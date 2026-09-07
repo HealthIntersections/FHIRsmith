@@ -23,6 +23,10 @@ const TXModule = require('../../tx/tx');
 
 const LIBRARY = path.join(__dirname, 'fixtures', 'test-library.yaml');
 const BASE = '/tx/r5';
+// The home page is only served with the trailing slash - tx.js 301s /tx/r5 to /tx/r5/ so
+// that the relative links on it (info/{id} and the source link) resolve under the endpoint
+// rather than one level up. Ask for the canonical URL; supertest does not follow redirects.
+const HOME = BASE + '/';
 
 /** A TX module of our own, so each block controls the setting under test. */
 async function startApp(extraConfig) {
@@ -45,6 +49,13 @@ describe('library source is not published by default', () => {
   beforeAll(async () => { ({ app, txModule } = await startApp({})); }, 120000);
   afterAll(async () => { await txModule.shutdown(); });
 
+  test('the endpoint root redirects to the trailing-slash form', async () => {
+    // load-bearing: the home page's links are relative to it
+    const res = await request(app).get(BASE).set('Accept', 'text/html');
+    expect(res.status).toBe(301);
+    expect(res.headers.location).toBe(HOME);
+  });
+
   test('the route is not registered', async () => {
     const res = await request(app).get(`${BASE}/library`).set('Accept', 'application/yaml');
     expect(res.status).toBe(404);
@@ -57,7 +68,7 @@ describe('library source is not published by default', () => {
   });
 
   test('and the home page heading is the bare one', async () => {
-    const res = await request(app).get(BASE).set('Accept', 'text/html');
+    const res = await request(app).get(HOME).set('Accept', 'text/html');
     expect(res.status).toBe(200);
     expect(res.text).toContain('Source Content</h3>');
     expect(res.text).not.toContain('/library"');
@@ -138,7 +149,7 @@ describe('library source published', () => {
   // looking when the question occurs to them - they are reading the list of loaded content
   // and want to know where it came from.
   test('the home page links the source from the Source Content heading', async () => {
-    const res = await request(app).get(BASE).set('Accept', 'text/html');
+    const res = await request(app).get(HOME).set('Accept', 'text/html');
     expect(res.status).toBe(200);
     expect(res.text).toContain(`Source Content <a href="${BASE}/library"`);
     expect(res.text).toContain('>source</a>');

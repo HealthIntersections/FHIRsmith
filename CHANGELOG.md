@@ -5,6 +5,22 @@ All notable changes to the Health Intersections Node Server will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.13.2] - 2026-09-05
+
+### Added
+
+- Add support for publishLibrarySource
+- 
+### Fixed
+
+- Fix error in Snomed CT and ICD-11 where normal form difference and case difference being conflated 
+- Fix error in mime-type subsumption analysis 
+- adjust mime type validation to not be case sensitive
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4)
+
 ## [v0.13.1] - 2026-09-05
 
 ### Fixed 
