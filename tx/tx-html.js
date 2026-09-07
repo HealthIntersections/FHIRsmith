@@ -86,6 +86,99 @@ function acceptsHtml(req) {
   return _fmt.includes('text/html');
 }
 
+// Whether this server publishes its library source YAML. Off unless the operator turns
+// modules.tx.publishLibrarySource on, and it gates both the route and the nav item, so a
+// server that does not publish it has no link to a 404.
+let publishLibrarySource = false;
+
+function setPublishLibrarySource(enabled) {
+  publishLibrarySource = enabled === true;
+}
+
+function publishesLibrarySource() {
+  return publishLibrarySource;
+}
+
+/**
+ * Highlight a YAML document for display.
+ *
+ * Deliberately line-oriented and modest: this is the operator's own source file, not a
+ * general YAML parser, and it has to survive anything a hand-edited file contains without
+ * ever emitting the file's bytes unescaped. Each line is split into its parts FIRST and
+ * every part is escaped before any markup goes near it, so no amount of angle brackets or
+ * ampersands in a value can break out.
+ */
+function highlightYaml(source) {
+  const lines = String(source).replace(/\r\n/g, '\n').split('\n');
+  const out = lines.map(line => {
+    if (line.trim() === '') {
+      return '';
+    }
+    // a whole-line comment
+    const wholeComment = /^(\s*)(#.*)$/.exec(line);
+    if (wholeComment) {
+      return escape(wholeComment[1]) + '<span class="y-c">' + escape(wholeComment[2]) + '</span>';
+    }
+    // split off a trailing comment, but only one introduced by whitespace-then-#, so a
+    // '#' inside a value (a FHIR fragment URL, say) stays part of the value
+    let body = line;
+    let comment = '';
+    const trailing = /^(.*?)(\s+#.*)$/.exec(line);
+    if (trailing) {
+      body = trailing[1];
+      comment = '<span class="y-c">' + escape(trailing[2]) + '</span>';
+    }
+
+    // a mapping key needs whitespace (or end of line) after the colon - without it the
+    // colon is just part of a scalar, which is exactly what a source line like
+    // '- internal:lang' or '- snomed!:sct_intl_20250201.cache' is
+    const m = /^(\s*)(-\s+)?([A-Za-z0-9_.$-]+)(:)(\s+|$)(.*)$/.exec(body);
+    if (m) {
+      return escape(m[1])
+        + (m[2] ? '<span class="y-d">' + escape(m[2]) + '</span>' : '')
+        + '<span class="y-k">' + escape(m[3]) + '</span>'
+        + '<span class="y-p">' + escape(m[4]) + '</span>'
+        + escape(m[5])
+        + (m[6] ? '<span class="y-v">' + escape(m[6]) + '</span>' : '')
+        + comment;
+    }
+    const item = /^(\s*)(-\s+)(.*)$/.exec(body);
+    if (item) {
+      return escape(item[1])
+        + '<span class="y-d">' + escape(item[2]) + '</span>'
+        + '<span class="y-v">' + escape(item[3]) + '</span>'
+        + comment;
+    }
+    return escape(body) + comment;
+  });
+  return out.join('\n');
+}
+
+const YAML_STYLE = '<style>' +
+  '.yaml-source { background: #f7f7f7; border: 1px solid #ddd; padding: 12px; overflow-x: auto; ' +
+  'font-family: Menlo, Consolas, monospace; font-size: 90%; line-height: 1.45; }' +
+  '.yaml-source .y-k { color: #0b5394; font-weight: bold; }' +
+  '.yaml-source .y-v { color: #444; }' +
+  '.yaml-source .y-p, .yaml-source .y-d { color: #999; }' +
+  '.yaml-source .y-c { color: #777; font-style: italic; }' +
+  '</style>';
+
+/**
+ * The page body for the library source: what the file is, where to get the raw bytes, and
+ * the file itself.
+ */
+function buildLibrarySourcePage(source, filename, endpointPath) {
+  return YAML_STYLE
+    + '<p>This is the library source this server loads its content from - the code system files, '
+    + 'the packages, and the terminology sources it makes available. It is shown here as it is on '
+    + 'disk.</p>'
+    + '<p>The same URL returns the file itself to anything that does not ask for HTML: '
+    + '<code>curl -H "Accept: application/yaml" ' + escape(endpointPath) + '/library</code>, or '
+    + '<a href="library?_format=yaml">' + escape(endpointPath) + '/library?_format=yaml</a>.</p>'
+    + '<p>Source file: <code>' + escape(filename) + '</code></p>'
+    + '<pre class="yaml-source">' + highlightYaml(source) + '</pre>';
+}
+
 
 class TxHtmlRenderer {
   renderer;
@@ -110,7 +203,10 @@ class TxHtmlRenderer {
       version: packageJson.version,
       endpointpath: endpoint.path,
       fhirversion: endpoint.fhirVersion,
-      ms: Date.now() - startTime
+      ms: Date.now() - startTime,
+      libraryLink: publishLibrarySource
+        ? '<a href="' + escape(endpoint.path) + '/library" style="color: gold">Library</a>  &nbsp;|&nbsp;'
+        : ''
     };
 
     return htmlServer.renderPage('tx', title, content, options);
@@ -244,7 +340,14 @@ class TxHtmlRenderer {
     html += await this.buildSearchForm(req);
 
     // ===== Packages and Factories Section =====
-    html += '<hr/><h3>Source Content</h3>';
+    // What follows is the loaded content; the library YAML is where it came from, so when
+    // the operator publishes it, link it from the heading over the list it produced.
+    html += '<hr/><h3>Source Content';
+    if (publishLibrarySource) {
+      html += ` <a href="${escape(this.path)}/library" style="font-size: 60%; font-weight: normal;"` +
+        ' title="The library source this server loaded this content from">source</a>';
+    }
+    html += '</h3>';
 
     // List Packages
     html += '<h6>FHIR Packages</h6>';
@@ -1371,5 +1474,6 @@ class TxHtmlRenderer {
 }
 
 module.exports = {
-  TxHtmlRenderer, loadTemplate, acceptsHtml
+  TxHtmlRenderer, loadTemplate, acceptsHtml,
+  setPublishLibrarySource, publishesLibrarySource, highlightYaml, buildLibrarySourcePage
 };

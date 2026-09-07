@@ -150,6 +150,11 @@
     "tx": {
       "enabled": false,
       "librarySource": "/absolute/path/to/library.yml",
+      // publish the library source above at <endpoint>/library, so users can see what this
+      // server actually loads. One URL, content negotiated: a browser gets a formatted page
+      // (and a "Library" item in the tx nav bar), anything else gets the YAML file itself.
+      // Off by default - the file names every database, cache and package the server runs.
+      "publishLibrarySource": false,
       "cacheTimeout": 30,
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,

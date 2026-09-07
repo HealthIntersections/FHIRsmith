@@ -40,11 +40,9 @@ describe('properties', () => {
     await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-wildcard"}, "5.0");
   });
 
-
   it("expand-with-valueset.compose.property-all-properties-enums" + 'R5', async () => {
     await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-enums"}, "5.0");
   });
-
 
 });
 
@@ -5750,6 +5748,22 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-concrete-good"}, "4.0");
   });
 
+  it("validate-code-pc-scg-no-comma" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-no-comma"}, "5.0");
+  });
+
+  it("validate-code-pc-scg-no-comma" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-no-comma"}, "4.0");
+  });
+
+  it("validate-code-pc-scg-comma" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-comma"}, "5.0");
+  });
+
+  it("validate-code-pc-scg-comma" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-comma"}, "4.0");
+  });
+
   it("validate-code-pc-mrcm-concrete-range" + 'R5', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-concrete-range"}, "5.0");
   });
@@ -7397,6 +7411,38 @@ describe('mimetypes', () => {
 
   it("mimetype-subsumes-parameter-disjoint" + 'R4', async () => {
     await runTest({"suite":"mimetypes","test":"mimetype-subsumes-parameter-disjoint"}, "4.0");
+  });
+
+  it("mimetype-subsumes-default-explicit" + 'R5', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-explicit"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-explicit" + 'R4', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-explicit"}, "4.0");
+  });
+
+  it("mimetype-subsumes-default-contradicted" + 'R5', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-contradicted"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-contradicted" + 'R4', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-contradicted"}, "4.0");
+  });
+
+  it("mimetype-subsumes-default-format" + 'R5', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-format"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-format" + 'R4', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-format"}, "4.0");
+  });
+
+  it("mimetype-subsumes-charset-unknown-default" + 'R5', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-charset-unknown-default"}, "5.0");
+  });
+
+  it("mimetype-subsumes-charset-unknown-default" + 'R4', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-charset-unknown-default"}, "4.0");
   });
 
   it("mimetype-subsumes-case" + 'R5', async () => {
@@ -12444,6 +12490,14 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-concrete-good"}, "5.0");
   });
 
+  it("validate-code-pc-scg-no-comma" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-no-comma"}, "5.0");
+  });
+
+  it("validate-code-pc-scg-comma" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-scg-comma"}, "5.0");
+  });
+
   it("validate-code-pc-mrcm-concrete-range" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-concrete-range"}, "5.0");
   });
@@ -13283,6 +13337,22 @@ describe('mimetypes', () => {
 
   it("mimetype-subsumes-parameter-disjoint" + 'R5-cached', async () => {
     await runTest({"suite":"mimetypes","test":"mimetype-subsumes-parameter-disjoint"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-explicit" + 'R5-cached', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-explicit"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-contradicted" + 'R5-cached', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-contradicted"}, "5.0");
+  });
+
+  it("mimetype-subsumes-default-format" + 'R5-cached', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-default-format"}, "5.0");
+  });
+
+  it("mimetype-subsumes-charset-unknown-default" + 'R5-cached', async () => {
+    await runTest({"suite":"mimetypes","test":"mimetype-subsumes-charset-unknown-default"}, "5.0");
   });
 
   it("mimetype-subsumes-case" + 'R5-cached', async () => {

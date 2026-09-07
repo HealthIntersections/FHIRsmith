@@ -537,18 +537,40 @@ class SnomedExpressionParser {
 
   /**
    * Parse refinements for an expression
+   *
+   * The compositional grammar ABNF is
+   *   refinement   = (attributeSet / attributeGroup) *( ws ["," ws] attributeGroup )
+   *   attributeSet = attribute *(ws "," ws attribute)
+   * so a comma is required between the ungrouped attributes of the attribute set, but is
+   * OPTIONAL before an attribute group. Requiring it everywhere rejected the minimal
+   * rendering this parser's own renderer produces (e.g. 249943000:260868000=6934004{...}).
+   *
+   * We stay liberal in what we accept: a group may also be followed by further ungrouped
+   * attributes, which the ABNF does not allow but which this parser has always taken.
    */
   refinements(expr) {
-    let next = true;
-    while (next) {
-      if (this.peek() !== '{') {
-        expr.refinements.push(this.attribute());
-      } else {
+    this.ws();
+
+    let first = true;
+    for (;;) {
+      if (!first) {
+        const mark = this.cursor;
+        const comma = this.gchar(',');
+        this.ws();
+        if (this.peek() !== '{' && !comma) {
+          // neither a separating comma nor a group: the refinements are finished
+          this.cursor = mark;
+          break;
+        }
+      }
+
+      if (this.peek() === '{') {
         expr.refinementGroups.push(this.attributeGroup());
+      } else {
+        expr.refinements.push(this.attribute());
       }
       this.ws();
-      next = this.gchar(',');
-      this.ws();
+      first = false;
     }
   }
 
@@ -2444,10 +2466,13 @@ class SnomedExpressionServices {
         }
       }
 
-      // Grouped refinements
+      // Grouped refinements. The comma between the attribute set and the first group is
+      // optional in the grammar, but we emit it: it is what makes the boundary between the
+      // ungrouped attributes and the first group legible, and it is the safer of the two
+      // spellings to hand to a third-party parser.
       if (expr.hasRefinementGroups()) {
         for (let j = 0; j < expr.refinementGroups.length; j++) {
-          if (j > 0) parts.push(',');
+          if (j > 0 || expr.hasRefinements()) parts.push(',');
           parts.push('{');
 
           for (let i = 0; i < expr.refinementGroups[j].refinements.length; i++) {

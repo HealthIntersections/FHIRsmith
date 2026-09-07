@@ -80,7 +80,9 @@ class HtmlServer {
       .replace(/\[%fhir-version%\]/g, escape(renderOptions.fhirversion))
       .replace(/\[%ms%\]/g, escape(renderOptions.processingTime.toString()))
       .replace(/\[%sponsorMessage%\]/g, sponsorMessage)
-      .replace(/\[%about%\]/g, renderOptions.about || '');
+      .replace(/\[%about%\]/g, renderOptions.about || '')
+      // raw HTML, like [%about%]: the caller decides whether the nav item exists at all
+      .replace(/\[%library-link%\]/g, renderOptions.libraryLink || '');
     
     // Handle any custom template variables
     if (options.templateVars) {
