@@ -7,6 +7,7 @@
 
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const Logger = require('../library/logger');
 const { Library } = require('./library');
 const { OperationContext, ResourceCache, ExpansionCache, debugLog} = require('./operation-context');
@@ -148,6 +149,10 @@ class TXModule {
 
     // Load HTML template
     txHtml.loadTemplate();
+
+    // Off unless the operator opts in. This gates the nav item as well as the route, so a
+    // server that does not publish its library source shows no link to it.
+    txHtml.setPublishLibrarySource(config.publishLibrarySource === true);
 
     // Validate config
     if (!config.librarySource) {
@@ -955,6 +960,45 @@ class TXModule {
         this.countRequest(endpointPath, 'problems', Date.now() - start);
       }
     });
+
+    // The library source YAML - the file this server loaded its content from.
+    //
+    // Only registered when the operator turns modules.tx.publishLibrarySource on: the file
+    // names every database, cache and package the server runs, which some deployments are
+    // happy to publish and others are not, so it is opt-in rather than opt-out.
+    //
+    // One URL, negotiated: a browser (Accept: text/html) gets the highlighted page, anything
+    // else gets the file itself. ?_format=html and ?_format=yaml force either way, through the
+    // same acceptsHtml() the rest of the module uses.
+    if (this.config.publishLibrarySource === true) {
+      router.get('/library', async (req, res) => {
+        const start = Date.now();
+        try {
+          const filename = this.config.librarySource;
+          let source;
+          try {
+            source = await fs.promises.readFile(filename, 'utf8');
+          } catch (error) {
+            this.log.error(`Error reading library source ${filename}: ${error.message}`);
+            res.status(500).json(this.operationOutcome('error', 'exception',
+              'The library source is published by this server, but could not be read'));
+            return;
+          }
+          if (txHtml.acceptsHtml(req)) {
+            let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+            const content = txHtml.buildLibrarySourcePage(source, path.basename(filename), req.txEndpoint.path);
+            const html = await txhtml.renderPage('Library Source', content, req.txEndpoint, req.txStartTime);
+            res.setHeader('Content-Type', 'text/html');
+            res.send(html);
+          } else {
+            res.setHeader('Content-Type', 'application/yaml; charset=utf-8');
+            res.send(source);
+          }
+        } finally {
+          this.countRequest(endpointPath, 'library', Date.now() - start);
+        }
+      });
+    }
 
     // Metadata / CapabilityStatement
     router.get('/metadata', async (req, res) => {
