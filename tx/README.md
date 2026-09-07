@@ -25,6 +25,7 @@ Add the `tx` section to your `config.json`:
     "tx": {
       "enabled": true,
       "librarySource": "/path/to/library.yml",
+      "publishLibrarySource": false,
       "cacheTimeout": 30,
       "internalLimit" : 10000,
       "externalLimit" : 1000,
@@ -66,6 +67,7 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
+| `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
 | `internalLimit`                 | integer | No       | Largest number of codes in internal expansions                                                          |
 | `externalLimit`                 | integer | No       | Largest number of codes the server will return in an expansion                                          |
 | `endpoints`                     | array   | Yes      | List of endpoint configurations (at least one required)                                                 |
@@ -125,6 +127,26 @@ Each endpoint provides the following FHIR terminology operations:
 Each endpoint also provides:
 - `GET /{path}/metadata` - Returns a CapabilityStatement describing the endpoint's capabilities
 - `GET /{path}/` - Returns basic endpoint information
+- `GET /{path}/library` - Returns the library source YAML, if `publishLibrarySource` is set
+
+### Publishing the library source
+
+`publishLibrarySource` lets users see what the server actually loads. It is off by default,
+because the library YAML names every database, cache and package the server runs, and not
+every deployment wants that public. Turn it on and each endpoint serves the file at
+`/{path}/library`, and a **Library** item appears in the tx navigation bar.
+
+There is one URL, content negotiated the same way the rest of the module negotiates:
+
+| Request | Response |
+|---------|----------|
+| `Accept: text/html` (i.e. a browser) | the file, syntax highlighted, in the tx page template |
+| anything else | the file itself, as `application/yaml` |
+| `?_format=html` / `?_format=yaml` | forces either representation |
+
+The file is read from disk per request, so editing it is reflected immediately - note that
+this means the published file can be ahead of what the running server actually loaded, if it
+has been edited since startup.
 
 ## Library Configuration
 

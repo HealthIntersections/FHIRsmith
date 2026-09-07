@@ -558,10 +558,10 @@ class ValueSetChecker {
           } else {
             this.worker.opContext.addNote(this.valueSet, 'found OK', this.indentCount);
             result = true;
-            if ((await cs.code(ctxt.context)) !== code) {
-              let msg = this.worker.i18n.translate('CODE_CASE_DIFFERENCE', this.params.HTTPLanguages, [code, await cs.code(ctxt), cs.system]);
-              messages.push(msg);
-              op.addIssue(new Issue('warning', 'business-rule', addToPath(path, 'code'), 'CODE_CASE_DIFFERENCE', msg, 'code-rule'));
+            const normalised = await cs.code(ctxt.context);
+            if (normalised && normalised !== code) {
+              messages.push(this.addNormalisationIssue(op, path, code, normalised, cs));
+              normalForm.value = normalised;
             }
             let msg = await cs.incompleteValidationMessage(ctxt.context, this.params.HTTPLanguages);
             if (msg) {
@@ -1611,6 +1611,34 @@ class ValueSetChecker {
     return result;
   }
 
+  /**
+   * The code as submitted differs from the code as the code system renders it. Report why.
+   *
+   * Every such difference used to be reported as CODE_CASE_DIFFERENCE, which is where that
+   * assumption came from - cs-lang, where the canonical form really does differ only in case.
+   * It is not true in general. cs-snomed re-renders any postcoordinated expression through
+   * renderExpression(Minimal), so every legal alternative serialisation (the optional comma
+   * before an attribute group, whitespace, |terms|, attribute order) came back to the caller
+   * as a complaint about their casing; ICD-11 normalises a URI to the code it denotes and did
+   * the same. Neither has anything to do with case, and unlike case there is nothing the
+   * caller did wrong - the submitted form is valid, it simply is not the normal form.
+   *
+   * So: case-only differences stay CODE_CASE_DIFFERENCE, everything else is
+   * CODE_NOT_IN_NORMAL_FORM. Both are information severity (they were warning in one of the
+   * two call sites and information in the other; every tx-ecosystem fixture expects
+   * information).
+   *
+   * @returns {string} the message, for callers that also collect it into `messages`
+   */
+  addNormalisationIssue(op, path, code, normalised, cs) {
+    const caseOnly = normalised.toLowerCase() === code.toLowerCase();
+    const id = caseOnly ? 'CODE_CASE_DIFFERENCE' : 'CODE_NOT_IN_NORMAL_FORM';
+    const csDesc = cs.version() ? cs.system() + '|' + cs.version() : cs.system();
+    const msg = this.worker.i18n.translate(id, this.params.HTTPLanguages, [code, normalised, csDesc]);
+    op.addIssue(new Issue('information', 'business-rule', addToPath(path, 'code'), id, msg, 'code-rule'));
+    return msg;
+  }
+
   async checkConceptSet(path, role, cs, cset, code, displays, vs, message, inactive, normalForm, vstatus, op, vcc, messages) {
     this.worker.opContext.addNote(vs, 'check code ' + role + ' ' + this.worker.renderer.displayValueSetInclude(cset) + ' at ' + path, this.indentCount);
     let result = false;
@@ -1633,15 +1661,10 @@ class ValueSetChecker {
         }
       } else {
         this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs), this.indentCount);
-        if (await cs.code(loc.context) != code) {
-          let msg;
-          if (cs.version()) {
-            msg = this.worker.i18n.translate('CODE_CASE_DIFFERENCE', this.params.HTTPLanguages, [code, await cs.code(loc.context), cs.system() + '|' + cs.version()]);
-          } else {
-            msg = this.worker.i18n.translate('CODE_CASE_DIFFERENCE', this.params.HTTPLanguages, [code, await cs.code(loc.context), cs.system()]);
-          }
-          op.addIssue(new Issue('information', 'business-rule', addToPath(path, 'code'), 'CODE_CASE_DIFFERENCE', msg, 'code-rule'));
-          normalForm.value = await cs.code(loc.context);
+        const normalised = await cs.code(loc.context);
+        if (normalised && normalised != code) {
+          this.addNormalisationIssue(op, path, code, normalised, cs);
+          normalForm.value = normalised;
         }
         let msg = await cs.incompleteValidationMessage(loc.context, this.params.HTTPLanguages);
         if (msg) {
