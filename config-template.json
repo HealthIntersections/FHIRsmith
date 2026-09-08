@@ -94,7 +94,14 @@
       // (>100MB). Only applies to websites whose publish-setup.json has $.website.github = true.
       // Omit to leave them in place - the push will then fail. Relative paths resolve under the
       // publisher data folder
-      "large-file-archive": "/absolute/path/to/large-file-archive"
+      "large-file-archive": "/absolute/path/to/large-file-archive",
+      // where to clone the IG registry from. Omit for the default,
+      // git@github.com:FHIR/ig-registry.git. Set this to an ssh_config Host alias when the
+      // server should push the registry with a repo-scoped deploy key instead of an account
+      // key - e.g. "git@github-ig-registry:FHIR/ig-registry.git", with a matching Host block
+      // in the service user's ~/.ssh/config carrying IdentityFile and IdentitiesOnly yes.
+      // The alias is what lets ssh tell this remote apart from the website remote.
+      "ig-registry-url": "git@github.com:FHIR/ig-registry.git"
     },
     "npmprojector": {
       "enabled": true,

@@ -1117,8 +1117,15 @@ class PublisherModule {
     // Step 1: Clone supporting repositories into the task directory
     const registryDir = path.join(taskDir, 'ig-registry');
 
-    await this.runCommand('git', ['clone', 'git@github.com:FHIR/ig-registry.git', registryDir],
-        {}, task.id, 'Cloning ig-registry');
+    // The URL is configurable so that the credential arrangement can live in server config
+    // rather than here. A deployment that pushes ig-registry with a repo-scoped deploy key
+    // rather than an account key points this at an ssh_config Host alias carrying that key,
+    // e.g. git@github-ig-registry:FHIR/ig-registry.git - the alias is the only way ssh can
+    // tell this remote apart from the website remote, both being github.com.
+    const igRegistryUrl = this.config['ig-registry-url'] || 'git@github.com:FHIR/ig-registry.git';
+
+    await this.runCommand('git', ['clone', igRegistryUrl, registryDir],
+        {}, task.id, 'Cloning ig-registry from ' + igRegistryUrl);
 
     // Use website-configured history templates path if provided, otherwise clone the default repo
     let historyDir;
