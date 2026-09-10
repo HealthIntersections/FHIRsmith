@@ -5,6 +5,33 @@ All notable changes to the Health Intersections Node Server will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.13.3] - 2026-09-10
+
+### Fixed
+
+- Fix SNOMED CT display selection on national editions. `_displayRefsetOrder()` knew a display
+  language reference set for only six editions (International, US, UK and the test edition);
+  every other edition fell through to "the first description marked Preferred in any language
+  reference set", which on a multi-language edition means whichever description happened to be
+  stored first. The Belgian edition (11000172109) marks a Preferred synonym in Belgian French
+  (21000172104) and Belgian Dutch (31000172101) as well as in English, so a request that named
+  no `displayLanguage` got French for one concept, Dutch for the next and English for a third.
+  Editions not in the table now default to US then GB English, and the $lookup designation
+  order ranks the edition's display reference set ahead of "preferred anywhere", so the choice
+  no longer depends on import order. An edition with no English language reference set at all
+  still falls back to its own preferred synonym. This changes one tx-ecosystem expectation:
+  `bugs/sct-display-2` recorded "Counselling" for 409063005 on the International edition, which
+  is the GB English preferred term picked only because it is stored before the US one - the same
+  concept already expanded as "Counseling". The expectation is now "Counseling".
+- Fix the language tag on the display designation in $expand. It was hard-coded to `en-US`
+  while its value came from the edition display, so on a multi-language edition a French or
+  Dutch term was published as English - which put it in an implementation guide's English
+  display column and made the real French designation read as a duplicate of it.
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4
+
 ## [v0.13.2] - 2026-09-05
 
 ### Added

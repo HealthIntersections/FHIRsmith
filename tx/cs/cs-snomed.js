@@ -28,6 +28,21 @@ const {debugLog} = require("../operation-context");
 // shared - it simply recomputes.
 const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
 
+// Description language index -> language code. The index is assigned at import
+// time by SnomedImporter.mapLanguageCode(); this table is its inverse and must
+// be kept in step with it.
+const SCT_LANGUAGE_CODES = {
+  1: 'en',
+  2: 'fr',
+  3: 'nl',
+  4: 'es',
+  5: 'sv',
+  6: 'da',
+  7: 'de',
+  8: 'it',
+  9: 'cs'
+};
+
 // Context kinds matching Pascal enum
 const SnomedProviderContextKind = {
   CODE: 0,
@@ -346,8 +361,20 @@ class SnomedServices {
   // preferred synonym in more than one dialect at once (the International
   // edition ships both US English 509007 and GB English 508004, each marking a
   // different synonym Preferred). The edition default decides which term is
-  // shown. Editions not listed here fall back to "preferred synonym in any
-  // language refset" (the historical behaviour), so no edition regresses.
+  // shown.
+  //
+  // Editions not listed here default to English (US then GB) rather than to
+  // "preferred synonym in any language refset". A national edition carries a
+  // Preferred synonym in each of its own language refsets as well as in English
+  // (e.g. the Belgian edition 11000172109 marks a French term Preferred in
+  // 21000172104 and a Dutch one in 31000172101), so "any refset" resolved to
+  // whichever description happened to be stored first - French for one concept,
+  // Dutch for the next, English for a third. A caller who asked for no
+  // particular language got an arbitrary mix. English is the only defensible
+  // default: it is the one language every edition has, and it is what a request
+  // with no displayLanguage is taken to mean everywhere else in the server. An
+  // edition with no English at all still falls through to the any-refset step
+  // below, so nothing regresses.
   _displayRefsetOrder() {
     if (this._dispOrder) return this._dispOrder;
     const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
@@ -361,7 +388,7 @@ class SnomedServices {
       '83821000000107': [GB],           // UK Edition
       '999000021000000109': [GB]        // UK Clinical Edition
     };
-    const ids = byEdition[String(this.edition)] || [];
+    const ids = byEdition[String(this.edition)] || [US, GB];
     this._dispOrder = ids.map(idx).filter((i) => i >= 0);
     return this._dispOrder;
   }
@@ -400,57 +427,78 @@ class SnomedServices {
     return false;
   }
 
-  // Return a concept's display: the synonym marked Preferred in the US English
-  // language reference set; failing that the FSN; failing that the first active
-  // description. Previously this returned the first active description outright,
-  // which is only the preferred term by accident of import order.
-  getDisplayName(reference = 0) {
+  // Return a concept's display, together with the language it is actually in:
+  // the synonym marked Preferred in the edition's display language reference
+  // set; failing that a preferred synonym in any language refset; failing that
+  // the FSN; failing that the first active description. Previously this
+  // returned the first active description outright, which is only the preferred
+  // term by accident of import order.
+  //
+  // The language matters as much as the term: the display is emitted as a
+  // designation (DesignationUse.DISPLAY) during $expand, and tagging a French
+  // term as en-US puts it in an IG's English display column and makes the real
+  // French designation look like a duplicate.
+  //
+  // Returns {term, lang} - lang is a language code, or null when no description
+  // could be read.
+  getDisplayNameEx(reference = 0) {
+    const none = { term: '', lang: null };
     try {
       const concept = this.concepts.getConcept(reference);
       const descriptionsRef = concept.descriptions;
 
       if (descriptionsRef === 0) {
-        return '';
+        return none;
       }
 
       const descriptionIndices = this.refs.getReferences(descriptionsRef);
       const K = this._displayConstants();
+      const pick = (description) => ({
+        term: this.strings.getEntry(description.iDesc).trim(),
+        lang: SCT_LANGUAGE_CODES[description.lang] || 'en'
+      });
 
       // 1. Preferred synonym in the edition's default display refset(s), tried
       //    in priority order. This is what disambiguates dialects: on the
       //    International edition a concept may be Preferred in both US and GB
-      //    English, and the edition default (US English) must win.
+      //    English, and the edition default (US English) must win. It is also
+      //    what keeps a multi-language national edition from picking a
+      //    different language for each concept.
       for (const refsetIdx of this._displayRefsetOrder()) {
         for (const descIndex of descriptionIndices) {
           const description = this.descriptions.getDescription(descIndex);
           if (!description.active || description.kind !== K.synonym) continue;
           if (this._descAcceptability(description, refsetIdx) === K.preferred) {
-            return this.strings.getEntry(description.iDesc).trim();
+            return pick(description);
           }
         }
       }
 
       // 2. Fallback: preferred synonym in ANY language refset; then FSN; then
-      //    the first active description. Used for editions without a mapped
-      //    default refset, and for concepts with no preferred synonym there.
-      let fsnTerm = '';
-      let firstActive = '';
+      //    the first active description. Reached only by editions with no
+      //    English language refset at all, and by concepts with no preferred
+      //    synonym in the edition's display refsets.
+      let fsn = null;
+      let firstActive = null;
       for (const descIndex of descriptionIndices) {
         const description = this.descriptions.getDescription(descIndex);
         if (!description.active) continue;
-        const term = this.strings.getEntry(description.iDesc).trim();
-        if (firstActive === '') firstActive = term;
+        if (firstActive === null) firstActive = pick(description);
         if (this._synonymIsPreferred(description)) {
-          return term; // preferred synonym (any English language refset)
+          return pick(description); // preferred synonym (any language refset)
         }
-        if (description.kind === K.fsn && fsnTerm === '') {
-          fsnTerm = term;
+        if (description.kind === K.fsn && fsn === null) {
+          fsn = pick(description);
         }
       }
-      return fsnTerm || firstActive || '';
+      return fsn || firstActive || none;
     } catch (error) {
-      return '';
+      return none;
     }
+  }
+
+  getDisplayName(reference = 0) {
+    return this.getDisplayNameEx(reference).term;
   }
 
   getConceptDescendants(reference) {
@@ -1687,8 +1735,16 @@ class SnomedProvider extends BaseCSServices {
                   if (!prefSyns.has(langCode)) prefSyns.set(langCode, { langCode, use, term });
                 }
               }
-              const display = this.sct.getDisplayName(ctxt.getReference());
-              if (display) displays.addDesignation(true, 'active', 'en-US', null, display);
+              // Tagged with the language the term is actually in, not a
+              // hard-coded en-US: on a multi-language edition the edition
+              // display can be French or Dutch, and mislabelling it as English
+              // is what puts it in an IG's English display column and makes the
+              // real French designation look like a duplicate of it. English
+              // stays 'en-US' (the term comes from the US English language
+              // reference set), so nothing changes for English editions.
+              const display = this.sct.getDisplayNameEx(ctxt.getReference());
+              const displayLang = (!display.lang || display.lang === 'en') ? 'en-US' : display.lang;
+              if (display.term) displays.addDesignation(true, 'active', displayLang, null, display.term);
               // FSNs before synonyms, matching the designation order the published
               // tx-ecosystem expectations were written against (sct/expand-inactive).
               // Which of the two is chosen as the display is settled by
@@ -1697,14 +1753,31 @@ class SnomedProvider extends BaseCSServices {
               for (const d of fsns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
               for (const d of prefSyns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
             } else {
-              // $lookup: emit every description (preferred synonym first so the
-              // display resolves correctly; order is not otherwise significant).
+              // $lookup: emit every description. Order matters only for the
+              // display: a request with no displayLanguage takes the first
+              // designation Designations._isPreferred() accepts, which is any
+              // SNOMED synonym. Ranking by the edition's display language
+              // reference set first (rather than by "preferred in any refset")
+              // keeps that pick in one language - otherwise a national edition
+              // answers $lookup in French for one concept and Dutch for the
+              // next, depending on description storage order.
+              const K2 = this.sct._displayConstants();
+              const displayRefsets = this.sct._displayRefsetOrder();
+              // Buckets: 0 = preferred in the edition's display refset, 1 =
+              // preferred in some other language refset, 2 = everything else
+              // (FSNs and acceptable synonyms, left in their original order -
+              // Array.sort is stable, so nothing else about the output moves).
+              const rank = (description) => {
+                if (description.kind !== K2.synonym) return 2;
+                for (const refsetIdx of displayRefsets) {
+                  if (this.sct._descAcceptability(description, refsetIdx) === K2.preferred) return 0;
+                }
+                return this.sct._synonymIsPreferred(description) ? 1 : 2;
+              };
               const orderedIndices = descriptionIndices.slice().sort((a, b) => {
                 const da = this.sct.descriptions.getDescription(a);
                 const db = this.sct.descriptions.getDescription(b);
-                const pa = this.sct._synonymIsPreferred(da) ? 0 : 1;
-                const pb = this.sct._synonymIsPreferred(db) ? 0 : 1;
-                return pa - pb;
+                return rank(da) - rank(db);
               });
               for (const descIndex of orderedIndices) {
                 const description = this.sct.descriptions.getDescription(descIndex);
@@ -1733,18 +1806,7 @@ class SnomedProvider extends BaseCSServices {
   }
 
   getLanguageCode(langIndex) {
-    const languageMap = {
-      1: 'en',
-      2: 'fr',
-      3: 'nl',
-      4: 'es',
-      5: 'sv',
-      6: 'da',
-      7: 'de',
-      8: 'it',
-      9: 'cs'
-    };
-    return languageMap[langIndex] || 'en';
+    return SCT_LANGUAGE_CODES[langIndex] || 'en';
   }
 
   // Lookup methods
