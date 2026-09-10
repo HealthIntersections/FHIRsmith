@@ -1012,6 +1012,60 @@ describe('SNOMED CT Subset Validation', () => {
   });
 });
 
+describe('SNOMED CT display language selection', () => {
+  let factory;
+  let provider;
+  let opContext;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  // An edition FHIRsmith has never seen must still resolve its display through an
+  // English language reference set. Before this, an unlisted edition got an empty
+  // refset order and fell through to "preferred synonym in ANY language refset",
+  // which on a multi-language national edition (Belgium 11000172109: French
+  // 21000172104, Dutch 31000172101) returned whichever description happened to be
+  // stored first - so $lookup answered in French for one concept and Dutch for the
+  // next, and $expand tagged that term as en-US.
+  test('an edition not in the display-refset table defaults to US then GB English', () => {
+    const sct = provider.sct;
+    const savedEdition = sct.edition;
+    const savedOrder = sct._dispOrder;
+    try {
+      sct.edition = '99900001000000000';  // not a real edition
+      sct._dispOrder = null;
+      const order = sct._displayRefsetOrder();
+      const us = sct.concepts.findConcept(900000000000509007n);
+      expect(us.found).toBe(true);
+      expect(order.length).toBeGreaterThan(0);
+      expect(order[0]).toBe(us.index);
+    } finally {
+      sct.edition = savedEdition;
+      sct._dispOrder = savedOrder;
+    }
+  });
+
+  test('getDisplayNameEx reports the language the display is actually in', () => {
+    const sct = provider.sct;
+    const r = sct.concepts.findConcept(11687002n); // Gestational diabetes mellitus
+    expect(r.found).toBe(true);
+    const ex = sct.getDisplayNameEx(r.index);
+    expect(ex.term).toBe(sct.getDisplayName(r.index));
+    expect(ex.term.length).toBeGreaterThan(0);
+    expect(ex.lang).toBe('en');
+  });
+});
+
 /**
  * SNOMED CT Test Prerequisites Check
  *
