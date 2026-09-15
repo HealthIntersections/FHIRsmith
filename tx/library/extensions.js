@@ -24,8 +24,8 @@ const Extensions = {
     if (resource.jsonObj) {
       resource = resource.jsonObj
     }
-    if (resource.implicitRules) {
-      throw new Issue("error", "business-rule", null, null, 'Cannot process resource "'+name+'" due to the presence of implicit rules @'+place);
+    if (resource.implicitRules && 'https://hl7.org/fhir/implicit-rules/omitted-mandatory-interversion-code' != resource.implicitRules) {
+      throw new Issue("error", "business-rule", null, null, 'Cannot process resource "'+name+'" due to the presence of implicit rules \''+resource.implicitRules+'\' @'+place);
     }
   },
 
