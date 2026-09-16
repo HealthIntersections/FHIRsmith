@@ -122,6 +122,22 @@ describe('TX Module', () => {
       // tx-resource is still supported and still advertised
       expect(expansionParams).toContain('tx-resource');
     });
+
+    test('advertises the $expand parameters the server actually reads', async () => {
+      const response = await request(app)
+        .get('/tx/r5/metadata')
+        .query({ mode: 'terminology' })
+        .set('Accept', 'application/json');
+      expect(response.status).toBe(200);
+
+      const expansionParams = ((response.body.expansion || {}).parameter || []).map(p => p.name);
+      for (const name of ['url', 'valueSet', 'valueSetVersion', 'filter', 'designation', 'useSupplement',
+        'default-valueset-version', 'check-valueset-version', 'force-valueset-version']) {
+        expect(expansionParams).toContain(name);
+      }
+      // no duplicates
+      expect(new Set(expansionParams).size).toBe(expansionParams.length);
+    });
   });
 
   describe('GET /tx/r5/', () => {

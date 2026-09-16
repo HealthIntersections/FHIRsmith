@@ -259,6 +259,26 @@ Each GitHub Release includes:
     - `ghcr.io/healthintersections/fhirsmith:X.Y.Z`
 - **npm package** published to npmjs.org as `fhirsmith` *(if you add this)*
 
+Release images carry OCI labels, so an image says which release it is without
+having to trust the tag it was pulled under:
+
+```bash
+docker inspect --format '{{json .Config.Labels}}' ghcr.io/healthintersections/fhirsmith:latest
+```
+
+`org.opencontainers.image.version` is the release, `.revision` the commit it was
+built from, and `.source` is what links the package to this repository on GHCR.
+
+### CI Images
+
+Every push to main also publishes `:cibuild` and `:cibuild-<sha>` to the same
+package. These are **not releases** - they are whatever was last merged. The
+Docker Build workflow prunes all but the ten most recent afterwards, so they do
+not bury the current release on the package page. To prune by hand (or to run
+the one-off backfill of images published before that job existed), run the
+**GHCR Cleanup** workflow from the Actions tab with `dry_run` on first, read the
+log, then run it again with `dry_run` off.
+
 ### Creating a Release
 
 GitHub Actions will automatically:
@@ -283,7 +303,18 @@ GitHub Actions will automatically:
 ### Tx Conformance Statement
      {copy content from text-cases-summary.txt}
 ```
-2. Update `package.json` & `package-lock.json` to have the same release version
+2. Update `package.json` & `package-lock.json` to the release version:
+
+```bash
+   npm version --no-git-tag-version X.Y.Z
+   npm install --package-lock-only
+```
+
+   This matters more than it looks. The server reports its version from
+   `package.json` (`server.js`, `tx/tx.js`) - not from the `APP_VERSION` build
+   arg - so a package.json left on the previous number ships a Docker image that
+   calls itself by the wrong release for good. The **Verify Version** job fails
+   the release if `package.json` or `package-lock.json` disagrees with the tag.
 
 3. Commit your changes:
 ```bash

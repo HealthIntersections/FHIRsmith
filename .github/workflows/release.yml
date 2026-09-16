@@ -6,6 +6,45 @@ on:
       - 'v*.*.*'
 
 jobs:
+  # The tag is the release. Everything downstream must agree with it, because the
+  # running server reports its version from package.json (server.js, tx/tx.js),
+  # NOT from the APP_VERSION build arg - so a package.json left on the previous
+  # number ships an image that calls itself by the wrong release for its whole
+  # life. v0.13.3 went out that way. Nothing here rewrites the version: a
+  # mismatch fails the release so the commit gets fixed and re-tagged.
+  verify-version:
+    name: Verify Version
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check package.json and package-lock.json against the tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "tag version: $VERSION"
+
+          fail=0
+          check() {
+            local label="$1" actual="$2"
+            echo "  $label = ${actual:-<missing>}"
+            if [ "$actual" != "$VERSION" ]; then
+              echo "::error::$label is '${actual:-<missing>}' but the tag is v$VERSION"
+              fail=1
+            fi
+          }
+
+          check "package.json version"              "$(jq -r '.version' package.json)"
+          check "package-lock.json version"         "$(jq -r '.version' package-lock.json)"
+          check 'package-lock.json packages[""]'    "$(jq -r '.packages."".version' package-lock.json)"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Release aborted. On main: npm version --no-git-tag-version $VERSION && npm install --package-lock-only"
+            echo "::error::then commit, delete the tag (git tag -d v$VERSION && git push origin :refs/tags/v$VERSION) and re-tag."
+            exit 1
+          fi
+          echo "OK: package.json and package-lock.json agree with the tag"
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -43,7 +82,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: test
+    needs: [verify-version, test]
 
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +128,7 @@ jobs:
   npm-publish:
     name: Publish to NPM
     runs-on: ubuntu-latest
-    needs: test
+    needs: [verify-version, test]
     permissions:
       contents: read
       id-token: write
@@ -138,6 +177,7 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "VERSION_NO_V=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
       - name: Set lowercase repository name
         run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
@@ -166,3 +206,5 @@ jobs:
           cache-to: type=gha,mode=max
           build-args: |
             VERSION=${{ steps.get_version.outputs.VERSION_NO_V }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.get_version.outputs.CREATED }}
