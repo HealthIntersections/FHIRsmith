@@ -16,6 +16,8 @@ const {ConceptMap} = require("../library/conceptmap");
 const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType} = require("../sct/ecl");
 const {Issue} = require("../library/operation-outcome");
 const {debugLog} = require("../operation-context");
+const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
+const Logger = require("../../library/logger");
 
 // Symbol key under which a resolved ECL filter analysis is memoised directly on
 // the ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
@@ -127,6 +129,9 @@ class SnomedServices {
     this.strings = new SnomedStrings(sharedData.strings);
     this.words = new SnomedWords(sharedData.words);
     this.stems = new SnomedStems(sharedData.stems);
+    // Free-text search index, built on first search (see getTextIndex)
+    this._textIndex = null;
+    this._textIndexPromise = null;
     this.refs = new SnomedReferences(sharedData.refs);
     this.descriptions = new SnomedDescriptions(sharedData.desc);
     this.descriptionIndex = new SnomedDescriptionIndex(sharedData.descRef);
@@ -1482,16 +1487,104 @@ class SnomedServices {
   };
 
 
-  searchFilter(searchText, includeInactive = false, exactMatch = false) {
+  /**
+   * Free-text search over active descriptions.
+   *
+   * Uses the in-memory word index (see tx/sct/text-index.js), built the first
+   * time this edition is searched: every filter token (stop words aside) must
+   * match a word of the concept's active descriptions, either as a prefix or
+   * by sharing its stem. Filters with no indexable token (only 1-character
+   * tokens), or an edition whose index failed to build, fall back to
+   * scanSearch().
+   *
+   * Previously the third parameter was `exactMatch`, which the provider fed
+   * from its unrelated `sort` flag - so $expand with a filter on an
+   * include-all-codes value set matched ANY term by brute-force scan: 10k+
+   * matches for a typical multi-word filter, with the event loop blocked for
+   * the whole scan (tx.fhir.org incident 2026-09-17).
+   *
+   * @param {SearchFilterText} searchText
+   * @param {boolean} includeInactive - include inactive concepts
+   * @param {OperationContext|null} opContext - for yielding / deadline checks
+   * @returns {Promise<SnomedFilterContext>}
+   */
+  async searchFilter(searchText, includeInactive = false, opContext = null) {
+    const filterText = (searchText && searchText.filter ? searchText.filter : '').toLowerCase().trim();
+    const tokens = filterTokens(filterText);
+    if (tokens.length > 0) {
+      const index = await this.getTextIndex(opContext);
+      if (index) {
+        const result = new SnomedFilterContext();
+        const ordinals = index.search(tokens, opContext);
+        if (opContext) {
+          await opContext.checkAndYield('sct:searchFilter');
+        }
+        result.matches = rankMatches(this, index, ordinals, filterText, tokens, includeInactive);
+        return result;
+      }
+    }
+    return await this.scanSearch(filterText, includeInactive, opContext);
+  }
+
+  /**
+   * The edition's text index, building it on first use. The build is shared:
+   * concurrent searches wait on the same promise, and time spent waiting is
+   * not charged to the waiting operation's compute budget. Resolves to null
+   * if the build failed (the next search retries it).
+   * @param {OperationContext|null} opContext
+   * @returns {Promise<SnomedTextIndex|null>}
+   */
+  async getTextIndex(opContext = null) {
+    if (this._textIndex) {
+      return this._textIndex;
+    }
+    if (!this._textIndexPromise) {
+      const started = Date.now();
+      // Logger fetched lazily: importers and tests require this module too
+      const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
+      this._textIndexPromise = SnomedTextIndex.build(this).then(index => {
+        this._textIndex = index;
+        textIndexLog.info(`SNOMED text index for ${this.versionUri}: ${index.words.length} words, built in ${Date.now() - started}ms`);
+        return index;
+      }, error => {
+        this._textIndexPromise = null;
+        textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}: ${error.message}`);
+        return null;
+      });
+    }
+    if (opContext && typeof opContext.waitFor === 'function') {
+      return await opContext.waitFor(this._textIndexPromise, 'sct:textIndex');
+    }
+    return await this._textIndexPromise;
+  }
+
+  /**
+   * Brute-force scan of every concept's active descriptions: every
+   * whitespace-separated term of the filter must appear (as a substring) in
+   * the same description. Expensive (hundreds of ms on a full edition), so it
+   * yields through opContext.checkAndYield and the compute deadline applies.
+   *
+   * @param {string} filterText - lower-cased, trimmed
+   * @param {boolean} includeInactive
+   * @param {OperationContext|null} opContext
+   * @returns {Promise<SnomedFilterContext>}
+   */
+  async scanSearch(filterText, includeInactive = false, opContext = null) {
     const result = new SnomedFilterContext();
-
-    // Simplified search - in full implementation would use stemming and word indexes
-    const searchTerms = searchText.filter.toLowerCase().split(/\s+/);
+    const searchTerms = filterText.split(/\s+/).filter(t => t.length > 0);
     const matches = [];
+    if (searchTerms.length === 0) {
+      result.matches = matches;
+      return result;
+    }
 
-    // Search through all concepts
-    for (let i = 0; i < this.concepts.count(); i++) {
-      const conceptIndex = i * this.concepts.constructor.CONCEPT_SIZE;
+    const conceptCount = this.concepts.count();
+    const conceptSize = this.concepts.constructor.CONCEPT_SIZE;
+    for (let i = 0; i < conceptCount; i++) {
+      if (opContext && (i & 0x3FF) === 0) {
+        await opContext.checkAndYield('sct:searchFilter');
+      }
+      const conceptIndex = i * conceptSize;
 
       try {
         const concept = this.concepts.getConcept(conceptIndex);
@@ -1510,25 +1603,23 @@ class SnomedServices {
           const description = this.descriptions.getDescription(descIndex);
           if (description.active) {
             const term = this.strings.getEntry(description.iDesc).toLowerCase();
-
-            if (exactMatch) {
-              // All search terms must be present
-              matchFound = searchTerms.every(searchTerm => term.includes(searchTerm));
-            } else {
-              // Any search term can match
-              matchFound = searchTerms.some(searchTerm => term.includes(searchTerm));
-            }
-
-            if (matchFound) {
+            if (searchTerms.every(searchTerm => term.includes(searchTerm))) {
+              matchFound = true;
               // Calculate priority based on match quality
-              if (term === searchText.filter.toLowerCase()) {
-                priority = 100; // Exact match
-              } else if (term.startsWith(searchText.filter.toLowerCase())) {
-                priority = 50; // Prefix match
+              let p;
+              if (term === filterText) {
+                p = 100; // Exact match
+              } else if (term.startsWith(filterText)) {
+                p = 50; // Prefix match
               } else {
-                priority = 10; // Contains match
+                p = 10; // Contains match
               }
-              break;
+              if (p > priority) {
+                priority = p;
+              }
+              if (priority === 100) {
+                break;
+              }
             }
           }
         }
@@ -1541,6 +1632,9 @@ class SnomedServices {
           });
         }
       } catch (error) {
+        if (error instanceof Issue || (error && error.abandoned)) {
+          throw error;
+        }
         // Skip problematic concepts
         continue;
       }
@@ -2448,8 +2542,10 @@ class SnomedProvider extends BaseCSServices {
   }
 
   // Search filter
+  // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
-    let f = this.sct.searchFilter(filter, false, sort);
+    // `sort` is not a match-mode flag: results are always ranked.
+    let f = await this.sct.searchFilter(filter, false, this.opContext);
     filterContext.filters.push(f);
     return f;
   }

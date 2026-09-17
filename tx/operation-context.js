@@ -972,6 +972,39 @@ class OperationContext {
     }
   }
 
+  /**
+   * Await something this operation does not itself compute - typically a
+   * shared structure another request is building - without charging the wait
+   * to the compute deadline. The current compute slice is closed before
+   * waiting and a new one opened after; aborts if the client disconnected
+   * meanwhile.
+   *
+   * @param {Promise} promise
+   * @param {string} place - Location identifier for debugging
+   * @returns {Promise<*>} what the promise resolves to
+   */
+  async waitFor(promise, place = 'unknown') {
+    const now = performance.now();
+    this._clock.compute += now - this._clock.sliceStart;
+    let result;
+    try {
+      result = await promise;
+    } finally {
+      const resumed = performance.now();
+      this._clock.sliceStart = resumed;
+      this._clock.lastYield = resumed;
+    }
+    if (this._clock.clientGone) {
+      this.log(`Operation abandoned @ ${place}: client disconnected`);
+      const error = new Issue("error", "too-costly", null,
+          `Operation abandoned at ${place}: the client disconnected before the response was ready`);
+      error.abandoned = true;
+      error.diagnostics = this.diagnostics();
+      throw error;
+    }
+    return result;
+  }
+
   unSeeAll() {
     this.contexts = [];
   }

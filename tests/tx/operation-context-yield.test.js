@@ -157,3 +157,37 @@ describe('OperationContext.checkAndYield', () => {
     expect(error.cause).toBe('too-costly');
   });
 });
+
+describe('OperationContext.waitFor', () => {
+
+  test('does not charge waiting to the compute deadline', async () => {
+    const ctx = makeContext(1); // 1 second of compute
+    spin(200);
+    const before = ctx.computeElapsed();
+    await ctx.waitFor(new Promise(resolve => setTimeout(resolve, 400)), 'test');
+    const after = ctx.computeElapsed();
+    // the 400ms wait is not compute: what accrued is the spin, not the wait
+    expect(after).toBeLessThan(before + 100);
+    expect(after).toBeGreaterThanOrEqual(190);
+    ctx.deadCheck('after-wait'); // still inside its budget
+  });
+
+  test('returns what the promise resolved to', async () => {
+    const ctx = makeContext(5);
+    await expect(ctx.waitFor(Promise.resolve('value'), 'test')).resolves.toBe('value');
+  });
+
+  test('aborts if the client disconnected while waiting', async () => {
+    const ctx = makeContext(5);
+    const waiting = ctx.waitFor(new Promise(resolve => setTimeout(resolve, 50)), 'test');
+    ctx.markClientGone();
+    await expect(waiting).rejects.toMatchObject({ abandoned: true });
+  });
+
+  test('restores the compute slice when the promise rejects', async () => {
+    const ctx = makeContext(5);
+    await expect(ctx.waitFor(Promise.reject(new Error('nope')), 'test')).rejects.toThrow('nope');
+    spin(50);
+    expect(ctx.computeElapsed()).toBeLessThan(200);
+  });
+});
