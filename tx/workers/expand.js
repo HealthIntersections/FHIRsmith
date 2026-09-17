@@ -861,6 +861,14 @@ class ValueSetExpander {
                   this.addToTotal();
                 }
               }
+              if (this.pageFilled()) {
+                // No total is reported for this path (noTotal above), so once
+                // the requested page is full there is nothing left to learn
+                // from the rest of the matches - and a text filter on a large
+                // code system can match tens of thousands of them, each
+                // costing a designations/properties lookup.
+                break;
+              }
             }
             this.worker.opContext.log('iterate filters done');
             }
@@ -1790,6 +1798,18 @@ class ValueSetExpander {
       pdv.code = code;
     }
     pdv[valueName] = value;
+  }
+
+  /**
+   * True when the requested page (offset + count) has been filled, so an
+   * iteration that is not counting a total can stop. Exclusions are handled
+   * after the fact and can remove codes already collected, so a value set
+   * with any exclusion never stops early.
+   * @returns {boolean}
+   */
+  pageFilled() {
+    return this.count > 0 && this.offset > -1 && !this.hasExclusions
+        && this.fullList.length >= this.count + this.offset;
   }
 
   addToTotal(t = 1) {
