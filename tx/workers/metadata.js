@@ -272,8 +272,8 @@ class MetadataHandler {
                 { name: '_id', type: 'token' }
               ],
               operation: [
-                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-                { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }
+                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' }
+                // closure is system level, not ConceptMap level - see rest.operation below
               ]
             }
           ],
@@ -286,7 +286,8 @@ class MetadataHandler {
             { name: 'subsumes', definition: 'http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes' },
             { name: 'validate-code', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-validate-code' },
             { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-            { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' },
+            // only when the administrator has turned it on (modules.tx.closure)
+            ...(this.config.closure ? [{ name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }] : []),
             { name: 'compare', definition: 'http://hl7.org/fhir/tools/OperationDefinition/ValueSet-compare' },
             { name: 'cache-control', definition: 'http://hl7.org/fhir/tools/OperationDefinition/cache-control' },
             { name: 'versions', definition: 'http://hl7.org/fhir/OperationDefinition/fhir-versions' }
@@ -333,6 +334,10 @@ class MetadataHandler {
       validateCode: this.buildValidateCodeCapabilities(),
       translation: this.buildTranslationCapabilities()
     };
+    if (this.config.closure) {
+      // closure tables relate concepts within one code system, never across them
+      tc.closure = { translation: false };
+    }
 
     return tc;
   }

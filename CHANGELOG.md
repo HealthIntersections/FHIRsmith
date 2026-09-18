@@ -5,6 +5,33 @@ All notable changes to the Health Intersections Node Server will be documented i
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-09-dd
+
+### Security
+
+-
+
+### Added
+
+- Initial Implementation of $closure
+- add support for caching across multiple servers
+
+### Changed
+
+-
+
+### Fixed
+
+- Fix broken links in HTML references (#256)
+- fix bug in concept map conversion 
+- fix issue processing MRCM rules (#287)
+
+### Tx Conformance Statement
+
+(paste)
+
+
+
 ## [v0.13.4] - 2026-09-17
 
 ### Changed 

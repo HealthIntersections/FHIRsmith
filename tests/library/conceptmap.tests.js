@@ -229,7 +229,7 @@ describe('ConceptMap', () => {
 
       const target2 = cm.jsonObj.group[0].element[1].target[0];
       expect(target2.equivalence).toBe('wider');
-      expect(target2.relationship).toBe('source-is-broader-than-target');
+      expect(target2.relationship).toBe('source-is-narrower-than-target');
     });
 
     test('should handle source/target without versions', () => {
@@ -277,7 +277,7 @@ describe('ConceptMap', () => {
       expect(target1.relationship).toBeUndefined();
 
       const target2 = parsed.group[0].element[1].target[0];
-      expect(target2.equivalence).toBe('wider');
+      expect(target2.equivalence).toBe('narrower'); // source-is-broader-than-target
       expect(target2.relationship).toBeUndefined();
     });
 
@@ -368,10 +368,11 @@ describe('ConceptMap', () => {
       const elements = cm.jsonObj.group[0].element;
       expect(elements[0].target[0].relationship).toBe('related-to');
       expect(elements[1].target[0].relationship).toBe('equivalent');
-      expect(elements[2].target[0].relationship).toBe('source-is-broader-than-target');
-      expect(elements[3].target[0].relationship).toBe('source-is-narrower-than-target');
-      expect(elements[4].target[0].relationship).toBe('source-is-narrower-than-target');
-      expect(elements[5].target[0].relationship).toBe('not-related-to');
+      // wider/narrower describe the target; R5 relationships describe the source
+      expect(elements[2].target[0].relationship).toBe('source-is-narrower-than-target');  // wider
+      expect(elements[3].target[0].relationship).toBe('source-is-broader-than-target');   // narrower
+      expect(elements[4].target[0].relationship).toBe('source-is-broader-than-target');   // specializes
+      expect(elements[5].target[0].relationship).toBe('related-to');                      // inexact
 
       // Original equivalence should be preserved
       expect(elements[0].target[0].equivalence).toBe('relatedto');
@@ -418,9 +419,9 @@ describe('ConceptMap', () => {
       const elements = parsed.group[0].element;
       expect(elements[0].target[0].equivalence).toBe('relatedto');
       expect(elements[1].target[0].equivalence).toBe('equivalent');
-      expect(elements[2].target[0].equivalence).toBe('wider');
-      expect(elements[3].target[0].equivalence).toBe('narrower');
-      expect(elements[4].target[0].equivalence).toBe('unmatched');
+      expect(elements[2].target[0].equivalence).toBe('narrower');  // source-is-broader-than-target
+      expect(elements[3].target[0].equivalence).toBe('wider');     // source-is-narrower-than-target
+      expect(elements[4].target[0].equivalence).toBe('disjoint');  // not-related-to
 
       // Relationship should be removed
       expect(elements[0].target[0].relationship).toBeUndefined();

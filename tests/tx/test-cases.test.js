@@ -5716,6 +5716,30 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain"}, "4.0");
   });
 
+  it("validate-code-pc-mrcm-domain-finding" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-finding"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-finding" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-finding"}, "4.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-event" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-event"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-event" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-event"}, "4.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-multi" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-multi"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-multi" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-multi"}, "4.0");
+  });
+
   it("validate-code-pc-mrcm-range" + 'R5', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-range"}, "5.0");
   });
@@ -12472,6 +12496,18 @@ describe('snomed', () => {
 
   it("validate-code-pc-mrcm-domain" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-finding" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-finding"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-event" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-event"}, "5.0");
+  });
+
+  it("validate-code-pc-mrcm-domain-multi" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-mrcm-domain-multi"}, "5.0");
   });
 
   it("validate-code-pc-mrcm-range" + 'R5-cached', async () => {

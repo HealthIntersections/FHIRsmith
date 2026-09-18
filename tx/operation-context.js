@@ -110,6 +110,63 @@ class ResourceCache {
     // so a client polling $cache-control?mode=check can work out how often it needs
     // to poll instead of guessing. Null = not advertised.
     this.idleTimeoutMs = null;
+    // This server instance's code (modules.tx.instanceCode), prefixed onto every
+    // cache-id it issues as "<code>.<uuid>". A proxy in front of several instances
+    // routes on the prefix to get a cached request back to the one instance that
+    // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
+    this.instanceCode = null;
+  }
+
+  /**
+   * Set the instance code that is prefixed onto the cache-ids this cache issues.
+   * 1-16 letters and digits: the code is followed by a '.', a proxy has to be able
+   * to match it with a simple pattern, and the whole id must stay a valid FHIR id. Empty/null/undefined means no prefix.
+   *
+   * @param {string|null|undefined} code
+   * @throws {Error} if the code is not letters and digits
+   */
+  setInstanceCode(code) {
+    this.instanceCode = ResourceCache.checkInstanceCode(code);
+  }
+
+  /**
+   * Validate an instance code from config.
+   * @param {string|null|undefined} code
+   * @returns {string|null} the code, or null for none (empty/null/undefined)
+   * @throws {Error} if the code is not letters and digits
+   */
+  static checkInstanceCode(code) {
+    if (code === undefined || code === null || code === '') {
+      return null;
+    }
+    // At most 16 characters: the cache-id goes back to the client as a FHIR id
+    // (valueId), which is capped at 64 - and "<code>." plus a 36-character UUID
+    // has to fit.
+    if (typeof code !== 'string' || !/^[A-Za-z0-9]{1,16}$/.test(code)) {
+      throw new Error(`tx instanceCode '${code}' is not valid: it must be 1-16 letters and digits`);
+    }
+    return code;
+  }
+
+  /**
+   * Mint a new cache-id: a UUID, prefixed with "<instanceCode>." when this server
+   * has an instance code. Minting only - the caller creates the entry with set().
+   * @returns {string}
+   */
+  newCacheId() {
+    const uuid = crypto.randomUUID();
+    return this.instanceCode ? `${this.instanceCode}.${uuid}` : uuid;
+  }
+
+  /**
+   * The instance code in a cache-id, or null if it has none. Ids this server mints
+   * are either a bare UUID (no '.') or "<code>.<uuid>".
+   * @param {string} cacheId
+   * @returns {string|null}
+   */
+  static issuerOf(cacheId) {
+    const dot = typeof cacheId === 'string' ? cacheId.indexOf('.') : -1;
+    return dot > 0 ? cacheId.substring(0, dot) : null;
   }
 
   /**
@@ -164,7 +221,9 @@ class ResourceCache {
 
   /**
    * The message to report for a cache-id that isn't here: which of the three
-   * fates it met, with the numbers that make it checkable. Both throw sites
+   * fates it met, with the numbers that make it checkable - or, when there's no
+   * record of it and its prefix names another instance, that it was routed here
+   * by mistake. Both throw sites
    * (worker.setupAdditionalResources and batchValidate.frontLoadBatch) use this
    * so they can never drift apart.
    *
@@ -175,6 +234,15 @@ class ResourceCache {
   describeMissing(cacheId) {
     const t = this.tombstone(cacheId);
     if (!t) {
+      // No record of it here. If its prefix names a different instance, say so:
+      // that's a routing problem (proxy misconfigured, or the owning instance is
+      // down and the request fell through to a backup), not a lifecycle one.
+      const issuer = ResourceCache.issuerOf(cacheId);
+      if (issuer && issuer !== this.instanceCode) {
+        return this.instanceCode
+          ? { messageId: 'CACHE_ID_OTHER_INSTANCE', params: [cacheId, issuer, this.instanceCode] }
+          : { messageId: 'CACHE_ID_OTHER_INSTANCE_UNNAMED', params: [cacheId, issuer] };
+      }
       return { messageId: 'CACHE_ID_UNKNOWN', params: [cacheId] };
     }
     const ago = formatDuration(Date.now() - t.at);

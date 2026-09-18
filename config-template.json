@@ -163,6 +163,11 @@
       // Off by default - the file names every database, cache and package the server runs.
       "publishLibrarySource": false,
       "cacheTimeout": 30,
+      // Optional. A short code (1-16 letters and digits) naming this server instance. Every
+      // cache-id the server issues then starts with "<code>.", so a proxy in front of
+      // several instances can route cached requests back to the instance that holds the
+      // cache. Leave unset for a single server. See nginx.md.
+      // "instanceCode": "tx1",
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
       "endpoints": [

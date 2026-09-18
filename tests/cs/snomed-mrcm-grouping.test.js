@@ -24,11 +24,13 @@ const { SnomedFileReader } = require('../../tx/sct/structures');
 const { SnomedServices } = require('../../tx/cs/cs-snomed');
 const { SnomedExpressionParser } = require('../../tx/sct/expressions');
 
-const cachePath = path.resolve(__dirname, '../../data/terminology-cache/sct_test_20250909.cache');
-const haveCache = fs.existsSync(cachePath);
-const describeIfCache = haveCache ? describe : describe.skip;
+const cacheFolder = path.resolve(__dirname, '../../data/terminology-cache');
+const cachePath = ['sct_test_20250909.cache', 'sct_test_20250909b.cache']
+  .map(name => path.join(cacheFolder, name))
+  .find(file => fs.existsSync(file));
+const describeIfCache = cachePath ? describe : describe.skip;
 
-if (!haveCache) {
+if (!cachePath) {
   // eslint-disable-next-line no-console
   console.warn('sct_test_20250909.cache not present - MRCM grouping tests skipped');
 }
