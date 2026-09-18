@@ -49,6 +49,7 @@ const {capabilityStatementFromR5} = require("./xversion/xv-capabiliityStatement"
 const {bundleFromR5} = require("./xversion/xv-bundle");
 const {convertResourceToR5} = require("./xversion/xv-resource");
 const ClosureWorker = require("./workers/closure");
+const { ClosureStore } = require("./closure/closure-store");
 const {BundleXML} = require("./xml/bundle-xml");
 const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
@@ -183,8 +184,35 @@ class TXModule {
     await this.i18n.load();
     this.log.info('I18n support initialized');
 
+    // $closure keeps its tables on disk, across sessions and restarts, so it only exists
+    // when the administrator turns it on and says where they go. If it is turned on and
+    // the database can't be opened, that stops startup - silently running without it
+    // would be worse.
+    this.closureStore = null;
+    if (config.closure && config.closure.enabled) {
+      this.closureStore = new ClosureStore(config.closure, this.log);
+      this.closureStore.open();
+      this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
+      const days = config.closure.retentionDays;
+      if (days) {
+        const prune = () => {
+          try {
+            const dropped = this.closureStore.pruneUnused(days);
+            if (dropped.length > 0) {
+              this.log.info(`closure: dropped ${dropped.length} table(s) unused for ${days} days`);
+            }
+          } catch (error) {
+            this.log.error(`closure: pruning failed: ${error.message}`);
+          }
+        };
+        prune();
+        this.timers.push(setInterval(prune, 24 * 60 * 60 * 1000));
+      }
+    }
+
     // Initialize metadata handler with config
     this.metadataHandler = new MetadataHandler({
+      closure: this.closureStore != null,
       baseUrl: config.baseUrl,
       serverVersion: packageJson.version,
       txVersion: packageJson.txVersion,
@@ -723,7 +751,7 @@ class TXModule {
     router.get('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$closure', Date.now() - start);
@@ -732,7 +760,7 @@ class TXModule {
     router.post('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$closure', Date.now() - start);
@@ -1227,6 +1255,10 @@ class TXModule {
     this.timers = [];
     // Clean up any resources if needed
     await this.library.close();
+    if (this.closureStore) {
+      this.closureStore.close();
+      this.closureStore = null;
+    }
     this.log.info('TX module shut down');
   }
 

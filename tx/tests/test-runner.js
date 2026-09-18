@@ -16,7 +16,7 @@ let error = 0;
 let forcedCaching = false;
 
 function txTestModeSet() {
-   return new Set(['tx.fhir.org', 'omop', 'general', 'snomed', 'mimetypes', 'icd-11']);
+   return new Set(['tx.fhir.org', 'omop', 'general', 'snomed', 'mimetypes', 'icd-11', 'closure']);
 }
 
 async function startTxTests() {

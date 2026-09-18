@@ -2,8 +2,9 @@
  * $closure routing, and FHIR errors for requests no route matches (issue #100)
  *
  * $closure is defined on ConceptMap but declared system=true, type=false, so it
- * lives at [base]/$closure. It isn't implemented yet: it must answer with a
- * not-supported OperationOutcome, not an Express HTML page.
+ * lives at [base]/$closure. The shared test app doesn't turn closure on, so here it
+ * must answer with a not-supported OperationOutcome, not an Express HTML page. The
+ * operation itself is tested in closure-enabled.test.js.
  */
 
 const request = require('supertest');
@@ -67,13 +68,13 @@ describe('$closure and unmatched routes (#100)', () => {
       expect(res.body.resourceType).toBe('OperationOutcome');
     });
 
-    test('the CapabilityStatement advertises it at system level only', async () => {
+    test('when not turned on, it is not advertised anywhere', async () => {
       const res = await request(app)
         .get(`${BASE}/metadata`)
         .set('Accept', 'application/fhir+json');
       expect(res.status).toBe(200);
       const rest = res.body.rest[0];
-      expect((rest.operation || []).map(o => o.name)).toContain('closure');
+      expect((rest.operation || []).map(o => o.name)).not.toContain('closure');
       for (const r of rest.resource || []) {
         expect((r.operation || []).map(o => o.name)).not.toContain('closure');
       }
