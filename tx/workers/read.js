@@ -62,13 +62,28 @@ class ReadWorker extends TerminologyWorker {
   }
 
   /**
+   * The resource as served at [type]/[id] must carry that id. Providers that
+   * share the server with others prefix their ids with a space id ("1-foo") but
+   * may keep the resource itself under its original id ("foo") - package
+   * ConceptMaps do - and then the HTML tabs, which link to [type]/[resource.id],
+   * point at a resource that doesn't exist (issue #256). Copy rather than
+   * mutate: the provider's object is shared and keyed on its original id.
+   */
+  withId(json, id) {
+    if (!json || json.id === id) {
+      return json;
+    }
+    return { ...json, id: id };
+  }
+
+  /**
    * Handle CodeSystem read
    */
   async handleCodeSystem(req, res, id) {
     let cs = this.provider.getCodeSystemById(this.opContext, id);
     if (cs != null) {
       req.sourcePackage = cs.sourcePackage;
-      return res.json(cs.jsonObj);
+      return res.json(this.withId(cs.jsonObj, id));
     }
 
     if (id.startsWith("x-")) {
@@ -127,7 +142,7 @@ class ReadWorker extends TerminologyWorker {
       const vs = await vsp.fetchValueSetById(id);
       if (vs) {
         req.sourcePackage = vs.sourcePackage;
-        return res.json(vs.jsonObj);
+        return res.json(this.withId(vs.jsonObj, id));
       }
     }
 
@@ -143,7 +158,7 @@ class ReadWorker extends TerminologyWorker {
       const cm = await cmsp.fetchConceptMapById(id);
       if (cm) {
         req.sourcePackage = cm.sourcePackage;
-        return res.json(cm.jsonObj);
+        return res.json(this.withId(cm.jsonObj, id));
       }
     }
 
