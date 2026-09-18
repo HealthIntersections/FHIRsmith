@@ -20,6 +20,10 @@
 // one $closure call on one table - read the table, compute (which awaits, and yields),
 // write - and that is the per-table lock below.
 //
+// Synchronous also means every statement blocks the event loop while it runs, so nothing
+// here reads or writes an unbounded amount in one go: reads that can be large are paged
+// (entriesPage), and the size of what one call can write is capped by the worker.
+//
 
 const path = require('path');
 const fs = require('fs');
@@ -40,7 +44,7 @@ class ClosureStore {
     this.log = log || console;
     this.db = null;
     this.path = ClosureStore.resolvePath(this.config);
-    this.locks = new Map(); // table name -> tail of that table's queue (a Promise)
+    this.locks = new Map(); // table name -> { tail: Promise, count: holder + waiters }
   }
 
   /**
@@ -112,6 +116,18 @@ class ClosureStore {
       countConcepts: this.db.prepare('SELECT count(*) AS n FROM closure_concept WHERE table_id = ?'),
       insertConcept: this.db.prepare('INSERT INTO closure_concept (table_id, system, code, display, added_version) VALUES (?, ?, ?, ?, ?)'),
       insertEntry: this.db.prepare('INSERT OR IGNORE INTO closure_entry (table_id, source_id, target_id, relationship, added_version) VALUES (?, ?, ?, ?, ?)'),
+      countEntries: this.db.prepare('SELECT count(*) AS n FROM closure_entry WHERE table_id = ?'),
+      entriesPage: this.db.prepare(`
+        SELECT e.rowid AS rowid,
+               s.system AS source_system, s.code AS source_code, s.display AS source_display,
+               t.system AS target_system, t.code AS target_code, t.display AS target_display,
+               e.relationship
+          FROM closure_entry e
+          JOIN closure_concept s ON s.id = e.source_id
+          JOIN closure_concept t ON t.id = e.target_id
+         WHERE e.table_id = ? AND e.added_version > ? AND e.rowid > ?
+         ORDER BY e.rowid
+         LIMIT ?`),
       entriesSince: this.db.prepare(`
         SELECT s.system AS source_system, s.code AS source_code, s.display AS source_display,
                t.system AS target_system, t.code AS target_code, t.display AS target_display,
@@ -135,21 +151,67 @@ class ClosureStore {
    * Run fn with exclusive use of the named table. Calls on different tables run in
    * parallel; calls on the same table queue, in arrival order. fn may await (and yield)
    * as much as it likes - nothing else touches that table until it settles.
+   *
+   * The queue is bounded, and so is the wait, so a flood of calls on one table can't pile
+   * up requests (and their sockets) without limit. A caller that gives up - timeout, or
+   * opts.waitFor throwing because the client went away - never runs fn, and passes its
+   * turn on to the next in line as soon as it comes.
+   *
    * @param {string} name
    * @param {Function} fn - async () => result
+   * @param {Object} [opts]
+   * @param {number} [opts.maxQueue] - most calls allowed in the queue, counting the one
+   *   running; beyond that the call fails at once. 0/absent = no limit
+   * @param {number} [opts.timeoutMs] - longest to wait for the lock. 0/absent = no limit
+   * @param {Function} [opts.waitFor] - (promise) => promise; wraps the wait (the worker
+   *   uses OperationContext.waitFor, so the wait isn't charged to the compute deadline and
+   *   a disconnected client stops waiting)
+   * @throws {Error} with .closureBusy = 'queue' | 'timeout' when the lock isn't got
    */
-  async withLock(name, fn) {
-    const prior = this.locks.get(name) || Promise.resolve();
+  async withLock(name, fn, opts = {}) {
+    let q = this.locks.get(name);
+    if (!q) {
+      q = { tail: Promise.resolve(), count: 0 };
+      this.locks.set(name, q);
+    }
+    if (opts.maxQueue && q.count >= opts.maxQueue) {
+      const error = new Error(`closure table '${name}' is busy`);
+      error.closureBusy = 'queue';
+      throw error;
+    }
+    const prior = q.tail;
     let release;
     const mine = new Promise(resolve => { release = resolve; });
-    const tail = prior.then(() => mine);
-    this.locks.set(name, tail);
-    await prior;
+    q.tail = prior.then(() => mine);
+    q.count++;
+
+    let timer = null;
+    let acquired = false;
     try {
+      let wait = prior;
+      if (opts.timeoutMs) {
+        wait = Promise.race([prior, new Promise((resolve, reject) => {
+          timer = setTimeout(() => {
+            const error = new Error(`timed out waiting for closure table '${name}'`);
+            error.closureBusy = 'timeout';
+            reject(error);
+          }, opts.timeoutMs);
+        })]);
+      }
+      await (opts.waitFor ? opts.waitFor(wait) : wait);
+      acquired = true;
       return await fn();
     } finally {
-      release();
-      if (this.locks.get(name) === tail) {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (acquired) {
+        release();
+      } else {
+        prior.then(release); // hand the turn on when it comes
+      }
+      q.count--;
+      if (q.count === 0 && this.locks.get(name) === q) {
         this.locks.delete(name);
       }
     }
@@ -169,6 +231,19 @@ class ClosureStore {
 
   conceptCount(tableId) {
     return this.stmt.countConcepts.get(tableId).n;
+  }
+
+  entryCount(tableId) {
+    return this.stmt.countEntries.get(tableId).n;
+  }
+
+  /**
+   * One page of the entries added after the given version, in the order they were
+   * written. Page through with the last row's rowid as afterRowid (start with 0).
+   * @returns {Array<{rowid, source_system, source_code, source_display, target_system, target_code, target_display, relationship}>}
+   */
+  entriesPage(tableId, version, afterRowid, limit) {
+    return this.stmt.entriesPage.all(tableId, version, afterRowid, limit);
   }
 
   /**
@@ -254,19 +329,26 @@ class ClosureStore {
   }
 
   /**
-   * Drop tables that nobody has used for the given number of days.
-   * @returns {Array<string>} the names dropped
+   * Drop tables that nobody has used for the given number of days. Each table is dropped
+   * under its lock (a table in use is not pulled out from under the call using it - it is
+   * checked again once the lock is held), one at a time, yielding in between.
+   * @returns {Promise<Array<string>>} the names dropped
    */
-  pruneUnused(days) {
+  async pruneUnused(days) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     const stale = this.stmt.staleTables.all(cutoff);
-    const tx = this.db.transaction(() => {
-      for (const t of stale) {
-        this.stmt.deleteTable.run(t.id);
-      }
-    });
-    tx();
-    return stale.map(t => t.name);
+    const dropped = [];
+    for (const t of stale) {
+      await this.withLock(t.name, async () => {
+        const now = this.db ? this.stmt.getTable.get(t.name) : null;
+        if (now && now.id === t.id && now.last_used < cutoff) {
+          this.stmt.deleteTable.run(t.id);
+          dropped.push(t.name);
+        }
+      });
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    return dropped;
   }
 }
 

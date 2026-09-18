@@ -195,9 +195,9 @@ class TXModule {
       this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
       const days = config.closure.retentionDays;
       if (days) {
-        const prune = () => {
+        const prune = async () => {
           try {
-            const dropped = this.closureStore.pruneUnused(days);
+            const dropped = await this.closureStore.pruneUnused(days);
             if (dropped.length > 0) {
               this.log.info(`closure: dropped ${dropped.length} table(s) unused for ${days} days`);
             }
@@ -205,7 +205,7 @@ class TXModule {
             this.log.error(`closure: pruning failed: ${error.message}`);
           }
         };
-        prune();
+        void prune(); // errors are logged inside
         this.timers.push(setInterval(prune, 24 * 60 * 60 * 1000));
       }
     }

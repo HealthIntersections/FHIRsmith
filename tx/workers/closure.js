@@ -25,6 +25,16 @@
 // Closure is stable across sessions, so it never uses a client's terminology cache: the
 // X-Cache-Id header is ignored here.
 //
+// Access: the table name is the only thing that identifies a table, so anyone who knows a
+// name can read, add to, or reset that table. On a public server, require UUID names
+// (requireUuidNames) so that a name is effectively a secret held by the client that made it.
+//
+// Cost: everything a client can make this do is bounded (see LIMITS) - the tables, the
+// concepts and entries in a table, what one call can add, what a table's configuration
+// can store, and how many calls can queue for one table and for how long. The work itself
+// yields (checkAndYield) and runs against the operation's compute deadline; the storage
+// is synchronous, so reads that can be large are paged and writes are capped.
+//
 
 const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
 const { TxParameters } = require('../params');
@@ -35,10 +45,22 @@ const { VersionUtilities } = require('../../library/version-utilities');
 
 // parameters that configure a table, and so are only accepted when it is initialised
 const CONFIG_PARAMS = ['tx-resource', 'useSupplement', 'system-version', 'check-system-version', 'force-system-version'];
-// parameters that are about the call, not the table
-const CALL_PARAMS = ['name', 'reset', 'concept', 'version'];
 
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Defaults for modules.tx.closure.<name>. Absent = the default; 0 = no limit.
+const LIMITS = {
+  maxTables: 1000,
+  maxConceptsPerTable: 10000,
+  maxConceptsPerRequest: 1000,
+  maxEntriesPerTable: 250000,
+  maxEntriesPerRequest: 50000,
+  maxConfigSize: 5 * 1024 * 1024,  // bytes of stored configuration (mostly tx-resource)
+  maxQueue: 10,                     // calls queued on one table, counting the running one
+  lockTimeout: 60                   // seconds a call will wait for its table
+};
+
+const RESYNC_PAGE = 2000; // rows read from the store at a time
 
 class ClosureWorker extends TerminologyWorker {
   /**
@@ -63,6 +85,15 @@ class ClosureWorker extends TerminologyWorker {
   // Not a value-set operation; the base class requires this to be implemented.
   vsHandle() {
     return null;
+  }
+
+  /**
+   * The configured value of a limit, or its default. 0 means no limit (Infinity).
+   */
+  limit(name) {
+    const v = this.closureConfig[name];
+    const n = (v === undefined || v === null) ? LIMITS[name] : Number(v);
+    return (!Number.isFinite(n) || n <= 0) ? Infinity : n;
   }
 
   /**
@@ -98,8 +129,8 @@ class ClosureWorker extends TerminologyWorker {
   }
 
   /**
-   * Do the operation. Everything after the name check happens with the table locked, so
-   * two calls on the same table can't interleave - each one reads the table, works out
+   * Do the operation. Everything after the request checks happens with the table locked,
+   * so two calls on the same table can't interleave - each one reads the table, works out
    * what's new (which awaits, and yields), and writes, before the next starts.
    *
    * @param {Object} params - Parameters resource
@@ -112,21 +143,41 @@ class ClosureWorker extends TerminologyWorker {
     const list = (params.parameter || []).filter(p => p.name !== 'cache-id');
 
     const name = this.readName(list);
-    const concepts = list.filter(p => p.name === 'concept');
-    const versionParam = list.find(p => p.name === 'version');
-    const reset = list.some(p => p.name === 'reset' && (p.valueBoolean === true || p.valueString === 'true'));
-    const config = list.filter(p => CONFIG_PARAMS.includes(p.name));
-
+    const concepts = [];
+    const config = [];
+    let versionParam = null;
+    let reset = false;
     for (const p of list) {
-      if (!CALL_PARAMS.includes(p.name) && !CONFIG_PARAMS.includes(p.name)) {
-        throw this.closureIssue('not-supported', 'CLOSURE_PARAM_UNKNOWN', [p.name], 'not-supported', 400);
+      if (p.name === 'concept') {
+        concepts.push(p);
+      } else if (CONFIG_PARAMS.includes(p.name)) {
+        config.push(p);
+      } else if (p.name === 'version') {
+        versionParam = p;
+      } else if (p.name === 'reset') {
+        reset = p.valueBoolean === true || p.valueString === 'true';
+      } else if (p.name !== 'name') {
+        throw this.closureIssue('not-supported', 'CLOSURE_PARAM_UNKNOWN', [safeText(p.name)], 'not-supported', 400);
       }
     }
     if (concepts.length > 0 && versionParam) {
       throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_AND_VERSION', [], 'invalid-data', 400);
     }
+    const maxRequest = this.limit('maxConceptsPerRequest');
+    if (concepts.length > maxRequest) {
+      throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_REQUEST_CONCEPTS', [String(maxRequest)], 'too-costly', 422);
+    }
+    // checked here, before anything waits for the table
+    let configSize = 0;
+    for (const p of config) {
+      configSize += JSON.stringify(p).length;
+    }
+    const maxConfig = this.limit('maxConfigSize');
+    if (configSize > maxConfig) {
+      throw this.closureIssue('too-costly', 'CLOSURE_CONFIG_TOO_LARGE', [String(maxConfig)], 'too-costly', 422);
+    }
 
-    return await this.store.withLock(name, async () => {
+    return await this.lockTable(name, async () => {
       const initialise = reset || (concepts.length === 0 && !versionParam);
       let table = this.store.getTable(name);
 
@@ -137,14 +188,14 @@ class ClosureWorker extends TerminologyWorker {
         if (table && !reset) {
           throw this.closureIssue('duplicate', 'CLOSURE_TABLE_EXISTS', [name], 'business-rule', 409);
         }
-        const max = this.closureConfig.maxTables;
-        if (!table && max && this.store.tableCount() >= max) {
+        const max = this.limit('maxTables');
+        if (!table && this.store.tableCount() >= max) {
           throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
         }
         table = this.store.createTable(name, config);
         this.log.info(`closure table '${name}' ${reset ? 'reset' : 'created'}`);
         if (concepts.length === 0) {
-          return this.buildConceptMap(name, table.version, [], fhirVersion);
+          return await this.buildConceptMap(name, table.version, [], fhirVersion);
         }
       } else {
         if (!table) {
@@ -156,16 +207,38 @@ class ClosureWorker extends TerminologyWorker {
       }
 
       if (versionParam) {
-        return this.resync(table, name, versionParam, fhirVersion);
+        return await this.resync(table, name, versionParam, fhirVersion);
       }
       return await this.add(table, name, concepts, fhirVersion);
     });
   }
 
   /**
-   * The table name: required, no whitespace, at most 64 characters - and a UUID, if the
-   * administrator has said so (tx.fhir.org does, so names chosen by different clients
-   * can't collide).
+   * Take the table's lock, with a bounded queue and a bounded wait. The wait goes through
+   * OperationContext.waitFor: it isn't charged to the compute deadline (the call isn't
+   * computing), and a client that has gone away stops waiting.
+   */
+  async lockTable(name, fn) {
+    const maxQueue = this.limit('maxQueue');
+    const timeout = this.limit('lockTimeout');
+    try {
+      return await this.store.withLock(name, fn, {
+        maxQueue: maxQueue === Infinity ? 0 : maxQueue,
+        timeoutMs: timeout === Infinity ? 0 : timeout * 1000,
+        waitFor: p => this.opContext.waitFor(p, 'closure-lock')
+      });
+    } catch (error) {
+      if (error.closureBusy) {
+        throw this.closureIssue('too-costly', 'CLOSURE_TABLE_BUSY', [name], 'too-costly', 429);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The table name: required, no whitespace or control characters, at most 64 characters
+   * - and a UUID, if the administrator has said so (tx.fhir.org does, so names chosen by
+   * different clients can't collide, and can't be guessed).
    */
   readName(list) {
     const p = list.find(x => x.name === 'name');
@@ -173,8 +246,8 @@ class ClosureWorker extends TerminologyWorker {
     if (typeof name !== 'string' || name.length === 0) {
       throw this.closureIssue('required', 'CLOSURE_NAME_REQUIRED', [], 'invalid-data', 400);
     }
-    if (/\s/.test(name) || name.length > 64) {
-      throw this.closureIssue('invalid', 'CLOSURE_NAME_INVALID', [name], 'invalid-data', 400);
+    if (/[\s\p{Cc}]/u.test(name) || name.length > 64) {
+      throw this.closureIssue('invalid', 'CLOSURE_NAME_INVALID', [safeText(name)], 'invalid-data', 400);
     }
     if (this.closureConfig.requireUuidNames && !UUID.test(name)) {
       throw this.closureIssue('invalid', 'CLOSURE_NAME_NOT_UUID', [name], 'invalid-data', 400);
@@ -184,27 +257,40 @@ class ClosureWorker extends TerminologyWorker {
 
   /**
    * Resync: every entry added after the nominated version, at the table's current version.
+   * The table can be large, so it is read a page at a time, yielding in between.
    */
-  resync(table, name, versionParam, fhirVersion) {
+  async resync(table, name, versionParam, fhirVersion) {
     const raw = this.getParameterValue(versionParam);
-    const v = typeof raw === 'number' ? raw : (/^\d+$/.test(String(raw)) ? parseInt(raw, 10) : NaN);
+    const v = typeof raw === 'number' ? raw : (/^\d{1,15}$/.test(String(raw)) ? parseInt(raw, 10) : NaN);
     if (!Number.isInteger(v) || v < 0 || v > table.version) {
-      throw this.closureIssue('invalid', 'CLOSURE_VERSION_INVALID', [String(raw), name, String(table.version)], 'invalid-data', 400);
+      throw this.closureIssue('invalid', 'CLOSURE_VERSION_INVALID', [safeText(raw), name, String(table.version)], 'invalid-data', 400);
     }
     this.store.touch(table.id);
-    const rows = this.store.entriesSince(table.id, v).map(r => ({
-      source: { system: r.source_system, code: r.source_code, display: r.source_display },
-      target: { system: r.target_system, code: r.target_code, display: r.target_display },
-      relationship: r.relationship
-    }));
-    return this.buildConceptMap(name, table.version, rows, fhirVersion);
+    const entries = [];
+    let after = 0;
+    for (;;) {
+      await this.checkAndYield('closure-resync');
+      const page = this.store.entriesPage(table.id, v, after, RESYNC_PAGE);
+      for (const r of page) {
+        entries.push({
+          source: { system: r.source_system, code: r.source_code, display: r.source_display },
+          target: { system: r.target_system, code: r.target_code, display: r.target_display },
+          relationship: r.relationship
+        });
+      }
+      if (page.length < RESYNC_PAGE) {
+        break;
+      }
+      after = page[page.length - 1].rowid;
+    }
+    return await this.buildConceptMap(name, table.version, entries, fhirVersion);
   }
 
   /**
    * Add concepts. Each new concept is compared with every concept of the same code system
    * already in the table (and with the ones added before it in this call), in both
    * directions. Nothing is written until every concept has been checked: an unknown code
-   * system or code fails the whole call.
+   * system or code, or going over a limit, fails the whole call.
    */
   async add(table, name, conceptParams, fhirVersion) {
     // replay the table's configuration: its code systems, and its version rules
@@ -214,14 +300,17 @@ class ClosureWorker extends TerminologyWorker {
     txp.readParams(stored);
 
     const existing = this.store.getConcepts(table.id);
-    const known = new Set(existing.map(c => c.system + '|' + c.code));
+    const known = new Set();
+    for (const c of existing) {
+      known.add(c.system + '|' + c.code);
+    }
     const providers = new Map();
     const fresh = [];
 
     for (const p of conceptParams) {
       await this.checkAndYield('closure-add');
       const coding = p.valueCoding;
-      if (!coding || !coding.system || !coding.code) {
+      if (!coding || typeof coding.system !== 'string' || typeof coding.code !== 'string' || !coding.system || !coding.code) {
         throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_INVALID', [], 'invalid-data', 400);
       }
       let cs = providers.get(coding.system);
@@ -246,12 +335,16 @@ class ClosureWorker extends TerminologyWorker {
       fresh.push({ key, ref: key, system: coding.system, code, display: await cs.display(loc.context), cs });
     }
 
-    const max = this.closureConfig.maxConceptsPerTable;
-    if (max && fresh.length > 0 && existing.length + fresh.length > max) {
-      throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_CONCEPTS', [name, String(max)], 'too-costly', 422);
+    const maxConcepts = this.limit('maxConceptsPerTable');
+    if (fresh.length > 0 && existing.length + fresh.length > maxConcepts) {
+      throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_CONCEPTS', [name, String(maxConcepts)], 'too-costly', 422);
     }
 
-    // work out the entries: each new concept against everything before it
+    // work out the entries: each new concept against everything before it. The number of
+    // entries is capped as it grows - a client-supplied code system can be shaped so that
+    // nearly every pair is related - so the write below is always bounded
+    const maxEntries = Math.min(this.limit('maxEntriesPerRequest'),
+      this.limit('maxEntriesPerTable') - (fresh.length > 0 ? this.store.entryCount(table.id) : 0));
     const entries = [];
     const out = [];
     const before = existing.map(c => ({ ref: c.id, system: c.system, code: c.code, display: c.display }));
@@ -272,6 +365,9 @@ class ClosureWorker extends TerminologyWorker {
         } else {
           continue;
         }
+        if (entries.length >= maxEntries) {
+          throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_ENTRIES', [name], 'too-costly', 422);
+        }
         entries.push({ source: source.ref, target: target.ref, relationship });
         out.push({ source, target, relationship });
       }
@@ -282,7 +378,7 @@ class ClosureWorker extends TerminologyWorker {
     if (fresh.length > 0) {
       this.log.info(`closure table '${name}': added ${fresh.length} concept(s), ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, now version ${version}`);
     }
-    return this.buildConceptMap(name, version, out, fhirVersion);
+    return await this.buildConceptMap(name, version, out, fhirVersion);
   }
 
   /**
@@ -291,8 +387,12 @@ class ClosureWorker extends TerminologyWorker {
    * as the equivalence the R3/R4 OperationDefinition names ('subsumes' - the target
    * subsumes the source), which the version transform then keeps in preference to the one
    * it would work out itself ('wider').
+   *
+   * A resync can hand this a whole table, so it yields as it goes, and never sorts the
+   * entries as one list: elements are sorted within their group (at most one per concept)
+   * and targets within their element.
    */
-  buildConceptMap(name, version, entries, fhirVersion) {
+  async buildConceptMap(name, version, entries, fhirVersion) {
     const legacy = VersionUtilities.isR3Ver(fhirVersion) || VersionUtilities.isR4Ver(fhirVersion);
     const cm = {
       resourceType: 'ConceptMap',
@@ -302,43 +402,55 @@ class ClosureWorker extends TerminologyWorker {
       experimental: true,
       date: new Date().toISOString()
     };
-    const groups = new Map();
+    const groups = new Map(); // source system -> target system -> source code -> element
     for (const e of entries) {
-      const gk = e.source.system + ' ' + e.target.system;
-      if (!groups.has(gk)) {
-        groups.set(gk, { source: e.source.system, target: e.target.system, elements: new Map() });
+      await this.checkAndYield('closure-response');
+      let bySource = groups.get(e.source.system);
+      if (!bySource) {
+        bySource = new Map();
+        groups.set(e.source.system, bySource);
       }
-      const g = groups.get(gk);
-      if (!g.elements.has(e.source.code)) {
-        g.elements.set(e.source.code, { code: e.source.code, display: e.source.display, target: [] });
+      let g = bySource.get(e.target.system);
+      if (!g) {
+        g = new Map();
+        bySource.set(e.target.system, g);
       }
-      const t = { code: e.target.code, display: e.target.display, relationship: e.relationship };
+      let el = g.get(e.source.code);
+      if (!el) {
+        el = { code: e.source.code };
+        if (e.source.display) {
+          el.display = e.source.display;
+        }
+        el.target = [];
+        g.set(e.source.code, el);
+      }
+      const t = { code: e.target.code };
+      if (e.target.display) {
+        t.display = e.target.display;
+      }
+      t.relationship = e.relationship;
       if (legacy) {
         t.equivalence = e.relationship === EQUIVALENT ? 'equal' : 'subsumes';
       }
-      g.elements.get(e.source.code).target.push(t);
+      el.target.push(t);
     }
+
     const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-    const group = [...groups.values()]
-      .sort((a, b) => byKey(a.source, b.source) || byKey(a.target, b.target))
-      .map(g => ({
-        source: g.source,
-        target: g.target,
-        element: [...g.elements.values()]
-          .sort((a, b) => byKey(a.code, b.code))
-          .map(el => {
-            const r = { code: el.code };
-            if (el.display) r.display = el.display;
-            r.target = el.target.sort((a, b) => byKey(a.code, b.code)).map(t => {
-              const x = { code: t.code };
-              if (t.display) x.display = t.display;
-              x.relationship = t.relationship;
-              if (t.equivalence) x.equivalence = t.equivalence;
-              return x;
-            });
-            return r;
-          })
-      }));
+    const group = [];
+    for (const src of [...groups.keys()].sort(byKey)) {
+      const bySource = groups.get(src);
+      for (const tgt of [...bySource.keys()].sort(byKey)) {
+        const g = bySource.get(tgt);
+        const element = [];
+        for (const code of [...g.keys()].sort(byKey)) {
+          await this.checkAndYield('closure-response');
+          const el = g.get(code);
+          el.target.sort((a, b) => byKey(a.code, b.code));
+          element.push(el);
+        }
+        group.push({ source: src, target: tgt, element });
+      }
+    }
     if (group.length > 0) {
       cm.group = group;
     }
@@ -356,7 +468,7 @@ class ClosureWorker extends TerminologyWorker {
     const system = cs.system();
     const version = cs.version();
     const msgId = Unknown_Code_in_VersionSCT(system, version);
-    const msg = this.i18n.translate(msgId, txp ? txp.HTTPLanguages : this.opContext.langs, [code, system, version, SCTVersion(system, version)]);
+    const msg = this.i18n.translate(msgId, txp ? txp.HTTPLanguages : this.opContext.langs, [safeText(code), system, version, SCTVersion(system, version)]);
     const issue = new Issue('error', 'code-invalid', 'concept', msgId, msg, 'invalid-code', 404);
     if (message) {
       issue.withDiagnostics(message);
@@ -365,4 +477,14 @@ class ClosureWorker extends TerminologyWorker {
   }
 }
 
+/**
+ * Client-supplied text going into a message (and so into the log): no control characters
+ * - a newline would let a client write lines of its own into the log - and not too long.
+ */
+function safeText(v) {
+  const s = String(v).replace(/\p{Cc}/gu, '?');
+  return s.length > 100 ? s.substring(0, 100) + '...' : s;
+}
+
 module.exports = ClosureWorker;
+module.exports.LIMITS = LIMITS;

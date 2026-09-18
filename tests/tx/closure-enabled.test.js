@@ -374,6 +374,69 @@ describe('$closure configuration', () => {
     }
   }, 120000);
 
+  test('limits: concepts per request, entries per table, stored configuration size', async () => {
+    const { app, txModule } = await startApp({ enabled: true, database: ':memory:',
+      maxConceptsPerRequest: 2, maxEntriesPerTable: 2, maxConfigSize: 100 });
+    try {
+      // the simple code system is far more than 100 bytes
+      const big = await post(app, params(name('cfg'), txResource));
+      expect(big.status).toBe(422);
+      expect(issueType(big)).toContain('too-costly');
+
+      const { app: app2, txModule: tx2 } = await startApp({ enabled: true, database: ':memory:',
+        maxConceptsPerRequest: 2, maxEntriesPerTable: 2 });
+      try {
+        await post(app2, params(name('lim'), txResource));
+        const many = await post(app2, params(name('lim'), concept('code1'), concept('code2'), concept('code3')));
+        expect(many.status).toBe(422);
+        // code2 then code2a gives 1 entry, then code2aI would give 2 more: over 2 for the table
+        expect((await post(app2, params(name('lim'), concept('code2'), concept('code2a')))).status).toBe(200);
+        const over = await post(app2, params(name('lim'), concept('code2aI')));
+        expect(over.status).toBe(422);
+        // and nothing was stored by the call that failed
+        const resync = await post(app2, params(name('lim'), { name: 'version', valueString: '0' }));
+        expect(resync.body.version).toBe('1');
+        expect(entries(resync.body)).toEqual([n('code2a', 'code2')]);
+      } finally {
+        await tx2.shutdown();
+      }
+    } finally {
+      await txModule.shutdown();
+    }
+  }, 120000);
+
+  test('a busy table answers 429, not an ever-growing queue', async () => {
+    const { app, txModule } = await startApp({ enabled: true, database: ':memory:', maxQueue: 1 });
+    try {
+      await post(app, params(name('q'), txResource));
+      const store = txModule.closureStore;
+      let release;
+      const gate = new Promise(r => { release = r; });
+      const holder = store.withLock('q', () => gate);
+      const res = await post(app, params(name('q'), concept('code1')));
+      expect(res.status).toBe(429);
+      expect(issueType(res)).toContain('too-costly');
+      release();
+      await holder;
+      expect((await post(app, params(name('q'), concept('code1')))).status).toBe(200);
+    } finally {
+      await txModule.shutdown();
+    }
+  }, 120000);
+
+  test('control characters in client text do not reach the log', async () => {
+    const { app, txModule } = await startApp({ enabled: true, database: ':memory:' });
+    try {
+      const res = await post(app, params(name('ok'), { name: 'bad\nFAKE LOG LINE', valueString: 'x' }));
+      expect(res.status).toBe(400);
+      expect(issueText(res)).not.toMatch(/\n/);
+      const nl = await post(app, params(name('bad\u0000name')));
+      expect(nl.status).toBe(400);
+    } finally {
+      await txModule.shutdown();
+    }
+  }, 120000);
+
   test('tables survive a restart', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closure-'));
     const db = path.join(dir, 'closure.db');
@@ -463,16 +526,89 @@ describe('ClosureStore', () => {
     expect(log).toEqual(['t2', 't1']);
   });
 
+  test('the queue for a table is bounded', async () => {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const holder = store.withLock('t', () => gate, { maxQueue: 2 });
+    const second = store.withLock('t', async () => 'second', { maxQueue: 2 });
+    await expect(store.withLock('t', async () => 'third', { maxQueue: 2 })).rejects.toMatchObject({ closureBusy: 'queue' });
+    release();
+    await holder;
+    await expect(second).resolves.toBe('second');
+  });
+
+  test('a waiter that times out never runs, and passes its turn on', async () => {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const ran = [];
+    const holder = store.withLock('t', () => gate);
+    const impatient = store.withLock('t', async () => { ran.push('impatient'); }, { timeoutMs: 20 });
+    const patient = store.withLock('t', async () => { ran.push('patient'); });
+    await expect(impatient).rejects.toMatchObject({ closureBusy: 'timeout' });
+    release();
+    await holder;
+    await patient;
+    expect(ran).toEqual(['patient']);
+    expect(store.locks.size).toBe(0);
+  });
+
+  test('a waiter whose waitFor throws (client gone) never runs', async () => {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const holder = store.withLock('t', () => gate);
+    const gone = store.withLock('t', async () => 'ran', { waitFor: p => p.then(() => { throw new Error('gone'); }) });
+    release();
+    await holder;
+    await expect(gone).rejects.toThrow('gone');
+    await expect(store.withLock('t', async () => 'next')).resolves.toBe('next');
+  });
+
+  test('entriesPage pages through in write order', () => {
+    const t = store.createTable('t', []);
+    const concepts = [];
+    for (let i = 0; i < 7; i++) {
+      concepts.push({ key: 'c' + i, system: 's', code: 'c' + i });
+    }
+    const entries = [];
+    for (let i = 1; i < 7; i++) {
+      entries.push({ source: 'c' + i, target: 'c0', relationship: NARROWER });
+    }
+    store.recordAdd(t, concepts, entries);
+    const seen = [];
+    let after = 0;
+    for (;;) {
+      const page = store.entriesPage(t.id, 0, after, 4);
+      seen.push(...page.map(r => r.source_code));
+      if (page.length < 4) break;
+      after = page[page.length - 1].rowid;
+    }
+    expect(seen).toEqual(['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);
+    expect(store.entryCount(t.id)).toBe(6);
+  });
+
+  test('pruneUnused waits for a table in use, and keeps it if that use refreshed it', async () => {
+    const t = store.createTable('busy', []);
+    store.db.prepare('UPDATE closure_table SET last_used = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', t.id);
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const user = store.withLock('busy', async () => { await gate; store.touch(t.id); });
+    const pruning = store.pruneUnused(30);
+    release();
+    await user;
+    expect(await pruning).toEqual([]);
+    expect(store.getTable('busy')).not.toBeNull();
+  });
+
   test('a failure inside withLock releases the lock', async () => {
     await expect(store.withLock('t', async () => { throw new Error('boom'); })).rejects.toThrow('boom');
     await expect(store.withLock('t', async () => 'ok')).resolves.toBe('ok');
   });
 
-  test('pruneUnused drops tables not used within the period', () => {
+  test('pruneUnused drops tables not used within the period', async () => {
     const t = store.createTable('old', []);
     store.createTable('new', []);
     store.db.prepare('UPDATE closure_table SET last_used = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', t.id);
-    expect(store.pruneUnused(30)).toEqual(['old']);
+    expect(await store.pruneUnused(30)).toEqual(['old']);
     expect(store.getTable('old')).toBeNull();
     expect(store.getTable('new')).not.toBeNull();
   });
