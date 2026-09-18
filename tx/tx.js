@@ -52,7 +52,7 @@ const ClosureWorker = require("./workers/closure");
 const {BundleXML} = require("./xml/bundle-xml");
 const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
-const { buildOperationOutcome } = require('./library/operation-outcome');
+const { buildOperationOutcome, outcomeFromError } = require('./library/operation-outcome');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -146,6 +146,13 @@ class TXModule {
     this.usageTracker = new ConceptUsageTracker();
 
     this.log.info('Initializing TX module');
+
+    // Optional instance code, prefixed onto every cache-id this server issues so a
+    // proxy in front of several instances can route by it (see nginx.md). Checked
+    // here so a bad value stops startup rather than surfacing per endpoint.
+    if (ResourceCache.checkInstanceCode(config.instanceCode)) {
+      this.log.info(`Cache-ids will be issued with instance code '${config.instanceCode}'`);
+    }
 
     // Load HTML template
     txHtml.loadTemplate();
@@ -259,6 +266,7 @@ class TXModule {
     // can report it and a client can size its keepalive interval to this server rather
     // than guessing at a number it has no way to see.
     endpointInfo.resourceCache.setIdleTimeout(cacheTimeoutMs);
+    endpointInfo.resourceCache.setInstanceCode(this.config.instanceCode);
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }
@@ -710,8 +718,9 @@ class TXModule {
       }
     });
 
-    // ConceptMap/$closure (GET and POST)
-    router.get('/ConceptMap/\\$closure', async (req, res) => {
+    // $closure (GET and POST). System level: the OperationDefinition is
+    // ConceptMap-closure, but it is declared system=true, type=false (#100).
+    router.get('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
@@ -720,7 +729,7 @@ class TXModule {
         this.countRequest(endpointPath, '$closure', Date.now() - start);
       }
     });
-    router.post('/ConceptMap/\\$closure', async (req, res) => {
+    router.post('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
@@ -921,9 +930,15 @@ class TXModule {
 
     // Unsupported methods
     for (const resourceType of resourceTypes) {
-      router.all(`/${resourceType}/:id`, (req, res) => {
+      router.all(`/${resourceType}/:id`, (req, res, next) => {
         const start = Date.now();
         try {
+          // /ConceptMap/$closure etc: an operation this server doesn't have at this
+          // level, not a resource that refuses the method
+          if (req.params.id.startsWith('$')) {
+            return res.status(404).json(this.operationOutcome('error', 'not-found',
+              `Unknown operation on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+          }
           if (['PUT', 'POST', 'DELETE', 'PATCH'].includes(req.method)) {
             return res.status(405).json(this.operationOutcome(
               'error',
@@ -931,6 +946,8 @@ class TXModule {
               `Method ${req.method} is not supported`
             ));
           }
+          // anything else falls through to the not-found fallback rather than hanging
+          return next();
         } finally {
           this.countRequest(endpointPath, '$read', Date.now() - start);
         }
@@ -1066,6 +1083,35 @@ class TXModule {
     };
     router.get('/info/:id', infoHandler);
     router.post('/info/:id', infoHandler);
+
+    // ===== Fallbacks - keep these last =====
+
+    // Nothing above matched. Without this, Express answers with its own HTML
+    // "Cannot POST /r4/$foo" page; a FHIR server must answer with an
+    // OperationOutcome (#100). Goes through the wrapped res.json, so it is
+    // rendered as JSON, XML or HTML to suit the client like everything else.
+    router.use((req, res) => {
+      const start = Date.now();
+      try {
+        const what = req.path.includes('$') ? 'operation' : 'path';
+        res.status(404).json(this.operationOutcome('error', 'not-found',
+          `Unknown ${what} on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+      } finally {
+        this.countRequest(endpointPath, 'unknown', Date.now() - start);
+      }
+    });
+
+    // A handler threw or rejected without answering. Express 5 forwards those here;
+    // its default handler would send an HTML error page.
+    // eslint-disable-next-line no-unused-vars
+    router.use((err, req, res, next) => {
+      this.log.error(err);
+      debugLog(err);
+      if (res.headersSent) {
+        return next(err);
+      }
+      res.status(err.statusCode || 500).json(outcomeFromError(err));
+    });
   }
 
   /**

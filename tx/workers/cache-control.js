@@ -13,7 +13,6 @@
 // unknown/expired cache later instead of failing obscurely deep inside a validation.
 //
 
-const crypto = require('crypto');
 const { TerminologyWorker, CACHE_ID_HEADER } = require('./worker');
 const { Parameters } = require('../library/parameters');
 const { Issue, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
@@ -135,7 +134,8 @@ class CacheControlWorker extends TerminologyWorker {
     // Flip this to default-true once all clients send an explicit value.
     const sealed = this.readSealed(params.jsonObj);
 
-    const cacheId = crypto.randomUUID();
+    // "<instanceCode>.<uuid>" when this server has an instance code, else a bare UUID
+    const cacheId = cache.newCacheId();
     cache.set(cacheId, resources, sealed);
 
     return res.status(200).json({

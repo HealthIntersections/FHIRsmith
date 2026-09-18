@@ -239,6 +239,81 @@ describe('ResourceCache', () => {
     });
   });
 
+  // With several instances behind one proxy, each prefixes its cache-ids with its
+  // instance code so the proxy can route on it (see nginx.md).
+  describe('instance code (cache-id prefix)', () => {
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+    test('no instance code: ids are bare UUIDs', () => {
+      expect(cache.newCacheId()).toMatch(UUID);
+    });
+
+    test('with an instance code: ids are "<code>.<uuid>"', () => {
+      cache.setInstanceCode('tx1');
+      const id = cache.newCacheId();
+      expect(id.startsWith('tx1.')).toBe(true);
+      expect(id.substring(4)).toMatch(UUID);
+      expect(ResourceCache.issuerOf(id)).toBe('tx1');
+    });
+
+    test('empty, null and undefined all mean no prefix', () => {
+      for (const v of ['', null, undefined]) {
+        cache.setInstanceCode('tx1');
+        cache.setInstanceCode(v);
+        expect(cache.instanceCode).toBeNull();
+        expect(cache.newCacheId()).toMatch(UUID);
+      }
+    });
+
+    test('codes that a proxy could not match cleanly are rejected', () => {
+      for (const bad of ['tx.1', 'tx-1', 'tx 1', 'tx/1', 'a'.repeat(17), 42, {}]) {
+        expect(() => cache.setInstanceCode(bad)).toThrow(/letters and digits/);
+      }
+    });
+
+    test('the longest allowed code still yields a valid FHIR id (<= 64 chars)', () => {
+      cache.setInstanceCode('a'.repeat(16));
+      expect(cache.newCacheId()).toMatch(/^[A-Za-z0-9\-.]{1,64}$/);
+    });
+
+    test('issuerOf: bare UUIDs and other unprefixed ids have no issuer', () => {
+      expect(ResourceCache.issuerOf('4f0c2d1e-0000-4000-8000-000000000000')).toBeNull();
+      expect(ResourceCache.issuerOf('.leading-dot')).toBeNull();
+      expect(ResourceCache.issuerOf(undefined)).toBeNull();
+    });
+
+    test('an id from another instance is reported as misrouted, naming both instances', () => {
+      cache.setInstanceCode('tx1');
+      const d = cache.describeMissing('tx2.abc');
+      expect(d.messageId).toBe('CACHE_ID_OTHER_INSTANCE');
+      expect(d.params).toEqual(['tx2.abc', 'tx2', 'tx1']);
+    });
+
+    test('a server with no code reports a prefixed id as issued elsewhere', () => {
+      const d = cache.describeMissing('tx2.abc');
+      expect(d.messageId).toBe('CACHE_ID_OTHER_INSTANCE_UNNAMED');
+      expect(d.params).toEqual(['tx2.abc', 'tx2']);
+    });
+
+    test('an unrecorded id with our own prefix is plain unknown (e.g. issued before a restart)', () => {
+      cache.setInstanceCode('tx1');
+      expect(cache.describeMissing('tx1.abc').messageId).toBe('CACHE_ID_UNKNOWN');
+    });
+
+    test('an unprefixed id on a named server is plain unknown', () => {
+      cache.setInstanceCode('tx1');
+      expect(cache.describeMissing('abc').messageId).toBe('CACHE_ID_UNKNOWN');
+    });
+
+    test('a tombstone wins over the prefix check', () => {
+      cache.setInstanceCode('tx1');
+      const id = cache.newCacheId();
+      cache.set(id, []);
+      cache.clear(id);
+      expect(cache.describeMissing(id).messageId).toBe('CACHE_ID_CLOSED');
+    });
+  });
+
   // status()/touch() back $cache-control?mode=check: a client that hasn't needed the
   // server for a while asks whether its cache is still there, and the asking keeps it
   // there. They are separate calls on purpose - see the comments on status().

@@ -31,7 +31,7 @@ This server provides a set of server-side services that are useful for the FHIR 
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/HealthIntersections/fhirsmith/pkgs/container/fhirsmith)
 
 Note: In production, this server always runs behind an nginx reverse proxy, so there's no
-in-build support for SSL, rate limiting etc.
+in-build support for SSL, rate limiting etc. See [nginx.md](nginx.md) for how to configure it.
 
 ## Quick Start
 
@@ -170,7 +170,8 @@ npm start
 
 The server will be available at `http://localhost:{port}` using the port specified in the config.
 In the production servers listed above, the server always sits behind an NGINX server which manages
-SSL, security, rate limiting etc.
+SSL, security, rate limiting etc. See [nginx.md](nginx.md) for configuration advice, including
+running several servers behind one front door.
 
 ## Testing
 
