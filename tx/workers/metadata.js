@@ -272,8 +272,8 @@ class MetadataHandler {
                 { name: '_id', type: 'token' }
               ],
               operation: [
-                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-                { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }
+                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' }
+                // closure is system level, not ConceptMap level - see rest.operation below
               ]
             }
           ],

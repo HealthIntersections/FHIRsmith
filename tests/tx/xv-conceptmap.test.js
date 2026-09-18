@@ -8,6 +8,11 @@
  */
 
 const { conceptMapToR5, conceptMapFromR5 } = require('../../tx/xversion/xv-conceptmap');
+const { parametersFromR5 } = require('../../tx/xversion/xv-parameters');
+const { Renderer } = require('../../tx/library/renderer');
+const { OperationContext } = require('../../tx/operation-context');
+const { Languages } = require('../../library/languages');
+const { TestUtilities } = require('../test-utilities');
 
 function r4Map(equivalences) {
   return {
@@ -92,4 +97,59 @@ describe('round trip', () => {
       const r4 = conceptMapFromR5(r5Map([rel]), '4.0.1');
       expect(targets(conceptMapToR5(r4, '4.0.1'))[0].relationship).toBe(rel);
     });
+});
+
+// $translate builds its match parts from the R5 form of the map (relationship, plus the
+// original equivalence when the map came from R3/R4); the Parameters convertor then
+// shapes them for the client's version.
+describe('$translate match parts across versions', () => {
+  function matchFor(target) {
+    const parts = [{ name: 'relationship', valueCode: target.relationship }];
+    if (target.equivalence) {
+      parts.push({ name: 'equivalence', valueCode: target.equivalence });
+    }
+    return { resourceType: 'Parameters', parameter: [{ name: 'match', part: parts }] };
+  }
+  const part = (params, name) => (params.parameter[0].part.find(p => p.name === name) || {}).valueCode;
+
+  test('an R5 map (source-is-narrower-than-target) reaches an R4 client as wider', () => {
+    const t = targets(r5Map(['source-is-narrower-than-target']))[0];
+    const out = parametersFromR5(matchFor(t), '4.0.1');
+    expect(part(out, 'equivalence')).toBe('wider');
+    expect(part(out, 'relationship')).toBeUndefined();
+  });
+
+  test('an R4 map (wider) carries source-is-narrower-than-target for an R5 client', () => {
+    const t = targets(conceptMapToR5(r4Map(['wider']), '4.0.1'))[0];
+    const out = parametersFromR5(matchFor(t), '5.0.0');
+    expect(part(out, 'relationship')).toBe('source-is-narrower-than-target');
+  });
+
+  test('an R4 map reaches an R4 client with its own equivalence', () => {
+    const t = targets(conceptMapToR5(r4Map(['narrower']), '4.0.1'))[0];
+    const out = parametersFromR5(matchFor(t), '4.0.1');
+    expect(part(out, 'equivalence')).toBe('narrower');
+  });
+});
+
+// The renderer prefers relationship over equivalence, so an R4 map shown on any endpoint
+// is described by the converted value - this is where the inversion was visible.
+describe('rendering an R4 ConceptMap', () => {
+  let renderer;
+
+  beforeAll(async () => {
+    const langDefs = await TestUtilities.loadLanguageDefinitions();
+    const i18n = await TestUtilities.loadTranslations(langDefs);
+    renderer = new Renderer(new OperationContext(Languages.fromAcceptLanguage('en-US', langDefs), i18n));
+  });
+
+  test.each([
+    ['wider', 'is narrower than', 'is broader than'],
+    ['narrower', 'is broader than', 'is narrower than']
+  ])('%s is described as "%s"', async (equivalence, expected, notExpected) => {
+    const cm = conceptMapToR5({ ...r4Map([equivalence]), url: 'http://example.org/cm', status: 'active' }, '4.0.1');
+    const html = await renderer.renderConceptMap(cm);
+    expect(html).toContain(expected);
+    expect(html).not.toContain(notExpected);
+  });
 });
