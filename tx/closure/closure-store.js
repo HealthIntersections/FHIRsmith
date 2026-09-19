@@ -5,7 +5,9 @@
 // and is shared across FHIR versions: the same name reaches the same table from /r4 and
 // /r5. What's held for each table:
 //
-//   closure_table   the name, the current version, and when it was created / last used
+//   closure_table   the name, the current version, when it was created / last used, and
+//                   how many concepts and entries it holds (kept up to date as it grows,
+//                   so the server's home page can report totals without counting rows)
 //   closure_param   the parameters the table was initialised with, as an ordered series
 //                   of name = value pairs (value is the JSON of the Parameters.parameter
 //                   entry, so tx-resource resources and typed values survive). These are
@@ -75,7 +77,9 @@ class ClosureStore {
         name      TEXT NOT NULL UNIQUE,
         version   INTEGER NOT NULL DEFAULT 0,
         created   TEXT NOT NULL,
-        last_used TEXT NOT NULL
+        last_used TEXT NOT NULL,
+        concept_count INTEGER NOT NULL DEFAULT 0,
+        entry_count   INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS closure_param (
         table_id  INTEGER NOT NULL REFERENCES closure_table(id) ON DELETE CASCADE,
@@ -103,13 +107,27 @@ class ClosureStore {
       );
       CREATE INDEX IF NOT EXISTS closure_entry_version ON closure_entry (table_id, added_version);
     `);
+    // databases made before the counts were kept: add them, and fill them in once
+    const columns = this.db.prepare('PRAGMA table_info(closure_table)').all().map(c => c.name);
+    if (!columns.includes('concept_count')) {
+      this.db.exec(`
+        ALTER TABLE closure_table ADD COLUMN concept_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE closure_table ADD COLUMN entry_count INTEGER NOT NULL DEFAULT 0;
+        UPDATE closure_table SET
+          concept_count = (SELECT count(*) FROM closure_concept c WHERE c.table_id = closure_table.id),
+          entry_count = (SELECT count(*) FROM closure_entry e WHERE e.table_id = closure_table.id);
+      `);
+    }
     this.stmt = {
       getTable: this.db.prepare('SELECT id, name, version, created, last_used FROM closure_table WHERE name = ?'),
       countTables: this.db.prepare('SELECT count(*) AS n FROM closure_table'),
       insertTable: this.db.prepare('INSERT INTO closure_table (name, version, created, last_used) VALUES (?, 0, ?, ?)'),
       deleteTable: this.db.prepare('DELETE FROM closure_table WHERE id = ?'),
       touchTable: this.db.prepare('UPDATE closure_table SET last_used = ? WHERE id = ?'),
-      setVersion: this.db.prepare('UPDATE closure_table SET version = ?, last_used = ? WHERE id = ?'),
+      setVersion: this.db.prepare(`UPDATE closure_table SET version = ?, last_used = ?,
+        concept_count = concept_count + ?, entry_count = entry_count + ? WHERE id = ?`),
+      totals: this.db.prepare(`SELECT count(*) AS tables, coalesce(sum(concept_count), 0) AS concepts,
+        coalesce(sum(entry_count), 0) AS entries FROM closure_table`),
       insertParam: this.db.prepare('INSERT INTO closure_param (table_id, seq, name, value) VALUES (?, ?, ?, ?)'),
       getParams: this.db.prepare('SELECT name, value FROM closure_param WHERE table_id = ? ORDER BY seq'),
       getConcepts: this.db.prepare('SELECT id, system, code, display FROM closure_concept WHERE table_id = ?'),
@@ -311,10 +329,11 @@ class ClosureStore {
         ids.set(c.key, info.lastInsertRowid);
       }
       const id = ref => (typeof ref === 'string' ? ids.get(ref) : ref);
+      let added = 0;
       for (const e of entries) {
-        this.stmt.insertEntry.run(table.id, id(e.source), id(e.target), e.relationship, version);
+        added += this.stmt.insertEntry.run(table.id, id(e.source), id(e.target), e.relationship, version).changes;
       }
-      this.stmt.setVersion.run(version, now, table.id);
+      this.stmt.setVersion.run(version, now, concepts.length, added, table.id);
     });
     tx();
     return version;
@@ -326,6 +345,28 @@ class ClosureStore {
    */
   entriesSince(tableId, version) {
     return this.stmt.entriesSince.all(tableId, version);
+  }
+
+  /**
+   * Totals across every table, and the size of the database on disk (the main file plus
+   * the write-ahead log; null for an in-memory database). Cheap: the counts are kept on
+   * each table row, so this reads at most maxTables rows.
+   * @returns {{tables: number, concepts: number, entries: number, bytes: number|null}}
+   */
+  totals() {
+    const t = this.stmt.totals.get();
+    let bytes = null;
+    if (this.path !== ':memory:') {
+      bytes = 0;
+      for (const f of [this.path, this.path + '-wal']) {
+        try {
+          bytes += fs.statSync(f).size;
+        } catch (e) {
+          // no WAL file yet
+        }
+      }
+    }
+    return { tables: t.tables, concepts: t.concepts, entries: t.entries, bytes };
   }
 
   /**

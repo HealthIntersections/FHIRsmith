@@ -440,6 +440,15 @@ async function buildRootPageContent() {
   content += `<td><strong>Client Cache:</strong> ${stats.clientCaches()} caches / ${stats.clientConcepts()} concepts</td>`;
   content += `<td><strong>Max Client Cache:</strong> ${stats.maxClientCaches()} caches / ${stats.maxClientConcepts()} concepts</td>`;
   content += '</tr>';
+  const closure = stats.closureStats();
+  if (closure) {
+    content += '<tr>';
+    content += `<td><strong>Closure Tables:</strong> ${closure.tables} tables` +
+      (closure.retentionDays ? ` (unused for ${closure.retentionDays} days = deleted)` : '') + `</td>`;
+    content += `<td><strong>Closure Entries:</strong> ${closure.entries} entries / ${closure.concepts} concepts</td>`;
+    content += `<td><strong>Closure Database:</strong> ${closure.bytes === null ? 'in memory' : formatBytes(closure.bytes)}</td>`;
+    content += '</tr>';
+  }
   content += getLogStats();
   content += '</table>';
 
@@ -648,6 +657,19 @@ app.get('/dashboard', async (req, res) => {
     htmlServer.sendErrorResponse(res, 'root', error);
   }
 });
+
+function formatBytes(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} bytes`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
 
 function pctColor(pct) {
   // Gradient from green (#deffe0) at 0% to red (#ffd3d1) at 100%

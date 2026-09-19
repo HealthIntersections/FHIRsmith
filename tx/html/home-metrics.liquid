@@ -4,8 +4,8 @@
     <canvas id="memoryChart" height="200"></canvas>
   </div>
   <div style="flex: 1;">
-    <h6>Expansion Cache</h6>
-    <canvas id="cacheChart" height="200"></canvas>
+    <h6>Requests per Minute</h6>
+    <canvas id="requestChart" height="200"></canvas>
   </div>
   <div style="flex: 1;">
     <h6>Turnaround Time</h6>
@@ -14,16 +14,16 @@
 </div>
 <div style="display: flex; gap: 20px; margin-bottom: 20px;">
   <div style="flex: 1;">
-    <h6>Requests per Minute</h6>
-    <canvas id="requestChart" height="200"></canvas>
-  </div>
-  <div style="flex: 1;">
     <h6>Client Cache</h6>
     <canvas id="clientCacheChart" height="200"></canvas>
   </div>
   <div style="flex: 1;">
-    <h6>Node Blocking</h6>
+    <h6>Node Blocking (mean)</h6>
     <canvas id="blockChart" height="200"></canvas>
+  </div>
+  <div style="flex: 1;">
+    <h6>Node Blocking (max)</h6>
+    <canvas id="blockMaxChart" height="200"></canvas>
   </div>
 </div>
 
@@ -98,36 +98,6 @@
       }
     }
   });
-
-  // Expansion cache chart
-  new Chart(document.getElementById('cacheChart'), {
-    type: 'line',
-    data: {
-      labels: historyData.map(d => formatTime(d.time)),
-      datasets: [{
-        data: historyData.map(d => d.expansion),
-        borderColor: '#7b7b7b',
-        backgroundColor: 'rgba(123, 123, 123, 0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2
-      }]
-    },
-    options: {
-      ...chartOptions,
-      scales: {
-        ...chartOptions.scales,
-        y: {
-          ...chartOptions.scales.y,
-          title: {
-            display: true,
-            text: 'Expansion cache # items'
-          }
-        }
-      }
-    }
-  });
-
 
   // Tat chart
   new Chart(document.getElementById('tatChart'), {
@@ -215,48 +185,41 @@
       }
     }
   });
-  // Blocking chart
-  new Chart(document.getElementById('blockChart'), {
-    type: 'line',
-    data: {
-      labels: historyData.map(d => formatTime(d.time)),
-      datasets: [{
-        label: 'mean',
-        data: historyData.map(d => d.block),
-        borderColor: '#2845a7',
-        backgroundColor: 'rgba(40, 69, 167, 0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2
-      }, {
-        // Worst single event-loop stall in the window: the mean dilutes a
-        // multi-second block into noise, so this is the line that shows
-        // request-freezing stalls.
-        label: 'max',
-        data: historyData.map(d => d.blockMax),
-        borderColor: '#a72828',
-        fill: false,
-        tension: 0.3,
-        pointRadius: 2
-      }]
-    },
-    options: {
-      ...chartOptions,
-      plugins: {
-        ...chartOptions.plugins,
-        legend: { display: true }
+  // Blocking charts. Mean and max are separate charts because they are on different
+  // scales: a multi-second stall puts max in the thousands of ms while the mean sits at
+  // a few ms, so on one chart the mean is a flat line along the bottom.
+  function blockChart(id, field, colour, fill) {
+    new Chart(document.getElementById(id), {
+      type: 'line',
+      data: {
+        labels: historyData.map(d => formatTime(d.time)),
+        datasets: [{
+          data: historyData.map(d => d[field]),
+          borderColor: colour,
+          backgroundColor: fill,
+          fill: true,
+          tension: 0.3,
+          pointRadius: 2
+        }]
       },
-      scales: {
-        ...chartOptions.scales,
-        y: {
-          ...chartOptions.scales.y,
-          title: {
-            display: true,
-            text: 'ms'
+      options: {
+        ...chartOptions,
+        scales: {
+          ...chartOptions.scales,
+          y: {
+            ...chartOptions.scales.y,
+            title: {
+              display: true,
+              text: 'ms'
+            }
           }
         }
       }
-    }
-  });
+    });
+  }
+  // the average event-loop delay over each interval
+  blockChart('blockChart', 'block', '#2845a7', 'rgba(40, 69, 167, 0.1)');
+  // the worst single stall in each interval: the one that shows request-freezing blocks
+  blockChart('blockMaxChart', 'blockMax', '#a72828', 'rgba(167, 40, 40, 0.1)');
 })();
 </script>

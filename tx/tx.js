@@ -1349,6 +1349,14 @@ class TXModule {
     return count;
   }
 
+  // $closure usage for the home page: null when closure isn't turned on
+  closureStats() {
+    if (!this.closureStore) {
+      return null;
+    }
+    return { ...this.closureStore.totals(), retentionDays: this.config.closure.retentionDays || null };
+  }
+
   // High-water marks for the client cache, summed across endpoints.
   maxClientCacheCount() {
     let count = 0;

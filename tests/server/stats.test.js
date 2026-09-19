@@ -154,4 +154,14 @@ describe('server statistics', () => {
     tx.cachingModules.push(cachingModule);
     expect(stats.expansionItems()).toBe(3);
   });
+
+  test('closureStats comes from the module that keeps closure tables, or is null', () => {
+    const stats = newStats();
+    expect(stats.closureStats()).toBeNull();
+    stats.cachingModules.push({ closureStats: () => null }); // closure turned off
+    expect(stats.closureStats()).toBeNull();
+    const figures = { tables: 2, concepts: 5, entries: 4, bytes: 4096, retentionDays: null };
+    stats.cachingModules.push({ closureStats: () => figures });
+    expect(stats.closureStats()).toBe(figures);
+  });
 });

@@ -437,6 +437,72 @@ describe('$closure configuration', () => {
     }
   }, 120000);
 
+  test('closureStats reports tables, concepts, entries and the database size', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closure-'));
+    try {
+      const { app, txModule } = await startApp({ enabled: true, database: path.join(dir, 'c.db'), retentionDays: 30 });
+      try {
+        await post(app, params(name('s1'), txResource));
+        await post(app, params(name('s1'), concept('code2'), concept('code2a'), concept('code2aI')));
+        await post(app, params(name('s2'), txResource));
+        await post(app, params(name('s2'), concept('code2'), concept('code2b')));
+        // adding a concept that's already there changes nothing
+        await post(app, params(name('s2'), concept('code2b')));
+        const st = txModule.closureStats();
+        expect(st.tables).toBe(2);
+        expect(st.concepts).toBe(5);
+        expect(st.entries).toBe(4); // s1: code2a>code2, code2aI>code2a, code2aI>code2; s2: code2b>code2
+        expect(st.bytes).toBeGreaterThan(0);
+        expect(st.retentionDays).toBe(30);
+        // a reset takes the table's counts with it
+        await post(app, params(name('s1'), reset, txResource));
+        expect(txModule.closureStats()).toMatchObject({ tables: 2, concepts: 2, entries: 1 });
+      } finally {
+        await txModule.shutdown();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  test('closureStats is null when closure is off', async () => {
+    const { txModule } = await startApp(undefined);
+    try {
+      expect(txModule.closureStats()).toBeNull();
+    } finally {
+      await txModule.shutdown();
+    }
+  }, 120000);
+
+  test('without retentionDays nothing is ever deleted; with it, stale tables go at startup', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closure-'));
+    const db = path.join(dir, 'c.db');
+    try {
+      let s = await startApp({ enabled: true, database: db });
+      await post(s.app, params(name('ancient'), txResource));
+      await post(s.app, params(name('recent'), txResource));
+      s.txModule.closureStore.db.prepare("UPDATE closure_table SET last_used = '2000-01-01T00:00:00.000Z' WHERE name = 'ancient'").run();
+      await s.txModule.shutdown();
+
+      // no retentionDays: kept, however old
+      s = await startApp({ enabled: true, database: db });
+      await new Promise(r => setTimeout(r, 50));
+      expect(s.txModule.closureStore.getTable('ancient')).not.toBeNull();
+      await s.txModule.shutdown();
+
+      // retentionDays: the stale one goes (the startup prune runs in the background)
+      s = await startApp({ enabled: true, database: db, retentionDays: 30 });
+      for (let i = 0; i < 50 && s.txModule.closureStore.getTable('ancient'); i++) {
+        await new Promise(r => setTimeout(r, 20));
+      }
+      expect(s.txModule.closureStore.getTable('ancient')).toBeNull();
+      expect(s.txModule.closureStore.getTable('recent')).not.toBeNull();
+      await s.txModule.shutdown();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 240000);
+
   test('tables survive a restart', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closure-'));
     const db = path.join(dir, 'closure.db');
@@ -489,6 +555,30 @@ describe('ClosureStore', () => {
     expect(store.getConcepts(t.id)).toEqual([]);
     expect(store.entriesSince(t.id, 0)).toEqual([]);
     expect(store.getParams(t.id)).toEqual([]);
+  });
+
+  test('a database made before the counts were kept is brought up to date', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closure-'));
+    const db = path.join(dir, 'old.db');
+    try {
+      const Database = require('better-sqlite3');
+      const old = new Database(db);
+      old.exec(`
+        CREATE TABLE closure_table (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, version INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, last_used TEXT NOT NULL);
+        CREATE TABLE closure_concept (id INTEGER PRIMARY KEY, table_id INTEGER NOT NULL, system TEXT NOT NULL, code TEXT NOT NULL, display TEXT, added_version INTEGER NOT NULL, UNIQUE (table_id, system, code));
+        CREATE TABLE closure_entry (table_id INTEGER NOT NULL, source_id INTEGER NOT NULL, target_id INTEGER NOT NULL, relationship TEXT NOT NULL, added_version INTEGER NOT NULL, PRIMARY KEY (table_id, source_id, target_id));
+        INSERT INTO closure_table VALUES (1, 't', 1, 'x', 'x');
+        INSERT INTO closure_concept VALUES (1, 1, 's', 'a', NULL, 1), (2, 1, 's', 'b', NULL, 1);
+        INSERT INTO closure_entry VALUES (1, 2, 1, '${NARROWER}', 1);
+      `);
+      old.close();
+      const upgraded = new ClosureStore({ database: db });
+      upgraded.open();
+      expect(upgraded.totals()).toMatchObject({ tables: 1, concepts: 2, entries: 1 });
+      upgraded.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('an add with nothing new leaves the version alone', () => {
