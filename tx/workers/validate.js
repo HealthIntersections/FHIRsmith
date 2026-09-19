@@ -86,11 +86,13 @@ class ValueSetChecker {
           op.addIssueIfNew(new Issue('information', 'business-rule', '', 'MSG_EXPERIMENTAL', this.worker.i18n.translate('MSG_EXPERIMENTAL', this.params.HTTPLanguages, [vurl, '', rtype]), 'status-check'), false);
         } else if ((status === 'draft' || standardsStatus === 'draft') &&
           !((source.status === 'draft') || (Extensions.readString(source, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status') === 'draft'))) {
-          if (pid) {
-            op.addIssueIfNew(new Issue('information', 'business-rule', '', 'MSG_DRAFT', this.worker.i18n.translate('MSG_DRAFT_SRC', this.params.HTTPLanguages, [vurl, pid, rtype]), 'status-check'), false);
-          } else {
-            op.addIssueIfNew(new Issue('information', 'business-rule', '', 'MSG_DRAFT', this.worker.i18n.translate('MSG_DRAFT', this.params.HTTPLanguages, [vurl, '', rtype]), 'status-check'), false);
-          }
+          // MSG_DRAFT_SRC_STATUS names the referring resource's status and type as well as its
+          // url, so the reader can see why the reference is reported at all: a resource that is
+          // not draft pointing at one that is. Matches ValueSetProcessBase.checkCanonical in the
+          // java implementation, so both terminology services report this the same way
+          op.addIssueIfNew(new Issue('information', 'business-rule', '', 'MSG_DRAFT_SRC_STATUS',
+            this.worker.i18n.translate('MSG_DRAFT_SRC_STATUS', this.params.HTTPLanguages,
+              [vurl, this.worker.makeVurl(source), rtype, source.status, source.resourceType]), 'status-check'), false);
         }
       }
     }
