@@ -113,7 +113,13 @@ describe('OperationContext.checkAndYield', () => {
     }
     expect(error).not.toBeNull();
     expect(error.cause).toBe('too-costly');
-    expect(error.msgId).toMatch(/exceeded time limit/);
+    // The sentence is the message, not the message id: Issue's fourth argument is msgId
+    // and its fifth is the message, and these sites used to pass the text as the fourth.
+    // That left details.text empty, so the HTML rendering fell back to the timing trace
+    // and the user was told "[too-costly] 0ms tx-op 1ms start working".
+    expect(error.message).toMatch(/exceeded time limit/);
+    expect(error.msgId).toBeFalsy();
+    expect(error.asIssue().details.text).toMatch(/exceeded time limit/);
     expect(error.abandoned).toBeUndefined();
   });
 
@@ -132,7 +138,9 @@ describe('OperationContext.checkAndYield', () => {
     }
     expect(error).not.toBeNull();
     expect(error.abandoned).toBe(true);
-    expect(error.msgId).toMatch(/client disconnected/);
+    expect(error.message).toMatch(/client disconnected/);
+    expect(error.msgId).toBeFalsy();
+    expect(error.asIssue().details.text).toMatch(/client disconnected/);
   });
 
   test('copy() shares the compute budget with sub-operations', async () => {
