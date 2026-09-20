@@ -959,8 +959,8 @@ class OperationContext {
     if (elapsed > this.timeLimit) {
       const timeInSeconds = Math.round(this.timeLimit / 1000);
       this.log(`Operation took too long @ ${place} (${this.constructor.name})`);
-      const error = new Issue("error", "too-costly", null,
-          `Operation exceeded time limit of ${timeInSeconds} seconds at ${place}`);
+      const error = new Issue("error", "too-costly", null, null,
+          `Operation exceeded time limit of ${timeInSeconds} seconds at ${place}`, "too-costly", 422);
       error.diagnostics = this.diagnostics();
       throw error;
     }
@@ -972,8 +972,8 @@ class OperationContext {
         const usedGB = (rss / 1024 / 1024 / 1024).toFixed(1);
         const limitGB = (MEMORY_LIMIT / 1024 / 1024 / 1024).toFixed(1);
         this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
-        const error = new Issue("error", "too-costly", null,
-            `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${MEMORY_FRACTION * 100}% of ${limitGB} GB limit) at ${place}`);
+        const error = new Issue("error", "too-costly", null, null,
+            `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${MEMORY_FRACTION * 100}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
         error.diagnostics = this.diagnostics();
         throw error;
       }
@@ -1031,8 +1031,8 @@ class OperationContext {
       this._clock.lastYield = resumed;
       if (this._clock.clientGone) {
         this.log(`Operation abandoned @ ${place}: client disconnected`);
-        const error = new Issue("error", "too-costly", null,
-            `Operation abandoned at ${place}: the client disconnected before the response was ready`);
+        const error = new Issue("error", "too-costly", null, null,
+            `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
         error.abandoned = true;
         error.diagnostics = this.diagnostics();
         throw error;
@@ -1064,8 +1064,8 @@ class OperationContext {
     }
     if (this._clock.clientGone) {
       this.log(`Operation abandoned @ ${place}: client disconnected`);
-      const error = new Issue("error", "too-costly", null,
-          `Operation abandoned at ${place}: the client disconnected before the response was ready`);
+      const error = new Issue("error", "too-costly", null, null,
+          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
       error.abandoned = true;
       error.diagnostics = this.diagnostics();
       throw error;

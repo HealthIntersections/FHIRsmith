@@ -20,6 +20,7 @@ const {ParametersXML} = require("./xml/parameters-xml");
 const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
 const {debugLog} = require("./operation-context");
 const {InvalidError} = require("./library/errors");
+const {VALID_FILTER_OPS} = require("./library/renderer");
 
 const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
 
@@ -49,6 +50,41 @@ const CODESYSTEM_PARAMS = [
 const SORT_OPTIONS = ['', 'id', 'url', 'version', 'date', 'name', 'vurl'];
 
 const ELEMENT_OPTIONS = ['id', 'url', 'version', 'name', 'title', 'status', 'date', 'publisher', 'description'];
+
+const SEVERITY_ALERT_CLASS = {
+  fatal: 'alert-danger',
+  error: 'alert-danger',
+  warning: 'alert-warning',
+  information: 'alert-info',
+  success: 'alert-info'
+};
+
+const SEVERITY_LABEL = {
+  fatal: 'Fatal',
+  error: 'Error',
+  warning: 'Warning',
+  information: 'Information',
+  success: 'Success'
+};
+
+// ValueSet.compose.include.filter.op, in R5 spec order - the operations offered
+// by the $filter form on the CodeSystem operations tab
+const FILTER_OPS = [...VALID_FILTER_OPS];
+
+// Filter/property names defined by the base specification, valid for any code system
+const BASE_FILTER_PROPERTIES = ['code', 'designation', 'concept', 'status', 'inactive', 'regex'];
+
+// Filter/property names defined by particular code systems. Any property or filter
+// declared in the CodeSystem resource itself is added to these at render time
+const SYSTEM_FILTER_PROPERTIES = {
+  'http://www.ama-assn.org/go/cpt': ['modifier', 'modified', 'kind', 'orthopox', 'telemedicine', 'code'],
+  'http://loinc.org': ['STATUS', 'COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP',
+    'CLASS', 'CONSUMER_NAME', 'CLASSTYPE', 'ORDER_OBS', 'DOCUMENT_SECTION', 'copyright'],
+  'http://www.nlm.nih.gov/research/umls/rxnorm': ['STY', 'SAB', 'TTY'],
+  'http://snomed.info/sct': ['constraint', 'expressions', 'effectiveTime', 'inactive', 'moduleId',
+    'normalForm', 'normalFormTerse', 'semanticTag', 'sufficientlyDefined'],
+  'http://unitsofmeasure.org': ['property', 'canonical']
+};
 
 /**
  * Load the TX HTML template
@@ -489,17 +525,24 @@ class TxHtmlRenderer {
     }
 
     html += '</tbody></table>';
+    html += this.renderJsonSource(json);
 
-    // Collapsible JSON source
+    return html;
+  }
+
+  /**
+   * The "Show JSON Source" disclosure: the resource as it went on the wire, for
+   * anything the HTML rendering summarises or leaves out.
+   */
+  renderJsonSource(json) {
     const resourceId = this.generateResourceId();
-    html += '<div class="json-source">';
+    let html = '<div class="json-source">';
     html += `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleJsonSource('${resourceId}')">`;
     html += 'Show JSON Source</button>';
     html += `<div id="${resourceId}" class="json-content" style="display: none; margin-top: 10px;">`;
     html += `<pre>${escape(JSON.stringify(json, null, 2))}</pre>`;
     html += '</div>';
     html += '</div>';
-
     return html;
   }
 
@@ -787,7 +830,7 @@ class TxHtmlRenderer {
       html += this.tab(_fmt && _fmt == 'html/json', 'JSON', json.resourceType, 'html/json', json.id);
       html += this.tab(_fmt && _fmt == 'html/xml', 'XML', json.resourceType, 'html/xml', json.id);
       html += this.tab(_fmt && _fmt == 'html/narrative', 'Original Narrative', json.resourceType, 'html/narrative', json.id);
-      html += this.tab(_fmt && _fmt == 'html/ops', 'LookUp / Subsumes', json.resourceType, 'html/ops', json.id);
+      html += this.tab(_fmt && _fmt == 'html/ops', 'Operations', json.resourceType, 'html/ops', json.id);
       html += `</ul>`;
 
       if (!_fmt || _fmt == 'html') {
@@ -803,7 +846,13 @@ class TxHtmlRenderer {
           opsId: this.generateResourceId(),
           vcSystemId: this.generateResourceId(),
           inferSystemId: this.generateResourceId(),
-          url: escape(json.url || '')
+          searchId: this.generateResourceId(),
+          filterId: this.generateResourceId(),
+          url: escape(json.url || ''),
+          systemVersion: escape(json.version || ''),
+          expandUrl: escape(this.path + '/ValueSet/$expand?_format=html'),
+          filterOpOptions: FILTER_OPS.map((op) => `<option value="${escape(op)}">${escape(op)}</option>`).join(''),
+          filterPropertyOptions: this.buildFilterPropertyNames(json).map((n) => `<option value="${escape(n)}"></option>`).join('')
         });
       }
 
@@ -927,41 +976,68 @@ class TxHtmlRenderer {
   }
 
   /**
-   * Render OperationOutcome resource
+   * Render OperationOutcome resource.
+   *
+   * details.text is the human account of the problem; diagnostics is server-specific
+   * detail, most often the operation's timing trace. So the text leads, and the
+   * diagnostics are kept but folded away - rendering diagnostics first (as this did)
+   * turns a perfectly good error message into a row of milliseconds.
    */
   async renderOperationOutcome(json) {
     let html = '<div class="operation-outcome">';
-    html += `<h4>OperationOutcome</h4>`;
 
-    if (json.issue && Array.isArray(json.issue)) {
-      for (const issue of json.issue) {
-        html += '<div class="alert ';
+    for (const issue of json.issue || []) {
+      const severity = issue.severity || 'information';
+      html += `<div class="alert ${SEVERITY_ALERT_CLASS[severity] || 'alert-secondary'}">`;
+      html += `<strong>${escape(SEVERITY_LABEL[severity] || severity)}</strong>: `;
 
-        // Determine alert style based on this issue's severity
-        const severity = issue.severity || 'information';
-        switch (severity) {
-          case 'error':
-          case 'fatal':
-            html += 'alert-danger';
-            break;
-          case 'warning':
-            html += 'alert-warning';
-            break;
-          case 'information':
-            html += 'alert-info';
-            break;
-          default:
-            html += 'alert-secondary';
+      const text = issue.details?.text || issue.diagnostics;
+      html += text ? escape(text) : '<em>(this issue carries no message)</em>';
+
+      // The issue-type and the tx-issue-type, which are usually - but not always - the
+      // same word, plus the message id if the issue names one. Shown because they are
+      // what a client actually branches on.
+      const codes = [];
+      if (issue.code) {
+        codes.push(issue.code);
+      }
+      for (const coding of issue.details?.coding || []) {
+        if (coding.code && !codes.includes(coding.code)) {
+          codes.push(coding.code);
         }
-
-        html += '">';
-        html += `<strong>${escape(issue.severity || 'unknown')}:</strong> `;
-        html += `[${escape(issue.code || 'unknown')}] `;
-        html += escape(issue.diagnostics || issue.details?.text || 'No details');
+      }
+      const msgId = (issue.extension || []).find((e) =>
+        e.url === 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id')?.valueString;
+      if (msgId) {
+        codes.push(msgId);
+      }
+      const where = [...(issue.expression || []), ...(issue.location || [])];
+      if (codes.length > 0 || where.length > 0) {
+        html += '<div style="margin-top: 6px; font-size: 90%;">';
+        html += codes.map((c) => `<code>${escape(c)}</code>`).join(' ');
+        if (where.length > 0) {
+          html += (codes.length > 0 ? ' at ' : 'at ') + where.map((w) => `<code>${escape(w)}</code>`).join(', ');
+        }
         html += '</div>';
       }
+
+      // Not when it is already the message - an issue with nothing but diagnostics
+      // should not say the same sentence twice.
+      if (issue.diagnostics && issue.diagnostics !== text) {
+        html += '<details style="margin-top: 6px; font-size: 90%;">';
+        html += '<summary>Server diagnostics</summary>';
+        html += `<pre style="margin-top: 6px;">${escape(issue.diagnostics)}</pre>`;
+        html += '</details>';
+      }
+
+      html += '</div>';
     }
 
+    if (!json.issue || json.issue.length === 0) {
+      html += '<div class="alert alert-secondary"><em>(no issues)</em></div>';
+    }
+
+    html += this.renderJsonSource(json);
     html += '</div>';
     return html;
   }
@@ -1390,6 +1466,31 @@ class TxHtmlRenderer {
    */
   let
   resourceIdCounter = 0;
+
+  /**
+   * The property/filter names offered by the $filter form for a code system: the names
+   * the base specification defines for any code system, then any names known for this
+   * particular code system, then anything the CodeSystem resource declares itself.
+   * @param {Object} json the CodeSystem resource
+   * @returns {string[]} names, in that order, without duplicates
+   */
+  buildFilterPropertyNames(json) {
+    const names = new Set(BASE_FILTER_PROPERTIES);
+    for (const name of SYSTEM_FILTER_PROPERTIES[json.url] || []) {
+      names.add(name);
+    }
+    for (const prop of json.property || []) {
+      if (prop.code) {
+        names.add(prop.code);
+      }
+    }
+    for (const filter of json.filter || []) {
+      if (filter.code) {
+        names.add(filter.code);
+      }
+    }
+    return [...names];
+  }
 
   generateResourceId() {
     return 'resource_' + (++this.resourceIdCounter);
