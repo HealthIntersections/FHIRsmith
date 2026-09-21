@@ -51,6 +51,14 @@ const SORT_OPTIONS = ['', 'id', 'url', 'version', 'date', 'name', 'vurl'];
 
 const ELEMENT_OPTIONS = ['id', 'url', 'version', 'name', 'title', 'status', 'date', 'publisher', 'description'];
 
+// Marks a value set that exists only for the request that carried it - the ones the
+// operations tab on a CodeSystem builds and posts to $expand. Nobody else ever sees it,
+// so rendering its uuid url and its status tells the user nothing; what they want is the
+// expansion, and the filters it came from. This is FHIRsmith's own extension, in
+// FHIRsmith's own namespace: it says something about how this server was asked to do
+// something, not about terminology, so it does not belong in the FHIR tools namespace.
+const TRANSIENT_VALUESET = 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient';
+
 const SEVERITY_ALERT_CLASS = {
   fatal: 'alert-danger',
   error: 'alert-danger',
@@ -120,6 +128,14 @@ function acceptsHtml(req) {
     return false;
   }
   return _fmt.includes('text/html');
+}
+
+/** Whether this resource is one of the throwaway value sets described at TRANSIENT_VALUESET. */
+function isTransientValueSet(json) {
+  if (!json || json.resourceType !== 'ValueSet') {
+    return false;
+  }
+  return (json.extension || []).some((e) => e.url === TRANSIENT_VALUESET && e.valueBoolean !== false);
 }
 
 // Whether this server publishes its library source YAML. Off unless the operator turns
@@ -289,6 +305,10 @@ class TxHtmlRenderer {
         return `${severity.charAt(0).toUpperCase() + severity.slice(1)}`;
       }
 
+      if (isTransientValueSet(json)) {
+        return 'Expansion';
+      }
+
       if (json.id) {
         return `${pfx} ${json.id}`;
       }
@@ -439,7 +459,7 @@ class TxHtmlRenderer {
 
     for (const factory of uniqueFactories) {
       html += '<tr>';
-      html += `<td>${escape(factory.name())}</td>`;
+      html += `<td>${this.factoryLink(factory)}</td>`;
       html += `<td>${escape(factory.system())}</td>`;
       html += `<td>${escape(factory.version() || '-')}</td>`;
       html += `<td>${factory.useCount ? factory.useCount() : '-'}</td>`;
@@ -450,6 +470,33 @@ class TxHtmlRenderer {
     html += '</div></div>';
 
     return html;
+  }
+
+  /**
+   * The name of a special code system, linked to its page where there is one.
+   *
+   * These are the code systems the server implements natively rather than loading as a
+   * resource, so they have no id of their own in the resource space. They are still
+   * readable: read.js serves them under the factory's id with an "x-" prefix, which is
+   * also the id search.js puts on the placeholder it synthesises. A factory whose id() is
+   * null - SNOMED, when its version is not one of the recognised edition URIs - has no
+   * page to link to, so the name is left as text rather than pointing at a 404.
+   *
+   * @param {Object} factory a CodeSystemFactoryProvider
+   * @returns {string} the cell content
+   */
+  factoryLink(factory) {
+    const name = escape(factory.name());
+    let id;
+    try {
+      id = factory.id();
+    } catch {
+      id = null;
+    }
+    if (!id) {
+      return name;
+    }
+    return `<a href="${escape(this.path)}/CodeSystem/x-${encodeURIComponent(id)}">${name}</a>`;
   }
 
   /**
@@ -872,6 +919,9 @@ class TxHtmlRenderer {
    * Render ValueSet resource
    */
   async renderValueSet(json, inBundle, _fmt, op, exp) {
+    if (isTransientValueSet(json) && json.expansion) {
+      return await this.renderTransientExpansion(json);
+    }
     if (inBundle || op) {
       return await this.renderResourceWithNarrative(json, await this.renderer.renderValueSet(json));
     } else {
@@ -909,6 +959,54 @@ class TxHtmlRenderer {
       }
       return html;
     }
+  }
+
+  /**
+   * Render the expansion of a value set that only ever existed for this request.
+   *
+   * The usual value set summary is all metadata - defining url, status, expansion
+   * identifier - and every one of those is a uuid this server minted a moment ago and
+   * will never use again, so it says nothing to anyone. What is worth saying is what was
+   * expanded and how, so that is what leads: the code system, the text searched for if
+   * there was one, and, when the expansion came from a filter, the compose that produced
+   * it - as JSON, because a filter is read by people who work in JSON.
+   */
+  async renderTransientExpansion(json) {
+    const include = json.compose?.include?.[0] || {};
+    const filter = (json.expansion.parameter || []).find((p) => p.name === 'filter')?.valueString;
+
+    let html = '<div class="narrative">';
+    html += '<p>An expansion of a value set built for this request alone - this server does '
+      + 'not hold it, and it has no URL of its own.</p>';
+
+    html += '<table class="grid">';
+    if (include.system) {
+      html += `<tr><td><b>Code System</b></td><td>${escape(include.system)}</td></tr>`;
+    }
+    if (include.version) {
+      html += `<tr><td><b>Version</b></td><td>${escape(include.version)}</td></tr>`;
+    }
+    if (filter) {
+      html += `<tr><td><b>Text Search</b></td><td>${escape(filter)}</td></tr>`;
+    }
+    html += '</table>';
+
+    if ((include.filter || []).length > 0) {
+      html += '<h3>Filters</h3>';
+      html += `<pre>${escape(JSON.stringify(json.compose, null, 2))}</pre>`;
+    }
+
+    // The expansion, without the two identifiers that are noise here: the value set's own
+    // url and the expansion identifier. Everything else - timestamp, total, the
+    // parameters the server echoed back - is real information about this request.
+    const shown = structuredClone(json);
+    delete shown.url;
+    delete shown.compose;
+    delete shown.expansion.identifier;
+    html += await this.renderer.renderVSExpansion(shown, true);
+    html += '</div>';
+    html += this.renderJsonSource(json);
+    return html;
   }
 
   /**

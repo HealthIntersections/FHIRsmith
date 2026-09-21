@@ -96,6 +96,9 @@ function txOpBuildValueSet(form, filters) {
   }
   return {
     resourceType: 'ValueSet',
+    // Marks the value set as one that exists only for this request, so that the server
+    // renders the expansion rather than a summary of a value set nobody can look up.
+    extension: [{ url: 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient', valueBoolean: true }],
     url: 'urn:uuid:' + txOpUuid(),
     status: 'active',
     compose: { include: [include] }
@@ -106,6 +109,9 @@ function txOpBuildValueSet(form, filters) {
 // part of the value set goes on the query, which $expand reads either way.
 function txOpExpand(id, form, valueSet, params) {
   var url = new URL(form.getAttribute('action'), window.location.href);
+  // The definition has to come back for the transient marker and the filters to survive
+  // the expansion - $expand drops both along with the rest of the definition otherwise.
+  url.searchParams.set('includeDefinition', 'true');
   for (var name in params || {}) {
     url.searchParams.set(name, params[name]);
   }
