@@ -2787,7 +2787,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 
     if (url.startsWith('http://snomed.info/sct?fhir_vs') ||
         url.startsWith(`http://snomed.info/sct/${this.edition}?fhir_vs`) ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version}?fhir_vs`)) {
+        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version()}?fhir_vs`)) {
       id = url.substring(qIdx);
     } else {
       return null;
@@ -3005,8 +3005,8 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         description: `The concept map implicitly defined by the ${name} Association Reference Set`,
         copyright: 'This value set includes content from SNOMED CT, which is copyright © 2002+ International Health Terminology Standards Development Organisation (SNOMED International), and distributed by agreement between SNOMED International and HL7',
         status: 'active',
-        sourceUri: `${this.system}?fhir_vs`,
-        targetUri: `${this.system}?fhir_vs`,
+        sourceUri: `${this.system()}?fhir_vs`,
+        targetUri: `${this.system()}?fhir_vs`,
         group: [{
           source: 'http://snomed.info/sct',
           target: 'http://snomed.info/sct'

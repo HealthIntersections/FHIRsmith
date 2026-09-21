@@ -10,6 +10,10 @@
  * So those value sets carry a marker extension, and the marker changes what is rendered:
  * what was expanded and how, then - when the expansion came from a filter - the compose
  * as JSON, then the expansion itself.
+ *
+ * Except as a fragment. A fragment goes inside a page that was just used to ask the
+ * question and still has the inputs on screen - the ECL panel - so there the expansion
+ * alone is the answer, and everything that restates the question is left out.
  */
 
 const { TxHtmlRenderer } = require('../../tx/tx-html');
@@ -51,7 +55,7 @@ const FILTERED = transient(
 function build() {
   const seen = {};
   const html = new TxHtmlRenderer(
-    { renderVSExpansion: (vs) => { seen.vs = vs; return '<div>EXPANSION</div>'; } },
+    { renderVSExpansion: (vs, showProps) => { seen.vs = vs; seen.showProps = showProps; return '<div>EXPANSION</div>'; } },
     null, null, null, '/tx/r4');
   return { html, seen };
 }
@@ -118,5 +122,96 @@ describe('a transient value set expansion', () => {
     const out = await html.renderValueSet(ordinary, false, undefined, true);
     expect(out).toContain('PLAIN');
     expect(seen.plain.url).toBe('http://hl7.org/fhir/ValueSet/administrative-gender');
+  });
+
+  describe('rendered as a fragment, for a page that already shows the question', () => {
+    const FRAGMENT = 'html/fragment';
+
+    const unclosed = transient(
+      { include: [{ system: 'http://snomed.info/sct', filter: [{ property: 'constraint', op: '=', value: '>> 40541001' }] }] },
+      {
+        extension: [
+          { url: 'http://hl7.org/fhir/StructureDefinition/valueset-unclosed', valueBoolean: true },
+          { url: 'http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason', valueString: 'has a grammar' }
+        ],
+        parameter: [
+          { name: 'used-codesystem', valueUri: 'http://snomed.info/sct|20250201' },
+          { name: 'displayLanguage', valueString: 'en-AU' }
+        ]
+      }
+    );
+
+    test('leaves out everything that restates the question', async () => {
+      const { html } = build();
+      const out = await html.renderValueSet(unclosed, false, FRAGMENT, true);
+      // before the JSON source, which is a disclosure and legitimately holds all of it
+      const shown = out.substring(0, out.indexOf('Show JSON Source'));
+      expect(shown).not.toContain('built for this request alone');
+      expect(shown).not.toContain('Code System');
+      expect(shown).not.toContain('<h3>Filters</h3>');
+      expect(shown).not.toContain('constraint');
+      expect(shown).toContain('EXPANSION');
+    });
+
+    // The one thing the properties table had that the reader cannot see by looking, and
+    // usually the answer they were after.
+    test('keeps the count', async () => {
+      const { html } = build();
+      const out = await html.renderValueSet(unclosed, false, FRAGMENT, true);
+      expect(out.substring(0, out.indexOf('EXPANSION'))).toContain('<b>25 concepts</b>');
+    });
+
+    test('says how many are on screen when the expansion was paged', async () => {
+      const { html } = build();
+      const paged = transient(unclosed.compose, { total: 900, contains: [{ code: 'a' }, { code: 'b' }] });
+      const out = await html.renderValueSet(paged, false, FRAGMENT, true);
+      expect(out).toContain('<b>900 concepts</b> (2 shown)');
+    });
+
+    test('counts what came back when the expansion reports no total', async () => {
+      const { html } = build();
+      const untotalled = transient(unclosed.compose, { total: undefined, contains: [{ code: 'a', contains: [{ code: 'b' }] }] });
+      delete untotalled.expansion.total;
+      const out = await html.renderValueSet(untotalled, false, FRAGMENT, true);
+      expect(out).toContain('<b>2 concepts</b>');
+    });
+
+    test('says nothing when nothing was found - the renderer says that itself', async () => {
+      const { html } = build();
+      const none = transient(unclosed.compose, { total: 0 });
+      const out = await html.renderValueSet(none, false, FRAGMENT, true);
+      expect(out).not.toContain('concept');
+    });
+
+    test('asks for the expansion without its properties table', async () => {
+      const { html, seen } = build();
+      await html.renderValueSet(unclosed, false, FRAGMENT, true);
+      expect(seen.showProps).toBe(false);
+    });
+
+    test('drops the unclosed warning and the code systems used', async () => {
+      const { html, seen } = build();
+      await html.renderValueSet(unclosed, false, FRAGMENT, true);
+      expect(seen.vs.expansion.extension).toEqual([]);
+      expect(seen.vs.expansion.parameter.map((p) => p.name)).toEqual(['displayLanguage']);
+    });
+
+    test('keeps a too-costly warning, which says the answer is incomplete', async () => {
+      const { html, seen } = build();
+      const costly = transient(unclosed.compose, {
+        extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/valueset-toocostly', valueBoolean: true }]
+      });
+      await html.renderValueSet(costly, false, FRAGMENT, true);
+      expect(seen.vs.expansion.extension.map((e) => e.url))
+        .toEqual(['http://hl7.org/fhir/StructureDefinition/valueset-toocostly']);
+    });
+
+    test('still keeps the whole summary on a page of its own', async () => {
+      const { html, seen } = build();
+      const out = await html.renderValueSet(unclosed, false, 'html', true);
+      expect(out).toContain('built for this request alone');
+      expect(seen.showProps).toBe(true);
+      expect(seen.vs.expansion.parameter.map((p) => p.name)).toContain('used-codesystem');
+    });
   });
 });

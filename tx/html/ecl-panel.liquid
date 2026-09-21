@@ -1,0 +1,93 @@
+<p>Expand a SNOMED CT expression constraint. The expression is run as a value set that
+  composes SNOMED CT with a <code>constraint</code> filter; the result appears below, and
+  the inputs stay where they are so the expression can be adjusted and run again.</p>
+
+{% if hasVersions %}
+<div class="operation-form" style="margin-bottom: 15px;">
+  <form id="{{ eclId }}_form" action="{{ expandUrl }}" data-system="{{ system }}"
+        data-transient="{{ transientExtension }}" onsubmit="return eclRun('{{ eclId }}')">
+    <table class="grid" cellpadding="0" cellspacing="0" style="width: 100%;">
+      <tr>
+        <td style="width: 100%;">ECL: <input type="text" name="ecl" id="{{ eclId }}_ecl" size="80"
+              style="width: 90%;" autocomplete="off" placeholder="&lt; 404684003 |Clinical finding|"/></td>
+      </tr>
+      <tr>
+        <td>Edition: <select name="version" id="{{ eclId }}_version">{{ versionOptions }}</select>
+          <button type="submit" class="btn btn-sm btn-primary" id="{{ eclId }}_go">Go</button>
+        </td>
+      </tr>
+    </table>
+  </form>
+</div>
+
+<div id="{{ eclId }}_results"></div>
+
+<script>
+function eclUuid() {
+  if (window.crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : ((r & 0x3) | 0x8)).toString(16);
+  });
+}
+
+function eclMessage(id, text) {
+  document.getElementById(id + '_results').innerHTML = '';
+  var p = document.createElement('p');
+  p.textContent = text;
+  document.getElementById(id + '_results').appendChild(p);
+  return false;
+}
+
+// The expansion comes back as a fragment rather than a page, so it can go straight under
+// the inputs. An error arrives the same way - as the rendered OperationOutcome - which is
+// the point: an ECL is usually wrong several times before it is right, and the message
+// belongs next to the expression that caused it.
+function eclRun(id) {
+  var form = document.getElementById(id + '_form');
+  var ecl = document.getElementById(id + '_ecl').value.trim();
+  var version = document.getElementById(id + '_version').value;
+  var go = document.getElementById(id + '_go');
+
+  if (ecl === '') {
+    return eclMessage(id, 'Enter an expression constraint.');
+  }
+
+  var valueSet = {
+    resourceType: 'ValueSet',
+    extension: [{ url: form.dataset.transient, valueBoolean: true }],
+    url: 'urn:uuid:' + eclUuid(),
+    status: 'active',
+    compose: {
+      include: [{
+        system: form.dataset.system,
+        version: version,
+        filter: [{ property: 'constraint', op: '=', value: ecl }]
+      }]
+    }
+  };
+
+  eclMessage(id, 'Expanding...');
+  go.disabled = true;
+  fetch(form.getAttribute('action'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/fhir+json', 'Accept': 'text/html' },
+    body: JSON.stringify(valueSet)
+  }).then(function (response) {
+    return response.text();
+  }).then(function (html) {
+    document.getElementById(id + '_results').innerHTML = html;
+  }).catch(function (err) {
+    eclMessage(id, 'Expansion failed: ' + err.message);
+  }).then(function () {
+    go.disabled = false;
+  });
+  return false;
+}
+</script>
+{% else %}
+<p><em>This endpoint has no SNOMED CT editions loaded, so there is nothing to run an
+  expression constraint against.</em></p>
+{% endif %}

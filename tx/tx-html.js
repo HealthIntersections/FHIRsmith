@@ -57,6 +57,8 @@ const ELEMENT_OPTIONS = ['id', 'url', 'version', 'name', 'title', 'status', 'dat
 // expansion, and the filters it came from. This is FHIRsmith's own extension, in
 // FHIRsmith's own namespace: it says something about how this server was asked to do
 // something, not about terminology, so it does not belong in the FHIR tools namespace.
+const SNOMED_URI = 'http://snomed.info/sct';
+
 const TRANSIENT_VALUESET = 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient';
 
 const SEVERITY_ALERT_CLASS = {
@@ -500,6 +502,53 @@ class TxHtmlRenderer {
   }
 
   /**
+   * The SNOMED CT editions this endpoint has loaded: the default one first, because it is
+   * what the rest of the server uses when no version is given, then the others by name.
+   * The factory map is keyed several ways for the same factory - by system, by
+   * system|version and by system|major.minor - so it has to be deduplicated.
+   *
+   * @param {Object} provider the endpoint's provider
+   * @returns {{value: string, label: string, isDefault: boolean}[]}
+   */
+  snomedVersions(provider) {
+    const byVersion = new Map();
+    const dflt = provider.codeSystemFactories.get(SNOMED_URI);
+    for (const factory of provider.codeSystemFactories.values()) {
+      if (factory.system() !== SNOMED_URI) {
+        continue;
+      }
+      const version = factory.version();
+      if (!version || byVersion.has(version)) {
+        continue;
+      }
+      byVersion.set(version, {
+        value: version,
+        label: factory.describeVersion(version),
+        isDefault: factory === dflt
+      });
+    }
+    const versions = [...byVersion.values()];
+    versions.sort((a, b) => (a.isDefault === b.isDefault ? a.label.localeCompare(b.label) : (a.isDefault ? -1 : 1)));
+    return versions;
+  }
+
+  /**
+   * The ECL panel at <endpoint>/ecl.
+   */
+  async buildEclPage(req) {
+    const versions = this.snomedVersions(req.txProvider);
+    return await this.liquid.renderFile('ecl-panel', {
+      eclId: this.generateResourceId(),
+      system: escape(SNOMED_URI),
+      transientExtension: escape(TRANSIENT_VALUESET),
+      expandUrl: escape(this.path + '/ValueSet/$expand?_format=html/fragment&includeDefinition=true'),
+      versionOptions: versions.map((v) =>
+        `<option value="${escape(v.value)}">${escape(v.label)}${v.isDefault ? ' (default)' : ''}</option>`).join(''),
+      hasVersions: versions.length > 0
+    });
+  }
+
+  /**
    * Main render - determines what to render based on resource type
    */
   async render(json, req, inBundle = false) {
@@ -920,7 +969,7 @@ class TxHtmlRenderer {
    */
   async renderValueSet(json, inBundle, _fmt, op, exp) {
     if (isTransientValueSet(json) && json.expansion) {
-      return await this.renderTransientExpansion(json);
+      return await this.renderTransientExpansion(json, _fmt === 'html/fragment');
     }
     if (inBundle || op) {
       return await this.renderResourceWithNarrative(json, await this.renderer.renderValueSet(json));
@@ -970,30 +1019,42 @@ class TxHtmlRenderer {
    * expanded and how, so that is what leads: the code system, the text searched for if
    * there was one, and, when the expansion came from a filter, the compose that produced
    * it - as JSON, because a filter is read by people who work in JSON.
+   *
+   * None of that when the rendering is a fragment, though. A fragment goes inside a page
+   * that has just been used to ask the question - the ECL panel still has the expression
+   * and the edition on screen - so restating them, and warning that a SNOMED expansion is
+   * not closed, is telling the user what they are looking at. There the expansion alone
+   * is the answer.
+   *
+   * @param {Object} json the expanded value set
+   * @param {boolean} embedded whether this is going inside a page that already has the context
    */
-  async renderTransientExpansion(json) {
+  async renderTransientExpansion(json, embedded) {
     const include = json.compose?.include?.[0] || {};
     const filter = (json.expansion.parameter || []).find((p) => p.name === 'filter')?.valueString;
 
     let html = '<div class="narrative">';
-    html += '<p>An expansion of a value set built for this request alone - this server does '
-      + 'not hold it, and it has no URL of its own.</p>';
 
-    html += '<table class="grid">';
-    if (include.system) {
-      html += `<tr><td><b>Code System</b></td><td>${escape(include.system)}</td></tr>`;
-    }
-    if (include.version) {
-      html += `<tr><td><b>Version</b></td><td>${escape(include.version)}</td></tr>`;
-    }
-    if (filter) {
-      html += `<tr><td><b>Text Search</b></td><td>${escape(filter)}</td></tr>`;
-    }
-    html += '</table>';
+    if (!embedded) {
+      html += '<p>An expansion of a value set built for this request alone - this server does '
+        + 'not hold it, and it has no URL of its own.</p>';
 
-    if ((include.filter || []).length > 0) {
-      html += '<h3>Filters</h3>';
-      html += `<pre>${escape(JSON.stringify(json.compose, null, 2))}</pre>`;
+      html += '<table class="grid">';
+      if (include.system) {
+        html += `<tr><td><b>Code System</b></td><td>${escape(include.system)}</td></tr>`;
+      }
+      if (include.version) {
+        html += `<tr><td><b>Version</b></td><td>${escape(include.version)}</td></tr>`;
+      }
+      if (filter) {
+        html += `<tr><td><b>Text Search</b></td><td>${escape(filter)}</td></tr>`;
+      }
+      html += '</table>';
+
+      if ((include.filter || []).length > 0) {
+        html += '<h3>Filters</h3>';
+        html += `<pre>${escape(JSON.stringify(json.compose, null, 2))}</pre>`;
+      }
     }
 
     // The expansion, without the two identifiers that are noise here: the value set's own
@@ -1003,10 +1064,56 @@ class TxHtmlRenderer {
     delete shown.url;
     delete shown.compose;
     delete shown.expansion.identifier;
-    html += await this.renderer.renderVSExpansion(shown, true);
+
+    if (embedded) {
+      // The unclosed warning and the list of code systems the expansion drew on say the
+      // same thing the page already said. A too-costly warning is not in that class - it
+      // means the answer on screen is not the whole answer - so it stays.
+      shown.expansion.extension = (shown.expansion.extension || [])
+        .filter((e) => !e.url.startsWith('http://hl7.org/fhir/StructureDefinition/valueset-unclosed'));
+      shown.expansion.parameter = (shown.expansion.parameter || [])
+        .filter((p) => !['used-codesystem', 'used-valueset', 'used-supplement'].includes(p.name));
+    }
+
+    if (embedded) {
+      html += this.expansionCount(json.expansion);
+    }
+
+    html += await this.renderer.renderVSExpansion(shown, !embedded);
     html += '</div>';
     html += this.renderJsonSource(json);
     return html;
+  }
+
+  /**
+   * How many concepts an expansion found, as one line.
+   *
+   * On a page of its own this is in the expansion properties table; in a fragment that
+   * table is gone, and the count is the one thing there that the reader cannot work out by
+   * looking - it is usually the answer they were after. total is the size of the whole
+   * expansion, which is not what is on screen when a page was asked for, and some paths
+   * report no total at all, so both are said when they differ.
+   *
+   * @param {Object} expansion the ValueSet.expansion
+   * @returns {string} a paragraph, or nothing when the expansion is empty (the renderer
+   *   says so itself in that case)
+   */
+  expansionCount(expansion) {
+    const concepts = (list) => (list || []).reduce((n, c) => n + 1 + concepts(c.contains), 0);
+    const plural = (n) => `${n} concept${n === 1 ? '' : 's'}`;
+
+    const shown = concepts(expansion.contains);
+    const total = typeof expansion.total === 'number' ? expansion.total : null;
+    if (total === null && shown === 0) {
+      return '';
+    }
+    if (total === null) {
+      return `<p><b>${plural(shown)}</b></p>`;
+    }
+    if (total === 0) {
+      return '';
+    }
+    return `<p><b>${plural(total)}</b>${total === shown ? '' : ` (${shown} shown)`}</p>`;
   }
 
   /**
