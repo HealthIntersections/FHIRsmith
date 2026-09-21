@@ -33,6 +33,15 @@ class TerminologyWorker {
   foundParameters = [];
   renderer;
 
+  // ValueSetChecker reads both of these off whatever worker it is given, so they belong to
+  // every worker that can construct one - not just the validate and expand workers that
+  // happen to have declared them first. A worker without them fails inside the checker with
+  // "Cannot read properties of undefined (reading 'size')", a long way from the cause.
+  // ValidateWorker and ExpandWorker redeclare them; a subclass field initialiser overrides
+  // the base one, so their behaviour is unchanged.
+  requiredSupplements = new Set();
+  usedSupplements = new Set();
+
   /**
    * @param {OperationContext} opContext - Operation context
    * @param {Logger} log - Provider for code systems and resources

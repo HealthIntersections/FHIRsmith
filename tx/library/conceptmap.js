@@ -196,6 +196,14 @@ class ConceptMap extends CanonicalResource {
    * their elements matched. group.unmapped only applies to a group that was in scope
    * for the translation, so the caller needs the same source/target test that
    * listTranslations applies - without the per-element filter.
+   *
+   * "In scope" here is only about this group's source and target code systems. It assumes
+   * the MAP itself is in scope, which is a separate and prior question: ConceptMap.sourceScope
+   * limits the map to codes that are members of that value set, and a map that does not cover
+   * the code has no groups in scope at all, whatever their systems say. That test needs a value
+   * set lookup and a $validate-code, so it lives in the worker (TranslateWorker.filterMapsByScope)
+   * and is applied to the map before this is ever called. Do not read a group coming back from
+   * here as evidence that the map applies.
    * @returns {Object[]} the matching group objects
    */
   listGroupsInScope(coding, targetScope, targetSystem) {
@@ -238,19 +246,27 @@ class ConceptMap extends CanonicalResource {
     return result;
   }
     /**
-   * Gets the source scope (R5) or source system (R3/R4)
-   * @returns {string|undefined} Source scope/system
+   * Gets the source scope (R5+) or source (R3/R4).
+   *
+   * R5 renamed ConceptMap.source[x] to ConceptMap.sourceScope[x], so an R4 resource spells this
+   * sourceUri / sourceCanonical and an R5 one sourceScopeUri / sourceScopeCanonical. Both have to
+   * be read: this server serves R4 as well as R5, and the R4 client sends the R4 spelling. Reading
+   * only the R5 names made this silently undefined on an R4 server, which made every map look
+   * unscoped - so the scope never limited anything, and $translate answered for codes outside it.
+   * @returns {string|undefined} Source scope
    */
   get sourceScope() {
-    return this.jsonObj.sourceScopeUri ? this.jsonObj.sourceScopeUri : this.jsonObj.sourceScopeCanonical;
+    return this.jsonObj.sourceScopeUri || this.jsonObj.sourceScopeCanonical
+      || this.jsonObj.sourceUri || this.jsonObj.sourceCanonical;
   }
 
   /**
-   * Gets the target scope (R5) or target system (R3/R4)
-   * @returns {string|undefined} Target scope/system
+   * Gets the target scope (R5+) or target (R3/R4). See sourceScope for why both are read.
+   * @returns {string|undefined} Target scope
    */
   get targetScope() {
-    return this.jsonObj.targetScopeUri ? this.jsonObj.targetScopeUri : this.jsonObj.targetScopeCanonical;
+    return this.jsonObj.targetScopeUri || this.jsonObj.targetScopeCanonical
+      || this.jsonObj.targetUri || this.jsonObj.targetCanonical;
   }
 
   /**
