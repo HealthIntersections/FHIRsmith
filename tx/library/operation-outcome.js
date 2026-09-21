@@ -198,7 +198,9 @@ class OperationOutcome {
   listMissedErrors(list) {
     for (let iss of this.jsonObj.issue || []) {
       if (iss.severity === 'error' && iss.details && iss.details.text && !list.find(msg => msg === iss.details.text )) {
-        return list.push(iss.details.text);
+        // every error that nothing else reported, not just the first one - an early return here
+        // meant the summary message named only one of them
+        list.push(iss.details.text);
       }
     }
 

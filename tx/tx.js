@@ -406,9 +406,15 @@ class TXModule {
           let result;
 
           if (isHtml) {
-            const title = txhtml.buildTitle(data, req);
+            // _format=html/fragment: the rendering only, with no page around it, for a
+            // page that runs an operation and puts the result inside itself (the ECL
+            // panel does this). The rendering is the same either way, so an error comes
+            // back as the rendered OperationOutcome rather than as something the caller
+            // has to handle separately.
             const content = await txhtml.render(data, req);
-            const html = await txhtml.renderPage(title, content, req.txEndpoint, req.txStartTime);
+            const fragment = (req.query._format || req.query.format) === 'html/fragment';
+            const html = fragment ? content
+              : await txhtml.renderPage(txhtml.buildTitle(data, req), content, req.txEndpoint, req.txStartTime);
             responseSize = Buffer.byteLength(html, 'utf8');
             res.setHeader('Content-Type', 'text/html');
             result = res.send(html);
@@ -989,6 +995,22 @@ class TXModule {
         await worker.handle(req, res);
       } finally {
         this.countRequest(endpointPath, '$op', Date.now() - start);
+      }
+    });
+
+    // The ECL panel: an expression, an edition, and the expansion it produces. ECL is
+    // written by trial and error, so the page keeps the inputs and puts each result under
+    // them rather than navigating away from what you just typed.
+    router.get('/ecl', async (req, res) => {
+      const start = Date.now();
+      try {
+        let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+        const content = await txhtml.buildEclPage(req);
+        const html = await txhtml.renderPage('ECL', content, req.txEndpoint, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        this.countRequest(endpointPath, 'ecl', Date.now() - start);
       }
     });
 

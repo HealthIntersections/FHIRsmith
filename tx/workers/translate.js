@@ -15,6 +15,7 @@ const {ConceptMap} = require("../library/conceptmap");
 const {Extensions} = require("../library/extensions");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
+const {ValueSetChecker, ValidationCheckMode} = require("./validate");
 
 // ConceptMap.group.element.comment is R6; on an R5 ConceptMap it is carried by the
 // cross-version extension. Read both, so a preadopted R5 resource and a native R6 one
@@ -260,6 +261,22 @@ class TranslateWorker extends TerminologyWorker {
         targetSystem = params.get('system');
       }
     }
+    // The sourceScope parameter is a precondition on the whole operation, not a way of picking
+    // maps: the client is saying which codes it is asking about. So it is evaluated once, before
+    // any map is considered, and if the code is not in it then no map applies under any
+    // condition - including a map the client nominated by url. Once the code has been shown to
+    // be in it, the parameter has done its work and plays no further part; each map is then
+    // judged by its own scope. Under reverse the two scopes have already swapped above, so
+    // sourceScope here is the scope of the concept that was named either way.
+    if (sourceScope) {
+      const inScope = await this.codeInScope(sourceScope, coding, txp,
+        `${reverse ? 'targetScope' : 'sourceScope'} parameter`);
+      if (!inScope) {
+        return res.status(200).json(this.noMapsResponse(coding, sourceScope, targetScope, targetSystem, reverse,
+          `'${coding.system}#${coding.code}' is not in the value set '${sourceScope}', so no ConceptMap can translate it`));
+      }
+    }
+
     // If no explicit concept map, we need to find one based on source/target
     if (conceptMaps.length == 0) {
       if (reverse) {
@@ -269,25 +286,19 @@ class TranslateWorker extends TerminologyWorker {
         await this.findConceptMapsInAdditionalResources(conceptMaps, coding.system, sourceScope, targetScope, targetSystem);
         await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, coding.system, sourceScope, targetScope, targetSystem, coding.code);
       }
-      if (conceptMaps.length == 0) {
-        // The client did not nominate a map, and this server knows none that covers this
-        // source and target. That is an answer - there is no translation - not an error;
-        // a nominated map that cannot be found is the error case, and is reported when
-        // the url parameter is resolved above.
-        const from = reverse ? (targetSystem || sourceScope) : coding.system;
-        const to = reverse ? coding.system : (targetSystem || targetScope);
-        return res.status(200).json({
-          resourceType: 'Parameters',
-          parameter: [{
-            name: 'message',
-            valueString: `No ConceptMap is available to translate from '${from || '(unspecified)'}' to '${to || '(unspecified)'}'`
-          },
-          {
-            name: 'result',
-            valueBoolean: false
-          }]
-        });
-      }
+    }
+
+    // Whether the map was nominated or found, it only applies if the code is within its own
+    // declared scope, so the filter goes here rather than in the selection above - a nominated
+    // map never passes through selection at all.
+    const scoped = await this.filterMapsByScope(conceptMaps, coding, txp, reverse);
+    conceptMaps = scoped.maps;
+
+    if (conceptMaps.length == 0) {
+      // No map covers this code. That is an answer - there is no translation - not an error;
+      // a nominated map that cannot be *found* is the error case, and is reported when the url
+      // parameter is resolved above.
+      return res.status(200).json(this.noMapsResponse(coding, sourceScope, targetScope, targetSystem, reverse, null, scoped.anyScoped));
     }
 
     // Perform the translation
@@ -371,8 +382,15 @@ class TranslateWorker extends TerminologyWorker {
     let conceptMaps = [];
     conceptMaps.push(conceptMap);
 
+    // Naming the map by id does not put an out-of-scope code into its scope, any more than
+    // naming it by url does: the map either covers this code or it does not.
+    const scoped = await this.filterMapsByScope(conceptMaps, coding, txp, false);
+    if (scoped.maps.length === 0) {
+      return res.status(200).json(this.noMapsResponse(coding, null, targetScope, targetSystem, false, null, scoped.anyScoped));
+    }
+
     // Perform the translation
-    const result = await this.doTranslate(conceptMaps, coding, targetScope, targetSystem, params);
+    const result = await this.doTranslate(scoped.maps, coding, targetScope, targetSystem, params);
     return res.status(200).json(result);
   }
 
@@ -904,6 +922,135 @@ class TranslateWorker extends TerminologyWorker {
       }
     }
     return result;
+  }
+
+  /**
+   * ConceptMap.sourceScope "limits the scope of the map to source codes that are members of
+   * this value set", so a code outside it means the map does not apply at all - not that the
+   * map has no element for it. The difference matters because group.unmapped answers the
+   * second question and must not answer the first: a map with unmapped mode=fixed would
+   * otherwise translate every code in the code system its group names, whatever its author
+   * declared, and sourceScope would have no effect on any map that has an unmapped.
+   *
+   * Resolving a scope costs a value set lookup and a $validate-code, and the same scope is
+   * usually shared by several of the candidate maps, so both are memoised for the life of the
+   * operation. They are deliberately not cached beyond it: tx-resource makes the resolution of
+   * a canonical a property of the request, not of the server.
+   */
+  scopeVsCache = new Map();    // canonical -> ValueSet
+  scopeCodeCache = new Map();  // canonical + coding -> boolean
+
+  async resolveScopeValueSet(canonical, why) {
+    if (this.scopeVsCache.has(canonical)) {
+      return this.scopeVsCache.get(canonical);
+    }
+    const { url, version } = VersionUtilities.splitCanonical(canonical);
+    let vs = null;
+    try {
+      vs = await this.findValueSet(url, version);
+    } catch (e) {
+      if (e instanceof Issue) {
+        throw e;
+      }
+      vs = null;
+    }
+    if (!vs) {
+      // Fatal to the operation, deliberately. A scope that cannot be resolved is a scope that
+      // cannot be evaluated, and dropping the map silently would report "no translation" for
+      // what is really "cannot tell" - the same trap as answering not-subsumed when the real
+      // answer is unknown.
+      throw new Issue('error', 'not-found', null, null,
+        `The value set '${canonical}', which is the ${why}, could not be found, so the scope of the translation cannot be determined`, null, 404);
+    }
+    this.scopeVsCache.set(canonical, vs);
+    return vs;
+  }
+
+  async codeInScope(canonical, coding, params, why) {
+    const key = canonical + '\u0000' + coding.system + '|' + (coding.version || '') + '#' + coding.code;
+    if (this.scopeCodeCache.has(key)) {
+      return this.scopeCodeCache.get(key);
+    }
+    const vs = await this.resolveScopeValueSet(canonical, why);
+    let inScope;
+    try {
+      const checker = new ValueSetChecker(this, vs, params);
+      await checker.prepare();
+      // The coding is wrapped in a CodeableConcept so that this goes through
+      // checkCodeableConcept - the same path every $validate-code takes, and the only one the
+      // test suite exercises.
+      const outcome = await checker.checkCodeableConcept('Coding',
+        { coding: [{ system: coding.system, version: coding.version, code: coding.code }] },
+        ValidationCheckMode.Coding);
+      inScope = outcome.has('result') && outcome.get('result') === true;
+    } catch (e) {
+      if (e instanceof Issue) {
+        throw e;
+      }
+      // The value set resolved; checking the code against it is what failed. Say so - the
+      // earlier wording claimed it could not be found, which sent the reader looking for a
+      // missing resource that was in fact right there.
+      throw new Issue('error', 'not-supported', null, null,
+        `The value set '${canonical}' was found, but '${coding.system}#${coding.code}' could not be checked against it (${e.message}), so the ${why} cannot be evaluated`, null, 422);
+    }
+    this.scopeCodeCache.set(key, inScope);
+    return inScope;
+  }
+
+  /**
+   * The answer when nothing can translate this code: a successful operation with a negative
+   * result, not an error. Where any candidate map declared a scope, the message names the code,
+   * because the code is then the reason - saying only that no map goes from this system to that
+   * one would be wrong, since such maps exist and simply do not cover this code.
+   */
+  noMapsResponse(coding, sourceScope, targetScope, targetSystem, reverse, message, anyScoped) {
+    let text = message;
+    if (!text) {
+      const from = reverse ? (targetSystem || sourceScope) : coding.system;
+      const to = reverse ? coding.system : (targetSystem || targetScope);
+      text = anyScoped
+        ? `No ConceptMap that translates from '${from || '(unspecified)'}' to '${to || '(unspecified)'}' has '${coding.system}#${coding.code}' in scope`
+        : `No ConceptMap is available to translate from '${from || '(unspecified)'}' to '${to || '(unspecified)'}'`;
+    }
+    return {
+      resourceType: 'Parameters',
+      parameter: [{
+        name: 'message',
+        valueString: text
+      },
+      {
+        name: 'result',
+        valueBoolean: false
+      }]
+    };
+  }
+
+  /**
+   * Drop the candidate maps that do not apply to this code. A map that declares no scope on the
+   * relevant side is not filtered - it applies on the strength of its group source/target
+   * systems alone. Under reverse the concept named is the target concept, so it is
+   * ConceptMap.targetScope that governs.
+   * @returns {Promise<{maps: Object[], anyScoped: boolean}>} anyScoped says whether any candidate
+   *   declared a scope, which decides whether the "no map" message names the code
+   */
+  async filterMapsByScope(conceptMaps, coding, params, reverse) {
+    const maps = [];
+    let anyScoped = false;
+    const side = reverse ? 'target' : 'source';
+    for (const cm of conceptMaps) {
+      const canonical = reverse ? cm.targetScope : cm.sourceScope;
+      if (!canonical) {
+        maps.push(cm);
+        continue;
+      }
+      anyScoped = true;
+      if (await this.codeInScope(canonical, coding, params, `${side} scope of the ConceptMap '${cm.url || '(inline)'}'`)) {
+        maps.push(cm);
+      } else {
+        this.opContext.addNote(null, `ConceptMap '${cm.url}' does not apply: '${coding.code}' is not in its ${side} scope '${canonical}'`, 0);
+      }
+    }
+    return { maps, anyScoped };
   }
 
   /**

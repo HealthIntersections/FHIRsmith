@@ -19,13 +19,19 @@ describe('Translate Worker', () => {
   });
 
   describe('GET /tx/r5/ConceptMap/$translate', () => {
+    // This used ConceptMap/example2, whose sourceScopeUri names http://example.org/fhir/example1
+    // - an invented example identifier that is not a ValueSet anywhere. ConceptMap.sourceScope
+    // limits the map to codes that are members of that value set, so a scope that cannot be
+    // resolved cannot be evaluated, and the operation fails rather than guessing. sc-flag-status
+    // is used instead: its scope resolves, so the map can actually be applied and the test
+    // asserts a translation rather than merely a response.
     test('should translate code with url, system, and sourceCode parameters', async () => {
       const response = await request(app)
         .get('/tx/r5/ConceptMap/$translate')
         .query({
-          url: 'example2',
-          sourceSystem: 'http://example.org/fhir/example1',
-          sourceCode: 'code'
+          url: 'http://hl7.org/fhir/ConceptMap/sc-flag-status',
+          sourceSystem: 'http://hl7.org/fhir/flag-status',
+          sourceCode: 'active'
         })
         .set('Accept', 'application/json');
 
@@ -34,7 +40,12 @@ describe('Translate Worker', () => {
 
       const resultParam = response.body.parameter.find(p => p.name === 'result');
       expect(resultParam).toBeDefined();
-      expect(typeof resultParam.valueBoolean).toBe('boolean');
+      expect(resultParam.valueBoolean).toBe(true);
+
+      const match = response.body.parameter.find(p => p.name === 'match');
+      expect(match).toBeDefined();
+      const concept = match.part.find(p => p.name === 'concept');
+      expect(concept.valueCoding.code).toBe('active');
     });
 
     test('should return 400 when sourceCode provided without system', async () => {
