@@ -1,3 +1,17 @@
+<!-- Text Search: the whole code system as an anonymous value set, expanded with the
+     text as the filter parameter. This is what a person opening a code system usually
+     wants - "is there a code for X" - so it comes first. -->
+<div class="operation-form" style="margin-bottom: 15px;">
+  <strong>Text Search</strong>
+  <form method="post" action="{{ expandUrl }}" id="{{ searchId }}_form"
+        data-system="{{ url }}" data-version="{{ systemVersion }}"
+        style="display: inline-block; margin-left: 10px;" onsubmit="return txSearchSubmit('{{ searchId }}')">
+    <input type="text" name="filter" placeholder="Text" size="30"/>
+    <button type="submit" class="btn btn-sm btn-primary">Search</button>
+  </form>
+  <div id="{{ searchId }}_preview" style="display: none; margin-left: 10px; margin-top: 8px;"></div>
+</div>
+
 <div class="operation-form" style="margin-bottom: 15px;">
   <strong>Lookup</strong>
   <form method="get" action="$lookup" style="display: inline-block; margin-left: 10px;">
@@ -16,3 +30,166 @@
     <button type="submit" class="btn btn-sm btn-primary">Subsumes</button>
   </form>
 </div>
+
+
+<!-- Filter: builds a throwaway ValueSet (uuid url, one include for this code system carrying
+     every filter row) and posts it to $expand, replacing the page with the rendered expansion. -->
+<div class="operation-form" style="margin-bottom: 15px;">
+  <strong>Filter</strong>
+  <form method="post" action="{{ expandUrl }}" id="{{ filterId }}_form"
+        data-system="{{ url }}" data-version="{{ systemVersion }}"
+        style="margin-left: 10px; margin-top: 5px;" onsubmit="return txFilterSubmit('{{ filterId }}')">
+    <datalist id="{{ filterId }}_props">{{ filterPropertyOptions }}</datalist>
+    <table class="grid" cellpadding="0" cellspacing="0">
+      <thead>
+        <tr><th>Property</th><th>Operation</th><th>Value</th><th></th></tr>
+      </thead>
+      <tbody id="{{ filterId }}_rows">
+        <tr>
+          <td><input type="text" name="property" list="{{ filterId }}_props" size="24" autocomplete="off"/></td>
+          <td><select name="op">{{ filterOpOptions }}</select></td>
+          <td><input type="text" name="value" size="24"/></td>
+          <td><button type="button" class="btn btn-sm" title="Remove this filter" onclick="txFilterRemoveRow(this)">&#215;</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <button type="button" class="btn btn-sm" onclick="txFilterAddRow('{{ filterId }}')">Add Filter</button>
+    <button type="submit" class="btn btn-sm btn-primary">Expand</button>
+  </form>
+  <div id="{{ filterId }}_preview" style="display: none; margin-left: 10px; margin-top: 8px;"></div>
+</div>
+
+<script>
+// The two forms on this tab that expand something both do the same thing: build an
+// anonymous value set over the code system being viewed and post it to $expand, then
+// replace the page with whatever comes back. They differ only in what they put on the
+// include (nothing, for a text search) and what they put on the request (the filter).
+
+function txOpMessage(id, text) {
+  var preview = document.getElementById(id + '_preview');
+  preview.textContent = text;
+  preview.style.display = 'block';
+  return false;
+}
+
+function txOpUuid() {
+  if (window.crypto && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : ((r & 0x3) | 0x8)).toString(16);
+  });
+}
+
+// One include, so that filters are ANDed. The value set exists only for the duration of
+// the expansion - it is never stored - so its url is a uuid.
+function txOpBuildValueSet(form, filters) {
+  var include = { system: form.dataset.system };
+  if (form.dataset.version) {
+    include.version = form.dataset.version;
+  }
+  if (filters && filters.length > 0) {
+    include.filter = filters.map(function (f) {
+      return { property: f.property, op: f.op, value: f.value };
+    });
+  }
+  return {
+    resourceType: 'ValueSet',
+    // Marks the value set as one that exists only for this request, so that the server
+    // renders the expansion rather than a summary of a value set nobody can look up.
+    extension: [{ url: 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient', valueBoolean: true }],
+    url: 'urn:uuid:' + txOpUuid(),
+    status: 'active',
+    compose: { include: [include] }
+  };
+}
+
+// The value set goes in the body; anything that is an expansion parameter rather than
+// part of the value set goes on the query, which $expand reads either way.
+function txOpExpand(id, form, valueSet, params) {
+  var url = new URL(form.getAttribute('action'), window.location.href);
+  // The definition has to come back for the transient marker and the filters to survive
+  // the expansion - $expand drops both along with the rest of the definition otherwise.
+  url.searchParams.set('includeDefinition', 'true');
+  for (var name in params || {}) {
+    url.searchParams.set(name, params[name]);
+  }
+  txOpMessage(id, 'Expanding...');
+  fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/fhir+json', 'Accept': 'text/html' },
+    body: JSON.stringify(valueSet)
+  }).then(function (response) {
+    return response.text();
+  }).then(function (html) {
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch(function (err) {
+    txOpMessage(id, 'Expansion failed: ' + err.message);
+  });
+  return false;
+}
+
+function txSearchSubmit(id) {
+  var form = document.getElementById(id + '_form');
+  var text = form.querySelector('input[name="filter"]').value.trim();
+  if (text === '') {
+    return txOpMessage(id, 'Enter some text to search for.');
+  }
+  return txOpExpand(id, form, txOpBuildValueSet(form, null), { filter: text });
+}
+
+function txFilterClearRow(row) {
+  row.querySelectorAll('input').forEach(function (input) { input.value = ''; });
+  row.querySelectorAll('select').forEach(function (select) { select.selectedIndex = 0; });
+}
+
+function txFilterAddRow(id) {
+  var rows = document.getElementById(id + '_rows');
+  var row = rows.rows[0].cloneNode(true);
+  txFilterClearRow(row);
+  rows.appendChild(row);
+}
+
+function txFilterRemoveRow(btn) {
+  var row = btn.closest('tr');
+  var rows = row.parentNode;
+  if (rows.rows.length > 1) {
+    rows.removeChild(row);
+  } else {
+    txFilterClearRow(row);
+  }
+}
+
+// Every row that has anything in it. Rows left entirely blank are ignored, so an unused
+// extra row does not stop the expansion; a half-filled one is an error the user must fix.
+function txFilterCollect(id) {
+  var filters = [];
+  var rows = document.getElementById(id + '_rows').rows;
+  for (var i = 0; i < rows.length; i++) {
+    var property = rows[i].querySelector('input[name="property"]').value.trim();
+    var op = rows[i].querySelector('select[name="op"]').value;
+    var value = rows[i].querySelector('input[name="value"]').value.trim();
+    if (property !== '' || value !== '') {
+      filters.push({ row: i + 1, property: property, op: op, value: value });
+    }
+  }
+  return filters;
+}
+
+function txFilterSubmit(id) {
+  var form = document.getElementById(id + '_form');
+  var filters = txFilterCollect(id);
+  if (filters.length === 0) {
+    return txOpMessage(id, 'No filters specified.');
+  }
+  for (var i = 0; i < filters.length; i++) {
+    if (filters[i].property === '' || filters[i].value === '') {
+      return txOpMessage(id, 'Filter ' + filters[i].row + ' needs both a property and a value.');
+    }
+  }
+  return txOpExpand(id, form, txOpBuildValueSet(form, filters), null);
+}
+</script>

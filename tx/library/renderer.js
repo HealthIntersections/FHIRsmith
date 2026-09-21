@@ -2732,4 +2732,4 @@ class Renderer {
 
 }
 
-module.exports = { Renderer };
+module.exports = { Renderer, VALID_FILTER_OPS };

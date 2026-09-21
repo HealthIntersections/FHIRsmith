@@ -20,6 +20,7 @@ const {ParametersXML} = require("./xml/parameters-xml");
 const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
 const {debugLog} = require("./operation-context");
 const {InvalidError} = require("./library/errors");
+const {VALID_FILTER_OPS} = require("./library/renderer");
 
 const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
 
@@ -49,6 +50,49 @@ const CODESYSTEM_PARAMS = [
 const SORT_OPTIONS = ['', 'id', 'url', 'version', 'date', 'name', 'vurl'];
 
 const ELEMENT_OPTIONS = ['id', 'url', 'version', 'name', 'title', 'status', 'date', 'publisher', 'description'];
+
+// Marks a value set that exists only for the request that carried it - the ones the
+// operations tab on a CodeSystem builds and posts to $expand. Nobody else ever sees it,
+// so rendering its uuid url and its status tells the user nothing; what they want is the
+// expansion, and the filters it came from. This is FHIRsmith's own extension, in
+// FHIRsmith's own namespace: it says something about how this server was asked to do
+// something, not about terminology, so it does not belong in the FHIR tools namespace.
+const TRANSIENT_VALUESET = 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient';
+
+const SEVERITY_ALERT_CLASS = {
+  fatal: 'alert-danger',
+  error: 'alert-danger',
+  warning: 'alert-warning',
+  information: 'alert-info',
+  success: 'alert-info'
+};
+
+const SEVERITY_LABEL = {
+  fatal: 'Fatal',
+  error: 'Error',
+  warning: 'Warning',
+  information: 'Information',
+  success: 'Success'
+};
+
+// ValueSet.compose.include.filter.op, in R5 spec order - the operations offered
+// by the $filter form on the CodeSystem operations tab
+const FILTER_OPS = [...VALID_FILTER_OPS];
+
+// Filter/property names defined by the base specification, valid for any code system
+const BASE_FILTER_PROPERTIES = ['code', 'designation', 'concept', 'status', 'inactive', 'regex'];
+
+// Filter/property names defined by particular code systems. Any property or filter
+// declared in the CodeSystem resource itself is added to these at render time
+const SYSTEM_FILTER_PROPERTIES = {
+  'http://www.ama-assn.org/go/cpt': ['modifier', 'modified', 'kind', 'orthopox', 'telemedicine', 'code'],
+  'http://loinc.org': ['STATUS', 'COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP',
+    'CLASS', 'CONSUMER_NAME', 'CLASSTYPE', 'ORDER_OBS', 'DOCUMENT_SECTION', 'copyright'],
+  'http://www.nlm.nih.gov/research/umls/rxnorm': ['STY', 'SAB', 'TTY'],
+  'http://snomed.info/sct': ['constraint', 'expressions', 'effectiveTime', 'inactive', 'moduleId',
+    'normalForm', 'normalFormTerse', 'semanticTag', 'sufficientlyDefined'],
+  'http://unitsofmeasure.org': ['property', 'canonical']
+};
 
 /**
  * Load the TX HTML template
@@ -84,6 +128,14 @@ function acceptsHtml(req) {
     return false;
   }
   return _fmt.includes('text/html');
+}
+
+/** Whether this resource is one of the throwaway value sets described at TRANSIENT_VALUESET. */
+function isTransientValueSet(json) {
+  if (!json || json.resourceType !== 'ValueSet') {
+    return false;
+  }
+  return (json.extension || []).some((e) => e.url === TRANSIENT_VALUESET && e.valueBoolean !== false);
 }
 
 // Whether this server publishes its library source YAML. Off unless the operator turns
@@ -253,6 +305,10 @@ class TxHtmlRenderer {
         return `${severity.charAt(0).toUpperCase() + severity.slice(1)}`;
       }
 
+      if (isTransientValueSet(json)) {
+        return 'Expansion';
+      }
+
       if (json.id) {
         return `${pfx} ${json.id}`;
       }
@@ -403,7 +459,7 @@ class TxHtmlRenderer {
 
     for (const factory of uniqueFactories) {
       html += '<tr>';
-      html += `<td>${escape(factory.name())}</td>`;
+      html += `<td>${this.factoryLink(factory)}</td>`;
       html += `<td>${escape(factory.system())}</td>`;
       html += `<td>${escape(factory.version() || '-')}</td>`;
       html += `<td>${factory.useCount ? factory.useCount() : '-'}</td>`;
@@ -414,6 +470,33 @@ class TxHtmlRenderer {
     html += '</div></div>';
 
     return html;
+  }
+
+  /**
+   * The name of a special code system, linked to its page where there is one.
+   *
+   * These are the code systems the server implements natively rather than loading as a
+   * resource, so they have no id of their own in the resource space. They are still
+   * readable: read.js serves them under the factory's id with an "x-" prefix, which is
+   * also the id search.js puts on the placeholder it synthesises. A factory whose id() is
+   * null - SNOMED, when its version is not one of the recognised edition URIs - has no
+   * page to link to, so the name is left as text rather than pointing at a 404.
+   *
+   * @param {Object} factory a CodeSystemFactoryProvider
+   * @returns {string} the cell content
+   */
+  factoryLink(factory) {
+    const name = escape(factory.name());
+    let id;
+    try {
+      id = factory.id();
+    } catch {
+      id = null;
+    }
+    if (!id) {
+      return name;
+    }
+    return `<a href="${escape(this.path)}/CodeSystem/x-${encodeURIComponent(id)}">${name}</a>`;
   }
 
   /**
@@ -489,17 +572,24 @@ class TxHtmlRenderer {
     }
 
     html += '</tbody></table>';
+    html += this.renderJsonSource(json);
 
-    // Collapsible JSON source
+    return html;
+  }
+
+  /**
+   * The "Show JSON Source" disclosure: the resource as it went on the wire, for
+   * anything the HTML rendering summarises or leaves out.
+   */
+  renderJsonSource(json) {
     const resourceId = this.generateResourceId();
-    html += '<div class="json-source">';
+    let html = '<div class="json-source">';
     html += `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="toggleJsonSource('${resourceId}')">`;
     html += 'Show JSON Source</button>';
     html += `<div id="${resourceId}" class="json-content" style="display: none; margin-top: 10px;">`;
     html += `<pre>${escape(JSON.stringify(json, null, 2))}</pre>`;
     html += '</div>';
     html += '</div>';
-
     return html;
   }
 
@@ -787,7 +877,7 @@ class TxHtmlRenderer {
       html += this.tab(_fmt && _fmt == 'html/json', 'JSON', json.resourceType, 'html/json', json.id);
       html += this.tab(_fmt && _fmt == 'html/xml', 'XML', json.resourceType, 'html/xml', json.id);
       html += this.tab(_fmt && _fmt == 'html/narrative', 'Original Narrative', json.resourceType, 'html/narrative', json.id);
-      html += this.tab(_fmt && _fmt == 'html/ops', 'LookUp / Subsumes', json.resourceType, 'html/ops', json.id);
+      html += this.tab(_fmt && _fmt == 'html/ops', 'Operations', json.resourceType, 'html/ops', json.id);
       html += `</ul>`;
 
       if (!_fmt || _fmt == 'html') {
@@ -803,7 +893,13 @@ class TxHtmlRenderer {
           opsId: this.generateResourceId(),
           vcSystemId: this.generateResourceId(),
           inferSystemId: this.generateResourceId(),
-          url: escape(json.url || '')
+          searchId: this.generateResourceId(),
+          filterId: this.generateResourceId(),
+          url: escape(json.url || ''),
+          systemVersion: escape(json.version || ''),
+          expandUrl: escape(this.path + '/ValueSet/$expand?_format=html'),
+          filterOpOptions: FILTER_OPS.map((op) => `<option value="${escape(op)}">${escape(op)}</option>`).join(''),
+          filterPropertyOptions: this.buildFilterPropertyNames(json).map((n) => `<option value="${escape(n)}"></option>`).join('')
         });
       }
 
@@ -823,6 +919,9 @@ class TxHtmlRenderer {
    * Render ValueSet resource
    */
   async renderValueSet(json, inBundle, _fmt, op, exp) {
+    if (isTransientValueSet(json) && json.expansion) {
+      return await this.renderTransientExpansion(json);
+    }
     if (inBundle || op) {
       return await this.renderResourceWithNarrative(json, await this.renderer.renderValueSet(json));
     } else {
@@ -860,6 +959,54 @@ class TxHtmlRenderer {
       }
       return html;
     }
+  }
+
+  /**
+   * Render the expansion of a value set that only ever existed for this request.
+   *
+   * The usual value set summary is all metadata - defining url, status, expansion
+   * identifier - and every one of those is a uuid this server minted a moment ago and
+   * will never use again, so it says nothing to anyone. What is worth saying is what was
+   * expanded and how, so that is what leads: the code system, the text searched for if
+   * there was one, and, when the expansion came from a filter, the compose that produced
+   * it - as JSON, because a filter is read by people who work in JSON.
+   */
+  async renderTransientExpansion(json) {
+    const include = json.compose?.include?.[0] || {};
+    const filter = (json.expansion.parameter || []).find((p) => p.name === 'filter')?.valueString;
+
+    let html = '<div class="narrative">';
+    html += '<p>An expansion of a value set built for this request alone - this server does '
+      + 'not hold it, and it has no URL of its own.</p>';
+
+    html += '<table class="grid">';
+    if (include.system) {
+      html += `<tr><td><b>Code System</b></td><td>${escape(include.system)}</td></tr>`;
+    }
+    if (include.version) {
+      html += `<tr><td><b>Version</b></td><td>${escape(include.version)}</td></tr>`;
+    }
+    if (filter) {
+      html += `<tr><td><b>Text Search</b></td><td>${escape(filter)}</td></tr>`;
+    }
+    html += '</table>';
+
+    if ((include.filter || []).length > 0) {
+      html += '<h3>Filters</h3>';
+      html += `<pre>${escape(JSON.stringify(json.compose, null, 2))}</pre>`;
+    }
+
+    // The expansion, without the two identifiers that are noise here: the value set's own
+    // url and the expansion identifier. Everything else - timestamp, total, the
+    // parameters the server echoed back - is real information about this request.
+    const shown = structuredClone(json);
+    delete shown.url;
+    delete shown.compose;
+    delete shown.expansion.identifier;
+    html += await this.renderer.renderVSExpansion(shown, true);
+    html += '</div>';
+    html += this.renderJsonSource(json);
+    return html;
   }
 
   /**
@@ -927,41 +1074,68 @@ class TxHtmlRenderer {
   }
 
   /**
-   * Render OperationOutcome resource
+   * Render OperationOutcome resource.
+   *
+   * details.text is the human account of the problem; diagnostics is server-specific
+   * detail, most often the operation's timing trace. So the text leads, and the
+   * diagnostics are kept but folded away - rendering diagnostics first (as this did)
+   * turns a perfectly good error message into a row of milliseconds.
    */
   async renderOperationOutcome(json) {
     let html = '<div class="operation-outcome">';
-    html += `<h4>OperationOutcome</h4>`;
 
-    if (json.issue && Array.isArray(json.issue)) {
-      for (const issue of json.issue) {
-        html += '<div class="alert ';
+    for (const issue of json.issue || []) {
+      const severity = issue.severity || 'information';
+      html += `<div class="alert ${SEVERITY_ALERT_CLASS[severity] || 'alert-secondary'}">`;
+      html += `<strong>${escape(SEVERITY_LABEL[severity] || severity)}</strong>: `;
 
-        // Determine alert style based on this issue's severity
-        const severity = issue.severity || 'information';
-        switch (severity) {
-          case 'error':
-          case 'fatal':
-            html += 'alert-danger';
-            break;
-          case 'warning':
-            html += 'alert-warning';
-            break;
-          case 'information':
-            html += 'alert-info';
-            break;
-          default:
-            html += 'alert-secondary';
+      const text = issue.details?.text || issue.diagnostics;
+      html += text ? escape(text) : '<em>(this issue carries no message)</em>';
+
+      // The issue-type and the tx-issue-type, which are usually - but not always - the
+      // same word, plus the message id if the issue names one. Shown because they are
+      // what a client actually branches on.
+      const codes = [];
+      if (issue.code) {
+        codes.push(issue.code);
+      }
+      for (const coding of issue.details?.coding || []) {
+        if (coding.code && !codes.includes(coding.code)) {
+          codes.push(coding.code);
         }
-
-        html += '">';
-        html += `<strong>${escape(issue.severity || 'unknown')}:</strong> `;
-        html += `[${escape(issue.code || 'unknown')}] `;
-        html += escape(issue.diagnostics || issue.details?.text || 'No details');
+      }
+      const msgId = (issue.extension || []).find((e) =>
+        e.url === 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id')?.valueString;
+      if (msgId) {
+        codes.push(msgId);
+      }
+      const where = [...(issue.expression || []), ...(issue.location || [])];
+      if (codes.length > 0 || where.length > 0) {
+        html += '<div style="margin-top: 6px; font-size: 90%;">';
+        html += codes.map((c) => `<code>${escape(c)}</code>`).join(' ');
+        if (where.length > 0) {
+          html += (codes.length > 0 ? ' at ' : 'at ') + where.map((w) => `<code>${escape(w)}</code>`).join(', ');
+        }
         html += '</div>';
       }
+
+      // Not when it is already the message - an issue with nothing but diagnostics
+      // should not say the same sentence twice.
+      if (issue.diagnostics && issue.diagnostics !== text) {
+        html += '<details style="margin-top: 6px; font-size: 90%;">';
+        html += '<summary>Server diagnostics</summary>';
+        html += `<pre style="margin-top: 6px;">${escape(issue.diagnostics)}</pre>`;
+        html += '</details>';
+      }
+
+      html += '</div>';
     }
 
+    if (!json.issue || json.issue.length === 0) {
+      html += '<div class="alert alert-secondary"><em>(no issues)</em></div>';
+    }
+
+    html += this.renderJsonSource(json);
     html += '</div>';
     return html;
   }
@@ -1390,6 +1564,31 @@ class TxHtmlRenderer {
    */
   let
   resourceIdCounter = 0;
+
+  /**
+   * The property/filter names offered by the $filter form for a code system: the names
+   * the base specification defines for any code system, then any names known for this
+   * particular code system, then anything the CodeSystem resource declares itself.
+   * @param {Object} json the CodeSystem resource
+   * @returns {string[]} names, in that order, without duplicates
+   */
+  buildFilterPropertyNames(json) {
+    const names = new Set(BASE_FILTER_PROPERTIES);
+    for (const name of SYSTEM_FILTER_PROPERTIES[json.url] || []) {
+      names.add(name);
+    }
+    for (const prop of json.property || []) {
+      if (prop.code) {
+        names.add(prop.code);
+      }
+    }
+    for (const filter of json.filter || []) {
+      if (filter.code) {
+        names.add(filter.code);
+      }
+    }
+    return [...names];
+  }
 
   generateResourceId() {
     return 'resource_' + (++this.resourceIdCounter);
