@@ -147,6 +147,7 @@ class ClosureWorker extends TerminologyWorker {
     const config = [];
     let versionParam = null;
     let reset = false;
+    const ignored = [];
     for (const p of list) {
       if (p.name === 'concept') {
         concepts.push(p);
@@ -157,8 +158,14 @@ class ClosureWorker extends TerminologyWorker {
       } else if (p.name === 'reset') {
         reset = p.valueBoolean === true || p.valueString === 'true';
       } else if (p.name !== 'name') {
-        throw this.closureIssue('not-supported', 'CLOSURE_PARAM_UNKNOWN', [safeText(p.name)], 'not-supported', 400);
+        // Ignored, as everywhere else in the server: a request carries parameters that
+        // are not for the operation in hand. The tx-ecosystem runner, for one, adds a
+        // 'uuid' to every request from its default profile
+        ignored.push(p.name);
       }
+    }
+    if (ignored.length > 0) {
+      this.log.debug(`$closure: ignored parameter(s) ${ignored.map(safeText).join(', ')}`);
     }
     if (concepts.length > 0 && versionParam) {
       throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_AND_VERSION', [], 'invalid-data', 400);
