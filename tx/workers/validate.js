@@ -457,7 +457,7 @@ class ValueSetChecker {
     if (!system && !this.params.inferSystem) {
       let msg = this.worker.i18n.translate('Coding_has_no_system__cannot_validate', this.params.HTTPLanguages, []);
       messages.push(msg);
-      op.addIssue(new Issue('error', 'invalid', path, 'Coding_has_no_system__cannot_validate', msg, 'invalid-data'));
+      op.addIssue(new Issue('warning', 'invalid', path, 'Coding_has_no_system__cannot_validate', msg, 'invalid-data'));
       return false;
     }
 
@@ -979,18 +979,21 @@ class ValueSetChecker {
         path = issuePath;
       }
       if (!c.code) {
-        // No code at all. Whatever else is wrong with this coding is still worth saying - in
-        // particular, a coding with neither system nor code has two things wrong with it - but
-        // there is nothing to look up, so the value set check below has nothing to report either
-        // (see noCode).
+        // No code at all, so there is nothing to look up and the value set check below has
+        // nothing to report either (see noCode). A coding with neither a system nor a code gets
+        // ONE message about the pair of them rather than one about each: there is nothing there
+        // to validate, and saying so twice does not make it clearer
         if (!c.system && !this.params.inferSystem) {
-          let m = this.worker.i18n.translate('Coding_has_no_system__cannot_validate', this.params.HTTPLanguages, []);
-          op.addIssue(new Issue('error', 'invalid', path, 'Coding_has_no_system__cannot_validate', m, 'invalid-data'));
+          let m = this.worker.i18n.translate('Coding_has_no_system_or_code__cannot_validate', this.params.HTTPLanguages, []);
+          msg(m);
+          op.addIssue(new Issue('warning', 'invalid', path, 'Coding_has_no_system_or_code__cannot_validate', m, 'invalid-data'));
+        } else {
+          let m = c.system
+            ? `Coding has no code for system ${c.system} and cannot be validated`
+            : `Coding has no code and cannot be validated`;
+          msg(m);
+          op.addIssue(new Issue('warning', 'invalid', path, null, m, 'invalid-data'));
         }
-        let msg = c.system
-          ? `Coding has no code for system ${c.system} and cannot be validated`
-          : `Coding has no code and cannot be validated`;
-        op.addIssue(new Issue('error', 'invalid', path, null, msg, 'invalid-data'));
         noCode = true;
         break;
       }
@@ -1259,8 +1262,11 @@ class ValueSetChecker {
     // explanation there will be, so it can't be suppressed
     // "none of the provided codes are in the value set" is only meaningful if a code was provided:
     // for a Coding with no code, the issue above has already said the only thing there is to say.
-    // A CodeableConcept still gets its own summary error, since the concept as a whole did not validate
-    if (ok === false && !(noCode && mode !== 'codeableConcept') && (!this.valueSet.jsonObj.internallyDefined || !op.hasErrors())) {
+    // A CodeableConcept still gets its own summary error, since the concept as a whole did not
+    // validate - but not when the value set is the internal one built for a CodeSystem
+    // $validate-code, where it would name a value set the caller never mentioned
+    let noCodeSummary = noCode && (mode !== 'codeableConcept' || this.valueSet.jsonObj.internallyDefined);
+    if (ok === false && !noCodeSummary && (!this.valueSet.jsonObj.internallyDefined || !op.hasErrors())) {
       let mid, m, p;
       if (mode === 'codeableConcept') {
         mid = 'TX_GENERAL_CC_ERROR_MESSAGE';
@@ -1896,7 +1902,7 @@ class ValidateWorker extends TerminologyWorker {
 
       // Extract coded value
       mode = {mode: null};
-      coded = this.extractCodedValue(params, true, mode);
+      coded = this.extractCodedValue(params, true, mode, txp);
       if (!coded) {
         throw new Issue('error', 'invalid', null, null, 'Unable to find code to validate (looked for coding | codeableConcept | code in parameters)', null, 400).handleAsOO(400);
       }
@@ -1906,7 +1912,7 @@ class ValidateWorker extends TerminologyWorker {
       if (!codeSystem) {
         if (!coded?.coding?.[0].system) {
           let msg = this.i18n.translate('Coding_has_no_system__cannot_validate', txp.HTTPLanguages, []);
-          throw new Issue('error', 'invalid', this.codingPath(mode), 'Coding_has_no_system__cannot_validate', msg, 'invalid-data');
+          throw new Issue('warning', 'invalid', this.codingPath(mode), 'Coding_has_no_system__cannot_validate', msg, 'invalid-data');
         } else {
           throw new Issue('error', 'invalid', null, null, 'No CodeSystem specified - provide url parameter or codeSystem resource', null, 400);
         }
@@ -1983,7 +1989,7 @@ class ValidateWorker extends TerminologyWorker {
 
       // Extract coded value
       let mode = { mode : null }
-      const coded = this.extractCodedValue(params, true, mode);
+      const coded = this.extractCodedValue(params, true, mode, txp);
       if (!coded) {
         return res.status(400).json(this.operationOutcome('error', 'invalid',
           'Unable to find code to validate (looked for coding | codeableConcept | code in parameters =codingX:Coding)'));
@@ -2043,7 +2049,7 @@ class ValidateWorker extends TerminologyWorker {
     // Extract coded value
 
     let mode = { mode : null };
-    const coded = this.extractCodedValue(params, false, mode);
+    const coded = this.extractCodedValue(params, false, mode, txp);
     if (!coded) {
       throw new Issue("error", "invalid", null, null, 'Unable to find code to validate (looked for coding | codeableConcept | code+system | code+inferSystem in parameters', null, 422);
     }
@@ -2082,7 +2088,7 @@ class ValidateWorker extends TerminologyWorker {
 
       // Extract coded value
       let mode = { mode : null };
-      const coded = this.extractCodedValue(params, false, mode);
+      const coded = this.extractCodedValue(params, false, mode, txp);
       if (!coded) {
         return res.status(400).json(this.operationOutcome('error', 'invalid',
           'Unable to find code to validate (looked for coding | codeableConcept | code in parameters =codingX:Coding)'));
@@ -2211,14 +2217,22 @@ class ValidateWorker extends TerminologyWorker {
    * Extract the coded value to validate as a CodeableConcept
    * @param {Object} params - Parameters resource
    * @param {string} mode - 'cs' for CodeSystem, 'vs' for ValueSet
+   * @param {Object} txp - the operation parameters. inferSystem is cleared on these unless the
+   *   code parameter is the one being validated - see below
    * @returns {Object|null} CodeableConcept or null
    */
-  extractCodedValue(params, isCs, mode) {
+  extractCodedValue(params, isCs, mode, txp) {
+    // inferSystem is defined for the code parameter only: it does not apply to a Coding, nor to
+    // the codings of a CodeableConcept. Those carry their own system (or fail to), and a server
+    // that inferred one here would be answering about a code the caller never named
+    const noInfer = () => { if (txp) { txp.inferSystem = false; } };
+
     // Priority 1: codeableConcept parameter
     const cc = this.getCodeableConceptParam(params, 'codeableConcept');
     if (cc) {
       mode.mode = 'codeableConcept';
       mode.issuePath = "CodeableConcept";
+      noInfer();
       return cc;
     }
 
@@ -2227,6 +2241,7 @@ class ValidateWorker extends TerminologyWorker {
     if (coding) {
       mode.mode = 'coding';
       mode.issuePath = "Coding";
+      noInfer();
       return {coding: [coding]};
     }
 
