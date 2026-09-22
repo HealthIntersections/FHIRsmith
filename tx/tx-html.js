@@ -610,13 +610,14 @@ class TxHtmlRenderer {
    * Render Parameters resource
    */
   async renderParameters(json) {
+    const codes = await this.parametersCodeContext(json);
     let html = '<table class="table grid">';
     html += '<thead><tr><th>Name</th><th>Value</th></tr></thead>';
     html += '<tbody>';
 
     if (json.parameter && Array.isArray(json.parameter)) {
       for (const param of json.parameter) {
-        html += await this.renderParameter(param);
+        html += await this.renderParameter(param, codes);
       }
     }
 
@@ -645,27 +646,91 @@ class TxHtmlRenderer {
   /**
    * Render a single parameter row
    */
-  async renderParameter(param) {
+  async renderParameter(param, codes) {
     let html = '<tr>';
     html += `<td>${escape(param.name || '')}</td>`;
     html += '<td>';
-    html += await this.renderParameterValue(param);
+    html += await this.renderParameterValue(param, codes, null);
     html += '</td>';
     html += '</tr>';
     return html;
   }
 
   /**
+   * What a Parameters resource says about the code system its codes belong to.
+   *
+   * $lookup answers about one concept, and names the code system it is in - the system
+   * and version parameters - so a property that came back as a code can be linked back
+   * into it. Building a checker here means the code system is built once for the page
+   * rather than once per property.
+   *
+   * @param {Object} json a Parameters resource
+   * @returns {Promise<{system: string, version: string|null, exists: function}|null>}
+   */
+  async parametersCodeContext(json) {
+    const value = (name) => (json.parameter || []).find((p) => p.name === name);
+    const system = value('system')?.valueUri || value('system')?.valueString;
+    if (!system || !this.renderer?.linkResolver?.codeChecker || !this.renderer.opContext) {
+      return null;
+    }
+    const version = value('version')?.valueString || null;
+    try {
+      const exists = await this.renderer.linkResolver.codeChecker(this.renderer.opContext, system, version);
+      return exists ? { system, version, exists } : null;
+    } catch (e) {
+      // A link is a courtesy; failing to work out whether to offer one is not a reason
+      // to fail the page.
+      debugLog(e);
+      return null;
+    }
+  }
+
+  /**
+   * A code in a $lookup response, linked to $lookup on it where that will work.
+   *
+   * Which values are links follows from the output alone. A Coding says which code system
+   * it is in. A code does not - but CodeSystem.property.type of 'code' is defined as a
+   * concept in the same code system, so a property's value part that came back as a code
+   * belongs to the system this response is about. Nothing else does: the code part of a
+   * property is the property's name, and a designation's language and status are codes
+   * from elsewhere entirely.
+   *
+   * Even then the code is checked before it is linked, because a provider can declare a
+   * property as a code and put something else in it.
+   */
+  async renderPropertyCode(code, codes) {
+    const plain = `<code>${escape(code)}</code>`;
+    if (!codes) {
+      return plain;
+    }
+    let display;
+    try {
+      display = await codes.exists(code);
+    } catch (e) {
+      debugLog(e);
+      return plain;
+    }
+    if (display === null || display === undefined) {
+      return plain;
+    }
+    const link = this.renderer.linkResolver.lookupLink(codes.system, codes.version, code);
+    if (!link) {
+      return plain;
+    }
+    return `<a href="${escape(link)}"${display ? ` title="${escape(display)}"` : ''}>${plain}</a>`;
+  }
+
+  /**
    * Render the value portion of a parameter
    */
-  async renderParameterValue(param) {
+  async renderParameterValue(param, codes, parentName) {
     // Check for parts (nested parameters)
     if (param.part && Array.isArray(param.part)) {
       let html = '<ul>';
       for (const part of param.part) {
         html += '<li>';
         html += `<strong>${escape(part.name || '')}:</strong> `;
-        html += await this.renderParameterValue(part);
+        html += await this.renderParameterValue(part, codes, param.name);
         html += '</li>';
       }
       html += '</ul>';
@@ -679,10 +744,10 @@ class TxHtmlRenderer {
 
     // Check for complex datatypes
     if (param.valueCoding) {
-      return this.renderCoding(param.valueCoding);
+      return await this.renderCoding(param.valueCoding, codes);
     }
     if (param.valueCodeableConcept) {
-      return this.renderCodeableConcept(param.valueCodeableConcept);
+      return await this.renderCodeableConcept(param.valueCodeableConcept, codes);
     }
     if (param.valueQuantity) {
       return this.renderQuantity(param.valueQuantity);
@@ -720,6 +785,9 @@ class TxHtmlRenderer {
       return escape(param.valueCanonical);
     }
     if (param.valueCode !== undefined) {
+      if (param.name === 'value' && ['property', 'subproperty'].includes(parentName)) {
+        return await this.renderPropertyCode(param.valueCode, codes);
+      }
       return `<code>${escape(param.valueCode)}</code>`;
     }
     if (param.valueId !== undefined) {
@@ -768,7 +836,7 @@ class TxHtmlRenderer {
   /**
    * Render Coding datatype
    */
-  async renderCoding(coding) {
+  async renderCoding(coding, codes) {
     if (!coding) return '';
 
     let parts = [];
@@ -776,7 +844,14 @@ class TxHtmlRenderer {
       parts.push(escape(coding.system));
     }
     if (coding.code) {
-      parts.push(`<code>${escape(coding.code)}</code>`);
+      // A Coding says which code system it is in, so it can be linked - but only when
+      // that is the code system this page already built a checker for. Building one per
+      // coding would mean building a code system per row.
+      const sameSystem = codes && coding.system === codes.system
+        && (!coding.version || !codes.version || coding.version === codes.version);
+      parts.push(sameSystem
+        ? await this.renderPropertyCode(coding.code, codes)
+        : `<code>${escape(coding.code)}</code>`);
     }
     if (coding.display) {
       parts.push(`"${escape(coding.display)}"`);
@@ -791,7 +866,7 @@ class TxHtmlRenderer {
   /**
    * Render CodeableConcept datatype
    */
-  async renderCodeableConcept(cc) {
+  async renderCodeableConcept(cc, codes) {
     if (!cc) return '';
 
     let html = '';
@@ -804,7 +879,7 @@ class TxHtmlRenderer {
       if (cc.text) html += '<br/>';
       html += '<ul style="margin: 0; padding-left: 20px;">';
       for (const coding of cc.coding) {
-        html += `<li>${this.renderCoding(coding)}</li>`;
+        html += `<li>${await this.renderCoding(coding, codes)}</li>`;
       }
       html += '</ul>';
     }
@@ -1060,9 +1135,10 @@ class TxHtmlRenderer {
     // The expansion, without the two identifiers that are noise here: the value set's own
     // url and the expansion identifier. Everything else - timestamp, total, the
     // parameters the server echoed back - is real information about this request.
+    // compose stays: renderVSExpansion never renders it, but it is where the version each
+    // code system was expanded at can be read from, for the $lookup links on the codes.
     const shown = structuredClone(json);
     delete shown.url;
-    delete shown.compose;
     delete shown.expansion.identifier;
 
     if (embedded) {

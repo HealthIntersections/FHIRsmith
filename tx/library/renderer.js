@@ -1445,6 +1445,7 @@ class Renderer {
 
     // Analyze columns needed
     const columnInfo = this.analyzeExpansionColumns(vs.expansion);
+    columnInfo.versions = this.expansionVersions(vs);
 
     // Build the expansion table
     const expTbl = x.table("codes");
@@ -1595,6 +1596,40 @@ class Renderer {
   /**
    * Add a row for an expansion contains entry
    */
+  /**
+   * The version each code system was expanded at, by system uri.
+   *
+   * An expansion.contains only carries a version when the expansion needed to distinguish
+   * one, so a link built from the row alone would silently point at whichever version the
+   * server happens to prefer - not what the reader is looking at. The expansion says which
+   * version it used in its used-codesystem parameters, and a value set that came with its
+   * definition says so in its compose; either will do.
+   *
+   * @param {Object} vs the expanded ValueSet
+   * @returns {Map<string, string>} system uri to version
+   */
+  expansionVersions(vs) {
+    const versions = new Map();
+    for (const inc of vs.compose?.include || []) {
+      if (inc.system && inc.version && !versions.has(inc.system)) {
+        versions.set(inc.system, inc.version);
+      }
+    }
+    for (const p of vs.expansion?.parameter || []) {
+      if (p.name !== 'used-codesystem') {
+        continue;
+      }
+      const vurl = getValuePrimitive(p);
+      if (vurl && vurl.includes('|')) {
+        const system = vurl.substring(0, vurl.indexOf('|'));
+        if (!versions.has(system)) {
+          versions.set(system, vurl.substring(vurl.indexOf('|') + 1));
+        }
+      }
+    }
+    return versions;
+  }
+
   async addExpansionRow(tbl, contains, level, columnInfo) {
     const tr = tbl.tr();
 
@@ -1617,12 +1652,14 @@ class Renderer {
       codeTd.tx('\u00A0'.repeat(level * 2)); // Non-breaking spaces for indentation
     }
 
-    // Try to link the code
+    // The code links to $lookup on it - what a reader wants from a row in an expansion is
+    // to find out what that code is - at the version the expansion used.
     if (contains.code) {
-      const link = this.linkResolver ?
-          await this.linkResolver.resolveCode(this.opContext, contains.system, contains.version, contains.code) : null;
+      const version = contains.version || columnInfo.versions?.get(contains.system) || null;
+      const link = this.linkResolver?.lookupLink
+        ? this.linkResolver.lookupLink(contains.system, version, contains.code) : null;
       if (link) {
-        codeTd.ah(link.link).tx(contains.code);
+        codeTd.ah(link, 'Look this code up').code().tx(contains.code);
       } else {
         codeTd.code().tx(contains.code);
       }

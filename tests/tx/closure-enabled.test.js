@@ -265,9 +265,16 @@ describe('$closure (enabled)', () => {
       expect(issueText(res)).toMatch(/current version, 1/);
     });
 
-    test('a parameter closure does not know', async () => {
-      const res = await post(app, params(name('err-table'), { name: 'activeOnly', valueBoolean: true }));
-      expect(res.status).toBe(400);
+    // Requests carry parameters that aren't for the operation in hand - the tx-ecosystem
+    // runner adds a 'uuid' to every request from its default profile - so they are
+    // ignored here, as they are everywhere else in the server
+    test('a parameter closure does not know is ignored', async () => {
+      const res = await post(app, params(name('err-table'),
+        { name: 'uuid', valueUuid: 'urn:uuid:8acdbfdc-e9d2-11ed-a05b-0242ac120003' },
+        { name: 'activeOnly', valueBoolean: true },
+        concept('code2a')));
+      expect(res.status).toBe(200);
+      expect(entries(res.body)).toEqual([n('code2a', 'code2')]);
     });
 
     test('GET is not allowed - closure changes state', async () => {
@@ -427,11 +434,15 @@ describe('$closure configuration', () => {
   test('control characters in client text do not reach the log', async () => {
     const { app, txModule } = await startApp({ enabled: true, database: ':memory:' });
     try {
-      const res = await post(app, params(name('ok'), { name: 'bad\nFAKE LOG LINE', valueString: 'x' }));
+      // a name with a newline in it: rejected, and the message doesn't carry the newline
+      const res = await post(app, params(name('bad\nname')));
       expect(res.status).toBe(400);
+      expect(issueText(res)).toMatch(/not valid/);
       expect(issueText(res)).not.toMatch(/\n/);
-      const nl = await post(app, params(name('bad\u0000name')));
-      expect(nl.status).toBe(400);
+      expect((await post(app, params(name('bad\u0000name')))).status).toBe(400);
+      // an ignored parameter whose name has a newline is only logged, sanitised
+      const ok = await post(app, params(name('ok'), { name: 'bad\nFAKE LOG LINE', valueString: 'x' }));
+      expect(ok.status).toBe(200);
     } finally {
       await txModule.shutdown();
     }

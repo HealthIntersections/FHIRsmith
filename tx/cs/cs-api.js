@@ -67,7 +67,12 @@ class CodeSystemProvider {
    */
 
   /**
-   * @returns {string} uri for the code system
+   * The display name of the code system - what $lookup reports as its name parameter, and
+   * what a person reads. Every provider should override this; the fallback is the
+   * versioned uri, which is not a name, and a provider that forgets ends up reporting
+   * "http://snomed.info/sct|http://snomed.info/sct/731000124108/version/20230301" where
+   * the others report "LOINC".
+   * @returns {string} display name for the code system
    */
   name() { return this.system() + (this.version() ? "|"+this.version() : "") }
 

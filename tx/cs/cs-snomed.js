@@ -1676,6 +1676,19 @@ class SnomedProvider extends BaseCSServices {
     return actualVersion && actualVersion.startsWith(checkVersion);
   }
 
+  /**
+   * The display name of the code system, as $lookup reports it.
+   *
+   * Without this, CodeSystemProvider's fallback applies, which returns the versioned uri -
+   * so a SNOMED lookup answered "http://snomed.info/sct|http://snomed.info/sct/731000124108
+   * /version/20230301" where every other code system answers something like "LOINC". The
+   * edition is named because for SNOMED that is the part worth knowing; the version
+   * parameter carries the uri.
+   */
+  name() {
+    return this.sct.getDescription();
+  }
+
   description() {
     return this.sct.getDescription();
   }
@@ -3027,6 +3040,9 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 function getEditionName(edition) {
   const editionMap = {
     '900000000000207008': 'International Edition',
+    // The terminology-ecosystem test distribution, published under xsct - see the
+    // tx-ecosystem IG, which requires a server claiming the snomed mode to load it.
+    '31000003106': 'Test Edition',
     '449081005': 'International Spanish Edition',
     '11000221109': 'Argentinian Edition',
     '32506021000036107': 'Australian Edition (with drug extension)',
@@ -3063,6 +3079,9 @@ function getEditionName(edition) {
 function getEditionCode(edition) {
   const editionMap = {
     '900000000000207008': 'Intl',
+    // The terminology-ecosystem test distribution, published under xsct - see the
+    // tx-ecosystem IG, which requires a server claiming the snomed mode to load it.
+    '31000003106': 'Test',
     '449081005': 'es',
     '11000221109': 'AR-es',
     '32506021000036107': 'AU+',

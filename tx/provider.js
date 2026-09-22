@@ -449,6 +449,91 @@ class Provider {
     return null;
   }
 
+  /**
+   * A checker for codes in one code system, so that a page can ask about many codes
+   * without paying to build the code system each time.
+   *
+   * This is for deciding whether to offer a link. A property value that came back from
+   * $lookup as a code is, by the definition of CodeSystem.property.type, a concept in the
+   * same code system - but a provider can declare a property that way and then put
+   * something else in it (ICD-11's classKind is chapter|block|window|category, none of
+   * which is an ICD-11 concept), and a link to a code that is not there is worse than no
+   * link. So the codes are checked, once each, against the code system itself.
+   *
+   * @param {OperationContext} opContext
+   * @param {string} system
+   * @param {string|null} version
+   * @returns {Promise<function(string): Promise<string|null>>|null} a function returning
+   *   the code's display (possibly empty) if it exists and null if it does not, or null
+   *   when this server does not have that code system at all
+   */
+  async codeChecker(opContext, system, version) {
+    validateParameter(opContext, "opContext", OperationContext);
+    if (!system) {
+      return null;
+    }
+    if (system.includes("|")) {
+      version = version || system.substring(system.indexOf("|") + 1);
+      system = system.substring(0, system.indexOf("|"));
+    }
+    const vurl = system + (version ? "|" + version : "");
+    const vurlMM = VersionUtilities.isSemVer(version) ? system + "|" + VersionUtilities.getMajMin(version) : null;
+
+    let factory = this.codeSystemFactories.get(vurl);
+    if (factory == null && vurlMM) {
+      factory = this.codeSystemFactories.get(vurlMM);
+    }
+    if (factory != null) {
+      const csp = await factory.build(opContext, []);
+      if (csp) {
+        opContext.registerProvider(csp);
+        return async (code) => {
+          const located = await csp.locate(code);
+          return located && located.context ? (await csp.display(located.context)) || '' : null;
+        };
+      }
+    }
+
+    let cs = this.codeSystems.get(vurl);
+    if (cs == null && vurlMM) {
+      cs = this.codeSystems.get(vurlMM);
+    }
+    if (cs != null) {
+      return async (code) => {
+        const c = cs.codeMap.get(code);
+        return c ? (c.display || '') : null;
+      };
+    }
+    return null;
+  }
+
+  /**
+   * A link to $lookup for a code on this server.
+   *
+   * resolveCode() answers "where does this code live" - a code system page, or the
+   * publisher's own browser - which is the right answer in prose. In an expansion the
+   * question is different: the reader has a list of codes in front of them and wants to
+   * know what one of them actually is, which is what $lookup answers, here, in the
+   * version the expansion used.
+   *
+   * @param {string} system
+   * @param {string|null} version - may also be carried on system as system|version
+   * @param {string} code
+   * @returns {string|null} the URL, or null if there is not enough to build one
+   */
+  lookupLink(system, version, code) {
+    if (!system || !code) {
+      return null;
+    }
+    if (system.includes("|")) {
+      version = version || system.substring(system.indexOf("|") + 1);
+      system = system.substring(0, system.indexOf("|"));
+    }
+    return this.path + "/CodeSystem/$lookup?system=" + encodeURIComponent(system)
+      + (version ? "&version=" + encodeURIComponent(version) : "")
+      + "&code=" + encodeURIComponent(code);
+  }
+
   async hasCsVersion(system, version) {
     for (let cs of this.codeSystems.values()) {
       if (cs.url == system && cs.version == version) {
