@@ -9,11 +9,14 @@ const Logger = require("../../library/logger");
 const {txTestVersion} = require("./test-cases-version");
 const folders = require('../../library/folder-setup');
 const {VersionUtilities} = require("../../library/version-utilities");
+const packageJson = require('../../package.json');
 
 let count = 0;
 let error = 0;
 // which pass we are in, so the output of the three passes can be told apart on disk
 let forcedCaching = false;
+// one entry per test run, for the TestReport written next to the summary
+let testResults = [];
 
 function txTestModeSet() {
    return new Set(['tx.fhir.org', 'omop', 'general', 'snomed', 'mimetypes', 'icd-11', 'closure']);
@@ -48,6 +51,8 @@ async function  finishTxTests() {
     console.log(txTestSummary());
     let textfilename = path.join(__dirname, '../../test-cases-summary.txt');
     fs.writeFileSync(textfilename, txTestSummary());
+    let reportfilename = path.join(__dirname, '../../test-cases-report.json');
+    fs.writeFileSync(reportfilename, JSON.stringify(txTestReport(), null, 2));
 
     await unloadValidator();
     await stopServer();
@@ -60,6 +65,47 @@ function txTestSummary() {
     } else {
       return `FHIRsmith failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
     }
+}
+
+/**
+ * The run as a TestReport, for the /testing module (and anything else that reads them).
+ *
+ * The validator's TxTester builds a TestReport of its own, but only its command line entry
+ * point writes it out: the /txTest HTTP endpoint these tests go through runs one test at a
+ * time and never returns it, and on that path the report's name, test script, result and
+ * score are never filled in. So this one is built here, from the results this runner
+ * already has, and shaped like the one TxTester writes, except that score is a percentage
+ * (0..100), as TestReport.score is defined, and each test carries its own result and period.
+ * testScript is left out for now: there is no TestScript for the tx ecosystem tests.
+ *
+ * The participant is FHIRsmith itself rather than the localhost endpoints the tests ran
+ * against, so that runs from different machines line up in a summary. Each test appears
+ * once per pass (r5, r4, and the cached passes), named suite/test (pass).
+ */
+function txTestReport() {
+    const modes = Array.from(txTestModeSet()).join('+');
+    return {
+        resourceType: 'TestReport',
+        name: 'TxEcosystemTests',
+        status: 'completed',
+        result: error == 0 ? 'pass' : 'fail',
+        score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
+        tester: 'HL7 Ecosystem Test Runner v' + validator.jarVersion() + ' (FHIRsmith test-runner, tests v' + txTestVersion() + ', modes ' + modes + ')',
+        issued: new Date().toISOString(),
+        participant: [{
+            type: 'server',
+            uri: 'https://github.com/HealthIntersections/FHIRsmith',
+            display: 'FHIRsmith v' + packageJson.version
+        }],
+        test: testResults.map(t => ({
+            name: t.name,
+            result: t.result,
+            period: { start: t.start, end: t.end },
+            action: [{
+                operation: t.message ? { result: t.result, message: t.message } : { result: t.result }
+            }]
+        }))
+    };
 }
 
 async function runTest(test, version = true) {
@@ -81,10 +127,18 @@ async function runTest(test, version = true) {
         label: (VersionUtilities.isR5Plus(version) ? 'r5' : 'r4') + (forcedCaching ? '-cached' : '')
     };
     count++;
+    const start = new Date().toISOString();
     const result = await validator.runTxTest(params);
     if (!result.result) { 
         error++;
     }
+    testResults.push({
+        name: `${test.suite}/${test.test} (${params.label})`,
+        result: result.result ? 'pass' : 'fail',
+        message: result.result ? null : result.message,
+        start,
+        end: new Date().toISOString()
+    });
     
     expect(result).toEqual({ result: true });
 }

@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const {Languages} = require("../library/languages");
 const {Issue} = require("./library/operation-outcome");
 const Logger = require("../library/logger");
+const { readCgroupMemoryLimit } = require('../library/cgroup-memory');
 
 /**
  * Check if running under a debugger
@@ -820,18 +821,12 @@ class ExpansionCache {
  * Returns the byte limit, or 0 if unavailable (disables the check).
  */
 function readMemoryLimit() {
-  try {
-    const raw = require('fs').readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-    if (raw === 'max') return 0; // no cgroup limit
-    return parseInt(raw);
-  } catch {
-    return 0; // not on Linux / no cgroup
-  }
+  return readCgroupMemoryLimit().limit;
 }
 
 const MEMORY_LIMIT = readMemoryLimit();
 const MEMORY_FRACTION = 0.98;
-const MEMORY_THRESHOLD = MEMORY_LIMIT > 0 ? MEMORY_LIMIT * MEMORY_FRACTION : 0; // 90% of cgroup limit
+const MEMORY_THRESHOLD = MEMORY_LIMIT > 0 ? MEMORY_LIMIT * MEMORY_FRACTION : 0; // MEMORY_FRACTION of cgroup limit
 const CHECK_FREQUENCY = 100;
 // How long an operation may compute without yielding the event loop (ms).
 // Node runs all JS on one thread: while a long operation executes, no other
