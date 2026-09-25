@@ -168,6 +168,34 @@
       // several instances can route cached requests back to the instance that holds the
       // cache. Leave unset for a single server. See nginx.md.
       // "instanceCode": "tx1",
+      // $closure: closure tables are kept on the server, across sessions and restarts, so
+      // the operation is off unless it is turned on here. When it is on, only one server
+      // instance may use the database - route every $closure request to it (see nginx.md).
+      "closure": {
+        "enabled": false,
+        // relative paths resolve under the data folder's databases directory
+        "database": "closure.db",
+        // require table names to be UUIDs, so names chosen by unrelated clients can't
+        // collide (public servers). Otherwise a name is anything up to 64 characters with
+        // no white space
+        "requireUuidNames": false,
+        // limits: these are the defaults, which apply when a limit is left out; 0 = no limit
+        "maxTables": 1000,
+        "maxConceptsPerTable": 10000,
+        "maxConceptsPerRequest": 1000,
+        "maxEntriesPerTable": 250000,
+        "maxEntriesPerRequest": 50000,
+        // bytes of configuration kept with a table - mostly the tx-resource code systems
+        "maxConfigSize": 5242880,
+        // calls that can queue for one table (counting the one running), and how long, in
+        // seconds, a call will wait for its turn; beyond either, the call gets a 429
+        "maxQueue": 10,
+        "lockTimeout": 60
+        // delete tables that nobody has touched (initialised, added to or resynced) for this
+        // many days. Checked at startup and then daily. Leave it out and nothing is ever
+        // deleted - the right default for a private server; public servers should set it:
+        // , "retentionDays": 90
+      },
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
       "endpoints": [
