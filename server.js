@@ -16,6 +16,7 @@ const folders = require('./library/folder-setup');  // <-- ADD: load early
 const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
+const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 
 // Load configuration BEFORE logger
 let config;
@@ -39,6 +40,12 @@ serverLog.info(`========================================`);
 serverLog.info(`FHIRsmith v${packageJson.version} starting (PID ${process.pid})`);
 serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os.arch()})`);
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
+{
+  const cg = readCgroupMemoryLimit();
+  serverLog.info(cg.limit > 0
+    ? `Memory limit: ${(cg.limit / 1024 / 1024 / 1024).toFixed(1)} GB (from ${cg.source})`
+    : 'Memory limit: none found in cgroup - RSS guard disabled');
+}
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -57,6 +64,7 @@ const PublisherModule = require('./publisher/publisher.js');
 const TokenModule = require('./token/token.js');
 const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
+const TestingModule = require('./testing/testing.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
@@ -219,6 +227,18 @@ async function initializeModules() {
       throw error;
     }
   }
+  if (config.modules?.testing?.enabled) {
+    try {
+      serverLog.info('Initializing module: testing...');
+      modules.testing = new TestingModule(stats.forModule('testing'));
+      await modules.testing.initialize(config.modules.testing);
+      app.use('/testing', modules.testing.router);
+    } catch (error) {
+      serverLog.error('Failed to initialize testing module:', error);
+      throw error;
+    }
+  }
+
   // Initialize TX module
   // Note: TX module registers its own endpoints directly on the app
   // because it supports multiple endpoints at different paths
@@ -346,6 +366,13 @@ async function buildRootPageContent() {
     content += '</li>';
   }
 
+  if (config.modules?.testing?.enabled) {
+    content += '<li class="list-group-item">';
+    content += '<a href="/testing" class="text-decoration-none">Test Reports</a>: ';
+    content += 'TestReports submitted by TxTester and other test tools';
+    content += '</li>';
+  }
+
   if (config.modules.folder && config.modules.folder.enabled) {
     content += '<li class="list-group-item">';
     content += '<strong>Cache Folder</strong>: ';
@@ -405,13 +432,7 @@ async function buildRootPageContent() {
 
   // Process RSS vs cgroup limit (or system total)
   const rssMB = (memUsage.rss / 1024 / 1024).toFixed(0);
-  let memLimit;
-  try {
-    const raw = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-    memLimit = raw === 'max' ? os.totalmem() : parseInt(raw);
-  } catch {
-    memLimit = os.totalmem();
-  }
+  const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
   const memLimitMB = (memLimit / 1024 / 1024).toFixed(0);
   const processPCT = (memUsage.rss * 100) / memLimit;
 
@@ -600,13 +621,7 @@ app.get('/dashboard', async (req, res) => {
     const v8PCT = (memUsage.heapUsed * 100) / heapStats.heap_size_limit;  // % of V8 heap limit used
 
     // Process RSS as % of cgroup memory limit (or system total as fallback)
-    let memLimit;
-    try {
-      const raw = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-      memLimit = raw === 'max' ? os.totalmem() : parseInt(raw);
-    } catch {
-      memLimit = os.totalmem();
-    }
+    const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
     const processPCT = (memUsage.rss * 100) / memLimit;
 
     const totalMemBytes = os.totalmem();

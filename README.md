@@ -336,7 +336,19 @@ or do it via a PR
     - Verify the [GitHub Release](https://github.com/HealthIntersections/fhirsmith/releases) was created
     - Confirm Docker images are available at [GHCR](https://github.com/HealthIntersections/fhirsmith/pkgs/container/fhirsmith)
 
-6. Update `package.json` to have the next release version -SNAPSHOT
+6. Submit the tx conformance report to [testing.fhir.org](https://testing.fhir.org/testing):
+```bash
+   node utilities/submit-test-report.js -token {token}
+```
+
+   The tx test run writes `test-cases-report.json` next to `test-cases-summary.txt` (both
+   are ignored by git); this uploads it as a TestReport. The report records the version in
+   `package.json` when the tests ran, so for it to name the release, run the tx tests
+   after step 2 - the script warns if the report is from a different version, or from a
+   snapshot. Use `-server {url}` to send it to a different /testing server; the token can
+   also come from `FHIRSMITH_TESTING_TOKEN`.
+
+7. Update `package.json` to have the next release version -SNAPSHOT
 
 **If a release fails:**
 - Delete the tag: `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`
