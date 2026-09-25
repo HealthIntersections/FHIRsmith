@@ -107,9 +107,16 @@ class SubsumesWorker extends TerminologyWorker {
       codingA = params.get('codingA');
       codingB = params.get('codingB');
 
+      // A Coding with no system has no defined meaning, so there is nothing to test. This is a
+      // problem with the request (400/invalid), not a code system the server can't find
+      for (const [name, coding] of [['codingA', codingA], ['codingB', codingB]]) {
+        if (!coding.system) {
+          throw this.parameterIssue(txp, 'SUBSUMES_CODING_NO_SYSTEM', [name], name);
+        }
+      }
       // Codings must have the same system
       if (codingA.system !== codingB.system) {
-        throw new Issue('error', 'not-found', null, null, 'codingA and codingB must have the same system', null, 400);
+        throw new Issue('error', 'invalid', null, null, 'codingA and codingB must have the same system', 'invalid-data', 400);
       }
       // Get the code system provider from the coding's system
       csProvider = await this.findCodeSystem(codingA.system, codingA.version || '', txp, ['complete'], null, false);
@@ -117,7 +124,7 @@ class SubsumesWorker extends TerminologyWorker {
     } else if (params.has('codeA') && params.has('codeB')) {
       // Using codeA, codeB - system is required
       if (!params.has('system')) {
-        throw new Issue('error', 'not-found', null, null, 'system parameter is required when using codeA and codeB', null, 404);
+        throw this.parameterIssue(txp, 'SUBSUMES_SYSTEM_REQUIRED', [], null);
       }
 
       csProvider = await this.findCodeSystem(params.get('system'), params.get('version') || '', txp, ['complete'], null, false);
@@ -316,6 +323,15 @@ class SubsumesWorker extends TerminologyWorker {
         }
       ]
     };
+  }
+
+  /**
+   * Build the Issue for a request that is malformed - a missing or unusable parameter. These
+   * are 400 / invalid: the request can't be processed as given, whatever the server knows
+   */
+  parameterIssue(txp, msgId, args, path) {
+    const msg = this.i18n.translate(msgId, txp.HTTPLanguages, args);
+    return new Issue('error', 'invalid', path, msgId, msg, 'invalid-data', 400);
   }
 
   /**

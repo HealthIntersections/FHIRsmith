@@ -47,6 +47,17 @@ class SnomedExpressionBase {
 }
 
 /**
+ * Whether an attribute value has to be written in brackets: the compositional grammar
+ * only allows a bare conceptReference as an attribute value, so anything with more than
+ * one focus concept, or with refinements of its own, is a bracketed subExpression.
+ */
+function needsBrackets(value) {
+  return !!value && ((value.concepts && value.concepts.length > 1) ||
+    (value.refinements && value.refinements.length > 0) ||
+    (value.refinementGroups && value.refinementGroups.length > 0));
+}
+
+/**
  * Represents a SNOMED concept with optional code, description, literal, or decimal value
  */
 class SnomedConcept extends SnomedExpressionBase {
@@ -163,7 +174,9 @@ class SnomedRefinement extends SnomedExpressionBase {
    * Get a string description of this refinement
    */
   describe() {
-    return this.name.describe() + '=' + this.value.describe();
+    // A refined or conjoined value has to be bracketed - see attributeValue() in the parser
+    const v = this.value.describe();
+    return this.name.describe() + '=' + (needsBrackets(this.value) ? '(' + v + ')' : v);
   }
 
   /**
@@ -649,16 +662,33 @@ class SnomedExpressionParser {
 
   /**
    * Parse an attribute value
+   *
+   * The compositional grammar ABNF is
+   *   attributeValue  = expressionValue / QM stringValue QM / "#" numericValue / booleanValue
+   *   expressionValue = ws ( conceptReference / "(" ws subExpression ws ")" ) ws
+   * so a value that is anything more than a single concept - a refined concept, or a
+   * conjunction - must be in brackets. This parser used to take an unbracketed
+   * sub-expression too (367430006:{405813007=85562004:272741003=24028007}), but that is not
+   * just non-conformant, it is ambiguous: in A:{B=C:D=E,F=G} nothing says whether F=G
+   * refines C or A, and the old parser silently picked C. Other parsers reject it, so we
+   * do too, and the renderer brackets nested values so that what we emit re-parses anywhere.
    */
   attributeValue() {
     this.ws();
 
     if (this.gchar('(')) {
       const result = this.expression();
+      this.ws();
       this.fixed(')');
       return result;
     } else {
-      return this.expression();
+      const result = new SnomedExpression();
+      result.start = this.cursor;
+      result.concepts.push(this.concept());
+      this.rule(this.peek() !== ':' && this.peek() !== '+',
+        'A refined or conjoined attribute value must be enclosed in brackets, e.g. 405813007=(85562004:272741003=24028007) (in "' + this.source + '")');
+      result.stop = this.cursor;
+      return result;
     }
   }
 
@@ -2579,7 +2609,11 @@ class SnomedExpressionServices {
   renderRefinement(parts, expr, option) {
     this.renderConcept(parts, expr.name, option);
     parts.push('=');
+    // a refined or conjoined value must be bracketed, or no conformant parser will read it back
+    const bracket = needsBrackets(expr.value);
+    if (bracket) parts.push('(');
     this.renderExpressionParts(parts, expr.value, option);
+    if (bracket) parts.push(')');
   }
 
   getDisplayName(conceptIdOrReference) {

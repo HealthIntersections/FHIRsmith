@@ -115,6 +115,42 @@ describe('SCG refinement syntax', () => {
     });
   });
 
+  describe('a refined or conjoined attribute value must be bracketed', () => {
+    // attributeValue = expressionValue / ..., expressionValue = conceptReference / "(" subExpression ")"
+    test.each([
+      ['a refined value in a group', '367430006:{405813007=85562004:272741003=24028007}'],
+      ['a refined value, ungrouped', '367430006:405813007=85562004:272741003=24028007'],
+      ['a conjoined value', '367430006:405813007=85562004+7946007']
+    ])('%s without brackets is rejected', (_name, expression) => {
+      expect(() => parse(expression)).toThrow(/must be enclosed in brackets/);
+    });
+
+    test('the bracketed form parses, with the refinement on the value, not the focus', () => {
+      const e = parse('367430006:{405813007=(85562004:272741003=24028007)}');
+      expect(e.refinements.length).toBe(0);
+      expect(e.refinementGroups.length).toBe(1);
+      expect(e.refinementGroups[0].refinements.length).toBe(1);
+      const value = e.refinementGroups[0].refinements[0].value;
+      expect(value.concepts[0].code).toBe('85562004');
+      expect(value.refinements.length).toBe(1);
+    });
+
+    test('brackets may carry whitespace and terms', () => {
+      expect(() => parse('367430006 |Repair of tendon of hand| : { 405813007 |Procedure site - Direct| = ' +
+        '( 85562004 |Hand structure| : 272741003 |Laterality| = 24028007 |Right| ) }')).not.toThrow();
+    });
+
+    test('a single bracketed concept is still fine', () => {
+      expect(shape('367430006:{405813007=(85562004)}')).toEqual({ ungrouped: 0, groups: [1] });
+    });
+
+    test('describe() brackets a nested value', () => {
+      const e = parse('367430006:{405813007=(85562004:272741003=24028007)}');
+      // SnomedExpression.describe() is a diagnostic rendering, not SCG, so only the brackets are pinned
+      expect(e.refinementGroups[0].refinements[0].describe()).toMatch(/^405813007=\(85562004.*\)$/);
+    });
+  });
+
   describe('leniency the parser has always had, pinned so it is not lost by accident', () => {
     test('ungrouped attributes after a group, which the ABNF does not permit', () => {
       expect(shape('249943000:{363698007=72098002},260868000=6934004'))
@@ -171,6 +207,14 @@ describeIfCache('rendered expressions re-parse', () => {
     const without = '64572001:272741003=24028007{116676008=57977008}';
     expect(render(without)).toBe(render(withComma));
     expect(render(without)).toBe(withComma);
+  });
+
+  test('a nested value is rendered in brackets, so it re-parses', () => {
+    const expression = '40468003:{363698007=(10200004:272741003=24028007)}';
+    const rendered = services.renderExpression(
+      services.parseExpression(expression), SnomedServicesRenderOption.Minimal);
+    expect(rendered).toBe(expression);
+    expect(() => services.parseExpression(rendered)).not.toThrow();
   });
 
   test('a group-only expression gains no leading comma', () => {
