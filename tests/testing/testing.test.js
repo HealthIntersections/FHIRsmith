@@ -506,6 +506,10 @@ describe('HTML', () => {
     // the system under test is a column; the test engine isn't
     expect(res.text).toContain('http://sut.example.org');
     expect(res.text).not.toContain('http://engine.example.org');
+    // reports by tester: the XSS tester sent 1 (escaped), TxTester 1.0 the other 4 (2 pass, 2 fail)
+    expect(res.text).toContain('Reports by Tester');
+    expect(res.text).toMatch(/tester%3Aexact=TxTester\+1\.0[^"]*">TxTester 1\.0<\/a><\/td><td>4<\/td><td>2<\/td><td>2<\/td><td>0<\/td>/);
+    expect(res.text).toContain('&quot;&gt;&lt;img src=x onerror=alert(2)&gt;</a></td><td>1</td>');
     const byTester = await request(app).get('/testing/summary?by=tester');
     expect(byTester.status).toBe(200);
     noScript(byTester.text);

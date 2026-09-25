@@ -271,8 +271,10 @@ function renderList(query, results, search, options) {
 /**
  * @param {Array} cells - from store.summary()
  * @param {'participant'|'tester'} by
+ * @param {string} baseUrl
+ * @param {Array} testers - from store.testerCounts()
  */
-function renderSummary(cells, by, baseUrl) {
+function renderSummary(cells, by, baseUrl, testers = []) {
   const base = escape(baseUrl);
   let h = STYLE;
   const other = by === 'tester' ? 'participant' : 'tester';
@@ -282,6 +284,26 @@ function renderSummary(cells, by, baseUrl) {
   if (cells.length === 0) {
     return h + '<p>No reports have been received.</p>';
   }
+  return h + summaryGrid(cells, by, base) + testerTable(testers, base);
+}
+
+/** How many reports have come from each tester. */
+function testerTable(testers, base) {
+  if (testers.length === 0) {
+    return '';
+  }
+  let h = '<h3>Reports by Tester</h3><table class="table table-sm table-striped tr-table" style="width: auto">' +
+    `<tr><th>Tester</th><th>Reports</th><th>${badge('pass')}</th><th>${badge('fail')}</th><th>Other</th><th>Latest</th></tr>`;
+  for (const t of testers) {
+    h += `<tr><td><a href="${base}${escape(qs({ 'tester:exact': t.tester, _sort: '-_lastUpdated' }))}">${escape(t.tester)}</a></td>` +
+      `<td>${t.reports}</td><td>${t.pass}</td><td>${t.fail}</td><td>${t.other}</td>` +
+      `<td class="tr-date" title="${escape(t.latest)}">${escape(dateOnly(t.latest))}</td></tr>`;
+  }
+  return h + '</table>';
+}
+
+function summaryGrid(cells, by, base) {
+  let h = '';
   const cols = [...new Set(cells.map(c => c.col))].sort();
   const scripts = [...new Set(cells.map(c => c.test_script))];
   const at = new Map(cells.map(c => [c.test_script + '\u0000' + c.col, c]));

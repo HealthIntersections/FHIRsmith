@@ -478,7 +478,7 @@ class TestingModule {
   async htmlSummary(req, res) {
     const start = Date.now();
     const by = req.query.by === 'tester' ? 'tester' : 'participant';
-    this.sendHtml(res, 'Test Report Summary', renderSummary(this.store.summary(by), by, req.baseUrl), start);
+    this.sendHtml(res, 'Test Report Summary', renderSummary(this.store.summary(by), by, req.baseUrl, this.store.testerCounts()), start);
   }
 }
 

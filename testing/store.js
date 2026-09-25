@@ -220,6 +220,23 @@ class TestReportStore {
   }
 
   /**
+   * How many reports each tester has sent, with how they came out, and when the latest
+   * was received. Most reports first.
+   *
+   * @returns {Array<{tester: string, reports: number, pass: number, fail: number, other: number,
+   *   latest: string}>}
+   */
+  testerCounts() {
+    return this.db.prepare(`
+      SELECT tester, COUNT(*) AS reports,
+        SUM(CASE WHEN result = 'pass' THEN 1 ELSE 0 END) AS pass,
+        SUM(CASE WHEN result = 'fail' THEN 1 ELSE 0 END) AS fail,
+        SUM(CASE WHEN result NOT IN ('pass', 'fail') THEN 1 ELSE 0 END) AS other,
+        MAX(received) AS latest
+      FROM reports GROUP BY tester ORDER BY reports DESC, tester_lc`).all();
+  }
+
+  /**
    * The latest report for each test script against each participant (or tester): the
    * one with the latest issued date, then the latest received. Test engines are not
    * participants in this sense - the columns are the things that were tested.
