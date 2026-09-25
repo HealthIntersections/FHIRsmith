@@ -50,7 +50,7 @@ describe('Subsumes Worker', () => {
       expect(response.body.resourceType).toBe('OperationOutcome');
       expect(response.body.issue[0].code).toBe('invalid');
       expect(response.body.issue[0].details.coding[0].code).toBe('invalid-data');
-      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMES_SYSTEM_REQUIRED');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_NO_SYSTEM');
       expect(response.body.issue[0].details.text).toContain('system');
     });
 
@@ -71,7 +71,7 @@ describe('Subsumes Worker', () => {
       expect(response.body.resourceType).toBe('OperationOutcome');
       expect(response.body.issue[0].code).toBe('invalid');
       expect(response.body.issue[0].details.coding[0].code).toBe('invalid-data');
-      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMES_CODING_NO_SYSTEM');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_NO_SYSTEM');
       expect(response.body.issue[0].expression).toEqual(['codingA']);
     });
 
@@ -260,7 +260,8 @@ describe('Subsumes Worker', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.resourceType).toBe('OperationOutcome');
-      expect(response.body.issue[0].details.text).toContain('same system');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_SYSTEM_MISMATCH');
+      expect(response.body.issue[0].details.text).toContain('same code system');
     });
   });
 

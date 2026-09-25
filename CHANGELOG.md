@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - $validate-code: inferSystem is only applied to the code parameter, per its definition - it is ignored for coding and codeableConcept
 - $validate-code: a Coding with neither a system nor a code is reported as one problem, not two (Coding_has_no_system_or_code__cannot_validate)
-- $subsumes: a missing system (codeA/codeB with no system parameter, or a codingA/codingB with no system) is now 400 with issue code invalid and tx-issue-type invalid-data (was 404/422 not-found), with message ids SUBSUMES_SYSTEM_REQUIRED / SUBSUMES_CODING_NO_SYSTEM
+- $subsumes: a missing system (codeA/codeB with no system parameter, or a codingA/codingB with no system) is now 400 with issue code invalid and tx-issue-type invalid-data (was 404/422 not-found), with message id SUBSUMPTION_NO_SYSTEM (shared with the Java terminology service); mismatched codingA/codingB systems use SUBSUMPTION_SYSTEM_MISMATCH
 - SNOMED expressions: a refined or conjoined attribute value must be bracketed, per the compositional grammar (405813007=(85562004:272741003=24028007)); the unbracketed form is now rejected, and the renderer emits the brackets (it used to produce expressions other parsers reject)
 
 ### Fixed

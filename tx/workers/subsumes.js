@@ -111,12 +111,12 @@ class SubsumesWorker extends TerminologyWorker {
       // problem with the request (400/invalid), not a code system the server can't find
       for (const [name, coding] of [['codingA', codingA], ['codingB', codingB]]) {
         if (!coding.system) {
-          throw this.parameterIssue(txp, 'SUBSUMES_CODING_NO_SYSTEM', [name], name);
+          throw this.parameterIssue(txp, 'SUBSUMPTION_NO_SYSTEM', [name], name);
         }
       }
       // Codings must have the same system
       if (codingA.system !== codingB.system) {
-        throw new Issue('error', 'invalid', null, null, 'codingA and codingB must have the same system', 'invalid-data', 400);
+        throw this.parameterIssue(txp, 'SUBSUMPTION_SYSTEM_MISMATCH', [codingA.system, codingB.system], 'codingB');
       }
       // Get the code system provider from the coding's system
       csProvider = await this.findCodeSystem(codingA.system, codingA.version || '', txp, ['complete'], null, false);
@@ -124,7 +124,7 @@ class SubsumesWorker extends TerminologyWorker {
     } else if (params.has('codeA') && params.has('codeB')) {
       // Using codeA, codeB - system is required
       if (!params.has('system')) {
-        throw this.parameterIssue(txp, 'SUBSUMES_SYSTEM_REQUIRED', [], null);
+        throw this.parameterIssue(txp, 'SUBSUMPTION_NO_SYSTEM', ['codeA'], 'codeA');
       }
 
       csProvider = await this.findCodeSystem(params.get('system'), params.get('version') || '', txp, ['complete'], null, false);
