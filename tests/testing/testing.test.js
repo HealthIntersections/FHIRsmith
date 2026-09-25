@@ -414,6 +414,9 @@ describe('HTML', () => {
     await post(app, report({ issued: '2026-01-01T00:00:00Z', result: 'fail' }));
     await post(app, report({ issued: '2026-02-01T00:00:00Z', result: 'pass', participant: [{ type: 'server', uri: 'http://other.org/fhir' }] }));
     latest = (await post(app, report({ issued: '2026-03-01T00:00:00Z', result: 'fail', score: 55 }))).body.id;
+    await post(app, report({ issued: '2026-04-01T00:00:00Z', testScript: 'http://example.org/engine-script',
+      participant: [{ type: 'server', uri: 'http://sut.example.org', version: '9.9.9' },
+        { type: 'test-engine', uri: 'http://engine.example.org', version: '6.10.4' }] }));
   });
   afterAll(() => mod.shutdown());
 
@@ -430,6 +433,12 @@ describe('HTML', () => {
     expect(res.text).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(res.text).toContain(`href="/testing/TestReport/${id}"`);
     noScript(res.text);
+  });
+
+  test('participant versions are shown', async () => {
+    const list = await request(app).get('/testing?participant=http://sut.example.org');
+    expect(list.text).toContain('http://sut.example.org</a> <small>9.9.9</small>');
+    expect(list.text).toContain('http://engine.example.org</a> <small>6.10.4</small>');
   });
 
   test('the list shows dates without times', async () => {
@@ -494,6 +503,9 @@ describe('HTML', () => {
     // the report with a different test script gets its own row
     expect(res.text).toContain(`href="/testing/TestReport/${id}"`);
     expect(res.text).toContain('http://other.org/fhir');
+    // the system under test is a column; the test engine isn't
+    expect(res.text).toContain('http://sut.example.org');
+    expect(res.text).not.toContain('http://engine.example.org');
     const byTester = await request(app).get('/testing/summary?by=tester');
     expect(byTester.status).toBe(200);
     noScript(byTester.text);

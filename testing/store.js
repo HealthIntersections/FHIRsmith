@@ -44,6 +44,7 @@ const SCHEMA = `
     seq          INTEGER NOT NULL,
     type         TEXT,
     uri          TEXT NOT NULL,
+    version      TEXT,
     display      TEXT
   );
 
@@ -92,6 +93,10 @@ class TestReportStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
+    // participants.version was added after the first databases were made
+    if (!this.db.prepare('PRAGMA table_info(participants)').all().some(c => c.name === 'version')) {
+      this.db.exec('ALTER TABLE participants ADD COLUMN version TEXT');
+    }
     this.stmts = {
       insert: this.db.prepare(`
         INSERT INTO reports (id, received, received_ms, ip, name, name_lc, status, result, score,
@@ -99,7 +104,7 @@ class TestReportStore {
         VALUES (@id, @received, @received_ms, @ip, @name, @name_lc, @status, @result, @score,
           @tester, @tester_lc, @test_script, @issued, @issued_lo, @issued_hi, @size, @json)`),
       insertParticipant: this.db.prepare(
-        'INSERT INTO participants (report_id, seq, type, uri, display) VALUES (?, ?, ?, ?, ?)'),
+        'INSERT INTO participants (report_id, seq, type, uri, version, display) VALUES (?, ?, ?, ?, ?, ?)'),
       read: this.db.prepare('SELECT json FROM reports WHERE id = ?'),
       delete: this.db.prepare('DELETE FROM reports WHERE id = ?'),
       purge: this.db.prepare('DELETE FROM reports WHERE received_ms < ?'),
@@ -145,7 +150,7 @@ class TestReportStore {
     this.db.transaction(() => {
       this.stmts.insert.run(row);
       report.participant.forEach((p, i) => {
-        this.stmts.insertParticipant.run(report.id, i, str(p.type), p.uri, str(p.display));
+        this.stmts.insertParticipant.run(report.id, i, str(p.type), p.uri, str(p.version), str(p.display));
       });
     })();
   }
@@ -197,7 +202,7 @@ class TestReportStore {
       }
       const ph = rows.map(() => '?').join(',');
       const parts = this.db.prepare(
-        `SELECT report_id, type, uri, display FROM participants WHERE report_id IN (${ph}) ORDER BY report_id, seq`
+        `SELECT report_id, type, uri, version, display FROM participants WHERE report_id IN (${ph}) ORDER BY report_id, seq`
       ).all(...rows.map(r => r.id));
       for (const p of parts) {
         byId.get(p.report_id).participants.push(p);
@@ -216,7 +221,8 @@ class TestReportStore {
 
   /**
    * The latest report for each test script against each participant (or tester): the
-   * one with the latest issued date, then the latest received.
+   * one with the latest issued date, then the latest received. Test engines are not
+   * participants in this sense - the columns are the things that were tested.
    *
    * @param {'participant'|'tester'} by
    * @returns {Array<{test_script: string|null, col: string, id: string, name: string,
@@ -226,7 +232,8 @@ class TestReportStore {
     const source = by === 'tester'
       ? 'SELECT r.*, r.tester AS col FROM reports r'
       : `SELECT r.*, p.uri AS col FROM reports r
-           JOIN (SELECT DISTINCT report_id, uri FROM participants) p ON p.report_id = r.id`;
+           JOIN (SELECT DISTINCT report_id, uri FROM participants
+                 WHERE type IS NULL OR type <> 'test-engine') p ON p.report_id = r.id`;
     return this.db.prepare(`
       SELECT test_script, col, id, name, result, score, issued, runs FROM (
         SELECT s.*,

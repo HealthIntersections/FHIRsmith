@@ -242,7 +242,7 @@ function renderList(query, results, search, options) {
     h += `<td>${score(r.score)}</td>`;
     h += `<td>${escape(r.tester)}</td>`;
     h += `<td>${testScriptLabel(r.test_script)}</td>`;
-    h += `<td>${r.participants.map(p => uriLink(p.uri)).join('<br/>')}</td>`;
+    h += `<td>${r.participants.map(p => uriLink(p.uri) + (p.version ? ` <small>${escape(p.version)}</small>` : '')).join('<br/>')}</td>`;
     h += `<td class="tr-date" title="${escape(r.issued)}">${escape(dateOnly(r.issued))}</td>`;
     h += `<td class="tr-date" title="${escape(r.received)}">${escape(dateOnly(r.received))}</td>`;
     h += '</tr>';
@@ -277,7 +277,7 @@ function renderSummary(cells, by, baseUrl) {
   let h = STYLE;
   const other = by === 'tester' ? 'participant' : 'tester';
   h += `<p><a href="${base}">All reports</a> &nbsp;|&nbsp; Columns are ${by === 'tester' ? 'testers' : 'participants'} ` +
-    `(<a href="${base}/summary?by=${other}">show by ${other}</a>). Each cell is the latest report (by issued date) ` +
+    `(<a href="${base}/summary?by=${other}">show by ${other}</a>${by === 'tester' ? '' : '; test engines are left out'}). Each cell is the latest report (by issued date) ` +
     'for that test script; the run count links to all of them.</p>';
   if (cells.length === 0) {
     return h + '<p>No reports have been received.</p>';
@@ -415,10 +415,10 @@ function renderReport(report, baseUrl) {
   h += '</table>';
 
   // participants
-  h += '<h3>Participants</h3><table class="table table-sm tr-table" style="width: auto"><tr><th>Type</th><th>URI</th><th>Display</th></tr>';
+  h += '<h3>Participants</h3><table class="table table-sm tr-table" style="width: auto"><tr><th>Type</th><th>URI</th><th>Version</th><th>Display</th></tr>';
   for (const p of asArray(report.participant)) {
     if (isObject(p)) {
-      h += `<tr><td>${escape(text(p.type))}</td><td>${uriLink(p.uri)}</td><td>${escape(text(p.display))}</td></tr>`;
+      h += `<tr><td>${escape(text(p.type))}</td><td>${uriLink(p.uri)}</td><td>${escape(text(p.version))}</td><td>${escape(text(p.display))}</td></tr>`;
     }
   }
   h += '</table>';

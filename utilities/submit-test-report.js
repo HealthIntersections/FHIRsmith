@@ -65,8 +65,8 @@ function endpoint(server) {
 /** Warn if the report doesn't describe the version being released. */
 function checkVersion(report) {
   const pkg = require('../package.json');
-  const display = (report.participant || []).map(p => p && p.display).find(d => typeof d === 'string' && d.startsWith('FHIRsmith v'));
-  const reported = display ? display.substring('FHIRsmith v'.length) : null;
+  const fhirsmith = (report.participant || []).find(p => p && p.uri === 'https://github.com/HealthIntersections/FHIRsmith');
+  const reported = fhirsmith && typeof fhirsmith.version === 'string' ? fhirsmith.version : null;
   if (reported && reported !== pkg.version) {
     console.warn(`Warning: the report is from FHIRsmith v${reported}, but package.json is v${pkg.version}`);
   } else if (reported && /snapshot/i.test(reported)) {

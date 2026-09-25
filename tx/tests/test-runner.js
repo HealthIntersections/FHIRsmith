@@ -74,13 +74,13 @@ function txTestSummary() {
  * point writes it out: the /txTest HTTP endpoint these tests go through runs one test at a
  * time and never returns it, and on that path the report's name, test script, result and
  * score are never filled in. So this one is built here, from the results this runner
- * already has, and shaped like the one TxTester writes, except that score is a percentage
- * (0..100), as TestReport.score is defined, and each test carries its own result and period.
- * testScript is left out for now: there is no TestScript for the tx ecosystem tests.
+ * already has. Each test carries its own result and period.
  *
- * The participant is FHIRsmith itself rather than the localhost endpoints the tests ran
- * against, so that runs from different machines line up in a summary. Each test appears
- * once per pass (r5, r4, and the cached passes), named suite/test (pass).
+ * testScript is the test-cases.json in the tx ecosystem IG, at the version of the tests. The
+ * participants are the software tested - FHIRsmith itself rather than the localhost endpoints
+ * the tests ran against, so that runs from different machines line up in a summary - and the
+ * test engine, each with its version. Each test appears once per pass (r5, r4, and the cached
+ * passes), named suite/test (pass).
  */
 function txTestReport() {
     const modes = Array.from(txTestModeSet()).join('+');
@@ -88,14 +88,21 @@ function txTestReport() {
         resourceType: 'TestReport',
         name: 'TxEcosystemTests',
         status: 'completed',
+        testScript: 'https://github.com/HL7/fhir-tx-ecosystem-ig/blob/main/tests/test-cases.json|' + txTestVersion(),
         result: error == 0 ? 'pass' : 'fail',
         score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
-        tester: 'HL7 Ecosystem Test Runner v' + validator.jarVersion() + ' (FHIRsmith test-runner, tests v' + txTestVersion() + ', modes ' + modes + ')',
+        tester: 'FHIRsmith build',
         issued: new Date().toISOString(),
         participant: [{
             type: 'server',
             uri: 'https://github.com/HealthIntersections/FHIRsmith',
-            display: 'FHIRsmith v' + packageJson.version
+            version: packageJson.version,
+            display: 'FHIRsmith'
+        }, {
+            type: 'test-engine',
+            uri: 'https://github.com/hapifhir/org.hl7.fhir.core',
+            version: validator.jarVersion(),
+            display: 'HL7 Ecosystem Test Runner (modes ' + modes + ')'
         }],
         test: testResults.map(t => ({
             name: t.name,
