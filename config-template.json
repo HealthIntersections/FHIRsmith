@@ -231,6 +231,24 @@
       "enabled": true,
       "database": "/var/fhir/data/extension-tracker.db",
       "url": "/ext-tracker"
+    },
+    // TestReports from TxTester and other tools, at /testing. See testing/readme.md
+    "testing": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "testing.db",
+      // if set, every POST must carry this token in tokenHeader (a "Bearer " prefix is
+      // allowed). Leave it out and anyone can submit a report
+      // "token": "<!-- secret -->",
+      "tokenHeader": "Authorization",
+      // DELETE of a report needs this token, in the same header. No adminToken, no deletes
+      // "adminToken": "<!-- secret -->",
+      // bytes
+      "maxSize": 512000,
+      // reports per IP address per window; max 0 turns the limit off
+      "rateLimit": { "windowMinutes": 1, "max": 60 }
+      // delete reports received more than this many days ago. Leave it out to keep everything
+      // , "retentionDays": 365
     }
   }
 }
