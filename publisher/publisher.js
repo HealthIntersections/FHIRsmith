@@ -2,6 +2,8 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const validation = require('./validation');
+const gitRemote = require('./git-remote');
+const githubRelease = require('./github-release');
 const Database = require('sqlite3').Database;
 const bcrypt = require('bcrypt');
 const session = require('express-session');
@@ -150,6 +152,7 @@ class PublisherModule {
                                           build_output_path TEXT,
                                           failure_reason TEXT,
                                           announcement TEXT,
+                                          release_url TEXT,
                                           approved_by INTEGER,
                                           queued_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                                           building_at DATETIME,
@@ -230,6 +233,17 @@ class PublisherModule {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added publisher_version column to tasks table');
+            resolve();
+          }
+        });
+      });
+    }
+    if (!columnNames.includes('release_url')) {
+      await new Promise((resolve, reject) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN release_url TEXT', (err) => {
+          if (err) reject(err);
+          else {
+            this.logger.info('Migration: added release_url column to tasks table');
             resolve();
           }
         });
@@ -722,7 +736,7 @@ class PublisherModule {
 
   async cloneRepository(task, draftDir) {
     const { spawn } = require('child_process');
-    const gitUrl = 'https://github.com/' + task.github_org + '/' + task.github_repo + '.git';
+    const gitUrl = gitRemote.githubUrl(task.github_org, task.github_repo);
 
     await this.logTaskMessage(task.id, 'info', 'Cloning repository: ' + gitUrl + ' (branch: ' + task.git_branch + ')');
 
@@ -734,7 +748,10 @@ class PublisherModule {
         gitUrl,
         draftDir
       ], {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // no terminal prompt: a missing repo looks like a private one to GitHub, and
+        // git would otherwise ask for a username (see git-remote.js)
+        env: gitRemote.gitEnv()
       });
 
       let stderr = '';
@@ -748,7 +765,10 @@ class PublisherModule {
           await this.logTaskMessage(task.id, 'info', 'Repository cloned successfully');
           resolve();
         } else {
-          const error = 'Git clone failed with code ' + code + ': ' + stderr;
+          const explained = gitRemote.explainCloneFailure(stderr, task.github_org, task.github_repo, task.git_branch);
+          const error = explained
+            ? 'Git clone failed: ' + explained
+            : 'Git clone failed with code ' + code + ': ' + stderr;
           await this.logTaskMessage(task.id, 'error', error);
           reject(new Error(error));
         }
@@ -868,6 +888,28 @@ class PublisherModule {
       errors.push('Version mismatch: task specifies "' + task.version + '" but build produced "' + qaData['ig-ver'] + '"');
     }
 
+    // publication-request.json is what the publication run actually follows - it decides the
+    // version folder the IG is published into. If it wasn't updated along with the IG, the run
+    // publishes the new content over the previous release's folder, so catch it here, before the
+    // task can be approved.
+    const prPath = path.join(draftDir, 'publication-request.json');
+    if (fs.existsSync(prPath)) {
+      let pr = null;
+      try {
+        pr = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      } catch (e) {
+        errors.push('publication-request.json could not be parsed: ' + e.message);
+      }
+      if (pr) {
+        if (pr['package-id'] !== task.npm_package_id) {
+          errors.push('publication-request.json package-id is "' + pr['package-id'] + '" but the task specifies "' + task.npm_package_id + '"');
+        }
+        if (pr.version !== task.version) {
+          errors.push('publication-request.json version is "' + pr.version + '" but the task specifies "' + task.version + '" - update publication-request.json in the IG');
+        }
+      }
+    }
+
     if (errors.length > 0) {
       for (const err of errors) {
         await this.logTaskMessage(task.id, 'error', err);
@@ -950,10 +992,14 @@ class PublisherModule {
       if (typeof json.url === 'string' && json.url.startsWith('file:')) {
         problems.push('url is a local file path (' + json.url + ')');
       }
+      if (json.version !== task.version) {
+        problems.push('its version is ' + json.version + ', not ' + task.version);
+      }
       if (problems.length > 0) {
-        throw new Error('Published package ' + pkgPath + ' is a draft build, not a publication build (' +
-            problems.join('; ') + '). The IG Publisher publication run likely skipped package ' +
-            'regeneration (e.g. a Jekyll/template failure). Not committing.');
+        throw new Error('Published package ' + pkgPath + ' is not the publication build of ' +
+            task.npm_package_id + '#' + task.version + ' (' + problems.join('; ') + '). ' +
+            'Either the IG Publisher publication run skipped package regeneration (e.g. a Jekyll/template ' +
+            'failure), or publication-request.json points at another version. Not committing.');
       }
       await this.logTaskMessage(task.id, 'info', 'Verified publication package: ' + pkgPath);
     }
@@ -1203,15 +1249,24 @@ class PublisherModule {
     // Step 7: Commit and push the ig-registry
     await this.logTaskMessage(task.id, 'info', 'Committing changes to ig-registry...');
     const registryCommitMsg = 'publish ' + task.npm_package_id + '#' + task.version;
-    await this.runCommand('git', ['commit', '-a', '-m', registryCommitMsg], { cwd: registryDir }, task.id, 'Committing ig-registry changes');
-    await this.runCommand('git', ['pull'], { cwd: registryDir }, task.id, 'Pulling latest ig-registry');
-    await this.runCommand('git', ['push'], { cwd: registryDir }, task.id, 'Pushing ig-registry changes');
+    // A republication of a version the registry already lists (a technical correction) leaves the
+    // registry as it was, and 'git commit' fails on a clean tree - which is not an error here.
+    const registryStatus = await this.runCommand('git', ['status', '--porcelain', '--untracked-files=no'],
+        { cwd: registryDir }, task.id, 'Checking for ig-registry changes');
+    if (registryStatus.trim() === '') {
+      await this.logTaskMessage(task.id, 'warn', 'The publication run made no changes to the ig-registry - nothing to commit');
+    } else {
+      await this.runCommand('git', ['commit', '-a', '-m', registryCommitMsg], { cwd: registryDir }, task.id, 'Committing ig-registry changes');
+      await this.runCommand('git', ['pull'], { cwd: registryDir }, task.id, 'Pulling latest ig-registry');
+      await this.runCommand('git', ['push'], { cwd: registryDir }, task.id, 'Pushing ig-registry changes');
+    }
 
     // Step 8: Read the announcement text and store it in the database
+    let announcement = null;
     const announcementPath = path.join(zipsDir, task.npm_package_id + '#' + task.version + '-announcement.txt');
     if (fs.existsSync(announcementPath)) {
       try {
-        const announcement = fs.readFileSync(announcementPath, 'utf8');
+        announcement = fs.readFileSync(announcementPath, 'utf8');
         await this.updateTaskFields(task.id, { announcement: announcement });
         await this.logTaskMessage(task.id, 'info', 'Announcement text saved (' + announcement.length + ' chars)');
       } catch (err) {
@@ -1221,10 +1276,66 @@ class PublisherModule {
       await this.logTaskMessage(task.id, 'warn', 'No announcement file found at ' + announcementPath);
     }
 
+    // Step 8b: Tag the source repository and publish a GitHub release carrying its source zip
+    await this.createSourceRelease(task, draftDir, zipsDir, announcement);
+
     // Step 9: Run the website update script
     if (website.server_update_script) {
       await this.logTaskMessage(task.id, 'info', 'Running website update script: ' + website.server_update_script);
       await this.runCommand('bash', ['-c', website.server_update_script], {}, task.id, 'Running website update script');
+    }
+  }
+
+  // Tag the IG source repository and publish a GitHub release with a zip of the source at the
+  // commit that was published. Runs only when a GitHub App is configured; without one there is no
+  // credential that can write to the source repository, and the step is skipped.
+  //
+  // Nothing here is allowed to fail the task. By the time this runs the IG is published, the web
+  // folder is pushed and the registry is updated - a release that did not get made is worth a
+  // warning in the log and nothing more.
+  async createSourceRelease(task, draftDir, zipsDir, announcement) {
+    const appConfig = this.config && this.config['github-app'];
+    if (!githubRelease.isConfigured(appConfig)) {
+      await this.logTaskMessage(task.id, 'info',
+          'No GitHub App configured - skipping the source tag and release');
+      return;
+    }
+
+    try {
+      // The draft clone is the exact tree that was published, so its HEAD is the commit the
+      // release should point at.
+      const sha = (await this.runCommand('git', ['rev-parse', 'HEAD'], { cwd: draftDir },
+          task.id, 'Reading the published commit')).trim();
+
+      // git archive takes the committed state, not the working directory: by now the publisher has
+      // built in this folder twice and left output/, temp/, template/ and fsh-generated/ behind,
+      // none of which are in the archive. It is also exactly reproducible from the tag.
+      const stem = task.npm_package_id + '-' + task.version;
+      const assetName = stem + '-source.zip';
+      const zipPath = path.join(zipsDir, assetName);
+      await this.runCommand('git',
+          ['archive', '--format=zip', '--prefix=' + stem + '/', '-o', zipPath, 'HEAD'],
+          { cwd: draftDir }, task.id, 'Building the source zip');
+
+      const result = await githubRelease.publishRelease({
+        config: appConfig,
+        org: task.github_org,
+        repo: task.github_repo,
+        tag: 'v' + task.version,
+        sha: sha,
+        releaseName: task.npm_package_id + '#' + task.version,
+        body: announcement || '',
+        zipPath: zipPath,
+        assetName: assetName,
+        log: (level, message) => { this.logTaskMessage(task.id, level, message); }
+      });
+
+      await this.updateTaskFields(task.id, { release_url: result.url });
+    } catch (err) {
+      const detail = (err.response && err.response.data && err.response.data.message) || err.message;
+      await this.logTaskMessage(task.id, 'warn',
+          'Could not tag and release the source repository: ' + detail +
+          '. The IG itself is published - this does not affect it.');
     }
   }
 
@@ -1692,6 +1803,18 @@ class PublisherModule {
           return res.status(400).send('An active task for this package and version is already in progress. Wait for it to complete or fail before resubmitting.');
         }
 
+        // Check the repo and branch actually exist before queueing, so a typo is
+        // reported now rather than when the build starts. If GitHub can't be
+        // reached, don't block - the clone will report any real problem.
+        const remote = await gitRemote.checkRemoteBranch(github_org, github_repo, git_branch);
+        if (!remote.ok) {
+          if (remote.unreachable) {
+            this.logger.warn('Could not verify ' + github_org + '/' + github_repo + '#' + git_branch + ' before queueing: ' + remote.error);
+          } else {
+            return res.status(400).send('Invalid task details: ' + remote.error);
+          }
+        }
+
         // Insert task (ID will be auto-generated)
         const result = await new Promise((resolve, reject) => {
           this.db.run(
@@ -1908,6 +2031,9 @@ class PublisherModule {
           let content = '<h3>Task Output: #' + task.id + ' - ' + escape(task.npm_package_id) + '#' + escape(task.version) + '</h3>';
           content += '<p><strong>Status:</strong> <span class="badge bg-' + this.getStatusColor(task.status) + '">' + escape(task.status) + '</span></p>';
           content += '<p><strong>GitHub:</strong> ' + escape(task.github_org) + '/' + escape(task.github_repo) + ' (' + escape(task.git_branch) + ')</p>';
+          if (task.release_url) {
+            content += '<p><strong>Release:</strong> <a href="' + escape(task.release_url) + '" target="_blank" rel="noopener noreferrer">' + escape(task.release_url) + '</a></p>';
+          }
 
           if (task.publisher_version) {
             content += '<p><strong>IG Publisher:</strong> <code>' + escape(task.publisher_version) + '</code></p>';
@@ -2053,6 +2179,9 @@ class PublisherModule {
         content += '</div>';
         content += '<div class="col-md-6">';
         content += '<p><strong>GitHub:</strong> ' + escape(task.github_org) + '/' + escape(task.github_repo) + ' (' + escape(task.git_branch) + ')</p>';
+        if (task.release_url) {
+          content += '<p><strong>Release:</strong> <a href="' + escape(task.release_url) + '" target="_blank" rel="noopener noreferrer">' + escape(task.release_url) + '</a></p>';
+        }
         content += '<p><strong>Created by:</strong> ' + escape(task.user_name) + ' (' + escape(task.user_login) + ')</p>';
         if (task.approved_by_name) {
           content += '<p><strong>Approved by:</strong> ' + escape(task.approved_by_name) + '</p>';
@@ -2747,10 +2876,12 @@ class PublisherModule {
     await this.logTaskMessage(taskId, 'info', description);
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        ...options
-      });
+      const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'], ...options };
+      if (command === 'git') {
+        // never let git block on (or fail obscurely at) a credentials prompt
+        spawnOptions.env = gitRemote.gitEnv(spawnOptions.env || process.env);
+      }
+      const proc = spawn(command, args, spawnOptions);
 
       let stdout = '';
       let stderr = '';
