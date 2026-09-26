@@ -101,7 +101,25 @@
       // key - e.g. "git@github-ig-registry:FHIR/ig-registry.git", with a matching Host block
       // in the service user's ~/.ssh/config carrying IdentityFile and IdentitiesOnly yes.
       // The alias is what lets ssh tell this remote apart from the website remote.
-      "ig-registry-url": "git@github.com:FHIR/ig-registry.git"
+      "ig-registry-url": "git@github.com:FHIR/ig-registry.git",
+      // Tagging the IG source repo and publishing a GitHub release with a zip of its source, at
+      // the end of a successful publication. Omit this whole block to skip that step - without it
+      // there is no credential that can write to a source repository.
+      //
+      // This is a GitHub App, not a personal access token: a fine-grained PAT cannot span two
+      // organisations, and a classic PAT would act as whoever minted it. Create the App with
+      // "Where can this GitHub App be installed?" = Any account, give it Contents: Read and write
+      // (which covers tags as well as releases), then install it on each org below with access to
+      // all repositories. The installation id is in the URL of the installation's settings page.
+      "github-app": {
+        "app-id": "123456",
+        "private-key": "/absolute/path/to/app-private-key.pem",
+        // github org name (as it appears on the publication task) -> installation id
+        "installations": {
+          "HL7": 12345678,
+          "FHIR": 87654321
+        }
+      }
     },
     "npmprojector": {
       "enabled": true,
