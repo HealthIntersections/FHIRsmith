@@ -1327,7 +1327,8 @@ class PublisherModule {
         body: announcement || '',
         zipPath: zipPath,
         assetName: assetName,
-        log: (level, message) => { this.logTaskMessage(task.id, level, message); }
+        // logTaskMessage never rejects, and github-release logs without waiting
+        log: (level, message) => { void this.logTaskMessage(task.id, level, message); }
       });
 
       await this.updateTaskFields(task.id, { release_url: result.url });
