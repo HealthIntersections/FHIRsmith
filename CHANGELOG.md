@@ -1,23 +1,24 @@
 # Changelog
 
-All notable changes to the Health Intersections Node Server will be documented in this file.
+All notable changes to Health Intersections FHIRsmith will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.14.0] - 2026-09-dd
-
-### Security
-
--
+## [0.14.0] - 2026-09-25
 
 ### Added
 
+- New Module: TestReport repository 
 - Initial Implementation of $closure
 - add support for caching across multiple servers
+- better support for web invocation of operations 
+- add ECL control panel
 
 ### Changed
 
+- improve home page graphs and cache information
+- better memory management - prevent an operation running the server out of memory 
 - $validate-code: inferSystem is only applied to the code parameter, per its definition - it is ignored for coding and codeableConcept
 - $validate-code: a Coding with neither a system nor a code is reported as one problem, not two (Coding_has_no_system_or_code__cannot_validate)
 - $subsumes: a missing system (codeA/codeB with no system parameter, or a codingA/codingB with no system) is now 400 with issue code invalid and tx-issue-type invalid-data (was 404/422 not-found), with message id SUBSUMPTION_NO_SYSTEM (shared with the Java terminology service); mismatched codingA/codingB systems use SUBSUMPTION_SYSTEM_MISMATCH
@@ -25,15 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fix processing of sourceScope during $translate operation
 - Fix broken links in HTML references (#256)
-- fix bug in concept map conversion 
-- fix issue processing MRCM rules (#287)
+- Fix bug in concept map conversion 
+- Fix issue processing MRCM rules (#287)
+- Fix message about depending on a draft resource (add source info)
 
 ### Tx Conformance Statement
 
-(paste)
-
-
+FHIRsmith passed all 3516 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.5
 
 ## [v0.13.4] - 2026-09-17
 
