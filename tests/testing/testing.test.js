@@ -515,3 +515,168 @@ describe('HTML', () => {
     noScript(byTester.text);
   });
 });
+
+describe('run length', () => {
+  const { runLengthOf } = require('../../testing/store');
+  const { runLength } = require('../../testing/render');
+
+  test('spans the earliest start to the latest end', () => {
+    expect(runLengthOf(report({ test: [
+      { period: { start: '2026-09-20T10:00:05Z', end: '2026-09-20T10:00:10Z' } },
+      { period: { start: '2026-09-20T10:00:00Z', end: '2026-09-20T10:00:07Z' } },
+      { name: 'no period' }
+    ] }))).toBe(10000);
+    expect(runLengthOf(report())).toBeNull();
+    expect(runLengthOf(report({ test: [{ period: { start: '2026-09-20T10:00:00Z' } }] }))).toBeNull();
+  });
+
+  test.each([[850, '850 ms'], [12345, '12.3 s'], [245000, '4m 05s'], [3720000, '1h 02m'], [null, '']])('%p is %p', (ms, s) => {
+    expect(runLength(ms)).toBe(s);
+  });
+
+  test('is filled in for reports stored before the column existed', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const Database = require('better-sqlite3');
+    const { TestReportStore } = require('../../testing/store');
+    const file = path.join(os.tmpdir(), `testing-migrate-${process.pid}.db`);
+    fs.rmSync(file, { force: true });
+    const store = new TestReportStore(file);
+    const r = report({ id: 'old', meta: { lastUpdated: '2026-09-20T00:00:00Z' },
+      test: [{ period: { start: '2026-09-20T10:00:00Z', end: '2026-09-20T10:01:00Z' } }] });
+    store.insert(r, { receivedMs: Date.now() });
+    store.close();
+    // make it look like an old database
+    const db = new Database(file);
+    db.exec('ALTER TABLE reports DROP COLUMN run_ms');
+    db.exec('ALTER TABLE reports DROP COLUMN test_count');
+    db.close();
+    const again = new TestReportStore(file);
+    expect(again.db.prepare('SELECT run_ms FROM reports WHERE id = ?').get('old').run_ms).toBe(60000);
+    expect(again.db.prepare('SELECT test_count FROM reports WHERE id = ?').get('old').test_count).toBe(1);
+    again.close();
+    fs.rmSync(file, { force: true });
+  });
+});
+
+describe('the list columns', () => {
+  test('no status, run length after issued, participants split by type, client only when there is one', async () => {
+    const { app, mod } = await makeApp();
+    await post(app, report({
+      participant: [{ type: 'server', uri: 'http://sut.example.org', version: '1.0' },
+        { type: 'test-engine', uri: 'http://engine.example.org', version: '6.10.4' }],
+      test: [{ name: 't', period: { start: '2026-09-20T10:00:00Z', end: '2026-09-20T10:04:05Z' } }]
+    }));
+    let res = await request(app).get('/testing');
+    const headings = [...res.text.matchAll(/<th>(?:<a [^>]*>)?([^<]+)/g)].map(m => m[1]);
+    expect(headings).toEqual(['Name', 'Result', 'Score', 'Tests', 'Tester', 'Test Script', 'Test Engine', 'Server', 'Issued', 'Run Length', 'Received']);
+    expect(res.text).not.toContain('Status: any');
+    expect(res.text).toMatch(/<td><a class="tr-uri" href="http:\/\/engine\.example\.org"[^>]*>[^<]*<\/a> <small>6\.10\.4<\/small><\/td><td><a class="tr-uri" href="http:\/\/sut\.example\.org"/);
+    expect(res.text).toContain('<td class="tr-date">4m 05s</td>');
+    expect(res.text).toMatch(/<td>100<\/td><td>1<\/td><td>TxTester 1\.0<\/td>/);
+
+    await post(app, report({ participant: [{ type: 'client', uri: 'http://client.example.org' }, { type: 'server', uri: 'http://sut.example.org' }] }));
+    res = await request(app).get('/testing');
+    expect(res.text).toContain('>Client</th>');
+    mod.shutdown();
+  });
+});
+
+describe('logins, users, named links', () => {
+  let app;
+  let mod;
+  let reportId;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ adminPassword: 'admin-secret', cookieSecure: false, sessionSecret: 'x'.repeat(32) }));
+    reportId = (await post(app, report({ testScript: 'http://example.org/TestScript/tx|1.9.5',
+      participant: [{ type: 'server', uri: 'http://sut.example.org', version: '2.0' }] }))).body.id;
+  });
+  afterEach(() => mod.shutdown());
+
+  const loginAs = async (login, password) => {
+    const agent = request.agent(app);
+    const res = await agent.post('/testing/login').type('form').send({ login, password });
+    return { agent, res };
+  };
+
+  test('the administrator logs in with the configured password', async () => {
+    expect((await loginAs('admin', 'wrong')).res.status).toBe(401);
+    const { agent, res } = await loginAs('admin', 'admin-secret');
+    expect(res.status).toBe(302);
+    const page = await agent.get('/testing');
+    expect(page.text).toContain('Logged in as <b>Administrator</b>');
+    expect(page.text).toContain('/testing/admin/users');
+    await agent.post('/testing/logout');
+    expect((await agent.get('/testing/admin/links')).status).toBe(302);
+  });
+
+  test('with no adminPassword nobody is the administrator', async () => {
+    const other = await makeApp({ cookieSecure: false });
+    const res = await request(other.app).post('/testing/login').type('form').send({ login: 'admin', password: '' });
+    expect(res.status).toBe(401);
+    other.mod.shutdown();
+  });
+
+  test('named links replace canonical URLs with names', async () => {
+    const { agent } = await loginAs('admin', 'admin-secret');
+    expect((await agent.post('/testing/admin/links').type('form')
+      .send({ canonical: 'http://example.org/TestScript/tx|ignored', name: 'Tx Tests', link: 'https://example.org/tx' })).status).toBe(302);
+    await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://sut.example.org', name: 'The <SUT>', link: '' });
+    expect((await agent.post('/testing/admin/links').type('form')
+      .send({ canonical: 'http://x.org', name: 'X', link: 'javascript:alert(1)' })).status).toBe(400);
+
+    const list = await request(app).get('/testing');
+    expect(list.text).toContain('<a href="https://example.org/tx" title="http://example.org/TestScript/tx|1.9.5" rel="nofollow noopener">Tx Tests</a> <small>1.9.5</small>');
+    expect(list.text).toContain('<span title="http://sut.example.org">The &lt;SUT&gt;</span> <small>2.0</small>');
+    const summary = await request(app).get('/testing/summary');
+    expect(summary.text).toContain('>Tx Tests</a>');
+    const page = await request(app).get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html');
+    expect(page.text).toContain('>Tx Tests</a>');
+
+    const links = await agent.get('/testing/admin/links');
+    const id = links.text.match(/action="\/testing\/admin\/links\/(\d+)\/delete"/)[1];
+    await agent.post(`/testing/admin/links/${id}/delete`);
+    expect((await agent.get('/testing/admin/links')).text.match(/\/delete"/g)).toHaveLength(1);
+  });
+
+  test('users get exactly the rights they are given', async () => {
+    const admin = (await loginAs('admin', 'admin-secret')).agent;
+    expect((await admin.post('/testing/admin/users').type('form')
+      .send({ login: 'linker', name: 'Link Editor', password: 'password1', editLinks: '1' })).status).toBe(302);
+    expect((await admin.post('/testing/admin/users').type('form')
+      .send({ login: 'short', name: 'Short', password: 'x' })).status).toBe(400);
+    expect((await admin.post('/testing/admin/users').type('form')
+      .send({ login: 'admin', name: 'Impostor', password: 'password1' })).status).toBe(400);
+    const users = await admin.get('/testing/admin/users');
+    expect(users.text).toContain('linker');
+    expect(users.text).not.toContain('password_hash');
+
+    const { agent: linker, res } = await loginAs('linker', 'password1');
+    expect(res.status).toBe(302);
+    expect((await linker.get('/testing/admin/links')).status).toBe(200);
+    expect((await linker.get('/testing/admin/users')).status).toBe(403);
+    expect((await linker.post(`/testing/TestReport/${reportId}/delete`)).status).toBe(403);
+    expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).not.toContain('Delete this report');
+
+    // give them the right to delete; it applies at once, without logging in again
+    const id = users.text.match(/action="\/testing\/admin\/users\/(\d+)"/)[1];
+    await admin.post(`/testing/admin/users/${id}`).type('form').send({ name: 'Link Editor', editLinks: '1', deleteReports: '1', password: '' });
+    expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).toContain('Delete this report');
+    expect((await linker.post(`/testing/TestReport/${reportId}/delete`)).status).toBe(302);
+    expect((await request(app).get(`/testing/TestReport/${reportId}`)).status).toBe(404);
+
+    // the password was left blank, so it still works; deleting the user ends their session
+    expect((await loginAs('linker', 'password1')).res.status).toBe(302);
+    await admin.post(`/testing/admin/users/${id}/delete`);
+    expect((await linker.get('/testing/admin/links')).status).toBe(302);
+    expect((await loginAs('linker', 'password1')).res.status).toBe(401);
+  });
+
+  test('form posts from another site are refused', async () => {
+    const { agent } = await loginAs('admin', 'admin-secret');
+    const res = await agent.post('/testing/admin/links').type('form').set('Origin', 'https://evil.example.com')
+      .send({ canonical: 'http://x.org', name: 'X' });
+    expect(res.status).toBe(403);
+  });
+});

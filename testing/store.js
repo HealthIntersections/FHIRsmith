@@ -36,6 +36,8 @@ const SCHEMA = `
     issued_lo    INTEGER NOT NULL,
     issued_hi    INTEGER NOT NULL,
     size         INTEGER NOT NULL,
+    run_ms       INTEGER,            -- how long the run took, when the report says
+    test_count   INTEGER,            -- how many entries in TestReport.test
     json         TEXT NOT NULL
   );
 
@@ -46,6 +48,26 @@ const SCHEMA = `
     uri          TEXT NOT NULL,
     version      TEXT,
     display      TEXT
+  );
+
+  -- people who can maintain the named links and delete reports. The administrator is not
+  -- in here: their password is in the configuration
+  CREATE TABLE IF NOT EXISTS users (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    login               TEXT UNIQUE NOT NULL,
+    name                TEXT NOT NULL,
+    password_hash       TEXT NOT NULL,
+    can_edit_links      INTEGER NOT NULL DEFAULT 0,
+    can_delete_reports  INTEGER NOT NULL DEFAULT 0,
+    created             TEXT NOT NULL
+  );
+
+  -- names (and links) shown in place of known canonical URLs
+  CREATE TABLE IF NOT EXISTS links (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical   TEXT UNIQUE NOT NULL,   -- without any |version
+    name        TEXT NOT NULL,
+    link        TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_reports_received ON reports(received_ms);
@@ -84,6 +106,41 @@ function str(v) {
   return typeof v === 'string' ? v : null;
 }
 
+/**
+ * How long the run took, in milliseconds, if the report says: from the earliest
+ * period.start to the latest period.end across its tests. null if no test has a period
+ * with both ends.
+ */
+function runLengthOf(report) {
+  let lo = null;
+  let hi = null;
+  for (const t of Array.isArray(report.test) ? report.test : []) {
+    const p = t && typeof t === 'object' ? t.period : null;
+    if (!p || typeof p !== 'object') {
+      continue;
+    }
+    const s = typeof p.start === 'string' ? Date.parse(p.start) : NaN;
+    const e = typeof p.end === 'string' ? Date.parse(p.end) : NaN;
+    if (!Number.isNaN(s) && (lo === null || s < lo)) {
+      lo = s;
+    }
+    if (!Number.isNaN(e) && (hi === null || e > hi)) {
+      hi = e;
+    }
+  }
+  return lo !== null && hi !== null && hi >= lo ? hi - lo : null;
+}
+
+/** How many tests the report has (entries in TestReport.test). */
+function testCountOf(report) {
+  return Array.isArray(report.test) ? report.test.length : 0;
+}
+
+/** A canonical URL without its |version. */
+function unversioned(url) {
+  return typeof url === 'string' && url.includes('|') ? url.substring(0, url.indexOf('|')) : url;
+}
+
 class TestReportStore {
   /**
    * @param {string} dbPath - file name, or ':memory:'
@@ -93,16 +150,13 @@ class TestReportStore {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.db.exec(SCHEMA);
-    // participants.version was added after the first databases were made
-    if (!this.db.prepare('PRAGMA table_info(participants)').all().some(c => c.name === 'version')) {
-      this.db.exec('ALTER TABLE participants ADD COLUMN version TEXT');
-    }
+    this.migrate();
     this.stmts = {
       insert: this.db.prepare(`
         INSERT INTO reports (id, received, received_ms, ip, name, name_lc, status, result, score,
-          tester, tester_lc, test_script, issued, issued_lo, issued_hi, size, json)
+          tester, tester_lc, test_script, issued, issued_lo, issued_hi, size, run_ms, test_count, json)
         VALUES (@id, @received, @received_ms, @ip, @name, @name_lc, @status, @result, @score,
-          @tester, @tester_lc, @test_script, @issued, @issued_lo, @issued_hi, @size, @json)`),
+          @tester, @tester_lc, @test_script, @issued, @issued_lo, @issued_hi, @size, @run_ms, @test_count, @json)`),
       insertParticipant: this.db.prepare(
         'INSERT INTO participants (report_id, seq, type, uri, version, display) VALUES (?, ?, ?, ?, ?, ?)'),
       read: this.db.prepare('SELECT json FROM reports WHERE id = ?'),
@@ -110,6 +164,31 @@ class TestReportStore {
       purge: this.db.prepare('DELETE FROM reports WHERE received_ms < ?'),
       count: this.db.prepare('SELECT COUNT(*) AS n FROM reports')
     };
+  }
+
+  /** Bring a database made by an earlier version of the module up to date. */
+  migrate() {
+    const has = (table, col) => this.db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+    if (!has('participants', 'version')) {
+      this.db.exec('ALTER TABLE participants ADD COLUMN version TEXT');
+    }
+    // columns worked out from the report: add them, and fill them in for the reports
+    // already there
+    const derived = [['run_ms', runLengthOf], ['test_count', testCountOf]];
+    for (const [col, fn] of derived) {
+      if (!has('reports', col)) {
+        this.db.exec(`ALTER TABLE reports ADD COLUMN ${col} INTEGER`);
+        const update = this.db.prepare(`UPDATE reports SET ${col} = ? WHERE id = ?`);
+        this.db.transaction(() => {
+          for (const row of this.db.prepare('SELECT id, json FROM reports').all()) {
+            const v = fn(JSON.parse(row.json));
+            if (v !== null) {
+              update.run(v, row.id);
+            }
+          }
+        })();
+      }
+    }
   }
 
   close() {
@@ -145,6 +224,8 @@ class TestReportStore {
       issued_lo: issued.lo,
       issued_hi: issued.hi,
       size: Buffer.byteLength(json, 'utf8'),
+      run_ms: runLengthOf(report),
+      test_count: testCountOf(report),
       json
     };
     this.db.transaction(() => {
@@ -191,7 +272,7 @@ class TestReportStore {
     }
     const cols = options.withJson
       ? 'r.id, r.json'
-      : 'r.id, r.received, r.name, r.status, r.result, r.score, r.tester, r.test_script, r.issued';
+      : 'r.id, r.received, r.name, r.status, r.result, r.score, r.tester, r.test_script, r.issued, r.run_ms, r.test_count';
     const rows = this.db.prepare(
       `SELECT ${cols} FROM reports r ${where} ORDER BY ${search.orderBy} LIMIT ? OFFSET ?`
     ).all(...search.args, search.count, search.offset);
@@ -209,6 +290,69 @@ class TestReportStore {
       }
     }
     return { total, rows };
+  }
+
+  /** Whether any report has a participant of this type. */
+  hasParticipantType(type) {
+    return !!this.db.prepare('SELECT 1 FROM participants WHERE type = ? LIMIT 1').get(type);
+  }
+
+  // ---- named links ----
+
+  /** @returns {Array<{id, canonical, name, link}>} sorted by name */
+  links() {
+    return this.db.prepare('SELECT id, canonical, name, link FROM links ORDER BY name COLLATE NOCASE, canonical').all();
+  }
+
+  /** Add a link, or replace the one for the same canonical. */
+  saveLink(canonical, name, link) {
+    this.db.prepare(`INSERT INTO links (canonical, name, link) VALUES (?, ?, ?)
+      ON CONFLICT(canonical) DO UPDATE SET name = excluded.name, link = excluded.link`)
+      .run(unversioned(canonical), name, link || null);
+  }
+
+  updateLink(id, canonical, name, link) {
+    return this.db.prepare('UPDATE links SET canonical = ?, name = ?, link = ? WHERE id = ?')
+      .run(unversioned(canonical), name, link || null, id).changes > 0;
+  }
+
+  deleteLink(id) {
+    return this.db.prepare('DELETE FROM links WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- users ----
+
+  /** @returns {Array} users, without their password hashes */
+  users() {
+    return this.db.prepare('SELECT id, login, name, can_edit_links, can_delete_reports, created FROM users ORDER BY login').all();
+  }
+
+  /** @returns {Object|null} the user, including the password hash */
+  userByLogin(login) {
+    return this.db.prepare('SELECT * FROM users WHERE login = ?').get(login) || null;
+  }
+
+  userById(id) {
+    return this.db.prepare('SELECT id, login, name, can_edit_links, can_delete_reports FROM users WHERE id = ?').get(id) || null;
+  }
+
+  createUser(login, name, passwordHash, rights) {
+    this.db.prepare(`INSERT INTO users (login, name, password_hash, can_edit_links, can_delete_reports, created)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(login, name, passwordHash, rights.editLinks ? 1 : 0, rights.deleteReports ? 1 : 0,
+      new Date().toISOString());
+  }
+
+  updateUser(id, name, rights, passwordHash) {
+    const n = this.db.prepare('UPDATE users SET name = ?, can_edit_links = ?, can_delete_reports = ? WHERE id = ?')
+      .run(name, rights.editLinks ? 1 : 0, rights.deleteReports ? 1 : 0, id).changes;
+    if (n > 0 && passwordHash) {
+      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
+    }
+    return n > 0;
+  }
+
+  deleteUser(id) {
+    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
   }
 
   /** The distinct values in a column, for filter drop-downs. */
@@ -263,4 +407,4 @@ class TestReportStore {
   }
 }
 
-module.exports = { TestReportStore, testScriptOf };
+module.exports = { TestReportStore, testScriptOf, runLengthOf, testCountOf, unversioned };

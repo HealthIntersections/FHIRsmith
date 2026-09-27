@@ -78,6 +78,36 @@ Everything in a report comes from whoever sent it, so all of it is escaped, and 
 URLs become links. The narrative (`text.div`) is never rendered as HTML - it appears only as
 text in the raw JSON.
 
+## What the pages show
+
+The list has a column each for the test engine, client and server participants (the client
+column only appears once some report has a client; a participant of any other type is shown
+as a server). **Tests** is the number of entries in `TestReport.test`. **Run Length** is how long the run took, from the earliest `test.period.start`
+to the latest `test.period.end`; it is blank when the report's tests have no periods. Both are
+worked out when the report is received, and for reports received before they existed, the
+first time the server starts with this version.
+
+Where a test script or participant URL, ignoring any `|version`, is one of the **named
+links**, its name is shown instead of the URL - linked to the named link's link, with the
+full URL in the tooltip and the version after the name.
+
+## Administration
+
+`/testing/login`. The administrator logs in as `admin` with the `adminPassword` from the
+configuration, and manages the other users at `/testing/admin/users`. A user can have either
+or both of two rights:
+
+* **edit named links** - `/testing/admin/links`: the canonical URLs that are shown by name
+* **delete reports** - a Delete button on each report's page
+
+Logins work as the publisher's do: a session cookie (set `sessionSecret`, and `cookieSecure:
+false` if the server is reached over plain http), bcrypt password hashes, and a rate limited
+login (`loginAttemptsPerWindow`, default 20 per 15 minutes). Rights are checked on every
+request, so changing or deleting a user takes effect at once. Every form post must come from
+the server's own pages (the cookie is SameSite=Lax, and a post whose `Origin` is another
+host is refused) - behind a proxy, that needs the proxy to pass on `Host` or
+`X-Forwarded-Host`.
+
 ## Deleting
 
     DELETE /testing/TestReport/{id}

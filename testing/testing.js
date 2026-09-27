@@ -15,6 +15,14 @@
  *   GET    {base}/metadata          CapabilityStatement
  *   GET    {base}                   the filterable list (HTML)
  *   GET    {base}/summary           latest result per test script x participant (HTML)
+ *   GET    {base}/login             login for the administration pages; POST {base}/logout
+ *   GET    {base}/admin/links       names for known canonical URLs (users who can edit links)
+ *   GET    {base}/admin/users       users and their rights (the administrator only)
+ *
+ * Logins work as the publisher's do: a session cookie, bcrypt password hashes, a rate
+ * limited login. The administrator logs in as 'admin' with the adminPassword from the
+ * configuration, and manages the other users; a user can have either or both of the
+ * rights to edit the named links and to delete reports.
  *
  * R4 and R5 TestReports are treated as the same thing. Reports can't be changed once
  * received: each POST is a new report, even when it's the same report as before.
@@ -27,14 +35,19 @@ const path = require('path');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
 
 const folders = require('../library/folder-setup');
 const htmlServer = require('../library/html-server');
 const { tokenMatches, tokenConfigured } = require('../library/request-token');
+const { requireSameOrigin } = require('../library/same-origin');
 const packageJson = require('../package.json');
 const { TestReportStore } = require('./store');
 const { parseSearch, dateRange, capabilitySearchParams } = require('./search');
-const { renderList, renderSummary, renderReport, listQueryToSearch } = require('./render');
+const {
+  renderList, renderSummary, renderReport, renderLogin, renderLinks, renderUsers, listQueryToSearch
+} = require('./render');
 
 const TEMPLATE = 'testing';
 const DEFAULT_MAX_SIZE = 500 * 1024;
@@ -140,10 +153,35 @@ class TestingModule {
 
     htmlServer.loadTemplate(TEMPLATE, path.join(__dirname, 'testing-template.html'));
 
+    this.setupSession();
     this.setupRoutes();
+    this.setupAdminRoutes();
     this.setupRetention();
     this.log.info(`Testing module: ${this.store.count()} reports in ${dbPath}; ` +
       `posting ${tokenConfigured(this.config.token) ? 'requires a token' : 'is open'}, max ${this.maxSize} bytes`);
+  }
+
+  setupSession() {
+    if (!this.config.sessionSecret) {
+      // as for the publisher: never a constant secret, which would be a published signing key
+      this.log.warn('testing: no sessionSecret configured - using a random one, so logins will not ' +
+        'survive a restart. Set modules.testing.sessionSecret.');
+    }
+    this.router.use(session({
+      name: 'testing.sid',
+      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        // HTTPS only unless cookieSecure is false - see the publisher's notes on nginx
+        secure: this.config.cookieSecure ?? true,
+        // the browser will not send the cookie on a form posted from another site, which,
+        // with the Origin check on every form post, is the CSRF protection
+        sameSite: 'lax',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000
+      }
+    }));
   }
 
   setupRoutes() {
@@ -337,7 +375,7 @@ class TestingModule {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No report with id '${req.params.id}'`), 404);
       }
       return this.sendHtml(res, 'Test Report: ' + (typeof report.name === 'string' ? report.name : report.id),
-        renderReport(report, req.baseUrl), start);
+        renderReport(report, req.baseUrl, { names: this.names(), user: this.currentUser(req) }), start);
     }
     if (!report) {
       return this.sendOutcome(res, 404, 'not-found', `No TestReport with id '${req.params.id}'`);
@@ -468,9 +506,11 @@ class TestingModule {
     }
     const results = this.store.search(search);
     const content = prefix + renderList(query, results, search, {
-      statuses: this.store.distinct('status'),
       results: this.store.distinct('result'),
-      base: req.baseUrl
+      base: req.baseUrl,
+      names: this.names(),
+      user: this.currentUser(req),
+      showClient: this.store.hasParticipantType('client')
     });
     this.sendHtml(res, 'Test Reports', content, start);
   }
@@ -478,7 +518,203 @@ class TestingModule {
   async htmlSummary(req, res) {
     const start = Date.now();
     const by = req.query.by === 'tester' ? 'tester' : 'participant';
-    this.sendHtml(res, 'Test Report Summary', renderSummary(this.store.summary(by), by, req.baseUrl, this.store.testerCounts()), start);
+    this.sendHtml(res, 'Test Report Summary', renderSummary(this.store.summary(by), by, req.baseUrl, this.store.testerCounts(),
+      { names: this.names(), user: this.currentUser(req) }), start);
+  }
+
+  // ---- users, named links, and the administration pages ----
+
+  /** The named links, by unversioned canonical. Cached until they change. */
+  names() {
+    if (!this.namesCache) {
+      this.namesCache = new Map(this.store.links().map(l => [l.canonical, l]));
+    }
+    return this.namesCache;
+  }
+
+  /**
+   * Who is logged in, with their rights as they are now (not as they were at login, so
+   * taking a right away, or deleting the user, takes effect at once).
+   */
+  currentUser(req) {
+    const s = req.session;
+    if (!s) {
+      return null;
+    }
+    if (s.testingAdmin) {
+      return { name: 'Administrator', isAdmin: true, canEditLinks: true, canDeleteReports: true };
+    }
+    if (s.testingUserId) {
+      const u = this.store.userById(s.testingUserId);
+      if (u) {
+        return { id: u.id, name: u.name, isAdmin: false, canEditLinks: !!u.can_edit_links, canDeleteReports: !!u.can_delete_reports };
+      }
+    }
+    return null;
+  }
+
+  setupAdminRoutes() {
+    const r = this.router;
+    const form = express.urlencoded({ extended: false, limit: '64kb' });
+    const loginLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: this.config.loginAttemptsPerWindow ?? 20,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
+    });
+    // every form post must come from one of our own pages
+    const sameOrigin = requireSameOrigin((req, res) =>
+      htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Cross-site form posts are not accepted'), 403));
+    // a right, or the administrator
+    const need = (right) => (req, res, next) => {
+      const user = this.currentUser(req);
+      if (!user) {
+        return res.redirect(req.baseUrl + '/login');
+      }
+      if (!(user.isAdmin || (right && user[right]))) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('You do not have permission to do that'), 403);
+      }
+      req.user = user;
+      next();
+    };
+    const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+
+    r.get('/login', h('login', (req, res) => this.sendLogin(req, res, 200)));
+    r.post('/login', sameOrigin, loginLimiter, form, h('login', (req, res) => this.login(req, res)));
+    r.post('/logout', sameOrigin, h('logout', (req, res) => {
+      req.session.destroy(() => res.redirect(req.baseUrl || '/'));
+    }));
+
+    r.get('/admin/links', need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
+    r.post('/admin/links', sameOrigin, need('canEditLinks'), form, h('links', (req, res) => this.saveLink(req, res, null)));
+    r.post('/admin/links/:id', sameOrigin, need('canEditLinks'), form, h('links', (req, res) => this.saveLink(req, res, req.params.id)));
+    r.post('/admin/links/:id/delete', sameOrigin, need('canEditLinks'), h('links', (req, res) => {
+      this.store.deleteLink(parseInt(req.params.id, 10));
+      this.namesCache = null;
+      res.redirect(req.baseUrl + '/admin/links');
+    }));
+
+    r.get('/admin/users', need(null), h('users', (req, res) => this.sendUsers(req, res)));
+    r.post('/admin/users', sameOrigin, need(null), form, h('users', (req, res) => this.saveUser(req, res, null)));
+    r.post('/admin/users/:id', sameOrigin, need(null), form, h('users', (req, res) => this.saveUser(req, res, req.params.id)));
+    r.post('/admin/users/:id/delete', sameOrigin, need(null), h('users', (req, res) => {
+      this.store.deleteUser(parseInt(req.params.id, 10));
+      this.log.info(`Testing module: user ${req.params.id} deleted`);
+      res.redirect(req.baseUrl + '/admin/users');
+    }));
+
+    r.post('/TestReport/:id/delete', sameOrigin, need('canDeleteReports'), h('delete', (req, res) => {
+      if (!this.store.delete(req.params.id)) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No report with id '${req.params.id}'`), 404);
+      }
+      this.log.info(`Testing module: report ${req.params.id} deleted by ${req.user.name}`);
+      res.redirect(req.baseUrl);
+    }));
+  }
+
+  sendLogin(req, res, status, error) {
+    res.status(status);
+    this.sendHtml(res, 'Login', renderLogin(req.baseUrl, error), Date.now());
+  }
+
+  async login(req, res) {
+    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+    let ok = false;
+    const regenerate = () => new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
+    if (login === 'admin') {
+      if (tokenConfigured(this.config.adminPassword) && tokenMatches(this.config.adminPassword, password)) {
+        await regenerate();
+        req.session.testingAdmin = true;
+        ok = true;
+      }
+    } else if (login) {
+      const user = this.store.userByLogin(login);
+      if (user && await bcrypt.compare(password, user.password_hash)) {
+        await regenerate();
+        req.session.testingUserId = user.id;
+        ok = true;
+      }
+    }
+    if (!ok) {
+      this.log.info(`Testing module: failed login for '${login}' from ${req.ip}`);
+      return this.sendLogin(req, res, 401, 'Unknown username or wrong password');
+    }
+    this.log.info(`Testing module: '${login}' logged in from ${req.ip}`);
+    res.redirect(req.baseUrl || '/');
+  }
+
+  sendLinks(req, res, message, status = 200) {
+    res.status(status);
+    this.sendHtml(res, 'Named Links', renderLinks(this.store.links(), { base: req.baseUrl, user: req.user }, message), Date.now());
+  }
+
+  saveLink(req, res, id) {
+    const canonical = typeof req.body.canonical === 'string' ? req.body.canonical.trim() : '';
+    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+    const link = typeof req.body.link === 'string' ? req.body.link.trim() : '';
+    let problem = null;
+    if (!canonical || /\s/.test(canonical) || canonical.length > 1024) {
+      problem = 'The canonical must be a URL with no spaces';
+    } else if (!name || name.length > 200) {
+      problem = 'A name is required (up to 200 characters)';
+    } else if (link && !/^https?:\/\/[^\s"'<>]+$/i.test(link)) {
+      problem = 'The link must be an http or https URL';
+    }
+    if (problem) {
+      return this.sendLinks(req, res, problem, 400);
+    }
+    try {
+      if (id === null) {
+        this.store.saveLink(canonical, name, link);
+      } else if (!this.store.updateLink(parseInt(id, 10), canonical, name, link)) {
+        return this.sendLinks(req, res, 'That link no longer exists', 404);
+      }
+    } catch (e) {
+      if (/UNIQUE/.test(e.message)) {
+        return this.sendLinks(req, res, `There is already a name for ${canonical}`, 409);
+      }
+      throw e;
+    }
+    this.namesCache = null;
+    res.redirect(req.baseUrl + '/admin/links');
+  }
+
+  sendUsers(req, res, message, status = 200) {
+    res.status(status);
+    this.sendHtml(res, 'Users', renderUsers(this.store.users(), { base: req.baseUrl, user: req.user }, message), Date.now());
+  }
+
+  async saveUser(req, res, id) {
+    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
+    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
+    const password = typeof req.body.password === 'string' ? req.body.password : '';
+    const rights = { editLinks: req.body.editLinks === '1', deleteReports: req.body.deleteReports === '1' };
+    let problem = null;
+    if (id === null && !/^[A-Za-z0-9._@-]{1,64}$/.test(login)) {
+      problem = 'The username must be 1-64 letters, digits, or . _ @ -';
+    } else if (id === null && login.toLowerCase() === 'admin') {
+      problem = "'admin' is the administrator's login";
+    } else if (!name || name.length > 100) {
+      problem = 'A name is required (up to 100 characters)';
+    } else if ((id === null || password) && password.length < 8) {
+      problem = 'Passwords must be at least 8 characters';
+    }
+    if (problem) {
+      return this.sendUsers(req, res, problem, 400);
+    }
+    const hash = password ? await bcrypt.hash(password, 10) : null;
+    if (id === null) {
+      if (this.store.userByLogin(login)) {
+        return this.sendUsers(req, res, `There is already a user '${login}'`, 409);
+      }
+      this.store.createUser(login, name, hash, rights);
+      this.log.info(`Testing module: user '${login}' created`);
+    } else if (!this.store.updateUser(parseInt(id, 10), name, rights, hash)) {
+      return this.sendUsers(req, res, 'That user no longer exists', 404);
+    }
+    res.redirect(req.baseUrl + '/admin/users');
   }
 }
 

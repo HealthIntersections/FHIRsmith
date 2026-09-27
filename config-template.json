@@ -261,6 +261,13 @@
       "tokenHeader": "Authorization",
       // DELETE of a report needs this token, in the same header. No adminToken, no deletes
       // "adminToken": "<!-- secret -->",
+      // the web administration pages: log in as 'admin' with this password to manage users
+      // (who can edit the named links and/or delete reports). No adminPassword, no administrator
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
       // bytes
       "maxSize": 512000,
       // reports per IP address per window; max 0 turns the limit off

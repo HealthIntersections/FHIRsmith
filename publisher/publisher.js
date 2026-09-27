@@ -11,6 +11,7 @@ const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const { requireSameOrigin } = require('../library/same-origin');
 const {Utilities} = require("../library/utilities");
 
 // GitHub refuses any file larger than this at the pre-receive hook, and the rejection takes down
@@ -59,10 +60,18 @@ class PublisherModule {
         // plain HTTP - without it the browser will not send the cookie back and login
         // appears to succeed and then silently do nothing.
         secure: this.config.cookieSecure ?? true,
+        // CSRF: the browser leaves the cookie off a POST that starts on another site. That,
+        // with the Origin check below, is what stops another site's page from driving a
+        // logged-in browser to create, approve or delete tasks, or to add users
+        sameSite: 'lax',
+        httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       }
       // Not using SQLiteStore to avoid the database conflict
     }));
+
+    // every POST must come from one of our own pages - see library/same-origin.js
+    this.router.use(requireSameOrigin());
 
     // Parse form data
     this.router.use(express.urlencoded({ extended: true }));
@@ -1595,6 +1604,9 @@ class PublisherModule {
           return res.redirect('/publisher/login?error=invalid');
         }
 
+        // a new session id on login, so an id planted in the browser before login
+        // (session fixation) does not become a logged-in session
+        await new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
         req.session.userId = user.id;
         req.session.userName = user.name;
         req.session.isAdmin = user.is_admin;
