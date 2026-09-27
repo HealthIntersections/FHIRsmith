@@ -154,6 +154,10 @@ class TestingModule {
 
     htmlServer.loadTemplate(TEMPLATE, path.join(__dirname, 'testing-template.html'));
 
+    // the administrator's password is checked the same way as everyone else's: bcrypt against
+    // a hash, made once here, of the configured password
+    this.adminHash = tokenConfigured(this.config.adminPassword) ? bcrypt.hashSync(this.config.adminPassword, 10) : null;
+
     this.setupSession();
     this.setupRoutes();
     this.setupAdminRoutes();
@@ -193,11 +197,10 @@ class TestingModule {
         maxAge: 24 * 60 * 60 * 1000
       }
     });
-    const luscaCsrf = lusca.csrf({ key: '_csrf' });
-    // lusca reports a bad or missing token by passing an error on; show it as a page
-    this.csrf = (req, res, next) => luscaCsrf(req, res, (err) => err
-      ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error('The form has expired or did not come from this site - reload the page and try again'), 403)
-      : next());
+    // used directly (not wrapped) in every form post's route, so static analysis can see
+    // it there. A bad or missing token comes out as an error, which the error handler at the
+    // end of setupAdminRoutes turns into a page
+    this.csrf = lusca.csrf({ key: '_csrf' });
     // the pages show a logout form (which needs a token) only to someone logged in. Making
     // a token stores a secret in the session, so doing it for every visitor would give
     // every crawler a session
@@ -601,41 +604,51 @@ class TestingModule {
       next();
     };
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
-    // what every page with a form needs, and what every form post needs
-    const page = [this.session, this.csrf];
-    const post = [sameOrigin, this.session, form, this.csrf];
+    // Every page with a form has this.session, this.csrf; every form post has sameOrigin,
+    // this.session, form, this.csrf. They are written out in each route rather than spread
+    // from an array, so that CodeQL can see the CSRF middleware on every cookie-using route.
 
-    r.get('/login', ...page, h('login', (req, res) => this.sendLogin(req, res, 200)));
+    r.get('/login', this.session, this.csrf, h('login', (req, res) => this.sendLogin(req, res, 200)));
     r.post('/login', sameOrigin, loginLimiter, this.session, form, this.csrf, h('login', (req, res) => this.login(req, res)));
-    r.post('/logout', ...post, h('logout', (req, res) => {
+    r.post('/logout', sameOrigin, this.session, form, this.csrf, h('logout', (req, res) => {
       req.session.destroy(() => res.redirect(req.baseUrl || '/'));
     }));
 
-    r.get('/admin/links', ...page, need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
-    r.post('/admin/links', ...post, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, null)));
-    r.post('/admin/links/:id', ...post, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, req.params.id)));
-    r.post('/admin/links/:id/delete', ...post, need('canEditLinks'), h('links', (req, res) => {
+    r.get('/admin/links', this.session, this.csrf, need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
+    r.post('/admin/links', sameOrigin, this.session, form, this.csrf, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, null)));
+    r.post('/admin/links/:id', sameOrigin, this.session, form, this.csrf, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, req.params.id)));
+    r.post('/admin/links/:id/delete', sameOrigin, this.session, form, this.csrf, need('canEditLinks'), h('links', (req, res) => {
       this.store.deleteLink(parseInt(req.params.id, 10));
       this.namesCache = null;
       res.redirect(req.baseUrl + '/admin/links');
     }));
 
-    r.get('/admin/users', ...page, need(null), h('users', (req, res) => this.sendUsers(req, res)));
-    r.post('/admin/users', ...post, need(null), h('users', (req, res) => this.saveUser(req, res, null)));
-    r.post('/admin/users/:id', ...post, need(null), h('users', (req, res) => this.saveUser(req, res, req.params.id)));
-    r.post('/admin/users/:id/delete', ...post, need(null), h('users', (req, res) => {
+    r.get('/admin/users', this.session, this.csrf, need(null), h('users', (req, res) => this.sendUsers(req, res)));
+    r.post('/admin/users', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => this.saveUser(req, res, null)));
+    r.post('/admin/users/:id', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => this.saveUser(req, res, req.params.id)));
+    r.post('/admin/users/:id/delete', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => {
       this.store.deleteUser(parseInt(req.params.id, 10));
       this.log.info(`Testing module: user ${req.params.id} deleted`);
       res.redirect(req.baseUrl + '/admin/users');
     }));
 
-    r.post('/TestReport/:id/delete', ...post, need('canDeleteReports'), h('delete', (req, res) => {
+    r.post('/TestReport/:id/delete', sameOrigin, this.session, form, this.csrf, need('canDeleteReports'), h('delete', (req, res) => {
       if (!this.store.delete(req.params.id)) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No report with id '${req.params.id}'`), 404);
       }
       this.log.info(`Testing module: report ${req.params.id} deleted by ${req.user.name}`);
       res.redirect(req.baseUrl);
     }));
+
+    // lusca rejects a form post with a missing or wrong token by passing on an error
+    // ("CSRF token missing" / "CSRF token mismatch"); anything else goes on as it was
+    r.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE,
+          new Error('The form has expired or did not come from this site - reload the page and try again'), 403);
+      }
+      next(err);
+    });
   }
 
   sendLogin(req, res, status, error) {
@@ -649,7 +662,7 @@ class TestingModule {
     let ok = false;
     const regenerate = () => new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
     if (login === 'admin') {
-      if (tokenConfigured(this.config.adminPassword) && tokenMatches(this.config.adminPassword, password)) {
+      if (this.adminHash && await bcrypt.compare(password, this.adminHash)) {
         await regenerate();
         req.session.testingAdmin = true;
         ok = true;

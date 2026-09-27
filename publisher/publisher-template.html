@@ -91,6 +91,7 @@
             <a href="/publisher" style="color: gold">Publisher Home</a> &nbsp;|&nbsp;
             <a href="/publisher/tasks" style="color: gold">Tasks</a> &nbsp;|&nbsp;
             <form method="[%loginAction%]" action="/publisher/[%loginPath%]" style="display:inline">
+                <input type="hidden" name="_csrf" value="[%csrfToken%]"/>
                 <button type="submit" style="background:none; border:none; color:gold; cursor:pointer; font:inherit; padding:0">[%loginTitle%]</button>
             </form>
         </div>  <!-- /container -->
