@@ -594,9 +594,18 @@ describe('logins, users, named links', () => {
   });
   afterEach(() => mod.shutdown());
 
-  const loginAs = async (login, password) => {
-    const agent = request.agent(app);
-    const res = await agent.post('/testing/login').type('form').send({ login, password });
+  // every form carries the session's CSRF token; get one the way a browser would, from a page
+  const csrfOf = async (agent) => {
+    const page = await agent.get('/testing/login');
+    return page.text.match(/name="_csrf" value="([^"]+)"/)[1];
+  };
+  const form = async (agent, url, data = {}, headers = {}) => {
+    const _csrf = await csrfOf(agent);
+    return agent.post(url).type('form').set(headers).send({ ...data, _csrf });
+  };
+  const loginAs = async (login, password, target = app) => {
+    const agent = request.agent(target);
+    const res = await form(agent, '/testing/login', { login, password });
     return { agent, res };
   };
 
@@ -607,24 +616,22 @@ describe('logins, users, named links', () => {
     const page = await agent.get('/testing');
     expect(page.text).toContain('Logged in as <b>Administrator</b>');
     expect(page.text).toContain('/testing/admin/users');
-    await agent.post('/testing/logout');
+    await form(agent, '/testing/logout');
     expect((await agent.get('/testing/admin/links')).status).toBe(302);
   });
 
   test('with no adminPassword nobody is the administrator', async () => {
     const other = await makeApp({ cookieSecure: false });
-    const res = await request(other.app).post('/testing/login').type('form').send({ login: 'admin', password: '' });
+    const { res } = await loginAs('admin', '', other.app);
     expect(res.status).toBe(401);
     other.mod.shutdown();
   });
 
   test('named links replace canonical URLs with names', async () => {
     const { agent } = await loginAs('admin', 'admin-secret');
-    expect((await agent.post('/testing/admin/links').type('form')
-      .send({ canonical: 'http://example.org/TestScript/tx|ignored', name: 'Tx Tests', link: 'https://example.org/tx' })).status).toBe(302);
-    await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://sut.example.org', name: 'The <SUT>', link: '' });
-    expect((await agent.post('/testing/admin/links').type('form')
-      .send({ canonical: 'http://x.org', name: 'X', link: 'javascript:alert(1)' })).status).toBe(400);
+    expect((await form(agent, '/testing/admin/links', { canonical: 'http://example.org/TestScript/tx|ignored', name: 'Tx Tests', link: 'https://example.org/tx' })).status).toBe(302);
+    await form(agent, '/testing/admin/links', { canonical: 'http://sut.example.org', name: 'The <SUT>', link: '' });
+    expect((await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X', link: 'javascript:alert(1)' })).status).toBe(400);
 
     const list = await request(app).get('/testing');
     expect(list.text).toContain('<a href="https://example.org/tx" title="http://example.org/TestScript/tx|1.9.5" rel="nofollow noopener">Tx Tests</a> <small>1.9.5</small>');
@@ -636,18 +643,15 @@ describe('logins, users, named links', () => {
 
     const links = await agent.get('/testing/admin/links');
     const id = links.text.match(/action="\/testing\/admin\/links\/(\d+)\/delete"/)[1];
-    await agent.post(`/testing/admin/links/${id}/delete`);
+    await form(agent, `/testing/admin/links/${id}/delete`);
     expect((await agent.get('/testing/admin/links')).text.match(/\/delete"/g)).toHaveLength(1);
   });
 
   test('users get exactly the rights they are given', async () => {
     const admin = (await loginAs('admin', 'admin-secret')).agent;
-    expect((await admin.post('/testing/admin/users').type('form')
-      .send({ login: 'linker', name: 'Link Editor', password: 'password1', editLinks: '1' })).status).toBe(302);
-    expect((await admin.post('/testing/admin/users').type('form')
-      .send({ login: 'short', name: 'Short', password: 'x' })).status).toBe(400);
-    expect((await admin.post('/testing/admin/users').type('form')
-      .send({ login: 'admin', name: 'Impostor', password: 'password1' })).status).toBe(400);
+    expect((await form(admin, '/testing/admin/users', { login: 'linker', name: 'Link Editor', password: 'password1', editLinks: '1' })).status).toBe(302);
+    expect((await form(admin, '/testing/admin/users', { login: 'short', name: 'Short', password: 'x' })).status).toBe(400);
+    expect((await form(admin, '/testing/admin/users', { login: 'admin', name: 'Impostor', password: 'password1' })).status).toBe(400);
     const users = await admin.get('/testing/admin/users');
     expect(users.text).toContain('linker');
     expect(users.text).not.toContain('password_hash');
@@ -656,27 +660,48 @@ describe('logins, users, named links', () => {
     expect(res.status).toBe(302);
     expect((await linker.get('/testing/admin/links')).status).toBe(200);
     expect((await linker.get('/testing/admin/users')).status).toBe(403);
-    expect((await linker.post(`/testing/TestReport/${reportId}/delete`)).status).toBe(403);
+    expect((await form(linker, `/testing/TestReport/${reportId}/delete`)).status).toBe(403);
     expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).not.toContain('Delete this report');
 
     // give them the right to delete; it applies at once, without logging in again
     const id = users.text.match(/action="\/testing\/admin\/users\/(\d+)"/)[1];
-    await admin.post(`/testing/admin/users/${id}`).type('form').send({ name: 'Link Editor', editLinks: '1', deleteReports: '1', password: '' });
+    await form(admin, `/testing/admin/users/${id}`, { name: 'Link Editor', editLinks: '1', deleteReports: '1', password: '' });
     expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).toContain('Delete this report');
-    expect((await linker.post(`/testing/TestReport/${reportId}/delete`)).status).toBe(302);
+    expect((await form(linker, `/testing/TestReport/${reportId}/delete`)).status).toBe(302);
     expect((await request(app).get(`/testing/TestReport/${reportId}`)).status).toBe(404);
 
     // the password was left blank, so it still works; deleting the user ends their session
     expect((await loginAs('linker', 'password1')).res.status).toBe(302);
-    await admin.post(`/testing/admin/users/${id}/delete`);
+    await form(admin, `/testing/admin/users/${id}/delete`);
     expect((await linker.get('/testing/admin/links')).status).toBe(302);
     expect((await loginAs('linker', 'password1')).res.status).toBe(401);
   });
 
   test('form posts from another site are refused', async () => {
     const { agent } = await loginAs('admin', 'admin-secret');
-    const res = await agent.post('/testing/admin/links').type('form').set('Origin', 'https://evil.example.com')
-      .send({ canonical: 'http://x.org', name: 'X' });
+    const res = await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X' }, { Origin: 'https://evil.example.com' });
     expect(res.status).toBe(403);
+  });
+
+  test('form posts need the session\'s CSRF token', async () => {
+    const { agent } = await loginAs('admin', 'admin-secret');
+    // none
+    expect((await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://x.org', name: 'X' })).status).toBe(403);
+    // someone else's
+    const other = request.agent(app);
+    const stolen = await csrfOf(other);
+    expect((await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://x.org', name: 'X', _csrf: stolen })).status).toBe(403);
+    // a login needs one too
+    expect((await request(app).post('/testing/login').type('form').send({ login: 'admin', password: 'admin-secret' })).status).toBe(403);
+    // the page's own works
+    expect((await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X' })).status).toBe(302);
+  });
+
+  test('the FHIR API needs no CSRF token and sets no cookie', async () => {
+    const res = await post(app, report());
+    expect(res.status).toBe(201);
+    expect(res.headers['set-cookie']).toBeUndefined();
+    const list = await request(app).get('/testing');
+    expect(list.headers['set-cookie']).toBeUndefined();
   });
 });

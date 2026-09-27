@@ -104,9 +104,11 @@ Logins work as the publisher's do: a session cookie (set `sessionSecret`, and `c
 false` if the server is reached over plain http), bcrypt password hashes, and a rate limited
 login (`loginAttemptsPerWindow`, default 20 per 15 minutes). Rights are checked on every
 request, so changing or deleting a user takes effect at once. Every form post must come from
-the server's own pages (the cookie is SameSite=Lax, and a post whose `Origin` is another
-host is refused) - behind a proxy, that needs the proxy to pass on `Host` or
-`X-Forwarded-Host`.
+the server's own pages: each form carries a per-session CSRF token (lusca) that the post must
+return, the cookie is SameSite=Lax, and a post whose `Origin` is another host is refused
+(behind a proxy, that needs the proxy to pass on `Host` or `X-Forwarded-Host`). The session
+and CSRF checks are only on the web pages: the FHIR API is authenticated by the header
+token, and sets no cookie.
 
 ## Deleting
 

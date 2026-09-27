@@ -36,6 +36,7 @@ const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
 const session = require('express-session');
+const lusca = require('lusca');
 const bcrypt = require('bcrypt');
 
 const folders = require('../library/folder-setup');
@@ -161,13 +162,23 @@ class TestingModule {
       `posting ${tokenConfigured(this.config.token) ? 'requires a token' : 'is open'}, max ${this.maxSize} bytes`);
   }
 
+  /**
+   * The session (login) cookie and CSRF protection. Neither is put on the whole router:
+   * the FHIR API (POST and DELETE of TestReports) is authenticated by a token in a header,
+   * not a cookie, so it needs neither and must not be made to carry a CSRF token. The web
+   * pages get this.web; every form post gets sameOrigin + this.session + a form parser +
+   * this.csrf (see setupAdminRoutes).
+   *
+   * CSRF has two layers: lusca's per-session token, which every form carries in a hidden
+   * _csrf field, and the Origin check (library/same-origin). The cookie is also SameSite=Lax.
+   */
   setupSession() {
     if (!this.config.sessionSecret) {
       // as for the publisher: never a constant secret, which would be a published signing key
       this.log.warn('testing: no sessionSecret configured - using a random one, so logins will not ' +
         'survive a restart. Set modules.testing.sessionSecret.');
     }
-    this.router.use(session({
+    this.session = session({
       name: 'testing.sid',
       secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
       resave: false,
@@ -181,7 +192,17 @@ class TestingModule {
         httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000
       }
-    }));
+    });
+    const luscaCsrf = lusca.csrf({ key: '_csrf' });
+    // lusca reports a bad or missing token by passing an error on; show it as a page
+    this.csrf = (req, res, next) => luscaCsrf(req, res, (err) => err
+      ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error('The form has expired or did not come from this site - reload the page and try again'), 403)
+      : next());
+    // the pages show a logout form (which needs a token) only to someone logged in. Making
+    // a token stores a secret in the session, so doing it for every visitor would give
+    // every crawler a session
+    const csrfIfLoggedIn = (req, res, next) => this.currentUser(req) ? this.csrf(req, res, next) : next();
+    this.web = [this.session, csrfIfLoggedIn];
   }
 
   setupRoutes() {
@@ -199,13 +220,13 @@ class TestingModule {
       }));
     }
 
-    r.get('/', (req, res) => this.handle(req, res, 'list', () => this.htmlList(req, res)));
-    r.get('/summary', (req, res) => this.handle(req, res, 'summary', () => this.htmlSummary(req, res)));
+    r.get('/', ...this.web, (req, res) => this.handle(req, res, 'list', () => this.htmlList(req, res)));
+    r.get('/summary', ...this.web, (req, res) => this.handle(req, res, 'summary', () => this.htmlSummary(req, res)));
     r.get('/metadata', (req, res) => this.handle(req, res, 'metadata', () => this.metadata(req, res)));
     r.post('/TestReport', ...posting, (req, res) => this.handle(req, res, 'create', () => this.create(req, res)));
-    r.get('/TestReport', (req, res) => this.handle(req, res, 'search', () =>
+    r.get('/TestReport', ...this.web, (req, res) => this.handle(req, res, 'search', () =>
       wantsHtml(req) ? this.htmlList(req, res) : this.search(req, res)));
-    r.get('/TestReport/:id', (req, res) => this.handle(req, res, 'read', () => this.read(req, res)));
+    r.get('/TestReport/:id', ...this.web, (req, res) => this.handle(req, res, 'read', () => this.read(req, res)));
     r.delete('/TestReport/:id', (req, res) => this.handle(req, res, 'delete', () => this.remove(req, res)));
   }
 
@@ -375,7 +396,7 @@ class TestingModule {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No report with id '${req.params.id}'`), 404);
       }
       return this.sendHtml(res, 'Test Report: ' + (typeof report.name === 'string' ? report.name : report.id),
-        renderReport(report, req.baseUrl, { names: this.names(), user: this.currentUser(req) }), start);
+        renderReport(report, req.baseUrl, { names: this.names(), user: this.currentUser(req), csrf: res.locals._csrf }), start);
     }
     if (!report) {
       return this.sendOutcome(res, 404, 'not-found', `No TestReport with id '${req.params.id}'`);
@@ -510,6 +531,7 @@ class TestingModule {
       base: req.baseUrl,
       names: this.names(),
       user: this.currentUser(req),
+      csrf: res.locals._csrf,
       showClient: this.store.hasParticipantType('client')
     });
     this.sendHtml(res, 'Test Reports', content, start);
@@ -519,7 +541,7 @@ class TestingModule {
     const start = Date.now();
     const by = req.query.by === 'tester' ? 'tester' : 'participant';
     this.sendHtml(res, 'Test Report Summary', renderSummary(this.store.summary(by), by, req.baseUrl, this.store.testerCounts(),
-      { names: this.names(), user: this.currentUser(req) }), start);
+      { names: this.names(), user: this.currentUser(req), csrf: res.locals._csrf }), start);
   }
 
   // ---- users, named links, and the administration pages ----
@@ -579,32 +601,35 @@ class TestingModule {
       next();
     };
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+    // what every page with a form needs, and what every form post needs
+    const page = [this.session, this.csrf];
+    const post = [sameOrigin, this.session, form, this.csrf];
 
-    r.get('/login', h('login', (req, res) => this.sendLogin(req, res, 200)));
-    r.post('/login', sameOrigin, loginLimiter, form, h('login', (req, res) => this.login(req, res)));
-    r.post('/logout', sameOrigin, h('logout', (req, res) => {
+    r.get('/login', ...page, h('login', (req, res) => this.sendLogin(req, res, 200)));
+    r.post('/login', sameOrigin, loginLimiter, this.session, form, this.csrf, h('login', (req, res) => this.login(req, res)));
+    r.post('/logout', ...post, h('logout', (req, res) => {
       req.session.destroy(() => res.redirect(req.baseUrl || '/'));
     }));
 
-    r.get('/admin/links', need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
-    r.post('/admin/links', sameOrigin, need('canEditLinks'), form, h('links', (req, res) => this.saveLink(req, res, null)));
-    r.post('/admin/links/:id', sameOrigin, need('canEditLinks'), form, h('links', (req, res) => this.saveLink(req, res, req.params.id)));
-    r.post('/admin/links/:id/delete', sameOrigin, need('canEditLinks'), h('links', (req, res) => {
+    r.get('/admin/links', ...page, need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
+    r.post('/admin/links', ...post, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, null)));
+    r.post('/admin/links/:id', ...post, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, req.params.id)));
+    r.post('/admin/links/:id/delete', ...post, need('canEditLinks'), h('links', (req, res) => {
       this.store.deleteLink(parseInt(req.params.id, 10));
       this.namesCache = null;
       res.redirect(req.baseUrl + '/admin/links');
     }));
 
-    r.get('/admin/users', need(null), h('users', (req, res) => this.sendUsers(req, res)));
-    r.post('/admin/users', sameOrigin, need(null), form, h('users', (req, res) => this.saveUser(req, res, null)));
-    r.post('/admin/users/:id', sameOrigin, need(null), form, h('users', (req, res) => this.saveUser(req, res, req.params.id)));
-    r.post('/admin/users/:id/delete', sameOrigin, need(null), h('users', (req, res) => {
+    r.get('/admin/users', ...page, need(null), h('users', (req, res) => this.sendUsers(req, res)));
+    r.post('/admin/users', ...post, need(null), h('users', (req, res) => this.saveUser(req, res, null)));
+    r.post('/admin/users/:id', ...post, need(null), h('users', (req, res) => this.saveUser(req, res, req.params.id)));
+    r.post('/admin/users/:id/delete', ...post, need(null), h('users', (req, res) => {
       this.store.deleteUser(parseInt(req.params.id, 10));
       this.log.info(`Testing module: user ${req.params.id} deleted`);
       res.redirect(req.baseUrl + '/admin/users');
     }));
 
-    r.post('/TestReport/:id/delete', sameOrigin, need('canDeleteReports'), h('delete', (req, res) => {
+    r.post('/TestReport/:id/delete', ...post, need('canDeleteReports'), h('delete', (req, res) => {
       if (!this.store.delete(req.params.id)) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No report with id '${req.params.id}'`), 404);
       }
@@ -615,7 +640,7 @@ class TestingModule {
 
   sendLogin(req, res, status, error) {
     res.status(status);
-    this.sendHtml(res, 'Login', renderLogin(req.baseUrl, error), Date.now());
+    this.sendHtml(res, 'Login', renderLogin(req.baseUrl, error, res.locals._csrf), Date.now());
   }
 
   async login(req, res) {
@@ -647,7 +672,7 @@ class TestingModule {
 
   sendLinks(req, res, message, status = 200) {
     res.status(status);
-    this.sendHtml(res, 'Named Links', renderLinks(this.store.links(), { base: req.baseUrl, user: req.user }, message), Date.now());
+    this.sendHtml(res, 'Named Links', renderLinks(this.store.links(), { base: req.baseUrl, user: req.user, csrf: res.locals._csrf }, message), Date.now());
   }
 
   saveLink(req, res, id) {
@@ -683,7 +708,7 @@ class TestingModule {
 
   sendUsers(req, res, message, status = 200) {
     res.status(status);
-    this.sendHtml(res, 'Users', renderUsers(this.store.users(), { base: req.baseUrl, user: req.user }, message), Date.now());
+    this.sendHtml(res, 'Users', renderUsers(this.store.users(), { base: req.baseUrl, user: req.user, csrf: res.locals._csrf }, message), Date.now());
   }
 
   async saveUser(req, res, id) {

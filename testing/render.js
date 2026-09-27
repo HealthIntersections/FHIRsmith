@@ -154,9 +154,14 @@ function runLength(ms) {
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
 }
 
+/** The hidden field every POST form carries: the CSRF token (lusca checks it). */
+function csrfField(token) {
+  return token ? `<input type="hidden" name="_csrf" value="${escape(token)}"/>` : '';
+}
+
 /**
  * The line at the top of every page: who is logged in, and what they can get to.
- * @param {{base: string, user?: Object}} ctx
+ * @param {{base: string, user?: Object, csrf?: string}} ctx
  */
 function userBar(ctx) {
   const base = escape(ctx.base);
@@ -171,7 +176,7 @@ function userBar(ctx) {
   if (u.isAdmin) {
     parts.push(`<a href="${base}/admin/users">Users</a>`);
   }
-  parts.push(`<form method="post" action="${base}/logout" style="display: inline"><button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
+  parts.push(`<form method="post" action="${base}/logout" style="display: inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
   return `<div style="float: right; font-size: 85%">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
 }
 
@@ -483,7 +488,7 @@ function renderReport(report, baseUrl, ctx = {}) {
     `<a href="${base}/TestReport/${encodeURIComponent(report.id)}?_format=json">JSON</a> &nbsp;|&nbsp; <a href="#raw">Raw JSON below</a></p>`;
   if (ctx.user && ctx.user.canDeleteReports) {
     h += `<form method="post" action="${base}/TestReport/${encodeURIComponent(report.id)}/delete" ` +
-      'onsubmit="return confirm(\'Delete this report?\')" style="margin-bottom: 10px">' +
+      'onsubmit="return confirm(\'Delete this report?\')" style="margin-bottom: 10px">' + csrfField(ctx.csrf) +
       '<button type="submit" class="btn btn-danger tr-btn" style="font-size: 85%; padding: 1px 10px">Delete this report</button></form>';
   }
 
@@ -569,13 +574,13 @@ function renderReport(report, baseUrl, ctx = {}) {
 
 // ---- login and administration --------------------------------------------------------
 
-function renderLogin(baseUrl, error) {
+function renderLogin(baseUrl, error, csrf) {
   const base = escape(baseUrl);
   let h = STYLE;
   if (error) {
     h += `<div class="alert alert-danger">${escape(error)}</div>`;
   }
-  h += `<form method="post" action="${base}/login" style="max-width: 360px">` +
+  h += `<form method="post" action="${base}/login" style="max-width: 360px">${csrfField(csrf)}` +
     '<div class="mb-3"><label for="login" class="form-label">Username</label>' +
     '<input type="text" class="form-control" id="login" name="login" required autocomplete="username"/></div>' +
     '<div class="mb-3"><label for="password" class="form-label">Password</label>' +
@@ -605,9 +610,9 @@ function renderLinks(links, ctx, message) {
     return `<tr><td><input form="${form}" type="text" name="canonical" required class="form-control" style="font-size: 85%" value="${escape(l ? l.canonical : '')}" placeholder="http://..."/></td>` +
       `<td><input form="${form}" type="text" name="name" required class="form-control" style="font-size: 85%" value="${escape(l ? l.name : '')}"/></td>` +
       `<td><input form="${form}" type="url" name="link" class="form-control" style="font-size: 85%" value="${escape(l ? l.link || '' : '')}" placeholder="https://..."/></td>` +
-      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" style="display: inline">` +
+      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" style="display: inline">${csrfField(ctx.csrf)}` +
       `<button type="submit" class="btn btn-primary tr-btn" style="font-size: 85%; padding: 1px 10px">${l ? 'Save' : 'Add'}</button></form>` +
-      (l ? ` <form method="post" action="${action}/delete" style="display: inline" onsubmit="return confirm('Delete this link?')">` +
+      (l ? ` <form method="post" action="${action}/delete" style="display: inline" onsubmit="return confirm('Delete this link?')">${csrfField(ctx.csrf)}` +
         '<button type="submit" class="btn btn-default tr-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form>' : '') +
       '</td></tr>';
   };
@@ -641,16 +646,16 @@ function renderUsers(users, ctx, message) {
       `<td><input form="${form}" type="text" name="name" required class="form-control" style="font-size: 85%" value="${escape(u.name)}"/></td>` +
       `<td><input form="${form}" type="password" name="password" class="form-control" style="font-size: 85%" autocomplete="new-password" placeholder="(unchanged)"/></td>` +
       `<td>${cb(form, 'editLinks', u.can_edit_links)}</td><td>${cb(form, 'deleteReports', u.can_delete_reports)}</td>` +
-      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" style="display: inline">` +
+      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" style="display: inline">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-primary tr-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
-      `<form method="post" action="${action}/delete" style="display: inline" onsubmit="return confirm('Delete this user?')">` +
+      `<form method="post" action="${action}/delete" style="display: inline" onsubmit="return confirm('Delete this user?')">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-default tr-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
   }
   h += `<tr><td><input form="user-new" type="text" name="login" required class="form-control" style="font-size: 85%" autocomplete="off"/></td>` +
     '<td><input form="user-new" type="text" name="name" required class="form-control" style="font-size: 85%"/></td>' +
     '<td><input form="user-new" type="password" name="password" required class="form-control" style="font-size: 85%" autocomplete="new-password"/></td>' +
     `<td>${cb('user-new', 'editLinks', false)}</td><td>${cb('user-new', 'deleteReports', false)}</td>` +
-    `<td><form id="user-new" method="post" action="${base}/admin/users" style="display: inline">` +
+    `<td><form id="user-new" method="post" action="${base}/admin/users" style="display: inline">${csrfField(ctx.csrf)}` +
     '<button type="submit" class="btn btn-primary tr-btn" style="font-size: 85%; padding: 1px 10px">Add</button></form></td></tr>';
   return h + '</table>';
 }
