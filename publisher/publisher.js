@@ -7,10 +7,12 @@ const githubRelease = require('./github-release');
 const Database = require('sqlite3').Database;
 const bcrypt = require('bcrypt');
 const session = require('express-session');
+const lusca = require('lusca');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const { requireSameOrigin } = require('../library/same-origin');
 const {Utilities} = require("../library/utilities");
 
 // GitHub refuses any file larger than this at the pre-receive hook, and the rejection takes down
@@ -59,13 +61,28 @@ class PublisherModule {
         // plain HTTP - without it the browser will not send the cookie back and login
         // appears to succeed and then silently do nothing.
         secure: this.config.cookieSecure ?? true,
+        // CSRF: the browser leaves the cookie off a POST that starts on another site. That,
+        // with the Origin check below, is what stops another site's page from driving a
+        // logged-in browser to create, approve or delete tasks, or to add users
+        sameSite: 'lax',
+        httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       }
       // Not using SQLiteStore to avoid the database conflict
     }));
 
+    // every POST must come from one of our own pages - see library/same-origin.js
+    this.router.use(requireSameOrigin());
+
     // Parse form data
     this.router.use(express.urlencoded({ extended: true }));
+
+    // CSRF tokens (lusca): every form carries the session's token in a hidden _csrf field,
+    // and every POST route has this.csrf in it, written out so static analysis can see it.
+    // Pages only make a token for someone logged in (making one stores a secret in the
+    // session, and anonymous visitors should not get sessions); the login page always does
+    this.csrf = lusca.csrf({ key: '_csrf' });
+    this.csrfIfLoggedIn = (req, res, next) => req.session && req.session.userId ? this.csrf(req, res, next) : next();
 
     // Set up routes
     this.setupRoutes();
@@ -308,7 +325,7 @@ class PublisherModule {
 
   setupRoutes() {
     // Main dashboard
-    this.router.get('/', this.renderDashboard.bind(this));
+    this.router.get('/', this.csrfIfLoggedIn, this.renderDashboard.bind(this));
 
     // Authentication. The login post is rate limited: besides slowing down guessing, it
     // is the one unauthenticated route that runs bcrypt, and bcrypt.compare holds a libuv
@@ -322,20 +339,39 @@ class PublisherModule {
       legacyHeaders: false
     });
 
-    this.router.get('/login', this.renderLogin.bind(this));
-    this.router.post('/login', loginLimiter, this.handleLogin.bind(this));
-    this.router.post('/logout', this.handleLogout.bind(this));
+    // Task actions delete build output from disk or queue new builds: a logged-in user can't
+    // be allowed to hammer them either
+    const taskActionLimiter = rateLimit({
+      windowMs: 60 * 1000,
+      max: this.config.taskActionsPerMinute ?? 30,
+      message: 'Too many task actions, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    // the task pages read build logs and QA output from disk
+    const taskReadLimiter = rateLimit({
+      windowMs: 60 * 1000,
+      max: this.config.taskReadsPerMinute ?? 300,
+      message: 'Too many requests, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    this.router.get('/login', this.csrf, this.renderLogin.bind(this));
+    this.router.post('/login', loginLimiter, this.csrf, this.handleLogin.bind(this));
+    this.router.post('/logout', this.csrf, this.handleLogout.bind(this));
 
     // Tasks
-    this.router.get('/tasks', this.renderTasks.bind(this));
-    this.router.post('/tasks', this.requireAuth.bind(this), this.createTask.bind(this));
-    this.router.post('/tasks/:id/approve', this.requireAuth.bind(this), this.approveTask.bind(this));
-    this.router.post('/tasks/:id/delete', this.requireAuth.bind(this), this.deleteTask.bind(this));
-    this.router.post('/tasks/:id/retry', this.requireAuth.bind(this), this.retryTask.bind(this));
-    this.router.get('/tasks/:id/output', this.getTaskOutput.bind(this));
-    this.router.get('/tasks/:id/history', this.getTaskHistory.bind(this));
-    this.router.get('/tasks/:id/qa', this.getTaskQA.bind(this));
-    this.router.use('/tasks/:id/qa-files', (req, res, next) => {
+    this.router.get('/tasks', this.csrfIfLoggedIn, this.renderTasks.bind(this));
+    this.router.post('/tasks', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.createTask.bind(this));
+    this.router.post('/tasks/:id/approve', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.approveTask.bind(this));
+    this.router.post('/tasks/:id/delete', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.deleteTask.bind(this));
+    this.router.post('/tasks/:id/retry', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.retryTask.bind(this));
+    this.router.get('/tasks/:id/output', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskOutput.bind(this));
+    this.router.get('/tasks/:id/history', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskHistory.bind(this));
+    this.router.get('/tasks/:id/qa', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskQA.bind(this));
+    this.router.use('/tasks/:id/qa-files', taskReadLimiter, (req, res, next) => {
       const taskId = req.params.id;
       this.getTask(taskId).then(task => {
         if (!task || !task.local_folder) {
@@ -347,13 +383,27 @@ class PublisherModule {
     });
 
     // Admin routes
-    this.router.get('/admin/websites', this.requireAdmin.bind(this), this.renderWebsites.bind(this));
-    this.router.post('/admin/websites', this.requireAdmin.bind(this), this.createWebsite.bind(this));
-    this.router.get('/admin/websites/:id/edit', this.requireAdmin.bind(this), this.renderEditWebsite.bind(this));
-    this.router.post('/admin/websites/:id/edit', this.requireAdmin.bind(this), this.updateWebsite.bind(this));
-    this.router.get('/admin/users', this.requireAdmin.bind(this), this.renderUsers.bind(this));
-    this.router.post('/admin/users', this.requireAdmin.bind(this), this.createUser.bind(this));
-    this.router.post('/admin/permissions', this.requireAdmin.bind(this), this.updatePermissions.bind(this));
+    this.router.get('/admin/websites', this.csrf, this.requireAdmin.bind(this), this.renderWebsites.bind(this));
+    this.router.post('/admin/websites', this.csrf, this.requireAdmin.bind(this), this.createWebsite.bind(this));
+    this.router.get('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.renderEditWebsite.bind(this));
+    this.router.post('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.updateWebsite.bind(this));
+    this.router.get('/admin/users', this.csrf, this.requireAdmin.bind(this), this.renderUsers.bind(this));
+    this.router.post('/admin/users', this.csrf, this.requireAdmin.bind(this), this.createUser.bind(this));
+    this.router.post('/admin/permissions', this.csrf, this.requireAdmin.bind(this), this.updatePermissions.bind(this));
+
+    // lusca rejects a post with a missing or wrong token by passing on an error
+    this.router.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
+      }
+      next(err);
+    });
+  }
+
+  /** The hidden field every POST form carries: the session's CSRF token. */
+  csrfField(res) {
+    const token = res.locals && res.locals._csrf;
+    return token ? '<input type="hidden" name="_csrf" value="' + escape(token) + '">' : '';
   }
 
   // Background Task Processing
@@ -1476,7 +1526,7 @@ class PublisherModule {
             content += '<a href="/publisher/admin/websites" class="btn btn-secondary me-2">Manage Websites</a>';
             content += '<a href="/publisher/admin/users" class="btn btn-secondary">Manage Users</a>';
           }
-          content += '<form style="display: inline-block; margin-left: 10px;" method="post" action="/publisher/logout">';
+          content += '<form style="display: inline-block; margin-left: 10px;" method="post" action="/publisher/logout">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-outline-secondary">' + escape(req.session.userName) + ' \u2014 Logout</button>';
           content += '</form>';
           content += '</div>';
@@ -1517,7 +1567,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }
         });
 
@@ -1541,7 +1591,7 @@ class PublisherModule {
       let content = '<div class="row justify-content-center">';
       content += '<div class="col-md-6">';
       content += '<h3>Login</h3>';
-      content += '<form method="post" action="/publisher/login">';
+      content += '<form method="post" action="/publisher/login">' + this.csrfField(res);
       content += '<div class="mb-3">';
       content += '<label for="login" class="form-label">Username</label>';
       content += '<input type="text" class="form-control" id="login" name="login" required>';
@@ -1559,7 +1609,7 @@ class PublisherModule {
         templateVars: {
           loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
           loginPath: req.session.userId ? "logout" : 'login',
-          loginAction: req.session.userId ? "POST" : 'GET'
+          loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
         }});
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -1595,6 +1645,9 @@ class PublisherModule {
           return res.redirect('/publisher/login?error=invalid');
         }
 
+        // a new session id on login, so an id planted in the browser before login
+        // (session fixation) does not become a logged-in session
+        await new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
         req.session.userId = user.id;
         req.session.userName = user.name;
         req.session.isAdmin = user.is_admin;
@@ -1640,7 +1693,7 @@ class PublisherModule {
           content += '<button class="btn btn-primary" onclick="document.getElementById(\'create-task-panel\').style.display = document.getElementById(\'create-task-panel\').style.display === \'none\' ? \'block\' : \'none\'">New Publication Task</button>';
           content += '<div id="create-task-panel" style="display: none;" class="mt-3">';
           content += '<h3>Create New Publication Task</h3>';
-          content += '<form id="create-task-form" method="post" action="/publisher/tasks" class="row g-3">';
+          content += '<form id="create-task-form" method="post" action="/publisher/tasks" class="row g-3">' + this.csrfField(res);
           content += '<div class="col-md-3">';
           content += '<label for="website_id" class="form-label">Target Website</label>';
           content += '<select class="form-select" id="website_id" name="website_id" required>';
@@ -1718,7 +1771,7 @@ class PublisherModule {
               content += '<a href="/publisher/tasks/' + task.id + '/qa-files/index.html" class="btn btn-sm btn-outline-secondary me-1">View IG</a>';
               content += '<a href="/publisher/tasks/' + task.id + '/qa" class="btn btn-sm btn-outline-secondary me-1">View QA</a>';
               if (canApprove) {
-                content += '<form method="post" action="/publisher/tasks/' + task.id + '/approve" style="display: inline;">';
+                content += '<form method="post" action="/publisher/tasks/' + task.id + '/approve" style="display: inline;">' + this.csrfField(res);
                 content += '<button type="submit" name="approve" class="btn btn-sm btn-success me-1">Approve</button>';
                 content += '</form>';
               }
@@ -1735,13 +1788,13 @@ class PublisherModule {
             }
 
             if (canDelete) {
-              content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">';
+              content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">' + this.csrfField(res);
               content += '<button type="submit" class="btn btn-sm btn-danger">Delete</button>';
               content += '</form>';
             }
 
             if (req.session.userId && task.status === 'failed') {
-              content += ' <form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;">';
+              content += ' <form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;">' + this.csrfField(res);
               content += '<button type="submit" class="btn btn-sm btn-warning">Retry</button>';
               content += '</form>';
             }
@@ -1761,7 +1814,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -1951,7 +2004,7 @@ class PublisherModule {
         res.redirect('/publisher/tasks');
       } catch (error) {
         this.logger.error('Error deleting task:', error);
-        res.status(500).send('Failed to delete task: ' + error.message);
+        res.status(500).type('text/plain').send('Failed to delete task: ' + escape(error.message));
       }
     } finally {
       this.stats.countRequest('delete-task', Date.now() - start);
@@ -1982,7 +2035,7 @@ class PublisherModule {
         res.redirect('/publisher/tasks/' + newTaskId + '/history');
       } catch (error) {
         this.logger.error('Error retrying task:', error);
-        res.status(500).send('Failed to retry task: ' + error.message);
+        res.status(500).type('text/plain').send('Failed to retry task: ' + escape(error.message));
       }
     } finally {
       this.stats.countRequest('retry-task', Date.now() - start);
@@ -2093,7 +2146,7 @@ class PublisherModule {
             templateVars: {
               loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
               loginPath: req.session.userId ? "logout" : 'login',
-              loginAction: req.session.userId ? "POST" : 'GET'
+              loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
             }});
           res.setHeader('Content-Type', 'text/html');
           res.send(html);
@@ -2310,7 +2363,7 @@ class PublisherModule {
           content += '<a href="/publisher/tasks/' + task.id + '/qa" class="btn btn-outline-secondary me-2">View QA Report</a>';
         }
         if (req.session.userId && task.status === 'failed') {
-          content += '<form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;" class="me-2">';
+          content += '<form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;" class="me-2">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-warning">Retry</button>';
           content += '</form>';
         }
@@ -2324,7 +2377,7 @@ class PublisherModule {
             (detailIsPostApprovalFailed && req.session.isAdmin)
         );
         if (detailCanDelete) {
-          content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" class="me-2" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">';
+          content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" class="me-2" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-danger">Delete</button>';
           content += '</form>';
         }
@@ -2335,7 +2388,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -2356,7 +2409,7 @@ class PublisherModule {
       if (!website) return res.status(404).send('Website not found');
 
       let content = '<h3>Edit Website</h3>';
-      content += '<form method="post" action="/publisher/admin/websites/' + website.id + '/edit" class="row g-3">';
+      content += '<form method="post" action="/publisher/admin/websites/' + website.id + '/edit" class="row g-3">' + this.csrfField(res);
       content += '<div class="col-md-4"><label class="form-label">Website Name</label>';
       content += '<input type="text" class="form-control" name="name" value="' + escape(website.name) + '" required></div>';
       content += '<div class="col-md-4"><label class="form-label">Local Folder</label>';
@@ -2376,7 +2429,7 @@ class PublisherModule {
       content += '</form>';
 
       const html = htmlServer.renderPage('publisher', 'Edit Website - FHIR Publisher', content, {
-        templateVars: { loginTitle: (req.session.userName || '') + ' \u2014 Logout', loginPath: 'logout', loginAction: 'POST' }
+        templateVars: { loginTitle: (req.session.userName || '') + ' \u2014 Logout', loginPath: 'logout', loginAction: 'POST', csrfToken: res.locals._csrf || '' }
       });
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -2427,7 +2480,7 @@ class PublisherModule {
         content += '<button class="btn btn-primary" onclick="document.getElementById(\'add-website-panel\').style.display = document.getElementById(\'add-website-panel\').style.display === \'none\' ? \'block\' : \'none\'">Add New Website</button>';
         content += '<div id="add-website-panel" style="display: none;" class="mt-3">';
         content += '<h3>Add New Website</h3>';
-        content += '<form method="post" action="/publisher/admin/websites" class="row g-3">';
+        content += '<form method="post" action="/publisher/admin/websites" class="row g-3">' + this.csrfField(res);
         content += '<div class="col-md-4">';
         content += '<label for="name" class="form-label">Website Name</label>';
         content += '<input type="text" class="form-control" id="name" name="name" required>';
@@ -2496,7 +2549,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -2556,7 +2609,7 @@ class PublisherModule {
         content += '<button class="btn btn-primary" onclick="document.getElementById(\'add-user-panel\').style.display = document.getElementById(\'add-user-panel\').style.display === \'none\' ? \'block\' : \'none\'">Add New User</button>';
         content += '<div id="add-user-panel" style="display: none;" class="mt-3">';
         content += '<h3>Add New User</h3>';
-        content += '<form method="post" action="/publisher/admin/users" class="row g-3">';
+        content += '<form method="post" action="/publisher/admin/users" class="row g-3">' + this.csrfField(res);
         content += '<div class="col-md-3">';
         content += '<label for="name" class="form-label">Full Name</label>';
         content += '<input type="text" class="form-control" id="name" name="name" required>';
@@ -2601,7 +2654,7 @@ class PublisherModule {
             if (websites.length === 0) {
               content += '<p>No websites available for permission assignment.</p>';
             } else {
-              content += '<form method="post" action="/publisher/admin/permissions">';
+              content += '<form method="post" action="/publisher/admin/permissions">' + this.csrfField(res);
               content += '<input type="hidden" name="user_id" value="' + user.id + '">';
               content += '<div class="permission-grid">';
               content += '<div><strong>Website</strong></div>';
@@ -2638,7 +2691,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);

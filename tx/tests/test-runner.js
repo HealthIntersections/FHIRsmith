@@ -91,7 +91,7 @@ function txTestReport() {
         testScript: 'https://github.com/HL7/fhir-tx-ecosystem-ig/blob/main/tests/test-cases.json|' + txTestVersion(),
         result: error == 0 ? 'pass' : 'fail',
         score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
-        tester: 'FHIRsmith build',
+        tester: 'FHIRsmith build (modes ' + Array.from(txTestModeSet()).join(', ') + ')',
         issued: new Date().toISOString(),
         participant: [{
             type: 'server',

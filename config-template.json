@@ -88,6 +88,10 @@
       "cookieSecure": true,
       // failed-login attempts allowed per IP per 15 minutes (default 20)
       "loginAttemptsPerWindow": 20,
+      // per IP address per minute: task actions (create, approve, delete, retry), and reads
+      // of task output, history and QA pages and files
+      "taskActionsPerMinute": 30,
+      "taskReadsPerMinute": 300,
       "workspaceRoot": "/absolute/path/to/workspaces",
       "igPublisherTimeoutMinutes": 60,
       // where to put files the IG Publisher leaves in the web folder that are too big for GitHub
@@ -261,6 +265,13 @@
       "tokenHeader": "Authorization",
       // DELETE of a report needs this token, in the same header. No adminToken, no deletes
       // "adminToken": "<!-- secret -->",
+      // the web administration pages: log in as 'admin' with this password to manage users
+      // (who can edit the named links and/or delete reports). No adminPassword, no administrator
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
       // bytes
       "maxSize": 512000,
       // reports per IP address per window; max 0 turns the limit off

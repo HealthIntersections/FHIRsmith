@@ -19,7 +19,7 @@ default `true`). That means it takes the client address, scheme and host from th
 
 | Header | nginx value | What FHIRsmith uses it for |
 |---|---|---|
-| `Host` | `$host` | The base URL in the CapabilityStatement, TerminologyCapabilities and other self-references. It is taken from the host the client asked for |
+| `Host` | `$host` | The base URL in the CapabilityStatement, TerminologyCapabilities and other self-references. It is taken from the host the client asked for. The publisher and testing modules also check the `Origin` of every form post against it, and refuse posts from anywhere else - so if nginx sends a different `Host` (e.g. `proxy_pass` with the default `$proxy_host`), every login and form fails with a 403 |
 | `X-Forwarded-Proto` | `$scheme` | The scheme of those same base URLs, and the `Secure` session cookie used by the publisher and token modules. If this header is missing, an HTTPS server advertises `http://` URLs and publisher login fails silently: you are sent back to the login page, still logged out |
 | `X-Forwarded-For` | `$proxy_add_x_forwarded_for` | The client IP address in audit and security logs (`req.ip`). If this header is missing, every request is logged as coming from `127.0.0.1` |
 | `X-Request-Id` | `$request_id` | Optional. FHIRsmith echoes it back on the response, so a client's report can be matched to a line in the nginx log (add `$request_id` to your `log_format`) |
