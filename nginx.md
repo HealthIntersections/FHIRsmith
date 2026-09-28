@@ -13,9 +13,9 @@ public servers (tx.fhir.org, packages.fhir.org and so on) use.
 
 ### Headers to pass to the server
 
-FHIRsmith runs Express with `trust proxy` enabled (`server.trustProxy` in config.json,
-default `true`). That means it takes the client address, scheme and host from the
-`X-Forwarded-*` headers, so nginx has to set them:
+FHIRsmith runs Express with `trust proxy` enabled (`server.trustProxy` in config.json; by
+default it trusts proxies on the same host or a private network). That means it takes the
+client address, scheme and host from the `X-Forwarded-*` headers, so nginx has to set them:
 
 | Header | nginx value | What FHIRsmith uses it for |
 |---|---|---|
@@ -49,11 +49,19 @@ them:
 
 ### Trusting the proxy
 
-With `trustProxy: true`, anyone who can reach the FHIRsmith port directly can forge
-`X-Forwarded-For`. FHIRsmith listens on all interfaces, so firewall the port so that only
-nginx can reach it. You can also set `server.trustProxy` to `"loopback"`, or to the proxy's
-address; any value that Express's `trust proxy` setting accepts will work. If you run
-FHIRsmith without a proxy, set it to `false`.
+By default FHIRsmith believes the `X-Forwarded-*` headers only when the request comes from
+a loopback, link-local or private address (`"loopback, linklocal, uniquelocal"`) - nginx on
+the same machine, or on the same docker or private network. A request straight from the
+internet can't set its own client address, so it can't get round the rate limits on logins,
+report submission and the publisher's task actions.
+
+If your proxy is somewhere else (a cloud load balancer with a public address, say), set
+`server.trustProxy` to its address, or to the number of proxy hops; any value Express's
+`trust proxy` setting accepts will work. If you run FHIRsmith without a proxy, set it to
+`false`. Avoid `true`: it believes any `X-Forwarded-For`, so anyone who can reach the
+FHIRsmith port directly can name their own IP address, and express-rate-limit logs
+`ERR_ERL_PERMISSIVE_TRUST_PROXY` to say so. Either way, firewalling the port so that only
+nginx can reach it is still a good idea.
 
 ### Upstream connections
 
