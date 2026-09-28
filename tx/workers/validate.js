@@ -1088,7 +1088,11 @@ class ValueSetChecker {
           mt.push(m);
           op.addIssue(new Issue('error', 'invalid', p, 'Terminology_TX_System_Relative', m, 'invalid-data'));
         }
-        let prov = await this.worker.findCodeSystem(ws, c.version, this.params, ['complete', 'fragment'],  op,true, true, false, this.worker.requiredSupplements);
+        // the code isn't in the value set, but it's still looked up in the code system to report on
+        // it - and that has to be the version the value set selects when the coding doesn't say,
+        // not the server default (tx-ecosystem sct validate-code-pc-none)
+        let lookupVersion = c.version || vsImpliedVersion;
+        let prov = await this.worker.findCodeSystem(ws, lookupVersion, this.params, ['complete', 'fragment'],  op,true, true, false, this.worker.requiredSupplements);
         if (prov === null) {
           let vss = await this.worker.findValueSet(ws, '', null);
           if (vss !== null) {
@@ -1098,7 +1102,7 @@ class ValueSetChecker {
             op.addIssue(new Issue('error', 'invalid', addToPath(path, 'system'), 'Terminology_TX_System_ValueSet2', m, 'invalid-data'));
             cause.value = 'invalid';
           } else {
-            let provS = await this.worker.findCodeSystem(ws, c.version, this.params, ['supplement'], op,true, true, false, this.worker.requiredSupplements);
+            let provS = await this.worker.findCodeSystem(ws, lookupVersion, this.params, ['supplement'], op,true, true, false, this.worker.requiredSupplements);
             if (provS !== null) {
               vss = null;
               let m = this.worker.i18n.translate('CODESYSTEM_CS_NO_SUPPLEMENT', this.params.HTTPLanguages, [provS.vurl()]);
@@ -1109,7 +1113,7 @@ class ValueSetChecker {
               let prov2 = await this.worker.findCodeSystem(ws, '', this.params, ['complete', 'fragment'], op,true, true, false, this.worker.requiredSupplements);
               let bAdd = true;
               let m, mid, vn;
-              if (prov2 === null && !c.version) {
+              if (prov2 === null && !lookupVersion) {
                 mid = 'UNKNOWN_CODESYSTEM';
                 m = this.worker.i18n.translate('UNKNOWN_CODESYSTEM', this.params.HTTPLanguages, [ws]);
                 bAdd = !unknownSystems.has(ws);
@@ -1123,9 +1127,9 @@ class ValueSetChecker {
                   vn = ws;
                 } else {
                   mid = 'UNKNOWN_CODESYSTEM_VERSION';
-                  vn = ws + '|' + c.version;
+                  vn = ws + '|' + lookupVersion;
                 }
-                m = this.worker.i18n.translate(mid, this.params.HTTPLanguages, [ws, c.version,  this.worker.presentVersionList(vl)]);
+                m = this.worker.i18n.translate(mid, this.params.HTTPLanguages, [ws, lookupVersion,  this.worker.presentVersionList(vl)]);
                 bAdd = !unknownSystems.has(vn);
                 if (bAdd) {
                   unknownSystems.add(vn);

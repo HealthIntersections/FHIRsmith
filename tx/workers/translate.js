@@ -1085,9 +1085,14 @@ class TranslateWorker extends TerminologyWorker {
           added = await this.translateUsingGroupsForwards(cm, coding, targetScope, targetSystem, params, result) || added;
         }
       }
+      // A map can say, explicitly, that a concept is NOT related to a target (not-related-to,
+      // or R4's unmatched/disjoint). That is still reported as a match - it is what the map
+      // says - but it is not a translation: "The value can only be true if at least one
+      // returned match has a relationship other than 'not-related-to'" (tx-ecosystem translate-2b)
+      const translated = added && result.some(p => p.name === 'match' && this.isPositiveMatch(p));
       result.push({
         name: 'result',
-        valueBoolean: added
+        valueBoolean: translated
       });
       if (!added) {
         result.push({
@@ -1118,6 +1123,25 @@ class TranslateWorker extends TerminologyWorker {
       resourceType: 'Parameters',
       parameter: result
     };
+  }
+
+  /**
+   * Whether a match counts towards result=true. A noMap match says there is no mapping, and
+   * an explicit negative relationship says the target is not related, so neither is a
+   * translation. A match with no relationship otherwise (an unmapped fallback without one,
+   * a code system supplied translation) still counts.
+   */
+  isPositiveMatch(match) {
+    const part = (name) => (match.part || []).find(p => p.name === name);
+    if (part('noMap')?.valueBoolean === true) {
+      return false;
+    }
+    const rel = part('relationship')?.valueCode;
+    const eq = part('equivalence')?.valueCode;
+    if (eq === 'unmatched' || eq === 'disjoint') {
+      return false;
+    }
+    return rel !== 'not-related-to';
   }
 
   // eslint-disable-next-line no-unused-vars

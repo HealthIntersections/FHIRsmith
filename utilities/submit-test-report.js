@@ -22,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_SERVER = 'https://testing.fhir.org/testing';
+const DEFAULT_SERVER = 'https://npm.fhir.org/testing';
 const DEFAULT_FILE = path.join(__dirname, '..', 'test-cases-report.json');
 
 function usage(msg) {
