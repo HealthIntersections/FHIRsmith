@@ -345,6 +345,22 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-subsumes-unknown-code-coding"}, "4.0");
   });
 
+  it("simple-subsumes-no-system" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system"}, "5.0");
+  });
+
+  it("simple-subsumes-no-system" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system"}, "4.0");
+  });
+
+  it("simple-subsumes-no-system-coding" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system-coding"}, "5.0");
+  });
+
+  it("simple-subsumes-no-system-coding" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system-coding"}, "4.0");
+  });
+
 });
 
 describe('parameters', () => {
@@ -1624,6 +1640,150 @@ describe('validation', () => {
 
   it("validation-contained-bad" + 'R4', async () => {
     await runTest({"suite":"validation","test":"validation-contained-bad"}, "4.0");
+  });
+
+  it("validation-missing-vs-code-no-system" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-code-no-system"}, "5.0");
+  });
+
+  it("validation-missing-vs-code-no-system" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-code-no-system"}, "4.0");
+  });
+
+  it("validation-missing-vs-system-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-system-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-system-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-system-no-code"}, "4.0");
+  });
+
+  it("validation-missing-vs-nothing" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-nothing"}, "5.0");
+  });
+
+  it("validation-missing-vs-nothing" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-nothing"}, "4.0");
+  });
+
+  it("validation-missing-vs-coding-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-code"}, "4.0");
+  });
+
+  it("validation-missing-vs-coding-display-only" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-display-only"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-display-only" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-display-only"}, "4.0");
+  });
+
+  it("validation-missing-vs-cc-no-system" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-system" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system"}, "4.0");
+  });
+
+  it("validation-missing-vs-cc-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-code"}, "4.0");
+  });
+
+  it("validation-missing-vs-cc-text-only" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-text-only"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-text-only" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-text-only"}, "4.0");
+  });
+
+  it("validation-missing-vs-cc-mixed" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-mixed"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-mixed" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-mixed"}, "4.0");
+  });
+
+  it("validation-missing-cs-code-no-url" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-code-no-url"}, "5.0");
+  });
+
+  it("validation-missing-cs-code-no-url" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-code-no-url"}, "4.0");
+  });
+
+  it("validation-missing-cs-url-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-url-no-code"}, "5.0");
+  });
+
+  it("validation-missing-cs-url-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-url-no-code"}, "4.0");
+  });
+
+  it("validation-missing-cs-nothing" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-nothing"}, "5.0");
+  });
+
+  it("validation-missing-cs-nothing" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-nothing"}, "4.0");
+  });
+
+  it("validation-missing-cs-coding-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-code"}, "5.0");
+  });
+
+  it("validation-missing-cs-coding-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-code"}, "4.0");
+  });
+
+  it("validation-missing-cs-coding-no-system" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-system"}, "5.0");
+  });
+
+  it("validation-missing-cs-coding-no-system" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-system"}, "4.0");
+  });
+
+  it("validation-missing-cs-cc-no-system" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-system"}, "5.0");
+  });
+
+  it("validation-missing-cs-cc-no-system" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-system"}, "4.0");
+  });
+
+  it("validation-missing-cs-cc-no-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-code"}, "5.0");
+  });
+
+  it("validation-missing-cs-cc-no-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-code"}, "4.0");
+  });
+
+  it("validation-missing-vs-coding-no-system-infer" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-system-infer"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-no-system-infer" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-system-infer"}, "4.0");
+  });
+
+  it("validation-missing-vs-cc-no-system-infer" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-system-infer" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "4.0");
   });
 
 });
@@ -4474,6 +4634,14 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6a"}, "4.0");
   });
 
+  it("translate-6b" + 'R5', async () => {
+    await runTest({"suite":"translate2","test":"translate-6b"}, "5.0");
+  });
+
+  it("translate-6b" + 'R4', async () => {
+    await runTest({"suite":"translate2","test":"translate-6b"}, "4.0");
+  });
+
   it("translate-reverse-r4" + 'R4', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4"}, "4.0");
   });
@@ -5668,6 +5836,14 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"lookup-pc"}, "4.0");
   });
 
+  it("lookup-pc-unbracketed" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"lookup-pc-unbracketed"}, "5.0");
+  });
+
+  it("lookup-pc-unbracketed" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"lookup-pc-unbracketed"}, "4.0");
+  });
+
   it("validate-code-pc-good" + 'R5', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-good"}, "5.0");
   });
@@ -5698,6 +5874,14 @@ describe('snomed', () => {
 
   it("validate-code-pc-nested-good" + 'R4', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-nested-good"}, "4.0");
+  });
+
+  it("validate-code-pc-unbracketed" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-unbracketed"}, "5.0");
+  });
+
+  it("validate-code-pc-unbracketed" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-unbracketed"}, "4.0");
   });
 
   it("validate-code-pc-mrcm-lateralizable" + 'R5', async () => {
@@ -9743,6 +9927,14 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-subsumes-unknown-code-coding"}, "5.0");
   });
 
+  it("simple-subsumes-no-system" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system"}, "5.0");
+  });
+
+  it("simple-subsumes-no-system-coding" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-subsumes-no-system-coding"}, "5.0");
+  });
+
 });
 
 describe('parameters', () => {
@@ -10394,6 +10586,78 @@ describe('validation', () => {
 
   it("validation-contained-bad" + 'R5-cached', async () => {
     await runTest({"suite":"validation","test":"validation-contained-bad"}, "5.0");
+  });
+
+  it("validation-missing-vs-code-no-system" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-code-no-system"}, "5.0");
+  });
+
+  it("validation-missing-vs-system-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-system-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-nothing" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-nothing"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-display-only" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-display-only"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-system" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-text-only" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-text-only"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-mixed" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-mixed"}, "5.0");
+  });
+
+  it("validation-missing-cs-code-no-url" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-code-no-url"}, "5.0");
+  });
+
+  it("validation-missing-cs-url-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-url-no-code"}, "5.0");
+  });
+
+  it("validation-missing-cs-nothing" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-nothing"}, "5.0");
+  });
+
+  it("validation-missing-cs-coding-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-code"}, "5.0");
+  });
+
+  it("validation-missing-cs-coding-no-system" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-coding-no-system"}, "5.0");
+  });
+
+  it("validation-missing-cs-cc-no-system" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-system"}, "5.0");
+  });
+
+  it("validation-missing-cs-cc-no-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-cs-cc-no-code"}, "5.0");
+  });
+
+  it("validation-missing-vs-coding-no-system-infer" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-coding-no-system-infer"}, "5.0");
+  });
+
+  it("validation-missing-vs-cc-no-system-infer" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "5.0");
   });
 
 });
@@ -11856,6 +12120,10 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6a"}, "5.0");
   });
 
+  it("translate-6b" + 'R5-cached', async () => {
+    await runTest({"suite":"translate2","test":"translate-6b"}, "5.0");
+  });
+
   it("translate-reverse-r4" + 'R4-cached', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4"}, "4.0");
   });
@@ -12474,6 +12742,10 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"lookup-pc"}, "5.0");
   });
 
+  it("lookup-pc-unbracketed" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"lookup-pc-unbracketed"}, "5.0");
+  });
+
   it("validate-code-pc-good" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-good"}, "5.0");
   });
@@ -12488,6 +12760,10 @@ describe('snomed', () => {
 
   it("validate-code-pc-nested-good" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"validate-code-pc-nested-good"}, "5.0");
+  });
+
+  it("validate-code-pc-unbracketed" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"validate-code-pc-unbracketed"}, "5.0");
   });
 
   it("validate-code-pc-mrcm-lateralizable" + 'R5-cached', async () => {
