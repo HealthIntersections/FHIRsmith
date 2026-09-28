@@ -45,6 +45,9 @@ const STYLE = `
   .tr-filter .tr-lbl { color: #555; }
   .tr-filter .tr-btn { font-size: 100%; padding: 1px 10px; line-height: 1.5; }
   .tr-date { white-space: nowrap; }
+  /* operations and assertions; nested inside the striped tests table, so reset its colours */
+  table.tr-steps { margin-top: 6px; margin-bottom: 0; }
+  table.tr-steps > tbody > tr > td, table.tr-steps > tbody > tr > th { background-color: #fff !important; color: #333 !important; padding: 2px 6px; }
   .tr-grid td { text-align: center; }
   .tr-grid th.tr-col { font-size: 80%; word-break: break-all; min-width: 90px; }
 </style>`;
@@ -470,6 +473,51 @@ function testResult(t) {
   return best ? best.r : '';
 }
 
+/**
+ * The operations and assertions in a list of actions, in order, each as
+ * {type: 'operation'|'assertion', message, detail, result}.
+ */
+function actionSteps(actions) {
+  const steps = [];
+  for (const action of asArray(actions)) {
+    if (!isObject(action)) {
+      continue;
+    }
+    for (const [kind, type] of [['operation', 'operation'], ['assert', 'assertion']]) {
+      const a = action[kind];
+      if (isObject(a)) {
+        steps.push({ type, message: text(a.message), detail: text(a.detail), result: text(a.result) });
+      }
+    }
+  }
+  return steps;
+}
+
+/** A table of operations and assertions: type, message, details link, result. */
+function actionsTable(actions) {
+  const steps = actionSteps(actions);
+  if (steps.length === 0) {
+    return '';
+  }
+  let h = '<table class="table table-sm table-bordered tr-table tr-steps"><tr><th>Type</th><th>Message</th><th>Details</th><th>Result</th></tr>';
+  for (const st of steps) {
+    const details = /^https?:\/\/[^\s"'<>]+$/i.test(st.detail)
+      ? `<a href="${escape(st.detail)}" rel="nofollow noopener">details</a>`
+      : (st.detail ? `<span title="${escape(st.detail)}">details</span>` : '');
+    h += `<tr><td>${st.type}</td><td class="tr-msg">${escape(st.message)}</td><td>${details}</td><td>${badge(st.result)}</td></tr>`;
+  }
+  return h + '</table>';
+}
+
+/**
+ * Whether a test's actions are worth a table: more than one operation or assertion, or a
+ * single one that says more than just its result.
+ */
+function hasActionDetail(t) {
+  const steps = actionSteps(t.action);
+  return steps.length > 1 || (steps.length === 1 && !!(steps[0].message || steps[0].detail));
+}
+
 function identifierText(ids) {
   return (Array.isArray(ids) ? ids : [ids]).filter(isObject).map(i =>
     (text(i.system) ? escape(text(i.system)) + ' | ' : '') + escape(text(i.value))).join('<br/>');
@@ -540,19 +588,28 @@ function renderReport(report, baseUrl, ctx = {}) {
   }
   h += '</table>';
 
-  // tests: one row each. Actions and the log are left to the raw JSON for now
+  // setup, then the tests (one row each, with their operations and assertions under the
+  // description when there is more to them than a single result), then teardown. The log
+  // is left to the raw JSON
+  if (isObject(report.setup) && actionSteps(report.setup.action).length > 0) {
+    h += '<h3>Setup</h3>' + actionsTable(report.setup.action);
+  }
   if (tests.length > 0) {
-    const hasDesc = tests.some(t => text(t.description));
+    const detailed = tests.map(t => hasActionDetail(t));
+    const hasDesc = tests.some((t, i) => text(t.description) || detailed[i]);
     const hasPeriod = tests.some(t => periodText(t.period));
     h += '<h3>Tests</h3><table class="table table-sm table-striped tr-table"><tr><th>Name</th>' +
       (hasDesc ? '<th>Description</th>' : '') + '<th>Result</th>' + (hasPeriod ? '<th>Period</th>' : '') + '</tr>';
-    for (const t of tests) {
+    tests.forEach((t, i) => {
       h += `<tr><td>${escape(text(t.name))}</td>` +
-        (hasDesc ? `<td class="tr-msg">${escape(text(t.description))}</td>` : '') +
+        (hasDesc ? `<td><div class="tr-msg">${escape(text(t.description))}</div>${detailed[i] ? actionsTable(t.action) : ''}</td>` : '') +
         `<td>${badge(testResult(t))}</td>` +
         (hasPeriod ? `<td>${periodText(t.period)}</td>` : '') + '</tr>';
-    }
+    });
     h += '</table>';
+  }
+  if (isObject(report.teardown) && actionSteps(report.teardown.action).length > 0) {
+    h += '<h3>Teardown</h3>' + actionsTable(report.teardown.action);
   }
 
   // anything else

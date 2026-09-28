@@ -469,13 +469,21 @@ describe('HTML', () => {
     const res = await request(app).get(`/testing/TestReport/${id}`).set('Accept', 'text/html,application/xhtml+xml');
     expect(res.status).toBe(200);
     noScript(res.text);
-    // one row per test: name, description, result, period
-    expect(res.text).toMatch(/<tr><td>expand &lt;b&gt;<\/td><td class="tr-msg"><\/td><td><span[^>]*>pass<\/span><\/td><td>2026-09-20T10:00:00Z &ndash; 2026-09-20T10:00:05Z<\/td><\/tr>/);
-    // no test.result: the worst of its actions
-    expect(res.text).toMatch(/<tr><td>validate-code<\/td><td class="tr-msg">checks &lt;i&gt;codes&lt;\/i&gt;<\/td><td><span[^>]*>fail<\/span><\/td><td><\/td><\/tr>/);
-    // actions aren't shown, except in the raw JSON
-    expect(res.text).not.toContain('Setup</h3>');
-    expect(res.text).not.toContain('href="http://example.org/detail"');
+    // one row per test: name, description, result, period. A single action with only a
+    // result gets no table
+    expect(res.text).toMatch(/<tr><td>expand &lt;b&gt;<\/td><td><div class="tr-msg"><\/div><\/td><td><span[^>]*>pass<\/span><\/td><td>2026-09-20T10:00:00Z &ndash; 2026-09-20T10:00:05Z<\/td><\/tr>/);
+    // no test.result: the worst of its actions; two assertions, so they are listed under the description
+    expect(res.text).toMatch(/<tr><td>validate-code<\/td><td><div class="tr-msg">checks &lt;i&gt;codes&lt;\/i&gt;<\/div><table [^>]*><tr><th>Type<\/th><th>Message<\/th><th>Details<\/th><th>Result<\/th><\/tr>/);
+    expect(res.text).toMatch(/<tr><td>assertion<\/td><td class="tr-msg">code valid<\/td><td><\/td><td><span[^>]*>pass<\/span><\/td><\/tr>/);
+    expect(res.text).toMatch(/<tr><td>assertion<\/td><td class="tr-msg">display wrong<\/td><td><a href="http:\/\/example\.org\/detail" rel="nofollow noopener">details<\/a><\/td><td><span[^>]*>fail<\/span><\/td><\/tr>/);
+    // setup before the tests, teardown after
+    const setupAt = res.text.indexOf('<h3>Setup</h3>');
+    const testsAt = res.text.indexOf('<h3>Tests</h3>');
+    const teardownAt = res.text.indexOf('<h3>Teardown</h3>');
+    expect(setupAt).toBeGreaterThan(0);
+    expect(setupAt).toBeLessThan(testsAt);
+    expect(teardownAt).toBeGreaterThan(testsAt);
+    expect(res.text).toContain('<td>operation</td><td class="tr-msg">set up &lt;b&gt;ok&lt;/b&gt;</td>');
     expect(res.text).toContain('Other Content');
     expect(res.text).toContain('Raw JSON');
     // the narrative is only ever shown as text
