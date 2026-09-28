@@ -79,7 +79,12 @@ const app = express();
 
 // Behind nginx (or any reverse proxy): honor X-Forwarded-* so req.protocol and
 // req.hostname reflect what the client actually requested, not the loopback hop.
-app.set('trust proxy', config.server.trustProxy ?? true);
+// Only proxies on the same host or a private network are trusted by default. `true` would
+// trust every X-Forwarded-For hop, so anyone who could reach the port directly could name
+// their own IP address and walk around every rate limit (express-rate-limit refuses to be
+// quiet about it: ERR_ERL_PERMISSIVE_TRUST_PROXY). See nginx.md.
+const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
+app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
 const PORT = process.env.PORT || config.server.port || 3000;
 
