@@ -1385,9 +1385,9 @@ class ValueSetExpander {
     }
 
     if (this.params.DisplayLanguages) {
-      this.addParamCode(exp, 'displayLanguage', this.params.DisplayLanguages.asString(true));
+      this.addParamCode(exp, 'displayLanguage', this.params.DisplayLanguages.asParameter());
     } else if (this.params.HTTPLanguages) {
-      this.addParamCode(exp, 'displayLanguage', this.params.HTTPLanguages.asString(true));
+      this.addParamCode(exp, 'displayLanguage', this.params.HTTPLanguages.asParameter());
     }
     if (this.params.designations) {
       for (const s of this.params.designations) {
