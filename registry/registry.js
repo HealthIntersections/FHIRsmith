@@ -721,7 +721,8 @@ class RegistryModule {
    * @returns {string} Formatted URL with edition description
    */
   _describeSnomedEdition(url) {
-    if (!url.startsWith('http://snomed.info/sct')) {
+    // the test edition is published under xsct (http://snomed.info/xsct/31000003106/...)
+    if (!url.startsWith('http://snomed.info/sct') && !url.startsWith('http://snomed.info/xsct')) {
       return url;
     }
 
@@ -745,6 +746,7 @@ class RegistryModule {
     // Match edition code to description
     switch (editionCode) {
       case '900000000000207008': edition = 'Intl'; break;
+      case '31000003106': edition = 'Test'; break; // tx-ecosystem test edition (xsct)
       case '731000124108': edition = 'US'; break;
       case '32506021000036107': edition = 'AU'; break;
       case '449081005': edition = 'ES/Intl'; break;

@@ -16,6 +16,7 @@ const {ConceptMap} = require("../library/conceptmap");
 const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType} = require("../sct/ecl");
 const {Issue} = require("../library/operation-outcome");
 const {debugLog} = require("../operation-context");
+const {editionName, editionCode} = require("../sct/editions");
 const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
 const Logger = require("../../library/logger");
 
@@ -3038,81 +3039,11 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 }
 
 function getEditionName(edition) {
-  const editionMap = {
-    '900000000000207008': 'International Edition',
-    // The terminology-ecosystem test distribution, published under xsct - see the
-    // tx-ecosystem IG, which requires a server claiming the snomed mode to load it.
-    '31000003106': 'Test Edition',
-    '449081005': 'International Spanish Edition',
-    '11000221109': 'Argentinian Edition',
-    '32506021000036107': 'Australian Edition (with drug extension)',
-    '11000234105': 'Austrian Edition',
-    '11000172109': 'Belgian Edition',
-    '20621000087109': 'Canadian English Edition',
-    '20611000087101': 'Canadian Canadian French Edition',
-    '554471000005108': 'Danish Edition',
-    '11000279109': 'Czech Edition',
-    '11000181102': 'Estonian Edition',
-    '11000229106': 'Finnish Edition',
-    '11000274103': 'German Edition',
-    '1121000189102': 'Indian Edition',
-    '827022005': 'IPS Terminology',
-    '11000220105': 'Irish Edition',
-    '11000146104': 'Netherlands Edition',
-    '21000210109': 'New Zealand Edition',
-    '51000202101': 'Norwegian Edition',
-    '11000267109': 'Republic of Korea Edition (South Korea)',
-    '900000001000122104': 'Spanish National Edition',
-    '45991000052106': 'Swedish Edition',
-    '2011000195101': 'Swiss Edition',
-    '83821000000107': 'UK Edition',
-    '999000021000000109': 'UK Clinical Edition',
-    '5631000179106': 'Uruguay Edition',
-    '731000124108': 'US Edition',
-    '21000325107': 'Chilean Edition',
-    '5991000124107': 'US Edition (with ICD-10-CM maps)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionName(edition) || 'Unknown Edition';
 }
 
 function getEditionCode(edition) {
-  const editionMap = {
-    '900000000000207008': 'Intl',
-    // The terminology-ecosystem test distribution, published under xsct - see the
-    // tx-ecosystem IG, which requires a server claiming the snomed mode to load it.
-    '31000003106': 'Test',
-    '449081005': 'es',
-    '11000221109': 'AR-es',
-    '32506021000036107': 'AU+',
-    '11000234105': 'AT',
-    '11000172109': 'BE',
-    '20621000087109': 'CA-en',
-    '20611000087101': 'CA-fr',
-    '554471000005108': 'DK',
-    '11000279109': 'CZ',
-    '11000181102': 'ES',
-    '11000229106': 'FI',
-    '11000274103': 'DE',
-    '1121000189102': 'IN',
-    '827022005': 'IPS',
-    '11000220105': 'IE',
-    '11000146104': 'NL',
-    '21000210109': 'NZ',
-    '51000202101': 'NO',
-    '11000267109': 'KR',
-    '900000001000122104': 'ES-es',
-    '45991000052106': 'SW',
-    '2011000195101': 'CH',
-    '83821000000107': 'UK',
-    '999000021000000109': 'UK-Clinical',
-    '5631000179106': 'UR',
-    '731000124108': 'US',
-    '21000325107': 'CL',
-    '5991000124107': 'US+)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionCode(edition) || 'Unknown Edition';
 }
 
 
