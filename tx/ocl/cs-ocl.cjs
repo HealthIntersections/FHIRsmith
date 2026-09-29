@@ -7,6 +7,7 @@ const { SearchFilterText } = require('../library/designations');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MARKER_EXTENSION } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
+const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { CACHE_CS_DIR, CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
 const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
 const { computeCodeSystemFingerprint } = require('./fingerprint/fingerprint');
@@ -43,6 +44,16 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
 
+    // Resolves each source's DEFAULT version (latest release, else HEAD) so both
+    // get registered. Disabled without a token, in which case discovery stays
+    // HEAD-only exactly as before.
+    this.referenceResolver = new OclReferenceResolver({
+      httpClient: this.httpClient,
+      token: options.token || null
+    });
+    this._defaultVersionByCanonical = new Map();
+    this._headMetaByCanonical = new Map();
+
     this._codeSystemsByCanonical = new Map();
     this._idToCodeSystem = new Map();
     this.sourceMetaByUrl = new Map();
@@ -72,6 +83,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
         oclLog.info(`Fetched ${sources.length} sources`);
 
         const snapshot = this.#buildSourceSnapshot(sources);
+        await this.#augmentSnapshotWithDefaultVersions(snapshot);
         this.#applySnapshot(snapshot);
 
         oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems`);
@@ -138,7 +150,94 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
   }
 
   getSourceMetas() {
-    return Array.from(this.sourceMetaByUrl.values());
+    // Default metas first: registerProvider's unversioned key is first-wins, so
+    // the release (when one exists) becomes what a versionless request gets,
+    // matching OCL's own resolution. HEAD variants stay reachable via |HEAD.
+    return [
+      ...this.sourceMetaByUrl.values(),
+      ...this._headMetaByCanonical.values()
+    ];
+  }
+
+  /**
+   * Resolve each source's DEFAULT version via one chunked $resolveReference
+   * batch: OCL answers with the latest release, or HEAD when none is released.
+   * For sources whose default is a release, the snapshot entry becomes the
+   * release (CodeSystem resource, meta, versioned concepts URL) and the HEAD
+   * variant is kept as an extra meta, so BOTH versions get factories.
+   *
+   * Only canonicals that are new or whose listing checksum changed are
+   * re-resolved, so a steady-state refresh costs no extra requests. A no-op
+   * without a token: discovery stays HEAD-only exactly as before.
+   */
+  async #augmentSnapshotWithDefaultVersions(snapshot) {
+    if (!this.referenceResolver.isEnabled()) {
+      return;
+    }
+
+    const previousSnapshot = this._sourceStateByCanonical;
+    const toResolve = [];
+    for (const [canonicalUrl, entry] of snapshot.entries()) {
+      entry.baseChecksum = entry.checksum;
+      const previous = previousSnapshot.get(canonicalUrl);
+      const previousBase = previous?.baseChecksum ?? previous?.checksum ?? null;
+      if (!this._defaultVersionByCanonical.has(canonicalUrl) || previousBase !== entry.baseChecksum) {
+        toResolve.push(canonicalUrl);
+      }
+    }
+
+    if (toResolve.length > 0) {
+      const results = await this.referenceResolver.resolveReferences(toResolve, { bypassCache: true });
+      if (Array.isArray(results)) {
+        toResolve.forEach((canonicalUrl, i) => {
+          const r = results[i];
+          if (r?.resolved && r.result?.version) {
+            this._defaultVersionByCanonical.set(canonicalUrl, r.result.version);
+          } else {
+            this._defaultVersionByCanonical.delete(canonicalUrl);
+          }
+        });
+      } else {
+        // Resolver unavailable: keep whatever defaults we knew; new canonicals
+        // stay HEAD-only until a later cycle succeeds.
+        oclLog.warn('Default-version resolution unavailable; keeping previous defaults');
+      }
+    }
+
+    let releaseCount = 0;
+    for (const [canonicalUrl, entry] of snapshot.entries()) {
+      const defaultVersion = this._defaultVersionByCanonical.get(canonicalUrl);
+      const headVersion = entry.meta?.version || null;
+      if (!defaultVersion || defaultVersion === headVersion) {
+        continue;
+      }
+      const conceptsUrl = entry.meta?.conceptsUrl;
+      if (!conceptsUrl || !conceptsUrl.endsWith('concepts/')) {
+        continue;
+      }
+
+      const baseRepo = conceptsUrl.slice(0, -'concepts/'.length);
+      const releaseJson = structuredClone(entry.cs.jsonObj);
+      releaseJson.version = defaultVersion;
+      const releaseCs = new CodeSystem(releaseJson, 'R5', true);
+      const releaseMeta = {
+        ...entry.meta,
+        version: defaultVersion,
+        conceptsUrl: `${baseRepo}${encodeURIComponent(defaultVersion)}/concepts/`,
+        codeSystem: releaseCs
+      };
+
+      entry.headMeta = entry.meta;
+      entry.meta = releaseMeta;
+      entry.cs = releaseCs;
+      // A release being published or deleted must surface as "changed".
+      entry.checksum = `${entry.baseChecksum}|default=${defaultVersion}`;
+      releaseCount++;
+    }
+
+    if (releaseCount > 0) {
+      oclLog.info(`${releaseCount} code system(s) defaulting to a released version (HEAD kept as |HEAD)`);
+    }
   }
 
   #scheduleRefresh() {
@@ -150,14 +249,24 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       try {
         const sources = await this.#fetchSourcesForDiscovery();
         const nextSnapshot = this.#buildSourceSnapshot(sources);
+        await this.#augmentSnapshotWithDefaultVersions(nextSnapshot);
         const changes = this.#diffSnapshots(this._sourceStateByCanonical, nextSnapshot);
         this.#applySnapshot(nextSnapshot);
-        for (const cs of changes.added || []) {
+        // Create factories for versions that appeared: the default (release) meta
+        // first so it claims the unversioned keys, then the HEAD variant. Covers
+        // both newly discovered sources and a release published on a known one.
+        for (const cs of [...(changes.added || []), ...(changes.changed || [])]) {
           const entry = nextSnapshot.get(cs.url);
-          if (entry?.meta && !OCLSourceCodeSystemFactory.hasFactory(cs.url, cs.version || null)) {
-            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, entry.meta);
+          for (const meta of [entry?.meta, entry?.headMeta]) {
+            if (!meta) {
+              continue;
+            }
+            if (OCLSourceCodeSystemFactory.hasExactFactory(meta.canonicalUrl, meta.version || null)) {
+              continue;
+            }
+            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta);
             if (factory) {
-              oclLog.info(`Factory created for newly discovered source: ${cs.url}`);
+              oclLog.info(`Factory created for ${meta.canonicalUrl}|${meta.version || ''}`);
             }
           }
         }
@@ -192,10 +301,36 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
   }
 
   async #fetchSourcesForDiscovery() {
+    // Prefer the global listing: one paginated crawl instead of one listing per
+    // org (N+1 requests). Org-only policy: user-owned sources are experimental by
+    // convention and not visible to the terminology service, so filter them out.
+    try {
+      const all = await this.#fetchAllPages('/sources/');
+      if (Array.isArray(all) && all.length > 0) {
+        const seen = new Set();
+        const orgOwned = [];
+        for (const source of all) {
+          if (!source || typeof source !== 'object' || !isOrgOwned(source)) {
+            continue;
+          }
+          const key = this.#sourceIdentity(source);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          orgOwned.push(source);
+        }
+        if (orgOwned.length > 0) {
+          return orgOwned;
+        }
+      }
+    } catch (error) {
+      oclLog.warn(`Global /sources/ listing failed (${error.message}); falling back to per-org discovery`);
+    }
+
     const organizations = await this.#fetchOrganizationIds();
     if (organizations.length === 0) {
-      // Fallback for OCL instances that expose global listing but not org listing.
-      return await this.#fetchAllPages('/sources/');
+      return [];
     }
 
     const allSources = [];
@@ -287,6 +422,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._codeSystemsByCanonical.clear();
     this._idToCodeSystem.clear();
     this.sourceMetaByUrl.clear();
+    this._headMetaByCanonical.clear();
     this._usedIds.clear();
 
     for (const [canonicalUrl, entry] of snapshot.entries()) {
@@ -311,6 +447,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       this._codeSystemsByCanonical.set(canonicalUrl, cs);
       this._idToCodeSystem.set(cs.id, cs);
       this.sourceMetaByUrl.set(canonicalUrl, meta);
+      if (entry.headMeta) {
+        this._headMetaByCanonical.set(canonicalUrl, entry.headMeta);
+      }
     }
 
     this._sourceStateByCanonical = snapshot;
@@ -1835,11 +1974,14 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   }
 
   #resourceKey() {
-    const crypto = require('crypto');
+    // Plain `system|version`, matching how hasExactFactory/#findFactory build
+    // their lookup keys. This used to be a SHA-256 of the same string, which
+    // meant exact-version lookups could NEVER match a registered factory (plain
+    // string vs hash) — only the unversioned `system|` alias ever worked. The
+    // key is only used for in-memory maps, job keys and logs, so hashing bought
+    // nothing and broke version-aware matching.
     const normalizedSystem = OCLSourceCodeSystemFactory.#normalizeSystem(this.system());
-    const base = `${normalizedSystem}|${this.version() || ''}`;
-    const hash = crypto.createHash('sha256').update(base).digest('hex');
-    return hash;
+    return `${normalizedSystem}|${this.version() || ''}`;
   }
 
   currentChecksum() {

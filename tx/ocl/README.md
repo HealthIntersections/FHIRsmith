@@ -39,14 +39,43 @@ In FHIRsmith terms, these providers are loaded by `tx/library.js` when a source 
 ## Runtime flow
 ### Metadata discovery
 CodeSystems (`cs-ocl.js`):
-- discover orgs via `/orgs/`
-- for each org, discover sources via `/orgs/{org}/sources/`
-- fallback to `/sources/` if org listing is unavailable
+- prefer one paginated crawl of the global `/sources/` listing (filtered to
+  organization-owned entries)
+- fallback: discover orgs via `/orgs/`, then `/orgs/{org}/sources/` per org
 
 ValueSets (`vs-ocl.js`):
-- discover orgs via `/orgs/`
-- discover collections via `/orgs/{org}/collections/`
-- fallback to `/collections/`
+- prefer one paginated crawl of the global `/collections/` listing (filtered to
+  organization-owned entries)
+- fallback: discover orgs via `/orgs/`, then `/orgs/{org}/collections/` per org
+
+### Visibility policy (org-only)
+An artifact is expected to live in an **organization** to be visible through the
+terminology service. User-owned repos (`/users/{user}/...`) are experimental by
+convention and are excluded from both discovery and `$resolveReference` results
+(a canonical resolving to a user-owned repo is treated as unresolved).
+
+### Canonical resolution via `$resolveReference`
+With a `token=` configured on the `ocl:` source line, the providers resolve
+"which repo holds this canonical URL?" through OCL's
+[`$resolveReference`](https://docs.openconceptlab.org/en/latest/oclapi/apireference/resolveReference.html)
+(global namespace) instead of iterating listings and matching `canonical_url`
+client-side. Used for ConceptMap source-system search, ValueSet lookup by
+canonical, and batched resolution of a collection's compose source canonicals.
+
+Without a token nothing changes: `$resolveReference` is authenticated on every
+instance probed (while the listing endpoints are public), so the resolver is
+constructed disabled and every caller keeps its previous search path. It also
+disables itself for the process on `404`/`401`/`403`.
+
+### CodeSystem default versions (release vs HEAD)
+OCL's own resolution treats a source's **latest release** as its default version
+(HEAD only when nothing is released), but discovery listings only ever report
+HEAD. With a token, discovery batch-resolves every canonical through
+`$resolveReference` and registers **both** versions: the release becomes what a
+versionless request gets (matching OCL), and HEAD stays reachable via an
+explicit `version=HEAD`. Only canonicals that are new or changed are re-resolved
+on refresh, so a steady-state cycle costs no extra requests. Without a token,
+discovery stays HEAD-only as before.
 
 ConceptMaps (`cm-ocl.js`):
 - fetch by id via `/mappings/{id}/`

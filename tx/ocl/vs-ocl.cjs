@@ -9,6 +9,7 @@ const { TxParameters } = require('../params');
 const { OCLSourceCodeSystemFactory, OCLBackgroundJobQueue } = require('./cs-ocl');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
+const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
 const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
@@ -43,6 +44,13 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
+
+    // Resolves a canonical to its OCL repo authoritatively. Disabled without a
+    // token, in which case the search paths below run exactly as before.
+    this.referenceResolver = new OclReferenceResolver({
+      httpClient: this.httpClient,
+      token: options.token || null
+    });
 
     this.valueSetMap = new Map();
     this._idMap = new Map();
@@ -726,6 +734,11 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
 
     const sourceKeys = await this.#fetchCollectionSourceKeys(meta.conceptsUrl, meta.owner || null);
+    // Resolve every source's canonical in a single $resolveReference batch and seed
+    // the per-source cache, replacing one sequential GET per source. The loop below
+    // then reads from cache; anything the batch could not resolve falls through to
+    // the individual GET in #getSourceCanonicalUrl, so behaviour is unchanged.
+    await this.#primeSourceCanonicalsBatch(sourceKeys);
     for (const { owner, source } of sourceKeys) {
       const systemUrl = normalizeCanonicalSystem(await this.#getSourceCanonicalUrl(owner, source));
       if (systemUrl && !seen.has(systemUrl)) {
@@ -1185,6 +1198,15 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
 
     const pending = (async () => {
+      // Ask OCL which repo holds this canonical. An authoritative answer skips
+      // the per-org text search below; without one (no token, or the endpoint is
+      // unavailable) we fall through to it.
+      const resolvedCollection = await this.#resolveCollectionViaReference(canonicalUrl, version);
+      if (resolvedCollection) {
+        this.collectionByCanonicalCache.set(lookupKey, resolvedCollection);
+        return resolvedCollection;
+      }
+
       const organizations = await this.#fetchOrganizationIds();
       const endpoints = organizations.length > 0
         ? organizations.map(orgId => `/orgs/${encodeURIComponent(orgId)}/collections/`)
@@ -1251,6 +1273,56 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
+  /**
+   * Resolve a ValueSet canonical to its OCL collection via $resolveReference,
+   * then fetch the collection object so it matches the shape the text-search path
+   * returns. Returns null when the resolver is disabled (no token), the endpoint
+   * is unavailable, OCL cannot resolve it, or the resolved repo is not a
+   * collection -- in every case the caller falls back to the search.
+   */
+  async #resolveCollectionViaReference(canonicalUrl, version) {
+    let resolved;
+    try {
+      resolved = await this.referenceResolver.resolve(
+        version ? { url: canonicalUrl, version } : canonicalUrl
+      );
+    } catch (error) {
+      oclVsLog.warn(`$resolveReference lookup failed for ${canonicalUrl}: ${error.message}`);
+      return null;
+    }
+
+    if (!resolved?.resolved || !resolved.repoUrl) {
+      return null;
+    }
+
+    // $resolveReference resolves any repo type; only collections are ValueSets.
+    if (!/[/]collections[/]/.test(resolved.repoUrl)) {
+      return null;
+    }
+
+    let collection;
+    try {
+      const response = await this.httpClient.get(resolved.repoUrl);
+      collection = response?.data || null;
+    } catch (error) {
+      oclVsLog.warn(`failed to fetch resolved collection ${resolved.repoUrl}: ${error.message}`);
+      return null;
+    }
+
+    if (!collection || typeof collection !== 'object' || !collection.id) {
+      return null;
+    }
+
+    // Honour an explicit version: the resolved repo is HEAD unless OCL matched a
+    // version, so a mismatch means fall back to the version-aware search.
+    if (version && (collection.version || null) !== version) {
+      return null;
+    }
+
+    oclVsLog.info(`$resolveReference resolved ${canonicalUrl} -> ${resolved.repoUrl}`);
+    return collection;
+  }
+
   #valueSetMetadataSignature(vs) {
     const meta = this.#getCollectionMeta(vs);
     const payload = {
@@ -1311,10 +1383,36 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   async #fetchCollectionsForDiscovery() {
+    // Prefer the global listing: one paginated crawl instead of one listing per
+    // org (N+1 requests). Org-only policy: user-owned collections are
+    // experimental by convention and not visible to the terminology service.
+    try {
+      const all = await this.#fetchAllPages('/collections/');
+      if (Array.isArray(all) && all.length > 0) {
+        const seen = new Set();
+        const orgOwned = [];
+        for (const collection of all) {
+          if (!collection || typeof collection !== 'object' || !isOrgOwned(collection)) {
+            continue;
+          }
+          const key = this.#collectionIdentity(collection);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          orgOwned.push(collection);
+        }
+        if (orgOwned.length > 0) {
+          return orgOwned;
+        }
+      }
+    } catch (error) {
+      oclVsLog.warn(`Global /collections/ listing failed (${error.message}); falling back to per-org discovery`);
+    }
+
     const organizations = await this.#fetchOrganizationIds();
     if (organizations.length === 0) {
-      // Fallback for OCL instances that expose global listing but not org listing.
-      return await this.#fetchAllPages('/collections/');
+      return [];
     }
 
     const allCollections = [];
@@ -1780,6 +1878,63 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       return await pending;
     } finally {
       this.pendingSourceCanonicalRequests.delete(key);
+    }
+  }
+
+  /**
+   * Resolve many sources' canonicals in one $resolveReference batch, seeding
+   * sourceCanonicalCache. A no-op when the resolver is disabled (no token) or the
+   * batch fails: #getSourceCanonicalUrl then falls back to its per-source GET, so
+   * this only ever saves round trips, never changes the result.
+   */
+  async #primeSourceCanonicalsBatch(sourceKeys) {
+    if (!this.referenceResolver.isEnabled()) {
+      return;
+    }
+
+    // Only sources not already cached, deduplicated by owner|source.
+    const pending = [];
+    const seen = new Set();
+    for (const { owner, source } of sourceKeys || []) {
+      if (!owner || !source) {
+        continue;
+      }
+      const key = `${owner}|${source}`;
+      if (this.sourceCanonicalCache.has(key) || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pending.push({ key, ref: `/orgs/${encodeURIComponent(owner)}/sources/${encodeURIComponent(source)}/` });
+    }
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    let results;
+    try {
+      results = await this.referenceResolver.resolveReferences(pending.map(p => p.ref));
+    } catch (error) {
+      oclVsLog.warn(`$resolveReference batch failed: ${error.message}`);
+      return;
+    }
+
+    // null => resolver disabled or unavailable mid-flight; leave the cache untouched
+    // so the per-source GET fallback runs.
+    if (!Array.isArray(results)) {
+      return;
+    }
+
+    let resolvedCount = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const canonical = results[i]?.resolved ? results[i].canonical : null;
+      if (canonical) {
+        this.sourceCanonicalCache.set(pending[i].key, canonical);
+        resolvedCount++;
+      }
+    }
+    if (resolvedCount > 0) {
+      oclVsLog.info(`$resolveReference batch resolved ${resolvedCount}/${pending.length} source canonical(s) in one request`);
     }
   }
 
