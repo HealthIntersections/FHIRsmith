@@ -10,6 +10,8 @@ const {txTestVersion} = require("./test-cases-version");
 const folders = require('../../library/folder-setup');
 const {VersionUtilities} = require("../../library/version-utilities");
 const packageJson = require('../../package.json');
+const axios = require('axios');
+const { pipeline } = require('stream/promises');
 
 let count = 0;
 let error = 0;
@@ -216,8 +218,30 @@ async function stopServer() {
     }
 }
 
+// fhir-validator-wrapper checks for a newer validator_cli.jar by asking the GitHub REST API,
+// unauthenticated. On a CI runner that shares a limit of 60 requests an hour with every other
+// job on the same IP address; once it is used up, the validator never starts and every tx test
+// fails. The release download URL is a plain redirect, not the API, so in CI the jar is fetched
+// from there (if it isn't already present) and the wrapper is told not to check. A CI runner
+// starts empty, so this always gets the current release anyway. Locally nothing changes.
+const LATEST_VALIDATOR_URL = 'https://github.com/hapifhir/org.hl7.fhir.core/releases/latest/download/validator_cli.jar';
+
+async function ensureValidatorJar(jarPath) {
+    if (fs.existsSync(jarPath)) {
+        return;
+    }
+    const tmp = jarPath + '.download';
+    const res = await axios.get(LATEST_VALIDATOR_URL, { responseType: 'stream', maxRedirects: 10, timeout: 300000 });
+    await pipeline(res.data, fs.createWriteStream(tmp));
+    fs.renameSync(tmp, jarPath);
+}
+
 async function loadValidator() {
     const validatorJarPath = folders.ensureFilePath('bin/validator_cli.jar');
+    const inCI = !!process.env.CI;
+    if (inCI) {
+        await ensureValidatorJar(validatorJarPath);
+    }
     log =  Logger.getInstance().child({ module: 'test-runner' });
     validator = new FhirValidator(validatorJarPath, log);
     const validatorConfig = {
@@ -231,7 +255,9 @@ async function loadValidator() {
         // 'server' parameter passed to runTxTest() - is our own express server on localhost, and all
         // content is our own fixtures, so there is nothing untrusted that could redirect the validator
         // anywhere. Protection has to be off for these tests to connect at all.
-        ssrfProtection: false
+        ssrfProtection: false,
+        // see ensureValidatorJar: no GitHub API call in CI
+        skipUpdateCheck: inCI
     }
     await validator.start(validatorConfig);
     await validator.loadIG("hl7.fhir.uv.tx-ecosystem", "current");

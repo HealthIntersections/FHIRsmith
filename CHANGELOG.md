@@ -5,6 +5,35 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [0.14.1] - 2026-09-29
+
+### Added
+
+- TestReport module: user administration - the administrator (`adminPassword`) manages users at /testing/admin/users, with rights to edit named links and/or delete reports
+- TestReport module: named links - test script and participant URLs shown by name, maintained at /testing/admin/links
+- TestReport module: the report list shows the test engine, client and server, the number of tests and the run length; a report page shows setup, each test with its operations and assertions, and teardown
+- Test reports from the FHIRsmith build name the test modes they ran with
+
+### Changed
+
+- Security: the publisher and testing web pages require a CSRF token on every form post (lusca), a SameSite=Lax session cookie, and a same-origin `Origin` on posts; the session id is regenerated on login
+- Security: the publisher rate limits task actions (create, approve, delete, retry) and task output reads, as well as logins
+- `server.trustProxy` now defaults to trusting only loopback, link-local and private-network proxies (was `true`, which let anyone reaching the port directly set their own client address and get round the rate limits). See nginx.md - a proxy elsewhere needs to be configured, and the proxy must pass on `Host` or `X-Forwarded-Host`, or form posts are refused
+- $expand: the `displayLanguage` expansion parameter is written without spaces (`en,*;q=0`, not `en, *; q=0`)
+- $translate: `result` is only true if at least one match is a translation - a `not-related-to` (R4: `disjoint`/`unmatched`) or `noMap` match is still returned, but `result` is false
+- SNOMED CT edition names are held in one table (tx/sct/editions.js), used by the provider and the unknown code messages
+
+### Fixed
+
+- $validate-code: when the code is not in the value set, it is looked up in the code system version the value set selects (`compose.include.version`), not the server's default version - so the version and display reported come from the right edition
+- $validate-code: the unknown code message named the SNOMED CT test edition as "unknown"; it is now "Test Edition"
+- Registry: the SNOMED CT test edition (`http://snomed.info/xsct/31000003106`) is labelled, rather than shown as `??`
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
+
 ## [0.14.0] - 2026-09-27
 
 ### Added
