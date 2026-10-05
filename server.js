@@ -314,7 +314,7 @@ async function buildRootPageContent() {
   // Check which modules are enabled and add them to the list
   if (config.modules.packages.enabled) {
     content += '<li class="list-group-item">';
-    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages';
+    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -339,7 +339,7 @@ async function buildRootPageContent() {
   if (config.modules.registry && config.modules.registry.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/tx-reg" class="text-decoration-none">Terminology Server Registry</a>: ';
-    content += 'Discover and query FHIR terminology servers for code system and value set support';
+    content += 'Discover and query FHIR terminology servers for code system and value set support (<a href="/tx-reg/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -374,7 +374,7 @@ async function buildRootPageContent() {
   if (config.modules?.testing?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/testing" class="text-decoration-none">Test Reports</a>: ';
-    content += 'TestReports submitted by TxTester and other test tools';
+    content += 'TestReports submitted by TxTester and other test tools (<a href="/testing/openapi">API</a>)';
     content += '</li>';
   }
 

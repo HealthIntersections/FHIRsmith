@@ -43,7 +43,7 @@ function makeServer(code, name, address, { authCS = [], authVS = [], languages =
 // m: wildcard claims covering both CS urls, excludes CS_HIDDEN, but (simulating stale
 //    persisted data) still lists CS_HIDDEN as hosted - exclusion must win anyway
 // f: wildcard claim covering CS_HIDDEN, excludes it, hosts nothing - previously leaked
-//    back in via the resolve fallback path
+//    back in via the (since removed) resolve fallback path
 // g: language specific claim covering CS_HIDDEN for de, excludes it
 function createData() {
   const data = new ServerRegistries();
@@ -145,14 +145,15 @@ describe('Exclusions hide the server entirely', () => {
     expect(urls(result.authoritative)).toContain('https://m.example.org/r4');
   });
 
-  test('resolve fallback path cannot resurrect an excluded code system', () => {
-    // f claims http://example.org/cs/* but hosts nothing; before the fix the fallback
-    // ("no matches anywhere -> use authoritative masks") returned it for CS_HIDDEN
+  test('a server that claims authority but does not host the code system is not returned', () => {
+    // f claims http://example.org/cs/* but hosts nothing. There used to be a fallback
+    // ("no matches anywhere -> use authoritative masks"); the ecosystem IG says servers
+    // are not listed as authoritative unless they actually host the code system
     const { result } = api.resolveCodeSystem('R4', CS_HIDDEN, false);
     expect(urls(result.authoritative)).not.toContain('https://f.example.org/r4');
-    // but the fallback still works for a non-excluded, non-hosted code system
-    const ok = api.resolveCodeSystem('R4', 'http://example.org/cs/unhosted', false).result;
-    expect(urls(ok.authoritative)).toContain('https://f.example.org/r4');
+    const unhosted = api.resolveCodeSystem('R4', 'http://example.org/cs/unhosted', false).result;
+    expect(urls(unhosted.authoritative)).toEqual([]);
+    expect(urls(unhosted.candidates)).toEqual([]);
   });
 
   test('exclusion defeats language routing too', () => {
