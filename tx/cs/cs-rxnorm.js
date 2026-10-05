@@ -36,12 +36,27 @@ class RxNormPrep {
 
 // Iterator context
 class RxNormIteratorContext {
-  constructor(query, params = {}) {
+  /**
+   * @param {string|null} query - the SQL that produces the rows, or null for an iterator with no rows
+   * @param {object} params - the query parameters
+   * @param {number} [total] - the number of rows the query will return, if known. The expander
+   *   reads it to refuse an over-limit whole-code-system expansion before it is materialised
+   */
+  constructor(query, params = {}, total = undefined) {
     this.query = query;
     this.params = params;
     this.cursor = 0;
-    this.results = null;
-    this.executed = false;
+    if (query) {
+      this.results = null;
+      this.executed = false;
+      this.total = total;
+    } else {
+      // nothing to run: an empty statement isn't a no-op in node-sqlite3, it fails with
+      // "SQLITE_MISUSE: not an error"
+      this.results = [];
+      this.executed = true;
+      this.total = 0;
+    }
   }
 
   more() {
@@ -288,10 +303,12 @@ class RxNormServices extends CodeSystemProvider {
     if (!context) {
       // Iterate all codes
       const query = `SELECT ${this.getCodeField()}, STR FROM rxnconso WHERE SAB = ? AND TTY <> 'SY' ORDER BY ${this.getCodeField()}`;
-      return new RxNormIteratorContext(query, { sab: this.getSAB() });
+      return new RxNormIteratorContext(query, { sab: this.getSAB() }, this.totalCodeCount);
     } else {
-      // No hierarchical iteration for specific contexts in this implementation
-      return new RxNormIteratorContext('', {});
+      // No hierarchical iteration for specific contexts in this implementation. The expander
+      // asks every concept for its children (includeCodeAndDescendants), so this has to be an
+      // iterator with no rows - not one with an empty query, which sqlite rejects
+      return new RxNormIteratorContext(null, {});
     }
   }
 

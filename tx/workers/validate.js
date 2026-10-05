@@ -285,7 +285,10 @@ class ValueSetChecker {
   }
 
   seeValueSet() {
-    this.worker.opContext.seeContext(this.valueSet.vurl);
+    const key = this.valueSet.contextKey !== undefined ? this.valueSet.contextKey : this.valueSet.vurl;
+    if (key) {
+      this.worker.opContext.seeContext(key);
+    }
     if (this.valueSet.jsonObj.compose && this.valueSet.jsonObj.compose.extension) {
       for (let ext of this.valueSet.jsonObj.compose.extension) {
         if (ext.url === 'http://hl7.org/fhir/StructureDefinition/valueset-expansion-parameter' || ext.url === 'http://hl7.org/fhir/tools/StructureDefinition/valueset-expansion-parameter') {
@@ -305,8 +308,22 @@ class ValueSetChecker {
   async prepare() {
     if (this.valueSet === null) {
       throw new Issue('error', 'not-found', null, null, 'Error Error: vs = nil', null, 422);
-    } else {
-      this.seeValueSet();
+    }
+    // circular reference detection: this value set is in the chain being processed until
+    // it's prepared (which prepares everything it imports)
+    this.seeValueSet();
+    try {
+      await this.prepareSeen();
+    } finally {
+      const key = this.valueSet.contextKey !== undefined ? this.valueSet.contextKey : this.valueSet.vurl;
+      if (key) {
+        this.worker.opContext.unseeContext(key);
+      }
+    }
+  }
+
+  async prepareSeen() {
+    {
       this.worker.opContext.addNote(this.valueSet, 'Analysing ' + this.valueSet.vurl + ' for validation purposes', this.indentCount);
       if (this.indentCount === 0) {
         this.worker.opContext.addNote(this.valueSet, 'Parameters: ' + this.params.summary(), this.indentCount);

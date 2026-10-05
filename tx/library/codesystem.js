@@ -55,6 +55,7 @@ class CodeSystem extends CanonicalResource {
       if (e.issueCode) { wrapped.issueCode = e.issueCode; }
       throw wrapped;
     }
+    this.checkContained();
     if (!noMaps) {
       this.buildMaps();
     }

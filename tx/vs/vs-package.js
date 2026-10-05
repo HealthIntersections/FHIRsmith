@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const { AbstractValueSetProvider } = require('./vs-api');
 const { PackageContentLoader } = require('../../library/package-manager');
 const { ValueSetDatabase } = require('./vs-database');
+const { checkContained } = require('../library/canonical-resource');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 
@@ -126,6 +127,15 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     for (const entry of valueSetEntries) {
       const valueSet = await this.packageLoader.loadFile(entry);
       if (valueSet.url) {
+        try {
+          // don't store a value set the server can't use (e.g. one that contains a
+          // CodeSystem): it would be listed by search, and fail when read
+          checkContained(valueSet);
+        } catch (e) {
+          require('../../library/logger').getInstance().child({ module: 'tx' })
+            .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: skipping ValueSet ${valueSet.url}: ${e.message}`);
+          continue;
+        }
         valueSets.push(valueSet);
       }
     }

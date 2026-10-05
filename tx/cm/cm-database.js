@@ -349,7 +349,16 @@ class ConceptMapDatabase {
             this.cmCount = rows.length;
 
             for (const row of rows) {
-              const conceptMap = new ConceptMap(JSON.parse(row.content));
+              let conceptMap;
+              try {
+                conceptMap = new ConceptMap(JSON.parse(row.content));
+              } catch (e) {
+                // one unacceptable concept map must not take the rest with it
+                require('../../library/logger').getInstance().child({ module: 'tx' })
+                  .warn(`ConceptMap database: skipping ConceptMap ${row.url || row.id}: ${e.message}`);
+                this.cmCount--;
+                continue;
+              }
 
               // Store by URL and id alone
               conceptMapMap.set(row.url, conceptMap);

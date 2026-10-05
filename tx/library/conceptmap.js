@@ -19,6 +19,7 @@ class ConceptMap extends CanonicalResource {
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = conceptMapToR5(jsonObj, fhirVersion);
     this.validate();
+    this.checkContained();
     this.id = this.jsonObj.id;
     // Precalculated at construction so callers (e.g. the resource cache) have a
     // cheap O(1) sense of how large this resource is.
