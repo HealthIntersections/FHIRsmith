@@ -625,6 +625,26 @@ describe('RxNorm Provider', () => {
       expect(count).toBeGreaterThan(0);
       console.log(`✓ Iterated ${count} codes via iterator`);
     });
+
+    testOrSkip('root iterator reports its total', async () => {
+      // the expander reads iter.total to refuse an over-limit whole-code-system expansion
+      const iterator = await provider.iterator(null);
+      expect(iterator.total).toBe(await provider.totalCount());
+    });
+
+    testOrSkip('iterating a concept\'s children yields nothing, without error', async () => {
+      // the expander asks every concept for its children (includeCodeAndDescendants). This used
+      // to run an empty SQL statement, which node-sqlite3 rejects with
+      // "SQLITE_MISUSE: not an error" - so any expansion of all of RxNorm failed
+      const root = await provider.iterator(null);
+      const concept = await provider.nextContext(root);
+      expect(concept).toBeTruthy();
+
+      const children = await provider.iterator(concept);
+      expect(children).toBeDefined();
+      expect(children.total).toBe(0);
+      await expect(provider.nextContext(children)).resolves.toBeNull();
+    });
   });
 
   describe('Error Handling', () => {
