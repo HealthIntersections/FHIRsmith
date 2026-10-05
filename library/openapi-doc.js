@@ -36,7 +36,11 @@ function tableCells(line) {
   let cell = '';
   const s = line.trim().replace(/^\|/, '').replace(/\|$/, '');
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\\' && s[i + 1] === '|') {
+    if (s[i] === '\\' && s[i + 1] === '\\') {
+      // an escaped backslash, left for CommonMark (so \\| is a backslash, then the next cell)
+      cell += '\\\\';
+      i++;
+    } else if (s[i] === '\\' && s[i + 1] === '|') {
       cell += '|';
       i++;
     } else if (s[i] === '|') {

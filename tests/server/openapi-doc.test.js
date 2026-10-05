@@ -101,8 +101,15 @@ describe('markdown', () => {
   });
 
   test('is still safe: raw HTML is dropped, in a table too', () => {
-    expect(markdown('<script>x</script>')).not.toMatch(/<script>/);
+    expect(markdown('<script>x</script>')).not.toMatch(/<script/i);
+    expect(markdown('<SCRIPT>x</SCRIPT>')).not.toMatch(/<script/i);
     expect(markdown('| a |\n|---|\n| <img src=x onerror=y> |')).not.toMatch(/<img/);
+  });
+
+  test('a backslash in a cell survives, and an escaped one doesn\'t escape the pipe after it', () => {
+    const html = markdown('| a | b |\n|---|---|\n| `x\\\\y` | `p\\|q` |\n| c\\\\| d |');
+    expect(html).toContain('<td><code>x\\\\y</code></td><td><code>p|q</code></td>');
+    expect(html).toContain('<tr><td>c\\</td><td>d</td></tr>');
   });
 
   test('a lone pipe line is not a table', () => {

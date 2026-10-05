@@ -39,8 +39,9 @@ function querySchema(type) {
   }
 }
 
+// a table cell: backslashes escaped first, then the pipes (which would end the cell)
 function cell(s) {
-  return String(s || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  return String(s || '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
 function typeCell(p) {

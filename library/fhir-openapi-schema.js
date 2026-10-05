@@ -380,17 +380,21 @@ class FhirSchemaGenerator {
  * that wasn't generated is added as is.
  */
 // keys that would reach an object's prototype rather than the object
-const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function isUnsafeKey(k) {
+  return k === '__proto__' || k === 'constructor' || k === 'prototype';
+}
 
 function applyOverlay(schemas, overlay) {
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
-      if (UNSAFE_KEYS.has(k)) {
+      if (isUnsafeKey(k)) {
         throw new Error(`An overlay can't set '${k}'`);
       }
+      // only the target's own properties are merged into, never anything it inherits
+      const own = Object.prototype.hasOwnProperty.call(target, k);
       if (k === 'required' && Array.isArray(target.required)) {
         target.required = [...new Set([...target.required, ...v])];
-      } else if (v && typeof v === 'object' && !Array.isArray(v) && target[k] && typeof target[k] === 'object' && !Array.isArray(target[k]) && !v.$replace) {
+      } else if (own && v && typeof v === 'object' && !Array.isArray(v) && target[k] && typeof target[k] === 'object' && !Array.isArray(target[k]) && !v.$replace) {
         merge(target[k], v);
       } else {
         const value = v && v.$replace ? { ...v } : v;
@@ -402,10 +406,10 @@ function applyOverlay(schemas, overlay) {
     }
   };
   for (const [name, s] of Object.entries(overlay || {})) {
-    if (UNSAFE_KEYS.has(name)) {
+    if (isUnsafeKey(name)) {
       throw new Error(`An overlay can't set '${name}'`);
     }
-    if (schemas[name]) {
+    if (Object.prototype.hasOwnProperty.call(schemas, name)) {
       merge(schemas[name], s);
     } else {
       schemas[name] = s;
