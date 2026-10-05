@@ -83,7 +83,10 @@ class HtmlServer {
       .replace(/\[%sponsorMessage%\]/g, sponsorMessage)
       .replace(/\[%about%\]/g, renderOptions.about || '')
       // raw HTML, like [%about%]: the caller decides whether the nav item exists at all
-      .replace(/\[%library-link%\]/g, renderOptions.libraryLink || '');
+      .replace(/\[%library-link%\]/g, renderOptions.libraryLink || '')
+      // raw HTML too: the OpenAPI description, where a template's module has one in some places only
+      .replace(/\[%api-link%\]/g, renderOptions.apiLink || '')
+      .replace(/\[%api-head%\]/g, renderOptions.apiHead || '');
     
     // Handle any custom template variables
     if (options.templateVars) {

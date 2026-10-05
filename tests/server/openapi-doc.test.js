@@ -1,6 +1,6 @@
-// The shared OpenAPI page renderer (library/openapi-doc.js): the "try it" forms.
+// The shared OpenAPI page renderer (library/openapi-doc.js): the "try it" forms, and markdown.
 
-const { buildTryItRequest, curlCommand } = require('../../library/openapi-doc');
+const { buildTryItRequest, curlCommand, markdown } = require('../../library/openapi-doc');
 const packagesOpenApi = require('../../packages/openapi');
 const testingOpenApi = require('../../testing/openapi');
 
@@ -88,5 +88,24 @@ describe('the rendered reference page', () => {
     const html = packagesOpenApi.renderHtml();
     const script = html.substring(html.lastIndexOf('<script>') + 8, html.lastIndexOf('</script>'));
     expect(() => new Function(script)).not.toThrow();
+  });
+});
+
+describe('markdown', () => {
+  test('renders pipe tables, which CommonMark lacks, with escaped pipes and inline markdown', () => {
+    const html = markdown('Before *this*\n\n| Name | Type |\n|---|---|\n| `a\\|b` | **c** |\n| d | |\n\nAfter');
+    expect(html).toBe('<p>Before <em>this</em></p>\n' +
+      '<table class="table table-condensed"><thead><tr><th>Name</th><th>Type</th></tr></thead><tbody>' +
+      '<tr><td><code>a|b</code></td><td><strong>c</strong></td></tr><tr><td>d</td><td></td></tr></tbody></table>' +
+      '<p>After</p>\n');
+  });
+
+  test('is still safe: raw HTML is dropped, in a table too', () => {
+    expect(markdown('<script>x</script>')).not.toMatch(/<script>/);
+    expect(markdown('| a |\n|---|\n| <img src=x onerror=y> |')).not.toMatch(/<img/);
+  });
+
+  test('a lone pipe line is not a table', () => {
+    expect(markdown('| not a table |')).toBe('<p>| not a table |</p>\n');
   });
 });

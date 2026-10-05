@@ -20,13 +20,81 @@ const PATTERN_INLINE = 40;
 
 const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
 
+function commonmarkHtml(text) {
+  const reader = new commonmark.Parser();
+  const writer = new commonmark.HtmlRenderer({ safe: true });
+  return writer.render(reader.parse(text));
+}
+
+// GitHub-style pipe tables, which CommonMark doesn't have (and the terminology server's
+// operations use, for their parameters): a header row, a delimiter row, and the rows
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_DELIMITER = /^\s*\|(\s*:?-+:?\s*\|)+\s*$/;
+
+function tableCells(line) {
+  const cells = [];
+  let cell = '';
+  const s = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && s[i + 1] === '|') {
+      cell += '|';
+      i++;
+    } else if (s[i] === '|') {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += s[i];
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function tableCellHtml(text) {
+  return commonmarkHtml(text).trim().replace(/^<p>([\s\S]*)<\/p>$/, '$1');
+}
+
+function tableHtml(header, rows) {
+  let html = '<table class="table table-condensed"><thead><tr>';
+  html += header.map(h => `<th>${tableCellHtml(h)}</th>`).join('');
+  html += '</tr></thead><tbody>';
+  for (const row of rows) {
+    html += '<tr>' + header.map((h, i) => `<td>${tableCellHtml(row[i] || '')}</td>`).join('') + '</tr>';
+  }
+  return html + '</tbody></table>';
+}
+
 function markdown(text) {
   if (!text) {
     return '';
   }
-  const reader = new commonmark.Parser();
-  const writer = new commonmark.HtmlRenderer({ safe: true });
-  return writer.render(reader.parse(text));
+  const lines = text.split('\n');
+  const out = [];
+  let buf = [];
+  const flush = () => {
+    if (buf.length > 0) {
+      out.push(commonmarkHtml(buf.join('\n')));
+      buf = [];
+    }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    if (TABLE_ROW.test(lines[i]) && i + 1 < lines.length && TABLE_DELIMITER.test(lines[i + 1])) {
+      flush();
+      const header = tableCells(lines[i]);
+      const rows = [];
+      i += 2;
+      while (i < lines.length && TABLE_ROW.test(lines[i])) {
+        rows.push(tableCells(lines[i]));
+        i++;
+      }
+      i--;
+      out.push(tableHtml(header, rows));
+    } else {
+      buf.push(lines[i]);
+    }
+  }
+  flush();
+  return out.join('');
 }
 
 // Resolves a local '#/components/...' reference.
@@ -370,6 +438,16 @@ function buildHtml(spec, BASE_PATH) {
   }
 
   html += '<h2>Endpoints</h2>';
+  // an index, when there are enough of them to need one
+  const all = Object.entries(spec.paths).flatMap(([p, item]) => METHODS.filter(m => item[m]).map(m => [p, m, item[m]]));
+  if (all.length > 12) {
+    html += '<table class="table table-condensed"><tbody>';
+    for (const [p, method, op] of all) {
+      html += `<tr><td><span class="label label-default">${method.toUpperCase()}</span></td>` +
+        `<td><a href="#${escape(op.operationId || '')}"><code>${escape(BASE_PATH + p)}</code></a></td><td>${escape(op.summary || '')}</td></tr>`;
+    }
+    html += '</tbody></table>';
+  }
   let first = true;
   for (const [p, item] of Object.entries(spec.paths)) {
     for (const method of METHODS) {
@@ -410,6 +488,10 @@ function buildHtml(spec, BASE_PATH) {
  * @param {string} [options.schemasPath] - a generated schemas file (see
  *   utilities/generate-openapi-schemas.js) whose schemas are merged into components.schemas.
  *   A schema in the YAML of the same name wins.
+ * @param {Function} [options.build] - adds to the spec once it's loaded (paths made from
+ *   data, say). The YAML served is then the whole spec, not the file
+ * @param {string} [options.serverUrl] - the server url, when the module is mounted in more
+ *   than one place (the YAML's servers are replaced)
  */
 function createOpenApiDoc(specPath, basePath, options = {}) {
   let cachedYaml = null;
@@ -418,7 +500,9 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
 
   function getYaml() {
     if (cachedYaml === null) {
-      cachedYaml = fs.readFileSync(specPath, 'utf8');
+      cachedYaml = options.build || options.serverUrl
+        ? YAML.stringify(getSpec(), { lineWidth: 0 })
+        : fs.readFileSync(specPath, 'utf8');
     }
     return cachedYaml;
   }
@@ -427,12 +511,18 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
   // nothing can modify the cached one.
   function getSpec() {
     if (cachedSpec === null) {
-      const spec = YAML.parse(getYaml());
+      const spec = YAML.parse(fs.readFileSync(specPath, 'utf8'));
       spec.info.version = packageJson.version;
+      if (options.serverUrl) {
+        spec.servers = [{ url: options.serverUrl }];
+      }
       if (options.schemasPath) {
         const generated = JSON.parse(fs.readFileSync(options.schemasPath, 'utf8'));
         spec.components = spec.components || {};
         spec.components.schemas = { ...generated.schemas, ...(spec.components.schemas || {}) };
+      }
+      if (options.build) {
+        options.build(spec);
       }
       cachedSpec = spec;
     }
@@ -450,4 +540,4 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
   return { getSpec, getYaml, renderHtml, SPEC_PATH: specPath, BASE_PATH: basePath };
 }
 
-module.exports = { createOpenApiDoc, buildTryItRequest, curlCommand };
+module.exports = { createOpenApiDoc, buildTryItRequest, curlCommand, markdown };

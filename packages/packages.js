@@ -256,7 +256,7 @@ class PackagesModule {
             column: 'PackageVersions.PackageVersionKey',
             operator: 'IN_SUBQUERY',
             subquery: 'SELECT PackageVersionKey FROM PackageDependencies WHERE Dependency LIKE ?',
-            value: `%${dependson.replace(/[#|]/, '@')}%`
+            value: `%${dependson.replace(/[#|]/g, '@')}%`
           });
         }
 
@@ -296,7 +296,7 @@ class PackagesModule {
           // or id|version (the Java PackageClient sends |), or just id for any version.
           let depQuery;
           if (/[#|@]/.test(dependency)) {
-            depQuery = `${dependency.replace(/[#|]/, '@')}%`;
+            depQuery = `${dependency.replace(/[#|]/g, '@')}%`;
           } else {
             depQuery = `${dependency}@%`;
           }

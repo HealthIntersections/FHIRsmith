@@ -402,7 +402,9 @@ async function buildRootPageContent() {
     if (config.modules.tx.endpoints && config.modules.tx.endpoints.length > 0) {
       content += '<ul class="mt-2 mb-0">';
       for (const endpoint of config.modules.tx.endpoints) {
-        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})</li>`;
+        // the OpenAPI description is for the R5 endpoints
+        const api = String(endpoint.fhirVersion).startsWith('5') ? ` (<a href="${endpoint.path}/openapi">API</a>)` : '';
+        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})${api}</li>`;
       }
       content += '</ul>';
     }

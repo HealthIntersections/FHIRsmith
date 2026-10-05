@@ -44,6 +44,20 @@ function decodeEntities(text) {
 }
 
 /**
+ * The text with the markup removed. Repeated until nothing changes, so that removing one tag
+ * can't leave another behind (<a<b>>).
+ */
+function stripTags(html) {
+  let text = html;
+  let previous;
+  do {
+    previous = text;
+    text = text.replace(/<[^<>]*>/g, '');
+  } while (text !== previous);
+  return text;
+}
+
+/**
  * The schema in a page: the text of its one <pre> element, with any markup removed and
  * entities decoded.
  *
@@ -55,7 +69,8 @@ function extractSchema(html) {
   if (pres.length !== 1) {
     return { problem: pres.length === 0 ? 'no <pre> element' : `${pres.length} <pre> elements` };
   }
-  const text = decodeEntities(pres[0][1].replace(/<[^>]*>/g, '')).trim() + '\n';
+  // entities are decoded after the markup is gone: a decoded < is the schema's own text
+  const text = decodeEntities(stripTags(pres[0][1])).trim() + '\n';
   try {
     JSON.parse(text);
   } catch (e) {

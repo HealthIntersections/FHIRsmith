@@ -437,7 +437,6 @@ class MetadataHandler {
         // Parameters the $expand handler reads - see handleTypeLevelExpand in
         // tx/workers/expand.js and TxParameters.seeParameter in tx/params.js.
         // Keep this list in step with those when adding a parameter.
-        { name: '_incomplete' },
         { name: 'abstract' },
         { name: 'activeOnly' },
         { name: 'check-system-version' },
@@ -453,19 +452,11 @@ class MetadataHandler {
         { name: 'filter' },
         { name: 'force-system-version' },
         { name: 'force-valueset-version' },
-        { name: 'inactive' },
-        { name: 'includeAlternateCodes' },
         { name: 'includeDefinition' },
         { name: 'includeDesignations' },
-        { name: 'incomplete-ok' },
         {
           name: 'limit',
           documentation: 'Upper bound on the size of the expansion; the operation fails as too-costly beyond it'
-        },
-        { name: 'limitedExpansion' },
-        {
-          name: 'mode',
-          documentation: '=lenient-display-validation'
         },
         { name: 'no-cache' },
         { name: 'offset' },
@@ -479,10 +470,6 @@ class MetadataHandler {
         { name: 'url' },
         { name: 'useSupplement' },
         { name: 'valueSet' },
-        {
-          name: 'valueSetMode',
-          documentation: '= CHECK_MEMBERSHIP_ONLY | NO_MEMBERSHIP_CHECK'
-        },
         { name: 'valueSetVersion' }
       ]
     };

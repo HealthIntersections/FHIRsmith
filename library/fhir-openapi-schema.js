@@ -24,6 +24,16 @@
  * resources), and an overlay can tighten the generated schemas to what an endpoint really
  * requires.
  *
+ * A module can move the boundaries, when it knows what it handles:
+ *  - `resources` names the resources an element of type Resource can hold, by path
+ *    (Bundle.entry.resource: CodeSystem or ValueSet, say); they're generated too. An
+ *    element whose type is a particular resource (Bundle.issues: OperationOutcome) is always
+ *    that resource
+ *  - `choiceTypes` restricts the types of a choice element, by path
+ *    (Parameters.parameter.value[x]: the primitives, say)
+ *  - `generateExtension` describes Extension fully, from its StructureDefinition, instead
+ *    of as a boundary; usually with choiceTypes for Extension.value[x]
+ *
  * What's generated:
  *  - one schema per resource and complex datatype, named for the type, and one per backbone
  *    element, named for its path (TestReport_Setup_Action); contentReference becomes a $ref
@@ -44,7 +54,7 @@ const path = require('path');
 const REGEX_EXT = 'http://hl7.org/fhir/StructureDefinition/regex';
 const SYSTEM_STRING = 'http://hl7.org/fhirpath/System.String';
 
-/** The boundary schemas; always included. */
+/** The boundary schemas; included where something reaches them. */
 const BOUNDARY_SCHEMAS = {
   Extension: {
     type: 'object',
@@ -154,12 +164,26 @@ class FhirSchemaGenerator {
   /**
    * @param {FhirPackage} pkg
    * @param {Object} [options]
-   * @param {string[]} [options.prohibit] - element names that are left out of every resource
-   *   and type (e.g. 'contained'); the schemas are closed, so they're then not allowed
+   * @param {string[]} [options.prohibit] - elements that are left out: a name (e.g.
+   *   'contained') leaves the element out of every resource and type, a path (e.g.
+   *   'CodeSystem.contained') out of that one place. The schemas are closed, so they're
+   *   then not allowed
+   * @param {Object<string, string[]>} [options.resources] - path -> the resource types an
+   *   element of type Resource may hold (otherwise it's AnyResource)
+   * @param {Object<string, string[]>} [options.choiceTypes] - path of a choice element
+   *   (e.g. 'Parameters.parameter.value[x]') -> the types allowed (otherwise all of them)
+   * @param {boolean} [options.generateExtension] - describe Extension from its
+   *   StructureDefinition rather than as a boundary
    */
   constructor(pkg, options = {}) {
     this.pkg = pkg;
     this.prohibit = new Set(options.prohibit || []);
+    this.resources = options.resources || {};
+    this.choiceTypes = options.choiceTypes || {};
+    this.boundary = { ...BOUNDARY_SCHEMAS };
+    if (options.generateExtension) {
+      delete this.boundary.Extension;
+    }
     this.schemas = {};
     this.queue = [];
     this.queued = new Set();
@@ -170,10 +194,17 @@ class FhirSchemaGenerator {
    * @returns {Object} name -> schema
    */
   generate(roots) {
-    Object.assign(this.schemas, structuredClone(BOUNDARY_SCHEMAS));
+    Object.assign(this.schemas, structuredClone(this.boundary));
     roots.forEach(r => this.enqueue(r));
     while (this.queue.length > 0) {
       this.generateType(this.queue.shift());
+    }
+    // a boundary nothing ended up at isn't needed
+    const used = JSON.stringify(this.schemas);
+    for (const name of Object.keys(this.boundary)) {
+      if (!used.includes(`"#/components/schemas/${name}"`)) {
+        delete this.schemas[name];
+      }
     }
     // a stable order, so the generated file diffs cleanly
     const sorted = {};
@@ -184,7 +215,7 @@ class FhirSchemaGenerator {
   }
 
   enqueue(type) {
-    if (!this.queued.has(type) && !BOUNDARY_SCHEMAS[type]) {
+    if (!this.queued.has(type) && !this.boundary[type]) {
       this.queued.add(type);
       this.queue.push(type);
     }
@@ -220,12 +251,19 @@ class FhirSchemaGenerator {
     }
     for (const el of this.children(p)) {
       const name = el.path.substring(p.length + 1);
-      if (el.max === '0' || this.prohibit.has(name)) {
+      if (el.max === '0' || this.prohibit.has(name) || this.prohibit.has(el.path)) {
         continue;
       }
       if (name.endsWith('[x]')) {
         const base = name.slice(0, -3);
-        for (const t of el.type) {
+        const allowed = this.choiceTypes[el.path];
+        if (allowed) {
+          const unknown = allowed.filter(t => !el.type.some(et => et.code === t));
+          if (unknown.length > 0) {
+            throw new Error(`${el.path} can't be ${unknown.join(', ')}`);
+          }
+        }
+        for (const t of el.type.filter(t => !allowed || allowed.includes(t.code))) {
           this.addProperty(properties, base + cap(t.code), el, t);
         }
       } else {
@@ -261,14 +299,24 @@ class FhirSchemaGenerator {
       this.buildObject(sn, el.path, false, el.definition);
       value = ref(sn);
     } else if (type.code === 'Extension') {
+      this.enqueue('Extension');
       value = ref('Extension');
     } else {
       const tsd = this.pkg.sd(type.code);
       if (!tsd) {
         throw new Error(`${el.path}: no StructureDefinition for type ${type.code}`);
       }
-      if (tsd.kind === 'resource' || type.code === 'Resource' || type.code === 'DomainResource') {
-        value = ref('AnyResource');
+      if (type.code === 'Resource' || type.code === 'DomainResource') {
+        const allowed = this.resources[el.path];
+        if (allowed) {
+          allowed.forEach(t => this.enqueue(t));
+          value = allowed.length === 1 ? ref(allowed[0]) : { anyOf: allowed.map(ref) };
+        } else {
+          value = ref('AnyResource');
+        }
+      } else if (tsd.kind === 'resource') {
+        this.enqueue(type.code);
+        value = ref(type.code);
       } else if (tsd.kind === 'primitive-type') {
         primitive = true;
         value = this.primitive(tsd, el);
@@ -331,9 +379,15 @@ class FhirSchemaGenerator {
  * and anything else in the overlay replaces what was generated. A schema in the overlay
  * that wasn't generated is added as is.
  */
+// keys that would reach an object's prototype rather than the object
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 function applyOverlay(schemas, overlay) {
   const merge = (target, src) => {
     for (const [k, v] of Object.entries(src)) {
+      if (UNSAFE_KEYS.has(k)) {
+        throw new Error(`An overlay can't set '${k}'`);
+      }
       if (k === 'required' && Array.isArray(target.required)) {
         target.required = [...new Set([...target.required, ...v])];
       } else if (v && typeof v === 'object' && !Array.isArray(v) && target[k] && typeof target[k] === 'object' && !Array.isArray(target[k]) && !v.$replace) {
@@ -348,6 +402,9 @@ function applyOverlay(schemas, overlay) {
     }
   };
   for (const [name, s] of Object.entries(overlay || {})) {
+    if (UNSAFE_KEYS.has(name)) {
+      throw new Error(`An overlay can't set '${name}'`);
+    }
     if (schemas[name]) {
       merge(schemas[name], s);
     } else {
@@ -360,13 +417,19 @@ function applyOverlay(schemas, overlay) {
 /**
  * Generates the schemas a module's config asks for.
  *
- * @param {Object} config - { package, roots, prohibit, overlay }
+ * @param {Object} config - { package, roots, prohibit, resources, choiceTypes,
+ *   generateExtension, overlay } (see FhirSchemaGenerator)
  * @param {string} packageDir - the unpacked package
  * @returns {{generatedFrom: string, schemas: Object}}
  */
 function generateSchemas(config, packageDir) {
   const pkg = new FhirPackage(packageDir);
-  const gen = new FhirSchemaGenerator(pkg, { prohibit: config.prohibit });
+  const gen = new FhirSchemaGenerator(pkg, {
+    prohibit: config.prohibit,
+    resources: config.resources,
+    choiceTypes: config.choiceTypes,
+    generateExtension: config.generateExtension
+  });
   const schemas = applyOverlay(gen.generate(config.roots), structuredClone(config.overlay || {}));
   return { generatedFrom: pkg.id, schemas };
 }
