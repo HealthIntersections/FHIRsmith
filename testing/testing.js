@@ -46,6 +46,7 @@ const { requireSameOrigin } = require('../library/same-origin');
 const packageJson = require('../package.json');
 const { TestReportStore } = require('./store');
 const { parseSearch, dateRange, capabilitySearchParams } = require('./search');
+const testingOpenApi = require('./openapi');
 const {
   renderList, renderSummary, renderReport, renderLogin, renderLinks, renderUsers, listQueryToSearch
 } = require('./render');
@@ -93,6 +94,11 @@ function validateReport(r) {
   }
   if (r.meta !== undefined && (r.meta === null || typeof r.meta !== 'object' || Array.isArray(r.meta))) {
     problems.push('TestReport.meta must be an object');
+  }
+  // contained resources aren't accepted: nothing in a report needs them, and allowing them
+  // would mean describing (and rendering) any resource at all
+  if (r.contained !== undefined) {
+    problems.push('TestReport.contained is not allowed: reports may not contain resources');
   }
   return problems;
 }
@@ -222,6 +228,24 @@ class TestingModule {
         handler: (req, res) => this.sendOutcome(res, 429, 'throttled', 'Too many reports submitted; try again later')
       }));
     }
+
+    // RFC 8631: where to find the machine-readable description of this API
+    r.use((req, res, next) => {
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
+      next();
+    });
+
+    // the OpenAPI description: /openapi.json, /openapi.yaml, and /openapi (an HTML reference
+    // for browsers, the JSON otherwise)
+    r.get('/openapi.json', (req, res) => this.handle(req, res, 'openapi', () => res.json(testingOpenApi.getSpec())));
+    r.get('/openapi.yaml', (req, res) => this.handle(req, res, 'openapi', () =>
+      res.set('Content-Type', 'application/yaml').send(testingOpenApi.getYaml())));
+    r.get('/openapi', (req, res) => this.handle(req, res, 'openapi', () => {
+      if (!wantsHtml(req)) {
+        return res.json(testingOpenApi.getSpec());
+      }
+      return this.sendHtml(res, 'Test Report API', testingOpenApi.renderHtml(), Date.now());
+    }));
 
     r.get('/', ...this.web, (req, res) => this.handle(req, res, 'list', () => this.htmlList(req, res)));
     r.get('/summary', ...this.web, (req, res) => this.handle(req, res, 'summary', () => this.htmlSummary(req, res)));
