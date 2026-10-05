@@ -586,9 +586,14 @@ class ValueSetChecker {
             if (msg) {
               op.addIssue(new Issue('information', 'informational', addToPath(path, 'code'), null, msg, 'process-note'));
             }
-            inactive.value = await cs.isInactive(ctxt.context);
-            inactive.path = path;
-            vstatus.value = await cs.getStatus(ctxt.context);
+            // in a CodeableConcept a later coding must not clear the inactive status an earlier
+            // coding found, or the warning silently disappears when the inactive coding comes first
+            if (!inactive.value) {
+              inactive.value = await cs.isInactive(ctxt.context);
+              inactive.path = path;
+              inactive.code = code;
+              vstatus.value = await cs.getStatus(ctxt.context);
+            }
           }
           if (displays !== null) {
             await this.worker.listDisplaysFromCodeSystem(displays, cs, ctxt.context);
@@ -942,6 +947,7 @@ class ValueSetChecker {
     let pdisp;
     let psys;
     let pcode;
+    let ppath; // the path of the coding that is returned
     let pver;
 
 
@@ -1080,6 +1086,7 @@ class ValueSetChecker {
         if (pcode === undefined) {
           psys = c.system;
           pcode = c.code;
+          ppath = path;
           if (ver.value) {
             pver = ver.value;
           }
@@ -1202,6 +1209,7 @@ class ValueSetChecker {
             if (!this.params.membershipOnly && !inactive.value && await prov.isInactive(ctxt.context)) {
               inactive.value = true;
               inactive.path = path;
+              inactive.code = c.code;
               const st = await prov.getStatus(ctxt.context);
               if (st) {
                 vstatus.value = st;
@@ -1357,9 +1365,14 @@ class ValueSetChecker {
     }
 
     if (inactive.value) {
-      result.addParamBool('inactive', inactive.value);
-      if (vstatus.value && vstatus.value !== 'inactive') {
-        result.addParamCode('status', vstatus.value);
+      // the inactive and status parameters describe the code being returned. In a CodeableConcept
+      // the inactive coding may be a different one (or none was returned at all): it still gets
+      // its warning below, but the parameters are not claimed for the returned code
+      if (mode !== 'codeableConcept' || (pcode && inactive.path === ppath)) {
+        result.addParamBool('inactive', inactive.value);
+        if (vstatus.value && vstatus.value !== 'inactive') {
+          result.addParamCode('status', vstatus.value);
+        }
       }
       let mpath = inactive.path;
       if (!mpath) {
@@ -1371,7 +1384,9 @@ class ValueSetChecker {
         mid1 = 'INACTIVE_CONCEPT_FOUND_ADD';
         mm1 = 'inactive';
       }
-      let m = this.worker.i18n.translate(mid1, this.params.HTTPLanguages, [vstatus.value, tcode, mm1]);
+      // report the code that is actually inactive - in a CodeableConcept that isn't necessarily
+      // the first coding (tcode), which is what this message used to name
+      let m = this.worker.i18n.translate(mid1, this.params.HTTPLanguages, [vstatus.value, inactive.code || tcode, mm1]);
       msg(m);
       op.addIssue(new Issue('warning', 'business-rule', mpath, 'INACTIVE_CONCEPT_FOUND', m, 'code-comment'));
     } else if (vstatus.value && vstatus.value.toLowerCase() === 'deprecated') {
@@ -1565,6 +1580,7 @@ class ValueSetChecker {
           if (!this.params.membershipOnly && role !== 'not in') {
             inactive.value = true;
             inactive.path = path;
+            inactive.code = code;
             if (inactive.value) {
               vstatus.value = await cs.getStatus(loc.context);
             }
@@ -1575,6 +1591,7 @@ class ValueSetChecker {
           if (role !== 'not in') {
             inactive.value = true;
             inactive.path = path;
+            inactive.code = code;
             vstatus.value = await cs.getStatus(loc.context);
             let msg = this.worker.i18n.translate('STATUS_CODE_WARNING_CODE', this.params.HTTPLanguages, ['not active', code]);
             messages.push(msg);
@@ -1583,9 +1600,12 @@ class ValueSetChecker {
         } else {
           result = true;
           if (role !== 'not in') {
-            inactive.value = await cs.isInactive(loc.context);
-            inactive.path = path;
-            vstatus.value = await cs.getStatus(loc.context);
+            if (!inactive.value) {
+              inactive.value = await cs.isInactive(loc.context);
+              inactive.path = path;
+              inactive.code = code;
+              vstatus.value = await cs.getStatus(loc.context);
+            }
             if (vcc !== null) {
               if (!vcc.coding) {
                 vcc.coding = [];
@@ -1622,6 +1642,7 @@ class ValueSetChecker {
             if (!this.params.membershipOnly) {
               inactive.value = true;
               inactive.path = path;
+              inactive.code = code;
               vstatus.value = await cs.getStatus(loc);
             }
           } else {
@@ -1635,9 +1656,12 @@ class ValueSetChecker {
             } else if (Extensions.has(cc,'http://hl7.org/fhir/StructureDefinition/valueset-deprecated')) {
               op.addIssue(new Issue('warning', 'business-rule', addToPath(path, 'code'), 'CONCEPT_DEPRECATED_IN_VALUESET', this.worker.i18n.translate('CONCEPT_DEPRECATED_IN_VALUESET', this.params.HTTPLanguages, [cs.system(), code, 'deprecated', vs.vurl]), 'code-comment'));
             }
-            inactive.value = await cs.isInactive(loc);
-            inactive.path = path;
-            vstatus.value = await cs.getStatus(loc);
+            if (!inactive.value) {
+              inactive.value = await cs.isInactive(loc);
+              inactive.path = path;
+              inactive.code = code;
+              vstatus.value = await cs.getStatus(loc);
+            }
             result = true;
             return result;
           }
@@ -1686,6 +1710,7 @@ class ValueSetChecker {
           if (!this.params.membershipOnly) {
             inactive.value = true;
             inactive.path = path;
+            inactive.code = code;
             vstatus.value = await cs.getStatus(loc);
           }
         } else {
@@ -1698,6 +1723,7 @@ class ValueSetChecker {
             if (await cs.isInactive(loc)) {
               inactive.value = true;
               inactive.path = path;
+              inactive.code = code;
               // only replace a status we already have with a real one - a filter context
               // doesn't always carry the status (SNOMED, LOINC), and the assembly reads
               // vstatus for the message wording as well as for the status parameter
@@ -1735,9 +1761,12 @@ class ValueSetChecker {
       }
     } else {
       result = true;
-      inactive.value = await cs.isInactive(loc.context);
-      inactive.path = path;
-      vstatus.value = await cs.getStatus(loc.context);
+      if (!inactive.value) {
+        inactive.value = await cs.isInactive(loc.context);
+        inactive.path = path;
+        inactive.code = code;
+        vstatus.value = await cs.getStatus(loc.context);
+      }
       await this.worker.listDisplaysFromCodeSystem(displays, cs, loc.context);
       return result;
     }
