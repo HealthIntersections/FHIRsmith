@@ -998,7 +998,7 @@ class PackagesModule {
     this.router.get('/openapi.json', (req, res) => {
       const start = Date.now();
       try {
-        res.json(packagesOpenApi.getSpec());
+        res.type('application/json').send(packagesOpenApi.getJson());
       } catch (error) {
         pckLog.error('Error in /packages/openapi.json:', error);
         res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
@@ -1025,7 +1025,7 @@ class PackagesModule {
       const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
       try {
         if (!acceptsHtml) {
-          res.json(packagesOpenApi.getSpec());
+          res.type('application/json').send(packagesOpenApi.getJson());
           return;
         }
         if (!htmlServer.hasTemplate('packages')) {

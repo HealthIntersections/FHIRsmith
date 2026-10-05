@@ -245,7 +245,7 @@ class RegistryModule {
     // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
     // reference for browsers, the JSON otherwise)
     this.router.get('/openapi.json', (req, res) => {
-      res.json(registryOpenApi.getSpec());
+      res.type('application/json').send(registryOpenApi.getJson());
     });
     this.router.get('/openapi.yaml', (req, res) => {
       res.setHeader('Content-Type', 'application/yaml');
@@ -254,7 +254,7 @@ class RegistryModule {
     this.router.get('/openapi', (req, res) => {
       const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
       if (!acceptsHtml) {
-        res.json(registryOpenApi.getSpec());
+        res.type('application/json').send(registryOpenApi.getJson());
         return;
       }
       try {

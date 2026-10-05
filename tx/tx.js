@@ -557,7 +557,7 @@ class TXModule {
    */
   setupOpenApi(router, endpointInfo) {
     const doc = txOpenApi.forEndpoint(endpointInfo.path);
-    const sendJson = (res) => res.type('application/json').send(JSON.stringify(doc.getSpec()));
+    const sendJson = (res) => res.type('application/json').send(doc.getJson());
     router.use((req, res, next) => {
       res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
       next();

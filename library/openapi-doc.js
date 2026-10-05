@@ -501,6 +501,7 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
   let cachedYaml = null;
   let cachedSpec = null;
   let cachedHtml = null;
+  let cachedJson = null;
 
   function getYaml() {
     if (cachedYaml === null) {
@@ -533,6 +534,15 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
     return structuredClone(cachedSpec);
   }
 
+  // The spec as JSON text, for serving: made once, rather than a copy cloned and serialised
+  // for every request
+  function getJson() {
+    if (cachedJson === null) {
+      cachedJson = JSON.stringify(getSpec());
+    }
+    return cachedJson;
+  }
+
   // The body of the HTML reference page (to be wrapped in the module's page template).
   function renderHtml() {
     if (cachedHtml === null) {
@@ -541,7 +551,7 @@ function createOpenApiDoc(specPath, basePath, options = {}) {
     return cachedHtml;
   }
 
-  return { getSpec, getYaml, renderHtml, SPEC_PATH: specPath, BASE_PATH: basePath };
+  return { getSpec, getJson, getYaml, renderHtml, SPEC_PATH: specPath, BASE_PATH: basePath };
 }
 
 module.exports = { createOpenApiDoc, buildTryItRequest, curlCommand, markdown };

@@ -237,12 +237,12 @@ class TestingModule {
 
     // the OpenAPI description: /openapi.json, /openapi.yaml, and /openapi (an HTML reference
     // for browsers, the JSON otherwise)
-    r.get('/openapi.json', (req, res) => this.handle(req, res, 'openapi', () => res.json(testingOpenApi.getSpec())));
+    r.get('/openapi.json', (req, res) => this.handle(req, res, 'openapi', () => res.type('application/json').send(testingOpenApi.getJson())));
     r.get('/openapi.yaml', (req, res) => this.handle(req, res, 'openapi', () =>
       res.set('Content-Type', 'application/yaml').send(testingOpenApi.getYaml())));
     r.get('/openapi', (req, res) => this.handle(req, res, 'openapi', () => {
       if (!wantsHtml(req)) {
-        return res.json(testingOpenApi.getSpec());
+        return res.type('application/json').send(testingOpenApi.getJson());
       }
       return this.sendHtml(res, 'Test Report API', testingOpenApi.renderHtml(), Date.now());
     }));
