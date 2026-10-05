@@ -64,7 +64,7 @@
     "properties-file": "^3.6.4",
     "re2js": "^2.8.0",
     "rimraf": "^5.0.10",
-    "sqlite3": "^5.1.7",
+    "sqlite3": "^6.0.1",
     "tar": "^7.5.7",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^4.7.1",
@@ -112,7 +112,9 @@
     "inquirer": {
       "lodash": "4.18.1"
     },
-    "brace-expansion": "^5.0.8"
+    "brace-expansion": "^5.0.8",
+    "csv-parse": "^7.0.3",
+    "uuid": "^11.1.1"
   },
   "bin": {
     "tx-import": "./tx/importers/tx-import.js",
