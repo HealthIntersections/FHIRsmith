@@ -9,6 +9,14 @@ const Logger = require('../library/logger');
 const regLog = Logger.getInstance().child({ module: 'registry' });
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const registryOpenApi = require('./openapi');
+
+// The query parameters of the public API. These are the contract published in openapi.yaml,
+// and tests/registry/openapi.test.js checks that the two agree - so change both together.
+// Parameters are read leniently (a repeated parameter takes its first value, and unknown
+// parameters are ignored) because existing ecosystem clients rely on that.
+const DISCOVERY_PARAMS = ['registry', 'server', 'fhirVersion', 'url', 'authoritativeOnly', 'language'];
+const RESOLVE_PARAMS = ['fhirVersion', 'url', 'version', 'valueSet', 'authoritativeOnly', 'language', 'usage'];
 
 class RegistryModule {
   constructor(stats) {
@@ -210,6 +218,9 @@ class RegistryModule {
       // Content Security Policy
       res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'");
 
+      // RFC 8631: where to find the machine-readable description of this API
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
+
       next();
     });
   }
@@ -230,6 +241,35 @@ class RegistryModule {
     this.router.get('/', this.handleMainPage.bind(this));
     this.router.get('/resolve', this.handleResolveEndpoint.bind(this));
     this.router.get('/log', this.handleLogEndpoint.bind(this));
+
+    // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
+    // reference for browsers, the JSON otherwise)
+    this.router.get('/openapi.json', (req, res) => {
+      res.json(registryOpenApi.getSpec());
+    });
+    this.router.get('/openapi.yaml', (req, res) => {
+      res.setHeader('Content-Type', 'application/yaml');
+      res.send(registryOpenApi.getYaml());
+    });
+    this.router.get('/openapi', (req, res) => {
+      const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+      if (!acceptsHtml) {
+        res.json(registryOpenApi.getSpec());
+        return;
+      }
+      try {
+        if (!htmlServer.hasTemplate('registry')) {
+          htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
+        }
+        const html = htmlServer.renderPage('registry', 'Terminology Server Registry API',
+          registryOpenApi.renderHtml(), this.api ? this.api.getStatistics() : {});
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } catch (error) {
+        this.logger.error('Error rendering OpenAPI page:', error);
+        res.status(500).send(`<html><body><h1>Error</h1><p>${escape(error.message)}</p></body></html>`);
+      }
+    });
   }
 
   /**
@@ -357,21 +397,23 @@ class RegistryModule {
       const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
 
       if (!acceptsHtml) {
-        // Return JSON overview
-        return res.json({
-          name: 'FHIR Terminology Server Registry',
-          description: 'Registry and discovery service for FHIR terminology servers',
-          endpoints: {
-            status: '/registry/api/status',
-            statistics: '/registry/api/stats',
-            registries: '/registry/api/registries',
-            queryCodeSystem: '/registry/api/query/codesystem',
-            queryValueSet: '/registry/api/query/valueset',
-            bestServer: '/registry/api/best-server/{type}',
-            errors: '/registry/api/errors'
-          },
-          documentation: 'https://github.com/your-org/fhir-registry'
-        });
+        // The ecosystem Discovery API
+        const params = this._normalizeQueryParams(req.query);
+        if (params.url && !this._isValidUrl(params.url.split('|')[0])) {
+          return res.status(400).json({error: 'Invalid code system URL format'});
+        }
+        try {
+          const filters = {};
+          for (const name of DISCOVERY_PARAMS) {
+            if (params[name]) {
+              filters[name] = params[name];
+            }
+          }
+          return res.json(this.api.discover(filters));
+        } catch (error) {
+          this.logger.error('Error in discovery:', error);
+          return res.status(500).json({error: error.message});
+        }
       }
 
       // Render HTML page
@@ -1086,10 +1128,6 @@ class RegistryModule {
           this.logger.info(`Resolved CodeSystem ${url} for FHIR ${fhirVersion} (usage=${usage}, language=${language || 'none'}): ${matches}`);
         }
 
-        // If only authoritative servers are requested, filter results
-        if (authoritativeOnly === 'true' && result) {
-          result.candidates = [];
-        }
         if (acceptsHtml) {
           try {
             const startTime = Date.now();
@@ -1455,5 +1493,8 @@ class RegistryModule {
     return html;
   }
 }
+
+RegistryModule.DISCOVERY_PARAMS = DISCOVERY_PARAMS;
+RegistryModule.RESOLVE_PARAMS = RESOLVE_PARAMS;
 
 module.exports = RegistryModule;

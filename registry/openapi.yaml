@@ -1,0 +1,311 @@
+# OpenAPI description of the FHIRsmith terminology server registry (/tx-reg) - the
+# coordination server of the HL7 terminology ecosystem.
+#
+# The normative description of this API is the ecosystem page of the terminology
+# ecosystem IG (https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/ecosystem.html); this
+# file describes what this server implements, including its extensions. It is maintained by
+# hand, and tests/registry/openapi.test.js keeps it honest: every route the router registers
+# must be described here or explicitly excluded, and the documented query parameters must
+# be the ones the handlers read (DISCOVERY_PARAMS, RESOLVE_PARAMS in registry.js).
+#
+# info.version is filled in from package.json when the spec is served.
+
+openapi: 3.1.0
+info:
+  title: FHIRsmith Terminology Server Registry
+  version: "0.0.0"
+  summary: Find the right terminology server for a code system or value set
+  description: |
+    The coordination server of a terminology server ecosystem. It regularly scans the
+    servers listed in the ecosystem's master registration file - their
+    CapabilityStatement, TerminologyCapabilities and ValueSets - and answers two
+    questions:
+
+    * **Discovery** (`GET /`): which terminology server endpoints are there?
+    * **Resolution** (`GET /resolve`): which server should be used for this code system
+      or value set?
+
+    Servers can claim to be **authoritative** for code systems and value sets (by URL
+    mask) in their registration. A server that hosts the content but makes no claim is a
+    **candidate**. A server is only ever returned for content it actually hosts.
+
+    **Content negotiation.** If the request's `Accept` header contains `text/html`, these
+    endpoints return a browsable HTML page instead of JSON. The JSON form is the contract.
+
+    **Parameters are read leniently**: unknown parameters are ignored, and a repeated
+    parameter takes its first value.
+  license:
+    name: BSD-3-Clause
+    url: https://opensource.org/license/bsd-3-clause
+externalDocs:
+  description: Terminology ecosystem IG - the ecosystem and the coordination server API
+  url: https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/ecosystem.html
+servers:
+  - url: /tx-reg
+tags:
+  - name: discovery
+    description: List the servers in the ecosystem
+  - name: resolution
+    description: Choose a server for a code system or value set
+
+paths:
+  /:
+    get:
+      tags: [discovery]
+      operationId: discover
+      summary: List terminology server endpoints
+      description: |
+        Lists the server endpoints in the ecosystem, one entry per server per FHIR
+        version, optionally filtered.
+
+        With `url`, only endpoints that host that code system are listed, those
+        authoritative for it first, and each entry's `candidate` list says whether the
+        endpoint hosts it without claiming authority. A server that excludes the code
+        system is not listed.
+
+        Without `url`, each entry's `authoritative` and `authoritative-valuesets` are the
+        server's claim masks, and there are no candidate lists (listing everything a server
+        hosts would make the response very large).
+      parameters:
+        - name: registry
+          in: query
+          description: Only endpoints from this registry (its code in the master registration file).
+          schema: { type: string }
+        - name: server
+          in: query
+          description: Only endpoints of this server (its code in its registry).
+          schema: { type: string }
+          example: tx.fhir.org
+        - $ref: '#/components/parameters/fhirVersionOptional'
+        - name: url
+          in: query
+          description: Only endpoints that host this code system (`url` or `url|version`).
+          schema: { type: string }
+          example: http://loinc.org
+        - name: authoritativeOnly
+          in: query
+          description: With `url`, only endpoints that are authoritative for it.
+          schema: { type: string, enum: ['true', 'false'], default: 'false' }
+        - $ref: '#/components/parameters/language'
+      responses:
+        '200':
+          description: The matching endpoints
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryResult' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /resolve:
+    get:
+      tags: [resolution]
+      operationId: resolve
+      summary: Choose a server for a code system or value set
+      description: |
+        Returns the endpoints to use for a code system (`url`) or a value set (`valueSet`)
+        at a FHIR version: those authoritative for it, then the other candidates that host
+        it. Choosing between several is up to the client.
+
+        * An endpoint is only listed if it hosts the code system (+version). A SNOMED CT
+          edition (`http://snomed.info/sct|http://snomed.info/sct/{edition}`) is hosted by an
+          endpoint that hosts any version of that edition.
+        * An endpoint listed as authoritative is not also listed as a candidate.
+        * A server whose registration has a `usage` list is only returned if the request's
+          `usage` is in it.
+        * A server that excludes the code system or value set is never returned.
+        * `authoritative` and `candidates` are omitted when empty.
+
+        With `language`, endpoints matched on a language specific claim come first in
+        `authoritative`, and candidates are marked `language-support: unknown`. Value set
+        resolution has no language dimension.
+
+        A browser request (`Accept: text/html`) without the required parameters returns a
+        form for making the request.
+      parameters:
+        - name: fhirVersion
+          in: query
+          required: true
+          description: The FHIR version, as a release code (`R4`, `R4B`, `R5` ...) or a version (`4.0.1`, `4.0`).
+          schema: { type: string }
+          example: R4
+        - name: url
+          in: query
+          description: The code system, `url` or `url|version`. One of `url` and `valueSet` is required.
+          schema: { type: string }
+          example: http://snomed.info/sct|http://snomed.info/sct/32506021000036107
+        - name: version
+          in: query
+          description: |
+            A version for `url`, as an alternative to `url|version`. Ignored if `url` already
+            has a version. (An extension to the ecosystem IG.)
+          schema: { type: string }
+        - name: valueSet
+          in: query
+          description: The value set, `url` or `url|version`.
+          schema: { type: string }
+          example: http://hl7.org/fhir/ValueSet/observation-codes
+        - name: authoritativeOnly
+          in: query
+          description: Only return authoritative endpoints (no candidates).
+          schema: { type: string, enum: ['true', 'false'], default: 'false' }
+        - $ref: '#/components/parameters/language'
+        - name: usage
+          in: query
+          description: |
+            What the client is doing, for servers that restrict their use. The HL7 Java
+            tools send `publication`, `validation` or `code-generation`.
+          schema: { type: string }
+          example: publication
+      responses:
+        '200':
+          description: The endpoints to use
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveResult' }
+            text/html:
+              schema: { type: string }
+        '400':
+          description: A required parameter is missing, or a URL is malformed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  parameters:
+    fhirVersionOptional:
+      name: fhirVersion
+      in: query
+      description: Only endpoints for this FHIR version, as a release code (`R4`, `R4B`, `R5` ...) or a version (`4.0.1`, `4.0`).
+      schema: { type: string }
+      example: R4
+    language:
+      name: language
+      in: query
+      description: |
+        The language of the request being routed, in Accept-Language syntax: one BCP-47
+        tag, or a weighted list (`de-AT, de;q=0.9, en;q=0.1`). Pass it only when the
+        operation is language-sensitive. With discovery, only meaningful with `url`.
+      schema: { type: string }
+      example: de
+
+  responses:
+    BadRequest:
+      description: A parameter is malformed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: The server failed to process the request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    SecurityFlags:
+      type: object
+      description: |
+        How the endpoint can be accessed, as the boolean flags of the ecosystem IG (`open`
+        for unauthenticated use; an API key is reported as `token`), plus the scanner's own
+        `security` string (`open` or `api-key`), kept for existing clients.
+      properties:
+        security: { type: string, enum: [open, api-key] }
+        open: { type: boolean, const: true }
+        password: { type: boolean, const: true }
+        token: { type: boolean, const: true }
+        oauth: { type: boolean, const: true }
+        smart: { type: boolean, const: true }
+        cert: { type: boolean, const: true }
+
+    DiscoveryResult:
+      type: object
+      required: [last-update, master-url, results]
+      properties:
+        last-update:
+          type: [string, 'null']
+          format: date-time
+          description: When the ecosystem was last scanned
+        master-url: { type: string, format: uri, description: The master registration file that was scanned }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoveryEntry' }
+
+    DiscoveryEntry:
+      allOf:
+        - $ref: '#/components/schemas/SecurityFlags'
+        - type: object
+          required: [server-name, server-code, registry-name, registry-code, url, fhirVersion, systems, authoritative, authoritative-valuesets]
+          properties:
+            server-name: { type: string }
+            server-code: { type: string }
+            registry-name: { type: string }
+            registry-code: { type: string }
+            registry-url: { type: string, format: uri }
+            url: { type: string, format: uri, description: The FHIR endpoint }
+            fhirVersion: { type: string, example: 4.0.1 }
+            error:
+              type: [string, 'null']
+              description: What went wrong the last time the endpoint was scanned; null if it worked
+            last-success:
+              type: [integer, 'null']
+              description: Milliseconds since the endpoint was last scanned successfully; null if never
+            systems: { type: integer, description: Number of code systems the endpoint hosts }
+            authoritative:
+              type: array
+              items: { type: string }
+              description: The code system masks the server claims authority for
+            authoritative-valuesets:
+              type: array
+              items: { type: string }
+              description: The value set masks the server claims authority for
+            candidate:
+              type: array
+              items: { type: string }
+              description: With `url`, present when the endpoint hosts it without claiming authority
+            languages:
+              type: array
+              items: { type: string }
+              description: With `url` and `language`, the language tag of the claim the endpoint matched on
+
+    ResolveResult:
+      type: object
+      required: [formatVersion, registry-url]
+      properties:
+        formatVersion: { type: string, const: '1' }
+        registry-url: { type: string, format: uri, description: The master registration file }
+        authoritative:
+          type: array
+          items: { $ref: '#/components/schemas/ResolvedServer' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/ResolvedServer' }
+
+    ResolvedServer:
+      allOf:
+        - $ref: '#/components/schemas/SecurityFlags'
+        - type: object
+          required: [server-name, url, fhirVersion]
+          properties:
+            server-name: { type: string }
+            url: { type: string, format: uri, description: The FHIR endpoint to use }
+            fhirVersion: { type: string, example: 4.0.1 }
+            access_info: { type: string, description: How to get access (markdown), from the server's registration }
+            content:
+              type: string
+              enum: [not-present, example, fragment, complete, supplement]
+              description: Candidates only - the content mode of the code system on this server, if it says
+            languages:
+              type: array
+              items: { type: string }
+              description: Authoritative entries matched on a language specific claim - that claim's language tag
+            language-support:
+              type: string
+              const: unknown
+              description: Candidates, when the request had a language - the ecosystem can't say whether this server has it
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
