@@ -1085,6 +1085,21 @@ class OperationContext {
   }
 
   /**
+   * Stop tracking a context, once processing of that value set is finished. The tracked
+   * contexts are the chain of value sets currently being processed, not every value set
+   * seen in the operation: a value set used twice (imported by two others, or twice by
+   * one) is not a circularity - only one that is reached again while it's being
+   * processed is.
+   * @param {string} vurl - the url passed to seeContext
+   */
+  unseeContext(vurl) {
+    const i = this.contexts.lastIndexOf(vurl);
+    if (i >= 0) {
+      this.contexts.splice(i, 1);
+    }
+  }
+
+  /**
    * Clear all tracked contexts
    */
   clearContexts() {

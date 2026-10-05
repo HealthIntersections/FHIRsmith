@@ -1,0 +1,273 @@
+# OpenAPI description of the FHIRsmith testing module (/testing): a FHIR API for TestReports.
+#
+# The paths are maintained here by hand. The FHIR resource schemas (TestReport,
+# OperationOutcome, Bundle, the datatypes they use, and TestReportSearchBundle) are generated
+# from the R5 StructureDefinitions into openapi-schemas.json, and merged into
+# components.schemas when the spec is served - see openapi-schemas.config.js.
+#
+# tests/testing/openapi.test.js keeps this honest: every route must be described here or
+# explicitly excluded, the search parameters must be the ones search.js understands, and
+# the TestReport schema must require everything validateReport() in testing.js requires.
+#
+# Administrative routes (DELETE, the login and admin pages) are deliberately not described.
+# info.version is filled in from package.json when the spec is served.
+
+openapi: 3.1.0
+info:
+  title: FHIRsmith Test Reports
+  version: "0.0.0"
+  summary: A FHIR repository for TestReports
+  description: |
+    Receives FHIR TestReports - from TxTester, and from any other tool that produces them -
+    and makes them available for reading and searching. This is a small FHIR R5 server with
+    one resource type, TestReport, and three interactions: create, read and search.
+
+    * **R4 and R5** TestReports are accepted alike (they differ only in `testScript`).
+    * **Reports are immutable**: the server assigns the id and `meta.lastUpdated`, drops
+      `meta.versionId`, and each POST is a new report, even of the same report.
+    * **Contained resources are not accepted.**
+    * The server checks only what the TestReport schema marks as required (and that
+      `issued` is a valid dateTime and `score` a number). The schema describes a valid
+      report; reports that don't conform to it in other ways may still be accepted, but
+      shouldn't be sent.
+
+    **Content negotiation.** Read and search return an HTML page to a browser (an
+    `Accept` containing `text/html`); `_format=json` or `_format=html` overrides that.
+  license:
+    name: BSD-3-Clause
+    url: https://opensource.org/license/bsd-3-clause
+externalDocs:
+  description: The TestReport resource (FHIR R5)
+  url: https://hl7.org/fhir/R5/testreport.html
+servers:
+  - url: /testing
+
+paths:
+  /TestReport:
+    post:
+      tags: [TestReport]
+      operationId: createTestReport
+      summary: Submit a report
+      description: |
+        Stores the report and returns it with its new id and `meta.lastUpdated`. Reports
+        are limited in size (500 KB by default) and submissions are rate limited.
+
+        If the server is configured with a token, every submission must carry it, in the
+        `Authorization` header by default (`Bearer <token>`; the header is configurable).
+      security:
+        - {}
+        - submitToken: []
+      parameters:
+        - name: Prefer
+          in: header
+          description: '`return=minimal` (no body), `return=representation` (the default), or `return=OperationOutcome`.'
+          schema: { type: string }
+          example: return=minimal
+      requestBody:
+        required: true
+        content:
+          application/fhir+json:
+            schema: { $ref: '#/components/schemas/TestReport' }
+          application/json:
+            schema: { $ref: '#/components/schemas/TestReport' }
+      responses:
+        '201':
+          description: Stored. The body is the stored report, nothing, or an OperationOutcome, as `Prefer` asks.
+          headers:
+            Location:
+              description: The new report's URL
+              schema: { type: string, format: uri }
+            Last-Modified:
+              schema: { type: string }
+          content:
+            application/fhir+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/TestReport'
+                  - $ref: '#/components/schemas/OperationOutcome'
+        '400': { $ref: '#/components/responses/Invalid' }
+        '401':
+          description: A token is required and wasn't supplied, or is wrong
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/OperationOutcome' }
+        '413':
+          description: The report is too big
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/OperationOutcome' }
+        '415':
+          description: The body isn't JSON
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/OperationOutcome' }
+        '429':
+          description: Too many submissions; try again later
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/OperationOutcome' }
+
+    get:
+      tags: [TestReport]
+      operationId: searchTestReports
+      summary: Search reports
+      description: |
+        Returns a searchset Bundle, newest received first unless `_sort` says otherwise.
+        `total` is always present.
+
+        Comma separated values are ORed; repeated parameters are ANDed. The search
+        parameters aren't yet formally defined as SearchParameter resources; their
+        behaviour is as described here. Modifiers are written after the name
+        (`name:exact=...`).
+
+        Unknown parameters are ignored, with a warning OperationOutcome entry
+        (`search.mode = outcome`) in the Bundle - unless the request has
+        `Prefer: handling=strict`, when they're a 400. Values that can't be understood (a
+        bad date or number) are always a 400.
+      parameters:
+        - name: _id
+          in: query
+          description: The report's id.
+          schema: { type: string }
+        - name: name
+          in: query
+          description: '`name` starts with this, case-insensitively. Modifiers: `:exact`, `:contains`, `:missing`.'
+          schema: { type: string }
+          example: tx-ecosystem
+        - name: tester
+          in: query
+          description: '`tester` starts with this, case-insensitively. Modifiers: `:exact`, `:contains`, `:missing`.'
+          schema: { type: string }
+        - name: status
+          in: query
+          description: '`status`, exactly (a `system|` prefix is ignored). Modifiers: `:not`, `:missing`.'
+          schema: { type: string }
+          example: completed
+        - name: result
+          in: query
+          description: '`result`, exactly. Modifiers: `:not`, `:missing`.'
+          schema: { type: string }
+          example: fail
+        - name: testscript
+          in: query
+          description: '`testScript` (the R5 canonical, or the R4 reference), exactly. Modifiers: `:below` (starts with), `:missing`.'
+          schema: { type: string }
+        - name: participant
+          in: query
+          description: 'The `uri` of any participant, exactly. Modifier: `:below` (starts with).'
+          schema: { type: string }
+          example: http://tx.fhir.org/r4
+        - name: score
+          in: query
+          description: '`score`, with a prefix (`eq` `ne` `gt` `lt` `ge` `le` `sa` `eb` `ap`); `eq` has implicit precision (`90` means 89.5 to 90.5). Modifier: `:missing`.'
+          schema: { type: string }
+          example: ge90
+        - name: issued
+          in: query
+          description: '`issued`, with a prefix; dates are ranges (`issued=2026-09` is all of September).'
+          schema: { type: string }
+          example: ge2026-09
+        - name: _lastUpdated
+          in: query
+          description: When the report was received, with a prefix.
+          schema: { type: string }
+        - name: _sort
+          in: query
+          description: Any of the parameters above except `_id`, comma separated, `-` for descending.
+          schema: { type: string }
+          example: -issued
+        - name: _count
+          in: query
+          description: Page size; defaults to 50, at most 500. `0` returns just the total.
+          schema: { type: integer, minimum: 0, maximum: 500 }
+        - name: _offset
+          in: query
+          description: Where the page starts. The Bundle has first, previous, next and last links.
+          schema: { type: integer, minimum: 0 }
+        - name: _summary
+          in: query
+          description: '`count` returns just the total.'
+          schema: { type: string, enum: [count] }
+        - name: _format
+          in: query
+          description: '`json` or `html`, overriding the `Accept` header.'
+          schema: { type: string }
+        - name: _total
+          in: query
+          description: Accepted, and has no effect - the total is always returned.
+          schema: { type: string }
+        - name: _pretty
+          in: query
+          description: Accepted, and has no effect - responses are always indented.
+          schema: { type: string }
+        - name: Prefer
+          in: header
+          description: '`handling=strict` makes unknown parameters an error.'
+          schema: { type: string }
+      responses:
+        '200':
+          description: The matching reports
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/TestReportSearchBundle' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/Invalid' }
+
+  /TestReport/{id}:
+    get:
+      tags: [TestReport]
+      operationId: readTestReport
+      summary: Read a report
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The report, or a rendering of it for a browser
+          headers:
+            Last-Modified:
+              schema: { type: string }
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/TestReport' }
+            text/html:
+              schema: { type: string }
+        '404':
+          description: No such report
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/OperationOutcome' }
+
+  /metadata:
+    get:
+      tags: [server]
+      operationId: capabilities
+      summary: The server's CapabilityStatement
+      description: |
+        Lists the interactions and search parameters. The search parameters have no
+        definitions (see the search operation for what they do).
+      responses:
+        '200':
+          description: A CapabilityStatement
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/AnyResource' }
+
+components:
+  securitySchemes:
+    submitToken:
+      type: http
+      scheme: bearer
+      description: |
+        Required for submitting reports if the server is configured with a token. Sent in the
+        `Authorization` header by default; a server can be configured to use another header.
+
+  responses:
+    Invalid:
+      description: The request isn't acceptable - the issues say why
+      content:
+        application/fhir+json:
+          schema: { $ref: '#/components/schemas/OperationOutcome' }

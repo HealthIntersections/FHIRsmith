@@ -54,6 +54,7 @@ const {BundleXML} = require("./xml/bundle-xml");
 const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
 const { buildOperationOutcome, outcomeFromError } = require('./library/operation-outcome');
+const txOpenApi = require('./openapi');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -521,6 +522,11 @@ class TXModule {
 
     app.use(express.urlencoded({ extended: true }));
 
+    // The OpenAPI description, on the endpoints it describes (R5)
+    if (txOpenApi.describes(fhirVersion)) {
+      this.setupOpenApi(router, endpointInfo);
+    }
+
     // Set up routes
     this.setupRoutes(router, endpointInfo.path);
 
@@ -538,6 +544,55 @@ class TXModule {
     this.endpoints.push(endpointInfo);
 
     this.log.info(`Endpoint ${endpointPath} registered`);
+  }
+
+  /**
+   * The OpenAPI description of an endpoint: /openapi.json, /openapi.yaml, and /openapi (an
+   * HTML reference for browsers, the JSON otherwise), and an RFC 8631 Link header on every
+   * response that points to them. These are sent directly, not through the res.json the
+   * endpoint wraps for FHIR resources.
+   *
+   * @param {express.Router} router
+   * @param {Object} endpointInfo
+   */
+  setupOpenApi(router, endpointInfo) {
+    const doc = txOpenApi.forEndpoint(endpointInfo.path);
+    const sendJson = (res) => res.type('application/json').send(doc.getJson());
+    router.use((req, res, next) => {
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
+      next();
+    });
+    const count = (start) => this.countRequest(endpointInfo.path, 'openapi', Date.now() - start);
+    router.get('/openapi.json', (req, res) => {
+      const start = Date.now();
+      try {
+        sendJson(res);
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi.yaml', (req, res) => {
+      const start = Date.now();
+      try {
+        res.type('application/yaml').send(doc.getYaml());
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi', async (req, res) => {
+      const start = Date.now();
+      try {
+        if (!txHtml.acceptsHtml(req)) {
+          return sendJson(res);
+        }
+        const txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, endpointInfo.path);
+        const html = await txhtml.renderPage('API', doc.renderHtml(), endpointInfo, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        count(start);
+      }
+    });
   }
 
   /**

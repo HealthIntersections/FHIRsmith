@@ -374,5 +374,5 @@ function capabilitySearchParams() {
 
 module.exports = {
   parseSearch, dateRange, splitValues, capabilitySearchParams,
-  PARAMS, DEFAULT_COUNT, MAX_COUNT
+  PARAMS, CONTROL, DEFAULT_COUNT, MAX_COUNT
 };

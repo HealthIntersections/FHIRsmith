@@ -61,9 +61,11 @@ jobs:
 
       - name: Check for known vulnerabilities
         run: |
-          # Check for high/critical vulnerabilities only
+          # Check for high/critical vulnerabilities only, in what ships (the image is built with
+          # npm ci --omit=dev). Dev tooling is reported by the step above, but doesn't fail the
+          # build: jest and nodemon depend on braces, which has an advisory with no fixed version.
           # npm audit returns non-zero exit code if vulnerabilities are found at the specified level
-          if npm audit --audit-level=high; then
+          if npm audit --omit=dev --audit-level=high; then
             echo "No high or critical vulnerabilities found"
           else
             echo "High or critical vulnerabilities found!"

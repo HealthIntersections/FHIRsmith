@@ -13,7 +13,9 @@ makes them available through a FHIR API and a set of web pages. It runs at `/tes
 R4 and R5 TestReports are treated the same. A report is accepted if it is JSON, has
 `resourceType: TestReport`, and has `name`, `status`, `result`, `tester`, `issued` (a valid
 dateTime) and at least one `participant` with a `uri`. `score`, if present, must be a number.
-Nothing else is checked.
+Contained resources are not accepted. Nothing else is checked - but the TestReport schema in
+the OpenAPI description (below) says what a valid report looks like, and reports should
+conform to it.
 
 The server gives the report a new id (any id sent is ignored), sets `meta.lastUpdated` to the
 time it was received, and drops `meta.versionId`: reports can't be changed once received, so
@@ -64,6 +66,46 @@ always returned, and `_summary=count` returns only that.
 Unknown parameters are ignored, with a warning OperationOutcome in the Bundle, unless the
 request has `Prefer: handling=strict`, in which case they're a 400. Values that can't be
 understood (a bad date or number) are always a 400.
+
+## OpenAPI description
+
+The FHIR API (create, read, search, metadata) is described by an OpenAPI 3.1 spec:
+
+| URL | |
+|---|---|
+| `/testing/openapi` | Browsable reference (HTML), with a "try it" form for each GET operation |
+| `/testing/openapi.json` | The spec as JSON |
+| `/testing/openapi.yaml` | The hand-written part, as YAML ([openapi.yaml](openapi.yaml)) |
+
+Every response carries a `Link: </testing/openapi.json>; rel="service-desc"` header (RFC 8631),
+and the HTML pages carry the matching `<link>` element. Deleting reports and the
+administration pages are deliberately not described.
+
+The spec is in two parts:
+
+* [openapi.yaml](openapi.yaml) - the paths, parameters and responses, written by hand
+* [openapi-schemas.json](openapi-schemas.json) - the FHIR schemas (TestReport, Bundle,
+  OperationOutcome, the datatypes they use, and `TestReportSearchBundle`), generated from the R5
+  StructureDefinitions by `library/fhir-openapi-schema.js`, as configured in
+  [openapi-schemas.config.js](openapi-schemas.config.js). The loader merges them into the spec.
+
+The generated schemas are closed (no properties FHIR doesn't define), include the `_x`
+siblings of primitive elements (so extensions on primitives, like `_name`, are allowed), and
+use the codes of required bindings as enums. Recursion is cut at two boundaries: an extension's
+value isn't described, and a resource inside another (`Bundle.entry.resource`) is "any resource"
+unless the config narrows it. `contained` is left out, so it isn't allowed. The config's overlay
+adds what this server requires beyond the base resource, and lets `testScript` be an R4
+Reference.
+
+After changing the config, regenerate (this needs `hl7.fhir.r5.core#5.0.0` in the
+terminology cache):
+
+    node utilities/generate-openapi-schemas.js testing
+
+`tests/testing/openapi.test.js` fails if the generated file is out of date, if a route or search
+parameter isn't described (or excluded), or if the TestReport schema doesn't require everything
+`validateReport()` requires. It also validates what the server actually returns (a stored
+report, a search Bundle, an OperationOutcome) against the schemas, using ajv.
 
 ## Web pages
 

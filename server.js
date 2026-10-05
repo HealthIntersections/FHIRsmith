@@ -314,7 +314,7 @@ async function buildRootPageContent() {
   // Check which modules are enabled and add them to the list
   if (config.modules.packages.enabled) {
     content += '<li class="list-group-item">';
-    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages';
+    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -339,7 +339,7 @@ async function buildRootPageContent() {
   if (config.modules.registry && config.modules.registry.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/tx-reg" class="text-decoration-none">Terminology Server Registry</a>: ';
-    content += 'Discover and query FHIR terminology servers for code system and value set support';
+    content += 'Discover and query FHIR terminology servers for code system and value set support (<a href="/tx-reg/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -374,7 +374,7 @@ async function buildRootPageContent() {
   if (config.modules?.testing?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/testing" class="text-decoration-none">Test Reports</a>: ';
-    content += 'TestReports submitted by TxTester and other test tools';
+    content += 'TestReports submitted by TxTester and other test tools (<a href="/testing/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -402,7 +402,9 @@ async function buildRootPageContent() {
     if (config.modules.tx.endpoints && config.modules.tx.endpoints.length > 0) {
       content += '<ul class="mt-2 mb-0">';
       for (const endpoint of config.modules.tx.endpoints) {
-        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})</li>`;
+        // the OpenAPI description is for the R5 endpoints
+        const api = String(endpoint.fhirVersion).startsWith('5') ? ` (<a href="${endpoint.path}/openapi">API</a>)` : '';
+        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})${api}</li>`;
       }
       content += '</ul>';
     }

@@ -21,6 +21,7 @@ const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
 const {debugLog} = require("./operation-context");
 const {InvalidError} = require("./library/errors");
 const {VALID_FILTER_OPS} = require("./library/renderer");
+const txOpenApi = require("./openapi");
 
 const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
 
@@ -262,6 +263,11 @@ class TxHtmlRenderer {
         ? '<a href="' + escape(endpoint.path) + '/library" style="color: gold">Library</a>  &nbsp;|&nbsp;'
         : ''
     };
+    // the OpenAPI description, on the endpoints it describes (R5)
+    if (txOpenApi.describes(endpoint.fhirVersion)) {
+      options.apiLink = '<a href="' + escape(endpoint.path) + '/openapi" style="color: gold">API</a>  &nbsp;|&nbsp;';
+      options.apiHead = '<link rel="service-desc" type="application/json" href="' + escape(endpoint.path) + '/openapi.json"/>';
+    }
 
     return htmlServer.renderPage('tx', title, content, options);
   }

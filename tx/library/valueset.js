@@ -25,10 +25,26 @@ class ValueSet extends CanonicalResource {
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = valueSetToR5(jsonObj, fhirVersion);
     this.validate();
+    this.checkContained();
     this.buildMaps();
     // Precalculated at construction so callers (e.g. the resource cache) have a
     // cheap O(1) sense of how large this resource is.
     this._conceptCount = ValueSet._countConcepts(this.jsonObj, this._containsCount);
+  }
+
+  /**
+   * What circular reference detection knows this value set by: its versioned url, or, for
+   * a contained value set (see TerminologyWorker.findValueSet), its container's key plus
+   * #id - a contained value set's own url, if it has one, says nothing about which
+   * container it came from. null for a value set with no url that isn't contained.
+   * @returns {string|null}
+   */
+  get contextKey() {
+    if (this.isContained && this.container) {
+      const base = this.container.contextKey || this.container.vurl || '(unidentified)';
+      return `${base}#${this.jsonObj.id || ''}`;
+    }
+    return this.vurl || null;
   }
 
   /**

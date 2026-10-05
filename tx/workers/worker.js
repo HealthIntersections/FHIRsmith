@@ -379,14 +379,22 @@ class TerminologyWorker {
       return null;
     }
     if (url.startsWith("#")) {
+      // A local reference: per FHIR, #id is resolved against the contained resources of
+      // the resource being processed - which, when that is itself a contained value set,
+      // means its container's (contained resources are all siblings in one list)
       if (source) {
-        if (source.jsonObj) {
-          source = source.jsonObj;
-        }
-        for (const contained of source.contained || []) {
-          if (contained.id === url.substring(1)) {
+        const container = source.container || source;
+        const json = container.jsonObj || container;
+        for (const contained of json.contained || []) {
+          if (contained && contained.id === url.substring(1)) {
+            if (contained.resourceType !== 'ValueSet') {
+              // the resource wrappers already reject this; this is the second line of defence
+              throw new Issue('error', 'not-supported', null, 'CONTAINED_RESOURCE_NOT_SUPPORTED',
+                `The reference '${url}' is to a contained ${contained.resourceType}, not a ValueSet`, 'not-supported', 400);
+            }
             const ret = this.wrapRawResource(contained);
             ret.isContained = true;
+            ret.container = container.jsonObj ? container : this.wrapRawResource(container);
             return ret;
           }
         }
@@ -477,11 +485,24 @@ class TerminologyWorker {
    *   Note: this is the caller's parameters, not this.params - the worker's own
    *   params is null when expanding an imported ValueSet
    */
+  /** The circular reference key seeValueSet tracks for a value set */
+  valueSetContextKey(vs) {
+    return vs.contextKey !== undefined ? vs.contextKey : (vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null);
+  }
+
+  /** Finished processing a value set: see OperationContext.unseeContext */
+  unseeValueSet(vs) {
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.unseeContext(key);
+    }
+  }
+
   seeValueSet(vs, params) {
     // Build canonical URL from url and version
-    const vurl = vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null;
-    if (vurl) {
-      this.opContext.seeContext(vurl);
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.seeContext(key);
     }
     // Check for expansion parameter extensions on compose
     if (vs.jsonObj.compose && vs.jsonObj.compose.extension) {

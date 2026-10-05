@@ -620,19 +620,23 @@ class ValueSetExpander {
     return count;
   }
 
+  /**
+   * Exclude the codes of an (expanded) value set. Excludes are processed before includes,
+   * so the codes are recorded as excluded - as excludeCode does - and the includes then
+   * skip them. (This used to remove them from what had been included so far, which at
+   * that point is nothing, so excluding a value set excluded nothing.)
+   */
   excludeValueSet(vs, expansion, imports, offset) {
-    for (const c of vs.expansion.contains) {
-      this.worker.deadCheck('excludeValueSet');
-      const s = this.keyC(c);
-      if (this.passesImports(imports, c.system, c.code, offset) && this.map.has(s)) {
-        const idx = this.fullList.indexOf(this.map.get(s));
-        if (idx >= 0) {
-          this.fullList.splice(idx, 1);
+    const walk = (list) => {
+      for (const c of list || []) {
+        this.worker.deadCheck('excludeValueSet');
+        if (c.code && this.passesImports(imports, c.system, c.code, offset)) {
+          this.excluded.add((this.doingVersion && !this.params.versionsMatch ? c.system + '|' + c.version : c.system) + '#' + c.code);
         }
-        this.map.delete(s);
-        this.decTotal();
+        walk(c.contains);
       }
-    }
+    };
+    walk(vs.expansion.contains);
   }
 
   async checkSource(cset, exp, filter, srcURL, ts, vsInfo , source) {
@@ -1012,8 +1016,10 @@ class ValueSetExpander {
           let vs = await this.worker.findValueSet(s, '', vsSrc);
           const ivs = new ImportedValueSet(await this.expandValueSet(s, '',  vs, filter, notClosed));
           this.checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
-          if (!vs.isContained && ivs.valueSet.vurl) {
-            this.addParamUri(expansion, 'used-valueset', ivs.valueSet.vurl);
+          // ivs.valueSet is the expansion (plain JSON), so it has no vurl - as for the
+          // includes, build it
+          if (!vs.isContained && this.worker.makeVurl(ivs.valueSet)) {
+            this.addParamUri(expansion, 'used-valueset', this.worker.makeVurl(ivs.valueSet));
           }
           valueSets.push(ivs);
         }
@@ -1314,13 +1320,22 @@ class ValueSetExpander {
   }
 
   async expand(source, filter, noCacheThisOne) {
+    Extensions.checkNoImplicitRules(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
+    Extensions.checkNoModifiers(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
+    // circular reference detection: this value set is in the chain being processed until
+    // its expansion is done
+    this.worker.seeValueSet(source, this.params);
+    try {
+      return await this.expandSeen(source, filter, noCacheThisOne);
+    } finally {
+      this.worker.unseeValueSet(source);
+    }
+  }
+
+  async expandSeen(source, filter, noCacheThisOne) {
     this.noCacheThisOne = noCacheThisOne;
     this.totalStatus = 'uninitialised';
     this.total = 0;
-
-    Extensions.checkNoImplicitRules(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
-    Extensions.checkNoModifiers(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
-    this.worker.seeValueSet(source, this.params);
     this.valueSet = source;
 
     const result = structuredClone(source.jsonObj);
@@ -1347,6 +1362,10 @@ class ValueSetExpander {
 
     if (result.expansion) {
       return result; // just return the expansion
+    }
+    if (!source.jsonObj.compose) {
+      throw new Issue('error', 'invalid', null, 'VALUESET_NO_COMPOSE',
+        this.worker.i18n.translate('VALUESET_NO_COMPOSE', this.params.httpLanguages, [source.contextKey || source.vurlOrMsg]), 'vs-invalid', 422);
     }
 
     if (this.params.generateNarrative && !this.noDetails) {

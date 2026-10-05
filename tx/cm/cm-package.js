@@ -63,7 +63,14 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     for (const entry of conceptMapEntries) {
       const conceptMap = await this.packageLoader.loadFile(entry);
       if (conceptMap.url) {
-        conceptMaps.push(new ConceptMap(conceptMap, this.packageLoader.fhirVersion())); // get in converted to R5 format
+        try {
+          conceptMaps.push(new ConceptMap(conceptMap, this.packageLoader.fhirVersion())); // get in converted to R5 format
+        } catch (e) {
+          // one unacceptable concept map (e.g. one with contained resources, which the
+          // server doesn't support) must not stop the rest of the package loading
+          require('../../library/logger').getInstance().child({ module: 'tx' })
+            .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: skipping ConceptMap ${conceptMap.url}: ${e.message}`);
+        }
       }
     }
 

@@ -148,6 +148,64 @@ The file is read from disk per request, so editing it is reflected immediately -
 this means the published file can be ahead of what the running server actually loaded, if it
 has been edited since startup.
 
+## OpenAPI description
+
+Each R5 endpoint is described by an OpenAPI 3.1 spec (the R4 and R3 endpoints work the same
+way, with that version's resources, and aren't described separately):
+
+| URL | |
+|---|---|
+| `/{path}/openapi` | Browsable reference (HTML, in the tx page template), with a "try it" form for each GET operation |
+| `/{path}/openapi.json` | The spec as JSON |
+| `/{path}/openapi.yaml` | The spec as YAML |
+
+`servers` is the endpoint. Every response from an R5 endpoint carries a
+`Link: </{path}/openapi.json>; rel="service-desc", </{path}/openapi>; rel="service-doc"` header
+(RFC 8631), the tx pages carry the matching `<link>` element and an **API** item in the
+navigation bar, and the server home page links to it. The HTML pages (`/`, `/op.html`, `/ecl`,
+`/problems.html`, `/info`, `/library`) aren't described.
+
+The spec is in three parts, merged when it's served ([openapi.js](openapi.js)):
+
+* [openapi.yaml](openapi.yaml) - the overview, `/metadata`, `/$versions`, and the shared
+  components, written by hand
+* [openapi-operations.js](openapi-operations.js) - the terminology operations, as data: their
+  in and out parameters, with types, cardinalities and descriptions. openapi.js makes the paths
+  from them (type and instance level; GET with the primitive parameters in the query, POST with
+  a Parameters resource or a form) and a table of the parameters for each. The parameters
+  TxParameters reads for most operations (tx-resource, cache-id, the version rules,
+  displayLanguage, ...) are listed once, in the overview. The read and search paths are made
+  there too, from the search worker's parameters
+* [openapi-schemas.json](openapi-schemas.json) - the FHIR R5 schemas, generated from the
+  StructureDefinitions by `library/fhir-openapi-schema.js`, as configured in
+  [openapi-schemas.config.js](openapi-schemas.config.js)
+
+The schemas are documentation: they describe what the server handles and returns, but the
+server doesn't reject content outside them. They describe:
+
+* CodeSystem, ValueSet, ConceptMap, OperationOutcome, Parameters, Bundle, CapabilityStatement
+  and TerminologyCapabilities, closed, with the `_x` siblings of primitive elements and
+  `modifierExtension` wherever FHIR allows them
+* contained resources only in a ValueSet, and only ValueSets
+* extension and parameter values: the primitive types (not `base64Binary`), `Coding` and
+  `CodeableConcept`
+* resources in a Bundle or a Parameters: CodeSystem, ValueSet, ConceptMap, OperationOutcome -
+  and Parameters, in a Parameters, for `$batch-validate-code` and `profile`. Never a Bundle
+* OperationOutcome issues with `details.text`, and (except for information) a tx-issue-type
+  coding
+
+After changing the operations, `openapi.js` picks them up. After changing the schema config,
+regenerate (this needs `hl7.fhir.r5.core#5.0.0` in the terminology cache):
+
+    node utilities/generate-openapi-schemas.js tx
+
+`tests/tx/openapi.test.js` fails if a route isn't described (or excluded, with a reason), if a
+worker or TxParameters reads a parameter that isn't described - or a described one isn't read
+anywhere - or if the generated schemas are out of date. It also validates what the server
+actually returns (metadata, read and search, `$expand`, `$validate-code`, `$lookup`,
+`$subsumes`, `$batch-validate-code`, `$versions`, `$cache-control`, an error) against the
+schemas, using ajv. So a new parameter needs adding to openapi-operations.js.
+
 ## Library Configuration
 
 The library - the source to load - is configured using a YAML file.

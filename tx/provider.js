@@ -172,7 +172,16 @@ class Provider {
 
     const resources = await contentLoader.getResourcesByType("CodeSystem");
     for (const resource of resources) {
-      const cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+      let cs;
+      try {
+        cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+      } catch (e) {
+        // one unacceptable resource (e.g. contained resources the server doesn't support)
+        // must not stop the rest of the package loading
+        require('../library/logger').getInstance().child({ module: 'tx' })
+          .warn(`Package ${contentLoader.pid()}: skipping CodeSystem ${resource.id || resource.filename || ''}: ${e.message}`);
+        continue;
+      }
       cs.sourcePackage = contentLoader.pid();
       this.addCodeSystem(cs);
     }

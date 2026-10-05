@@ -397,8 +397,7 @@ async function gatherPageStatistics() {
       downloadDate: downloadDate,
       totalResources: tableCounts.resources || 0,
       totalPackages: tableCounts.packages || 0,
-      processingTime: processingTime,
-      version: getMetadata('fhir-version') || '4.0.1'
+      processingTime: processingTime
     };
 
   } catch (error) {
@@ -411,8 +410,7 @@ async function gatherPageStatistics() {
       downloadDate: 'Error',
       totalResources: 0,
       totalPackages: 0,
-      processingTime: processingTime,
-      version: '4.0.1'
+      processingTime: processingTime
     };
   }
 }

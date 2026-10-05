@@ -561,6 +561,13 @@ class ServerRegistryUtilities {
       } else {
         // Otherwise do exact matching on both full and base URL
         ok = vurl === cs || vurl === baseCs;
+        // A SNOMED CT version URI extends its edition URI, so a server hosting
+        // sct|.../{edition}/version/{date} hosts the edition sct|.../{edition}. Servers
+        // list only full versions, so without this an edition-level request would never
+        // find the servers that host the edition.
+        if (!ok && noVersionIndependentMatching && cs.includes('|')) {
+          ok = vurl.startsWith(cs + '/');
+        }
       }
       if (ok && content) {
         content.content = item.content;

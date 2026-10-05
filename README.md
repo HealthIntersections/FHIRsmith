@@ -10,10 +10,11 @@ This server provides a set of server-side services that are useful for the FHIR 
 
 ## Services useful the community as a whole
 
-* [TX Registry](registry/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg)
-* [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages)
+* [TX Registry](registry/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
+* [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
 * [XIG server](xig/readme.md) -  **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
 * [Publisher](publisher/readme.md) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
+* [Testing](testing/readme.md) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://testing.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
 * [VCL](vcl/readme.md) - **Parse VCL expressions** into FHIR ValueSet resources (as running at http://fhir.org/vcl)
 * (Coming) Token services
 

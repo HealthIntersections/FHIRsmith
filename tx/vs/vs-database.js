@@ -743,7 +743,17 @@ class ValueSetDatabase {
           const valueSetMap = new Map();
 
           for (const row of rows) {
-            const valueSet = new ValueSet(JSON.parse(row.content));
+            let valueSet;
+            try {
+              valueSet = new ValueSet(JSON.parse(row.content));
+            } catch (e) {
+              // one unacceptable value set (e.g. one containing a CodeSystem, which the
+              // server doesn't support) must not take the whole package's value sets with it
+              require('../../library/logger').getInstance().child({ module: 'tx' })
+                .warn(`${source || 'ValueSet database'}: skipping ValueSet ${row.url || row.id}${row.version ? '|' + row.version : ''}: ${e.message}`);
+              this.vsCount--;
+              continue;
+            }
             valueSet.sourcePackage = source;
             // Attach the stored content hash so callers can detect changes
             // without recomputing over the full JSON.
@@ -839,10 +849,9 @@ class ValueSetDatabase {
             });
           } else {
             // Fall back to parsing JSON
-            results = rows.map(row => {
-              const vs = map.get(row.id);
-              return vs;
-            });
+            // a value set the map doesn't have was rejected when the map was loaded
+            // (see loadAllValueSets), so it isn't a result
+            results = rows.map(row => map.get(row.id)).filter(vs => vs);
           }
 
           resolve(results);
