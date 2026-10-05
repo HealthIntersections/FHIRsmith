@@ -158,7 +158,10 @@ async function main(args) {
 }
 
 if (require.main === module) {
-  main(process.argv.slice(2));
+  main(process.argv.slice(2)).catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
 }
 
 module.exports = { extractSchema, decodeEntities, run };

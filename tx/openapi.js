@@ -71,10 +71,6 @@ function camel(s) {
   return s.replace(/-([a-z])/g, (m, c) => c.toUpperCase());
 }
 
-function cap(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 function errorResponses(extra = {}) {
   return {
     '400': { $ref: '#/components/responses/Outcome', description: 'The request is not valid' },
