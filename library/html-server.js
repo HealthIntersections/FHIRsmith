@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const escape = require('escape-html');
+const packageJson = require('../package.json');
 
 let sponsorMessage = '';
 
@@ -60,7 +61,6 @@ class HtmlServer {
     
     // Default options
     const renderOptions = {
-      version: '4.0.1',
       downloadDate: 'Unknown',
       totalResources: 0,
       totalPackages: 0,
@@ -72,7 +72,8 @@ class HtmlServer {
     let html = template
       .replace(/\[%title%\]/g, escape(title))
       .replace(/\[%content%\]/g, content) // Content is assumed to be already-safe HTML
-      .replace(/\[%ver%\]/g, escape(renderOptions.version))
+      // [%ver%] is the FHIRsmith version in every template (it follows the FHIRsmith link)
+      .replace(/\[%ver%\]/g, escape(packageJson.version))
       .replace(/\[%download-date%\]/g, escape(renderOptions.downloadDate))
       .replace(/\[%total-resources%\]/g, escape(renderOptions.totalResources.toLocaleString()))
       .replace(/\[%total-packages%\]/g, escape(renderOptions.totalPackages.toLocaleString()))
