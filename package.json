@@ -41,7 +41,7 @@
     "cli-progress": "^3.12.0",
     "commander": "^14.0.3",
     "commonmark": "^0.31.2",
-    "connect-sqlite3": "^0.9.16",
+    "connect-sqlite3": "^0.9.18",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^7.4.1",
@@ -114,7 +114,10 @@
     },
     "brace-expansion": "^5.0.8",
     "csv-parse": "^7.0.3",
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "connect-sqlite3": {
+      "sqlite3": "$sqlite3"
+    }
   },
   "bin": {
     "tx-import": "./tx/importers/tx-import.js",
