@@ -5,8 +5,41 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.14.2] - 
+## [0.14.2] - 2026-10-06
 
+### Security
+
+- Dependency updates for published advisories, including axios (several high severity), brace-expansion (denial of service), and http-cache-semantics and @tootallnate/once (removed with the old sqlite3 build chain)
+
+### Added
+
+- OpenAPI descriptions for the package server (/packages), the terminology registry (/tx-reg), the TestReport module (/testing) and the R5 terminology endpoints: each serves `openapi.json`, `openapi.yaml` and an HTML reference at `openapi` (JSON for non-browser clients), linked from the module's pages and advertised in an RFC 8631 `Link` header on every response. The FHIR resource schemas are generated from the FHIR definitions, constrained to what each module accepts
+- npm audit self-check: once a day the server checks its installed packages (and FHIRsmith itself) against the npm advisory database - report only, nothing is changed. Findings show as a banner on the home page, in full on the dashboard, and in the log. `npmAudit.enabled` = false turns it off (e.g. for servers with no internet access)
+- Registry: new Software page (/tx-reg/software) listing each registered server's software and version, and for FHIRsmith servers, the release date, its age, and how many releases behind it is. The crawler now records `CapabilityStatement.software.version`
+
+### Changed
+
+- Terminology server: contained resources are supported only for ValueSets that contain ValueSets (which `compose.include.valueSet` can import by `#id`). Any other contained resource is rejected (CONTAINED_RESOURCE_NOT_SUPPORTED) wherever the resource comes from; when loading a package, the offending resource is skipped rather than stopping the load
+- $validate-code: the `inactive` and `status` output parameters describe the code being returned. In a CodeableConcept where a different coding is inactive, that coding still gets its warning, but the parameters are not set for the returned code
+- Registry discovery API follows the tx ecosystem IG: rows carry `fhirVersion` and the IG's security flags (`open`, `token`, ...) alongside the existing security string; candidate lists are only given when `url` is supplied; R-codes (R4, R4B, R5, ...) map to their release versions; and the resolve fallback that returned servers authoritative for a code system but not hosting it has been removed
+- The TerminologyCapabilities statement no longer lists expansion parameters the server doesn't act on (`limitedExpansion`, `_incomplete`, `incomplete-ok` and others); `limitedExpansion`/`incomplete-ok` are no longer read, and no longer part of the expansion cache key (they never had any effect)
+- TestReport module: a TestReport with contained resources is refused
+- Packages and registry page footers say when the crawler last updated the data ("last updated 35 minutes ago"), or "not yet updated" before the first crawl - they used to show a raw `[%crawler-date%]` placeholder
+- Packages crawler log: the start time is shown relative ("35 minutes ago") and the duration in seconds; the end time is dropped
+- Dependencies: sqlite3 6 (connect-sqlite3 now uses the same sqlite3, which drops the old node-gyp/make-fetch-happen chain), and updates for axios, brace-expansion, moment, ip-address, csv-parse and uuid. The PR build now fails only on high/critical advisories in what ships (`npm audit --omit=dev`)
+
+### Fixed
+
+- $expand: RxNorm expansions that asked for a concept's children failed with `SQLITE_MISUSE`; an over-limit expansion of the whole of RxNorm is now refused before it is built
+- $expand: a value set with neither a compose nor an expansion gets a clear error (VALUESET_NO_COMPOSE)
+- $validate-code: in a CodeableConcept, the inactive warning names the coding that is actually inactive (it used to name the first coding), and a later active coding no longer hides the warning from an earlier inactive one
+- Packages: `/status`, `/stats` and `/search` hung instead of answering (the `/:id` route swallowed them)
+- Packages: dependency searches accept `id#version` and `id|version` (as sent by the Java PackageClient) as well as `id@version`; npm search (`/-/v1/search`) honours `text`, `size` and `from`, and accepts the other npm and PackageClient parameters
+- XIG: the version shown on the pages
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
 
 ## [0.14.1] - 2026-09-29
 

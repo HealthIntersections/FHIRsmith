@@ -17,6 +17,7 @@ const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
+const { NpmAudit } = require('./library/npm-audit');
 
 // Load configuration BEFORE logger
 let config;
@@ -110,10 +111,13 @@ app.use(cors(config.server.cors));
 const modules = {};
 
 let stats = null;
+// periodic npm advisory check of the installed packages - see library/npm-audit.js
+let npmAudit = null;
 
 // Initialize modules based on configuration
 async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
+  npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
   // Initialize SHL module
   if (config.modules?.shl?.enabled) {
@@ -305,7 +309,8 @@ async function loadTemplates() {
 
 async function buildRootPageContent() {
   stats.requestCount++;
-  let content = '<div class="row mb-4">';
+  let content = npmAudit ? npmAudit.renderBanner() : '';
+  content += '<div class="row mb-4">';
   content += '<div class="col-12">';
 
   content += '<h3>Available Modules</h3>';
@@ -660,6 +665,9 @@ app.get('/dashboard', async (req, res) => {
       startTime: stats.startTime
     });
     content += stats.taskDetails();
+    if (npmAudit) {
+      content += npmAudit.renderDashboard();
+    }
     content += `<p>Data: ${folders.dataDir()}</p>`;
 
     content = '<div class="row mb-4"><div class="col-12">' + content + '</div></div>';
@@ -792,6 +800,7 @@ async function startServer() {
       stats.markStarted();
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
+    npmAudit.start();
     if (modules.packages && config.modules.packages.enabled) {
       modules.packages.startInitialCrawler();
     }
@@ -819,6 +828,9 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   serverLog.info('\nShutting down server...');
+  if (npmAudit) {
+    npmAudit.stop();
+  }
 
   // Shutdown all modules
   for (const [moduleName, moduleInstance] of Object.entries(modules)) {

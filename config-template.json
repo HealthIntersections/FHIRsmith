@@ -18,6 +18,15 @@
     // how often the counters are written out
     "intervalMinutes": 10
   },
+  // Once a day the server checks its installed npm packages against the npm advisory
+  // database (what `npm audit` does - report only, nothing is changed). Problems show on
+  // the home page and the dashboard, and in the log. Needs outbound access to
+  // registry.npmjs.org. The whole block is optional.
+  "npmAudit": {
+    // set false to turn the check off (e.g. a server with no internet access)
+    "enabled": true,
+    "intervalHours": 24
+  },
   "modules": {
     "shl": {
       "enabled": false,

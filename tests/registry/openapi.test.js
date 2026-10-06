@@ -15,6 +15,7 @@ const { parametersOf, operations, describeSpecBasics, describeRouterAgreement } 
 // Routes the spec deliberately does not describe, with the reason.
 const EXCLUDED = {
   'GET /log': 'operational: crawler log',
+  'GET /software': 'operational: software versions of the registered servers (HTML page)',
   'GET /openapi': 'the description itself',
   'GET /openapi.json': 'the description itself',
   'GET /openapi.yaml': 'the description itself'

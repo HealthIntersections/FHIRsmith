@@ -10,6 +10,7 @@ const regLog = Logger.getInstance().child({ module: 'registry' });
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const registryOpenApi = require('./openapi');
+const { FhirsmithReleases, isFhirsmith, describeAge } = require('./fhirsmith-releases');
 
 // The query parameters of the public API. These are the contract published in openapi.yaml,
 // and tests/registry/openapi.test.js checks that the two agree - so change both together.
@@ -57,6 +58,13 @@ class RegistryModule {
 
       // Initialize API with crawler
       this.api = new RegistryAPI(this.crawler);
+
+      // FHIRsmith release dates, for the software page. CHANGELOG.md until GitHub answers
+      this.releases = new FhirsmithReleases(crawlerConfig, this.logger);
+      this.releases.loadFromChangelog();
+      if (config.releasesUrl !== '') {
+        this.releases.refresh().catch(() => {});
+      }
 
       // Load saved data if available
       await this.loadSavedData();
@@ -153,6 +161,9 @@ class RegistryModule {
     try {
       // Perform the crawl
       const newData = await this.crawler.crawl(this.config.masterUrl);
+      if (this.releases && this.config.releasesUrl !== '') {
+        await this.releases.refresh();
+      }
 
       // Thread-safe update of current data
       await this.updateData(() => {
@@ -241,6 +252,7 @@ class RegistryModule {
     this.router.get('/', this.handleMainPage.bind(this));
     this.router.get('/resolve', this.handleResolveEndpoint.bind(this));
     this.router.get('/log', this.handleLogEndpoint.bind(this));
+    this.router.get('/software', this.handleSoftwarePage.bind(this));
 
     // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
     // reference for browsers, the JSON otherwise)
@@ -455,6 +467,114 @@ class RegistryModule {
       }
     } finally {
       this.stats.countRequest('home', Date.now() - start);
+    }
+  }
+
+  /**
+   * The software page - what each registered server is running, and for FHIRsmith,
+   * how old that release is
+   */
+  async handleSoftwarePage(req, res) {
+    const start = Date.now();
+    try {
+      if (!htmlServer.hasTemplate('registry')) {
+        htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
+      }
+      const startTime = Date.now();
+      const content = this.buildSoftwareContent();
+      const stats = this.api.getStatistics();
+      stats.processingTime = Date.now() - startTime;
+      const html = htmlServer.renderPage('registry', 'Terminology Server Software', content, stats);
+      res.setHeader('Content-Type', 'text/html');
+      res.send(html);
+    } catch (error) {
+      this.logger.error('Error rendering software page:', error);
+      res.status(500).send(`<html><body><h1>Error</h1><p>${escape(error.message)}</p></body></html>`);
+    } finally {
+      this.stats.countRequest('software', Date.now() - start);
+    }
+  }
+
+  buildSoftwareContent(now = Date.now()) {
+    const data = this.api.getData();
+    if (!data || !data.registries) {
+      return '<div class="alert alert-info"><h4>Registry data not yet available</h4>' +
+        '<p>The initial crawl is in progress. Please refresh in a moment.</p></div>';
+    }
+
+    const rows = [];
+    for (const registry of data.registries) {
+      for (const server of registry.servers || []) {
+        for (const version of server.versions || []) {
+          rows.push({
+            name: server.name || server.code || '',
+            url: version.address || '',
+            fhirVersion: version.version || '',
+            software: version.software && version.software !== 'unknown' ? version.software : '',
+            softwareVersion: version.softwareVersion || '',
+            error: version.error,
+            lastSuccess: version.lastSuccess
+          });
+        }
+      }
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url));
+
+    let html = '<h3>Terminology Server Software</h3>';
+    const latest = this.releases ? this.releases.latest() : null;
+    if (latest) {
+      html += `<p>The current FHIRsmith release is <b>v${escape(latest.version)}</b>, released ` +
+        `${escape(latest.date.toISOString().substring(0, 10))}. ` +
+        'Servers running older FHIRsmith releases are missing security fixes, both in FHIRsmith ' +
+        'and in the libraries it depends on, and should be upgraded.</p>';
+    }
+
+    html += '<table class="grid">';
+    html += '<thead><tr><th>Server</th><th>URL</th><th>FHIR</th><th>Software</th><th>Version</th>' +
+      '<th>Released</th><th>Age</th></tr></thead><tbody>';
+    for (const row of rows) {
+      html += '<tr>';
+      html += `<td>${escape(row.name)}</td>`;
+      html += `<td><a href="${escape(row.url)}" target="_blank" rel="noopener">${escape(row.url)}</a>`;
+      if (row.error) {
+        html += ` <span class="text-danger" title="${escape(row.error)}">(unreachable)</span>`;
+      }
+      html += '</td>';
+      html += `<td>${escape(row.fhirVersion)}</td>`;
+      html += `<td>${row.software ? escape(row.software.replace('Reference Server', 'HealthIntersections')) : '<i>unknown</i>'}</td>`;
+      html += `<td>${row.softwareVersion ? escape(row.softwareVersion) : '<i>unknown</i>'}</td>`;
+      html += this._renderReleaseCells(row, now);
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+
+    if (this.releases && this.releases.source !== 'none') {
+      html += `<p class="text-muted"><small>FHIRsmith release dates from ${escape(this.releases.source)}.</small></p>`;
+    }
+    return html;
+  }
+
+  _renderReleaseCells(row, now) {
+    if (!isFhirsmith(row.software) || !this.releases) {
+      return '<td></td><td></td>';
+    }
+    const d = this.releases.describe(row.softwareVersion, now);
+    const behind = d.behind ? ` (${d.behind} release${d.behind === 1 ? '' : 's'} behind)` : '';
+    switch (d.status) {
+      case 'current':
+        return `<td>${d.release.date.toISOString().substring(0, 10)}</td>` +
+          `<td><span class="text-success">${describeAge(d.ageDays)} - current release</span></td>`;
+      case 'outdated': {
+        // more than 3 months, or more than 3 releases, out of date is flagged
+        const cls = d.ageDays > 90 || d.behind > 3 ? 'text-danger' : 'text-warning';
+        return `<td>${d.release.date.toISOString().substring(0, 10)}</td>` +
+          `<td><span class="${cls}">${describeAge(d.ageDays)}${behind}</span></td>`;
+      }
+      case 'dev':
+        return '<td></td><td>development build' +
+          (d.release ? ` after v${escape(d.release.version)}` : '') + behind + '</td>';
+      default:
+        return '<td></td><td><i>unknown</i></td>';
     }
   }
 
