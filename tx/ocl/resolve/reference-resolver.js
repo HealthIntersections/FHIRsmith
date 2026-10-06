@@ -18,10 +18,26 @@ const RESOLVE_PATH = '/$resolveReference/';
 // references); 100 resolved in ~1.1s. Chunking is transparent to callers.
 const MAX_BATCH_SIZE = 100;
 
+// Caps so that client-supplied references cannot grow memory or outbound traffic
+// without bound (the resolver is reachable from any public terminology request):
+//  - the cache is a bounded LRU, so distinct references evict the oldest rather
+//    than accumulating forever;
+//  - references longer than the limit are treated as unresolved and never sent to
+//    OCL (nothing legitimate is anywhere near this long).
+const DEFAULT_CACHE_LIMIT = 5000;
+const MAX_REFERENCE_LENGTH = 2048;
+
+// A transient 401/403 (rate limit, a brief credential hiccup, an oversized batch
+// on a busy instance) backs the resolver off for a while rather than disabling it
+// for the whole process life. 404 (endpoint not implemented) stays permanent.
+const DEFAULT_AUTH_BACKOFF_MS = 60_000;
+
 // Org-only visibility policy: an artifact is expected to live in an organization
-// to be visible through the terminology service. User-owned repos (/users/...)
-// are experimental by convention and are excluded from discovery AND resolution.
-const REPO_PATH_PATTERN = /^\/orgs\/[^/]+\//;
+// to be visible through the terminology service. The path must be a concrete
+// /orgs/<org>/(sources|collections)/<id>/ repo path — this both enforces the
+// policy and keeps repoUrl a safe relative OCL path (so it can never redirect an
+// authenticated request, carrying our token, to an arbitrary host).
+const REPO_PATH_PATTERN = /^\/orgs\/[^/]+\/(sources|collections)\/[^/]+\//;
 
 // Reference object fields forwarded to OCL. `namespace` is intentionally absent.
 const BODY_FIELDS = [
@@ -38,26 +54,46 @@ const BODY_FIELDS = [
 
 /**
  * True for a relative OCL repo path the terminology service may serve — i.e. an
- * organization-owned one (`/orgs/CIEL/sources/CIEL/`). User-owned paths
- * (`/users/joe/...`) are rejected by policy.
+ * organization-owned source or collection (`/orgs/CIEL/sources/CIEL/`). User-owned
+ * paths (`/users/joe/...`), absolute URLs, and anything containing path traversal
+ * are rejected.
  */
 function isOclRepoPath(value) {
-  return REPO_PATH_PATTERN.test(String(value == null ? '' : value).trim());
+  const s = String(value == null ? '' : value).trim();
+  if (s.includes('..')) {
+    // No legitimate OCL repo path contains `..`; reject traversal outright.
+    return false;
+  }
+  return REPO_PATH_PATTERN.test(s);
 }
 
 /**
- * Org-only policy check for an OCL repo payload or resolve result. Prefers the
- * explicit owner_type when present; falls back to the path shape.
+ * A repoUrl we can safely GET against the OCL base URL: a relative, same-host path
+ * with no traversal. Absolute or protocol-relative URLs are rejected so an authed
+ * request (carrying our token) can never be redirected to an arbitrary host. This
+ * is the SSRF guard and is deliberately separate from the org-only policy: a
+ * same-host `/users/...` path is "safe" here but still rejected by isOrgOwned.
+ */
+function isSafeRelativeOclPath(value) {
+  const s = String(value == null ? '' : value).trim();
+  return s.startsWith('/') && !s.startsWith('//') && !s.includes('..');
+}
+
+/**
+ * Org-only policy check for an OCL repo payload or resolve result. The path must
+ * be a valid org repo path AND, when an explicit owner_type is present, it must be
+ * an Organization. owner_type alone can never override the path check — a payload
+ * claiming owner_type:"Organization" on a non-org (or off-host) URL is not served.
  */
 function isOrgOwned(repo) {
   if (!repo || typeof repo !== 'object') {
     return false;
   }
-  const ownerType = repo.owner_type || repo.ownerType || null;
-  if (ownerType) {
-    return ownerType === 'Organization';
+  if (!isOclRepoPath(repo.url)) {
+    return false;
   }
-  return isOclRepoPath(repo.url);
+  const ownerType = repo.owner_type || repo.ownerType || null;
+  return ownerType ? ownerType === 'Organization' : true;
 }
 
 /**
@@ -95,6 +131,18 @@ function cacheKey(body) {
   return typeof body === 'string' ? body : JSON.stringify(body);
 }
 
+// Length of the reference's URL, used for the inbound length cap.
+function referenceLength(body) {
+  return (typeof body === 'string' ? body : String(body?.url ?? '')).length;
+}
+
+// Client input ends up in log lines; strip control characters / newlines and cap
+// the length so a crafted reference cannot forge log entries or flood the log.
+function safeForLog(value) {
+  const s = String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]+/g, ' ');
+  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
+}
+
 function unresolved(request) {
   return {
     resolved: false,
@@ -116,6 +164,16 @@ function normalizeResult(entry, request) {
 
   const result = entry.result && typeof entry.result === 'object' ? entry.result : null;
   const repoUrl = result && result.url ? result.url : null;
+
+  // Only ever hand back a repoUrl that is a safe same-host relative path. Anything
+  // absolute or off-host (or containing traversal) is treated as unresolved, so a
+  // surprising OCL response can never cause a caller to issue an authenticated
+  // request (with our token) to an arbitrary host. The org-only policy is applied
+  // separately by the caller (isOrgOwned), so a same-host /users/ path survives to
+  // there and is rejected with a logged reason.
+  if (repoUrl && !isSafeRelativeOclPath(repoUrl)) {
+    return unresolved(entry.request === undefined ? request : entry.request);
+  }
 
   return {
     resolved: Boolean(entry.resolved) && Boolean(repoUrl),
@@ -139,8 +197,11 @@ class OclReferenceResolver {
   #httpClient;
   #logger;
   #cache = new Map();
+  #cacheLimit;
   #enabled;
   #disabledReason = null;
+  #authBackoffMs;
+  #backoffUntil = 0;
 
   /**
    * @param {object} options
@@ -149,15 +210,20 @@ class OclReferenceResolver {
    *   $resolveReference is authenticated on every OCL instance probed, while the
    *   listing endpoints it replaces are public, so a tokenless call is a
    *   guaranteed 401
-   * @param {object} [options.logger]
+   * @param {object} [options.logger] - module logger; defaults to console only as
+   *   a last resort (callers pass their child logger)
+   * @param {number} [options.cacheLimit] - max cached references (bounded LRU)
+   * @param {number} [options.authBackoffMs] - cooldown after a transient 401/403
    */
-  constructor({ httpClient, token = null, logger = console } = {}) {
+  constructor({ httpClient, token = null, logger = console, cacheLimit = DEFAULT_CACHE_LIMIT, authBackoffMs = DEFAULT_AUTH_BACKOFF_MS } = {}) {
     if (!httpClient) {
       throw new Error('OCL reference resolver requires an http client');
     }
 
     this.#httpClient = httpClient;
     this.#logger = logger;
+    this.#cacheLimit = cacheLimit > 0 ? cacheLimit : DEFAULT_CACHE_LIMIT;
+    this.#authBackoffMs = authBackoffMs >= 0 ? authBackoffMs : DEFAULT_AUTH_BACKOFF_MS;
     this.#enabled = Boolean(token);
     if (!this.#enabled) {
       this.#disabledReason = 'no token configured';
@@ -165,16 +231,42 @@ class OclReferenceResolver {
   }
 
   isEnabled() {
-    return this.#enabled;
+    return this.#enabled && Date.now() >= this.#backoffUntil;
   }
 
   get disabledReason() {
     return this.#disabledReason;
   }
 
+  // Permanent: no token, or the endpoint does not exist on this instance.
   #disable(reason) {
     this.#enabled = false;
     this.#disabledReason = reason;
+  }
+
+  // Transient: back off for a cooldown, then let requests resume.
+  #backOff(reason) {
+    this.#backoffUntil = Date.now() + this.#authBackoffMs;
+    this.#disabledReason = reason;
+  }
+
+  #cacheTouch(key) {
+    // Re-insert to mark most-recently-used.
+    const value = this.#cache.get(key);
+    this.#cache.delete(key);
+    this.#cache.set(key, value);
+    return value;
+  }
+
+  #cachePut(key, value) {
+    if (this.#cache.has(key)) {
+      this.#cache.delete(key);
+    }
+    this.#cache.set(key, value);
+    if (this.#cache.size > this.#cacheLimit) {
+      const oldest = this.#cache.keys().next().value;
+      this.#cache.delete(oldest);
+    }
   }
 
   /**
@@ -197,7 +289,7 @@ class OclReferenceResolver {
    * @returns {Promise<Array|null>} null when the resolver is unavailable (use fallback)
    */
   async resolveReferences(refs, { bypassCache = false } = {}) {
-    if (!this.#enabled) {
+    if (!this.isEnabled()) {
       return null;
     }
 
@@ -211,9 +303,14 @@ class OclReferenceResolver {
     const misses = [];
 
     bodies.forEach((body, index) => {
+      // Length cap: an over-long reference is never cached nor sent to OCL.
+      if (referenceLength(body) > MAX_REFERENCE_LENGTH) {
+        output[index] = unresolved(body);
+        return;
+      }
       const key = cacheKey(body);
       if (!bypassCache && this.#cache.has(key)) {
-        output[index] = this.#cache.get(key);
+        output[index] = this.#cacheTouch(key);
       } else {
         misses.push({ body, index });
       }
@@ -251,7 +348,7 @@ class OclReferenceResolver {
     // silently attributing a resolution to the wrong canonical.
     if (payload.length !== chunk.length) {
       this.#logger.error(
-        `[OCL] $resolveReference returned ${payload.length} result(s) for ${chunk.length} reference(s); discarding to avoid misaligned results`
+        `$resolveReference returned ${payload.length} result(s) for ${chunk.length} reference(s); discarding to avoid misaligned results`
       );
       for (const { body, index } of chunk) {
         output[index] = unresolved(body);
@@ -266,11 +363,11 @@ class OclReferenceResolver {
       // terminology service. Cached: the policy outcome is deterministic.
       if (value.resolved && !isOrgOwned({ owner_type: value.ownerType, url: value.repoUrl })) {
         this.#logger.info(
-          `[OCL] $resolveReference resolved ${cacheKey(body)} to a user-owned repo (${value.repoUrl}); org-only policy treats it as unresolved`
+          `$resolveReference resolved ${safeForLog(cacheKey(body))} to a user-owned repo (${safeForLog(value.repoUrl)}); org-only policy treats it as unresolved`
         );
         value = unresolved(body);
       }
-      this.#cache.set(cacheKey(body), value);
+      this.#cachePut(cacheKey(body), value);
       output[index] = value;
     });
 
@@ -283,15 +380,18 @@ class OclReferenceResolver {
     if (status === 404) {
       this.#disable('endpoint not implemented (404)');
       this.#logger.info(
-        `[OCL] $resolveReference is not available on this instance (404); using listing search instead`
+        `$resolveReference is not available on this instance (404); using listing search instead`
       );
       return null;
     }
 
     if (status === 401 || status === 403) {
-      this.#disable(`not authorised (${status})`);
+      // Transient: back off and retry after a cooldown rather than disabling for
+      // the life of the process. A busy public instance can 401/403 briefly (rate
+      // limiting, an oversized batch) without our credentials being wrong.
+      this.#backOff(`not authorised (${status})`);
       this.#logger.warn(
-        `[OCL] $resolveReference rejected our credentials (${status}); using listing search instead`
+        `$resolveReference rejected our credentials (${status}); backing off, using listing search meanwhile`
       );
       return null;
     }
@@ -300,14 +400,14 @@ class OclReferenceResolver {
       // Our request body is wrong — a bug on this side. Don't disable: a later,
       // well-formed batch may be fine.
       const detail = error?.response?.data?.detail || error.message;
-      this.#logger.error(`[OCL] $resolveReference rejected the request body: ${detail}`);
+      this.#logger.error(`$resolveReference rejected the request body: ${safeForLog(detail)}`);
       for (const { body, index } of misses) {
         output[index] = unresolved(body);
       }
       return output;
     }
 
-    this.#logger.warn(`[OCL] $resolveReference failed: ${error.message}`);
+    this.#logger.warn(`$resolveReference failed: ${safeForLog(error.message)}`);
     return null;
   }
 }

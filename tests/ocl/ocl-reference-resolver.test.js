@@ -97,6 +97,12 @@ describe('isOclRepoPath (org-only policy)', () => {
     ['/orgs/'],
     ['/orgs/CIEL'],
     ['/groups/x/sources/S/'],
+    // second segment must be sources|collections, not anything
+    ['/orgs/CIEL/mappings/M/'],
+    ['/orgs/CIEL/'],
+    // path traversal must never pass, even when the prefix looks valid
+    ['/orgs/CIEL/../../users/joe/sources/S/'],
+    ['/orgs/CIEL/sources/../../x/'],
     [''],
     [null],
     [undefined]
@@ -106,10 +112,14 @@ describe('isOclRepoPath (org-only policy)', () => {
 });
 
 describe('isOrgOwned', () => {
-  it('prefers an explicit owner_type', () => {
-    expect(isOrgOwned({ owner_type: 'Organization', url: '/users/joe/sources/S/' })).toBe(true);
+  it('requires a valid org repo path; owner_type cannot override it', () => {
+    // owner_type alone must NOT grant access: a payload claiming Organization on a
+    // non-org (or off-host) URL is not served. This closes the hole where a private
+    // repo reachable by the configured token could be surfaced publicly.
+    expect(isOrgOwned({ owner_type: 'Organization', url: '/users/joe/sources/S/' })).toBe(false);
     expect(isOrgOwned({ owner_type: 'User', url: '/orgs/A/sources/S/' })).toBe(false);
-    expect(isOrgOwned({ ownerType: 'Organization' })).toBe(true);
+    expect(isOrgOwned({ ownerType: 'Organization' })).toBe(false); // no path -> not servable
+    expect(isOrgOwned({ owner_type: 'Organization', url: '/orgs/A/sources/S/' })).toBe(true);
   });
 
   it('falls back to the path shape when owner_type is absent', () => {
@@ -559,5 +569,72 @@ describe('OclReferenceResolver error handling', () => {
     await expect(resolver.resolveReferences(['a'])).resolves.toBeNull();
     expect(resolver.isEnabled()).toBe(true);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/timeout/));
+  });
+
+  it('backs off on a transient 403 and resumes after the cooldown', async () => {
+    const httpClient = {
+      post: jest
+        .fn()
+        .mockRejectedValueOnce(httpError(403))
+        .mockResolvedValueOnce({ data: [oclEntry({ url: '/orgs/A/sources/S/' })] })
+    };
+    // Zero cooldown: the backoff window has already elapsed by the next call.
+    const resolver = new OclReferenceResolver({
+      httpClient, token: 'Token abc', logger: silentLogger(), authBackoffMs: 0
+    });
+
+    await expect(resolver.resolveReferences(['/orgs/A/sources/S/'])).resolves.toBeNull();
+    expect(resolver.disabledReason).toBe('not authorised (403)');
+    // Unlike a 404, it is not permanently disabled.
+    expect(resolver.isEnabled()).toBe(true);
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+    expect(r.resolved).toBe(true);
+    expect(httpClient.post).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('OclReferenceResolver hardening', () => {
+  it('treats an off-host absolute repo url as unresolved (never redirects an authed request off-host)', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({
+        data: [{ resolved: true, result: { url: 'https://evil.example/orgs/A/sources/S/', owner_type: 'Organization' } }]
+      }))
+    };
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger: silentLogger() });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(false);
+    expect(r.repoUrl).toBeNull();
+  });
+
+  it('treats an over-long reference as unresolved and never sends it to OCL', async () => {
+    const httpClient = { post: jest.fn() };
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger: silentLogger() });
+
+    const longRef = `/orgs/A/sources/${'x'.repeat(3000)}/`;
+    const r = await resolver.resolve(longRef);
+
+    expect(r.resolved).toBe(false);
+    expect(httpClient.post).not.toHaveBeenCalled();
+  });
+
+  it('evicts the oldest entry when the cache limit is exceeded (bounded LRU)', async () => {
+    const httpClient = echoClient();
+    const resolver = new OclReferenceResolver({
+      httpClient, token: 'Token abc', logger: silentLogger(), cacheLimit: 2
+    });
+
+    await resolver.resolve('a'); // {a}
+    await resolver.resolve('b'); // {a,b}
+    await resolver.resolve('c'); // {b,c} — 'a' evicted
+    httpClient.post.mockClear();
+
+    await resolver.resolve('c'); // still cached — no request
+    expect(httpClient.post).not.toHaveBeenCalled();
+
+    await resolver.resolve('a'); // evicted — must re-POST
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
   });
 });

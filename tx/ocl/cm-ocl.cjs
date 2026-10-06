@@ -31,7 +31,8 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     // keeps using its existing search.
     this.referenceResolver = new OclReferenceResolver({
       httpClient: this.httpClient,
-      token: options.token || null
+      token: options.token || null,
+      logger: oclCmLog
     });
   }
 

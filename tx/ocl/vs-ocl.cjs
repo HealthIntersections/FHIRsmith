@@ -49,7 +49,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     // token, in which case the search paths below run exactly as before.
     this.referenceResolver = new OclReferenceResolver({
       httpClient: this.httpClient,
-      token: options.token || null
+      token: options.token || null,
+      logger: oclVsLog
     });
 
     this.valueSetMap = new Map();
