@@ -75,6 +75,8 @@ class HtmlServer {
       // [%ver%] is the FHIRsmith version in every template (it follows the FHIRsmith link)
       .replace(/\[%ver%\]/g, escape(packageJson.version))
       .replace(/\[%download-date%\]/g, escape(renderOptions.downloadDate))
+      // "last updated 35 minutes ago" / "not yet updated", for the crawler-driven modules
+      .replace(/\[%crawler-status%\]/g, escape(renderOptions.crawlerStatus || 'not yet updated'))
       .replace(/\[%total-resources%\]/g, escape(renderOptions.totalResources.toLocaleString()))
       .replace(/\[%total-packages%\]/g, escape(renderOptions.totalPackages.toLocaleString()))
       .replace(/\[%endpoint-path%\]/g, escape(renderOptions.endpointpath))

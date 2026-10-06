@@ -14,7 +14,7 @@ const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const Logger = require('../library/logger');
-const {validateParameter} = require("../library/utilities");
+const {validateParameter, Utilities} = require("../library/utilities");
 const {describeCron} = require("../library/cron-utilities");
 const {tokenMatches, tokenConfigured} = require("../library/request-token");
 const pckLog = Logger.getInstance().child({ module: 'packages' });
@@ -481,8 +481,11 @@ class PackagesModule {
       // Get counts from database
       const tableCounts = await this.getDatabaseTableCounts();
 
+      // the page footer: the last crawl this run, else when the database was last written
+      const updated = this.lastRunTime || dbAge.lastModified;
       return {
         downloadDate: downloadDate,
+        crawlerStatus: updated ? `last updated ${Utilities.describeAgo(updated)}` : 'not yet updated',
         totalResources: 0, // Packages don't track individual resources
         totalPackages: tableCounts.packages || 0,
         totalVersions: tableCounts.packageVersions || 0,

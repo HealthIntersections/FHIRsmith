@@ -2,6 +2,7 @@
 
 const { ServerRegistryUtilities } = require('./model');
 const escape = require('escape-html');
+const { Utilities } = require('../library/utilities');
 
 const RELEASE_VERSIONS = {
   R2: '1.0',
@@ -286,6 +287,10 @@ class RegistryAPI {
 
     return {
       lastRun: data.lastRun,
+      // the page footer: nothing to report until the first crawl has finished
+      crawlerStatus: data.lastRun ?
+        `last updated ${Utilities.describeAgo(data.lastRun)}, ${totalServers} server${totalServers === 1 ? '' : 's'}` :
+        'not yet updated',
       outcome: data.outcome,
       registryCount: data.registries.length,
       serverCount: totalServers,
