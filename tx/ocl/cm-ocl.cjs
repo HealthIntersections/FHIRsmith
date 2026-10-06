@@ -453,15 +453,18 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     return new ConceptMap(json, 'R5');
   }
 
+  // OCL map_type expresses "from concept <relation> to concept", which lines up
+  // with the R5 ConceptMapRelationship codes (source <relation> target).
   #toRelationship(mapType) {
-    switch ((mapType || '').toUpperCase()) {
+    switch (String(mapType || '').trim().toUpperCase().replace(/[\s_]+/g, '-')) {
       case 'SAME-AS':
         return 'equivalent';
       case 'NARROWER-THAN':
-        return 'narrower-than';
+        return 'source-is-narrower-than-target';
       case 'BROADER-THAN':
-        return 'broader-than';
+        return 'source-is-broader-than-target';
       case 'NOT-EQUIVALENT':
+      case 'NOT-SAME-AS':
         return 'not-related-to';
       default:
         return 'related-to';

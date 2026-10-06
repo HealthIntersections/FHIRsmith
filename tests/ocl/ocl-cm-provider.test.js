@@ -133,6 +133,23 @@ describe('OCLConceptMapProvider', () => {
       expect(getMock).toHaveBeenCalledWith('/mappings/map-1/');
     });
 
+    it.each([
+      ['SAME-AS', 'equivalent'],
+      ['NARROWER-THAN', 'source-is-narrower-than-target'],
+      ['BROADER-THAN', 'source-is-broader-than-target'],
+      ['NOT-SAME-AS', 'not-related-to'],
+      ['NOT-EQUIVALENT', 'not-related-to'],
+      ['narrower than', 'source-is-narrower-than-target'],
+      ['Q-AND-A', 'related-to'],
+      [undefined, 'related-to']
+    ])('should translate OCL map_type %s to FHIR relationship %s', async (mapType, expected) => {
+      const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
+      const provider = createProvider({ get: getMock });
+
+      const result = await provider.fetchConceptMapById('map-1');
+      expect(result.jsonObj.group[0].element[0].target[0].relationship).toBe(expected);
+    });
+
     it('should return null on HTTP error', async () => {
       const getMock = jest.fn().mockRejectedValue(new Error('404'));
       const provider = createProvider({ get: getMock });
