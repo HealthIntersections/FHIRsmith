@@ -2867,13 +2867,14 @@ class PackagesModule {
 
       if (logData) {
         if (logData.startTime) {
-          content += `<tr><td>Start Time:</td><td>${new Date(logData.startTime).toLocaleString()}</td></tr>`;
-        }
-        if (logData.endTime) {
-          content += `<tr><td>End Time:</td><td>${new Date(logData.endTime).toLocaleString()}</td></tr>`;
+          // relative, because the server's local clock means nothing to the reader
+          content += `<tr><td>Started:</td><td title="${new Date(logData.startTime).toISOString()}">${this.formatTimeAgo(logData.startTime)}</td></tr>`;
         }
         if (logData.runTime) {
-          content += `<tr><td>Duration:</td><td>${logData.runTime}</td></tr>`;
+          const ms = parseInt(logData.runTime, 10);
+          if (!isNaN(ms)) {
+            content += `<tr><td>Duration:</td><td>${(ms / 1000).toFixed(1)} seconds</td></tr>`;
+          }
         }
         if (logData.totalBytes) {
           content += `<tr><td>Total Bytes:</td><td>${logData.totalBytes.toLocaleString()}</td></tr>`;
@@ -2907,6 +2908,24 @@ class PackagesModule {
     }
 
     return content;
+  }
+
+  formatTimeAgo(time) {
+    const secs = Math.max(0, Math.round((Date.now() - new Date(time).getTime()) / 1000));
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (secs < 60) {
+      return plural(secs, 'second');
+    }
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) {
+      return plural(mins, 'minute');
+    }
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) {
+      const rem = mins % 60;
+      return rem ? `${hours} hour${hours === 1 ? '' : 's'} ${rem} minute${rem === 1 ? '' : 's'} ago` : plural(hours, 'hour');
+    }
+    return plural(Math.floor(hours / 24), 'day');
   }
 
 // Add this new method to format the crawler log as readable text
