@@ -150,6 +150,21 @@ describe('OCLConceptMapProvider', () => {
       expect(result.jsonObj.group[0].element[0].target[0].relationship).toBe(expected);
     });
 
+    it('should not declare a source/target scope from OCL repo paths', async () => {
+      const mapping = makeMapping({
+        from_collection_url: '/orgs/TestOrg/collections/ColA/',
+        to_collection_url: '/orgs/TestOrg/collections/ColB/'
+      });
+      const getMock = jest.fn().mockResolvedValue({ data: mapping });
+      const provider = createProvider({ get: getMock });
+
+      const result = await provider.fetchConceptMapById('map-1');
+      // $translate resolves a scope as a ValueSet; an OCL path would fail with not-found
+      expect(result.sourceScope).toBeUndefined();
+      expect(result.targetScope).toBeUndefined();
+      expect(result.jsonObj.group[0].source).toBe('/orgs/TestOrg/sources/SourceA/');
+    });
+
     it('should return null on HTTP error', async () => {
       const getMock = jest.fn().mockRejectedValue(new Error('404'));
       const provider = createProvider({ get: getMock });
@@ -272,6 +287,9 @@ describe('OCLConceptMapProvider', () => {
       expect(cm.jsonObj.group[0].element).toHaveLength(2);
       expect(cm.jsonObj.group[0].source).toBe('http://example.org/SourceA');
       expect(cm.jsonObj.group[0].target).toBe('http://example.org/SourceB');
+      // a CodeSystem canonical is not a ValueSet, so it must not be declared as the scope
+      expect(cm.sourceScope).toBeUndefined();
+      expect(cm.targetScope).toBeUndefined();
     });
 
     it('should handle target-system parameter', async () => {
