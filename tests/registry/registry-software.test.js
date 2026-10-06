@@ -147,7 +147,8 @@ describe('software page', () => {
 
   test('does not date software that is not FHIRsmith', () => {
     const html = page();
-    const otherRow = html.split('<tr>').find(r => r.includes('other.example.org'));
+    // find the row by its server name cell (CodeQL flags a substring match on a host name)
+    const otherRow = html.split('<tr>').find(r => r.startsWith('<td>Other</td>'));
     expect(otherRow).toContain('<td></td><td></td>');
   });
 });
