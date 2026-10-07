@@ -6,6 +6,7 @@ const path = require('path');
 const { FhirsmithReleases, isFhirsmith, describeAge } = require('../../registry/fhirsmith-releases');
 const { ServerRegistries, ServerRegistry, ServerInformation, ServerVersionInformation } = require('../../registry/model');
 const RegistryModule = require('../../registry/registry');
+const RegistryCrawler = require('../../registry/crawler');
 
 const NOW = new Date('2026-10-06T00:00:00Z').getTime();
 
@@ -86,18 +87,40 @@ describe('FhirsmithReleases', () => {
 });
 
 describe('model', () => {
-  test('the software version survives a save and load', () => {
+  test('the software version and release date survive a save and load', () => {
     const v = new ServerVersionInformation();
     v.software = 'FHIRsmith';
     v.softwareVersion = '0.9.7';
+    v.softwareReleaseDate = '2026-06-12';
     const back = ServerVersionInformation.fromJSON(JSON.parse(JSON.stringify(v.toJSON())));
     expect(back.softwareVersion).toBe('0.9.7');
+    expect(back.softwareReleaseDate).toBe('2026-06-12');
     expect(ServerVersionInformation.fromJSON({}).softwareVersion).toBe('');
+    expect(ServerVersionInformation.fromJSON({}).softwareReleaseDate).toBe('');
+  });
+});
+
+describe('crawler: reported release date', () => {
+  const crawler = new RegistryCrawler({});
+  const now = NOW;
+
+  test('a real release date is kept', () => {
+    expect(crawler.reportedReleaseDate({ releaseDate: '2026-09-05T00:37:46+10:00' }, now)).toBe('2026-09-05T00:37:46+10:00');
+  });
+
+  test("the server's own clock is not a release date", () => {
+    expect(crawler.reportedReleaseDate({ releaseDate: new Date(now - 2000).toISOString() }, now)).toBe('');
+  });
+
+  test('missing or unparseable', () => {
+    expect(crawler.reportedReleaseDate(undefined, now)).toBe('');
+    expect(crawler.reportedReleaseDate({}, now)).toBe('');
+    expect(crawler.reportedReleaseDate({ releaseDate: 'soon' }, now)).toBe('');
   });
 });
 
 describe('software page', () => {
-  function addServer(registry, name, url, software, softwareVersion, error) {
+  function addServer(registry, name, url, software, softwareVersion, error, releaseDate) {
     const server = new ServerInformation();
     server.code = name.toLowerCase();
     server.name = name;
@@ -107,6 +130,7 @@ describe('software page', () => {
     v.software = software;
     v.softwareVersion = softwareVersion;
     v.error = error || '';
+    v.softwareReleaseDate = releaseDate || '';
     server.versions.push(v);
     registry.servers.push(server);
   }
@@ -120,6 +144,8 @@ describe('software page', () => {
     addServer(registry, 'Dev', 'https://dev.example.org/r4', 'FHIRsmith', '0.14.2-snapshot');
     addServer(registry, 'Other', 'https://other.example.org/r4', 'Other <Server>', '6.1', 'HTTP 503');
     addServer(registry, 'Silent', 'https://silent.example.org/r4', 'unknown', '');
+    addServer(registry, 'Onto', 'https://onto.example.org/fhir', 'Ontoserver', '6.29.0', '', '2026-09-05T00:37:46+10:00');
+    addServer(registry, 'Future', 'https://future.example.org/r4', 'FHIRsmith', '0.15.3', '', '2026-12-01');
     data.registries.push(registry);
 
     const module = new RegistryModule({});
@@ -145,7 +171,17 @@ describe('software page', () => {
     expect(html).toContain('development build after v0.14.1');
   });
 
-  test('does not date software that is not FHIRsmith', () => {
+  test('other software is dated by the release date it reports', () => {
+    const row = page().split('<tr>').find(r => r.startsWith('<td>Onto</td>'));
+    expect(row).toContain('<td>2026-09-05</td><td>4 weeks</td>');
+  });
+
+  test('a FHIRsmith release the release list does not know yet falls back to its reported date', () => {
+    const row = page().split('<tr>').find(r => r.startsWith('<td>Future</td>'));
+    expect(row).toContain('<td>2026-12-01</td>');
+  });
+
+  test('does not date software that reports no release date', () => {
     const html = page();
     // find the row by its server name cell (CodeQL flags a substring match on a host name)
     const otherRow = html.split('<tr>').find(r => r.startsWith('<td>Other</td>'));

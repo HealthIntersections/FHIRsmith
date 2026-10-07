@@ -5,6 +5,7 @@
 // with support for multiple endpoints at different FHIR versions.
 //
 
+const { releaseDateOf } = require('../library/changelog');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -223,7 +224,8 @@ class TXModule {
       description: config.description || 'FHIR Terminology Server',
       contactUrl: config.contactUrl,
       contact: config.contact,
-      releaseDate: config.releaseDate,
+      // when this version was released, from its CHANGELOG.md heading - none for a snapshot
+      releaseDate: config.releaseDate || releaseDateOf(packageJson.version),
       host: config.host ? config.host : "localhost"
     });
 

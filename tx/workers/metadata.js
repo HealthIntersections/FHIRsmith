@@ -202,7 +202,8 @@ class MetadataHandler {
       software: {
         name: this.config.softwareName || 'FHIR Terminology Server',
         version: serverVersion,
-        releaseDate: this.config.releaseDate || now
+        // only when it's known - this used to fall back to the time of the request
+        ...(this.config.releaseDate ? { releaseDate: this.config.releaseDate } : {})
       },
       implementation: {
         description: `FHIR Server running at ${baseUrl}`,
