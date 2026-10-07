@@ -18,6 +18,15 @@
     // how often the counters are written out
     "intervalMinutes": 10
   },
+  // Once a day the server checks its installed npm packages against the npm advisory
+  // database (what `npm audit` does - report only, nothing is changed). Problems show on
+  // the home page and the dashboard, and in the log. Needs outbound access to
+  // registry.npmjs.org. The whole block is optional.
+  "npmAudit": {
+    // set false to turn the check off (e.g. a server with no internet access)
+    "enabled": true,
+    "intervalHours": 24
+  },
   "modules": {
     "shl": {
       "enabled": false,
@@ -88,13 +97,42 @@
       "cookieSecure": true,
       // failed-login attempts allowed per IP per 15 minutes (default 20)
       "loginAttemptsPerWindow": 20,
+      // per IP address per minute: task actions (create, approve, delete, retry), and reads
+      // of task output, history and QA pages and files
+      "taskActionsPerMinute": 30,
+      "taskReadsPerMinute": 300,
       "workspaceRoot": "/absolute/path/to/workspaces",
       "igPublisherTimeoutMinutes": 60,
       // where to put files the IG Publisher leaves in the web folder that are too big for GitHub
       // (>100MB). Only applies to websites whose publish-setup.json has $.website.github = true.
       // Omit to leave them in place - the push will then fail. Relative paths resolve under the
       // publisher data folder
-      "large-file-archive": "/absolute/path/to/large-file-archive"
+      "large-file-archive": "/absolute/path/to/large-file-archive",
+      // where to clone the IG registry from. Omit for the default,
+      // git@github.com:FHIR/ig-registry.git. Set this to an ssh_config Host alias when the
+      // server should push the registry with a repo-scoped deploy key instead of an account
+      // key - e.g. "git@github-ig-registry:FHIR/ig-registry.git", with a matching Host block
+      // in the service user's ~/.ssh/config carrying IdentityFile and IdentitiesOnly yes.
+      // The alias is what lets ssh tell this remote apart from the website remote.
+      "ig-registry-url": "git@github.com:FHIR/ig-registry.git",
+      // Tagging the IG source repo and publishing a GitHub release with a zip of its source, at
+      // the end of a successful publication. Omit this whole block to skip that step - without it
+      // there is no credential that can write to a source repository.
+      //
+      // This is a GitHub App, not a personal access token: a fine-grained PAT cannot span two
+      // organisations, and a classic PAT would act as whoever minted it. Create the App with
+      // "Where can this GitHub App be installed?" = Any account, give it Contents: Read and write
+      // (which covers tags as well as releases), then install it on each org below with access to
+      // all repositories. The installation id is in the URL of the installation's settings page.
+      "github-app": {
+        "app-id": "123456",
+        "private-key": "/absolute/path/to/app-private-key.pem",
+        // github org name (as it appears on the publication task) -> installation id
+        "installations": {
+          "HL7": 12345678,
+          "FHIR": 87654321
+        }
+      }
     },
     "npmprojector": {
       "enabled": true,
@@ -150,7 +188,45 @@
     "tx": {
       "enabled": false,
       "librarySource": "/absolute/path/to/library.yml",
+      // publish the library source above at <endpoint>/library, so users can see what this
+      // server actually loads. One URL, content negotiated: a browser gets a formatted page
+      // (and a "Library" item in the tx nav bar), anything else gets the YAML file itself.
+      // Off by default - the file names every database, cache and package the server runs.
+      "publishLibrarySource": false,
       "cacheTimeout": 30,
+      // Optional. A short code (1-16 letters and digits) naming this server instance. Every
+      // cache-id the server issues then starts with "<code>.", so a proxy in front of
+      // several instances can route cached requests back to the instance that holds the
+      // cache. Leave unset for a single server. See nginx.md.
+      // "instanceCode": "tx1",
+      // $closure: closure tables are kept on the server, across sessions and restarts, so
+      // the operation is off unless it is turned on here. When it is on, only one server
+      // instance may use the database - route every $closure request to it (see nginx.md).
+      "closure": {
+        "enabled": false,
+        // relative paths resolve under the data folder's databases directory
+        "database": "closure.db",
+        // require table names to be UUIDs, so names chosen by unrelated clients can't
+        // collide (public servers). Otherwise a name is anything up to 64 characters with
+        // no white space
+        "requireUuidNames": false,
+        // limits: these are the defaults, which apply when a limit is left out; 0 = no limit
+        "maxTables": 1000,
+        "maxConceptsPerTable": 10000,
+        "maxConceptsPerRequest": 1000,
+        "maxEntriesPerTable": 250000,
+        "maxEntriesPerRequest": 50000,
+        // bytes of configuration kept with a table - mostly the tx-resource code systems
+        "maxConfigSize": 5242880,
+        // calls that can queue for one table (counting the one running), and how long, in
+        // seconds, a call will wait for its turn; beyond either, the call gets a 429
+        "maxQueue": 10,
+        "lockTimeout": 60
+        // delete tables that nobody has touched (initialised, added to or resynced) for this
+        // many days. Checked at startup and then daily. Leave it out and nothing is ever
+        // deleted - the right default for a private server; public servers should set it:
+        // , "retentionDays": 90
+      },
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
       "endpoints": [
@@ -186,6 +262,31 @@
       "enabled": true,
       "database": "/var/fhir/data/extension-tracker.db",
       "url": "/ext-tracker"
+    },
+    // TestReports from TxTester and other tools, at /testing. See testing/readme.md
+    "testing": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "testing.db",
+      // if set, every POST must carry this token in tokenHeader (a "Bearer " prefix is
+      // allowed). Leave it out and anyone can submit a report
+      // "token": "<!-- secret -->",
+      "tokenHeader": "Authorization",
+      // DELETE of a report needs this token, in the same header. No adminToken, no deletes
+      // "adminToken": "<!-- secret -->",
+      // the web administration pages: log in as 'admin' with this password to manage users
+      // (who can edit the named links and/or delete reports). No adminPassword, no administrator
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
+      // bytes
+      "maxSize": 512000,
+      // reports per IP address per window; max 0 turns the limit off
+      "rateLimit": { "windowMinutes": 1, "max": 60 }
+      // delete reports received more than this many days ago. Leave it out to keep everything
+      // , "retentionDays": 365
     }
   }
 }

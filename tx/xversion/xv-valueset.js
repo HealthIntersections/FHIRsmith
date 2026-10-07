@@ -1,6 +1,12 @@
 const {VersionUtilities} = require("../../library/version-utilities");
-const {getValueName} = require("../../library/utilities");
+const {getValueName, getValuePrimitive} = require("../../library/utilities");
 const {Extensions} = require("../library/extensions");
+
+// ValueSet.compose.property is R5 and up - it is how a client says which properties it wants
+// back in an expansion. R4 and R3 have nowhere to put it, so it travels as a cross-version
+// extension, the same one the Java convertors use. Dropping it instead means the expansion
+// comes back without the properties that were asked for, which reads as a server fault.
+const COMPOSE_PROPERTY_EXT = "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.property";
 
 /**
  * Converts input ValueSet to R5 format (modifies input object for performance)
@@ -20,6 +26,7 @@ function valueSetToR5(jsonObj, sourceVersion) {
   for (const inc of jsonObj.compose?.exclude || []) {
     valueSetIncludeToR5(inc);
   }
+  composePropertyToR5(jsonObj.compose);
   if (VersionUtilities.isR4Ver(sourceVersion)) {
     return jsonObj; // No conversion needed
   }
@@ -31,6 +38,28 @@ function valueSetToR5(jsonObj, sourceVersion) {
     return jsonObj; // No conversion needed
   }
   throw new Error(`Unsupported FHIR version: ${sourceVersion}`);
+}
+
+/** Read ValueSet.compose.property back out of the cross-version extension. */
+function composePropertyToR5(compose) {
+  if (!compose) {
+    return;
+  }
+  const carried = Extensions.list(compose, COMPOSE_PROPERTY_EXT);
+  if (carried.length === 0) {
+    return;
+  }
+  compose.property = compose.property || [];
+  for (const ext of carried) {
+    const value = getValuePrimitive(ext);
+    if (value !== undefined && value !== null) {
+      compose.property.push(value);
+    }
+  }
+  compose.extension = compose.extension.filter(ext => ext.url !== COMPOSE_PROPERTY_EXT);
+  if (compose.extension.length === 0) {
+    delete compose.extension;
+  }
 }
 
 function valueSetIncludeToR5(inc) {
@@ -82,6 +111,15 @@ function valueSetR5ToR4(r5Obj) {
   }
   if (r5Obj.versionAlgorithmCoding) {
     delete r5Obj.versionAlgorithmCoding;
+  }
+
+  // ValueSet.compose.property has no home in R4, so it goes into the extension
+  if (r5Obj.compose && Array.isArray(r5Obj.compose.property) && r5Obj.compose.property.length > 0) {
+    r5Obj.compose.extension = r5Obj.compose.extension || [];
+    for (const prop of r5Obj.compose.property) {
+      r5Obj.compose.extension.push({ url: COMPOSE_PROPERTY_EXT, valueString: prop });
+    }
+    delete r5Obj.compose.property;
   }
 
   // Filter out R5-only filter operators in compose

@@ -11,6 +11,7 @@ class ServerVersionInformation {
     this.lastSuccess = null; // Date object
     this.lastTat = '';
     this.software = ''; // what software is running
+    this.softwareVersion = ''; // CapabilityStatement.software.version, if the server reports one
     this.codeSystems = []; // Array of strings (sorted, unique)
     this.valueSets = []; // Array of strings (sorted, unique)
   }
@@ -58,6 +59,7 @@ class ServerVersionInformation {
       lastTat: this.lastTat,
       terminologies: this.codeSystems,
       software: this.software,
+      'software-version': this.softwareVersion,
       valuesets: this.valueSets
     };
   }
@@ -71,6 +73,7 @@ class ServerVersionInformation {
     instance.lastSuccess = json['last-success'] ? new Date(json['last-success']) : null;
     instance.lastTat = json.lastTat || '';
     instance.software = json.software;
+    instance.softwareVersion = json['software-version'] || '';
     instance.codeSystems = json.terminologies || [];
     instance.valueSets = json.valuesets || [];
     return instance;
@@ -561,6 +564,13 @@ class ServerRegistryUtilities {
       } else {
         // Otherwise do exact matching on both full and base URL
         ok = vurl === cs || vurl === baseCs;
+        // A SNOMED CT version URI extends its edition URI, so a server hosting
+        // sct|.../{edition}/version/{date} hosts the edition sct|.../{edition}. Servers
+        // list only full versions, so without this an edition-level request would never
+        // find the servers that host the edition.
+        if (!ok && noVersionIndependentMatching && cs.includes('|')) {
+          ok = vurl.startsWith(cs + '/');
+        }
       }
       if (ok && content) {
         content.content = item.content;

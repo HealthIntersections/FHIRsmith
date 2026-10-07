@@ -1,0 +1,151 @@
+# OpenAPI description of the FHIRsmith terminology server (an R5 endpoint, e.g. /tx/r5).
+#
+# Three parts, merged when the spec is served (see openapi.js):
+#  - this file: the overview, /metadata and /$versions, and the shared components
+#  - openapi-operations.js: the terminology operations, as data. openapi.js makes their
+#    paths (type and instance level, GET and POST) and their parameter tables, and the
+#    read and search paths
+#  - openapi-schemas.json: the FHIR R5 resource schemas, generated from the
+#    StructureDefinitions by utilities/generate-openapi-schemas.js (see
+#    openapi-schemas.config.js)
+#
+# tests/tx/openapi.test.js keeps this honest: every route must be described or explicitly
+# excluded, the parameters must be the ones the code reads, and real responses must
+# validate against the schemas.
+#
+# HTML pages (/, /op.html, /ecl, /problems.html, /info, /library) are not described.
+# info.version is filled in from package.json, and servers from the endpoint, when the spec
+# is served.
+
+openapi: 3.1.0
+info:
+  title: FHIRsmith Terminology Server
+  version: "0.0.0"
+  summary: A FHIR terminology server (R5)
+  description: |
+    A FHIR terminology server: code systems, value sets and concept maps, and the
+    terminology operations on them - $expand, $validate-code, $lookup, $subsumes,
+    $translate, and more. This describes an R5 endpoint; the server's R4 and R3 endpoints
+    work the same way, with the resources of that version.
+
+    The operations are the ones FHIR defines (see the [terminology
+    service](https://hl7.org/fhir/R5/terminology-service.html)), with the behaviour the
+    [terminology ecosystem IG](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/) asks of
+    the servers in the ecosystem. Each operation lists the parameters this server reads.
+
+    **Requests.** An operation can be invoked with GET, with its parameters in the query, or
+    with POST, with a Parameters resource (`application/fhir+json`), or a form. Parameters
+    whose values are not primitives (a Coding, a resource) can only be sent in a Parameters
+    resource.
+
+    **Responses** are JSON by default; `application/fhir+xml` (or `_format=xml`) gets XML,
+    and a browser (or `_format=html`) gets an HTML page. Only the JSON is described here.
+    Errors are OperationOutcomes, and every issue (except information) has a tx-issue-type
+    code in `details.coding` and its message in `details.text`.
+
+    **Schemas.** The resource schemas describe what this server handles and returns: it
+    doesn't reject content outside them (an extension with a Quantity value, say), but it
+    isn't designed to do anything with it. They have the JSON `_x` elements (the id and
+    extensions of a primitive) and modifierExtension wherever FHIR allows them. Contained
+    resources are value sets, in a value set, only.
+
+    **Caching.** A client that sends the same resources (`tx-resource`) with many requests
+    can keep them on the server with `$cache-control`, and then send the cache's id in the
+    `X-Cache-Id` header.
+  license:
+    name: BSD-3-Clause
+    url: https://opensource.org/license/bsd-3-clause
+externalDocs:
+  description: The FHIR R5 terminology service
+  url: https://hl7.org/fhir/R5/terminology-service.html
+servers:
+  - url: /tx/r5
+
+tags:
+  - name: Server
+    description: What the server does, and operations on the server as a whole
+  - name: CodeSystem
+    description: Code systems, and $lookup, $validate-code and $subsumes
+  - name: ValueSet
+    description: Value sets, and $expand, $validate-code and $compare
+  - name: ConceptMap
+    description: Concept maps, and $translate
+
+paths:
+  /metadata:
+    get:
+      tags: [Server]
+      operationId: metadata
+      summary: The server's capabilities
+      description: |
+        The CapabilityStatement, or with `mode=terminology`, the TerminologyCapabilities:
+        the code systems (and versions) the server has, and the expansion parameters it
+        understands.
+      parameters:
+        - name: mode
+          in: query
+          description: '`terminology` for the TerminologyCapabilities'
+          schema: { type: string, enum: [terminology] }
+        - $ref: '#/components/parameters/format'
+      responses:
+        '200':
+          description: The CapabilityStatement, or the TerminologyCapabilities
+          content:
+            application/fhir+json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/CapabilityStatement'
+                  - $ref: '#/components/schemas/TerminologyCapabilities'
+
+  /$versions:
+    get:
+      tags: [Server]
+      operationId: versions
+      summary: The FHIR versions of this endpoint
+      description: |
+        The FHIR version this endpoint uses. With `Accept: application/fhir+json` the answer
+        is a Parameters resource (`version` and `default`); otherwise, a simple JSON object.
+      responses:
+        '200':
+          description: The versions
+          content:
+            application/fhir+json:
+              schema: { $ref: '#/components/schemas/Parameters' }
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versions: { type: array, items: { type: string }, example: ['5.0'] }
+                  default: { type: string, example: '5.0' }
+                required: [versions, default]
+
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      description: The resource's id
+      schema: { type: string }
+    format:
+      name: _format
+      in: query
+      description: '`json`, `xml` or `html`, instead of the Accept header'
+      schema: { type: string, enum: [json, xml, html] }
+    acceptLanguage:
+      name: Accept-Language
+      in: header
+      description: The language(s) for displays and messages
+      schema: { type: string }
+      example: en
+    cacheId:
+      name: X-Cache-Id
+      in: header
+      description: A cache of resources, started with $cache-control
+      schema: { type: string }
+  responses:
+    Outcome:
+      description: An error, as an OperationOutcome
+      content:
+        application/fhir+json:
+          schema: { $ref: '#/components/schemas/OperationOutcome' }

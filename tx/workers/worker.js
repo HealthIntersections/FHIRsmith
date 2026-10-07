@@ -7,6 +7,7 @@ const {Issue} = require("../library/operation-outcome");
 const {Languages} = require("../../library/languages");
 const {ConceptMap} = require("../library/conceptmap");
 const {Renderer} = require("../library/renderer");
+const {editionName} = require("../sct/editions");
 
 // The cache-id travels as an HTTP header (not an operation parameter) so proxies /
 // load-balancers can act on it and the server can reject it before parsing the body.
@@ -32,6 +33,15 @@ class TerminologyWorker {
   additionalResources = []; // Resources provided via tx-resource parameter or cache
   foundParameters = [];
   renderer;
+
+  // ValueSetChecker reads both of these off whatever worker it is given, so they belong to
+  // every worker that can construct one - not just the validate and expand workers that
+  // happen to have declared them first. A worker without them fails inside the checker with
+  // "Cannot read properties of undefined (reading 'size')", a long way from the cause.
+  // ValidateWorker and ExpandWorker redeclare them; a subclass field initialiser overrides
+  // the base one, so their behaviour is unchanged.
+  requiredSupplements = new Set();
+  usedSupplements = new Set();
 
   /**
    * @param {OperationContext} opContext - Operation context
@@ -369,14 +379,22 @@ class TerminologyWorker {
       return null;
     }
     if (url.startsWith("#")) {
+      // A local reference: per FHIR, #id is resolved against the contained resources of
+      // the resource being processed - which, when that is itself a contained value set,
+      // means its container's (contained resources are all siblings in one list)
       if (source) {
-        if (source.jsonObj) {
-          source = source.jsonObj;
-        }
-        for (const contained of source.contained || []) {
-          if (contained.id === url.substring(1)) {
+        const container = source.container || source;
+        const json = container.jsonObj || container;
+        for (const contained of json.contained || []) {
+          if (contained && contained.id === url.substring(1)) {
+            if (contained.resourceType !== 'ValueSet') {
+              // the resource wrappers already reject this; this is the second line of defence
+              throw new Issue('error', 'not-supported', null, 'CONTAINED_RESOURCE_NOT_SUPPORTED',
+                `The reference '${url}' is to a contained ${contained.resourceType}, not a ValueSet`, 'not-supported', 400);
+            }
             const ret = this.wrapRawResource(contained);
             ret.isContained = true;
+            ret.container = container.jsonObj ? container : this.wrapRawResource(container);
             return ret;
           }
         }
@@ -467,11 +485,24 @@ class TerminologyWorker {
    *   Note: this is the caller's parameters, not this.params - the worker's own
    *   params is null when expanding an imported ValueSet
    */
+  /** The circular reference key seeValueSet tracks for a value set */
+  valueSetContextKey(vs) {
+    return vs.contextKey !== undefined ? vs.contextKey : (vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null);
+  }
+
+  /** Finished processing a value set: see OperationContext.unseeContext */
+  unseeValueSet(vs) {
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.unseeContext(key);
+    }
+  }
+
   seeValueSet(vs, params) {
     // Build canonical URL from url and version
-    const vurl = vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null;
-    if (vurl) {
-      this.opContext.seeContext(vurl);
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.seeContext(key);
     }
     // Check for expansion parameter extensions on compose
     if (vs.jsonObj.compose && vs.jsonObj.compose.extension) {
@@ -1091,42 +1122,9 @@ function Unknown_Code_in_VersionSCT(url, version) {
 function SCTVersion(url, ver) {
   if (url !== 'http://snomed.info/sct' || !ver) {
     return '';
-  } else {
-    let result = 'unknown';
-    let s = ver.split('/');
-    if (s.length >= 5) {
-      if (s[4] === '900000000000207008') result = 'International Edition';
-      else if (s[4] === '449081005') result = 'International Spanish Edition';
-      else if (s[4] === '11000221109') result = 'Argentinian Edition';
-      else if (s[4] === '32506021000036107') result = 'Australian Edition (with drug extension)';
-      else if (s[4] === '11000234105') result = 'Austrian Edition';
-      else if (s[4] === '11000172109') result = 'Belgian Edition';
-      else if (s[4] === '20621000087109') result = 'Canadian English Edition';
-      else if (s[4] === '20611000087101') result = 'Canadian Canadian French Edition';
-      else if (s[4] === '11000279109') result = 'Czech Edition';
-      else if (s[4] === '554471000005108') result = 'Danish Edition';
-      else if (s[4] === '11000181102') result = 'Estonian Edition';
-      else if (s[4] === '11000229106') result = 'Finnish Edition';
-      else if (s[4] === '11000274103') result = 'German Edition';
-      else if (s[4] === '1121000189102') result = 'Indian Edition';
-      else if (s[4] === '827022005') result = 'IPS Terminology';
-      else if (s[4] === '11000220105') result = 'Irish Edition';
-      else if (s[4] === '11000146104') result = 'Netherlands Edition';
-      else if (s[4] === '21000210109') result = 'New Zealand Edition';
-      else if (s[4] === '51000202101') result = 'Norwegian Edition';
-      else if (s[4] === '11000267109') result = 'Republic of Korea Edition (South Korea)';
-      else if (s[4] === '900000001000122104') result = 'Spanish National Edition';
-      else if (s[4] === '45991000052106') result = 'Swedish Edition';
-      else if (s[4] === '2011000195101') result = 'Swiss Edition';
-      else if (s[4] === '83821000000107') result = 'UK Edition';
-      else if (s[4] === '999000021000000109') result = 'UK Clinical Edition';
-      else if (s[4] === '5631000179106') result = 'Uruguay Edition';
-      else if (s[4] === '21000325107') result = 'Chilean Edition';
-      else if (s[4] === '731000124108') result = 'US Edition';
-      else if (s[4] === '5991000124107') result = 'US Edition (with ICD-10-CM maps)';
-    }
-    return result;
   }
+  const s = ver.split('/');
+  return (s.length >= 5 && editionName(s[4])) || 'unknown';
 }
 
 module.exports = {

@@ -23,6 +23,7 @@ const {UniiServicesFactory} = require("./cs/cs-unii");
 const {SnomedServicesFactory} = require("./cs/cs-snomed");
 const {CPTServicesFactory} = require("./cs/cs-cpt");
 const {OMOPServicesFactory} = require("./cs/cs-omop");
+const {ICD11ServicesFactory} = require("./cs/cs-icd11");
 const {PackageValueSetProvider} = require("./vs/vs-package");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const {IETFLanguageCodeFactory} = require("./cs/cs-lang");
@@ -275,6 +276,10 @@ class Library {
 
       case 'omop':
         await this.loadOmop(details, isDefault, mode);
+        break;
+
+      case 'icd11':
+        await this.loadIcd11(details, isDefault, mode);
         break;
 
       case 'npm':
@@ -592,6 +597,23 @@ class Library {
   }
 
   /**
+   * ICD-11 is three code systems in one database - the MMS and ICF linearizations and the
+   * Foundation - so one source line registers a factory per system that the database
+   * actually contains. registerProvider is keyed on system(), so they cannot share one.
+   */
+  async loadIcd11(details, isDefault, mode) {
+    const icdFN = await this.getOrDownloadFile(details);
+    if (mode === "fetch" || mode === "npm") {
+      return;
+    }
+    for (const sys of await ICD11ServicesFactory.listSystems(icdFN)) {
+      const factory = new ICD11ServicesFactory(this.i18n, icdFN, sys.code);
+      await factory.load();
+      this.registerProvider(icdFN, factory, isDefault);
+    }
+  }
+
+  /**
    * Returns true if the given url/version should be excluded from npm/url package loading.
    * Matches against the ignored list using either plain url or url#version.
    */
@@ -642,7 +664,15 @@ class Library {
     const resources = await contentLoader.getResourcesByType("CodeSystem");
     let csc = 0;
     for (const resource of resources) {
-      const cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+      let cs;
+      try {
+        cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+      } catch (e) {
+        // one unacceptable resource (e.g. contained resources the server doesn't support)
+        // must not stop the rest of the package loading
+        this.log.warn(`Package ${contentLoader.pid()}: skipping CodeSystem ${resource.id || resource.filename || ''}: ${e.message}`);
+        continue;
+      }
       if (this.#isIgnored(cs.url, cs.version)) {
         this.log.info(`Ignoring CodeSystem ${cs.url}${cs.version ? '#' + cs.version : ''} (excluded by config)`);
         continue;
@@ -753,7 +783,14 @@ class Library {
     const csEntries = await contentLoader.getResourcesByType("CodeSystem");
     let csc = 0;
     for (const entry of csEntries) {
-      const cs = new CodeSystem(await contentLoader.loadFile(entry, contentLoader.fhirVersion()));
+      let cs;
+      try {
+        cs = new CodeSystem(await contentLoader.loadFile(entry, contentLoader.fhirVersion()));
+      } catch (e) {
+        // one unacceptable resource must not stop the rest of the package loading
+        this.log.warn(`Package ${contentLoader.pid()}: skipping CodeSystem ${entry.id || entry.filename || ''}: ${e.message}`);
+        continue;
+      }
       if (this.#isIgnored(cs.url, cs.version)) {
         this.log.info(`Ignoring CodeSystem ${cs.url}${cs.version ? '#' + cs.version : ''} (excluded by config)`);
         continue;

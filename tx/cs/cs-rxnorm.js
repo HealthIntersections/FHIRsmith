@@ -36,12 +36,27 @@ class RxNormPrep {
 
 // Iterator context
 class RxNormIteratorContext {
-  constructor(query, params = {}) {
+  /**
+   * @param {string|null} query - the SQL that produces the rows, or null for an iterator with no rows
+   * @param {object} params - the query parameters
+   * @param {number} [total] - the number of rows the query will return, if known. The expander
+   *   reads it to refuse an over-limit whole-code-system expansion before it is materialised
+   */
+  constructor(query, params = {}, total = undefined) {
     this.query = query;
     this.params = params;
     this.cursor = 0;
-    this.results = null;
-    this.executed = false;
+    if (query) {
+      this.results = null;
+      this.executed = false;
+      this.total = total;
+    } else {
+      // nothing to run: an empty statement isn't a no-op in node-sqlite3, it fails with
+      // "SQLITE_MISUSE: not an error"
+      this.results = [];
+      this.executed = true;
+      this.total = 0;
+    }
   }
 
   more() {
@@ -288,10 +303,12 @@ class RxNormServices extends CodeSystemProvider {
     if (!context) {
       // Iterate all codes
       const query = `SELECT ${this.getCodeField()}, STR FROM rxnconso WHERE SAB = ? AND TTY <> 'SY' ORDER BY ${this.getCodeField()}`;
-      return new RxNormIteratorContext(query, { sab: this.getSAB() });
+      return new RxNormIteratorContext(query, { sab: this.getSAB() }, this.totalCodeCount);
     } else {
-      // No hierarchical iteration for specific contexts in this implementation
-      return new RxNormIteratorContext('', {});
+      // No hierarchical iteration for specific contexts in this implementation. The expander
+      // asks every concept for its children (includeCodeAndDescendants), so this has to be an
+      // iterator with no rows - not one with an empty query, which sqlite rejects
+      return new RxNormIteratorContext(null, {});
     }
   }
 
@@ -428,6 +445,20 @@ class RxNormServices extends CodeSystemProvider {
     filterContext.filters.push(filter);
   }
 
+  /**
+   * Whether RXNSTEMS can hold this stem at all.
+   *
+   * The importer only stems words that are longer than two characters and start with a
+   * letter (see extractWords), so the table has nothing that begins with a digit. Every
+   * token of a search is ANDed, so a token the table cannot hold takes the whole search
+   * to nothing: "acetaminophen" found thousands of codes while "acetaminophen 500" found
+   * none, which is not a result anyone would expect from adding a dose.
+   * @private
+   */
+  #stemIsIndexed(stem) {
+    return stem.length > 2 && /^[a-z]/.test(stem);
+  }
+
   async searchFilter(filterContext, filter, sort) {
 
     if (!filter || !filter.stems || filter.stems.length === 0) {
@@ -437,9 +468,18 @@ class RxNormServices extends CodeSystemProvider {
     for (let i = 0; i < filter.stems.length; i++) {
       const stem = filter.stems[i];
       const rxnormFilter = new RxNormFilterHolder();
-      rxnormFilter.text = true;
-      rxnormFilter.sql = ` AND (${this.getCodeField()} = s${i}.CUI AND s${i}.stem LIKE $stem${i})`;
-      rxnormFilter.params[`stem${i}`] = this.#sqlWrapString(stem) + '%';
+      if (this.#stemIsIndexed(stem)) {
+        rxnormFilter.text = true;
+        rxnormFilter.sql = ` AND (${this.getCodeField()} = s${i}.CUI AND s${i}.stem LIKE $stem${i})`;
+        rxnormFilter.params[`stem${i}`] = stem + '%';
+      } else {
+        // Not in the stem table, so match the token against the text itself. Left as a
+        // plain (non-text) filter so that executeFilters does not join RXNSTEMS for it.
+        // Unindexed, but it only ever narrows rows the other tokens have already found,
+        // and the tokens are alphanumeric, so there are no LIKE wildcards to escape.
+        rxnormFilter.sql = ` AND STR LIKE $text${i}`;
+        rxnormFilter.params[`text${i}`] = '%' + ((filter.words && filter.words[i]) || stem) + '%';
+      }
 
       filterContext.filters.push(rxnormFilter);
     }
@@ -470,17 +510,21 @@ class RxNormServices extends CodeSystemProvider {
       }
     }
 
-    // Add text search joins and filters
+    // Add text search joins and filters. Each one is renumbered to its position among the
+    // text filters, which is not its position among the filters - searchFilter leaves gaps
+    // where a token went to a plain STR match instead. The alias, the placeholder and the
+    // parameter key all carry that number and have to move together: renaming the key but
+    // not the placeholder leaves the query asking for a parameter that is not there.
     for (const filter of filterContext.filters) {
       if (filter.text) {
         sql2 += `, rxnstems as s${stemIndex}`;
-        const stemSql = filter.sql.replace(/s\d+/g, `s${stemIndex}`);
+        const stemSql = filter.sql
+          .replace(/\bs\d+\./g, `s${stemIndex}.`)
+          .replace(/\$stem\d+/g, `$stem${stemIndex}`);
         sql1 += ' ' + stemSql;
 
-        // Update parameter keys to match stem index
         for (const [key, value] of Object.entries(filter.params)) {
-          const newKey = key.replace(/\d+/, stemIndex.toString());
-          allParams[newKey] = value;
+          allParams[key.replace(/\d+$/, stemIndex.toString())] = value;
         }
         stemIndex++;
       }

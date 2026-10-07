@@ -13,7 +13,7 @@
 //
 
 const { TerminologyWorker } = require('./worker');
-const {OperationOutcome, Issue} = require("../library/operation-outcome");
+const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const {Parameters} = require("../library/parameters");
 const {ValidateWorker} = require("./validate");
 const {debugLog} = require("../operation-context");
@@ -137,7 +137,7 @@ class BatchValidateWorker extends TerminologyWorker {
               op.addIssue(error);
               output.push({name: "validation", resource : op.jsonObj});
             } else {
-              output.push({name: "validation", resource : this.operationOutcome('error', error.issueCode || 'exception', error.message) } );
+              output.push({name: "validation", resource : outcomeFromError(error) } );
             }
           }
         }
@@ -156,8 +156,7 @@ class BatchValidateWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       }
-      return res.status(error.statusCode || 500).json(this.operationOutcome(
-        'error', error.issueCode || 'exception', error.message));
+      return res.status(error.statusCode || 500).json(outcomeFromError(error));
     }
   }
 
@@ -218,18 +217,9 @@ class BatchValidateWorker extends TerminologyWorker {
   /**
    * Build an OperationOutcome
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        details: {
-          text: message
-        },
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    // the shared builder, so that every outcome has details.text and a tx-issue-type coding
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
   hasValueSet(parameter) {

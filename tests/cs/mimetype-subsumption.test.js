@@ -1,12 +1,17 @@
 /**
  * Media type subsumption, and where it cannot be determined.
  *
- * A parameter narrows a media type - everything true of `text/plain` is true of
- * `text/plain; charset=utf-8` - so within one type/subtype the code with fewer
+ * A parameter narrows a media type - everything true of `application/xml` is true of
+ * `application/xml; charset=utf-8` - so within one type/subtype the code with fewer
  * parameters subsumes the one that adds to them. That reasoning needs two things of a
  * parameter, though: that adding it narrows at all, and that two of its values exclude
  * one another. Both are properties of the specific parameter's definition, so neither
  * can be asserted for a parameter the server has never heard of.
+ *
+ * It also needs the parameter to have no DEFAULT, which is why the narrowing cases here are
+ * written on application/xml and text/vcard rather than the obvious text/plain: all three of
+ * text/plain's parameters default, so its bare form is not the general case. That is a whole
+ * subject of its own - see mimetype-defaults.test.js.
  *
  * FHIR-58748: a server that cannot decide must say so rather than answer. $subsumes has
  * no outcome code meaning "unknown", so it comes back as an error carrying the
@@ -42,16 +47,18 @@ describe('media type subsumption', () => {
     test.each([
       ['identical', 'text/plain', 'text/plain', 'equivalent'],
       ['case differences only', 'Text/Plain; CharSet=UTF-8', 'text/plain; charset=utf-8', 'equivalent'],
-      ['an understood parameter added', 'text/plain', 'text/plain; charset=utf-8', 'subsumes'],
-      ['the same, reversed', 'text/plain; charset=utf-8', 'text/plain', 'subsumed-by'],
-      ['two understood parameters', 'text/plain; charset=utf-8', 'text/plain; charset=utf-8; format=flowed', 'subsumes'],
+      ['an understood parameter added', 'application/xml', 'application/xml; charset=utf-8', 'subsumes'],
+      ['the same, reversed', 'application/xml; charset=utf-8', 'application/xml', 'subsumed-by'],
+      // text/vcard has a real version parameter (RFC 6350 s10.1) with no default, alongside a
+      // charset that does default - so this exercises both mechanisms in one code
+      ['two understood parameters', 'text/vcard; charset=utf-8', 'text/vcard; charset=utf-8; version=4.0', 'subsumes'],
       ['understood parameters with different values', 'text/plain; charset=utf-8', 'text/plain; charset=utf-16', 'not-subsumed'],
       ['disjoint understood parameters', 'text/plain; charset=utf-8', 'text/plain; format=flowed', 'not-subsumed'],
       ['different subtypes', 'text/plain', 'text/html', 'not-subsumed'],
       ['different types', 'text/plain', 'application/json', 'not-subsumed'],
       ['a structured syntax suffix is a separate registration', 'application/xml', 'application/fhir+xml', 'not-subsumed'],
       ['an unknown parameter identical on both sides cannot decide anything',
-        'text/plain; foo=bar', 'text/plain; charset=utf-8; foo=bar', 'subsumes']
+        'application/xml; foo=bar', 'application/xml; charset=utf-8; foo=bar', 'subsumes']
     ])('%s', async (_label, a, b, expected) => {
       expect(await outcome(a, b)).toBe(expected);
     });

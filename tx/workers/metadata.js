@@ -272,8 +272,8 @@ class MetadataHandler {
                 { name: '_id', type: 'token' }
               ],
               operation: [
-                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-                { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }
+                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' }
+                // closure is system level, not ConceptMap level - see rest.operation below
               ]
             }
           ],
@@ -286,7 +286,8 @@ class MetadataHandler {
             { name: 'subsumes', definition: 'http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes' },
             { name: 'validate-code', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-validate-code' },
             { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-            { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' },
+            // only when the administrator has turned it on (modules.tx.closure)
+            ...(this.config.closure ? [{ name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }] : []),
             { name: 'compare', definition: 'http://hl7.org/fhir/tools/OperationDefinition/ValueSet-compare' },
             { name: 'cache-control', definition: 'http://hl7.org/fhir/tools/OperationDefinition/cache-control' },
             { name: 'versions', definition: 'http://hl7.org/fhir/OperationDefinition/fhir-versions' }
@@ -333,6 +334,10 @@ class MetadataHandler {
       validateCode: this.buildValidateCodeCapabilities(),
       translation: this.buildTranslationCapabilities()
     };
+    if (this.config.closure) {
+      // closure tables relate concepts within one code system, never across them
+      tc.closure = { translation: false };
+    }
 
     return tc;
   }
@@ -429,36 +434,43 @@ class MetadataHandler {
           name: 'tx-resource',
           documentation: 'Additional valuesets needed for evaluation e.g. value sets referred to from the import statement of the value set being expanded'
         },
-        { name: '_incomplete' },
+        // Parameters the $expand handler reads - see handleTypeLevelExpand in
+        // tx/workers/expand.js and TxParameters.seeParameter in tx/params.js.
+        // Keep this list in step with those when adding a parameter.
         { name: 'abstract' },
         { name: 'activeOnly' },
         { name: 'check-system-version' },
+        { name: 'check-valueset-version' },
         { name: 'count' },
         { name: 'default-to-latest-version' },
+        { name: 'default-valueset-version' },
+        { name: 'designation' },
         { name: 'displayLanguage' },
         { name: 'excludeNested' },
         { name: 'excludeNotForUI' },
         { name: 'excludePostCoordinated' },
+        { name: 'filter' },
         { name: 'force-system-version' },
-        { name: 'inactive' },
-        { name: 'includeAlternateCodes' },
+        { name: 'force-valueset-version' },
         { name: 'includeDefinition' },
         { name: 'includeDesignations' },
-        { name: 'incomplete-ok' },
-        { name: 'limitedExpansion' },
         {
-          name: 'mode',
-          documentation: '=lenient-display-validation'
+          name: 'limit',
+          documentation: 'Upper bound on the size of the expansion; the operation fails as too-costly beyond it'
         },
         { name: 'no-cache' },
         { name: 'offset' },
         { name: 'profile' },
         { name: 'property' },
-        { name: 'system-version' },
         {
-          name: 'valueSetMode',
-          documentation: '= CHECK_MEMBERSHIP_ONLY | NO_MEMBERSHIP_CHECK'
-        }
+          name: 'sort',
+          documentation: 'code | display | design | prop:{name}; prefix with - to reverse. Ignored for hierarchical expansions'
+        },
+        { name: 'system-version' },
+        { name: 'url' },
+        { name: 'useSupplement' },
+        { name: 'valueSet' },
+        { name: 'valueSetVersion' }
       ]
     };
   }

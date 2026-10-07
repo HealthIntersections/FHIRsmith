@@ -13,7 +13,8 @@ sources:
   - ucum:tx/data/ucum-essence.xml
   - loinc!:Loinc_2.82.db
   - snomed!:sct_intl_20250201.cache
-  - snomed:sct_test_20250909.cache
+  - snomed:sct_test_20250909b.cache
   - omop:omop_v20250227.db
+  - icd11:icd11-2026-01.db
   - npm:hl7.terminology
   - npm:fhir.tx.support.r4

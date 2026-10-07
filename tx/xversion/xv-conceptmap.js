@@ -263,16 +263,23 @@ function conceptMapR5ToR3(r5Obj) {
  * @returns {string} R5 relationship value
  * @private
  */
+// The two vocabularies name the relationship from opposite ends. R3/R4 equivalence
+// describes the TARGET ('wider' = the target is wider than the source); R5 relationship
+// describes the SOURCE ('source-is-narrower-than-target'). So wider <-> narrower-than-
+// target, and narrower <-> broader-than-target. These tables follow the Java convertors
+// (ConceptMap30_50 / ConceptMap40_50), which are the reference.
 function convertEquivalenceToRelationship(equivalence) {
   const equivalenceToRelationship = {
     'relatedto': 'related-to',
     'equivalent': 'equivalent',
     'equal': 'equivalent',
-    'wider': 'source-is-broader-than-target',
-    'subsumes': 'source-is-broader-than-target',
-    'narrower': 'source-is-narrower-than-target',
-    'specializes': 'source-is-narrower-than-target',
-    'inexact': 'not-related-to',
+    'wider': 'source-is-narrower-than-target',
+    'subsumes': 'source-is-narrower-than-target',
+    'narrower': 'source-is-broader-than-target',
+    'specializes': 'source-is-broader-than-target',
+    'inexact': 'related-to',
+    // Java gives no relationship for 'unmatched' (a target-less 'unmatched' is lifted to
+    // element.noMap before this is reached); R5 requires one, so not-related-to it is
     'unmatched': 'not-related-to',
     'disjoint': 'not-related-to'
   };
@@ -289,9 +296,11 @@ function convertRelationshipToEquivalence(relationship) {
   const relationshipToEquivalence = {
     'related-to': 'relatedto',
     'equivalent': 'equivalent',
-    'source-is-broader-than-target': 'wider',
-    'source-is-narrower-than-target': 'narrower',
-    'not-related-to': 'unmatched'
+    'source-is-narrower-than-target': 'wider',
+    'source-is-broader-than-target': 'narrower',
+    // 'unmatched' is reserved for "no map" (see conceptMapToR5); a real not-related-to
+    // target is disjoint, as in the Java convertors
+    'not-related-to': 'disjoint'
   };
   return relationshipToEquivalence[relationship] || 'relatedto';
 }

@@ -14,10 +14,70 @@ const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const Logger = require('../library/logger');
-const {validateParameter} = require("../library/utilities");
+const {validateParameter, Utilities} = require("../library/utilities");
 const {describeCron} = require("../library/cron-utilities");
 const {tokenMatches, tokenConfigured} = require("../library/request-token");
 const pckLog = Logger.getInstance().child({ module: 'packages' });
+const packagesOpenApi = require('./openapi');
+
+// Query parameter rules for validateQueryParams. These are also the contract published in
+// openapi.yaml, and tests/packages/openapi.test.js checks that the two agree - so change
+// both together.
+const SEARCH_PARAMS = {
+  name: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
+  dependson: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|@-]*$/ },
+  pkgcanonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*%?$/ },
+  canonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*$/ },
+  fhirversion: { maxLength: 10, pattern: /^(R2|R2B|R3|R4|R4B|R5|R6)?$/ },
+  dependency: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|@-]*$/ },
+  sort: { maxLength: 20, pattern: /^-?(name|version|date|count|fhirversion|kind|canonical)$/ },
+  objWrapper: { maxLength: 10, pattern: /^(true|false)?$/ },
+  // Sent by the Java PackageClient (org.hl7.fhir.utilities.npm). Accepted, but has no
+  // effect: a search already returns pre-release versions.
+  prerelease: { maxLength: 5, pattern: /^(true|false)?$/ }
+};
+
+// /-/v1/search also takes the npm registry search parameters. npm always sends all of
+// these; quality, popularity and maintenance are ranking weights, accepted and ignored.
+const V1_SEARCH_PARAMS = {
+  ...SEARCH_PARAMS,
+  text: { maxLength: 200, pattern: /^[a-zA-Z0-9._:@/#| -]*$/ },
+  size: { maxLength: 3, pattern: /^\d{1,3}$/ },
+  from: { maxLength: 6, pattern: /^\d{1,6}$/ },
+  quality: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ },
+  popularity: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ },
+  maintenance: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ }
+};
+const V1_SEARCH_MAX_SIZE = 250;
+
+// FHIR release codes accepted by fhirversion=, mapped to the version prefix they select.
+const FHIR_RELEASE_VERSIONS = {
+  'R2': '1.0',
+  'R2B': '1.4',
+  'R3': '3.0',
+  'R4': '4.0',
+  'R4B': '4.3',
+  'R5': '5.0',
+  'R6': '6.0'
+};
+
+// No default for dateValue: a default computed here would be frozen at the date the server
+// started. The /updates handler supplies today's date when none is given.
+const UPDATES_PARAMS = {
+  dateType: { maxLength: 10, pattern: /^(relative|absolute)?$/, default: 'relative' },
+  daysValue: { maxLength: 3, pattern: /^\d{1,3}$/, default: '10' },
+  dateValue: { maxLength: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ }
+};
+
+const BROKEN_PARAMS = {
+  filter: { maxLength: 100, pattern: /^[a-zA-Z0-9._-]*$/ }
+};
+
+// Path parameter rules for GET /:id/:version (also published in openapi.yaml).
+const PACKAGE_ID_PATTERN = /^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/;
+const PACKAGE_ID_MAX_LENGTH = 100;
+const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._-]+$/;
+const PACKAGE_VERSION_MAX_LENGTH = 50;
 
 class PackagesModule {
   constructor(stats) {
@@ -52,6 +112,8 @@ class PackagesModule {
         "frame-ancestors 'none'"
       ].join('; '));
       res.removeHeader('X-Powered-By');
+      // RFC 8631: where to find the machine-readable description of this API
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
       next();
     });
   }
@@ -145,6 +207,10 @@ class PackagesModule {
       } else if (condition.operator === 'IN_SUBQUERY') {
         query += ` AND ${condition.column} IN (${condition.subquery})`;
         params.push(condition.value);
+      } else if (condition.operator === 'TEXT') {
+        // A free-text search term: in the package id or its description
+        query += ' AND (PackageVersions.Id LIKE ? OR CAST(PackageVersions.Description AS TEXT) LIKE ?)';
+        params.push(`%${condition.value}%`, `%${condition.value}%`);
       }
     });
     return { query, params };
@@ -158,6 +224,7 @@ class PackagesModule {
       canonicalUrl = '',
       fhirVersion = '',
       dependency = '',
+      text = '',
       sort = ''
     } = params;
 
@@ -182,13 +249,14 @@ class PackagesModule {
         // Add the missing dependency search logic
         if (dependson) {
           validateParameter(dependson, "dependson", String);
-          versioned = dependson.includes('#');
-          // This requires a subquery to PackageDependencies table
+          versioned = /[#|@]/.test(dependson);
+          // Dependencies are stored as id@version (npm convention), so accept # and | as
+          // the separator too.
           conditions.push({
             column: 'PackageVersions.PackageVersionKey',
             operator: 'IN_SUBQUERY',
             subquery: 'SELECT PackageVersionKey FROM PackageDependencies WHERE Dependency LIKE ?',
-            value: `%${dependson}%`
+            value: `%${dependson.replace(/[#|]/g, '@')}%`
           });
         }
 
@@ -212,7 +280,7 @@ class PackagesModule {
 
         // Add FHIR version search (requires PackageFHIRVersions table)
         if (fhirVersion) {
-          const mappedVersion = this.getVersion(fhirVersion);
+          const mappedVersion = FHIR_RELEASE_VERSIONS[fhirVersion] || fhirVersion;
           conditions.push({
             column: 'PackageVersions.PackageVersionKey',
             operator: 'IN_SUBQUERY',
@@ -224,13 +292,13 @@ class PackagesModule {
         // Add dependency search
         if (dependency) {
           validateParameter(dependency, "dependency", String);
+          // Dependencies are stored as id@version (npm convention). Clients send id#version
+          // or id|version (the Java PackageClient sends |), or just id for any version.
           let depQuery;
-          if (dependency.includes('#')) {
-            depQuery = `${dependency}%`;
-          } else if (dependency.includes('|')) {
-            depQuery = `${dependency.replace('|', '#')}%`;
+          if (/[#|@]/.test(dependency)) {
+            depQuery = `${dependency.replace(/[#|]/g, '@')}%`;
           } else {
-            depQuery = `${dependency}#%`;
+            depQuery = `${dependency}@%`;
           }
 
           conditions.push({
@@ -239,6 +307,12 @@ class PackagesModule {
             subquery: 'SELECT PackageVersionKey FROM PackageDependencies WHERE Dependency LIKE ?',
             value: depQuery
           });
+        }
+
+        // Free text (npm search): every term must appear in the id or the description.
+        // npm qualifiers (keywords:, author:, scope: etc.) have no equivalent here and are ignored.
+        for (const term of text.split(/\s+/).filter(t => t && !/^[a-z-]+:/.test(t))) {
+          conditions.push({ operator: 'TEXT', value: term });
         }
 
         // Build appropriate base query
@@ -407,12 +481,14 @@ class PackagesModule {
       // Get counts from database
       const tableCounts = await this.getDatabaseTableCounts();
 
+      // the page footer: the last crawl this run, else when the database was last written
+      const updated = this.lastRunTime || dbAge.lastModified;
       return {
         downloadDate: downloadDate,
+        crawlerStatus: updated ? `last updated ${Utilities.describeAgo(updated)}` : 'not yet updated',
         totalResources: 0, // Packages don't track individual resources
         totalPackages: tableCounts.packages || 0,
         totalVersions: tableCounts.packageVersions || 0,
-        version: '4.0.1',
         crawlerEnabled: this.config.crawler.enabled,
         lastCrawlerRun: this.lastRunTime,
         totalCrawlerRuns: this.totalRuns
@@ -426,7 +502,6 @@ class PackagesModule {
         totalResources: 0,
         totalPackages: 0,
         totalVersions: 0,
-        version: '4.0.1',
         crawlerEnabled: false,
         lastCrawlerRun: null,
         totalCrawlerRuns: 0
@@ -434,8 +509,15 @@ class PackagesModule {
     }
   }
 
+  // The database file, resolved the same way initializeDatabase opens it: a relative
+  // config.database is relative to the data directory, not the working directory.
+  getDatabasePath() {
+    return path.isAbsolute(this.config.database) ? this.config.database : folders.filePath('packages', this.config.database);
+  }
+
   getDatabaseAgeInfo() {
-    if (!fs.existsSync(this.config.database)) {
+    const dbPath = this.getDatabasePath();
+    if (!fs.existsSync(dbPath)) {
       return {
         lastModified: null,
         daysOld: null,
@@ -443,10 +525,11 @@ class PackagesModule {
       };
     }
 
-    const stats = fs.statSync(this.config.database);
+    const stats = fs.statSync(dbPath);
     const lastModified = stats.mtime;
     const now = new Date();
-    const ageInDays = Math.floor((now - lastModified) / (1000 * 60 * 60 * 24));
+    // Clamped: a file timestamp slightly ahead of this clock (e.g. on a network mount) is 'Today', not '-1 days ago'
+    const ageInDays = Math.max(0, Math.floor((now - lastModified) / (1000 * 60 * 60 * 24)));
 
     return {
       lastModified: lastModified,
@@ -596,7 +679,7 @@ class PackagesModule {
   async initializeDatabase() {
     return new Promise((resolve, reject) => {
       // Use config path if absolute, otherwise resolve relative to data dir
-      const dbPath = path.isAbsolute(this.config.database) ? this.config.database : folders.filePath('packages', this.config.database);
+      const dbPath = this.getDatabasePath();
 
       // Ensure directory exists
       const dbDir = path.dirname(dbPath);
@@ -909,23 +992,64 @@ class PackagesModule {
   }
 
   setupRoutes() {
-    // Parameter validation configs
-    const searchParams = {
-      name: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
-      dependson: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
-      pkgcanonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*%?$/ },
-      canonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*$/ },
-      fhirversion: { maxLength: 10, pattern: /^(R2|R2B|R3|R4|R4B|R5|R6)?$/ },
-      dependency: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|-]*$/ },
-      sort: { maxLength: 20, pattern: /^-?(name|version|date|count|fhirversion|kind|canonical)$/ },
-      objWrapper: { maxLength: 10, pattern: /^(true|false)?$/ }
-    };
+    const searchParams = SEARCH_PARAMS;
+    const updatesParams = UPDATES_PARAMS;
 
-    const updatesParams = {
-      dateType: { maxLength: 10, pattern: /^(relative|absolute)?$/, default: 'relative' },
-      daysValue: { maxLength: 3, pattern: /^\d{1,3}$/, default: '10' },
-      dateValue: { maxLength: 10, pattern: /^\d{4}-\d{2}-\d{2}$/, default: new Date().toISOString().split('T')[0] }
-    };
+    // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
+    // reference for browsers, the JSON otherwise). Registered before /:id, which would
+    // otherwise treat "openapi" as a package id.
+    this.router.get('/openapi.json', (req, res) => {
+      const start = Date.now();
+      try {
+        res.type('application/json').send(packagesOpenApi.getJson());
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi.json:', error);
+        res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
+
+    this.router.get('/openapi.yaml', (req, res) => {
+      const start = Date.now();
+      try {
+        res.setHeader('Content-Type', 'application/yaml');
+        res.send(packagesOpenApi.getYaml());
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi.yaml:', error);
+        res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
+
+    this.router.get('/openapi', async (req, res) => {
+      const start = Date.now();
+      const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+      try {
+        if (!acceptsHtml) {
+          res.type('application/json').send(packagesOpenApi.getJson());
+          return;
+        }
+        if (!htmlServer.hasTemplate('packages')) {
+          htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+        }
+        const content = packagesOpenApi.renderHtml();
+        const stats = await this.gatherPackageStatistics();
+        stats.processingTime = Date.now() - start;
+        res.setHeader('Content-Type', 'text/html');
+        res.send(htmlServer.renderPage('packages', 'Package Server API', content, stats));
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi:', error);
+        if (acceptsHtml) {
+          htmlServer.sendErrorResponse(res, 'packages', error);
+        } else {
+          res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+        }
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
 
     // GET /packages/catalog - Search packages or get updates
     this.router.get('/catalog', this.validateQueryParams(searchParams), async (req, res) => {
@@ -944,12 +1068,11 @@ class PackagesModule {
     });
 
     // GET /packages/-/v1/search - Search packages (v1 API)
-    this.router.get('/-/v1/search', this.validateQueryParams(searchParams), async (req, res) => {
+    this.router.get('/-/v1/search', this.validateQueryParams(V1_SEARCH_PARAMS), async (req, res) => {
       const start = Date.now();
       try {
         try {
-          req.query.objWrapper = 'true';
-          await this.serveSearch(req, res);
+          await this.serveV1Search(req, res);
           pckLog.info("/search?" + searchParams);
         } catch (error) {
           pckLog.error('Error in /packages/-/v1/search:', error);
@@ -1056,9 +1179,7 @@ class PackagesModule {
     });
 
     // GET /packages/broken
-    this.router.get('/broken', this.validateQueryParams({
-      filter: { maxLength: 100, pattern: /^[a-zA-Z0-9._-]*$/ }
-    }), async (req, res) => {
+    this.router.get('/broken', this.validateQueryParams(BROKEN_PARAMS), async (req, res) => {
       const start = Date.now();
       try {
         try {
@@ -1082,13 +1203,11 @@ class PackagesModule {
         // Validate path parameters
         const {id, version} = req.params;
 
-        if (!id || !version ||
-          !/^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/.test(id) ||
-          !/^[a-zA-Z0-9._-]+$/.test(version)) {
+        if (!id || !version || !PACKAGE_ID_PATTERN.test(id) || !PACKAGE_VERSION_PATTERN.test(version)) {
           return res.status(400).json({error: `Invalid package id or version format: ${id}`});
         }
 
-        if (id.length > 100 || version.length > 50) {
+        if (id.length > PACKAGE_ID_MAX_LENGTH || version.length > PACKAGE_VERSION_MAX_LENGTH) {
           return res.status(400).json({error: `Package id or version too long: ${id}`});
         }
 
@@ -1146,7 +1265,7 @@ class PackagesModule {
     });
 
     // GET /packages/:id - Get package versions
-    this.router.get('/:id', async (req, res) => {
+    this.router.get('/:id', async (req, res, next) => {
       const start = Date.now();
       try {
 
@@ -1154,10 +1273,13 @@ class PackagesModule {
           const {id} = req.params;
           const {sort} = req.query;
 
-          // Don't process routes that are handled elsewhere
+          // Don't process routes that are handled elsewhere. These must call next():
+          // returning without responding leaves the request hanging, which is what
+          // /status, /stats and /search (registered after this route) used to do.
           if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates'].includes(id) ||
             id.endsWith('.html') || id === '-') {
-            return; // Let other routes handle these
+            next();
+            return;
           }
 
           await this.serveVersions(id, sort, req.secure, req, res);
@@ -1276,10 +1398,6 @@ class PackagesModule {
                 lastRun: this.lastRunTime,
                 totalRuns: this.totalRuns,
                 lastLog: this.lastCrawlerLog || null
-              },
-              paths: {
-                database: this.config.database,
-                mirror: this.config.mirrorPath
               },
               config: {
                 masterUrl: this.config.masterUrl
@@ -1794,7 +1912,7 @@ class PackagesModule {
 
       const versionObj = {
         name: id,
-        _id: `${id}@${this.interpretVersion(pv.FhirVersions)}`,
+        _id: `${id}@${pv.Version}`,
         version: pv.Version,
         date: new Date(pv.PubDate).toISOString(),
         fhirVersion: this.interpretVersion(pv.FhirVersions),
@@ -1845,7 +1963,7 @@ class PackagesModule {
   buildTarballUrl(id, version, secure, req) {
     if (this.config.bucketPath) {
       let bucketUrl = this.getBucketUrl(secure);
-      return `${bucketUrl}${id}-${version}.tgz`;
+      return `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
     } else {
       // Use direct server URL
       const protocol = secure ? 'https' : 'http';
@@ -1987,6 +2105,52 @@ class PackagesModule {
     return escape(text).replace(/\n/g, '<br>');
   }
 
+  // GET /-/v1/search: the npm registry search API. Takes the FHIR search parameters plus
+  // npm's text/size/from, and returns npm's result shape. Without size, every result is
+  // returned (npm's own clients always send size).
+  async serveV1Search(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    if (acceptsHtml) {
+      await this.serveSearch(req, res);
+      return;
+    }
+
+    const q = req.query;
+    const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    try {
+      const results = await this.searchPackages({
+        name: q.name,
+        dependson: q.dependson,
+        canonicalPkg: q.pkgcanonical,
+        canonicalUrl: q.canonical,
+        fhirVersion: q.fhirversion,
+        dependency: q.dependency,
+        text: q.text,
+        sort: q.sort
+      }, req, secure);
+
+      const from = parseInt(q.from, 10) || 0;
+      const page = q.size
+        ? results.slice(from, from + Math.min(parseInt(q.size, 10), V1_SEARCH_MAX_SIZE))
+        : results.slice(from);
+
+      res.setHeader('Content-Type', 'application/json');
+      res.json({
+        objects: page.map(pkg => ({
+          // The npm CLI requires maintainers (it calls maintainers.map) and reads keywords
+          package: { ...pkg, keywords: [], maintainers: [] },
+          score: { final: 1, detail: { quality: 1, popularity: 1, maintenance: 1 } },
+          searchScore: 1
+        })),
+        total: results.length,
+        time: new Date().toUTCString()
+      });
+    } catch (error) {
+      pckLog.error('Error in v1 search:', error);
+      res.status(500).json({error: 'Search failed', message: error.message});
+    }
+  }
+
   async serveSearch(req, res) {
     const {
       name = '',
@@ -2029,7 +2193,7 @@ class PackagesModule {
         // Return JSON response
         let responseData;
 
-        if (objWrapper) {
+        if (objWrapper === true || objWrapper === 'true') {
           // V1 API format with object wrapper
           responseData = {
             objects: results.map(pkg => ({package: pkg}))
@@ -2265,18 +2429,6 @@ class PackagesModule {
     return str.replace(/'/g, "''");
   }
 
-  getVersion(fhirVersion) {
-    // Map common FHIR version aliases to actual versions
-    const versionMap = {
-      'R2': '1.0.2',
-      'R3': '3.0.2',
-      'R4': '4.0.1',
-      'R5': '5.0.0'
-    };
-
-    return versionMap[fhirVersion] || fhirVersion;
-  }
-
   interpretVersion(fhirVersions) {
     if (!fhirVersions) return '';
 
@@ -2300,7 +2452,7 @@ class PackagesModule {
   buildPackageUrl(id, version, secure = false, req = null) {
     if (this.config.bucketPath) {
       let bucketUrl = this.getBucketUrl(secure);
-      return `${bucketUrl}${id}-${version}.tgz`;
+      return `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
     } else {
       // Use direct server URL
       const protocol = secure ? 'https' : 'http';
@@ -2337,6 +2489,15 @@ class PackagesModule {
         case 'count':
           comparison = (a.count || 0) - (b.count || 0);
           break;
+        case 'fhirversion':
+          comparison = this.compareVersions(a.fhirVersion || '', b.fhirVersion || '');
+          break;
+        case 'kind':
+          comparison = (a.kind || '').localeCompare(b.kind || '');
+          break;
+        case 'canonical':
+          comparison = (a.canonical || '').localeCompare(b.canonical || '');
+          break;
         default:
           return 0;
       }
@@ -2345,20 +2506,38 @@ class PackagesModule {
     });
   }
 
+  // Semver-style comparison: numeric major.minor.patch, then a version with a pre-release
+  // label (1.0.0-ballot) sorts before the release (1.0.0). Anything unparseable falls back
+  // to string order, so the result is always a number (Array.sort misbehaves on NaN).
   compareVersions(a, b) {
-    const aParts = a.split('.').map(Number);
-    const bParts = b.split('.').map(Number);
+    const parse = v => {
+      const [core, ...pre] = String(v).trim().split('-');
+      return { nums: core.split('.').map(n => parseInt(n, 10)), pre: pre.join('-') };
+    };
+    const va = parse(a);
+    const vb = parse(b);
 
-    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-      const aPart = aParts[i] || 0;
-      const bPart = bParts[i] || 0;
-
+    for (let i = 0; i < Math.max(va.nums.length, vb.nums.length); i++) {
+      const aPart = va.nums[i] || 0;
+      const bPart = vb.nums[i] || 0;
+      if (Number.isNaN(aPart) || Number.isNaN(bPart)) {
+        return String(a).localeCompare(String(b));
+      }
       if (aPart !== bPart) {
         return aPart - bPart;
       }
     }
 
-    return 0;
+    if (va.pre === vb.pre) {
+      return 0;
+    }
+    if (!va.pre) {
+      return 1;
+    }
+    if (!vb.pre) {
+      return -1;
+    }
+    return va.pre.localeCompare(vb.pre, undefined, { numeric: true });
   }
 
   generateSearchHtml(req, results, params) {
@@ -2691,13 +2870,14 @@ class PackagesModule {
 
       if (logData) {
         if (logData.startTime) {
-          content += `<tr><td>Start Time:</td><td>${new Date(logData.startTime).toLocaleString()}</td></tr>`;
-        }
-        if (logData.endTime) {
-          content += `<tr><td>End Time:</td><td>${new Date(logData.endTime).toLocaleString()}</td></tr>`;
+          // relative, because the server's local clock means nothing to the reader
+          content += `<tr><td>Started:</td><td title="${new Date(logData.startTime).toISOString()}">${this.formatTimeAgo(logData.startTime)}</td></tr>`;
         }
         if (logData.runTime) {
-          content += `<tr><td>Duration:</td><td>${logData.runTime}</td></tr>`;
+          const ms = parseInt(logData.runTime, 10);
+          if (!isNaN(ms)) {
+            content += `<tr><td>Duration:</td><td>${(ms / 1000).toFixed(1)} seconds</td></tr>`;
+          }
         }
         if (logData.totalBytes) {
           content += `<tr><td>Total Bytes:</td><td>${logData.totalBytes.toLocaleString()}</td></tr>`;
@@ -2731,6 +2911,24 @@ class PackagesModule {
     }
 
     return content;
+  }
+
+  formatTimeAgo(time) {
+    const secs = Math.max(0, Math.round((Date.now() - new Date(time).getTime()) / 1000));
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (secs < 60) {
+      return plural(secs, 'second');
+    }
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) {
+      return plural(mins, 'minute');
+    }
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) {
+      const rem = mins % 60;
+      return rem ? `${hours} hour${hours === 1 ? '' : 's'} ${rem} minute${rem === 1 ? '' : 's'} ago` : plural(hours, 'hour');
+    }
+    return plural(Math.floor(hours / 24), 'day');
   }
 
 // Add this new method to format the crawler log as readable text
@@ -2773,12 +2971,12 @@ class PackagesModule {
   getStatus() {
     return {
       enabled: true,
+      // No file system paths here: this is served publicly (/packages/status and the
+      // server health check)
       database: {
-        connected: this.db ? true : false,
-        path: this.config.database
+        connected: this.db ? true : false
       },
       mirror: {
-        path: this.config.mirrorPath,
         exists: fs.existsSync(this.config.mirrorPath)
       },
       crawler: {
@@ -2856,5 +3054,12 @@ class PackagesModule {
     }
   }
 }
+
+PackagesModule.QUERY_PARAMS = { search: SEARCH_PARAMS, v1Search: V1_SEARCH_PARAMS, updates: UPDATES_PARAMS, broken: BROKEN_PARAMS };
+PackagesModule.FHIR_RELEASE_VERSIONS = FHIR_RELEASE_VERSIONS;
+PackagesModule.PATH_PARAMS = {
+  id: { maxLength: PACKAGE_ID_MAX_LENGTH, pattern: PACKAGE_ID_PATTERN },
+  version: { maxLength: PACKAGE_VERSION_MAX_LENGTH, pattern: PACKAGE_VERSION_PATTERN }
+};
 
 module.exports = PackagesModule;

@@ -10,10 +10,11 @@ This server provides a set of server-side services that are useful for the FHIR 
 
 ## Services useful the community as a whole
 
-* [TX Registry](registry/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg)
-* [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages)
+* [TX Registry](registry/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
+* [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
 * [XIG server](xig/readme.md) -  **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
 * [Publisher](publisher/readme.md) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
+* [Testing](testing/readme.md) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://testing.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
 * [VCL](vcl/readme.md) - **Parse VCL expressions** into FHIR ValueSet resources (as running at http://fhir.org/vcl)
 * (Coming) Token services
 
@@ -31,7 +32,7 @@ This server provides a set of server-side services that are useful for the FHIR 
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/HealthIntersections/fhirsmith/pkgs/container/fhirsmith)
 
 Note: In production, this server always runs behind an nginx reverse proxy, so there's no
-in-build support for SSL, rate limiting etc.
+in-build support for SSL, rate limiting etc. See [nginx.md](nginx.md) for how to configure it.
 
 ## Quick Start
 
@@ -170,7 +171,8 @@ npm start
 
 The server will be available at `http://localhost:{port}` using the port specified in the config.
 In the production servers listed above, the server always sits behind an NGINX server which manages
-SSL, security, rate limiting etc.
+SSL, security, rate limiting etc. See [nginx.md](nginx.md) for configuration advice, including
+running several servers behind one front door.
 
 ## Testing
 
@@ -259,6 +261,26 @@ Each GitHub Release includes:
     - `ghcr.io/healthintersections/fhirsmith:X.Y.Z`
 - **npm package** published to npmjs.org as `fhirsmith` *(if you add this)*
 
+Release images carry OCI labels, so an image says which release it is without
+having to trust the tag it was pulled under:
+
+```bash
+docker inspect --format '{{json .Config.Labels}}' ghcr.io/healthintersections/fhirsmith:latest
+```
+
+`org.opencontainers.image.version` is the release, `.revision` the commit it was
+built from, and `.source` is what links the package to this repository on GHCR.
+
+### CI Images
+
+Every push to main also publishes `:cibuild` and `:cibuild-<sha>` to the same
+package. These are **not releases** - they are whatever was last merged. The
+Docker Build workflow prunes all but the ten most recent afterwards, so they do
+not bury the current release on the package page. To prune by hand (or to run
+the one-off backfill of images published before that job existed), run the
+**GHCR Cleanup** workflow from the Actions tab with `dry_run` on first, read the
+log, then run it again with `dry_run` off.
+
 ### Creating a Release
 
 GitHub Actions will automatically:
@@ -283,7 +305,18 @@ GitHub Actions will automatically:
 ### Tx Conformance Statement
      {copy content from text-cases-summary.txt}
 ```
-2. Update `package.json` & `package-lock.json` to have the same release version
+2. Update `package.json` & `package-lock.json` to the release version:
+
+```bash
+   npm version --no-git-tag-version X.Y.Z
+   npm install --package-lock-only
+```
+
+   This matters more than it looks. The server reports its version from
+   `package.json` (`server.js`, `tx/tx.js`) - not from the `APP_VERSION` build
+   arg - so a package.json left on the previous number ships a Docker image that
+   calls itself by the wrong release for good. The **Verify Version** job fails
+   the release if `package.json` or `package-lock.json` disagrees with the tag.
 
 3. Commit your changes:
 ```bash
@@ -304,7 +337,19 @@ or do it via a PR
     - Verify the [GitHub Release](https://github.com/HealthIntersections/fhirsmith/releases) was created
     - Confirm Docker images are available at [GHCR](https://github.com/HealthIntersections/fhirsmith/pkgs/container/fhirsmith)
 
-6. Update `package.json` to have the next release version -SNAPSHOT
+6. Submit the tx conformance report to [testing.fhir.org](https://testing.fhir.org/testing):
+```bash
+   node utilities/submit-test-report.js -token {token}
+```
+
+   The tx test run writes `test-cases-report.json` next to `test-cases-summary.txt` (both
+   are ignored by git); this uploads it as a TestReport. The report records the version in
+   `package.json` when the tests ran, so for it to name the release, run the tx tests
+   after step 2 - the script warns if the report is from a different version, or from a
+   snapshot. Use `-server {url}` to send it to a different /testing server; the token can
+   also come from `FHIRSMITH_TESTING_TOKEN`.
+
+7. Update `package.json` to have the next release version -SNAPSHOT
 
 **If a release fails:**
 - Delete the tag: `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`

@@ -16,6 +16,9 @@ const {ConceptMap} = require("../library/conceptmap");
 const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType} = require("../sct/ecl");
 const {Issue} = require("../library/operation-outcome");
 const {debugLog} = require("../operation-context");
+const {editionName, editionCode} = require("../sct/editions");
+const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
+const Logger = require("../../library/logger");
 
 // Symbol key under which a resolved ECL filter analysis is memoised directly on
 // the ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
@@ -27,6 +30,21 @@ const {debugLog} = require("../operation-context");
 // _cacheEcl): a wildcard's materialised form depends on forIteration and is not
 // shared - it simply recomputes.
 const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
+
+// Description language index -> language code. The index is assigned at import
+// time by SnomedImporter.mapLanguageCode(); this table is its inverse and must
+// be kept in step with it.
+const SCT_LANGUAGE_CODES = {
+  1: 'en',
+  2: 'fr',
+  3: 'nl',
+  4: 'es',
+  5: 'sv',
+  6: 'da',
+  7: 'de',
+  8: 'it',
+  9: 'cs'
+};
 
 // Context kinds matching Pascal enum
 const SnomedProviderContextKind = {
@@ -112,6 +130,9 @@ class SnomedServices {
     this.strings = new SnomedStrings(sharedData.strings);
     this.words = new SnomedWords(sharedData.words);
     this.stems = new SnomedStems(sharedData.stems);
+    // Free-text search index, built on first search (see getTextIndex)
+    this._textIndex = null;
+    this._textIndexPromise = null;
     this.refs = new SnomedReferences(sharedData.refs);
     this.descriptions = new SnomedDescriptions(sharedData.desc);
     this.descriptionIndex = new SnomedDescriptionIndex(sharedData.descRef);
@@ -346,8 +367,20 @@ class SnomedServices {
   // preferred synonym in more than one dialect at once (the International
   // edition ships both US English 509007 and GB English 508004, each marking a
   // different synonym Preferred). The edition default decides which term is
-  // shown. Editions not listed here fall back to "preferred synonym in any
-  // language refset" (the historical behaviour), so no edition regresses.
+  // shown.
+  //
+  // Editions not listed here default to English (US then GB) rather than to
+  // "preferred synonym in any language refset". A national edition carries a
+  // Preferred synonym in each of its own language refsets as well as in English
+  // (e.g. the Belgian edition 11000172109 marks a French term Preferred in
+  // 21000172104 and a Dutch one in 31000172101), so "any refset" resolved to
+  // whichever description happened to be stored first - French for one concept,
+  // Dutch for the next, English for a third. A caller who asked for no
+  // particular language got an arbitrary mix. English is the only defensible
+  // default: it is the one language every edition has, and it is what a request
+  // with no displayLanguage is taken to mean everywhere else in the server. An
+  // edition with no English at all still falls through to the any-refset step
+  // below, so nothing regresses.
   _displayRefsetOrder() {
     if (this._dispOrder) return this._dispOrder;
     const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
@@ -361,7 +394,7 @@ class SnomedServices {
       '83821000000107': [GB],           // UK Edition
       '999000021000000109': [GB]        // UK Clinical Edition
     };
-    const ids = byEdition[String(this.edition)] || [];
+    const ids = byEdition[String(this.edition)] || [US, GB];
     this._dispOrder = ids.map(idx).filter((i) => i >= 0);
     return this._dispOrder;
   }
@@ -400,57 +433,78 @@ class SnomedServices {
     return false;
   }
 
-  // Return a concept's display: the synonym marked Preferred in the US English
-  // language reference set; failing that the FSN; failing that the first active
-  // description. Previously this returned the first active description outright,
-  // which is only the preferred term by accident of import order.
-  getDisplayName(reference = 0) {
+  // Return a concept's display, together with the language it is actually in:
+  // the synonym marked Preferred in the edition's display language reference
+  // set; failing that a preferred synonym in any language refset; failing that
+  // the FSN; failing that the first active description. Previously this
+  // returned the first active description outright, which is only the preferred
+  // term by accident of import order.
+  //
+  // The language matters as much as the term: the display is emitted as a
+  // designation (DesignationUse.DISPLAY) during $expand, and tagging a French
+  // term as en-US puts it in an IG's English display column and makes the real
+  // French designation look like a duplicate.
+  //
+  // Returns {term, lang} - lang is a language code, or null when no description
+  // could be read.
+  getDisplayNameEx(reference = 0) {
+    const none = { term: '', lang: null };
     try {
       const concept = this.concepts.getConcept(reference);
       const descriptionsRef = concept.descriptions;
 
       if (descriptionsRef === 0) {
-        return '';
+        return none;
       }
 
       const descriptionIndices = this.refs.getReferences(descriptionsRef);
       const K = this._displayConstants();
+      const pick = (description) => ({
+        term: this.strings.getEntry(description.iDesc).trim(),
+        lang: SCT_LANGUAGE_CODES[description.lang] || 'en'
+      });
 
       // 1. Preferred synonym in the edition's default display refset(s), tried
       //    in priority order. This is what disambiguates dialects: on the
       //    International edition a concept may be Preferred in both US and GB
-      //    English, and the edition default (US English) must win.
+      //    English, and the edition default (US English) must win. It is also
+      //    what keeps a multi-language national edition from picking a
+      //    different language for each concept.
       for (const refsetIdx of this._displayRefsetOrder()) {
         for (const descIndex of descriptionIndices) {
           const description = this.descriptions.getDescription(descIndex);
           if (!description.active || description.kind !== K.synonym) continue;
           if (this._descAcceptability(description, refsetIdx) === K.preferred) {
-            return this.strings.getEntry(description.iDesc).trim();
+            return pick(description);
           }
         }
       }
 
       // 2. Fallback: preferred synonym in ANY language refset; then FSN; then
-      //    the first active description. Used for editions without a mapped
-      //    default refset, and for concepts with no preferred synonym there.
-      let fsnTerm = '';
-      let firstActive = '';
+      //    the first active description. Reached only by editions with no
+      //    English language refset at all, and by concepts with no preferred
+      //    synonym in the edition's display refsets.
+      let fsn = null;
+      let firstActive = null;
       for (const descIndex of descriptionIndices) {
         const description = this.descriptions.getDescription(descIndex);
         if (!description.active) continue;
-        const term = this.strings.getEntry(description.iDesc).trim();
-        if (firstActive === '') firstActive = term;
+        if (firstActive === null) firstActive = pick(description);
         if (this._synonymIsPreferred(description)) {
-          return term; // preferred synonym (any English language refset)
+          return pick(description); // preferred synonym (any language refset)
         }
-        if (description.kind === K.fsn && fsnTerm === '') {
-          fsnTerm = term;
+        if (description.kind === K.fsn && fsn === null) {
+          fsn = pick(description);
         }
       }
-      return fsnTerm || firstActive || '';
+      return fsn || firstActive || none;
     } catch (error) {
-      return '';
+      return none;
     }
+  }
+
+  getDisplayName(reference = 0) {
+    return this.getDisplayNameEx(reference).term;
   }
 
   getConceptDescendants(reference) {
@@ -1434,16 +1488,104 @@ class SnomedServices {
   };
 
 
-  searchFilter(searchText, includeInactive = false, exactMatch = false) {
+  /**
+   * Free-text search over active descriptions.
+   *
+   * Uses the in-memory word index (see tx/sct/text-index.js), built the first
+   * time this edition is searched: every filter token (stop words aside) must
+   * match a word of the concept's active descriptions, either as a prefix or
+   * by sharing its stem. Filters with no indexable token (only 1-character
+   * tokens), or an edition whose index failed to build, fall back to
+   * scanSearch().
+   *
+   * Previously the third parameter was `exactMatch`, which the provider fed
+   * from its unrelated `sort` flag - so $expand with a filter on an
+   * include-all-codes value set matched ANY term by brute-force scan: 10k+
+   * matches for a typical multi-word filter, with the event loop blocked for
+   * the whole scan (tx.fhir.org incident 2026-09-17).
+   *
+   * @param {SearchFilterText} searchText
+   * @param {boolean} includeInactive - include inactive concepts
+   * @param {OperationContext|null} opContext - for yielding / deadline checks
+   * @returns {Promise<SnomedFilterContext>}
+   */
+  async searchFilter(searchText, includeInactive = false, opContext = null) {
+    const filterText = (searchText && searchText.filter ? searchText.filter : '').toLowerCase().trim();
+    const tokens = filterTokens(filterText);
+    if (tokens.length > 0) {
+      const index = await this.getTextIndex(opContext);
+      if (index) {
+        const result = new SnomedFilterContext();
+        const ordinals = index.search(tokens, opContext);
+        if (opContext) {
+          await opContext.checkAndYield('sct:searchFilter');
+        }
+        result.matches = rankMatches(this, index, ordinals, filterText, tokens, includeInactive);
+        return result;
+      }
+    }
+    return await this.scanSearch(filterText, includeInactive, opContext);
+  }
+
+  /**
+   * The edition's text index, building it on first use. The build is shared:
+   * concurrent searches wait on the same promise, and time spent waiting is
+   * not charged to the waiting operation's compute budget. Resolves to null
+   * if the build failed (the next search retries it).
+   * @param {OperationContext|null} opContext
+   * @returns {Promise<SnomedTextIndex|null>}
+   */
+  async getTextIndex(opContext = null) {
+    if (this._textIndex) {
+      return this._textIndex;
+    }
+    if (!this._textIndexPromise) {
+      const started = Date.now();
+      // Logger fetched lazily: importers and tests require this module too
+      const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
+      this._textIndexPromise = SnomedTextIndex.build(this).then(index => {
+        this._textIndex = index;
+        textIndexLog.info(`SNOMED text index for ${this.versionUri}: ${index.words.length} words, built in ${Date.now() - started}ms`);
+        return index;
+      }, error => {
+        this._textIndexPromise = null;
+        textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}: ${error.message}`);
+        return null;
+      });
+    }
+    if (opContext && typeof opContext.waitFor === 'function') {
+      return await opContext.waitFor(this._textIndexPromise, 'sct:textIndex');
+    }
+    return await this._textIndexPromise;
+  }
+
+  /**
+   * Brute-force scan of every concept's active descriptions: every
+   * whitespace-separated term of the filter must appear (as a substring) in
+   * the same description. Expensive (hundreds of ms on a full edition), so it
+   * yields through opContext.checkAndYield and the compute deadline applies.
+   *
+   * @param {string} filterText - lower-cased, trimmed
+   * @param {boolean} includeInactive
+   * @param {OperationContext|null} opContext
+   * @returns {Promise<SnomedFilterContext>}
+   */
+  async scanSearch(filterText, includeInactive = false, opContext = null) {
     const result = new SnomedFilterContext();
-
-    // Simplified search - in full implementation would use stemming and word indexes
-    const searchTerms = searchText.filter.toLowerCase().split(/\s+/);
+    const searchTerms = filterText.split(/\s+/).filter(t => t.length > 0);
     const matches = [];
+    if (searchTerms.length === 0) {
+      result.matches = matches;
+      return result;
+    }
 
-    // Search through all concepts
-    for (let i = 0; i < this.concepts.count(); i++) {
-      const conceptIndex = i * this.concepts.constructor.CONCEPT_SIZE;
+    const conceptCount = this.concepts.count();
+    const conceptSize = this.concepts.constructor.CONCEPT_SIZE;
+    for (let i = 0; i < conceptCount; i++) {
+      if (opContext && (i & 0x3FF) === 0) {
+        await opContext.checkAndYield('sct:searchFilter');
+      }
+      const conceptIndex = i * conceptSize;
 
       try {
         const concept = this.concepts.getConcept(conceptIndex);
@@ -1462,25 +1604,23 @@ class SnomedServices {
           const description = this.descriptions.getDescription(descIndex);
           if (description.active) {
             const term = this.strings.getEntry(description.iDesc).toLowerCase();
-
-            if (exactMatch) {
-              // All search terms must be present
-              matchFound = searchTerms.every(searchTerm => term.includes(searchTerm));
-            } else {
-              // Any search term can match
-              matchFound = searchTerms.some(searchTerm => term.includes(searchTerm));
-            }
-
-            if (matchFound) {
+            if (searchTerms.every(searchTerm => term.includes(searchTerm))) {
+              matchFound = true;
               // Calculate priority based on match quality
-              if (term === searchText.filter.toLowerCase()) {
-                priority = 100; // Exact match
-              } else if (term.startsWith(searchText.filter.toLowerCase())) {
-                priority = 50; // Prefix match
+              let p;
+              if (term === filterText) {
+                p = 100; // Exact match
+              } else if (term.startsWith(filterText)) {
+                p = 50; // Prefix match
               } else {
-                priority = 10; // Contains match
+                p = 10; // Contains match
               }
-              break;
+              if (p > priority) {
+                priority = p;
+              }
+              if (priority === 100) {
+                break;
+              }
             }
           }
         }
@@ -1493,6 +1633,9 @@ class SnomedServices {
           });
         }
       } catch (error) {
+        if (error instanceof Issue || (error && error.abandoned)) {
+          throw error;
+        }
         // Skip problematic concepts
         continue;
       }
@@ -1532,6 +1675,19 @@ class SnomedProvider extends BaseCSServices {
    */
   versionIsMoreDetailed(checkVersion, actualVersion) {
     return actualVersion && actualVersion.startsWith(checkVersion);
+  }
+
+  /**
+   * The display name of the code system, as $lookup reports it.
+   *
+   * Without this, CodeSystemProvider's fallback applies, which returns the versioned uri -
+   * so a SNOMED lookup answered "http://snomed.info/sct|http://snomed.info/sct/731000124108
+   * /version/20230301" where every other code system answers something like "LOINC". The
+   * edition is named because for SNOMED that is the part worth knowing; the version
+   * parameter carries the uri.
+   */
+  name() {
+    return this.sct.getDescription();
   }
 
   description() {
@@ -1687,8 +1843,16 @@ class SnomedProvider extends BaseCSServices {
                   if (!prefSyns.has(langCode)) prefSyns.set(langCode, { langCode, use, term });
                 }
               }
-              const display = this.sct.getDisplayName(ctxt.getReference());
-              if (display) displays.addDesignation(true, 'active', 'en-US', null, display);
+              // Tagged with the language the term is actually in, not a
+              // hard-coded en-US: on a multi-language edition the edition
+              // display can be French or Dutch, and mislabelling it as English
+              // is what puts it in an IG's English display column and makes the
+              // real French designation look like a duplicate of it. English
+              // stays 'en-US' (the term comes from the US English language
+              // reference set), so nothing changes for English editions.
+              const display = this.sct.getDisplayNameEx(ctxt.getReference());
+              const displayLang = (!display.lang || display.lang === 'en') ? 'en-US' : display.lang;
+              if (display.term) displays.addDesignation(true, 'active', displayLang, null, display.term);
               // FSNs before synonyms, matching the designation order the published
               // tx-ecosystem expectations were written against (sct/expand-inactive).
               // Which of the two is chosen as the display is settled by
@@ -1697,14 +1861,31 @@ class SnomedProvider extends BaseCSServices {
               for (const d of fsns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
               for (const d of prefSyns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
             } else {
-              // $lookup: emit every description (preferred synonym first so the
-              // display resolves correctly; order is not otherwise significant).
+              // $lookup: emit every description. Order matters only for the
+              // display: a request with no displayLanguage takes the first
+              // designation Designations._isPreferred() accepts, which is any
+              // SNOMED synonym. Ranking by the edition's display language
+              // reference set first (rather than by "preferred in any refset")
+              // keeps that pick in one language - otherwise a national edition
+              // answers $lookup in French for one concept and Dutch for the
+              // next, depending on description storage order.
+              const K2 = this.sct._displayConstants();
+              const displayRefsets = this.sct._displayRefsetOrder();
+              // Buckets: 0 = preferred in the edition's display refset, 1 =
+              // preferred in some other language refset, 2 = everything else
+              // (FSNs and acceptable synonyms, left in their original order -
+              // Array.sort is stable, so nothing else about the output moves).
+              const rank = (description) => {
+                if (description.kind !== K2.synonym) return 2;
+                for (const refsetIdx of displayRefsets) {
+                  if (this.sct._descAcceptability(description, refsetIdx) === K2.preferred) return 0;
+                }
+                return this.sct._synonymIsPreferred(description) ? 1 : 2;
+              };
               const orderedIndices = descriptionIndices.slice().sort((a, b) => {
                 const da = this.sct.descriptions.getDescription(a);
                 const db = this.sct.descriptions.getDescription(b);
-                const pa = this.sct._synonymIsPreferred(da) ? 0 : 1;
-                const pb = this.sct._synonymIsPreferred(db) ? 0 : 1;
-                return pa - pb;
+                return rank(da) - rank(db);
               });
               for (const descIndex of orderedIndices) {
                 const description = this.sct.descriptions.getDescription(descIndex);
@@ -1733,18 +1914,7 @@ class SnomedProvider extends BaseCSServices {
   }
 
   getLanguageCode(langIndex) {
-    const languageMap = {
-      1: 'en',
-      2: 'fr',
-      3: 'nl',
-      4: 'es',
-      5: 'sv',
-      6: 'da',
-      7: 'de',
-      8: 'it',
-      9: 'cs'
-    };
-    return languageMap[langIndex] || 'en';
+    return SCT_LANGUAGE_CODES[langIndex] || 'en';
   }
 
   // Lookup methods
@@ -2386,8 +2556,10 @@ class SnomedProvider extends BaseCSServices {
   }
 
   // Search filter
+  // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
-    let f = this.sct.searchFilter(filter, false, sort);
+    // `sort` is not a match-mode flag: results are always ranked.
+    let f = await this.sct.searchFilter(filter, false, this.opContext);
     filterContext.filters.push(f);
     return f;
   }
@@ -2629,7 +2801,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 
     if (url.startsWith('http://snomed.info/sct?fhir_vs') ||
         url.startsWith(`http://snomed.info/sct/${this.edition}?fhir_vs`) ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version}?fhir_vs`)) {
+        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version()}?fhir_vs`)) {
       id = url.substring(qIdx);
     } else {
       return null;
@@ -2847,8 +3019,8 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         description: `The concept map implicitly defined by the ${name} Association Reference Set`,
         copyright: 'This value set includes content from SNOMED CT, which is copyright © 2002+ International Health Terminology Standards Development Organisation (SNOMED International), and distributed by agreement between SNOMED International and HL7',
         status: 'active',
-        sourceUri: `${this.system}?fhir_vs`,
-        targetUri: `${this.system}?fhir_vs`,
+        sourceUri: `${this.system()}?fhir_vs`,
+        targetUri: `${this.system()}?fhir_vs`,
         group: [{
           source: 'http://snomed.info/sct',
           target: 'http://snomed.info/sct'
@@ -2867,75 +3039,11 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 }
 
 function getEditionName(edition) {
-  const editionMap = {
-    '900000000000207008': 'International Edition',
-    '449081005': 'International Spanish Edition',
-    '11000221109': 'Argentinian Edition',
-    '32506021000036107': 'Australian Edition (with drug extension)',
-    '11000234105': 'Austrian Edition',
-    '11000172109': 'Belgian Edition',
-    '20621000087109': 'Canadian English Edition',
-    '20611000087101': 'Canadian Canadian French Edition',
-    '554471000005108': 'Danish Edition',
-    '11000279109': 'Czech Edition',
-    '11000181102': 'Estonian Edition',
-    '11000229106': 'Finnish Edition',
-    '11000274103': 'German Edition',
-    '1121000189102': 'Indian Edition',
-    '827022005': 'IPS Terminology',
-    '11000220105': 'Irish Edition',
-    '11000146104': 'Netherlands Edition',
-    '21000210109': 'New Zealand Edition',
-    '51000202101': 'Norwegian Edition',
-    '11000267109': 'Republic of Korea Edition (South Korea)',
-    '900000001000122104': 'Spanish National Edition',
-    '45991000052106': 'Swedish Edition',
-    '2011000195101': 'Swiss Edition',
-    '83821000000107': 'UK Edition',
-    '999000021000000109': 'UK Clinical Edition',
-    '5631000179106': 'Uruguay Edition',
-    '731000124108': 'US Edition',
-    '21000325107': 'Chilean Edition',
-    '5991000124107': 'US Edition (with ICD-10-CM maps)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionName(edition) || 'Unknown Edition';
 }
 
 function getEditionCode(edition) {
-  const editionMap = {
-    '900000000000207008': 'Intl',
-    '449081005': 'es',
-    '11000221109': 'AR-es',
-    '32506021000036107': 'AU+',
-    '11000234105': 'AT',
-    '11000172109': 'BE',
-    '20621000087109': 'CA-en',
-    '20611000087101': 'CA-fr',
-    '554471000005108': 'DK',
-    '11000279109': 'CZ',
-    '11000181102': 'ES',
-    '11000229106': 'FI',
-    '11000274103': 'DE',
-    '1121000189102': 'IN',
-    '827022005': 'IPS',
-    '11000220105': 'IE',
-    '11000146104': 'NL',
-    '21000210109': 'NZ',
-    '51000202101': 'NO',
-    '11000267109': 'KR',
-    '900000001000122104': 'ES-es',
-    '45991000052106': 'SW',
-    '2011000195101': 'CH',
-    '83821000000107': 'UK',
-    '999000021000000109': 'UK-Clinical',
-    '5631000179106': 'UR',
-    '731000124108': 'US',
-    '21000325107': 'CL',
-    '5991000124107': 'US+)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionCode(edition) || 'Unknown Edition';
 }
 
 

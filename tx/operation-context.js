@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const {Languages} = require("../library/languages");
 const {Issue} = require("./library/operation-outcome");
 const Logger = require("../library/logger");
+const { readCgroupMemoryLimit } = require('../library/cgroup-memory');
 
 /**
  * Check if running under a debugger
@@ -110,6 +111,63 @@ class ResourceCache {
     // so a client polling $cache-control?mode=check can work out how often it needs
     // to poll instead of guessing. Null = not advertised.
     this.idleTimeoutMs = null;
+    // This server instance's code (modules.tx.instanceCode), prefixed onto every
+    // cache-id it issues as "<code>.<uuid>". A proxy in front of several instances
+    // routes on the prefix to get a cached request back to the one instance that
+    // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
+    this.instanceCode = null;
+  }
+
+  /**
+   * Set the instance code that is prefixed onto the cache-ids this cache issues.
+   * 1-16 letters and digits: the code is followed by a '.', a proxy has to be able
+   * to match it with a simple pattern, and the whole id must stay a valid FHIR id. Empty/null/undefined means no prefix.
+   *
+   * @param {string|null|undefined} code
+   * @throws {Error} if the code is not letters and digits
+   */
+  setInstanceCode(code) {
+    this.instanceCode = ResourceCache.checkInstanceCode(code);
+  }
+
+  /**
+   * Validate an instance code from config.
+   * @param {string|null|undefined} code
+   * @returns {string|null} the code, or null for none (empty/null/undefined)
+   * @throws {Error} if the code is not letters and digits
+   */
+  static checkInstanceCode(code) {
+    if (code === undefined || code === null || code === '') {
+      return null;
+    }
+    // At most 16 characters: the cache-id goes back to the client as a FHIR id
+    // (valueId), which is capped at 64 - and "<code>." plus a 36-character UUID
+    // has to fit.
+    if (typeof code !== 'string' || !/^[A-Za-z0-9]{1,16}$/.test(code)) {
+      throw new Error(`tx instanceCode '${code}' is not valid: it must be 1-16 letters and digits`);
+    }
+    return code;
+  }
+
+  /**
+   * Mint a new cache-id: a UUID, prefixed with "<instanceCode>." when this server
+   * has an instance code. Minting only - the caller creates the entry with set().
+   * @returns {string}
+   */
+  newCacheId() {
+    const uuid = crypto.randomUUID();
+    return this.instanceCode ? `${this.instanceCode}.${uuid}` : uuid;
+  }
+
+  /**
+   * The instance code in a cache-id, or null if it has none. Ids this server mints
+   * are either a bare UUID (no '.') or "<code>.<uuid>".
+   * @param {string} cacheId
+   * @returns {string|null}
+   */
+  static issuerOf(cacheId) {
+    const dot = typeof cacheId === 'string' ? cacheId.indexOf('.') : -1;
+    return dot > 0 ? cacheId.substring(0, dot) : null;
   }
 
   /**
@@ -164,7 +222,9 @@ class ResourceCache {
 
   /**
    * The message to report for a cache-id that isn't here: which of the three
-   * fates it met, with the numbers that make it checkable. Both throw sites
+   * fates it met, with the numbers that make it checkable - or, when there's no
+   * record of it and its prefix names another instance, that it was routed here
+   * by mistake. Both throw sites
    * (worker.setupAdditionalResources and batchValidate.frontLoadBatch) use this
    * so they can never drift apart.
    *
@@ -175,6 +235,15 @@ class ResourceCache {
   describeMissing(cacheId) {
     const t = this.tombstone(cacheId);
     if (!t) {
+      // No record of it here. If its prefix names a different instance, say so:
+      // that's a routing problem (proxy misconfigured, or the owning instance is
+      // down and the request fell through to a backup), not a lifecycle one.
+      const issuer = ResourceCache.issuerOf(cacheId);
+      if (issuer && issuer !== this.instanceCode) {
+        return this.instanceCode
+          ? { messageId: 'CACHE_ID_OTHER_INSTANCE', params: [cacheId, issuer, this.instanceCode] }
+          : { messageId: 'CACHE_ID_OTHER_INSTANCE_UNNAMED', params: [cacheId, issuer] };
+      }
       return { messageId: 'CACHE_ID_UNKNOWN', params: [cacheId] };
     }
     const ago = formatDuration(Date.now() - t.at);
@@ -752,18 +821,12 @@ class ExpansionCache {
  * Returns the byte limit, or 0 if unavailable (disables the check).
  */
 function readMemoryLimit() {
-  try {
-    const raw = require('fs').readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-    if (raw === 'max') return 0; // no cgroup limit
-    return parseInt(raw);
-  } catch {
-    return 0; // not on Linux / no cgroup
-  }
+  return readCgroupMemoryLimit().limit;
 }
 
 const MEMORY_LIMIT = readMemoryLimit();
 const MEMORY_FRACTION = 0.98;
-const MEMORY_THRESHOLD = MEMORY_LIMIT > 0 ? MEMORY_LIMIT * MEMORY_FRACTION : 0; // 90% of cgroup limit
+const MEMORY_THRESHOLD = MEMORY_LIMIT > 0 ? MEMORY_LIMIT * MEMORY_FRACTION : 0; // MEMORY_FRACTION of cgroup limit
 const CHECK_FREQUENCY = 100;
 // How long an operation may compute without yielding the event loop (ms).
 // Node runs all JS on one thread: while a long operation executes, no other
@@ -891,8 +954,8 @@ class OperationContext {
     if (elapsed > this.timeLimit) {
       const timeInSeconds = Math.round(this.timeLimit / 1000);
       this.log(`Operation took too long @ ${place} (${this.constructor.name})`);
-      const error = new Issue("error", "too-costly", null,
-          `Operation exceeded time limit of ${timeInSeconds} seconds at ${place}`);
+      const error = new Issue("error", "too-costly", null, null,
+          `Operation exceeded time limit of ${timeInSeconds} seconds at ${place}`, "too-costly", 422);
       error.diagnostics = this.diagnostics();
       throw error;
     }
@@ -904,8 +967,8 @@ class OperationContext {
         const usedGB = (rss / 1024 / 1024 / 1024).toFixed(1);
         const limitGB = (MEMORY_LIMIT / 1024 / 1024 / 1024).toFixed(1);
         this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
-        const error = new Issue("error", "too-costly", null,
-            `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${MEMORY_FRACTION * 100}% of ${limitGB} GB limit) at ${place}`);
+        const error = new Issue("error", "too-costly", null, null,
+            `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${MEMORY_FRACTION * 100}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
         error.diagnostics = this.diagnostics();
         throw error;
       }
@@ -963,13 +1026,46 @@ class OperationContext {
       this._clock.lastYield = resumed;
       if (this._clock.clientGone) {
         this.log(`Operation abandoned @ ${place}: client disconnected`);
-        const error = new Issue("error", "too-costly", null,
-            `Operation abandoned at ${place}: the client disconnected before the response was ready`);
+        const error = new Issue("error", "too-costly", null, null,
+            `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
         error.abandoned = true;
         error.diagnostics = this.diagnostics();
         throw error;
       }
     }
+  }
+
+  /**
+   * Await something this operation does not itself compute - typically a
+   * shared structure another request is building - without charging the wait
+   * to the compute deadline. The current compute slice is closed before
+   * waiting and a new one opened after; aborts if the client disconnected
+   * meanwhile.
+   *
+   * @param {Promise} promise
+   * @param {string} place - Location identifier for debugging
+   * @returns {Promise<*>} what the promise resolves to
+   */
+  async waitFor(promise, place = 'unknown') {
+    const now = performance.now();
+    this._clock.compute += now - this._clock.sliceStart;
+    let result;
+    try {
+      result = await promise;
+    } finally {
+      const resumed = performance.now();
+      this._clock.sliceStart = resumed;
+      this._clock.lastYield = resumed;
+    }
+    if (this._clock.clientGone) {
+      this.log(`Operation abandoned @ ${place}: client disconnected`);
+      const error = new Issue("error", "too-costly", null, null,
+          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
+      error.abandoned = true;
+      error.diagnostics = this.diagnostics();
+      throw error;
+    }
+    return result;
   }
 
   unSeeAll() {
@@ -986,6 +1082,21 @@ class OperationContext {
       throw new Issue("error", "processing", null, 'VALUESET_CIRCULAR_REFERENCE', this.i18n.formatMessage(this.langs, 'VALUESET_CIRCULAR_REFERENCE', [vurl, contextList]), "vs-invalid").handleAsOO(400);
     }
     this.contexts.push(vurl);
+  }
+
+  /**
+   * Stop tracking a context, once processing of that value set is finished. The tracked
+   * contexts are the chain of value sets currently being processed, not every value set
+   * seen in the operation: a value set used twice (imported by two others, or twice by
+   * one) is not a circularity - only one that is reached again while it's being
+   * processed is.
+   * @param {string} vurl - the url passed to seeContext
+   */
+  unseeContext(vurl) {
+    const i = this.contexts.lastIndexOf(vurl);
+    if (i >= 0) {
+      this.contexts.splice(i, 1);
+    }
   }
 
   /**

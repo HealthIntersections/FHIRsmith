@@ -26,6 +26,10 @@ class SearchFilterText {
 
     this.filter = filter ? filter.toLowerCase() : null;
     this.stems = [];
+    // The words the stems came from, index-aligned with stems. A provider whose text
+    // index cannot hold a particular token (RxNorm's stem table has nothing that starts
+    // with a digit, for one) needs the word itself to search the text with instead.
+    this.words = [];
     this.stemmer = natural.PorterStemmer;
     if (filter) {
       this._process();
@@ -135,6 +139,7 @@ class SearchFilterText {
 
   _process() {
     let i = 0;
+    const found = [];
 
     while (i < this.filter.length) {
       if (this._isAlphaNumeric(this.filter[i])) {
@@ -142,14 +147,18 @@ class SearchFilterText {
         while (i < this.filter.length && this._isAlphaNumeric(this.filter[i])) {
           i++;
         }
-        const word = this.filter.substring(j, i);
-        this.stems.push(this.stemmer.stem(word.toLowerCase()));
+        const word = this.filter.substring(j, i).toLowerCase();
+        found.push({ word: word, stem: this.stemmer.stem(word) });
       } else {
         i++;
       }
     }
 
-    this.stems.sort();
+    // Sorted by stem, because _find() binary searches stems - words ride along so that
+    // words[n] is always the word stems[n] came from.
+    found.sort((a, b) => (a.stem < b.stem ? -1 : (a.stem > b.stem ? 1 : 0)));
+    this.stems = found.map((f) => f.stem);
+    this.words = found.map((f) => f.word);
   }
 
   _isAlphaNumeric(char) {

@@ -333,9 +333,31 @@ class RegistryCrawler {
       this.addLogEntry('error', `Server ${version.address}: Error after ${elapsed}ms: ${error.message}`);
       version.error = error.message;
       version.lastTat = `${elapsed}ms`;
+      this.carryForwardSoftware(version);
     }
     
     return version;
+  }
+
+  /**
+   * A server that can't be reached this time is still running whatever it was running
+   * last time we saw it - keep that, so the software page doesn't lose track of it
+   */
+  carryForwardSoftware(version) {
+    if (version.software && version.software !== 'unknown') {
+      return;
+    }
+    for (const registry of (this.currentData && this.currentData.registries) || []) {
+      for (const server of registry.servers || []) {
+        for (const prev of server.versions || []) {
+          if (prev.address === version.address && prev.software) {
+            version.software = prev.software;
+            version.softwareVersion = prev.softwareVersion || '';
+            return;
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -348,6 +370,7 @@ class RegistryCrawler {
     
     version.version = capability.fhirVersion || '3.0.2';
     version.software = capability.software ? capability.software.name : "unknown";
+    version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
 
     // Get terminology capabilities (R3 uses Parameters resource)
     try {
@@ -392,6 +415,7 @@ class RegistryCrawler {
     
     version.version = capability.fhirVersion || defVersion;
     version.software = capability.software ? capability.software.name : "unknown";
+    version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
 
     let set = new Set();
 

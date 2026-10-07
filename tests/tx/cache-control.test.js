@@ -39,6 +39,17 @@ describe('$cache-control routing (scaffolding)', () => {
     expect(res.body.resourceType).toBe('Parameters');
   });
 
+  test('mode=start with no instance code configured issues a bare UUID', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .query({ mode: 'start' })
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send(emptyBody);
+    const p = (res.body.parameter || []).find(x => x.name === 'cache-id');
+    expect(p.valueId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  });
+
   test('GET mode=start resolves (browsable, like the other operations)', async () => {
     const res = await request(app)
       .get(BASE)
@@ -440,6 +451,22 @@ describe('$cache-control routing (scaffolding)', () => {
       const text = (((res.body.issue || [])[0] || {}).details || {}).text || '';
       expect(text).toMatch(/never issued by this server/i);
       expect(text).not.toMatch(/expired/i);
+    });
+
+    // A cache-id whose prefix names another instance got here through a routing
+    // mistake (or a proxy falling back to a backup): same coding, but the message
+    // must name the instance that issued it.
+    test('a cache-id prefixed with another instance code is reported as misrouted', async () => {
+      const res = await request(app)
+        .post('/tx/r5/ValueSet/$expand')
+        .set('Content-Type', 'application/json')
+        .set('x-cache-id', 'tx9.never-issued-this-id')
+        .send({ resourceType: 'Parameters', parameter: [{ name: 'url', valueUri: colorsVS.url }] });
+      expect(res.status).toBe(404);
+      const issue = (res.body.issue || [])[0] || {};
+      const coding = (issue.details || {}).coding || [];
+      expect(coding.some(c => c.code === 'cache-id-unknown')).toBe(true);
+      expect((issue.details || {}).text || '').toMatch(/issued by the server instance 'tx9'/);
     });
 
     // The three ways a cache-id can be missing are indistinguishable to a client

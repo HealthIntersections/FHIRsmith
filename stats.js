@@ -124,20 +124,13 @@ class ServerStats {
       // event-loop block into noise; the max is what shows request-freezing
       // stalls (see the 2026-07-30 tx.fhir.org incident).
       const loopMax = this.eventLoopMonitor.max / 1e6;
-      // Two distinct caches: the expansion cache (count entries) and the client
-      // (resource) cache (count concepts held - a sense of how much it's carrying).
-      let expansionItems = 0;
-      let clientConcepts = 0;
-      for (let m of this.cachingModules) {
-        if (typeof m.expansionItemCount === 'function') {
-          expansionItems = expansionItems + m.expansionItemCount();
-        }
-        if (typeof m.clientConceptCount === 'function') {
-          clientConcepts = clientConcepts + m.clientConceptCount();
-        }
-      }
+      // The client (resource) cache, as concepts held - a sense of how much it's carrying.
+      // (The expansion cache isn't tracked over time: it fills to its limit over a few
+      // days and then sits there, so a history of it says nothing. The home page still
+      // shows its current size.)
+      const clientConcepts = this._sumCachingModules('clientConceptCount');
 
-      this.history.push({time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, expansion: expansionItems, clientConcepts: clientConcepts});
+      this.history.push({time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts});
 
       this.eventLoopMonitor.reset();
       this.requestCountSnapshot = combinedCount;
@@ -327,6 +320,19 @@ class ServerStats {
   clientConcepts() { return this._sumCachingModules('clientConceptCount'); }
   maxClientCaches() { return this._sumCachingModules('maxClientCacheCount'); }
   maxClientConcepts() { return this._sumCachingModules('maxClientConceptCount'); }
+
+  // $closure usage, from whichever module keeps closure tables; null if none does
+  closureStats() {
+    for (let m of this.cachingModules) {
+      if (typeof m.closureStats === 'function') {
+        const s = m.closureStats();
+        if (s) {
+          return s;
+        }
+      }
+    }
+    return null;
+  }
 
   getTaskColor(status) {
     switch (status) {

@@ -5,7 +5,7 @@
 //
 
 const { TerminologyWorker } = require('./worker');
-const { Issue, OperationOutcome } = require('../library/operation-outcome');
+const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const {debugLog} = require("../operation-context");
 
 class BatchWorker extends TerminologyWorker {
@@ -47,8 +47,7 @@ class BatchWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        return res.status(error.statusCode || 500).json(this.operationOutcome(
-          'error', error.issueCode || 'exception', error.message));
+        return res.status(error.statusCode || 500).json(outcomeFromError(error));
       }
     }
   }
@@ -163,9 +162,8 @@ class BatchWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       const statusCode = error.statusCode || 500;
-      const issueCode = error.issueCode || 'exception';
-
-      return this.errorEntry(statusCode, issueCode, error.message);
+      // on a plain Error, issueCode is the FHIR issue type and txIssueType the tx-issue-type
+      return this.errorEntry(statusCode, error.issueCode || 'exception', error.message, error.txIssueType);
     }
   }
 
@@ -319,19 +317,13 @@ class BatchWorker extends TerminologyWorker {
   /**
    * Build an error response entry
    * @param {number} statusCode - HTTP status code
-   * @param {string} issueCode - FHIR issue code
+   * @param {string} issueCode - FHIR issue type
    * @param {string} message - Error message
+   * @param {string} [txIssueType] - tx-issue-type; defaulted from issueCode when not given
    * @returns {Object} Error entry
    */
-  errorEntry(statusCode, issueCode, message) {
-    const outcome = {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity: 'error',
-        code: issueCode,
-        diagnostics: message
-      }]
-    };
+  errorEntry(statusCode, issueCode, message, txIssueType = null) {
+    const outcome = buildOperationOutcome('error', issueCode, message, txIssueType);
 
     return {
       resource: outcome,
@@ -343,21 +335,17 @@ class BatchWorker extends TerminologyWorker {
   }
 
   /**
-   * Build an OperationOutcome
+   * Build an OperationOutcome. Delegates to the shared builder so that every outcome this
+   * server emits has details.text and a tx-issue-type coding: diagnostics is stripped by
+   * the test harness, so nothing a caller needs may live there.
    * @param {string} severity - error, warning, information
-   * @param {string} code - Issue code
-   * @param {string} message - Diagnostic message
+   * @param {string} code - FHIR issue type
+   * @param {string} message - the human readable account of the problem
+   * @param {string} [txIssueType] - tx-issue-type; defaulted from code when not given
    * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 }
 

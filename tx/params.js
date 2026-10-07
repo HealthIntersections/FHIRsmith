@@ -372,11 +372,6 @@ class TxParameters {
         if (claim('no-cache') && asBool()) this.FUid = crypto.randomUUID();
         break;
       }
-      case '_incomplete':
-      case 'limitedExpansion': {
-        if (claim('limitedExpansion')) this.limitedExpansion = asBool();
-        break;
-      }
       case 'includeDesignations': {
         if (claim('includeDesignations')) this.includeDesignations = asBool();
         break;
@@ -403,10 +398,6 @@ class TxParameters {
       }
       case 'default-to-latest-version': {
         if (claim('default-to-latest-version')) this.defaultToLatestVersion = asBool();
-        break;
-      }
-      case 'incomplete-ok': {
-        if (claim('incomplete-ok')) this.incompleteOK = asBool();
         break;
       }
       case 'diagnostics': {
@@ -629,11 +620,11 @@ class TxParameters {
       s = s + '$' + [...this.supplements].sort().join(',') + '|';
     }
     // Further result-affecting parameters that were previously omitted from the
-    // key: the text filter (changes which codes expand), limited/incomplete
-    // expansion handling, whether abstract codes are included, and diagnostics.
+    // key: the text filter (changes which codes expand), whether abstract codes
+    // are included, and diagnostics.
     // filter is free text, so JSON.stringify it to avoid delimiter collisions.
     s = s + 'f:' + JSON.stringify(this.filter || '') + '|' +
-      b(this.limitedExpansion) + b(this.incompleteOK) + b(this.abstractOk) + b(this.diagnostics);
+      b(this.abstractOk) + b(this.diagnostics);
     for (let t of this.FVersionRules) {
       s = s + t.asString() + '|';
     }

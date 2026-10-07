@@ -10,6 +10,7 @@ const {Utilities} = require("../../library/utilities");
 const {debugLog} = require("../operation-context");
 const {acceptsHtml} = require("../tx-html");
 
+const { buildOperationOutcome } = require('../library/operation-outcome');
 class SearchWorker extends TerminologyWorker {
   /**
    * @param {OperationContext} opContext - Operation context
@@ -127,14 +128,7 @@ class SearchWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = "error "+(error.msgId || error.className);
-      return res.status(500).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: 'exception',
-          diagnostics: error.message
-        }]
-      });
+      return res.status(500).json(buildOperationOutcome('error', 'exception', error.message));
     }
   }
 

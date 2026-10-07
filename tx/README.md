@@ -25,6 +25,7 @@ Add the `tx` section to your `config.json`:
     "tx": {
       "enabled": true,
       "librarySource": "/path/to/library.yml",
+      "publishLibrarySource": false,
       "cacheTimeout": 30,
       "internalLimit" : 10000,
       "externalLimit" : 1000,
@@ -66,6 +67,7 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
+| `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
 | `internalLimit`                 | integer | No       | Largest number of codes in internal expansions                                                          |
 | `externalLimit`                 | integer | No       | Largest number of codes the server will return in an expansion                                          |
 | `endpoints`                     | array   | Yes      | List of endpoint configurations (at least one required)                                                 |
@@ -125,6 +127,84 @@ Each endpoint provides the following FHIR terminology operations:
 Each endpoint also provides:
 - `GET /{path}/metadata` - Returns a CapabilityStatement describing the endpoint's capabilities
 - `GET /{path}/` - Returns basic endpoint information
+- `GET /{path}/library` - Returns the library source YAML, if `publishLibrarySource` is set
+
+### Publishing the library source
+
+`publishLibrarySource` lets users see what the server actually loads. It is off by default,
+because the library YAML names every database, cache and package the server runs, and not
+every deployment wants that public. Turn it on and each endpoint serves the file at
+`/{path}/library`, and a **Library** item appears in the tx navigation bar.
+
+There is one URL, content negotiated the same way the rest of the module negotiates:
+
+| Request | Response |
+|---------|----------|
+| `Accept: text/html` (i.e. a browser) | the file, syntax highlighted, in the tx page template |
+| anything else | the file itself, as `application/yaml` |
+| `?_format=html` / `?_format=yaml` | forces either representation |
+
+The file is read from disk per request, so editing it is reflected immediately - note that
+this means the published file can be ahead of what the running server actually loaded, if it
+has been edited since startup.
+
+## OpenAPI description
+
+Each R5 endpoint is described by an OpenAPI 3.1 spec (the R4 and R3 endpoints work the same
+way, with that version's resources, and aren't described separately):
+
+| URL | |
+|---|---|
+| `/{path}/openapi` | Browsable reference (HTML, in the tx page template), with a "try it" form for each GET operation |
+| `/{path}/openapi.json` | The spec as JSON |
+| `/{path}/openapi.yaml` | The spec as YAML |
+
+`servers` is the endpoint. Every response from an R5 endpoint carries a
+`Link: </{path}/openapi.json>; rel="service-desc", </{path}/openapi>; rel="service-doc"` header
+(RFC 8631), the tx pages carry the matching `<link>` element and an **API** item in the
+navigation bar, and the server home page links to it. The HTML pages (`/`, `/op.html`, `/ecl`,
+`/problems.html`, `/info`, `/library`) aren't described.
+
+The spec is in three parts, merged when it's served ([openapi.js](openapi.js)):
+
+* [openapi.yaml](openapi.yaml) - the overview, `/metadata`, `/$versions`, and the shared
+  components, written by hand
+* [openapi-operations.js](openapi-operations.js) - the terminology operations, as data: their
+  in and out parameters, with types, cardinalities and descriptions. openapi.js makes the paths
+  from them (type and instance level; GET with the primitive parameters in the query, POST with
+  a Parameters resource or a form) and a table of the parameters for each. The parameters
+  TxParameters reads for most operations (tx-resource, cache-id, the version rules,
+  displayLanguage, ...) are listed once, in the overview. The read and search paths are made
+  there too, from the search worker's parameters
+* [openapi-schemas.json](openapi-schemas.json) - the FHIR R5 schemas, generated from the
+  StructureDefinitions by `library/fhir-openapi-schema.js`, as configured in
+  [openapi-schemas.config.js](openapi-schemas.config.js)
+
+The schemas are documentation: they describe what the server handles and returns, but the
+server doesn't reject content outside them. They describe:
+
+* CodeSystem, ValueSet, ConceptMap, OperationOutcome, Parameters, Bundle, CapabilityStatement
+  and TerminologyCapabilities, closed, with the `_x` siblings of primitive elements and
+  `modifierExtension` wherever FHIR allows them
+* contained resources only in a ValueSet, and only ValueSets
+* extension and parameter values: the primitive types (not `base64Binary`), `Coding` and
+  `CodeableConcept`
+* resources in a Bundle or a Parameters: CodeSystem, ValueSet, ConceptMap, OperationOutcome -
+  and Parameters, in a Parameters, for `$batch-validate-code` and `profile`. Never a Bundle
+* OperationOutcome issues with `details.text`, and (except for information) a tx-issue-type
+  coding
+
+After changing the operations, `openapi.js` picks them up. After changing the schema config,
+regenerate (this needs `hl7.fhir.r5.core#5.0.0` in the terminology cache):
+
+    node utilities/generate-openapi-schemas.js tx
+
+`tests/tx/openapi.test.js` fails if a route isn't described (or excluded, with a reason), if a
+worker or TxParameters reads a parameter that isn't described - or a described one isn't read
+anywhere - or if the generated schemas are out of date. It also validates what the server
+actually returns (metadata, read and search, `$expand`, `$validate-code`, `$lookup`,
+`$subsumes`, `$batch-validate-code`, `$versions`, `$cache-control`, an error) against the
+schemas, using ajv. So a new parameter needs adding to openapi-operations.js.
 
 ## Library Configuration
 
@@ -277,6 +357,27 @@ Loads OMOP (Observational Medical Outcomes Partnership) vocabulary mappings from
 - omop:omop_v20250227.db
 ```
 The file is built by importing OMOP (see [documentation](importers/readme.md))
+
+#### `icd11` - ICD-11
+
+Loads ICD-11 from a SQLite database built by importing from the WHO ICD-API.
+
+```yaml
+- icd11:icd11-2026-01.db
+```
+
+One database holds three code systems - the MMS and ICF linearizations and the Foundation -
+so a single source line registers a provider for each one it finds:
+
+| system | url |
+|---|---|
+| MMS | `http://id.who.int/icd/release/11/mms` |
+| ICF | `http://id.who.int/icd/release/11/icf` |
+| Foundation | `http://id.who.int/icd/entity` |
+
+The file is built by importing ICD-11 (see [documentation](importers/icd11-schema.md)). Note
+that only the WHO native API can enumerate the classification; the FHIR endpoint cannot, which
+is why the importer reads from the native one.
 
 #### `npm` - FHIR NPM Packages
 

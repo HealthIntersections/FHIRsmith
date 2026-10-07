@@ -36,6 +36,99 @@ const { Issue } = require("../library/operation-outcome");
  */
 const UNDERSTOOD_PARAMETERS = new Set(['charset', 'format', 'delsp', 'version']);
 
+/**
+ * Parameters whose VALUES are case-insensitive.
+ *
+ * RFC 2045 section 5.1 makes type, subtype and parameter names case-insensitive, and then says
+ * of values: "Parameter values are normally case sensitive, but sometimes are interpreted in a
+ * case-insensitive fashion, depending on the intended use." So a value is only folded where its
+ * own definition says to fold it, and this is the list of those we know of:
+ *
+ *  - charset  RFC 2046 section 4.1.2: "Unlike some other parameter values, the values of the
+ *             charset parameter are NOT case sensitive." (RFC 9110 section 8.3.2 agrees.)
+ *  - format   RFC 3676 section 4, of Format and DelSp together: "(Neither the parameter names
+ *  - delsp    nor values are case sensitive.)"
+ *
+ * `version` is deliberately absent: there is no general definition of a version parameter -
+ * it exists only per-registration (text/vcard has one, text/html deliberately removed one) -
+ * so there is nothing that says its values fold, and folding them could equate two versions
+ * that a registration means to distinguish.
+ *
+ * @type {Set<string>}
+ */
+const CASE_INSENSITIVE_VALUES = new Set(['charset', 'format', 'delsp']);
+
+/**
+ * Media types whose registration gives a parameter a DEFAULT value.
+ *
+ * This is the thing that breaks the otherwise tidy rule that a parameter narrows a media type.
+ * Where a parameter has a default, the bare form is not the general case - it already carries
+ * that value - so `text/plain` does not subsume `text/plain; charset=utf-8`, the two are
+ * different things. Applying the default to whichever side omits it, and then comparing as
+ * usual, gets this right in both directions: it also makes `text/plain` and
+ * `text/plain; charset=us-ascii` come out equivalent, which they are and which we used to
+ * get wrong in the other direction.
+ *
+ * There is no list to load this from. IANA's registry schema has no parameter element at all -
+ * a record is a name, a deprecation flag, cross-references and a pointer to a template - and
+ * defaults live only in the prose of each defining RFC. `text/plain`, the type that needs this
+ * most, has no IANA registration template whatsoever ("No registration template available"),
+ * so all of the below comes from the RFCs directly:
+ *
+ *  - text/plain charset: RFC 2046 section 4.1.2 made US-ASCII the default, and RFC 6657
+ *    section 4 exists specifically to say it stayed: "The default "charset" parameter value
+ *    for "text/plain" is unchanged from [RFC2046] and remains as "US-ASCII"."
+ *  - text/plain format and delsp: RFC 3676 section 4, "If Format is not specified, or if the
+ *    value is not recognized, a value of Fixed is assumed" and "If DelSp is not specified, or
+ *    if its value is not recognized, a value of No is assumed."
+ *  - text/vcard charset: RFC 6350 section 3.1, "The charset ... for vCard is UTF-8 ... There is
+ *    no way to override this." A default expressed as a prohibition, but a default.
+ *
+ * Keyed by lower-case type/subtype; the inner map is lower-case parameter name to the value
+ * the bare form implies. Values are stored folded, matching CASE_INSENSITIVE_VALUES.
+ *
+ * @type {Map<string, Map<string, string>>}
+ */
+const PARAMETER_DEFAULTS = new Map([
+  ['text/plain', new Map([['charset', 'us-ascii'], ['format', 'fixed'], ['delsp', 'no']])],
+  ['text/vcard', new Map([['charset', 'utf-8']])]
+]);
+
+/**
+ * text/* types whose registration says explicitly that charset has NO default.
+ *
+ * RFC 6657 section 3 left a residual rule behind that is the awkward part of all this:
+ * "existing "text/*" registrations that fail to specify how the charset is determined still
+ * default to US-ASCII." So for a text/* type, silence in the registration is not the absence
+ * of a default - it IS a default, of US-ASCII. That set cannot be enumerated without reading
+ * every legacy text/* registration and judging whether it "clearly specifies", so instead of
+ * guessing, charset on an unlisted text/* type yields cannot-determine.
+ *
+ * This set is the escape hatch: text/* types we have actually read, which say there is no
+ * default, and for which the narrowing rule therefore holds.
+ *
+ *  - text/markdown: RFC 7763 section 2, "charset: Per Section 4.2.1 of [RFC6838], charset is
+ *    REQUIRED. There is no default value because neither [MDSYNTAX] nor many popular
+ *    implementations at the time of this registration do either."
+ *  - text/html: a judgement rather than a quoted default, and the only entry here that is.
+ *    Neither registration states one - RFC 2854 section 6 recites the RFC 2046 and RFC 2616
+ *    rules, observes that they conflict, and only recommends being explicit; the current IANA
+ *    registration is the W3C one, whose whole optional-parameters text is that charset
+ *    "may be provided to definitively specify the document's character encoding, overriding
+ *    any character encoding declarations in the document". HTML determines its encoding in
+ *    band, and the phrase "overriding any character encoding declarations in the document"
+ *    only makes sense if the absence of the parameter means "whatever the document says"
+ *    rather than "US-ASCII". Listed because text/html is the most asked-about media type
+ *    there is, and declining to answer for it is a poor trade for a defensible reading.
+ *
+ * Non-text types need no entry: RFC 6657 is a text/* rule, so silence elsewhere really is
+ * silence (application/xml, for instance - RFC 7303 section 3.2 tells consumers they "SHOULD
+ * NOT assume a default encoding").
+ *
+ * @type {Set<string>}
+ */
+const TEXT_TYPES_WITH_NO_CHARSET_DEFAULT = new Set(['text/markdown', 'text/html']);
+
 // The IANA media types registry. Only the names are kept - the registry is a few MB of
 // cross-references and templates, and all the `registered` filter asks is whether a type is in it
 const IANA_MEDIA_TYPES_URL = 'https://www.iana.org/assignments/media-types/media-types.xml';
@@ -46,6 +139,63 @@ class MimeTypeConcept {
   constructor(code) {
     this.code = code;
     this.mimeType = this.#parseMimeType(code);
+    this.normalized = this.#normalize(code);
+  }
+
+  /**
+   * The canonical spelling of this media type.
+   *
+   * Four things are canonicalised, and each is something the specs say carries no meaning:
+   *
+   *  - case, in the type, the subtype, every parameter name, and the values of the parameters
+   *    in CASE_INSENSITIVE_VALUES (RFC 2045 section 5.1, RFC 2046 section 4.1.2, RFC 3676
+   *    section 4). Every other parameter value keeps its case: RFC 2045 makes values
+   *    case-sensitive unless their own definition says otherwise, and a boundary or a profile
+   *    URI can genuinely differ by case
+   *  - parameter ORDER, which is not significant, so sorting by name gives two spellings of one
+   *    media type one spelling. Without this, `text/plain; charset=utf-8; format=flowed` and
+   *    `text/plain; format=flowed; charset=utf-8` would have two different "normal" forms,
+   *    which is not a normal form at all
+   *  - the separator, which becomes '; '
+   *  - surrounding and internal padding
+   *
+   * Quoting is NOT canonicalised. A quoted value can always be written quoted, so removing the
+   * quotes needs to know that the value contains no tspecials, and getting that wrong produces
+   * a "canonical" form that is not a legal media type. Left for someone who needs it.
+   *
+   * Note the consequence for validation: reordering or respacing makes this differ from the
+   * submitted code by more than case, so it is reported as a normal-form difference rather
+   * than a case difference. That is the honest description of what changed.
+   */
+  #normalize(code) {
+    if (!this.mimeType.isValid) {
+      return code;
+    }
+    const segments = code.split(';');
+    const params = [];
+    for (const segment of segments.slice(1)) {
+      const trimmed = segment.trim();
+      if (trimmed === '') {
+        continue;
+      }
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) {
+        // not a name=value pair. The parser ignores it, but dropping it here would make the
+        // canonical form say something the submitted code did not, so it is carried through -
+        // untouched, since only parameter NAMES fold and nothing says this is one
+        params.push({ name: trimmed.toLowerCase(), text: trimmed });
+        continue;
+      }
+      const name = trimmed.slice(0, eq).trim().toLowerCase();
+      const value = trimmed.slice(eq + 1).trim();
+      params.push({
+        name: name,
+        text: name + '=' + (CASE_INSENSITIVE_VALUES.has(name) ? value.toLowerCase() : value)
+      });
+    }
+    // by name, then by the whole parameter, so a repeated name is still ordered predictably
+    params.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : (a.text < b.text ? -1 : a.text > b.text ? 1 : 0)));
+    return [segments[0].trim().toLowerCase(), ...params.map(p => p.text)].join('; ');
   }
 
   #parseMimeType(code) {
@@ -71,7 +221,7 @@ class MimeTypeConcept {
       if (value.length > 1 && value.startsWith('"') && value.endsWith('"')) {
         value = value.slice(1, -1);
       }
-      if (name === 'charset') {
+      if (CASE_INSENSITIVE_VALUES.has(name)) {
         value = value.toLowerCase();
       }
       if (name) {
@@ -196,7 +346,7 @@ class MimeTypeServices extends CodeSystemProvider {
   async code(code) {
     
     const ctxt = await this.#ensureContext(code);
-    return ctxt ? ctxt.code : null;
+    return ctxt ? ctxt.normalized : null;
   }
 
   async display(code) {
@@ -206,14 +356,15 @@ class MimeTypeServices extends CodeSystemProvider {
       return null;
     }
 
-    // Check supplements first
-    const suppDisplay = this._displayFromSupplements(ctxt.code);
+    // Check supplements first, by the normalised code - a supplement that designates
+    // 'text/plain' has to be found for a request that spells it 'TEXT/Plain'
+    const suppDisplay = this._displayFromSupplements(ctxt.normalized);
     if (suppDisplay) {
       return suppDisplay;
     }
 
-    // Default display is the code itself, trimmed
-    return ctxt.code.trim();
+    // Default display is the code itself, normalised and trimmed
+    return ctxt.normalized.trim();
   }
 
   async definition(code) {
@@ -314,11 +465,27 @@ class MimeTypeServices extends CodeSystemProvider {
       return 'not-subsumed';
     }
 
+    // Where the registration gives a parameter a default, the bare form already carries that
+    // value, so fill it in on both sides before comparing anything. After this, a parameter
+    // that defaults is present on both sides and the narrowing logic below never sees it as
+    // "added" - which is the point: adding format=flowed to text/plain does not narrow it, it
+    // contradicts the format=fixed the bare form meant all along.
+    const key = a.type + '/' + a.subtype;
+    const defaults = PARAMETER_DEFAULTS.get(key);
+    const aParams = new Map(a.params);
+    const bParams = new Map(b.params);
+    if (defaults) {
+      for (const [name, value] of defaults) {
+        if (!aParams.has(name)) aParams.set(name, value);
+        if (!bParams.has(name)) bParams.set(name, value);
+      }
+    }
+
     // Only the parameters the two codes DISAGREE on can decide the answer - one present
     // on one side only, or present on both with different values. A parameter carried
     // identically by both, understood or not, cannot affect the result and is ignored.
-    const deciding = [...new Set([...a.params.keys(), ...b.params.keys()])]
-      .filter(name => a.params.get(name) !== b.params.get(name));
+    const deciding = [...new Set([...aParams.keys(), ...bParams.keys()])]
+      .filter(name => aParams.get(name) !== bParams.get(name));
     const unknown = deciding.filter(name => !UNDERSTOOD_PARAMETERS.has(name));
     if (unknown.length > 0) {
       throw cannotDetermineSubsumption(
@@ -331,15 +498,34 @@ class MimeTypeServices extends CodeSystemProvider {
         + 'that may be wrong');
     }
 
+    // RFC 6657 section 3: a text/* registration that does not say how the charset is determined
+    // still defaults to US-ASCII. So on a text/* type we have not read, we do not know whether
+    // the side without a charset means "any charset" or "US-ASCII", and that is exactly the
+    // difference between subsumes and not-subsumed. Only bites when charset is present on one
+    // side and absent on the other - two explicit values are just two values.
+    if (deciding.includes('charset') && a.type === 'text'
+        && !(defaults && defaults.has('charset'))
+        && !TEXT_TYPES_WITH_NO_CHARSET_DEFAULT.has(key)
+        && aParams.has('charset') !== bParams.has('charset')) {
+      throw cannotDetermineSubsumption(
+        `Unable to determine the subsumption relationship between '${a.source}' and `
+        + `'${b.source}': one carries a charset and the other does not, and this server does `
+        + `not know whether '${key}' gives charset a default value. RFC 6657 leaves every `
+        + 'text/* registration that does not say how the charset is determined defaulting to '
+        + 'US-ASCII, so the absence of a charset may mean "any charset" or may mean "US-ASCII", '
+        + 'and those give opposite answers. No outcome is returned rather than one that may be '
+        + 'wrong');
+    }
+
     // Any parameter they both carry has to agree, or neither includes the other
-    for (const [name, value] of a.params) {
-      if (b.params.has(name) && b.params.get(name) !== value) {
+    for (const [name, value] of aParams) {
+      if (bParams.has(name) && bParams.get(name) !== value) {
         return 'not-subsumed';
       }
     }
 
-    const aInB = [...a.params.keys()].every(name => b.params.has(name));
-    const bInA = [...b.params.keys()].every(name => a.params.has(name));
+    const aInB = [...aParams.keys()].every(name => bParams.has(name));
+    const bInA = [...bParams.keys()].every(name => aParams.has(name));
 
     if (aInB && bInA) {
       return 'equivalent';

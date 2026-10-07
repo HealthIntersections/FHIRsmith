@@ -49,6 +49,7 @@ bin/validator_cli.jar.version
 *.log
 
 test-cases-summary.txt
+test-cases-report.json
 
 tx/data/CodeSystem-cpt.db
 

@@ -55,14 +55,6 @@ describe('TxParameters — other result-affecting params enter the cache key', (
     expect(paramsWith([{ name: 'abstract', valueBoolean: false }]).hashSource()).not.toBe(base());
   });
 
-  test('limitedExpansion changes the key', () => {
-    expect(paramsWith([{ name: 'limitedExpansion', valueBoolean: true }]).hashSource()).not.toBe(base());
-  });
-
-  test('incomplete-ok changes the key', () => {
-    expect(paramsWith([{ name: 'incomplete-ok', valueBoolean: true }]).hashSource()).not.toBe(base());
-  });
-
   test('diagnostics changes the key', () => {
     expect(paramsWith([{ name: 'diagnostics', valueBoolean: true }]).hashSource()).not.toBe(base());
   });

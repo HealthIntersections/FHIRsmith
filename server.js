@@ -16,6 +16,8 @@ const folders = require('./library/folder-setup');  // <-- ADD: load early
 const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
+const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
+const { NpmAudit } = require('./library/npm-audit');
 
 // Load configuration BEFORE logger
 let config;
@@ -39,6 +41,12 @@ serverLog.info(`========================================`);
 serverLog.info(`FHIRsmith v${packageJson.version} starting (PID ${process.pid})`);
 serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os.arch()})`);
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
+{
+  const cg = readCgroupMemoryLimit();
+  serverLog.info(cg.limit > 0
+    ? `Memory limit: ${(cg.limit / 1024 / 1024 / 1024).toFixed(1)} GB (from ${cg.source})`
+    : 'Memory limit: none found in cgroup - RSS guard disabled');
+}
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -57,6 +65,7 @@ const PublisherModule = require('./publisher/publisher.js');
 const TokenModule = require('./token/token.js');
 const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
+const TestingModule = require('./testing/testing.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
@@ -71,7 +80,12 @@ const app = express();
 
 // Behind nginx (or any reverse proxy): honor X-Forwarded-* so req.protocol and
 // req.hostname reflect what the client actually requested, not the loopback hop.
-app.set('trust proxy', config.server.trustProxy ?? true);
+// Only proxies on the same host or a private network are trusted by default. `true` would
+// trust every X-Forwarded-For hop, so anyone who could reach the port directly could name
+// their own IP address and walk around every rate limit (express-rate-limit refuses to be
+// quiet about it: ERR_ERL_PERMISSIVE_TRUST_PROXY). See nginx.md.
+const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
+app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
 const PORT = process.env.PORT || config.server.port || 3000;
 
@@ -97,10 +111,13 @@ app.use(cors(config.server.cors));
 const modules = {};
 
 let stats = null;
+// periodic npm advisory check of the installed packages - see library/npm-audit.js
+let npmAudit = null;
 
 // Initialize modules based on configuration
 async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
+  npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
   // Initialize SHL module
   if (config.modules?.shl?.enabled) {
@@ -219,6 +236,18 @@ async function initializeModules() {
       throw error;
     }
   }
+  if (config.modules?.testing?.enabled) {
+    try {
+      serverLog.info('Initializing module: testing...');
+      modules.testing = new TestingModule(stats.forModule('testing'));
+      await modules.testing.initialize(config.modules.testing);
+      app.use('/testing', modules.testing.router);
+    } catch (error) {
+      serverLog.error('Failed to initialize testing module:', error);
+      throw error;
+    }
+  }
+
   // Initialize TX module
   // Note: TX module registers its own endpoints directly on the app
   // because it supports multiple endpoints at different paths
@@ -280,7 +309,8 @@ async function loadTemplates() {
 
 async function buildRootPageContent() {
   stats.requestCount++;
-  let content = '<div class="row mb-4">';
+  let content = npmAudit ? npmAudit.renderBanner() : '';
+  content += '<div class="row mb-4">';
   content += '<div class="col-12">';
 
   content += '<h3>Available Modules</h3>';
@@ -289,7 +319,7 @@ async function buildRootPageContent() {
   // Check which modules are enabled and add them to the list
   if (config.modules.packages.enabled) {
     content += '<li class="list-group-item">';
-    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages';
+    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -314,7 +344,7 @@ async function buildRootPageContent() {
   if (config.modules.registry && config.modules.registry.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/tx-reg" class="text-decoration-none">Terminology Server Registry</a>: ';
-    content += 'Discover and query FHIR terminology servers for code system and value set support';
+    content += 'Discover and query FHIR terminology servers for code system and value set support (<a href="/tx-reg/openapi">API</a>)';
     content += '</li>';
   }
 
@@ -346,6 +376,13 @@ async function buildRootPageContent() {
     content += '</li>';
   }
 
+  if (config.modules?.testing?.enabled) {
+    content += '<li class="list-group-item">';
+    content += '<a href="/testing" class="text-decoration-none">Test Reports</a>: ';
+    content += 'TestReports submitted by TxTester and other test tools (<a href="/testing/openapi">API</a>)';
+    content += '</li>';
+  }
+
   if (config.modules.folder && config.modules.folder.enabled) {
     content += '<li class="list-group-item">';
     content += '<strong>Cache Folder</strong>: ';
@@ -370,7 +407,9 @@ async function buildRootPageContent() {
     if (config.modules.tx.endpoints && config.modules.tx.endpoints.length > 0) {
       content += '<ul class="mt-2 mb-0">';
       for (const endpoint of config.modules.tx.endpoints) {
-        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})</li>`;
+        // the OpenAPI description is for the R5 endpoints
+        const api = String(endpoint.fhirVersion).startsWith('5') ? ` (<a href="${endpoint.path}/openapi">API</a>)` : '';
+        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})${api}</li>`;
       }
       content += '</ul>';
     }
@@ -405,13 +444,7 @@ async function buildRootPageContent() {
 
   // Process RSS vs cgroup limit (or system total)
   const rssMB = (memUsage.rss / 1024 / 1024).toFixed(0);
-  let memLimit;
-  try {
-    const raw = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-    memLimit = raw === 'max' ? os.totalmem() : parseInt(raw);
-  } catch {
-    memLimit = os.totalmem();
-  }
+  const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
   const memLimitMB = (memLimit / 1024 / 1024).toFixed(0);
   const processPCT = (memUsage.rss * 100) / memLimit;
 
@@ -440,6 +473,15 @@ async function buildRootPageContent() {
   content += `<td><strong>Client Cache:</strong> ${stats.clientCaches()} caches / ${stats.clientConcepts()} concepts</td>`;
   content += `<td><strong>Max Client Cache:</strong> ${stats.maxClientCaches()} caches / ${stats.maxClientConcepts()} concepts</td>`;
   content += '</tr>';
+  const closure = stats.closureStats();
+  if (closure) {
+    content += '<tr>';
+    content += `<td><strong>Closure Tables:</strong> ${closure.tables} tables` +
+      (closure.retentionDays ? ` (unused for ${closure.retentionDays} days = deleted)` : '') + `</td>`;
+    content += `<td><strong>Closure Entries:</strong> ${closure.entries} entries / ${closure.concepts} concepts</td>`;
+    content += `<td><strong>Closure Database:</strong> ${closure.bytes === null ? 'in memory' : formatBytes(closure.bytes)}</td>`;
+    content += '</tr>';
+  }
   content += getLogStats();
   content += '</table>';
 
@@ -591,13 +633,7 @@ app.get('/dashboard', async (req, res) => {
     const v8PCT = (memUsage.heapUsed * 100) / heapStats.heap_size_limit;  // % of V8 heap limit used
 
     // Process RSS as % of cgroup memory limit (or system total as fallback)
-    let memLimit;
-    try {
-      const raw = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
-      memLimit = raw === 'max' ? os.totalmem() : parseInt(raw);
-    } catch {
-      memLimit = os.totalmem();
-    }
+    const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
     const processPCT = (memUsage.rss * 100) / memLimit;
 
     const totalMemBytes = os.totalmem();
@@ -629,6 +665,9 @@ app.get('/dashboard', async (req, res) => {
       startTime: stats.startTime
     });
     content += stats.taskDetails();
+    if (npmAudit) {
+      content += npmAudit.renderDashboard();
+    }
     content += `<p>Data: ${folders.dataDir()}</p>`;
 
     content = '<div class="row mb-4"><div class="col-12">' + content + '</div></div>';
@@ -648,6 +687,19 @@ app.get('/dashboard', async (req, res) => {
     htmlServer.sendErrorResponse(res, 'root', error);
   }
 });
+
+function formatBytes(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} bytes`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
 
 function pctColor(pct) {
   // Gradient from green (#deffe0) at 0% to red (#ffd3d1) at 100%
@@ -748,6 +800,7 @@ async function startServer() {
       stats.markStarted();
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
+    npmAudit.start();
     if (modules.packages && config.modules.packages.enabled) {
       modules.packages.startInitialCrawler();
     }
@@ -775,6 +828,9 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   serverLog.info('\nShutting down server...');
+  if (npmAudit) {
+    npmAudit.stop();
+  }
 
   // Shutdown all modules
   for (const [moduleName, moduleInstance] of Object.entries(modules)) {

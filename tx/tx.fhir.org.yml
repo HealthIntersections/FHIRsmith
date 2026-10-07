@@ -37,6 +37,7 @@ sources:
   - npm:us.cdc.phinvads
   - npm:hl7.fhir.uv.sdc
   - internal:vsac
+  - icd11:icd11-2026-01.db
 
 ignored:
   - urn:iso:std:iso:3166#20210120

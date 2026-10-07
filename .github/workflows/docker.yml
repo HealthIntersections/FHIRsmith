@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    
+
 
 jobs:
   docker:
@@ -26,6 +26,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set lowercase repository name
         run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+      - name: Build metadata
+        id: meta
+        run: |
+          echo "VERSION=0.0.0-cibuild.${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -35,3 +40,28 @@ jobs:
           tags: |
             ghcr.io/${{ env.REPO_LC }}:cibuild
             ghcr.io/${{ env.REPO_LC }}:cibuild-${{ github.sha }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.VERSION }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.meta.outputs.CREATED }}
+
+  prune:
+    name: Prune Old CI Images
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      # Every push to main adds a cibuild-<sha> version. Left alone they crowd
+      # the package page, so that a visitor coming from the README badge sees a
+      # 40-hex CI tag as the newest image rather than the current release.
+      - name: Prune
+        run: python3 .github/scripts/prune-ci-images.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP: '10'
+          DRY_RUN: 'false'
+        continue-on-error: true

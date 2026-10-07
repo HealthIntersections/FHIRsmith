@@ -1,11 +1,248 @@
 # Changelog
 
-All notable changes to the Health Intersections Node Server will be documented in this file.
+All notable changes to Health Intersections FHIRsmith will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.0] - 2026-08-27
+## [0.14.2] - 2026-10-06
+
+### Security
+
+- Dependency updates for published advisories, including axios (several high severity), brace-expansion (denial of service), and http-cache-semantics and @tootallnate/once (removed with the old sqlite3 build chain)
+
+### Added
+
+- OpenAPI descriptions for the package server (/packages), the terminology registry (/tx-reg), the TestReport module (/testing) and the R5 terminology endpoints: each serves `openapi.json`, `openapi.yaml` and an HTML reference at `openapi` (JSON for non-browser clients), linked from the module's pages and advertised in an RFC 8631 `Link` header on every response. The FHIR resource schemas are generated from the FHIR definitions, constrained to what each module accepts
+- npm audit self-check: once a day the server checks its installed packages (and FHIRsmith itself) against the npm advisory database - report only, nothing is changed. Findings show as a banner on the home page, in full on the dashboard, and in the log. `npmAudit.enabled` = false turns it off (e.g. for servers with no internet access)
+- Registry: new Software page (/tx-reg/software) listing each registered server's software and version, and for FHIRsmith servers, the release date, its age, and how many releases behind it is. The crawler now records `CapabilityStatement.software.version`
+
+### Changed
+
+- Terminology server: contained resources are supported only for ValueSets that contain ValueSets (which `compose.include.valueSet` can import by `#id`). Any other contained resource is rejected (CONTAINED_RESOURCE_NOT_SUPPORTED) wherever the resource comes from; when loading a package, the offending resource is skipped rather than stopping the load
+- $validate-code: the `inactive` and `status` output parameters describe the code being returned. In a CodeableConcept where a different coding is inactive, that coding still gets its warning, but the parameters are not set for the returned code
+- Registry discovery API follows the tx ecosystem IG: rows carry `fhirVersion` and the IG's security flags (`open`, `token`, ...) alongside the existing security string; candidate lists are only given when `url` is supplied; R-codes (R4, R4B, R5, ...) map to their release versions; and the resolve fallback that returned servers authoritative for a code system but not hosting it has been removed
+- The TerminologyCapabilities statement no longer lists expansion parameters the server doesn't act on (`limitedExpansion`, `_incomplete`, `incomplete-ok` and others); `limitedExpansion`/`incomplete-ok` are no longer read, and no longer part of the expansion cache key (they never had any effect)
+- TestReport module: a TestReport with contained resources is refused
+- Packages and registry page footers say when the crawler last updated the data ("last updated 35 minutes ago"), or "not yet updated" before the first crawl - they used to show a raw `[%crawler-date%]` placeholder
+- Packages crawler log: the start time is shown relative ("35 minutes ago") and the duration in seconds; the end time is dropped
+- Dependencies: sqlite3 6 (connect-sqlite3 now uses the same sqlite3, which drops the old node-gyp/make-fetch-happen chain), and updates for axios, brace-expansion, moment, ip-address, csv-parse and uuid. The PR build now fails only on high/critical advisories in what ships (`npm audit --omit=dev`)
+
+### Fixed
+
+- $expand: RxNorm expansions that asked for a concept's children failed with `SQLITE_MISUSE`; an over-limit expansion of the whole of RxNorm is now refused before it is built
+- $expand: a value set with neither a compose nor an expansion gets a clear error (VALUESET_NO_COMPOSE)
+- $validate-code: in a CodeableConcept, the inactive warning names the coding that is actually inactive (it used to name the first coding), and a later active coding no longer hides the warning from an earlier inactive one
+- Packages: `/status`, `/stats` and `/search` hung instead of answering (the `/:id` route swallowed them)
+- Packages: dependency searches accept `id#version` and `id|version` (as sent by the Java PackageClient) as well as `id@version`; npm search (`/-/v1/search`) honours `text`, `size` and `from`, and accepts the other npm and PackageClient parameters
+- XIG: the version shown on the pages
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
+
+## [0.14.1] - 2026-09-29
+
+### Added
+
+- TestReport module: user administration - the administrator (`adminPassword`) manages users at /testing/admin/users, with rights to edit named links and/or delete reports
+- TestReport module: named links - test script and participant URLs shown by name, maintained at /testing/admin/links
+- TestReport module: the report list shows the test engine, client and server, the number of tests and the run length; a report page shows setup, each test with its operations and assertions, and teardown
+- Test reports from the FHIRsmith build name the test modes they ran with
+
+### Changed
+
+- Security: the publisher and testing web pages require a CSRF token on every form post (lusca), a SameSite=Lax session cookie, and a same-origin `Origin` on posts; the session id is regenerated on login
+- Security: the publisher rate limits task actions (create, approve, delete, retry) and task output reads, as well as logins
+- `server.trustProxy` now defaults to trusting only loopback, link-local and private-network proxies (was `true`, which let anyone reaching the port directly set their own client address and get round the rate limits). See nginx.md - a proxy elsewhere needs to be configured, and the proxy must pass on `Host` or `X-Forwarded-Host`, or form posts are refused
+- $expand: the `displayLanguage` expansion parameter is written without spaces (`en,*;q=0`, not `en, *; q=0`)
+- $translate: `result` is only true if at least one match is a translation - a `not-related-to` (R4: `disjoint`/`unmatched`) or `noMap` match is still returned, but `result` is false
+- SNOMED CT edition names are held in one table (tx/sct/editions.js), used by the provider and the unknown code messages
+
+### Fixed
+
+- $validate-code: when the code is not in the value set, it is looked up in the code system version the value set selects (`compose.include.version`), not the server's default version - so the version and display reported come from the right edition
+- $validate-code: the unknown code message named the SNOMED CT test edition as "unknown"; it is now "Test Edition"
+- Registry: the SNOMED CT test edition (`http://snomed.info/xsct/31000003106`) is labelled, rather than shown as `??`
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
+
+## [0.14.0] - 2026-09-27
+
+### Added
+
+- New Module: TestReport repository 
+- Initial Implementation of $closure
+- add support for caching across multiple servers
+- better support for web invocation of operations 
+- add ECL control panel
+
+### Changed
+
+- improve home page graphs and cache information
+- better memory management - prevent an operation running the server out of memory 
+- $validate-code: inferSystem is only applied to the code parameter, per its definition - it is ignored for coding and codeableConcept
+- $validate-code: a Coding with neither a system nor a code is reported as one problem, not two (Coding_has_no_system_or_code__cannot_validate)
+- $subsumes: a missing system (codeA/codeB with no system parameter, or a codingA/codingB with no system) is now 400 with issue code invalid and tx-issue-type invalid-data (was 404/422 not-found), with message id SUBSUMPTION_NO_SYSTEM (shared with the Java terminology service); mismatched codingA/codingB systems use SUBSUMPTION_SYSTEM_MISMATCH
+- SNOMED expressions: a refined or conjoined attribute value must be bracketed, per the compositional grammar (405813007=(85562004:272741003=24028007)); the unbracketed form is now rejected, and the renderer emits the brackets (it used to produce expressions other parsers reject)
+
+### Fixed
+
+- Fix processing of sourceScope during $translate operation
+- Fix broken links in HTML references (#256)
+- Fix bug in concept map conversion 
+- Fix issue processing MRCM rules (#287)
+- Fix message about depending on a draft resource (add source info)
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3516 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.5
+
+## [v0.13.4] - 2026-09-17
+
+### Changed 
+
+- Clean up TxCaps expansion parameter list
+
+### Fixed 
+
+- Fix performance issue with snomed text search
+- clean up release process to avoid version mismatch, and to clean out old dockers
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.13.3] - 2026-09-10
+
+### Fixed
+
+- Fix SNOMED CT display selection on national editions. `_displayRefsetOrder()` knew a display
+  language reference set for only six editions (International, US, UK and the test edition);
+  every other edition fell through to "the first description marked Preferred in any language
+  reference set", which on a multi-language edition means whichever description happened to be
+  stored first. The Belgian edition (11000172109) marks a Preferred synonym in Belgian French
+  (21000172104) and Belgian Dutch (31000172101) as well as in English, so a request that named
+  no `displayLanguage` got French for one concept, Dutch for the next and English for a third.
+  Editions not in the table now default to US then GB English, and the $lookup designation
+  order ranks the edition's display reference set ahead of "preferred anywhere", so the choice
+  no longer depends on import order. An edition with no English language reference set at all
+  still falls back to its own preferred synonym. This changes one tx-ecosystem expectation:
+  `bugs/sct-display-2` recorded "Counselling" for 409063005 on the International edition, which
+  is the GB English preferred term picked only because it is stored before the US one - the same
+  concept already expanded as "Counseling". The expectation is now "Counseling".
+- Fix the language tag on the display designation in $expand. It was hard-coded to `en-US`
+  while its value came from the edition display, so on a multi-language edition a French or
+  Dutch term was published as English - which put it in an implementation guide's English
+  display column and made the real French designation read as a duplicate of it.
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4
+
+## [v0.13.2] - 2026-09-05
+
+### Added
+
+- Add support for publishLibrarySource
+- 
+### Fixed
+
+- Fix error in Snomed CT and ICD-11 where normal form difference and case difference being conflated 
+- Fix error in mime-type subsumption analysis 
+- adjust mime type validation to not be case sensitive
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4)
+
+## [v0.13.1] - 2026-09-05
+
+### Fixed 
+
+- Error in ICD-11 provider that made the version page not show 
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3489 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.13.0] - 2026-09-04
+
+### Added
+
+- ICD-11 support, in three parts. `tx/importers/import-icd11.js` builds a SQLite database from
+  the WHO ICD-API - 110,441 concepts across MMS, ICF and the Foundation for the 2026-01 release,
+  in every language the API advertises. The native API is the content source because it is the
+  only one that can enumerate the classification: the FHIR endpoint exposes no all-codes value
+  set, accepts no client-supplied value sets, and its 28 top-level entities report no parent, so
+  nothing there tells a client what the roots are. `tx/importers/export-icd11-codesystem.js`
+  writes the content back out as FHIR CodeSystems, language supplements and the 25,354
+  postcoordination scale ValueSets, optionally as a FHIR NPM package. `tx/cs/cs-icd11.js` is the
+  provider; it is a skeleton at this point - metadata, code location, displays and definitions
+  work, while designations, properties, extendLookup, filters, iteration, subsumption and
+  postcoordinated expressions are still to come. The `icd-11` suite from the tx-ecosystem IG is
+  the specification for the rest of it. Postcoordinated expressions now work:
+  `tx/cs/icd11-expressions.js` parses the short-code, entity-uri and ICF dotted forms,
+  binds each value to the axis it belongs on, and renders the expression back. The binding
+  rule is that an axis not yet carrying a value is preferred over one that is, and required
+  axes come before WHO's declaration order - which is what keeps the two values of
+  1D01.0Y/1G41/1G40 on the two axes a coder meant them for instead of coalescing them onto
+  the first, and what stops a repeated value being silently dropped. `&` asserts that what
+  follows is a value on an axis of the stem, so a value on none of them is an error that
+  names the axes; `/` asserts only cluster membership, so a member that fits an unfilled
+  axis is taken as a value and one that does not starts a new stem. The provider also now
+  answers `concept is-a` / `descendent-of` filters and text search, iterates children and
+  roots, tests subsumption, and builds the 25,354 postcoordination scale value sets on
+  demand from the database rather than shipping them
+
+### Changed
+
+- The tx test runner now names its own output folder (`fhirsmith`) and labels each pass (`r4`,
+  `r5`, `r5-cached`), so the three passes stop writing over each other's expected/actual files.
+  It also passes its mode set to the validator, which was previously falling back to its own
+  default - one that does not include `icd-11`, so every icd-11 test came back "n/a" and was
+  counted as a failure. Needs validator 6.10.5 and validator-wrapper 1.4
+- The R5 -> R4 cross-version conversion dropped `ValueSet.compose.property` - the element a
+  client uses to say which properties it wants back in an expansion. R4 and R3 have nowhere to
+  put it, so it now travels as
+  `http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.property` (the same
+  extension the Java convertors use) and is read back on the way up, with the extension removed
+  so it does not show up twice. Before this, an R4 client that asked for properties got an
+  expansion without them
+- Every OperationOutcome the server emits now carries `details.text` and a tx-issue-type
+  coding in `details.coding`. `diagnostics` is stripped outright by the test harness, so
+  anything a client needs had to stop living *only* there -- it is still sent, and is still
+  the right place for server-specific detail: the four (in fact nine) private
+  `operationOutcome()` helpers that built `{severity, code, diagnostics}` by hand now all
+  delegate to `buildOperationOutcome()` in `tx/library/operation-outcome.js`, and
+  `Issue.asIssue()` falls back to a tx-issue-type derived from the FHIR issue type when an
+  Issue does not name one, so the guarantee holds without revisiting all ~170 Issue
+  construction sites. An informational issue that is not about a code or a value set -- the
+  server banner -- gets text but no coding, since it is not a tx issue
+
+### Fixed
+
+- The exclude branch of `$expand` called `searchFilter(filter, prep, true)` -- the first two
+  arguments the wrong way round, so a provider that implements a text search would have been
+  handed the filter where it expected its own filter context. The other three call sites,
+  and the declared signature, are `(filterContext, filter, sort)`
+- `$lookup` reported a code that is not in the code system as `not-found`; the code system
+  was found, so it is `invalid-code`, which is what the other 62 unknown-code expectations
+  in the tx-ecosystem suite assert
+- `$lookup`'s two top-level catch blocks put `Issue.issueCode` -- a tx-issue-type -- into
+  `OperationOutcome.issue.code`, which takes a FHIR issue type. Two conventions were in use:
+  an `Issue` carries the FHIR issue type in `cause` and the tx-issue-type in `issueCode`,
+  while a plain Error tagged by its thrower carries the FHIR issue type in `issueCode` and
+  the tx-issue-type in `txIssueType`. Every catch block now goes through
+  `outcomeFromError()`, which is the one place that knows about both
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3489 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.12.0] - 2026-08-27
 
 ### Added
 
@@ -310,7 +547,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 FHIRsmith passed all 2822 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.3, runner v6.10.3)
 
-## [0.11.2] - 2026-08-12
+## [v0.11.2] - 2026-08-12
 
 ### Fixed
 
@@ -325,7 +562,7 @@ FHIRsmith passed all 2822 HL7 terminology service tests (modes tx.fhir.org+omop+
 
 FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.3, runner v6.10.1)
 
-## [0.11.1] - 2026-07-30
+## [v0.11.1] - 2026-07-30
 
 ### Added
 
@@ -359,7 +596,7 @@ FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+
 
 FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.2, runner v6.9.12)
 
-## [0.11.0] - 2026-mm-dd
+## [v0.11.0] - 2026-mm-dd
 
 ### Added
 

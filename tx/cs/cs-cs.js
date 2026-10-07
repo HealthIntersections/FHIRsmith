@@ -1695,6 +1695,19 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
     return "cs";
   }
 
+  /**
+   * This factory wraps whatever CodeSystem it is handed at build() time, so it has no
+   * system or version of its own. It is never registered in codeSystemFactories (which
+   * is keyed on system()); these answer for the abstract contract, not for a lookup.
+   */
+  system() {
+    return null;
+  }
+
+  version() {
+    return null;
+  }
+
 }
 
 module.exports = {

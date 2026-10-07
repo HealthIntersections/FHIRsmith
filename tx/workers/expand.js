@@ -14,7 +14,7 @@ const {Designations, SearchFilterText} = require("../library/designations");
 const {Extensions} = require("../library/extensions");
 const {getValuePrimitive, getValueName, validateParameter} = require("../../library/utilities");
 const {div} = require("../../library/html");
-const {Issue, OperationOutcome} = require("../library/operation-outcome");
+const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const crypto = require('crypto');
 const ValueSet = require("../library/valueset");
 const {VersionUtilities} = require("../../library/version-utilities");
@@ -447,8 +447,21 @@ class ValueSetExpander {
           }
         }
 
+        // '*' asks for every property the code system defines for the concept (R6's
+        // ValueSet.compose.property allows it, and a request can name it too). It is handled
+        // here rather than by expanding it into a list of names, because which properties
+        // exist is a property of the concept, not of the request
+        if (this.params.properties.includes('*') && csProps != null && cs != null) {
+          for (const cp of csProps) {
+            const vn = getValueName(cp);
+            this.defineProperty(expansion, n, this.getPropUrl(cs, cp.code, cp), cp.code, vn, cp[vn], true);
+          }
+        }
+
         for (const pn of this.params.properties) {
-          if (pn === 'definition') {
+          if (pn === '*') {
+            continue; // done above
+          } else if (pn === 'definition') {
             if (definition) {
               this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#definition', pn, "valueString", definition);
             }
@@ -607,19 +620,23 @@ class ValueSetExpander {
     return count;
   }
 
+  /**
+   * Exclude the codes of an (expanded) value set. Excludes are processed before includes,
+   * so the codes are recorded as excluded - as excludeCode does - and the includes then
+   * skip them. (This used to remove them from what had been included so far, which at
+   * that point is nothing, so excluding a value set excluded nothing.)
+   */
   excludeValueSet(vs, expansion, imports, offset) {
-    for (const c of vs.expansion.contains) {
-      this.worker.deadCheck('excludeValueSet');
-      const s = this.keyC(c);
-      if (this.passesImports(imports, c.system, c.code, offset) && this.map.has(s)) {
-        const idx = this.fullList.indexOf(this.map.get(s));
-        if (idx >= 0) {
-          this.fullList.splice(idx, 1);
+    const walk = (list) => {
+      for (const c of list || []) {
+        this.worker.deadCheck('excludeValueSet');
+        if (c.code && this.passesImports(imports, c.system, c.code, offset)) {
+          this.excluded.add((this.doingVersion && !this.params.versionsMatch ? c.system + '|' + c.version : c.system) + '#' + c.code);
         }
-        this.map.delete(s);
-        this.decTotal();
+        walk(c.contains);
       }
-    }
+    };
+    walk(vs.expansion.contains);
   }
 
   async checkSource(cset, exp, filter, srcURL, ts, vsInfo , source) {
@@ -848,6 +865,14 @@ class ValueSetExpander {
                   this.addToTotal();
                 }
               }
+              if (this.pageFilled()) {
+                // No total is reported for this path (noTotal above), so once
+                // the requested page is full there is nothing left to learn
+                // from the rest of the matches - and a text filter on a large
+                // code system can match tens of thousands of them, each
+                // costing a designations/properties lookup.
+                break;
+              }
             }
             this.worker.opContext.log('iterate filters done');
             }
@@ -991,8 +1016,10 @@ class ValueSetExpander {
           let vs = await this.worker.findValueSet(s, '', vsSrc);
           const ivs = new ImportedValueSet(await this.expandValueSet(s, '',  vs, filter, notClosed));
           this.checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
-          if (!vs.isContained && ivs.valueSet.vurl) {
-            this.addParamUri(expansion, 'used-valueset', ivs.valueSet.vurl);
+          // ivs.valueSet is the expansion (plain JSON), so it has no vurl - as for the
+          // includes, build it
+          if (!vs.isContained && this.worker.makeVurl(ivs.valueSet)) {
+            this.addParamUri(expansion, 'used-valueset', this.worker.makeVurl(ivs.valueSet));
           }
           valueSets.push(ivs);
         }
@@ -1094,7 +1121,7 @@ class ValueSetExpander {
           this.worker.opContext.log('prep filters');
           const prep = await cs.getPrepContext(true);
           if (!filter.isNull) {
-            await cs.searchFilter(filter, prep, true);
+            await cs.searchFilter(prep, filter, true);
           }
 
           if (cs.specialEnumeration()) {
@@ -1293,13 +1320,22 @@ class ValueSetExpander {
   }
 
   async expand(source, filter, noCacheThisOne) {
+    Extensions.checkNoImplicitRules(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
+    Extensions.checkNoModifiers(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
+    // circular reference detection: this value set is in the chain being processed until
+    // its expansion is done
+    this.worker.seeValueSet(source, this.params);
+    try {
+      return await this.expandSeen(source, filter, noCacheThisOne);
+    } finally {
+      this.worker.unseeValueSet(source);
+    }
+  }
+
+  async expandSeen(source, filter, noCacheThisOne) {
     this.noCacheThisOne = noCacheThisOne;
     this.totalStatus = 'uninitialised';
     this.total = 0;
-
-    Extensions.checkNoImplicitRules(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
-    Extensions.checkNoModifiers(source,'ValueSetExpander.Expand', 'ValueSet', source.vurl);
-    this.worker.seeValueSet(source, this.params);
     this.valueSet = source;
 
     const result = structuredClone(source.jsonObj);
@@ -1326,6 +1362,10 @@ class ValueSetExpander {
 
     if (result.expansion) {
       return result; // just return the expansion
+    }
+    if (!source.jsonObj.compose) {
+      throw new Issue('error', 'invalid', null, 'VALUESET_NO_COMPOSE',
+        this.worker.i18n.translate('VALUESET_NO_COMPOSE', this.params.httpLanguages, [source.contextKey || source.vurlOrMsg]), 'vs-invalid', 422);
     }
 
     if (this.params.generateNarrative && !this.noDetails) {
@@ -1364,9 +1404,9 @@ class ValueSetExpander {
     }
 
     if (this.params.DisplayLanguages) {
-      this.addParamCode(exp, 'displayLanguage', this.params.DisplayLanguages.asString(true));
+      this.addParamCode(exp, 'displayLanguage', this.params.DisplayLanguages.asParameter());
     } else if (this.params.HTTPLanguages) {
-      this.addParamCode(exp, 'displayLanguage', this.params.HTTPLanguages.asString(true));
+      this.addParamCode(exp, 'displayLanguage', this.params.HTTPLanguages.asParameter());
     }
     if (this.params.designations) {
       for (const s of this.params.designations) {
@@ -1699,16 +1739,23 @@ class ValueSetExpander {
     if (!expansion.property) {
       expansion.property = [];
     }
-    let pd = expansion.property.find(t1 => t1.uri == url || t1.code == code);
+    // match on the uri only when there is one. A code system may declare several properties with
+    // no uri at all, and those are told apart by their code - matching on an undefined uri would
+    // collapse all of them into whichever one was declared first
+    let pd = url
+      ? expansion.property.find(t1 => t1.uri == url || t1.code == code)
+      : expansion.property.find(t1 => t1.code == code);
     if (!pd) {
       pd = {};
       expansion.property.push(pd);
-      pd.uri = url;
       pd.code = code;
-    } else if (!pd.uri) {
+      if (url) {
+        pd.uri = url;
+      }
+    } else if (url && !pd.uri) {
       pd.uri = url;
     }
-    if (pd.uri != url) {
+    if (url && pd.uri != url) {
       throw new Error('URL mismatch on expansion: ' + pd.uri + ' vs ' + url + ' for code ' + code);
     }
     return pd.code;
@@ -1738,7 +1785,7 @@ class ValueSetExpander {
       }
     }
     for (const definition of definitions) {
-      if (definition.uri && used.has(definition.code)) {
+      if (used.has(definition.code)) {
         this.declareProperty(expansion, definition.uri, definition.code);
       }
     }
@@ -1754,10 +1801,9 @@ class ValueSetExpander {
     if (value === undefined || value == null) {
       return;
     }
-    // we only define it if the code system has a definition
-    if (url) {
-      code = this.declareProperty(expansion, url, code);
-    }
+    // every property that appears in contains.property has to be declared in expansion.property,
+    // whether or not the code system gave it a uri
+    code = this.declareProperty(expansion, url, code);
 
     if (!contains.property) {
       contains.property = [];
@@ -1771,6 +1817,18 @@ class ValueSetExpander {
       pdv.code = code;
     }
     pdv[valueName] = value;
+  }
+
+  /**
+   * True when the requested page (offset + count) has been filled, so an
+   * iteration that is not counting a total can stop. Exclusions are handled
+   * after the fact and can remove codes already collected, so a value set
+   * with any exclusion never stops early.
+   * @returns {boolean}
+   */
+  pageFilled() {
+    return this.count > 0 && this.offset > -1 && !this.hasExclusions
+        && this.fullList.length >= this.count + this.offset;
   }
 
   addToTotal(t = 1) {
@@ -1950,18 +2008,7 @@ class ExpandWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        const issueCode = error.issueCode || 'exception';
-        return res.status(statusCode).json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'error',
-            code: issueCode,
-            details: {
-              text: error.message
-            },
-            diagnostics: error.message
-          }]
-        });
+        return res.status(statusCode).json(outcomeFromError(error));
       }
     }
   }
@@ -1980,18 +2027,7 @@ class ExpandWorker extends TerminologyWorker {
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
       const statusCode = error.statusCode || 500;
-      const issueCode = error.issueCode || 'exception';
-      return res.status(statusCode).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: issueCode,
-          details: {
-            text : error.message
-          },
-          diagnostics: error.message
-        }]
-      });
+      return res.status(statusCode).json(outcomeFromError(error));
     }
   }
 
@@ -2253,15 +2289,9 @@ class ExpandWorker extends TerminologyWorker {
    * @param {string} message - Diagnostic message
    * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    // the shared builder, so that every outcome has details.text and a tx-issue-type coding
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
 }

@@ -26,6 +26,8 @@ const MRCM_ATTRIBUTE_RANGE_REFSET = 723562003n;
 // rules about authoring precoordinated concepts and do not constrain expressions.
 const MRCM_CONTENT_TYPE_ALL = 723596005n;
 const MRCM_CONTENT_TYPE_POSTCOORDINATED = 723594008n;
+// ruleStrengthId value for an optional rule (the other value, 723597001, is mandatory).
+const MRCM_RULE_STRENGTH_OPTIONAL = 723598006n;
 
 // Expression status enumeration
 const SnomedExpressionStatus = {
@@ -42,6 +44,17 @@ class SnomedExpressionBase {
     this.start = 0;
     this.stop = 0;
   }
+}
+
+/**
+ * Whether an attribute value has to be written in brackets: the compositional grammar
+ * only allows a bare conceptReference as an attribute value, so anything with more than
+ * one focus concept, or with refinements of its own, is a bracketed subExpression.
+ */
+function needsBrackets(value) {
+  return !!value && ((value.concepts && value.concepts.length > 1) ||
+    (value.refinements && value.refinements.length > 0) ||
+    (value.refinementGroups && value.refinementGroups.length > 0));
 }
 
 /**
@@ -161,7 +174,9 @@ class SnomedRefinement extends SnomedExpressionBase {
    * Get a string description of this refinement
    */
   describe() {
-    return this.name.describe() + '=' + this.value.describe();
+    // A refined or conjoined value has to be bracketed - see attributeValue() in the parser
+    const v = this.value.describe();
+    return this.name.describe() + '=' + (needsBrackets(this.value) ? '(' + v + ')' : v);
   }
 
   /**
@@ -537,18 +552,40 @@ class SnomedExpressionParser {
 
   /**
    * Parse refinements for an expression
+   *
+   * The compositional grammar ABNF is
+   *   refinement   = (attributeSet / attributeGroup) *( ws ["," ws] attributeGroup )
+   *   attributeSet = attribute *(ws "," ws attribute)
+   * so a comma is required between the ungrouped attributes of the attribute set, but is
+   * OPTIONAL before an attribute group. Requiring it everywhere rejected the minimal
+   * rendering this parser's own renderer produces (e.g. 249943000:260868000=6934004{...}).
+   *
+   * We stay liberal in what we accept: a group may also be followed by further ungrouped
+   * attributes, which the ABNF does not allow but which this parser has always taken.
    */
   refinements(expr) {
-    let next = true;
-    while (next) {
-      if (this.peek() !== '{') {
-        expr.refinements.push(this.attribute());
-      } else {
+    this.ws();
+
+    let first = true;
+    for (;;) {
+      if (!first) {
+        const mark = this.cursor;
+        const comma = this.gchar(',');
+        this.ws();
+        if (this.peek() !== '{' && !comma) {
+          // neither a separating comma nor a group: the refinements are finished
+          this.cursor = mark;
+          break;
+        }
+      }
+
+      if (this.peek() === '{') {
         expr.refinementGroups.push(this.attributeGroup());
+      } else {
+        expr.refinements.push(this.attribute());
       }
       this.ws();
-      next = this.gchar(',');
-      this.ws();
+      first = false;
     }
   }
 
@@ -625,16 +662,33 @@ class SnomedExpressionParser {
 
   /**
    * Parse an attribute value
+   *
+   * The compositional grammar ABNF is
+   *   attributeValue  = expressionValue / QM stringValue QM / "#" numericValue / booleanValue
+   *   expressionValue = ws ( conceptReference / "(" ws subExpression ws ")" ) ws
+   * so a value that is anything more than a single concept - a refined concept, or a
+   * conjunction - must be in brackets. This parser used to take an unbracketed
+   * sub-expression too (367430006:{405813007=85562004:272741003=24028007}), but that is not
+   * just non-conformant, it is ambiguous: in A:{B=C:D=E,F=G} nothing says whether F=G
+   * refines C or A, and the old parser silently picked C. Other parsers reject it, so we
+   * do too, and the renderer brackets nested values so that what we emit re-parses anywhere.
    */
   attributeValue() {
     this.ws();
 
     if (this.gchar('(')) {
       const result = this.expression();
+      this.ws();
       this.fixed(')');
       return result;
     } else {
-      return this.expression();
+      const result = new SnomedExpression();
+      result.start = this.cursor;
+      result.concepts.push(this.concept());
+      this.rule(this.peek() !== ':' && this.peek() !== '+',
+        'A refined or conjoined attribute value must be enclosed in brackets, e.g. 405813007=(85562004:272741003=24028007) (in "' + this.source + '")');
+      result.stop = this.cursor;
+      return result;
     }
   }
 
@@ -1603,7 +1657,7 @@ class SnomedExpressionServices {
         this.checkRefinement(refinement);
         this.checkRefinementDomain(expression, refinement);
         this.checkRefinementRange(refinement);
-        this.checkRefinementGrouped(refinement);
+        this.checkRefinementGrouped(expression, refinement);
       }
     }
 
@@ -1622,12 +1676,8 @@ class SnomedExpressionServices {
 
   /**
    * Check one refinement against the MRCM attribute domain reference set: the
-   * focus concept the attribute is applied to must be in the attribute's domain.
-   *
-   * Every applicable rule must hold, mandatory or optional. Internationally
-   * there is exactly one optional rule - Laterality in the lateralizable body
-   * structure reference set - and it is the rule that stops laterality being
-   * applied to a structure that cannot be lateralized, so it is enforced.
+   * focus concept the attribute is applied to must be in one of the attribute's
+   * domains (see applicableDomainRules for how several rules combine).
    *
    * Attributes with no rule in this edition's MRCM are not checked, and neither
    * is cardinality (checkExpressionCardinality), grouping (checkRefinementGrouped)
@@ -1641,44 +1691,84 @@ class SnomedExpressionServices {
     if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
       return;
     }
-    const rules = this.mrcmAttributeDomains().get(attribute);
-    if (!rules || rules.length === 0) {
-      // This edition's concept model says nothing about this attribute (3 active
-      // attributes internationally have no domain rule and appear in no
-      // postcoordination domain template), so there is nothing to check it against.
-      return;
+    const result = this.applicableDomainRules(expression, attribute);
+    if (result.failed) {
+      const attrDesc = this.describeConceptForMessage(attribute);
+      const focusDesc = result.focus.map(f => this.describeConceptForMessage(f)).join(' + ');
+      throw new Error(`The SNOMED CT concept model does not allow the attribute ${attrDesc} on ${focusDesc}`
+        + ` (the attribute is only valid ${result.failed})`);
     }
+  }
 
-    // The focus may be a conjunction of concepts; the expression is a subtype of
-    // each of them, so the attribute is in domain if any focus concept is.
+  /**
+   * Work out which of an attribute's MRCM domain rules apply to an expression's
+   * focus concept(s), and whether the attribute is allowed there at all.
+   *
+   * An attribute has one domain rule per domain it may be used in, so the
+   * mandatory rules are ALTERNATIVES: |Due to| has one rule for |Clinical finding|
+   * and one for |Event|, and is valid on a concept in either (issue #287 - these
+   * were once ANDed, which rejected |Due to| everywhere).
+   *
+   * Optional rules are RESTRICTIONS layered on top: internationally the only one
+   * is |Laterality| for the lateralizable body structure reference set, which
+   * narrows the mandatory |Anatomical structure| rule, and it is what stops
+   * laterality being applied to a structure that cannot be lateralized. So an
+   * optional rule must also hold wherever a mandatory rule has admitted the
+   * attribute. (An attribute with only optional rules treats them as
+   * alternatives, since there is nothing for them to narrow.)
+   *
+   * The focus may be a conjunction of concepts; the expression is a subtype of
+   * each of them, so a rule holds if it holds for any focus concept.
+   *
+   * @param {SnomedExpression} expression
+   * @param {number} attribute - concept index of the attribute
+   * @returns {{rules: Array, focus: number[], failed: string|null}} the rules that
+   *   apply (for cardinality and grouping - empty when the attribute is out of
+   *   domain), the focus concepts, and when the attribute is not allowed on this
+   *   focus, a description of the domain(s) it is restricted to
+   */
+  applicableDomainRules(expression, attribute) {
+    const rules = this.mrcmAttributeDomains().get(attribute);
     const focus = [];
     for (const concept of expression.concepts) {
       if (concept.reference !== undefined && concept.reference !== null && concept.reference !== NO_REFERENCE) {
         focus.push(concept.reference);
       }
     }
-    if (focus.length === 0) {
-      return;
+    if (!rules || rules.length === 0 || focus.length === 0) {
+      // This edition's concept model says nothing about this attribute (3 active
+      // attributes internationally have no domain rule and appear in no
+      // postcoordination domain template), so there is nothing to check it against.
+      return { rules: rules || [], focus, failed: null };
     }
 
-    // Report every rule that failed, not just the first: a laterality on a
-    // disorder breaks both the anatomical structure domain and the lateralizable
-    // refset rule, and naming only one of them misleads.
-    const failed = [];
-    for (const rule of rules) {
-      const ok = focus.some(f => rule.isRefset
-        ? this.conceptInRefSet(rule.domain, f)
-        : this.subsumes(rule.domain, f));
-      if (!ok) {
-        failed.push((rule.isRefset ? 'for concepts in ' : 'in the domain ') + this.describeConceptForMessage(rule.domain));
+    const holds = rule => focus.some(f => rule.isRefset
+      ? this.conceptInRefSet(rule.domain, f)
+      : this.subsumes(rule.domain, f));
+    const describe = rule => (rule.isRefset ? 'for concepts in ' : 'in the domain ')
+      + this.describeConceptForMessage(rule.domain);
+
+    const mandatory = rules.filter(rule => !rule.optional);
+    const alternatives = mandatory.length > 0 ? mandatory : rules;
+    const restrictions = mandatory.length > 0 ? rules.filter(rule => rule.optional) : [];
+
+    const matched = alternatives.filter(holds);
+    const failedRestrictions = restrictions.filter(rule => !holds(rule));
+    if (matched.length === 0) {
+      // Name every domain the attribute could have been used in, and any
+      // restriction that also fails: a laterality on a disorder is outside both
+      // the anatomical structure domain and the lateralizable refset, and naming
+      // only one of them misleads.
+      const parts = [alternatives.map(describe).join(', or ')];
+      for (const rule of failedRestrictions) {
+        parts.push(describe(rule));
       }
+      return { rules: [], focus, failed: parts.join(', and ') };
     }
-    if (failed.length > 0) {
-      const attrDesc = this.describeConceptForMessage(attribute);
-      const focusDesc = focus.map(f => this.describeConceptForMessage(f)).join(' + ');
-      throw new Error(`The SNOMED CT concept model does not allow the attribute ${attrDesc} on ${focusDesc}`
-        + ` (the attribute is only valid ${failed.join(', and ')})`);
+    if (failedRestrictions.length > 0) {
+      return { rules: [], focus, failed: failedRestrictions.map(describe).join(', and ') };
     }
+    return { rules: matched.concat(restrictions), focus, failed: null };
   }
 
   /**
@@ -1699,17 +1789,19 @@ class SnomedExpressionServices {
    * expression is not classifiable is honest, quietly guessing what they meant is not.
    *
    * As elsewhere in this check, an attribute with no rule in this edition's MRCM is
-   * left alone, and where several rules apply the strictest wins.
+   * left alone. Only the rules for the domain(s) the focus concept is in count
+   * (see applicableDomainRules), and where several of those apply the strictest wins.
    *
+   * @param {SnomedExpression} expression - the expression the refinement is on
    * @param {SnomedRefinement} refinement - a refinement outside any group
    */
-  checkRefinementGrouped(refinement) {
+  checkRefinementGrouped(expression, refinement) {
     const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
     if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
       return;
     }
-    const rules = this.mrcmAttributeDomains().get(attribute);
-    if (!rules || rules.length === 0) {
+    const rules = this.applicableDomainRules(expression, attribute).rules;
+    if (rules.length === 0) {
       return;
     }
     if (!rules.some(rule => rule.grouped)) {
@@ -1725,7 +1817,7 @@ class SnomedExpressionServices {
    * Built once per edition and cached; an edition with no MRCM yields an empty
    * map, which turns the domain check off rather than failing.
    *
-   * @returns {Map<number, Array<{domain: number, isRefset: boolean, grouped: boolean, max: number, maxInGroup: number}>>}
+   * @returns {Map<number, Array<{domain: number, isRefset: boolean, grouped: boolean, optional: boolean, max: number, maxInGroup: number}>>}
    */
   mrcmAttributeDomains() {
     if (this._mrcmAttributeDomains) {
@@ -1740,6 +1832,7 @@ class SnomedExpressionServices {
     }
     const contentAll = this.conceptIndexOf(MRCM_CONTENT_TYPE_ALL);
     const contentPost = this.conceptIndexOf(MRCM_CONTENT_TYPE_POSTCOORDINATED);
+    const strengthOptional = this.conceptIndexOf(MRCM_RULE_STRENGTH_OPTIONAL);
 
     // Every concept that defines a reference set, so a domain that is itself a
     // reference set (the lateralizable body structure refset) is tested by
@@ -1782,6 +1875,9 @@ class SnomedExpressionServices {
         // The grouped column is a plain 0/1 (type 4), not a reference into the string
         // table like the cardinalities beside it - reading it as one yields garbage.
         grouped: values[2] === 1,
+        // An optional rule narrows a mandatory one rather than adding a domain
+        // (see applicableDomainRules).
+        optional: values[8] === strengthOptional,
         // Only the maximums are enforced. A minimum ("1..1") says a concept in
         // this domain must have the attribute in its own definition; it does not
         // say a refinement of that concept has to restate it.
@@ -2011,8 +2107,10 @@ class SnomedExpressionServices {
    * a single relationship group - a maximum of 0 there is how the MRCM says an
    * attribute is ungrouped (all 37 ungrouped attributes carry "0..0").
    *
-   * Rules are ANDed, so where an attribute has several rules the tightest
-   * maximum applies. Nested value expressions are checked separately, when
+   * Only the rules for the domain(s) the focus concept is in count - |Procedure
+   * device| is 0..* in a group on a procedure but 0..1 on an observable, and a
+   * procedure must not get the observable's limit (see applicableDomainRules).
+   * Where several of those rules apply, the tightest maximum wins. Nested value expressions are checked separately, when
    * checkRefinement recurses into them.
    *
    * @param {SnomedExpression} expression
@@ -2050,10 +2148,14 @@ class SnomedExpressionServices {
       perGroup.push(counts);
     }
 
+    const applicable = new Map();
     const limit = (attribute, field) => {
-      const rules = domains.get(attribute);
-      if (!rules || rules.length === 0) {
-        return Infinity;
+      if (!applicable.has(attribute)) {
+        applicable.set(attribute, this.applicableDomainRules(expression, attribute).rules);
+      }
+      const rules = applicable.get(attribute);
+      if (rules.length === 0) {
+        return Infinity; // no rule, or out of domain (which checkRefinementDomain reports)
       }
       return rules.reduce((least, rule) => Math.min(least, rule[field]), Infinity);
     };
@@ -2444,10 +2546,13 @@ class SnomedExpressionServices {
         }
       }
 
-      // Grouped refinements
+      // Grouped refinements. The comma between the attribute set and the first group is
+      // optional in the grammar, but we emit it: it is what makes the boundary between the
+      // ungrouped attributes and the first group legible, and it is the safer of the two
+      // spellings to hand to a third-party parser.
       if (expr.hasRefinementGroups()) {
         for (let j = 0; j < expr.refinementGroups.length; j++) {
-          if (j > 0) parts.push(',');
+          if (j > 0 || expr.hasRefinements()) parts.push(',');
           parts.push('{');
 
           for (let i = 0; i < expr.refinementGroups[j].refinements.length; i++) {
@@ -2504,7 +2609,11 @@ class SnomedExpressionServices {
   renderRefinement(parts, expr, option) {
     this.renderConcept(parts, expr.name, option);
     parts.push('=');
+    // a refined or conjoined value must be bracketed, or no conformant parser will read it back
+    const bracket = needsBrackets(expr.value);
+    if (bracket) parts.push('(');
     this.renderExpressionParts(parts, expr.value, option);
+    if (bracket) parts.push(')');
   }
 
   getDisplayName(conceptIdOrReference) {

@@ -7,6 +7,7 @@
 
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const Logger = require('../library/logger');
 const { Library } = require('./library');
 const { OperationContext, ResourceCache, ExpansionCache, debugLog} = require('./operation-context');
@@ -48,9 +49,12 @@ const {capabilityStatementFromR5} = require("./xversion/xv-capabiliityStatement"
 const {bundleFromR5} = require("./xversion/xv-bundle");
 const {convertResourceToR5} = require("./xversion/xv-resource");
 const ClosureWorker = require("./workers/closure");
+const { ClosureStore } = require("./closure/closure-store");
 const {BundleXML} = require("./xml/bundle-xml");
 const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
+const { buildOperationOutcome, outcomeFromError } = require('./library/operation-outcome');
+const txOpenApi = require('./openapi');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -145,8 +149,19 @@ class TXModule {
 
     this.log.info('Initializing TX module');
 
+    // Optional instance code, prefixed onto every cache-id this server issues so a
+    // proxy in front of several instances can route by it (see nginx.md). Checked
+    // here so a bad value stops startup rather than surfacing per endpoint.
+    if (ResourceCache.checkInstanceCode(config.instanceCode)) {
+      this.log.info(`Cache-ids will be issued with instance code '${config.instanceCode}'`);
+    }
+
     // Load HTML template
     txHtml.loadTemplate();
+
+    // Off unless the operator opts in. This gates the nav item as well as the route, so a
+    // server that does not publish its library source shows no link to it.
+    txHtml.setPublishLibrarySource(config.publishLibrarySource === true);
 
     // Validate config
     if (!config.librarySource) {
@@ -170,8 +185,35 @@ class TXModule {
     await this.i18n.load();
     this.log.info('I18n support initialized');
 
+    // $closure keeps its tables on disk, across sessions and restarts, so it only exists
+    // when the administrator turns it on and says where they go. If it is turned on and
+    // the database can't be opened, that stops startup - silently running without it
+    // would be worse.
+    this.closureStore = null;
+    if (config.closure && config.closure.enabled) {
+      this.closureStore = new ClosureStore(config.closure, this.log);
+      this.closureStore.open();
+      this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
+      const days = config.closure.retentionDays;
+      if (days) {
+        const prune = async () => {
+          try {
+            const dropped = await this.closureStore.pruneUnused(days);
+            if (dropped.length > 0) {
+              this.log.info(`closure: dropped ${dropped.length} table(s) unused for ${days} days`);
+            }
+          } catch (error) {
+            this.log.error(`closure: pruning failed: ${error.message}`);
+          }
+        };
+        void prune(); // errors are logged inside
+        this.timers.push(setInterval(prune, 24 * 60 * 60 * 1000));
+      }
+    }
+
     // Initialize metadata handler with config
     this.metadataHandler = new MetadataHandler({
+      closure: this.closureStore != null,
       baseUrl: config.baseUrl,
       serverVersion: packageJson.version,
       txVersion: packageJson.txVersion,
@@ -253,6 +295,7 @@ class TXModule {
     // can report it and a client can size its keepalive interval to this server rather
     // than guessing at a number it has no way to see.
     endpointInfo.resourceCache.setIdleTimeout(cacheTimeoutMs);
+    endpointInfo.resourceCache.setInstanceCode(this.config.instanceCode);
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }
@@ -364,9 +407,15 @@ class TXModule {
           let result;
 
           if (isHtml) {
-            const title = txhtml.buildTitle(data, req);
+            // _format=html/fragment: the rendering only, with no page around it, for a
+            // page that runs an operation and puts the result inside itself (the ECL
+            // panel does this). The rendering is the same either way, so an error comes
+            // back as the rendered OperationOutcome rather than as something the caller
+            // has to handle separately.
             const content = await txhtml.render(data, req);
-            const html = await txhtml.renderPage(title, content, req.txEndpoint, req.txStartTime);
+            const fragment = (req.query._format || req.query.format) === 'html/fragment';
+            const html = fragment ? content
+              : await txhtml.renderPage(txhtml.buildTitle(data, req), content, req.txEndpoint, req.txStartTime);
             responseSize = Buffer.byteLength(html, 'utf8');
             res.setHeader('Content-Type', 'text/html');
             result = res.send(html);
@@ -437,14 +486,7 @@ class TXModule {
             }
           } catch (e) {
             this.log.error(`JSON parse error: ${e.message}`);
-            return res.status(400).json({
-              resourceType: 'OperationOutcome',
-              issue: [{
-                severity: 'error',
-                code: 'invalid',
-                diagnostics: `Invalid JSON: ${e.message}`
-              }]
-            });
+            return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid JSON: ${e.message}`));
           }
         }
 
@@ -465,25 +507,11 @@ class TXModule {
             req.body = this.convertXmlToResource(xmlStr);
           } catch (e) {
             this.log.error(`XML parse error: ${e.message}`);
-            return res.status(400).json({
-              resourceType: 'OperationOutcome',
-              issue: [{
-                severity: 'error',
-                code: 'invalid',
-                diagnostics: `Invalid XML: ${e.message}`
-              }]
-            });
+            return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid XML: ${e.message}`));
           }
         }
       } else if (contentType != 'application/x-www-form-urlencoded') {
-        return res.status(415).json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'error',
-            code: 'invalid',
-            diagnostics: `Unsupported Media Type: ${contentType}`
-          }]
-        });
+        return res.status(415).json(buildOperationOutcome('error', 'invalid', `Unsupported Media Type: ${contentType}`));
       }
 
       if (req.body) {
@@ -493,6 +521,11 @@ class TXModule {
     });
 
     app.use(express.urlencoded({ extended: true }));
+
+    // The OpenAPI description, on the endpoints it describes (R5)
+    if (txOpenApi.describes(fhirVersion)) {
+      this.setupOpenApi(router, endpointInfo);
+    }
 
     // Set up routes
     this.setupRoutes(router, endpointInfo.path);
@@ -511,6 +544,55 @@ class TXModule {
     this.endpoints.push(endpointInfo);
 
     this.log.info(`Endpoint ${endpointPath} registered`);
+  }
+
+  /**
+   * The OpenAPI description of an endpoint: /openapi.json, /openapi.yaml, and /openapi (an
+   * HTML reference for browsers, the JSON otherwise), and an RFC 8631 Link header on every
+   * response that points to them. These are sent directly, not through the res.json the
+   * endpoint wraps for FHIR resources.
+   *
+   * @param {express.Router} router
+   * @param {Object} endpointInfo
+   */
+  setupOpenApi(router, endpointInfo) {
+    const doc = txOpenApi.forEndpoint(endpointInfo.path);
+    const sendJson = (res) => res.type('application/json').send(doc.getJson());
+    router.use((req, res, next) => {
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
+      next();
+    });
+    const count = (start) => this.countRequest(endpointInfo.path, 'openapi', Date.now() - start);
+    router.get('/openapi.json', (req, res) => {
+      const start = Date.now();
+      try {
+        sendJson(res);
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi.yaml', (req, res) => {
+      const start = Date.now();
+      try {
+        res.type('application/yaml').send(doc.getYaml());
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi', async (req, res) => {
+      const start = Date.now();
+      try {
+        if (!txHtml.acceptsHtml(req)) {
+          return sendJson(res);
+        }
+        const txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, endpointInfo.path);
+        const html = await txhtml.renderPage('API', doc.renderHtml(), endpointInfo, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        count(start);
+      }
+    });
   }
 
   /**
@@ -725,20 +807,21 @@ class TXModule {
       }
     });
 
-    // ConceptMap/$closure (GET and POST)
-    router.get('/ConceptMap/\\$closure', async (req, res) => {
+    // $closure (GET and POST). System level: the OperationDefinition is
+    // ConceptMap-closure, but it is declared system=true, type=false (#100).
+    router.get('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$closure', Date.now() - start);
       }
     });
-    router.post('/ConceptMap/\\$closure', async (req, res) => {
+    router.post('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$closure', Date.now() - start);
@@ -936,9 +1019,15 @@ class TXModule {
 
     // Unsupported methods
     for (const resourceType of resourceTypes) {
-      router.all(`/${resourceType}/:id`, (req, res) => {
+      router.all(`/${resourceType}/:id`, (req, res, next) => {
         const start = Date.now();
         try {
+          // /ConceptMap/$closure etc: an operation this server doesn't have at this
+          // level, not a resource that refuses the method
+          if (req.params.id.startsWith('$')) {
+            return res.status(404).json(this.operationOutcome('error', 'not-found',
+              `Unknown operation on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+          }
           if (['PUT', 'POST', 'DELETE', 'PATCH'].includes(req.method)) {
             return res.status(405).json(this.operationOutcome(
               'error',
@@ -946,6 +1035,8 @@ class TXModule {
               `Method ${req.method} is not supported`
             ));
           }
+          // anything else falls through to the not-found fallback rather than hanging
+          return next();
         } finally {
           this.countRequest(endpointPath, '$read', Date.now() - start);
         }
@@ -962,6 +1053,22 @@ class TXModule {
       }
     });
 
+    // The ECL panel: an expression, an edition, and the expansion it produces. ECL is
+    // written by trial and error, so the page keeps the inputs and puts each result under
+    // them rather than navigating away from what you just typed.
+    router.get('/ecl', async (req, res) => {
+      const start = Date.now();
+      try {
+        let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+        const content = await txhtml.buildEclPage(req);
+        const html = await txhtml.renderPage('ECL', content, req.txEndpoint, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        this.countRequest(endpointPath, 'ecl', Date.now() - start);
+      }
+    });
+
     router.get('/problems.html', async (req, res) => {
       const start = Date.now();
       try {
@@ -975,6 +1082,45 @@ class TXModule {
         this.countRequest(endpointPath, 'problems', Date.now() - start);
       }
     });
+
+    // The library source YAML - the file this server loaded its content from.
+    //
+    // Only registered when the operator turns modules.tx.publishLibrarySource on: the file
+    // names every database, cache and package the server runs, which some deployments are
+    // happy to publish and others are not, so it is opt-in rather than opt-out.
+    //
+    // One URL, negotiated: a browser (Accept: text/html) gets the highlighted page, anything
+    // else gets the file itself. ?_format=html and ?_format=yaml force either way, through the
+    // same acceptsHtml() the rest of the module uses.
+    if (this.config.publishLibrarySource === true) {
+      router.get('/library', async (req, res) => {
+        const start = Date.now();
+        try {
+          const filename = this.config.librarySource;
+          let source;
+          try {
+            source = await fs.promises.readFile(filename, 'utf8');
+          } catch (error) {
+            this.log.error(`Error reading library source ${filename}: ${error.message}`);
+            res.status(500).json(this.operationOutcome('error', 'exception',
+              'The library source is published by this server, but could not be read'));
+            return;
+          }
+          if (txHtml.acceptsHtml(req)) {
+            let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+            const content = txHtml.buildLibrarySourcePage(source, path.basename(filename), req.txEndpoint.path);
+            const html = await txhtml.renderPage('Library Source', content, req.txEndpoint, req.txStartTime);
+            res.setHeader('Content-Type', 'text/html');
+            res.send(html);
+          } else {
+            res.setHeader('Content-Type', 'application/yaml; charset=utf-8');
+            res.send(source);
+          }
+        } finally {
+          this.countRequest(endpointPath, 'library', Date.now() - start);
+        }
+      });
+    }
 
     // Metadata / CapabilityStatement
     router.get('/metadata', async (req, res) => {
@@ -1010,14 +1156,7 @@ class TXModule {
     router.get('/', async (req, res) => {
       const start = Date.now();
       try {
-        await res.json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'information',
-            code: 'informational',
-            diagnostics: `FHIR Terminology Server - FHIR v${req.txEndpoint.fhirVersion}`
-          }]
-        });
+        await res.json(buildOperationOutcome('information', 'informational', `FHIR Terminology Server - FHIR v${req.txEndpoint.fhirVersion}`));
       } finally {
         this.countRequest(endpointPath, 'home', Date.now() - start);
       }
@@ -1049,6 +1188,35 @@ class TXModule {
     };
     router.get('/info/:id', infoHandler);
     router.post('/info/:id', infoHandler);
+
+    // ===== Fallbacks - keep these last =====
+
+    // Nothing above matched. Without this, Express answers with its own HTML
+    // "Cannot POST /r4/$foo" page; a FHIR server must answer with an
+    // OperationOutcome (#100). Goes through the wrapped res.json, so it is
+    // rendered as JSON, XML or HTML to suit the client like everything else.
+    router.use((req, res) => {
+      const start = Date.now();
+      try {
+        const what = req.path.includes('$') ? 'operation' : 'path';
+        res.status(404).json(this.operationOutcome('error', 'not-found',
+          `Unknown ${what} on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+      } finally {
+        this.countRequest(endpointPath, 'unknown', Date.now() - start);
+      }
+    });
+
+    // A handler threw or rejected without answering. Express 5 forwards those here;
+    // its default handler would send an HTML error page.
+    // eslint-disable-next-line no-unused-vars
+    router.use((err, req, res, next) => {
+      this.log.error(err);
+      debugLog(err);
+      if (res.headersSent) {
+        return next(err);
+      }
+      res.status(err.statusCode || 500).json(outcomeFromError(err));
+    });
   }
 
   /**
@@ -1125,17 +1293,17 @@ class TXModule {
   }
 
   /**
-   * Build an OperationOutcome for errors
+   * Build an OperationOutcome. Delegates to the shared builder so that every outcome this
+   * server emits has details.text and a tx-issue-type coding: diagnostics is stripped by
+   * the test harness, so nothing a caller needs may live there.
+   * @param {string} severity - error, warning, information
+   * @param {string} code - FHIR issue type
+   * @param {string} message - the human readable account of the problem
+   * @param {string} [txIssueType] - tx-issue-type; defaulted from code when not given
+   * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
   /**
@@ -1164,6 +1332,10 @@ class TXModule {
     this.timers = [];
     // Clean up any resources if needed
     await this.library.close();
+    if (this.closureStore) {
+      this.closureStore.close();
+      this.closureStore = null;
+    }
     this.log.info('TX module shut down');
   }
 
@@ -1252,6 +1424,14 @@ class TXModule {
       count = count + ep.resourceCache.size();
     }
     return count;
+  }
+
+  // $closure usage for the home page: null when closure isn't turned on
+  closureStats() {
+    if (!this.closureStore) {
+      return null;
+    }
+    return { ...this.closureStore.totals(), retentionDays: this.config.closure.retentionDays || null };
   }
 
   // High-water marks for the client cache, summed across endpoints.

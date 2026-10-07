@@ -2,6 +2,30 @@
 
 const { ServerRegistryUtilities } = require('./model');
 const escape = require('escape-html');
+const { Utilities } = require('../library/utilities');
+
+const RELEASE_VERSIONS = {
+  R2: '1.0',
+  R2B: '1.4',
+  R3: '3.0',
+  R4: '4.0',
+  R4B: '4.3',
+  R5: '5.0',
+  R6: '6.0'
+};
+
+// The ecosystem IG reports a server's security as boolean flags (open, password, token,
+// oauth, smart, cert). The crawler records a single string; this maps it. 'api-key' is a
+// token. The string itself is still reported as 'security' for existing clients.
+function securityFlags(security) {
+  switch (security) {
+    case 'open': return { open: true };
+    case 'api-key': return { token: true };
+    case 'password': case 'token': case 'oauth': case 'smart': case 'cert':
+      return { [security]: true };
+    default: return {};
+  }
+}
 
 class RegistryAPI {
   constructor(crawler) {
@@ -263,6 +287,10 @@ class RegistryAPI {
 
     return {
       lastRun: data.lastRun,
+      // the page footer: nothing to report until the first crawl has finished
+      crawlerStatus: data.lastRun ?
+        `last updated ${Utilities.describeAgo(data.lastRun)}, ${totalServers} server${totalServers === 1 ? '' : 's'}` :
+        'not yet updated',
       outcome: data.outcome,
       registryCount: data.registries.length,
       serverCount: totalServers,
@@ -317,16 +345,11 @@ class RegistryAPI {
     });
   }
 
+  // Release codes (R4, r4b ...) to the version prefix they select; anything else (4.0.1,
+  // 4.0) is used as given. R4B and R2B can't be derived from the number alone.
   _normalizeFhirVersion(version) {
     if (!version) return version;
-
-    // Convert R4 or r4 to 4.0, R5 or r5 to 5.0, etc.
-    const rMatch = /^[rR](\d+)$/.exec(version);
-    if (rMatch) {
-      return `${rMatch[1]}.0`;
-    }
-
-    return version;
+    return RELEASE_VERSIONS[version.toUpperCase()] || version;
   }
 
   /**
@@ -471,38 +494,9 @@ class RegistryAPI {
       });
     });
 
-    // NEW: Fallback - if no matches found, check for authoritative pattern matches
-    if (authMatches.length === 0 && result.candidates.length === 0) {
-      data.registries.forEach(registry => {
-        registry.servers.forEach(server => {
-          // Excluded content stays hidden in the fallback path too
-          if (server.isExcludedTarget(codeSystem)) return;
-
-          // Check if server supports the requested usage tag
-          if (server.usageList.length === 0 ||
-            (usage && server.usageList.includes(usage))) {
-
-            // Check if server is authoritative for this code system
-            // (taking language specific claims into account)
-            const authMatch = server.matchAuthCS(codeSystem, requestLangs);
-
-            if (authMatch.isAuth) {
-              server.versions.forEach(version => {
-                if (ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {
-                  authMatches.push({
-                    entry: this.createServerEntry(server, version, null, authMatch),
-                    score: authMatch.score
-                  });
-                  if (!matchedServers.includes(server.code)) {
-                    matchedServers.push(server.code);
-                  }
-                }
-              });
-            }
-          }
-        });
-      });
-    }
+    // No fallback to servers that claim authority but don't host the code system: per the
+    // ecosystem IG, 'Servers are not listed as authoritative unless they actually host the
+    // CodeSystem(+version) in the request'.
 
     // Language specific matches rank before authoritative-list matches, most specific
     // match first. Array.prototype.sort is stable, so entries with equal scores (e.g.
@@ -598,6 +592,86 @@ class RegistryAPI {
     };
   }
 
+  /**
+   * The ecosystem Discovery API (GET {root} as JSON): one row per server endpoint.
+   *
+   * Filters, all optional: registry and server (codes), fhirVersion (RX or M.n.p), url (a
+   * code system, url or url|version), authoritativeOnly, language (only with url).
+   *
+   * With url, only endpoints that host that code system are listed (an excluded code
+   * system hides the server), and the row's 'candidate' list says whether it's hosted but
+   * not claimed; authoritativeOnly then keeps only the endpoints authoritative for it.
+   * Without url, authoritative/authoritative-valuesets are the server's claim masks and the
+   * candidate lists are omitted - listing everything a server hosts would be huge.
+   */
+  discover(params = {}) {
+    const { registry = '', server = '', fhirVersion = '', url = '', language = '' } = params;
+    const authoritativeOnly = params.authoritativeOnly === true || params.authoritativeOnly === 'true';
+    const normalizedVersion = this._normalizeFhirVersion(fhirVersion);
+    const requestLangs = url ? ServerRegistryUtilities.parseAcceptLanguage(language) : null;
+    const data = this.crawler.getData();
+
+    const authRows = [];
+    const otherRows = [];
+    data.registries.forEach(reg => {
+      if (registry && reg.code !== registry) return;
+      reg.servers.forEach(srv => {
+        if (server && srv.code !== server) return;
+        if (url && srv.isExcludedTarget(url)) return;
+
+        const authMatch = url ? srv.matchAuthCS(url, requestLangs) : { isAuth: false, scoped: false };
+
+        srv.versions.forEach(version => {
+          if (normalizedVersion && !ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {
+            return;
+          }
+          let hosted = false;
+          if (url) {
+            hosted = ServerRegistryUtilities.hasMatchingCodeSystem(url, version.codeSystems, false, {});
+            if (!hosted || (authoritativeOnly && !authMatch.isAuth)) {
+              return;
+            }
+          }
+
+          const row = {
+            'server-name': srv.name,
+            'server-code': srv.code,
+            'registry-name': reg.name,
+            'registry-code': reg.code,
+            'registry-url': reg.address,
+            url: version.address,
+            fhirVersion: version.version,
+            error: version.error || null,
+            'last-success': version.lastSuccess ? Math.floor(Date.now() - new Date(version.lastSuccess).getTime()) : null,
+            systems: version.codeSystems.length,
+            authoritative: [...srv.authCSList],
+            'authoritative-valuesets': [...srv.authVSList]
+          };
+          if (url && !authMatch.isAuth) {
+            row.candidate = [url];
+          }
+          if (authMatch.isAuth && authMatch.scoped) {
+            row.languages = [authMatch.tag];
+          }
+          if (version.security) {
+            row.security = version.security;
+            Object.assign(row, securityFlags(version.security));
+          }
+          (authMatch.isAuth ? authRows : otherRows).push({ row, score: authMatch.score || 0 });
+        });
+      });
+    });
+
+    // Endpoints authoritative for url first (language specific matches before the rest;
+    // sort is stable, so registration order is kept otherwise)
+    authRows.sort((a, b) => a.score - b.score);
+    return {
+      'last-update': data.lastRun ? new Date(data.lastRun).toISOString() : null,
+      'master-url': data.address,
+      results: [...authRows, ...otherRows].map(r => r.row)
+    };
+  }
+
   _cleanEmptyArrays(result) {
     const cleanedResult = { ...result };
 
@@ -620,11 +694,13 @@ class RegistryAPI {
   createServerEntry(server, version, content = null, authMatch = null) {
     const entry = {
       'server-name': server.name,
-      url: version.address
+      url: version.address,
+      fhirVersion: version.version
     };
 
     if (version.security) {
       entry.security = version.security;
+      Object.assign(entry, securityFlags(version.security));
     }
     if (server.accessInfo) {
       entry.access_info = server.accessInfo;

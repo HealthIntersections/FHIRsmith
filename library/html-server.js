@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const escape = require('escape-html');
+const packageJson = require('../package.json');
 
 let sponsorMessage = '';
 
@@ -60,7 +61,6 @@ class HtmlServer {
     
     // Default options
     const renderOptions = {
-      version: '4.0.1',
       downloadDate: 'Unknown',
       totalResources: 0,
       totalPackages: 0,
@@ -72,15 +72,23 @@ class HtmlServer {
     let html = template
       .replace(/\[%title%\]/g, escape(title))
       .replace(/\[%content%\]/g, content) // Content is assumed to be already-safe HTML
-      .replace(/\[%ver%\]/g, escape(renderOptions.version))
+      // [%ver%] is the FHIRsmith version in every template (it follows the FHIRsmith link)
+      .replace(/\[%ver%\]/g, escape(packageJson.version))
       .replace(/\[%download-date%\]/g, escape(renderOptions.downloadDate))
+      // "last updated 35 minutes ago" / "not yet updated", for the crawler-driven modules
+      .replace(/\[%crawler-status%\]/g, escape(renderOptions.crawlerStatus || 'not yet updated'))
       .replace(/\[%total-resources%\]/g, escape(renderOptions.totalResources.toLocaleString()))
       .replace(/\[%total-packages%\]/g, escape(renderOptions.totalPackages.toLocaleString()))
       .replace(/\[%endpoint-path%\]/g, escape(renderOptions.endpointpath))
       .replace(/\[%fhir-version%\]/g, escape(renderOptions.fhirversion))
       .replace(/\[%ms%\]/g, escape(renderOptions.processingTime.toString()))
       .replace(/\[%sponsorMessage%\]/g, sponsorMessage)
-      .replace(/\[%about%\]/g, renderOptions.about || '');
+      .replace(/\[%about%\]/g, renderOptions.about || '')
+      // raw HTML, like [%about%]: the caller decides whether the nav item exists at all
+      .replace(/\[%library-link%\]/g, renderOptions.libraryLink || '')
+      // raw HTML too: the OpenAPI description, where a template's module has one in some places only
+      .replace(/\[%api-link%\]/g, renderOptions.apiLink || '')
+      .replace(/\[%api-head%\]/g, renderOptions.apiHead || '');
     
     // Handle any custom template variables
     if (options.templateVars) {

@@ -562,6 +562,21 @@ class Languages {
     }
     return parts.join(', ');
   }
+
+  /**
+   * The languages as they were asked for, in the form a displayLanguage parameter takes
+   * (the Accept-Language syntax: "en,it;q=0.8,*"). Unlike asString, which is for reading
+   * in messages, there are no spaces; unlike toString, implicit languages are left out.
+   */
+  asParameter() {
+    return this.languages.filter(lang => !lang.implicit).map(lang => {
+      if (lang.quality === undefined || lang.quality === 1.0) {
+        return lang.code;
+      } else {
+        return `${lang.code};q=${lang.quality}`;
+      }
+    }).join(',');
+  }
 }
 
 /**

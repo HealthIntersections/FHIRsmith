@@ -12,7 +12,7 @@ const { FhirCodeSystemProvider } = require('../cs/cs-cs');
 const { Designations} = require("../library/designations");
 const {TxParameters} = require("../params");
 const {Parameters} = require("../library/parameters");
-const {Issue, OperationOutcome} = require("../library/operation-outcome");
+const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const {debugLog} = require("../operation-context");
 const {checkAddedParameters} = require("../library/parameter-check");
 
@@ -49,16 +49,7 @@ class LookupWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const statusCode = error.statusCode || 500;
-      const issueCode = error.issueCode || 'exception';
-      return res.status(statusCode).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: issueCode,
-          diagnostics: error.message
-        }]
-      });
+      return res.status(error.statusCode || 500).json(outcomeFromError(error));
     }
   }
 
@@ -76,15 +67,7 @@ class LookupWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const issueCode = error.issueCode || 'exception';
-      return res.status(400).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: issueCode,
-          diagnostics: error.message
-        }]
-      });
+      return res.status(400).json(outcomeFromError(error));
     }
   }
 
@@ -140,8 +123,11 @@ class LookupWorker extends TerminologyWorker {
       }
 
       if (!csProvider) {
-        const systemUrl = params.system || params.coding?.system;
-        const versionStr = params.version || params.coding?.version;
+        // params is a Map-like: params.system is always undefined, so the message read
+        // "CodeSystem not found: undefined" for every unknown system or version.
+        const coding = params.has('coding') ? params.get('coding') : null;
+        const systemUrl = params.has('system') ? params.get('system') : coding?.system;
+        const versionStr = params.has('version') ? params.get('version') : coding?.version;
         const msg = versionStr
           ? `CodeSystem not found: ${systemUrl} version ${versionStr}`
           : `CodeSystem not found: ${systemUrl}`;
@@ -169,8 +155,7 @@ class LookupWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        return res.status(error.statusCode || 500).json(this.operationOutcome(
-          'error', error.issueCode || 'exception', error.message));
+        return res.status(error.statusCode || 500).json(outcomeFromError(error));
       }
     }
   }
@@ -233,8 +218,7 @@ class LookupWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        return res.status(error.statusCode || 500).json(this.operationOutcome(
-          'error', error.issueCode || 'exception', error.message));
+        return res.status(error.statusCode || 500).json(outcomeFromError(error));
       }
     }
   }
@@ -271,7 +255,9 @@ class LookupWorker extends TerminologyWorker {
       if (locateResult?.message) {
         message += ' ('+locateResult.message+')';
       }
-      throw new Issue('error', 'not-found', null, null, message, null, 404);
+      // invalid-code, not not-found: the code system was found, the code in it was not.
+      // not-found is for a code system or value set that could not be resolved at all.
+      throw new Issue('error', 'not-found', null, null, message, 'invalid-code', 404);
     }
 
     const ctxt = locateResult.context;
@@ -441,21 +427,17 @@ class LookupWorker extends TerminologyWorker {
   }
 
   /**
-   * Build an OperationOutcome
+   * Build an OperationOutcome. Delegates to the shared builder so that every outcome this
+   * server emits has details.text and a tx-issue-type coding: diagnostics is stripped by
+   * the test harness, so nothing a caller needs may live there.
    * @param {string} severity - error, warning, information
-   * @param {string} code - Issue code
-   * @param {string} message - Diagnostic message
+   * @param {string} code - FHIR issue type
+   * @param {string} message - the human readable account of the problem
+   * @param {string} [txIssueType] - tx-issue-type; defaulted from code when not given
    * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        details: {text : message}
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 }
 

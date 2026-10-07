@@ -54,6 +54,12 @@ module.exports = { txTestVersion };
                     s += `  // ${suite.description}\n\n`;
                 }
 
+                // A "sequential" suite's tests depend on each other (closure: each builds on the
+                // table the last one left, and the table is shared across FHIR versions). So its
+                // R5 run goes through the whole suite before its R4 run starts, rather than the
+                // two being interleaved test by test.
+                const passes = (suite.sequential && !oneVersion) ? ['R5', 'R4'] : [null];
+                for (const pass of passes)
                 for (const test of suite.tests) {
                     if ((!test.mode || modes.has(test.mode)) && (!test["full-set"])) {
                         let testDetails = {
@@ -74,7 +80,11 @@ module.exports = { txTestVersion };
                             s += `    await runTest(${JSON.stringify(testDetails)}, "4.0");\n`;
                             s += `  });\n\n`;
                         };
-                        if (oneVersion) {
+                        if (pass === 'R5') {
+                            if (hasR5) emitR5();
+                        } else if (pass === 'R4') {
+                            if (hasR4) emitR4();
+                        } else if (oneVersion) {
                             if (hasR5) emitR5(); else if (hasR4) emitR4();
                         } else {
                             if (hasR5) emitR5();

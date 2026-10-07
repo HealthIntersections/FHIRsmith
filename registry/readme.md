@@ -1,225 +1,124 @@
 # Terminology Server Registry
 
-A Node.js module for crawling and querying FHIR terminology servers. This module maintains a registry of terminology servers, periodically crawls them to gather capability information, and provides an API to find the best server for specific code systems or value sets.
+The coordination server of a terminology server ecosystem, as described by the
+[terminology ecosystem IG](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/ecosystem.html).
+It regularly scans the servers listed in the ecosystem's master registration file, and tells
+clients which terminology server to use for a code system or value set. It runs at
+http://tx.fhir.org/tx-reg for the HL7 ecosystem.
 
-## Architecture
+Its main client is the HL7 Java tooling (`TerminologyClientManager` in org.hl7.fhir.r5),
+which calls `/resolve` to route each terminology operation to the right server.
 
-The module consists of three main components:
+## API
 
-### 1. Data Model (`registry-model.js`)
-- **ServerRegistries**: Top-level container for all registry data
-- **ServerRegistry**: Individual registry containing multiple servers
-- **ServerInformation**: Server metadata and authoritative designations
-- **ServerVersionInformation**: Version-specific server capabilities
-- **ServerRow**: Flattened representation for API responses
-- **ServerRegistryUtilities**: Helper functions for matching and filtering
+The public API is described by an OpenAPI 3.1 spec:
 
-### 2. Crawler (`registry-crawler.js`)
-- Periodically fetches capability statements from configured servers
-- Extracts security models, supported code systems, and value sets
-- Handles retries and error recovery
-- Maintains current state of all servers
+| URL | |
+|---|---|
+| `/tx-reg/openapi` | Browsable reference (HTML), with a "try it" form for each GET operation |
+| `/tx-reg/openapi.json` | The spec as JSON |
+| `/tx-reg/openapi.yaml` | The spec as YAML (the source file, [openapi.yaml](openapi.yaml)) |
 
-### 3. API Processor (`registry-api.js`)
-- Provides query endpoints for finding servers
-- Ranks servers based on:
-  - Authoritative designation
-  - Availability (no errors)
-  - Recency of successful connection
-  - Number of resources available
-- Supports filtering by registry, server, version, and resource
+Every response carries a `Link: </tx-reg/openapi.json>; rel="service-desc"` header
+(RFC 8631), and the HTML pages carry the matching `<link>` element.
 
-## Installation
+| Endpoint | Purpose |
+|---|---|
+| `GET /tx-reg/` | **Discovery**: the server endpoints in the ecosystem. Filters: `registry`, `server`, `fhirVersion`, `url`, `authoritativeOnly`, `language` |
+| `GET /tx-reg/resolve` | **Resolution**: which endpoints to use for a code system (`url`) or value set (`valueSet`) at a `fhirVersion`. Also `authoritativeOnly`, `language`, `usage`, `version` |
 
-```bash
-npm install
-```
+Both return an HTML page instead of JSON when the request's `Accept` header contains
+`text/html`. `/tx-reg/resolve` without parameters is a form for trying it out.
+`/tx-reg/log` (the crawler log) is operational, and not in the spec.
 
-## Usage
+Parameters are read leniently: unknown parameters are ignored, and a repeated parameter
+takes its first value.
 
-### Basic Server Setup
+### How resolution decides
 
-```javascript
-const express = require('express');
-const RegistryCrawler = require('./crawler');
-const RegistryAPI = require('./api');
+* An endpoint is only returned for content it actually hosts, as reported by its
+  TerminologyCapabilities (code systems) and ValueSet search (value sets).
+* A SNOMED CT edition (`http://snomed.info/sct|http://snomed.info/sct/{edition}`) is hosted
+  by any endpoint that hosts a version of that edition. Otherwise SNOMED CT versions match
+  exactly; for other code systems, a server that hosts the code system hosts all its
+  versions.
+* Endpoints whose server claims authority (the `authoritative` masks in its registration)
+  are listed as `authoritative`; the others as `candidates`.
+* With `language`, servers with a matching language specific claim (`languages` in the
+  registration) come first, most specific tag first; candidates are marked
+  `language-support: unknown`.
+* A server with a `usage` list is only returned when the request's `usage` is in it.
+* A server's `exclusions` hide the matching content from it entirely.
+* FHIR versions can be given as release codes (`R4`, `R4B`, `R5`, `R6` ...) or numbers
+  (`4.0.1`, `4.0`).
 
-// Configure crawler
-const crawler = new RegistryCrawler({
-  timeout: 30000,
-  crawlInterval: 5 * 60 * 1000, // 5 minutes
-  registryConfigs: [
-    {
-      code: 'main',
-      name: 'Main Registry',
-      servers: [
-        {
-          code: 'tx1',
-          name: 'TX Server',
-          authCSList: ['http://loinc.org*'],
-          versions: [
-            {
-              version: '4.0.1',
-              address: 'https://tx.fhir.org/r4'
-            }
-          ]
-        }
-      ]
-    }
-  ]
-});
+### Differences from the ecosystem IG
 
-// Create API
-const api = new RegistryAPI(crawler);
+* Discovery: without `url`, a row's `authoritative`/`authoritative-valuesets` are the
+  server's claim masks, and there are no candidate lists. With `url`, `candidate` is
+  `[url]` when the endpoint hosts it without claiming authority.
+* Entries carry the IG's security flags (`open`, `token`...) and also a `security` string
+  (`open` or `api-key`). Note that this records how the *registry* reaches the server: an
+  endpoint is `api-key` when the registry is configured with a key for it (`apiKeys`), and
+  `open` otherwise.
+* Resolve takes a `version` parameter, as an alternative to `url|version`.
+* Resolve omits `authoritative` and `candidates` when they are empty.
 
-// Set up Express
-const app = express();
-api.registerRoutes(app);
+### Keeping the spec honest
 
-// Start crawler and server
-crawler.start();
-app.listen(3000);
-```
-
-### API Endpoints
-
-#### Query Endpoints
-
-**Find servers for a code system:**
-```
-GET /api/query/codesystem?system=http://loinc.org&version=4.0
-```
-
-**Find servers for a value set:**
-```
-GET /api/query/valueset?valueset=http://hl7.org/fhir/ValueSet/observation-codes
-```
-
-**Find the best server:**
-```
-GET /api/best-server/codesystem?url=http://snomed.info/sct
-```
-
-#### Registry Information
-
-**Get statistics:**
-```
-GET /api/registry/stats
-```
-
-**List all registries:**
-```
-GET /api/registry
-```
-
-**Get servers in a registry:**
-```
-GET /api/registry/main/servers
-```
-
-#### Admin Endpoints
-
-**Trigger manual crawl:**
-```
-POST /api/admin/crawl
-```
-
-**Export/Import data:**
-```
-GET /api/admin/data
-POST /api/admin/data
-```
+[openapi.yaml](openapi.yaml) is maintained by hand. `tests/registry/openapi.test.js` fails
+if a route is added without being described (or listed in the test's `EXCLUDED` table), if
+the spec describes a route the router doesn't have, or if the documented query parameters
+differ from `DISCOVERY_PARAMS` and `RESOLVE_PARAMS` in `registry.js`. So when you change a
+route or a parameter, change `openapi.yaml` with it.
 
 ## Configuration
 
-### Registry Configuration
+In the server config, under `modules.registry`:
 
-```javascript
-{
-  code: 'main',           // Unique registry identifier
-  name: 'Main Registry',  // Display name
-  address: 'https://...',  // Registry URL
-  authority: 'HL7',       // Managing authority
-  servers: [...]          // Array of server configs
+```json
+"registry": {
+  "enabled": true,
+  "masterUrl": "https://fhir.github.io/ig-registry/tx-servers.json",
+  "crawlInterval": 30,
+  "timeout": 30000,
+  "userAgent": "YourServer/1.0",
+  "apiKeys": {}
 }
 ```
 
-### Server Configuration
+| Setting | |
+|---|---|
+| `masterUrl` | The ecosystem's master registration file. Defaults to the HL7 one. |
+| `crawlInterval` | Minutes between scans. 0 or absent: no scanning. |
+| `timeout` | Per-request timeout for scanning, in milliseconds. |
+| `userAgent` | The User-Agent the scanner sends. |
+| `apiKeys` | API keys for servers that need one, by server code. |
 
-```javascript
-{
-  code: 'tx1',            // Unique server identifier
-  name: 'TX Server',      // Display name
-  address: 'https://...', // Base server URL
-  accessInfo: '...',      // Access information
-  authCSList: [           // Authoritative code systems
-    'http://loinc.org*',  // Supports wildcards
-    'http://snomed.info/sct'
-  ],
-  authVSList: [...],      // Authoritative value sets
-  usageList: ['public'],  // Usage tags
-  versions: [...]         // Array of version configs
-}
-```
+## Scanning
 
-### Version Configuration
+Each scan reads the master registration file, each registry it lists, and then, for each
+server endpoint:
 
-```javascript
-{
-  version: '4.0.1',       // FHIR version
-  address: 'https://...'  // Version-specific endpoint
-}
-```
+* `/metadata` (the CapabilityStatement, for the software name and version)
+* `/metadata?mode=terminology` (the TerminologyCapabilities, for the code systems and
+  versions it hosts)
+* `/ValueSet?_elements=url,version` (the value sets it hosts)
 
-## Authoritative Designations
+An endpoint that fails keeps the content found by its last successful scan, and reports the
+error. The scanner refuses to fetch from private or loopback addresses (SSRF protection).
 
-Servers can be marked as authoritative for specific code systems or value sets. This affects ranking:
+The results are saved to `[data]/registry/registry-data.json` after each scan, and loaded at
+startup, so the registry can answer immediately after a restart.
 
-- Authoritative servers are always ranked first
-- Wildcards are supported (e.g., `http://loinc.org*`)
-- Non-authoritative servers are still returned but ranked lower
-- Language specific claims (`languages`: BCP-47 tag -> mask list) make a server authoritative for
-  requests in that language only; matched entries rank ahead of language independent claims
-- `exclusions` hides matching code systems/value sets from the ecosystem entirely (never
-  authoritative, never a candidate)
+## Code
 
-## Testing
+| File | |
+|---|---|
+| `registry.js` | The module: routes, HTML pages, scan scheduling |
+| `api.js` | Discovery and resolution |
+| `crawler.js` | Scanning |
+| `model.js` | The data model, and mask and version matching |
+| `openapi.yaml`, `openapi.js` | The API description |
 
-Run the test suite:
-
-```bash
-npm test
-```
-
-Run with Jest (if installed):
-
-```bash
-npm run test:jest
-```
-
-## Data Persistence
-
-The crawler saves and loads its state in [data]/registry-data.json
-
-## Development
-
-Start development server with auto-reload:
-
-```bash
-npm run dev
-```
-
-## Security Models
-
-The crawler detects the following security models:
-
-- `open`: No authentication required
-- `password`: Basic authentication
-- `token`: Token-based authentication
-- `oauth`: OAuth 2.0
-- `smart`: SMART on FHIR
-- `cert`: Certificate-based authentication
-
-## License
-
-BSD-3-Clause
+Tests are in `tests/registry`.
