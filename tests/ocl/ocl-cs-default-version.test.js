@@ -34,6 +34,7 @@ function releaseReply() {
       url: '/orgs/ANVISA/sources/cmed/',
       owner: 'ANVISA',
       owner_type: 'Organization',
+      public_access: 'View',
       version: '20230109',
       type: 'Source Version',
       canonical_url: CANONICAL
@@ -98,7 +99,7 @@ describe('OCL CodeSystem default-version resolution', () => {
       data: [{
         reference_type: 'canonical',
         resolved: true,
-        result: { url: '/orgs/ANVISA/sources/cmed/', owner_type: 'Organization', version: 'HEAD', type: 'Source', canonical_url: CANONICAL }
+        result: { url: '/orgs/ANVISA/sources/cmed/', owner_type: 'Organization', public_access: 'View', version: 'HEAD', type: 'Source', canonical_url: CANONICAL }
       }]
     }));
     const { provider } = makeProvider({ post });

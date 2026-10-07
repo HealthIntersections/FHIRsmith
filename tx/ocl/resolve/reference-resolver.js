@@ -80,6 +80,17 @@ function isSafeRelativeOclPath(value) {
 }
 
 /**
+ * Whether an OCL repo's public_access makes it publicly viewable. OCL uses
+ * 'View' | 'Edit' | 'None' ('None' = private, members only). Fail-closed:
+ * anything that is not an explicit public value (including null/unknown) is NOT
+ * public, so a repo is only served when we can positively confirm it is.
+ */
+function isPublicAccess(value) {
+  const s = String(value == null ? '' : value).trim().toLowerCase();
+  return s === 'view' || s === 'edit';
+}
+
+/**
  * Org-only policy check for an OCL repo payload or resolve result. The path must
  * be a valid org repo path AND, when an explicit owner_type is present, it must be
  * an Organization. owner_type alone can never override the path check — a payload
@@ -151,6 +162,7 @@ function unresolved(request) {
     repoUrl: null,
     canonical: null,
     ownerType: null,
+    publicAccess: null,
     resolutionUrl: null,
     registryEntry: null,
     referenceType: null,
@@ -185,6 +197,10 @@ function normalizeResult(entry, request) {
     // authoritative, the request is just whatever spelling the caller used.
     canonical: result ? (result.canonical_url || result.canonicalUrl || null) : null,
     ownerType: result ? (result.owner_type || result.ownerType || null) : null,
+    // public_access is not in the $resolveReference result today (the live capture
+    // omits it), so this is usually null and the repo is fetched to check — kept
+    // anyway so the gate is free the day OCL does inline it.
+    publicAccess: result ? (result.public_access ?? result.publicAccess ?? null) : null,
     resolutionUrl: entry.resolution_url || null,
     // Kept even though every observed response so far carries null: whether a URL
     // Registry entry was involved is exactly what the OCL-team discussion needs.
@@ -358,7 +374,8 @@ class OclReferenceResolver {
       return output;
     }
 
-    chunk.forEach(({ body, index }, position) => {
+    // Pass 1 (sync): normalize + org-only policy.
+    const prelim = chunk.map(({ body, index }, position) => {
       let value = normalizeResult(payload[position], body);
       // Org-only policy: a canonical resolving to a user-owned repo is treated as
       // unresolved — user artifacts are experimental and not visible through the
@@ -369,11 +386,53 @@ class OclReferenceResolver {
         );
         value = unresolved(body);
       }
-      this.#cachePut(cacheKey(body), value);
-      output[index] = value;
+      return { body, index, value };
     });
 
+    // Pass 2 (async): public-access gate. A private repo (public_access other than
+    // View/Edit) that the configured token can see must NOT be served through the
+    // public terminology server, so anything not positively confirmed public is
+    // dropped. public_access is not in the resolve result today, so for a resolved
+    // repo we fetch it once (cached via the result below); done concurrently.
+    await Promise.all(prelim.map(async entry => {
+      if (!entry.value.resolved) {
+        return;
+      }
+      const access = await this.#publicAccessOf(entry.value);
+      if (!isPublicAccess(access)) {
+        this.#logger.info(
+          `$resolveReference resolved ${safeForLog(cacheKey(entry.body))} to a non-public repo ` +
+          `(${safeForLog(entry.value.repoUrl)}, public_access=${safeForLog(access)}); not served`
+        );
+        entry.value = unresolved(entry.body);
+      }
+    }));
+
+    for (const { body, index, value } of prelim) {
+      this.#cachePut(cacheKey(body), value);
+      output[index] = value;
+    }
+
     return output;
+  }
+
+  // The repo's public_access, preferring the value inlined in the resolve result
+  // and otherwise fetching the repo once. Returns null (→ fail-closed, not served)
+  // when it cannot be determined, including on a fetch error.
+  async #publicAccessOf(value) {
+    if (value.publicAccess != null) {
+      return value.publicAccess;
+    }
+    try {
+      const response = await this.#httpClient.get(value.repoUrl);
+      const repo = response?.data && typeof response.data === 'object' ? response.data : null;
+      return repo ? (repo.public_access ?? repo.publicAccess ?? null) : null;
+    } catch (error) {
+      this.#logger.warn(
+        `public_access check failed for ${safeForLog(value.repoUrl)}: ${safeForLog(error.message)}`
+      );
+      return null;
+    }
   }
 
   #handleError(error, misses, output) {

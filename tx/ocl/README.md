@@ -48,11 +48,28 @@ ValueSets (`vs-ocl.js`):
   organization-owned entries)
 - fallback: discover orgs via `/orgs/`, then `/orgs/{org}/collections/` per org
 
-### Visibility policy (org-only)
+### Visibility policy (org-only + public-only)
 An artifact is expected to live in an **organization** to be visible through the
 terminology service. User-owned repos (`/users/{user}/...`) are experimental by
 convention and are excluded from both discovery and `$resolveReference` results
 (a canonical resolving to a user-owned repo is treated as unresolved).
+
+In addition, a resolved repo is only served when it is **publicly viewable**
+(`public_access` is `View`/`Edit`; `None`/unknown is treated as unresolved,
+fail-closed). Because the configured token can see every repo its OCL account has
+access to — and `$resolveReference` answers canonicals for anonymous terminology
+requests — without this gate a *private* repo in the token's org could be surfaced
+publicly. `public_access` is not returned inline by `$resolveReference` today, so
+for a resolved repo the resolver fetches the repo once to read it (cached with the
+result; concurrent across a batch). It also rejects any `repoUrl` that is not a
+safe same-host relative path, so an unexpected response can never redirect an
+authenticated request off-host.
+
+> **Operational guidance (defense-in-depth):** configure the `token=` account with
+> the **least privilege** needed — ideally a service account that can see only
+> public repos. The `public_access` gate enforces public-only serving in code
+> regardless, but a least-privilege token means a misconfiguration can never
+> expose private content.
 
 ### Canonical resolution via `$resolveReference`
 With a `token=` configured on the `ocl:` source line, the providers resolve
@@ -64,8 +81,10 @@ canonical, and batched resolution of a collection's compose source canonicals.
 
 Without a token nothing changes: `$resolveReference` is authenticated on every
 instance probed (while the listing endpoints are public), so the resolver is
-constructed disabled and every caller keeps its previous search path. It also
-disables itself for the process on `404`/`401`/`403`.
+constructed disabled and every caller keeps its previous search path. A `404`
+(endpoint not implemented) disables it for the process; a transient `401`/`403`
+backs it off for a cooldown and then retries. The resolution cache is a bounded
+LRU and over-long references are never sent to OCL.
 
 ### CodeSystem default versions (release vs HEAD)
 OCL's own resolution treats a source's **latest release** as its default version

@@ -451,7 +451,7 @@ describe('OCLConceptMapProvider $resolveReference integration', () => {
           request: null,
           resolution_url: url,
           url_registry_entry: null,
-          result: { type: 'Source', short_code: 'S', url, canonical_url: 'http://x.org/cs', owner_type: 'Organization' }
+          result: { type: 'Source', short_code: 'S', url, canonical_url: 'http://x.org/cs', owner_type: 'Organization', public_access: 'View' }
         }
       ]
     }));
@@ -538,6 +538,7 @@ describe('OCLConceptMapProvider $resolveReference integration', () => {
           result: {
             url: repo,
             owner_type: 'Organization',
+            public_access: 'View',
             type: 'Source',
             canonical_url: `http://canon.example.org${repo}`
           }

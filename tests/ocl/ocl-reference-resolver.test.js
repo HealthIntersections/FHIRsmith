@@ -22,6 +22,11 @@ function oclEntry({
   canonicalUrl = 'https://terminologia.saude.gov.br/fhir/CodeSystem/BRTabelaSUS',
   owner = 'MS',
   ownerType = 'Organization',
+  // The live $resolveReference result does NOT carry public_access (see the
+  // verbatim test below). This helper adds it so the gate's inline path is taken
+  // and most tests need no repo GET; pass publicAccess: null to omit it and
+  // exercise the GET fallback, or 'None' for a private repo.
+  publicAccess = 'View',
   registryEntry = null,
   referenceType = 'relative',
   resolutionUrl = null,
@@ -46,6 +51,7 @@ function oclEntry({
         source_type: 'Dictionary',
         canonical_url: canonicalUrl,
         type: 'Source',
+        ...(publicAccess != null ? { public_access: publicAccess } : {}),
         checksums: { standard: '282d3c8ce440b8a03698196967042a08', smart: '90599db3f6da397c1af26baaf9467eb1' }
       }
       : null
@@ -253,7 +259,11 @@ describe('OclReferenceResolver resolution', () => {
         checksums: { standard: '282d3c8ce440b8a03698196967042a08', smart: '90599db3f6da397c1af26baaf9467eb1' }
       }
     }];
-    const httpClient = { post: jest.fn(async () => ({ data: live })) };
+    // The live result omits public_access, so the gate fetches the repo to check it.
+    const httpClient = {
+      post: jest.fn(async () => ({ data: live })),
+      get: jest.fn(async () => ({ data: { public_access: 'View' } }))
+    };
     const resolver = makeResolver({ httpClient });
 
     const r = await resolver.resolve('/orgs/MS/sources/BRTabelaSUS/concepts/1948/');
@@ -351,7 +361,9 @@ describe('OclReferenceResolver resolution', () => {
           resolved: true,
           result: { url: '/orgs/A/sources/S/', canonicalUrl: 'http://a.org/cs', ownerType: 'Organization' }
         }]
-      }))
+      })),
+      // No public_access inline -> gate fetches the repo.
+      get: jest.fn(async () => ({ data: { public_access: 'View' } }))
     };
     const resolver = makeResolver({ httpClient });
 
@@ -636,5 +648,75 @@ describe('OclReferenceResolver hardening', () => {
 
     await resolver.resolve('a'); // evicted — must re-POST
     expect(httpClient.post).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('OclReferenceResolver public-access gate', () => {
+  it('does not serve a private repo (public_access: None), even when org-owned', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({ data: [oclEntry({ url: '/orgs/A/sources/S/', publicAccess: 'None' })] }))
+    };
+    const logger = silentLogger();
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(false);
+    expect(r.repoUrl).toBeNull();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringMatching(/non-public repo.*not served/));
+    // No repo GET needed: public_access was inline.
+    expect(httpClient.get).toBeUndefined();
+  });
+
+  it('serves a public repo and reuses the inline public_access (no repo GET)', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({ data: [oclEntry({ url: '/orgs/A/sources/S/', publicAccess: 'View' })] })),
+      get: jest.fn()
+    };
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger: silentLogger() });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(true);
+    expect(httpClient.get).not.toHaveBeenCalled();
+  });
+
+  it('fetches public_access via a repo GET when the resolve result omits it', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({ data: [oclEntry({ url: '/orgs/A/sources/S/', publicAccess: null })] })),
+      get: jest.fn(async () => ({ data: { public_access: 'View' } }))
+    };
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger: silentLogger() });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(true);
+    expect(httpClient.get).toHaveBeenCalledWith('/orgs/A/sources/S/');
+  });
+
+  it('does not serve when the repo GET says the repo is private', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({ data: [oclEntry({ url: '/orgs/A/sources/S/', publicAccess: null })] })),
+      get: jest.fn(async () => ({ data: { public_access: 'None' } }))
+    };
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger: silentLogger() });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(false);
+  });
+
+  it('fails closed when the public_access check errors (not served)', async () => {
+    const httpClient = {
+      post: jest.fn(async () => ({ data: [oclEntry({ url: '/orgs/A/sources/S/', publicAccess: null })] })),
+      get: jest.fn().mockRejectedValue(new Error('network blip'))
+    };
+    const logger = silentLogger();
+    const resolver = new OclReferenceResolver({ httpClient, token: 'Token abc', logger });
+
+    const r = await resolver.resolve('/orgs/A/sources/S/');
+
+    expect(r.resolved).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/public_access check failed/));
   });
 });

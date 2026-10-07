@@ -19,6 +19,7 @@ function collectionResolve(repoUrl, canonical) {
       url: repoUrl,
       canonical_url: canonical,
       owner_type: 'Organization',
+      public_access: 'View',
       type: 'Collection'
     }
   };
@@ -97,7 +98,7 @@ describe('vs-ocl $resolveReference: collection resolution', () => {
           const id = ref.split('/').filter(Boolean).pop();
           return {
             reference_type: 'relative', resolved: true,
-            result: { url: ref, owner_type: 'Organization', type: 'Source', canonical_url: `http://x.org/cs/${id}` }
+            result: { url: ref, owner_type: 'Organization', public_access: 'View', type: 'Source', canonical_url: `http://x.org/cs/${id}` }
           };
         }
         return collectionResolve('/orgs/MS/collections/BC/', CANON);
