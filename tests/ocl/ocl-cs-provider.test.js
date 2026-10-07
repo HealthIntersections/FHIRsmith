@@ -10,9 +10,12 @@ describe('OCLCodeSystemProvider', () => {
 
   it('should assign ids', () => {
     const provider = new OCLCodeSystemProvider();
-    const ids = new Set();
-    provider.assignIds(ids);
-    expect(ids.size).toBeGreaterThanOrEqual(0);
+    const cs = { id: 'src', jsonObj: { id: 'src' } };
+    provider._idToCodeSystem.set('src', cs);
+    provider.assignIds('ocl');
+    expect(cs.id).toBe('ocl-src');
+    expect(cs.jsonObj.id).toBe('ocl-src');
+    expect(provider._idToCodeSystem.get('ocl-src')).toBe(cs);
   });
 
   // Adicione mais testes para métodos públicos e fluxos de erro

@@ -21,13 +21,23 @@ describe('Read Worker', () => {
   describe('GET /tx/r5/CodeSystem/:id', () => {
     test('should return CodeSystem by id', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender')
+        .get('/tx/r5/CodeSystem/core-administrative-gender')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(200);
       expect(response.body.resourceType).toBe('CodeSystem');
-      expect(response.body.id).toBe('administrative-gender');
+      expect(response.body.id).toBe('core-administrative-gender');
       expect(response.body.url).toBe('http://hl7.org/fhir/administrative-gender');
+    });
+
+    test('should return 404 for the id the CodeSystem has in its package', async () => {
+      // core resources are only served in the 'core' id space - hl7.terminology can have
+      // the same ids
+      const response = await request(app)
+        .get('/tx/r5/CodeSystem/administrative-gender')
+        .set('Accept', 'application/json');
+
+      expect(response.status).toBe(404);
     });
 
     test('should return 404 for non-existent CodeSystem', async () => {
@@ -42,7 +52,7 @@ describe('Read Worker', () => {
 
     test('should include X-Request-Id header', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender')
+        .get('/tx/r5/CodeSystem/core-administrative-gender')
         .set('Accept', 'application/json');
 
       expect(response.headers['x-request-id']).toBeDefined();
@@ -53,12 +63,12 @@ describe('Read Worker', () => {
   describe('GET /tx/r5/ValueSet/:id', () => {
     test('should return ValueSet by id', async () => {
       const response = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender')
+        .get('/tx/r5/ValueSet/core-administrative-gender')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(200);
       expect(response.body.resourceType).toBe('ValueSet');
-      expect(response.body.id).toBe('administrative-gender');
+      expect(response.body.id).toBe('core-administrative-gender');
     });
 
     test('should return 404 for non-existent ValueSet', async () => {
@@ -75,7 +85,7 @@ describe('Read Worker', () => {
   describe('Unsupported methods', () => {
     test('should return 405 for PUT', async () => {
       const response = await request(app)
-        .put('/tx/r5/CodeSystem/administrative-gender')
+        .put('/tx/r5/CodeSystem/core-administrative-gender')
         .set('Accept', 'application/json')
         .send({});
 
@@ -86,7 +96,7 @@ describe('Read Worker', () => {
 
     test('should return 405 for DELETE', async () => {
       const response = await request(app)
-        .delete('/tx/r5/CodeSystem/administrative-gender')
+        .delete('/tx/r5/CodeSystem/core-administrative-gender')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(405);

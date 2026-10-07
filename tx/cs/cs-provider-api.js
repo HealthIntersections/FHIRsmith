@@ -1,22 +1,37 @@
+const { assignIdSpace } = require('../library/resource-ids');
+
 /**
  * Abstract base class for value set providers
  * Defines the interface that all value set providers must implement
  */
 class AbstractCodeSystemProvider {
   /**
-   * {int} Unique number assigned to this provider
+   * {string} The prefix of this provider's id space (set by assignIds) - given for its source in the library
+   * YAML, or autonumbered. Every code system this provider provides has an id that starts
+   * with spaceId + '-' (see tx/library/resource-ids.js)
    */
   spaceId;
 
   /**
-   * ensure that the ids on the code systems are unique, if they are
-   * in the global namespace
+   * Put this provider in an id space: set spaceId, and prefix the ids of the code systems it
+   * provides with spaceId + '-'. A provider is put in one id space, once - asking for a
+   * different one later is an error (see assignIdSpace)
    *
-   * @param {Set<String>} ids
+   * @param {string} spaceId
    */
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    throw new Error('assignIds must be implemented by subclass');
+  assignIds(spaceId) {
+    if (assignIdSpace(this, spaceId)) {
+      this.prefixIds();
+    }
+  }
+
+  /**
+   * Prefix the ids of the code systems this provider provides with spaceId + '-', once spaceId
+   * is set (by assignIds). Code systems the provider provides later (see
+   * getCodeSystemChanges) must be given ids in the same space.
+   */
+  prefixIds() {
+    throw new Error('prefixIds must be implemented by subclass');
   }
 
   /**

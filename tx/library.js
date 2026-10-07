@@ -39,6 +39,7 @@ const { OCLValueSetProvider } = require('./ocl/vs-ocl');
 const { OCLConceptMapProvider } = require('./ocl/cm-ocl');
 const {UriServicesFactory} = require("./cs/cs-uri");
 const {debugLog} = require("./operation-context");
+const { checkIdPrefix } = require("./library/resource-ids");
 
 /**
  * This class holds all the loaded content ready for processing
@@ -71,6 +72,17 @@ class Library {
 
   packageSources = [];
   externalSources = [];
+
+  /**
+   * {Map<Object, string>} the id prefix the library YAML gives for the source a provider was
+   * loaded from (npm:hl7.terminology=tho), by provider
+   */
+  #sourcePrefixes = new Map();
+
+  /**
+   * {Set<string>} every id prefix the library YAML gives - autonumbered prefixes skip them
+   */
+  #givenPrefixes = new Set();
 
   baseUrl = null;
   cacheFolder = null;
@@ -171,6 +183,8 @@ class Library {
 
     this.log.info('Fetching Data from '+this.baseUrl);
 
+    this.#checkSourcePrefixes(config.sources);
+
     for (const source of config.sources) {
       try {
         await this.processSource(source, this.packageManager, "fetch");
@@ -223,15 +237,20 @@ class Library {
     this.assignIds();
   }
 
-  async processSource(source, packageManager, mode) {
-    // Parse the source string
+  /**
+   * Parse a source entry from the library YAML: type[!]:details[=prefix]
+   *
+   * @param {string} source
+   * @returns {{type: string, details: string, isDefault: boolean, prefix: string|null}}
+   */
+  #parseSource(source) {
     const colonIndex = source.indexOf(':');
     if (colonIndex === -1) {
       throw new Error(`Invalid source format: ${source}`);
     }
 
     let type = source.substring(0, colonIndex);
-    const details = source.substring(colonIndex + 1);
+    let details = source.substring(colonIndex + 1);
 
     // Handle special markers (like ! for default)
     let isDefault = false;
@@ -240,6 +259,59 @@ class Library {
       isDefault = true;
     }
 
+    // the id prefix for the resources the source provides: everything after the last '='
+    let prefix = null;
+    const eqIndex = details.lastIndexOf('=');
+    if (eqIndex > -1) {
+      prefix = details.substring(eqIndex + 1);
+      details = details.substring(0, eqIndex);
+      const problem = checkIdPrefix(prefix);
+      if (problem) {
+        throw new Error(`Invalid source '${source}': ${problem}`);
+      }
+    }
+    return { type, details, isDefault, prefix };
+  }
+
+  /**
+   * Check the id prefixes the library YAML gives before anything is loaded - each id space
+   * must belong to one source
+   *
+   * @param {string[]} sources
+   */
+  #checkSourcePrefixes(sources) {
+    const seen = new Map();
+    for (const source of sources) {
+      const { prefix } = this.#parseSource(source);
+      if (prefix) {
+        if (seen.has(prefix)) {
+          throw new Error(`The id prefix '${prefix}' is given for both '${seen.get(prefix)}' and '${source}'`);
+        }
+        seen.set(prefix, source);
+      }
+    }
+  }
+
+  async processSource(source, packageManager, mode) {
+    const { type, details, isDefault, prefix } = this.#parseSource(source);
+
+    // the providers this source adds, so they can be given its id prefix
+    const csCount = this.codeSystemProviders.length;
+    const vsCount = this.valueSetProviders.length;
+    const cmCount = this.conceptMapProviders.length;
+
+    await this.#loadSource(type, details, isDefault, mode, packageManager);
+
+    if (prefix) {
+      this.#givenPrefixes.add(prefix);
+      for (const provider of [...this.codeSystemProviders.slice(csCount),
+        ...this.valueSetProviders.slice(vsCount), ...this.conceptMapProviders.slice(cmCount)]) {
+        this.#sourcePrefixes.set(provider, prefix);
+      }
+    }
+  }
+
+  async #loadSource(type, details, isDefault, mode, packageManager) {
     // Switch statement for different source types
     switch (type) {
       case 'internal':
@@ -1000,6 +1072,7 @@ class Library {
     // Now add the existing value set providers after the FHIR core packages
     provider.valueSetProviders.push(...this.valueSetProviders);
     provider.conceptMapProviders.push(...this.conceptMapProviders);
+    provider.applyTHOPrecedence();
 
     // bind UCUM common value set
     let ucum = provider.codeSystemFactories.get("http://unitsofmeasure.org");
@@ -1030,30 +1103,29 @@ class Library {
   }
 
   /**
-   * all the loaded resources must have unique IDs for the get operation
-   * they must be assigned by the library on loading. providers can either assign
-   * ids from the global space at start up, or, if they can provide new resources
-   * later in an ongoing fashion, allocate them in their own space
+   * Every loaded resource is served in the id space of the provider that loaded it: its id is
+   * the provider's spaceId, '-', and the id it had in its source (see
+   * tx/library/resource-ids.js). The spaceId is the prefix the library YAML gives for the
+   * provider's source, or, if it gives none, a number - the next one, counting providers of
+   * the same kind, that the YAML doesn't use as a prefix. Numbers depend on the order of the
+   * sources, so a source whose ids should stay the same when the YAML changes needs a prefix.
+   *
+   * (Code system factories don't have ids - they are not available directly.)
    */
   assignIds() {
-    let ids = new Set();
-    // these don't have ids - not available directly for (const cs of this.codeSystemFactories) { .. }
-    let i = 0;
-    for (const cp of this.codeSystemProviders) {
-      cp.spaceId = String(++i);
-      cp.assignIds(ids);
+    for (const providers of [this.codeSystemProviders, this.valueSetProviders, this.conceptMapProviders]) {
+      let n = 0;
+      for (const provider of providers) {
+        let spaceId = this.#sourcePrefixes.get(provider);
+        if (!spaceId) {
+          do {
+            n++;
+          } while (this.#givenPrefixes.has(String(n)));
+          spaceId = String(n);
+        }
+        provider.assignIds(spaceId);
+      }
     }
-    i = 0;
-    for (const vp of this.valueSetProviders) {
-      vp.spaceId = String(++i);
-      vp.assignIds(ids);
-    }
-    i = 0;
-    for (const cmp of this.conceptMapProviders) {
-      cmp.spaceId = String(++i);
-      cmp.assignIds(ids);
-    }
-
   }
 
   async close() {

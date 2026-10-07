@@ -6,6 +6,7 @@ const { ValueSetDatabase } = require('./vs-database');
 const { VersionUtilities } = require('../../library/version-utilities');
 const folders = require('../../library/folder-setup');
 const {debugLog} = require("../operation-context");
+const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
 
 // Persisted watermark for the phase-1b _lastUpdated scan.
 const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
@@ -422,6 +423,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         }
       }
     }
+    // the value sets are served in this provider's id space
+    for (const vs of new Set(newMap.values())) {
+      applyIdPrefix(vs, this.spaceId);
+    }
     // Atomic replacement of the map
     this.valueSetMap = newMap;
   }
@@ -466,7 +471,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
-    return await this.checkFullVS(this.valueSetMap.get(id));
+    // the map is keyed by the value set's own id (and its url); the value set itself
+    // carries the prefixed id, which is how a url key that happens to match is excluded
+    const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
+    return vs && vs.id === id ? await this.checkFullVS(vs) : null;
   }
   /**
    * Searches for value sets based on criteria
@@ -556,9 +564,16 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     await this.database.close();
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing?
+  prefixIds() {
+    this.#applyIdPrefix();
+  }
+
+  // the map is replaced every time it's reloaded from the database (see _reloadMap), and that
+  // can happen before or after the spaceId is assigned - so both prefix whatever is there
+  #applyIdPrefix() {
+    for (const vs of new Set(this.valueSetMap.values())) {
+      applyIdPrefix(vs, this.spaceId);
+    }
   }
 
   // when we get a valueset from vsac via search, the compose is not
@@ -898,7 +913,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         html += `<tr>`;
         html += `<td>${escape(timeOnly(row.ts))}</td>`;
         html += `<td><span style="color:${colour}">${label}</span></td>`;
-        html += `<td>${escape(this.urlTail(row.url) || '')} v <a href="../ValueSet/${escape(this.urlTail(row.url) || '')}-${escape(row.version || '')}">${escape(row.version || '')}</a></td>`;
+        html += `<td>${escape(this.urlTail(row.url) || '')} v <a href="../ValueSet/${escape(this.spaceId ? this.spaceId + '-' : '')}${escape(this.urlTail(row.url) || '')}-${escape(row.version || '')}">${escape(row.version || '')}</a></td>`;
         html += `</tr>`;
       }
     }

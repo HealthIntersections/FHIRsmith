@@ -268,7 +268,7 @@ describe('Subsumes Worker', () => {
   describe('GET /tx/r5/CodeSystem/:id/$subsumes', () => {
     test('should check subsumption by instance id', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .query({
           codeA: 'male',
           codeB: 'female'
@@ -297,7 +297,7 @@ describe('Subsumes Worker', () => {
 
     test('should return 400 when codes are missing for instance subsumes', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(400);
@@ -308,7 +308,7 @@ describe('Subsumes Worker', () => {
   describe('POST /tx/r5/CodeSystem/:id/$subsumes', () => {
     test('should check subsumption by instance id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .post('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({

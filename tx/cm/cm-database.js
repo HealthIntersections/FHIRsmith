@@ -733,10 +733,6 @@ class ConceptMapDatabase {
     return { query, params };
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing - we don't do any assigning.
-  }
 }
 
 module.exports = {
