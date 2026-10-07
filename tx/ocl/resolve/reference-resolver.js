@@ -139,6 +139,8 @@ function referenceLength(body) {
 // Client input ends up in log lines; strip control characters / newlines and cap
 // the length so a crafted reference cannot forge log entries or flood the log.
 function safeForLog(value) {
+  // Matching control characters is the whole point here (we are scrubbing them).
+  // eslint-disable-next-line no-control-regex
   const s = String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]+/g, ' ');
   return s.length > 200 ? `${s.slice(0, 200)}…` : s;
 }
