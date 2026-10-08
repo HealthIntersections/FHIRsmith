@@ -40,4 +40,18 @@ function releaseDateOf(version, changelogPath = DEFAULT_PATH) {
   }
 }
 
-module.exports = { readReleaseDates, releaseDateOf };
+/**
+ * The release date a server reports for its version: the date of the release, or, for a
+ * version that hasn't been released (a snapshot), the time the server started - which is
+ * when that build went into service.
+ *
+ * @param {string} version
+ * @param {Date} started - when the server started
+ * @param {string} [changelogPath]
+ * @returns {string} YYYY-MM-DD for a release, an ISO dateTime for a snapshot
+ */
+function reportedReleaseDate(version, started, changelogPath = DEFAULT_PATH) {
+  return releaseDateOf(version, changelogPath) || started.toISOString();
+}
+
+module.exports = { readReleaseDates, releaseDateOf, reportedReleaseDate };

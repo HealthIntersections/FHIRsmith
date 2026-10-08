@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { readReleaseDates, releaseDateOf } = require('../../library/changelog');
+const { readReleaseDates, releaseDateOf, reportedReleaseDate } = require('../../library/changelog');
 const { MetadataHandler } = require('../../tx/workers/metadata');
 
 function changelog(text) {
@@ -28,6 +28,13 @@ describe('changelog release dates', () => {
     expect(releaseDateOf('0.14.3-snapshot', file)).toBeNull();
     expect(releaseDateOf('0.11.0', file)).toBeNull();
     expect(releaseDateOf('0.14.2', '/no/such/CHANGELOG.md')).toBeNull();
+  });
+
+  test('the reported release date is the release, or for a snapshot when the server started', () => {
+    const file = changelog(TEXT);
+    const started = new Date('2026-10-08T01:02:03.000Z');
+    expect(reportedReleaseDate('0.14.2', started, file)).toBe('2026-10-06');
+    expect(reportedReleaseDate('0.14.3-snapshot', started, file)).toBe('2026-10-08T01:02:03.000Z');
   });
 
   test('the shipped CHANGELOG.md dates the shipped version, unless it is a snapshot', () => {

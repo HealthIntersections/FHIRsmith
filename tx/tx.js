@@ -5,7 +5,10 @@
 // with support for multiple endpoints at different FHIR versions.
 //
 
-const { releaseDateOf } = require('../library/changelog');
+const { reportedReleaseDate } = require('../library/changelog');
+
+// when this server process started (the release date of a snapshot build)
+const SERVER_STARTED = new Date(Date.now() - process.uptime() * 1000);
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -224,8 +227,9 @@ class TXModule {
       description: config.description || 'FHIR Terminology Server',
       contactUrl: config.contactUrl,
       contact: config.contact,
-      // when this version was released, from its CHANGELOG.md heading - none for a snapshot
-      releaseDate: config.releaseDate || releaseDateOf(packageJson.version),
+      // when this version was released, from its CHANGELOG.md heading - or, for a snapshot,
+      // when the server started
+      releaseDate: config.releaseDate || reportedReleaseDate(packageJson.version, SERVER_STARTED),
       host: config.host ? config.host : "localhost"
     });
 
