@@ -6,6 +6,7 @@ const { ValueSetDatabase } = require('./vs-database');
 const { checkContained } = require('../library/canonical-resource');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
+const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -78,6 +79,8 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
         Object.defineProperty(vs, 'isCached', { value: true, enumerable: false, configurable: true, writable: true });
       }
     }
+    // nothing, unless the spaceId was assigned before the provider was initialized
+    this.#applyIdPrefix();
     this.initialized = true;
   }
 
@@ -212,7 +215,9 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     this._validateSearchParams(searchParams);
 
     if (this.USE_DATABASE_SEARCH) {
-      return await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+      const results = await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+      return this.#excludedIds.size === 0 ? results
+        : results.filter(r => !this.#excludedIds.has(stripIdPrefix((r.jsonObj || r).id, this.spaceId)));
     } else {
       const matches = [];
       const seen = new Set(); // Track by URL to avoid duplicates from versioned keys
@@ -398,38 +403,19 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
-    return this.valueSetMap.get(id);
+    // the map is keyed by the value set's own id (and its url); the value set itself
+    // carries the prefixed id, which is how a url key that happens to match is excluded
+    const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
+    return vs && vs.id === id ? vs : null;
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    if (!this.spaceId) {
-      return;
-    }
+  prefixIds() {
+    this.#applyIdPrefix();
+  }
 
-    const prefix = this.spaceId + '-';
-    const alreadyPrefixed = new Set();
-
-    // Get all current entries - we'll iterate and modify
-    const entries = Array.from(this.valueSetMap.entries());
-
-    // eslint-disable-next-line no-unused-vars
-    for (const [key, vs] of entries) {
-      // Skip if we've already processed this ValueSet instance
-      if (alreadyPrefixed.has(vs)) {
-        continue;
-      }
-
-      // Update the id on the ValueSet itself
-      if (vs.id && !vs.id.startsWith(prefix)) {
-        const oldId = vs.id;
-        vs.id = prefix + oldId;
-
-        // Add to map under the new id as well
-        this.valueSetMap.set(vs.id, vs);
-      }
-
-      alreadyPrefixed.add(vs);
+  #applyIdPrefix() {
+    for (const vs of new Set(this.valueSetMap.values())) {
+      applyIdPrefix(vs, this.spaceId);
     }
   }
 
@@ -438,7 +424,38 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
   }
 
   async listAllValueSets() {
-    return await this.database.listAllValueSets();
+    const urls = await this.database.listAllValueSets();
+    return this.#excludedUrls.size === 0 ? urls : urls.filter(url => !this.#excludedUrls.has(url));
+  }
+
+  // the value sets left out by excludeUrls - by url, and by their own (unprefixed) id
+  #excludedUrls = new Set();
+  #excludedIds = new Set();
+
+  /**
+   * Leave out the value sets with any of these urls: they can't be fetched, and they aren't
+   * found by search. The FHIR core package's value sets are left out where hl7.terminology
+   * provides the same url (see Provider.applyTHOPrecedence). Must be called once the
+   * provider is initialized - the database is shared, so it isn't changed.
+   *
+   * @param {Set<string>} urls
+   */
+  excludeUrls(urls) {
+    const excluded = new Set();
+    for (const vs of this.valueSetMap.values()) {
+      if (vs && urls.has(vs.url)) {
+        excluded.add(vs);
+      }
+    }
+    for (const [key, vs] of [...this.valueSetMap]) {
+      if (excluded.has(vs)) {
+        this.valueSetMap.delete(key);
+      }
+    }
+    for (const vs of excluded) {
+      this.#excludedUrls.add(vs.url);
+      this.#excludedIds.add(stripIdPrefix(vs.id, this.spaceId) ?? vs.id);
+    }
   }
 }
 

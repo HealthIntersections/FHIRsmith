@@ -30,14 +30,17 @@ describe('ListCodeSystemProvider.codeSystems contract', () => {
     expect(list.map(c => c.url)).toEqual(['http://a', 'http://b']);
   });
 
-  test('assignIds iterates the array and assigns unique ids', () => {
+  test('assignIds prefixes every id with the spaceId', () => {
     const cp = new ListCodeSystemProvider();
-    cp.codeSystems.push({ url: 'http://a' });            // no id
-    cp.codeSystems.push({ url: 'http://b', id: 'a' });   // collides after first gets id
-    const ids = new Set();
-    cp.assignIds(ids);
-    const assigned = cp.codeSystems.map(c => c.id);
-    expect(new Set(assigned).size).toBe(2);              // all unique
-    expect(ids.size).toBe(2);
+    cp.codeSystems.push({ url: 'http://a', jsonObj: { id: 'a' } });
+    cp.codeSystems.push({ url: 'http://b', jsonObj: {} });   // no id: gets its position
+    cp.assignIds('tho');
+    expect(cp.spaceId).toBe('tho');
+    expect(cp.codeSystems.map(c => c.jsonObj.id)).toEqual(['tho-a', 'tho-2']);
+    // the same space again does nothing
+    cp.assignIds('tho');
+    expect(cp.codeSystems.map(c => c.jsonObj.id)).toEqual(['tho-a', 'tho-2']);
+    // a different one is an error
+    expect(() => cp.assignIds('us')).toThrow(/already in the id space 'tho'/);
   });
 });

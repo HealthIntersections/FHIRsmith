@@ -6,7 +6,7 @@
 // succeeds (or if it can't be reached), the dated headings in this server's own
 // CHANGELOG.md are used instead - those only go up to this server's own version.
 
-const fs = require('fs');
+const { readReleaseDates } = require('../library/changelog');
 const path = require('path');
 const axios = require('axios');
 
@@ -72,12 +72,9 @@ class FhirsmithReleases {
    */
   loadFromChangelog(changelogPath = path.join(__dirname, '..', 'CHANGELOG.md')) {
     try {
-      const text = fs.readFileSync(changelogPath, 'utf8');
       const list = [];
-      const re = /^##\s*\[v?(\d+\.\d+\.\d+)\]\s*-\s*(\d{4}-\d{2}-\d{2})\s*$/gm;
-      let m;
-      while ((m = re.exec(text)) !== null) {
-        list.push({ version: m[1], date: new Date(m[2] + 'T00:00:00Z') });
+      for (const [version, date] of readReleaseDates(changelogPath)) {
+        list.push({ version, date: new Date(date + 'T00:00:00Z') });
       }
       this.setReleases(list, 'CHANGELOG.md');
     } catch (error) {

@@ -5,6 +5,33 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-mm-dd
+
+### Security
+
+-
+
+### Added
+
+- Library YAML: a source can give the id prefix for the resources it loads (`npm:hl7.terminology=tho`), so their ids stay the same when sources are added, removed or reordered. Sources without one are numbered, as before. See Resource Ids in tx/README.md
+- `CapabilityStatement.software.releaseDate` (and the TerminologyCapabilities equivalent) is the date the running version was released, taken from its heading in CHANGELOG.md, which is now included in the Docker image. A snapshot reports the time the server started
+- Registry: the crawler records each server's `software.releaseDate`. The Software page uses it to date software other than FHIRsmith, and FHIRsmith releases (including development builds) that the release list doesn't know about yet
+
+### Changed
+
+- **Breaking - resource ids:** every CodeSystem, ValueSet and ConceptMap is served with an id in the id space of its source - `prefix-id`, e.g. `CodeSystem/tho-v3-ActCode` - and the FHIR core package each endpoint loads uses `core` (`CodeSystem/core-administrative-gender`). An unprefixed id is not found by read or by any `[type]/[id]/$operation`. Library CodeSystems used to keep the ids they had in their packages (ValueSets and ConceptMaps were already numbered), and so could clash with the endpoint's core CodeSystems
+- THO overrides the FHIR core packages the same way the Java validator does: where hl7.terminology has a url, the core package's CodeSystems, ValueSets and ConceptMaps with that url are not loaded at all. Older core versions used to stay available by `url|version`, so the server reported versions the validator doesn't know (e.g. v3-MaritalStatus `2018-08-12`). The exception is the R4 v2 tables 0006, 0360 and 0391, which R4 core has in two versions each with the version in the url: those versions stay available, and THO's is the default
+- `software.releaseDate` is no longer the time of the request
+
+### Fixed
+
+- Search: two CodeSystems with the same id from different packages (e.g. v3-MaritalStatus from hl7.fhir.r4.core and hl7.terminology) linked to the same resource, and a read of that id always returned the core one
+- On the R4 endpoint, a ValueSet asked for without a version (e.g. `http://terminology.hl7.org/ValueSet/v3-MaritalStatus`) was the core package's copy rather than hl7.terminology's
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [0.14.2] - 2026-10-06
 
 ### Security

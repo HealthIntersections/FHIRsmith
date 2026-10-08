@@ -259,4 +259,67 @@ describe('PackageConceptMapProvider', () => {
       expect(mapSize).toBeGreaterThanOrEqual(stats.totalConceptMaps);
     });
   });
+
+  describe('id space', () => {
+    let spaced;
+
+    beforeAll(async () => {
+      // a provider of its own, so the other tests see the concept maps as they are loaded
+      spaced = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await spaced.initialize();
+      spaced.assignIds('ch');
+    });
+
+    test('concept maps carry their prefixed id, and are fetched by it', async () => {
+      const cm = [...spaced.conceptMapMap.values()][0];
+      expect(cm.id.startsWith('ch-')).toBe(true);
+      expect(cm.jsonObj.id).toBe(cm.id);
+      expect(await spaced.fetchConceptMapById(cm.id)).toBe(cm);
+    });
+
+    test('a concept map is not found by its unprefixed id', async () => {
+      const cm = [...spaced.conceptMapMap.values()][0];
+      expect(await spaced.fetchConceptMapById(cm.id.substring('ch-'.length))).toBeNull();
+    });
+
+    test('search returns prefixed ids', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await spaced.searchConceptMaps([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        for (const r of results) {
+          expect(r.id.startsWith('ch-')).toBe(true);
+          expect(r.id.startsWith('ch-ch-')).toBe(false);
+        }
+      }
+    });
+  });
+
+  describe('excludeUrls', () => {
+    let reduced;
+    let gone;
+
+    beforeAll(async () => {
+      reduced = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await reduced.initialize();
+      reduced.assignIds('core');
+      gone = [...reduced.conceptMapMap.values()][0];
+      reduced.excludeUrls(new Set([gone.url]));
+    });
+
+    test('an excluded concept map is not fetched, by url or by id', async () => {
+      expect(await reduced.fetchConceptMap(gone.url, null)).toBeNull();
+      expect(await reduced.fetchConceptMapById(gone.id)).toBeNull();
+    });
+
+    test('an excluded concept map is not found by search', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await reduced.searchConceptMaps([], elements);
+        expect(results.some(r => r.id === gone.id)).toBe(false);
+      }
+    });
+
+    test('the package says where it came from', () => {
+      expect(reduced.sourcePackage()).toBe('ch.fhir.ig.ch-core');
+    });
+  });
 });

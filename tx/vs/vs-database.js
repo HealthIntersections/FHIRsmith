@@ -1114,10 +1114,6 @@ class ValueSetDatabase {
     return { query, params };
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing - we don't do any assigning.
-  }
 
   /**
    * Get a list of all ValueSet URLs in the database

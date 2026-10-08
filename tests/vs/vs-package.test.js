@@ -315,4 +315,71 @@ describe('PackageValueSetProvider', () => {
       expect(mapSize).toBeGreaterThanOrEqual(stats.totalValueSets);
     });
   });
+
+  describe('id space', () => {
+    let spaced;
+
+    beforeAll(async () => {
+      // a provider of its own, so the other tests see the value sets as they are loaded
+      spaced = new PackageValueSetProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await spaced.initialize();
+      spaced.assignIds('tools');
+    });
+
+    test('value sets carry their prefixed id, and are fetched by it', async () => {
+      const vs = [...spaced.valueSetMap.values()][0];
+      expect(vs.id.startsWith('tools-')).toBe(true);
+      expect(vs.jsonObj.id).toBe(vs.id);
+      expect(await spaced.fetchValueSetById(vs.id)).toBe(vs);
+    });
+
+    test('a value set is not found by its unprefixed id, or by its url', async () => {
+      const vs = [...spaced.valueSetMap.values()][0];
+      expect(await spaced.fetchValueSetById(vs.id.substring('tools-'.length))).toBeNull();
+      expect(await spaced.fetchValueSetById('tools-' + vs.url)).toBeNull();
+    });
+
+    test('search returns prefixed ids', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await spaced.searchValueSets([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        for (const r of results) {
+          expect((r.jsonObj || r).id.startsWith('tools-')).toBe(true);
+          expect((r.jsonObj || r).id.startsWith('tools-tools-')).toBe(false);
+        }
+      }
+    });
+  });
+
+  describe('excludeUrls', () => {
+    let reduced;
+    let gone;
+
+    beforeAll(async () => {
+      reduced = new PackageValueSetProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await reduced.initialize();
+      reduced.assignIds('core');
+      gone = [...reduced.valueSetMap.values()][0];
+      reduced.excludeUrls(new Set([gone.url]));
+    });
+
+    test('an excluded value set is not fetched, by url or by id', async () => {
+      expect(await reduced.fetchValueSet(gone.url, null)).toBeNull();
+      expect(await reduced.fetchValueSetById(gone.id)).toBeNull();
+    });
+
+    test('an excluded value set is not found by search, or listed', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await reduced.searchValueSets([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.some(r => (r.jsonObj || r).id === gone.id)).toBe(false);
+      }
+      expect(await reduced.listAllValueSets()).not.toContain(gone.url);
+    });
+
+    test('the other value sets are still there', async () => {
+      const other = [...reduced.valueSetMap.values()].find(vs => vs.url !== gone.url);
+      expect(await reduced.fetchValueSetById(other.id)).toBe(other);
+    });
+  });
 });

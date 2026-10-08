@@ -319,7 +319,7 @@ describe('Translate Worker', () => {
   describe('GET /tx/r5/ConceptMap/:id/$translate', () => {
     test('should translate by instance id', async () => {
       const response = await request(app)
-        .get('/tx/r5/ConceptMap/example2/$translate')
+        .get('/tx/r5/ConceptMap/core-example2/$translate')
         .query({
           system: 'http://example.org/source',
           sourceCode: 'source-code'
@@ -345,7 +345,7 @@ describe('Translate Worker', () => {
 
     test('should return 400 when source code/coding is missing for instance translate', async () => {
       const response = await request(app)
-        .get('/tx/r5/ConceptMap/example2/$translate')
+        .get('/tx/r5/ConceptMap/core-example2/$translate')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(400);
@@ -354,7 +354,7 @@ describe('Translate Worker', () => {
 
     test('should translate by instance id with sourceCoding', async () => {
       const response = await request(app)
-        .post('/tx/r5/ConceptMap/example/$translate')
+        .post('/tx/r5/ConceptMap/core-example/$translate')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({
@@ -377,7 +377,7 @@ describe('Translate Worker', () => {
   describe('POST /tx/r5/ConceptMap/:id/$translate', () => {
     test('should translate by instance id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/ConceptMap/example/$translate')
+        .post('/tx/r5/ConceptMap/core-example/$translate')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({

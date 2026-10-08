@@ -340,6 +340,20 @@ class RegistryCrawler {
   }
 
   /**
+   * CapabilityStatement.software.releaseDate, if it means anything. A date within a few
+   * minutes of now is the server's clock, not a release date: FHIRsmith up to 0.14.2 filled
+   * it in with the time of the request, and other software may do the same.
+   */
+  reportedReleaseDate(software, now = Date.now()) {
+    const value = software && software.releaseDate;
+    const t = value ? new Date(value).getTime() : NaN;
+    if (isNaN(t) || Math.abs(now - t) < 10 * 60 * 1000) {
+      return '';
+    }
+    return String(value);
+  }
+
+  /**
    * A server that can't be reached this time is still running whatever it was running
    * last time we saw it - keep that, so the software page doesn't lose track of it
    */
@@ -353,6 +367,7 @@ class RegistryCrawler {
           if (prev.address === version.address && prev.software) {
             version.software = prev.software;
             version.softwareVersion = prev.softwareVersion || '';
+            version.softwareReleaseDate = prev.softwareReleaseDate || '';
             return;
           }
         }
@@ -371,6 +386,7 @@ class RegistryCrawler {
     version.version = capability.fhirVersion || '3.0.2';
     version.software = capability.software ? capability.software.name : "unknown";
     version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
+    version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
 
     // Get terminology capabilities (R3 uses Parameters resource)
     try {
@@ -416,6 +432,7 @@ class RegistryCrawler {
     version.version = capability.fhirVersion || defVersion;
     version.software = capability.software ? capability.software.name : "unknown";
     version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
+    version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
 
     let set = new Set();
 

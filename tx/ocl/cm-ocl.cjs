@@ -3,6 +3,7 @@ const { ConceptMap } = require('../library/conceptmap');
 const { PAGE_SIZE } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
+const { stripIdPrefix } = require('../library/resource-ids');
 
 const DEFAULT_MAX_SEARCH_PAGES = 10;
 
@@ -24,7 +25,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     this._canonicalBySourceUrl = new Map();
   }
 
-  assignIds(ids) {
+  prefixIds() {
     if (!this.spaceId) {
       return;
     }
@@ -33,13 +34,18 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     this._idMap.clear();
 
     for (const cm of unique) {
-      if (!cm.id.startsWith(`${this.spaceId}-`)) {
-        const nextId = `${this.spaceId}-${cm.id}`;
-        cm.id = nextId;
-        cm.jsonObj.id = nextId;
-      }
+      this.#prefixId(cm);
       this._idMap.set(cm.id, cm);
-      ids.add(`ConceptMap/${cm.id}`);
+    }
+  }
+
+  // concept maps are served in this provider's id space - including the ones that arrive
+  // after the spaceId is assigned
+  #prefixId(cm) {
+    if (this.spaceId && cm.id && !cm.id.startsWith(`${this.spaceId}-`)) {
+      const nextId = `${this.spaceId}-${cm.id}`;
+      cm.id = nextId;
+      cm.jsonObj.id = nextId;
     }
   }
 
@@ -56,7 +62,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
 
     const mappingId = this.#extractMappingId(url);
     if (mappingId) {
-      return await this.fetchConceptMapById(mappingId);
+      return await this.#fetchMappingById(mappingId);
     }
 
     try {
@@ -81,14 +87,15 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     if (this._idMap.has(id)) {
       return this._idMap.get(id);
     }
+    // only ids in this provider's space - the rest is the OCL mapping id
+    const rawId = stripIdPrefix(id, this.spaceId);
+    return rawId ? await this.#fetchMappingById(rawId) : null;
+  }
 
-    let rawId = id;
-    if (this.spaceId && id.startsWith(`${this.spaceId}-`)) {
-      rawId = id.substring(this.spaceId.length + 1);
-    }
-
-    if (this._idMap.has(rawId)) {
-      return this._idMap.get(rawId);
+  async #fetchMappingById(rawId) {
+    const id = this.spaceId ? `${this.spaceId}-${rawId}` : rawId;
+    if (this._idMap.has(id)) {
+      return this._idMap.get(id);
     }
 
     try {
@@ -378,6 +385,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   }
 
   #indexConceptMap(cm) {
+    this.#prefixId(cm);
     this.conceptMapMap.set(cm.url, cm);
     if (cm.version) {
       this.conceptMapMap.set(`${cm.url}|${cm.version}`, cm);

@@ -5,6 +5,7 @@ const { ConceptMapDatabase } = require('./cm-database');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
+const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
 
 /**
  * Package-based ConceptMap provider using shared database layer
@@ -34,6 +35,7 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     if (this.initialized) {
       return;
     }
+    await this.packageLoader.initialize();
 
     const dbExists = await this.database.exists();
 
@@ -43,6 +45,8 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     }
 
     this.conceptMapMap = await this.database.loadAllConceptMaps();
+    // nothing, unless the spaceId was assigned before the provider was initialized
+    this.#applyIdPrefix();
     this.initialized = true;
   }
 
@@ -128,7 +132,9 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     this._validateSearchParams(searchParams);
 
     if (this.USE_DATABASE_SEARCH) {
-      return await this.database.search(this.spaceId, searchParams, elements);
+      const results = await this.database.search(this.spaceId, searchParams, elements);
+      return this.#excludedIds.size === 0 ? results
+        : results.filter(r => !this.#excludedIds.has(stripIdPrefix(r.id, this.spaceId)));
     } else {
       const matches = [];
       const seen = new Set(); // Track by URL to avoid duplicates from versioned keys
@@ -194,9 +200,8 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
         if (isMatch) {
           seen.add(vsUrl);
-          // Return with prefixed id
-          const result = { ...json, id: `${this.spaceId}-${json.id}` };
-          matches.push(result);
+          // the id is already prefixed (see assignIds)
+          matches.push(json);
         }
       }
 
@@ -298,19 +303,53 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
   }
 
   async fetchConceptMapById(id) {
-    if (!this.spaceId) {
-      return this.conceptMapMap.get(id);
-    } else if (id.startsWith(this.spaceId+"-")) {
-      let key = id.substring(this.spaceId.length + 1);
-      return this.conceptMapMap.get(key);
-    } else {
-      return null;
+    // the map is keyed by the concept map's own id (and its url); the concept map itself
+    // carries the prefixed id, which is how a url key that happens to match is excluded
+    const cm = this.conceptMapMap.get(stripIdPrefix(id, this.spaceId));
+    return cm && cm.id === id ? cm : null;
+  }
+
+  sourcePackage() {
+    return this.packageLoader.id();
+  }
+
+  // the concept maps left out by excludeUrls, by their own (unprefixed) id
+  #excludedIds = new Set();
+
+  /**
+   * Leave out the concept maps with any of these urls: they can't be fetched, they aren't
+   * found by search, and they aren't used for translation. The FHIR core package's concept
+   * maps are left out where hl7.terminology provides the same url (see
+   * Provider.applyTHOPrecedence). Must be called once the provider is initialized - the
+   * database is shared, so it isn't changed.
+   *
+   * @param {Set<string>} urls
+   */
+  excludeUrls(urls) {
+    const excluded = new Set();
+    for (const cm of this.conceptMapMap.values()) {
+      if (cm && urls.has(cm.url)) {
+        excluded.add(cm);
+      }
+    }
+    for (const [key, cm] of [...this.conceptMapMap]) {
+      if (excluded.has(cm)) {
+        this.conceptMapMap.delete(key);
+      }
+    }
+    for (const cm of excluded) {
+      this.#excludedIds.add(stripIdPrefix(cm.id, this.spaceId) ?? cm.id);
     }
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing - we don't do any assigning.
+  prefixIds() {
+    this.#applyIdPrefix();
+  }
+
+  #applyIdPrefix() {
+    for (const cm of new Set(this.conceptMapMap.values())) {
+      applyIdPrefix(cm, this.spaceId);
+    }
   }
 
   async findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceScope, targetScope, targetSystem) {

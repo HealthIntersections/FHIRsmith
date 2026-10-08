@@ -512,6 +512,7 @@ class RegistryModule {
             fhirVersion: version.version || '',
             software: version.software && version.software !== 'unknown' ? version.software : '',
             softwareVersion: version.softwareVersion || '',
+            softwareReleaseDate: version.softwareReleaseDate || '',
             error: version.error,
             lastSuccess: version.lastSuccess
           });
@@ -556,7 +557,7 @@ class RegistryModule {
 
   _renderReleaseCells(row, now) {
     if (!isFhirsmith(row.software) || !this.releases) {
-      return '<td></td><td></td>';
+      return this._renderReportedReleaseCells(row, now);
     }
     const d = this.releases.describe(row.softwareVersion, now);
     const behind = d.behind ? ` (${d.behind} release${d.behind === 1 ? '' : 's'} behind)` : '';
@@ -571,11 +572,28 @@ class RegistryModule {
           `<td><span class="${cls}">${describeAge(d.ageDays)}${behind}</span></td>`;
       }
       case 'dev':
-        return '<td></td><td>development build' +
+        return `<td>${this._reportedReleaseDay(row)}</td><td>development build` +
           (d.release ? ` after v${escape(d.release.version)}` : '') + behind + '</td>';
       default:
-        return '<td></td><td><i>unknown</i></td>';
+        return this._renderReportedReleaseCells(row, now);
     }
+  }
+
+  // what the server says about its release (CapabilityStatement.software.releaseDate) -
+  // the only source for software other than FHIRsmith
+  _reportedReleaseDay(row) {
+    // the day as the server gives it - converting to UTC can move it a day
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(row.softwareReleaseDate || '');
+    return m ? m[1] : '';
+  }
+
+  _renderReportedReleaseCells(row, now) {
+    const day = this._reportedReleaseDay(row);
+    if (!day) {
+      return '<td></td><td></td>';
+    }
+    const days = Math.max(0, Math.floor((now - new Date(row.softwareReleaseDate).getTime()) / (24 * 60 * 60 * 1000)));
+    return `<td>${day}</td><td>${describeAge(days)}</td>`;
   }
 
   /**
