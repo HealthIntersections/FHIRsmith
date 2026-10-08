@@ -252,8 +252,8 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
         name: id,
         title: `${sourceId} to ${targetId}`,
         status: 'active',
-        sourceScopeUri: group.sourceCanonical,
-        targetScopeUri: group.targetCanonical,
+        // No sourceScope/targetScope: a scope is a ValueSet, and $translate resolves it and
+        // checks the code against it. The systems are carried by the group instead.
         group: [{
           source: group.sourceCanonical,
           target: group.targetCanonical,
@@ -430,8 +430,10 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       name: `mapping-${id}`,
       title: mapping.name || `Mapping ${id}`,
       status: 'active',
-      sourceScopeUri: mapping.from_collection_url || mapping.fromCollectionUrl || source,
-      targetScopeUri: mapping.to_collection_url || mapping.toCollectionUrl || target,
+      // No sourceScope/targetScope: a scope is a ValueSet canonical, which $translate resolves
+      // and checks the code against. OCL only offers repo paths here (from_source_url or
+      // from_collection_url), which resolve to no ValueSet and made every translation fail
+      // with not-found. The systems are carried by the group instead.
       group: [
         {
           source: sourceCanonical,
@@ -461,15 +463,18 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     return new ConceptMap(json, 'R5');
   }
 
+  // OCL map_type expresses "from concept <relation> to concept", which lines up
+  // with the R5 ConceptMapRelationship codes (source <relation> target).
   #toRelationship(mapType) {
-    switch ((mapType || '').toUpperCase()) {
+    switch (String(mapType || '').trim().toUpperCase().replace(/[\s_]+/g, '-')) {
       case 'SAME-AS':
         return 'equivalent';
       case 'NARROWER-THAN':
-        return 'narrower-than';
+        return 'source-is-narrower-than-target';
       case 'BROADER-THAN':
-        return 'broader-than';
+        return 'source-is-broader-than-target';
       case 'NOT-EQUIVALENT':
+      case 'NOT-SAME-AS':
         return 'not-related-to';
       default:
         return 'related-to';
