@@ -12,6 +12,7 @@ class ServerVersionInformation {
     this.lastTat = '';
     this.software = ''; // what software is running
     this.softwareVersion = ''; // CapabilityStatement.software.version, if the server reports one
+    this.softwareReleaseDate = ''; // CapabilityStatement.software.releaseDate, if it is a real date
     this.codeSystems = []; // Array of strings (sorted, unique)
     this.valueSets = []; // Array of strings (sorted, unique)
   }
@@ -60,6 +61,7 @@ class ServerVersionInformation {
       terminologies: this.codeSystems,
       software: this.software,
       'software-version': this.softwareVersion,
+      'software-release-date': this.softwareReleaseDate,
       valuesets: this.valueSets
     };
   }
@@ -74,6 +76,7 @@ class ServerVersionInformation {
     instance.lastTat = json.lastTat || '';
     instance.software = json.software;
     instance.softwareVersion = json['software-version'] || '';
+    instance.softwareReleaseDate = json['software-release-date'] || '';
     instance.codeSystems = json.terminologies || [];
     instance.valueSets = json.valuesets || [];
     return instance;

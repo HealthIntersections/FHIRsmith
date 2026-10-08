@@ -104,15 +104,12 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     }
   }
 
-  assignIds(ids) {
+  prefixIds() {
+    const codeSystems = [...new Set(this._idToCodeSystem.values())];
     this._usedIds.clear();
-    for (const cs of this._idToCodeSystem.values()) {
-      if (!cs.id || ids.has(`CodeSystem/${cs.id}`)) {
-        cs.id = String(ids.size);
-        cs.jsonObj.id = cs.id;
-      }
-      ids.add(`CodeSystem/${cs.id}`);
-      this._usedIds.add(cs.id);
+    this._idToCodeSystem.clear();
+    for (const cs of codeSystems) {
+      this.#trackCodeSystemId(cs);
       this._idToCodeSystem.set(cs.id, cs);
     }
   }
@@ -497,9 +494,11 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       return;
     }
 
-    if (!cs.id || this._usedIds.has(cs.id)) {
+    // code systems are served in this provider's id space
+    const prefix = this.spaceId ? `${this.spaceId}-` : '';
+    if (!cs.id || !cs.id.startsWith(prefix) || this._usedIds.has(cs.id)) {
       const raw = cs.id || cs.name || cs.url || 'ocl-cs';
-      const base = this.spaceId ? `${this.spaceId}-${raw}` : String(raw);
+      const base = raw.startsWith(prefix) ? String(raw) : `${prefix}${raw}`;
       let candidate = base;
       let index = 1;
       while (this._usedIds.has(candidate)) {

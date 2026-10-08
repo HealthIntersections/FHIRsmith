@@ -55,37 +55,38 @@ describe('OCLConceptMapProvider', () => {
   // assignIds
   // -----------------------------------------------------------
   describe('assignIds', () => {
-    it('should be a no-op when spaceId is not set', () => {
+    it('should need a spaceId', () => {
       const provider = new OCLConceptMapProvider();
-      const ids = new Set();
-      provider.assignIds(ids);
-      expect(ids.size).toBe(0);
+      expect(() => provider.assignIds()).toThrow(/no id space/);
+    });
+
+    it('should not move to a different id space', () => {
+      const provider = new OCLConceptMapProvider();
+      provider.assignIds('3');
+      provider.assignIds('3');
+      expect(() => provider.assignIds('4')).toThrow(/already in the id space '3'/);
+      expect(provider.spaceId).toBe('3');
     });
 
     it('should prefix ids when spaceId is set and conceptMaps exist', () => {
       const provider = new OCLConceptMapProvider();
-      provider.spaceId = '3';
-
       // Manually inject a ConceptMap via the internal map
       const fakeCm = { id: 'map-1', url: 'http://x/map-1', jsonObj: { id: 'map-1' } };
       provider.conceptMapMap.set('map-1', fakeCm);
 
-      const ids = new Set();
-      provider.assignIds(ids);
+      provider.assignIds('3');
 
       expect(fakeCm.id).toBe('3-map-1');
-      expect(ids.has('ConceptMap/3-map-1')).toBe(true);
+      expect(fakeCm.jsonObj.id).toBe('3-map-1');
+      expect(provider._idMap.get('3-map-1')).toBe(fakeCm);
     });
 
     it('should not double-prefix', () => {
       const provider = new OCLConceptMapProvider();
-      provider.spaceId = '3';
-
       const fakeCm = { id: '3-map-1', url: 'http://x/map-1', jsonObj: { id: '3-map-1' } };
       provider.conceptMapMap.set('map-1', fakeCm);
 
-      const ids = new Set();
-      provider.assignIds(ids);
+      provider.assignIds('3');
 
       expect(fakeCm.id).toBe('3-map-1');
     });
@@ -104,14 +105,16 @@ describe('OCLConceptMapProvider', () => {
       expect(result).toBe(fakeCm);
     });
 
-    it('should strip spaceId prefix and lookup rawId', async () => {
-      const provider = createProvider();
-      provider.spaceId = '5';
-      const fakeCm = { id: 'raw-id', url: 'http://x' };
-      provider._idMap.set('raw-id', fakeCm);
+    it('should only find a cached ConceptMap by its prefixed id', async () => {
+      const getMock = jest.fn().mockRejectedValue(new Error('404'));
+      const provider = createProvider({ get: getMock });
+      provider.assignIds('5');
+      const fakeCm = { id: '5-raw-id', url: 'http://x' };
+      provider._idMap.set('5-raw-id', fakeCm);
 
-      const result = await provider.fetchConceptMapById('5-raw-id');
-      expect(result).toBe(fakeCm);
+      expect(await provider.fetchConceptMapById('5-raw-id')).toBe(fakeCm);
+      expect(await provider.fetchConceptMapById('raw-id')).toBeNull();
+      expect(getMock).not.toHaveBeenCalled();
     });
 
     it('should fetch from OCL when not cached', async () => {
@@ -128,8 +131,11 @@ describe('OCLConceptMapProvider', () => {
         'http://example.org/SourceB'
       );
 
-      const result = await provider.fetchConceptMapById('map-1');
+      provider.assignIds('5');
+
+      const result = await provider.fetchConceptMapById('5-map-1');
       expect(result).not.toBeNull();
+      expect(result.id).toBe('5-map-1');
       expect(getMock).toHaveBeenCalledWith('/mappings/map-1/');
     });
 

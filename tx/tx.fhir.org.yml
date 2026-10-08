@@ -1,6 +1,14 @@
 base:
   url: https://storage.googleapis.com/tx-fhir-org
 
+# Each source is type[!]:details[=prefix] - see tx/README.md.
+#
+# The prefix (after the last '=') is the id space for the resources the source provides:
+# with npm:hl7.terminology=tho, THO's v3-ActCode is CodeSystem/tho-v3-ActCode. Every
+# resource is served with a prefixed id - never the id it has in its source, which other
+# sources may share - and each endpoint's own FHIR core package uses 'core'. A source with
+# no prefix gets a number, which changes when sources are added, removed or reordered, so
+# any source whose resources people link to by id should have one.
 sources:
   - internal:lang
   - internal:country
@@ -29,14 +37,14 @@ sources:
   - snomed:sct_test_20250909b.cache
   - cpt:CodeSystem-cpt.db|cpt-2023-fragment-0.1.db
   - omop:omop_v20250227.db
-  - npm:hl7.terminology
-  - npm:fhir.tx.support
-  - npm:ihe.formatcode.fhir
-  - npm:fhir.dicom
-  - npm:hl7.fhir.us.core
-  - npm:us.cdc.phinvads
-  - npm:hl7.fhir.uv.sdc
-  - internal:vsac
+  - npm:hl7.terminology=tho
+  - npm:fhir.tx.support=tx
+  - npm:ihe.formatcode.fhir=ihe
+  - npm:fhir.dicom=dicom
+  - npm:hl7.fhir.us.core=us
+  - npm:us.cdc.phinvads=cdc
+  - npm:hl7.fhir.uv.sdc=sdc
+  - internal:vsac=vsac
   - icd11:icd11-2026-01.db
 
 ignored:

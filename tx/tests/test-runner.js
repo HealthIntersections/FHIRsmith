@@ -63,9 +63,9 @@ async function  finishTxTests() {
 function txTestSummary() {
     let set = Array.from(txTestModeSet()).join('+');
     if (error == 0) {
-      return `FHIRsmith passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
+      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
     } else {
-      return `FHIRsmith failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
+      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
     }
 }
 

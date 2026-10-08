@@ -260,7 +260,7 @@ describe('tx OpenAPI description', () => {
     });
 
     test('read and search', async () => {
-      let res = await get('/CodeSystem/administrative-gender');
+      let res = await get('/CodeSystem/core-administrative-gender');
       expect(res.status).toBe(200);
       expect(validate('CodeSystem', res.body)).toEqual([]);
       res = await get('/ValueSet?_count=20');

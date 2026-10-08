@@ -33,7 +33,7 @@ describe('Expand Worker', () => {
   describe('GET /tx/r5/ValueSet/:id/$expand', () => {
     test('should expand ValueSet by id', async () => {
       const response = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender/$expand')
+        .get('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(200);
@@ -191,7 +191,7 @@ describe('Expand Worker', () => {
   describe('POST /tx/r5/ValueSet/:id/$expand', () => {
     test('should expand ValueSet by id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/ValueSet/administrative-gender/$expand')
+        .post('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({
@@ -208,7 +208,7 @@ describe('Expand Worker', () => {
   describe('Expansion response structure', () => {
     test('should include expansion metadata', async () => {
       const response = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender/$expand')
+        .get('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(200);
@@ -223,7 +223,7 @@ describe('Expand Worker', () => {
 
     test('should preserve ValueSet metadata', async () => {
       const response = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender/$expand')
+        .get('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(200);
@@ -443,11 +443,11 @@ describe('Expand Worker', () => {
     test('should return same expansion for identical requests', async () => {
       // Make the same expand request twice
       const response1 = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender/$expand')
+        .get('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json');
 
       const response2 = await request(app)
-        .get('/tx/r5/ValueSet/administrative-gender/$expand')
+        .get('/tx/r5/ValueSet/core-administrative-gender/$expand')
         .set('Accept', 'application/json');
 
       expect(response1.status).toBe(200);

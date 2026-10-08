@@ -237,12 +237,28 @@ shouldn't be - too big. Note that that files in the list below are considered to
 Each source entry follows the format:
 
 ```
-type[!]:details
+type[!]:details[=prefix]
 ```
 
 - **type**: The source type (see Source Types below)
 - **!** (optional): Append to type to mark this source as the default for its code system. When multiple versions of the same code system are loaded, the default is used when no version is specified.
 - **details**: Type-specific configuration (filename, package name, or internal provider name)
+- **prefix** (optional): The id prefix for the resources the source provides - see [Resource Ids](#resource-ids). Everything after the last `=` in the entry is the prefix, so a `url` source whose url contains a `=` must give one.
+
+### Resource Ids
+
+Every CodeSystem, ValueSet and ConceptMap is served with an id in the id space of the source it came from: the source's prefix, `-`, and the id the resource has in the source. With
+
+```yaml
+- npm:hl7.terminology=tho
+```
+
+THO's v3-ActCode code system is `CodeSystem/tho-v3-ActCode`. No resource is served on the id it has in its source - different sources can use the same ids (hl7.terminology and the FHIR core packages both have a CodeSystem `v3-MaritalStatus`), so an unprefixed id can't say which one is meant, and it finds nothing.
+
+- A prefix may contain letters, digits and `.` (no `-`), up to 32 characters, and each prefix may only be given once
+- If a source isn't given a prefix, it gets a number. Numbers depend on the order of the sources (and on which sources provide which kinds of resource), so they change when the YAML changes. Give every source that provides resources a prefix if its ids should stay the same - i.e. on any server where people link to resources by id
+- `core` is the FHIR core package each endpoint loads for its FHIR version (`CodeSystem/core-administrative-gender`), and `x` is the code systems the server implements natively (`CodeSystem/x-...`); neither can be given as a prefix
+- Sources that only provide code systems natively (`internal`, `snomed`, `loinc` etc.) don't serve resources by id, so a prefix does nothing for them
 
 ### Source Types
 
@@ -464,9 +480,9 @@ sources:
   - snomed:sct_us_20250901.cache
   
   # FHIR packages
-  - npm:hl7.terminology
-  - npm:hl7.fhir.us.core
-  - npm:us.nlm.vsac
+  - npm:hl7.terminology=tho
+  - npm:hl7.fhir.us.core=us
+  - npm:us.nlm.vsac=vsac
 ```
 
 Also see tx.fhir.org.yml for the production configuration for tx.fhir.org

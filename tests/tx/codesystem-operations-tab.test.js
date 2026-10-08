@@ -25,7 +25,7 @@
 const request = require('supertest');
 const { getTestApp, shutdownTestApp } = require('./setup');
 
-const OPS_TAB = '/tx/r5/CodeSystem/administrative-gender?_format=html/ops';
+const OPS_TAB = '/tx/r5/CodeSystem/core-administrative-gender?_format=html/ops';
 
 // ValueSet.compose.include.filter.op in R5. All of them are offered: which ones a given
 // code system actually supports is the server's business at expansion time, not the form's.

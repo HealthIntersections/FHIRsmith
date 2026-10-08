@@ -123,6 +123,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
             id: cached.canonicalUrl
           }, 'R5');
           this.#applyCachedCompose(valueSetObj, paramsKey);
+          this.#prefixId(valueSetObj);
           // Indexa o ValueSet restaurado para torná-lo disponível via fetchValueSet
           this.valueSetMap.set(valueSetObj.url, valueSetObj);
           if (valueSetObj.version) {
@@ -233,7 +234,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
-  assignIds(ids) {
+  prefixIds() {
     if (!this.spaceId) {
       return;
     }
@@ -242,13 +243,18 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     this._idMap.clear();
 
     for (const vs of unique) {
-      if (!vs.id.startsWith(`${this.spaceId}-`)) {
-        const nextId = `${this.spaceId}-${vs.id}`;
-        vs.id = nextId;
-        vs.jsonObj.id = nextId;
-      }
+      this.#prefixId(vs);
       this._idMap.set(vs.id, vs);
-      ids.add(`ValueSet/${vs.id}`);
+    }
+  }
+
+  // value sets are served in this provider's id space - including the ones that arrive
+  // after the spaceId is assigned
+  #prefixId(vs) {
+    if (this.spaceId && vs.id && !vs.id.startsWith(`${this.spaceId}-`)) {
+      const nextId = `${this.spaceId}-${vs.id}`;
+      vs.id = nextId;
+      vs.jsonObj.id = nextId;
     }
   }
 
@@ -354,16 +360,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   #getLocalValueSetById(id) {
-    if (this._idMap.has(id)) {
-      return this._idMap.get(id);
-    }
-
-    if (this.spaceId && id.startsWith(`${this.spaceId}-`)) {
-      const unprefixed = id.substring(this.spaceId.length + 1);
-      return this._idMap.get(id) || this._idMap.get(unprefixed) || this.valueSetMap.get(unprefixed) || null;
-    }
-
-    return this._idMap.get(id) || this.valueSetMap.get(id) || null;
+    // _idMap is keyed by the ids the value sets are served with - prefixed, once the
+    // spaceId is assigned
+    return this._idMap.get(id) || null;
   }
 
   // eslint-disable-next-line no-unused-vars
@@ -400,6 +399,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   #indexValueSet(vs) {
+    this.#prefixId(vs);
     const existing = this.valueSetMap.get(vs.url) || null;
 
     // When fresh discovery metadata replaces a cold-cached entry, carry over

@@ -9,6 +9,7 @@ const {PackageContentLoader} = require("../library/package-manager");
 const {PackageValueSetProvider} = require("./vs/vs-package");
 const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
+const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
 
 /**
  * This class holds what information is in context
@@ -153,6 +154,12 @@ class Provider {
   }
 
 
+  /**
+   * Load the FHIR core package for this endpoint. Its resources are served in the 'core' id
+   * space (CodeSystem/core-v3-MaritalStatus): the core packages for different FHIR versions
+   * share ids, and so does other content (hl7.terminology), so no endpoint can serve them on
+   * their own ids (see tx/library/resource-ids.js)
+   */
   async loadNpm(packageManager, cacheFolder,  details, isDefault, mode) {
     // Parse packageId and version from details (e.g., "hl7.terminology.r4#6.0.2")
     let packageId = details;
@@ -171,6 +178,9 @@ class Provider {
     await contentLoader.initialize();
 
     const resources = await contentLoader.getResourcesByType("CodeSystem");
+    let i = 0;
+    // the index has the urls as they are in the package; the version is taken out of the url
+    // when the code system is loaded (see normalizeVersionedCanonicals in package-manager.js)
     for (const resource of resources) {
       let cs;
       try {
@@ -183,13 +193,24 @@ class Provider {
         continue;
       }
       cs.sourcePackage = contentLoader.pid();
+      if (typeof resource.url === 'string' && resource.url.includes('|')) {
+        cs.urlHadVersion = true; // see addCodeSystem
+      }
+      // these objects belong to this endpoint, so they can be given ids here
+      i++;
+      if (!cs.id) {
+        cs.id = String(i);
+      }
+      applyIdPrefix(cs, CORE_PREFIX);
       this.addCodeSystem(cs);
     }
     const vs = new PackageValueSetProvider(contentLoader);
     await vs.initialize();
+    vs.assignIds(CORE_PREFIX);
     this.valueSetProviders.push(vs);
     const cm = new PackageConceptMapProvider(contentLoader);
     await cm.initialize();
+    cm.assignIds(CORE_PREFIX);
     this.conceptMapProviders.push(cm);
   }
 
@@ -582,27 +603,38 @@ class Provider {
     return pid != null && pid.startsWith("hl7.terminology");
   }
 
+  /**
+   * Add a code system to the ones this endpoint knows, by url and by url|version.
+   *
+   * THO precedence, as in CanonicalResourceManager.see() in the Java core: content that
+   * moved from the FHIR core packages to terminology.hl7.org has been QA'd there since, and
+   * its versions went backwards (coverage-selfpay is 4.0.1 in hl7.fhir.r4.core but 1.0.1 in
+   * hl7.terminology), so version precedence can't decide between them. Instead, a code system
+   * from an hl7.terminology package replaces every code system with the same url from a FHIR
+   * core package - none of the core versions stay available.
+   *
+   * Except: hl7.fhir.r4.core has the v2 tables 0006, 0360 and 0391 in two versions each,
+   * with the version in the url (http://terminology.hl7.org/CodeSystem/v2-0006|2.1 - see
+   * urlHadVersion in loadNpm). hl7.terminology doesn't publish those versions, so they stay
+   * available by url|version; THO's code system is the default for the url.
+   */
   addCodeSystem(cs) {
-    // Special case, mirroring CanonicalResourceManager.see() in the Java core:
-    // when content moved from the FHIR core packages to terminology.hl7.org,
-    // the versions went backwards (e.g. coverage-selfpay is 4.0.1 in
-    // hl7.fhir.r4.core (2019) but 1.0.1 in hl7.terminology (2024)), so plain
-    // version precedence would leave the stale core copy as the default. A
-    // resource from an hl7.terminology package displaces any same-URL
-    // resource that came from a FHIR core package, regardless of version.
     if (Provider.#isTHOPackage(cs.sourcePackage)) {
       for (const [key, t] of [...this.codeSystems]) {
-        // only the bare-url (default) entry is displaced; explicitly versioned
-        // entries (key = url|version) stay addressable, because the core packages
-        // carry historical versions (e.g. the normalized R4 v2 tables 0006/0360/0391
-        // at 2.1/2.3.1/2.4/2.6/2.7) that hl7.terminology does not publish at all
-        if (key === t.url && t.url === cs.url && VersionUtilities.isCorePackage(t.sourcePackage)) {
+        if (t.url === cs.url && VersionUtilities.isCorePackage(t.sourcePackage)
+          && (key === t.url || !t.urlHadVersion)) {
           this.codeSystems.delete(key);
         }
       }
+    } else if (VersionUtilities.isCorePackage(cs.sourcePackage) && !cs.urlHadVersion) {
+      // THO's code system is always the default for its url
+      const t = this.codeSystems.get(cs.url);
+      if (t && Provider.#isTHOPackage(t.sourcePackage)) {
+        return;
+      }
     }
     const existing = this.codeSystems.get(cs.url);
-    // the reverse guard: a core-package resource never displaces a THO one
+    // a core-package resource never displaces a THO one as the default
     const yieldsToTHO = existing && Provider.#isTHOPackage(existing.sourcePackage)
       && VersionUtilities.isCorePackage(cs.sourcePackage);
     if (!existing || (!yieldsToTHO && cs.isMoreRecent(existing))) {
@@ -615,6 +647,41 @@ class Provider {
         && VersionUtilities.isCorePackage(cs.sourcePackage);
       if (!vYieldsToTHO) {
         this.codeSystems.set(cs.vurl, cs);
+      }
+    }
+  }
+
+  /**
+   * THO precedence for value sets and concept maps, as for code systems (see addCodeSystem):
+   * once the library's providers have been added after this endpoint's core package, the core
+   * package's value sets and concept maps whose urls an hl7.terminology package also provides
+   * are left out. (No core value set or concept map has the version in its url.)
+   */
+  applyTHOPrecedence() {
+    const thoValueSets = new Set();
+    for (const vp of this.valueSetProviders) {
+      if (vp instanceof PackageValueSetProvider && Provider.#isTHOPackage(vp.sourcePackage())) {
+        for (const vs of vp.valueSetMap.values()) {
+          thoValueSets.add(vs.url);
+        }
+      }
+    }
+    const thoConceptMaps = new Set();
+    for (const cmp of this.conceptMapProviders) {
+      if (cmp instanceof PackageConceptMapProvider && Provider.#isTHOPackage(cmp.sourcePackage())) {
+        for (const cm of cmp.conceptMapMap.values()) {
+          thoConceptMaps.add(cm.url);
+        }
+      }
+    }
+    for (const vp of this.valueSetProviders) {
+      if (vp instanceof PackageValueSetProvider && VersionUtilities.isCorePackage(vp.sourcePackage())) {
+        vp.excludeUrls(thoValueSets);
+      }
+    }
+    for (const cmp of this.conceptMapProviders) {
+      if (cmp instanceof PackageConceptMapProvider && VersionUtilities.isCorePackage(cmp.sourcePackage())) {
+        cmp.excludeUrls(thoConceptMaps);
       }
     }
   }
