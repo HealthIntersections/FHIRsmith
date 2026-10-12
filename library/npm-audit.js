@@ -6,6 +6,9 @@
 // The package list comes from node_modules/.package-lock.json (what is actually
 // installed), falling back to package-lock.json. Dev dependencies are left out, and
 // fhirsmith itself is included, so an advisory published against fhirsmith shows up too.
+// A server installed with `npm install -g fhirsmith` has neither - npm doesn't publish the
+// lock file, and keeps no hidden one for a global package - so then the package list is read
+// from the package.json files in node_modules (a published install has no dev dependencies).
 //
 // Config (all optional), top level of config.json:
 //   "npmAudit": { "enabled": true, "intervalHours": 24 }
@@ -67,9 +70,6 @@ class NpmAudit {
         // try the next one
       }
     }
-    if (!lock || !lock.packages) {
-      throw new Error('No package-lock.json found to audit');
-    }
     const found = new Map();
     const add = (name, version) => {
       if (!found.has(name)) {
@@ -77,13 +77,17 @@ class NpmAudit {
       }
       found.get(name).add(version);
     };
-    for (const [key, info] of Object.entries(lock.packages)) {
-      if (!key || !info || info.dev || info.link || !info.version) {
-        continue;
+    if (lock && lock.packages) {
+      for (const [key, info] of Object.entries(lock.packages)) {
+        if (!key || !info || info.dev || info.link || !info.version) {
+          continue;
+        }
+        const marker = 'node_modules/';
+        const name = info.name || key.substring(key.lastIndexOf(marker) + marker.length);
+        add(name, info.version);
       }
-      const marker = 'node_modules/';
-      const name = info.name || key.substring(key.lastIndexOf(marker) + marker.length);
-      add(name, info.version);
+    } else if (!this.scanInstalled(path.join(this.appDir, 'node_modules'), add)) {
+      throw new Error('No package-lock.json or node_modules found to audit');
     }
     try {
       const pkg = JSON.parse(fs.readFileSync(path.join(this.appDir, 'package.json'), 'utf8'));
@@ -98,6 +102,55 @@ class NpmAudit {
       result[name] = [...versions].sort();
     }
     return result;
+  }
+
+  /**
+   * Read the installed packages from the package.json files under a node_modules folder,
+   * including scoped packages and the node_modules nested inside packages. Linked packages
+   * (symlinks) are left out, as they are from a lock file.
+   *
+   * @returns {boolean} false if there is no node_modules folder
+   */
+  scanInstalled(dir, add) {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return false;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) {
+        continue;
+      }
+      const dirs = [];
+      if (entry.name.startsWith('@')) {
+        let scoped = [];
+        try {
+          scoped = fs.readdirSync(path.join(dir, entry.name), { withFileTypes: true });
+        } catch (e) {
+          // unreadable scope folder - nothing in it
+        }
+        for (const s of scoped) {
+          if (s.isDirectory()) {
+            dirs.push(path.join(dir, entry.name, s.name));
+          }
+        }
+      } else {
+        dirs.push(path.join(dir, entry.name));
+      }
+      for (const pkgDir of dirs) {
+        try {
+          const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
+          if (pkg.name && pkg.version) {
+            add(pkg.name, pkg.version);
+          }
+        } catch (e) {
+          // not a package
+        }
+        this.scanInstalled(path.join(pkgDir, 'node_modules'), add);
+      }
+    }
+    return true;
   }
 
   async run() {
