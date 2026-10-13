@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS system (
   uri_stem  TEXT NOT NULL           -- versioned uri prefix used by the native API
 );
 
+-- the code system's own title, per language crawled (system.title is the primary language).
+-- Only a title WHO actually translated is recorded -- an English fallback is not a French title.
+CREATE TABLE IF NOT EXISTS system_title (
+  system  INTEGER NOT NULL REFERENCES system(id),
+  lang    TEXT NOT NULL,
+  title   TEXT NOT NULL,
+  PRIMARY KEY (system, lang)
+);
+
 -- one row per concept
 CREATE TABLE IF NOT EXISTS concept (
   id           INTEGER PRIMARY KEY,
@@ -374,6 +383,8 @@ class Icd11Importer {
       setMeta: db.prepare(`INSERT INTO meta(key,value) VALUES (?,?)
                            ON CONFLICT(key) DO UPDATE SET value=excluded.value`),
       getMeta: db.prepare(`SELECT value FROM meta WHERE key=?`),
+      insSystemTitle: db.prepare(`INSERT INTO system_title(system,lang,title) VALUES (?,?,?)
+                                  ON CONFLICT(system,lang) DO UPDATE SET title=excluded.title`),
       insSystem: db.prepare(`INSERT INTO system(code,url,version,title,is_tree,api_root,uri_stem)
                              VALUES (@code,@url,@version,@title,@is_tree,@api_root,@uri_stem)
                              ON CONFLICT(code) DO UPDATE SET
@@ -566,6 +577,8 @@ class Icd11Importer {
 
     for (const lang of languages) {
       const isPrimary = lang === primaryLang;
+      // before the resume check: a language whose concepts are all done still needs its title
+      await this.storeSystemTitle(systemId, def, lang, isPrimary ? root : null);
       const done = new Set(this.stmt.doneLangs.all(systemId, lang).map(r => r.uri));
       const todo = uris.filter(u => !done.has(unversion(u)));
       if (!todo.length) { this.log(`  [${lang}] already complete`); continue; }
@@ -607,6 +620,32 @@ class Icd11Importer {
     this.buildClosure(systemId);
     this.checkIntegrity(systemId, def);
     return systemId;
+  }
+
+  /**
+   * Record the linearization root's title in one language. `root` is the document already
+   * fetched for the primary language; other languages cost one extra call each. The root's
+   * title carries the language WHO actually answered in, so an untranslated title (WHO falls
+   * back to English) is skipped rather than stored under the requested language.
+   */
+  async storeSystemTitle(systemId, def, lang, root) {
+    if (!root) {
+      const r = await this.getEntity(WHO + def.apiRoot, lang);
+      if (!r.ok) {
+        this.problem('title-failed', r.error, { system: def.code, lang, uri: def.apiRoot });
+        this.warn(`  ! could not read the ${lang} title of ${def.apiRoot}: ${r.error}`);
+        return;
+      }
+      root = r.body;
+    }
+    const title = textOf(root.title);
+    if (!title) return;
+    const got = langOf(root.title, lang);
+    if (got.split('-')[0] !== lang.split('-')[0]) {
+      this.log(`  [${lang}] no translated title (WHO answered in ${got})`);
+      return;
+    }
+    this.stmt.insSystemTitle.run(systemId, lang, title);
   }
 
   /**

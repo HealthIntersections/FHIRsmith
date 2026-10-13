@@ -45,7 +45,7 @@ sources:
   - npm:us.cdc.phinvads=cdc
   - npm:hl7.fhir.uv.sdc=sdc
   - internal:vsac=vsac
-  - icd11:icd11-2026-01.db
+  - icd11:icd11-2026-01-b.db
 
 ignored:
   - urn:iso:std:iso:3166#20210120

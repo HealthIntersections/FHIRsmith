@@ -74,7 +74,12 @@ class CodeSystemProvider {
    * the others report "LOINC".
    * @returns {string} display name for the code system
    */
-  name() { return this.system() + (this.version() ? "|"+this.version() : "") }
+  /**
+   * @param {Languages} [languages] - the request's working languages, for a provider whose name
+   *   is translated; the default ignores them
+   */
+  // eslint-disable-next-line no-unused-vars
+  name(languages) { return this.system() + (this.version() ? "|"+this.version() : "") }
 
   /**
    * @returns {string} uri for the code system

@@ -113,8 +113,11 @@ class ICD11Services extends BaseCSServices {
   /**
    * The default is system|version, but $lookup's `name` is meant to be a display name for
    * the code system. OMOP overrides it the same way; WHO returns the linearization title.
+   * It follows the request's languages like any other display, falling back to the primary
+   * title. $lookup passes its working languages (displayLanguage, else Accept-Language),
+   * since displayLanguage never reaches opContext.langs; other callers pass nothing.
    */
-  name() { return this.shared.title; }
+  name(languages) { return this.shared.titles?.[this.#displayLang(languages)] || this.shared.title; }
   description() { return this.shared.title; }
   totalCount() { return this.shared.count; }
   defLang() { return 'en'; }
@@ -191,12 +194,13 @@ class ICD11Services extends BaseCSServices {
     return row ? new ICD11Concept(row) : null;
   }
 
-  /** The three things the expression parser needs from the database. */
+  /** What the expression parser needs: the database, and the request's translations. */
   #expressionContext() {
     return {
       get: (sql, params) => this.#get(sql, params),
       all: (sql, params) => this.#all(sql, params),
       resolve: (text) => this.#resolve(text),
+      translate: (msgId, params) => this.opContext.i18n.translate(msgId, this.opContext.langs, params),
     };
   }
 
@@ -309,8 +313,8 @@ class ICD11Services extends BaseCSServices {
    * iterable of Language, in quality order; the database holds translations keyed on the
    * primary subtag, so that is what is matched.
    */
-  #displayLang() {
-    const langs = this.opContext?.langs;
+  #displayLang(languages) {
+    const langs = languages || this.opContext?.langs;
     if (langs) {
       for (const l of langs) {
         const base = l.language || String(l.code || '').split('-')[0];
@@ -615,8 +619,9 @@ class ICD11Services extends BaseCSServices {
     if (!target) {
       // a value set that names a code that is not there is broken, and saying so is more
       // use than quietly expanding to nothing
-      throw new Issue('error', 'code-invalid', null, null,
-        `The filter value '${value}' is not a code in ${this.system()}`, 'invalid-code', 422);
+      throw new Issue('error', 'code-invalid', null, 'FILTER_VALUE_UNKNOWN_CODE',
+        this.opContext.i18n.translate('FILTER_VALUE_UNKNOWN_CODE', this.opContext.langs, [value, this.system()]),
+        'invalid-code', 422);
     }
     filterContext.filters.push(new ICD11FilterSet('isa', {
       ancestorId: target.id, minDepth: op === 'is-a' ? 0 : 1, value,
@@ -749,12 +754,24 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
       }
       const count = await get('SELECT COUNT(*) n FROM concept WHERE system = ?', [sys.id]);
       const langs = await get("SELECT value FROM meta WHERE key = 'languages'", []);
+      // per-language titles; a database built before system_title existed has none
+      const all = (sql, p) => new Promise((res, rej) =>
+        db.all(sql, p, (e, r) => e ? rej(e) : res(r || [])));
+      const titles = {};
+      const hasTitles = await get(
+        "SELECT 1 x FROM sqlite_master WHERE type = 'table' AND name = 'system_title'", []);
+      if (hasTitles) {
+        for (const r of await all('SELECT lang, title FROM system_title WHERE system = ?', [sys.id])) {
+          titles[r.lang] = r.title;
+        }
+      }
       this._shared = {
         systemCode: sys.code,
         systemId: sys.id,
         url: sys.url,
         version: sys.version,
         title: sys.title,
+        titles,
         isTree: !!sys.is_tree,
         count: count.n,
         languages: (langs?.value || 'en').split(','),
