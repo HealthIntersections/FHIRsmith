@@ -14,5 +14,19 @@
       "fhirVersion": "4.0",
       "context": null
     }
-  ]
+  ],
+  "closure": {
+    "enabled": true,
+    "database": "closures-testing.db",
+    "requireUuidNames": false,
+    "maxTables": 1000,
+    "maxConceptsPerTable": 10000,
+    "maxConceptsPerRequest": 1000,
+    "maxEntriesPerTable": 250000,
+    "maxEntriesPerRequest": 50000,
+    "maxConfigSize": 5242880,
+    "maxQueue": 10,
+    "lockTimeout": 60,
+    "retentionDays": 90
+  }
 }
