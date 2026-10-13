@@ -619,7 +619,7 @@ FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+
 
 FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.2, runner v6.9.12)
 
-## [v0.11.0] - 2026-mm-dd
+## [v0.11.0] - 2026-07-30
 
 ### Added
 

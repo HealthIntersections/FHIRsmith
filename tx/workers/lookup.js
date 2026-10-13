@@ -7,7 +7,7 @@
 // POST /CodeSystem/{id}/$lookup
 //
 
-const { TerminologyWorker } = require('./worker');
+const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
 const { FhirCodeSystemProvider } = require('../cs/cs-cs');
 const { Designations} = require("../library/designations");
 const {TxParameters} = require("../params");
@@ -251,13 +251,16 @@ class LookupWorker extends TerminologyWorker {
     const locateResult = await csProvider.locate(code);
 
     if (!locateResult || !locateResult.context) {
-      let message = `Unable to find code '${code}' in ${csProvider.system()} version ${csProvider.version() || 'unknown'}`
+      const system = csProvider.system();
+      const version = csProvider.version();
+      const msgId = Unknown_Code_in_VersionSCT(system, version);
+      let message = this.i18n.translate(msgId, params.HTTPLanguages, [code, system, version, SCTVersion(system, version)]);
       if (locateResult?.message) {
         message += ' ('+locateResult.message+')';
       }
       // invalid-code, not not-found: the code system was found, the code in it was not.
       // not-found is for a code system or value set that could not be resolved at all.
-      throw new Issue('error', 'not-found', null, null, message, 'invalid-code', 404);
+      throw new Issue('error', 'not-found', null, msgId, message, 'invalid-code', 404);
     }
 
     const ctxt = locateResult.context;
@@ -268,7 +271,7 @@ class LookupWorker extends TerminologyWorker {
     // name (required)
     responseParams.push({
       name: 'name',
-      valueString: csProvider.name()
+      valueString: csProvider.name(params.workingLanguages())
     });
     responseParams.push({
       name: 'code',

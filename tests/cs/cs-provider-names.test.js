@@ -26,7 +26,7 @@ function providerClasses() {
   for (const file of fs.readdirSync(CS_DIR).filter((f) => f.startsWith('cs-') && f.endsWith('.js'))) {
     const src = fs.readFileSync(path.join(CS_DIR, file), 'utf8');
     const classes = [...src.matchAll(/^class (\w+) extends (\w+)/gm)];
-    const names = [...src.matchAll(/^ {2}name\(\) *\{/gm)].map((m) => m.index);
+    const names = [...src.matchAll(/^ {2}name\([^)]*\) *\{/gm)].map((m) => m.index);   // name() or name(languages)
     classes.forEach((m, i) => {
       const end = i + 1 < classes.length ? classes[i + 1].index : src.length;
       if (['CodeSystemProvider', 'BaseCSServices'].includes(m[2]) && m[1] !== 'BaseCSServices') {

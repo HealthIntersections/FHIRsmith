@@ -40,8 +40,16 @@ describe('properties', () => {
     await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-wildcard"}, "5.0");
   });
 
+  it("expand-with-valueset.compose.property-all-properties-wildcard" + 'R4', async () => {
+    await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-wildcard"}, "4.0");
+  });
+
   it("expand-with-valueset.compose.property-all-properties-enums" + 'R5', async () => {
     await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-enums"}, "5.0");
+  });
+
+  it("expand-with-valueset.compose.property-all-properties-enums" + 'R4', async () => {
+    await runTest({"suite":"properties","test":"expand-with-valueset.compose.property-all-properties-enums"}, "4.0");
   });
 
 });
@@ -215,6 +223,22 @@ describe('simple-cases', () => {
 
   it("simple-expand-contained" + 'R4', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-contained"}, "4.0");
+  });
+
+  it("simple-expand-contained-nested" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-nested"}, "5.0");
+  });
+
+  it("simple-expand-contained-nested" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-nested"}, "4.0");
+  });
+
+  it("simple-expand-contained-circular" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-circular"}, "5.0");
+  });
+
+  it("simple-expand-contained-circular" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-circular"}, "4.0");
   });
 
   it("simple-subsumes-parent" + 'R5', async () => {
@@ -1640,6 +1664,14 @@ describe('validation', () => {
 
   it("validation-contained-bad" + 'R4', async () => {
     await runTest({"suite":"validation","test":"validation-contained-bad"}, "4.0");
+  });
+
+  it("validation-contained-nested" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-contained-nested"}, "5.0");
+  });
+
+  it("validation-contained-nested" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-contained-nested"}, "4.0");
   });
 
   it("validation-missing-vs-code-no-system" + 'R5', async () => {
@@ -4471,6 +4503,22 @@ describe('inactive', () => {
     await runTest({"suite":"inactive","test":"inactive-3b-validate"}, "4.0");
   });
 
+  it("inactive-4-validate" + 'R5', async () => {
+    await runTest({"suite":"inactive","test":"inactive-4-validate"}, "5.0");
+  });
+
+  it("inactive-4-validate" + 'R4', async () => {
+    await runTest({"suite":"inactive","test":"inactive-4-validate"}, "4.0");
+  });
+
+  it("inactive-5-validate" + 'R5', async () => {
+    await runTest({"suite":"inactive","test":"inactive-5-validate"}, "5.0");
+  });
+
+  it("inactive-5-validate" + 'R4', async () => {
+    await runTest({"suite":"inactive","test":"inactive-5-validate"}, "4.0");
+  });
+
 });
 
 describe('case', () => {
@@ -4958,6 +5006,22 @@ describe('exclude', () => {
 
   it("exclude-combo" + 'R4', async () => {
     await runTest({"suite":"exclude","test":"exclude-combo"}, "4.0");
+  });
+
+  it("exclude-valueset" + 'R5', async () => {
+    await runTest({"suite":"exclude","test":"exclude-valueset"}, "5.0");
+  });
+
+  it("exclude-valueset" + 'R4', async () => {
+    await runTest({"suite":"exclude","test":"exclude-valueset"}, "4.0");
+  });
+
+  it("exclude-contained" + 'R5', async () => {
+    await runTest({"suite":"exclude","test":"exclude-contained"}, "5.0");
+  });
+
+  it("exclude-contained" + 'R4', async () => {
+    await runTest({"suite":"exclude","test":"exclude-contained"}, "4.0");
   });
 
   it("include-combo" + 'R5', async () => {
@@ -9746,6 +9810,60 @@ describe('langcodes', () => {
 
 });
 
+describe('closure', () => {
+  // $closure: build a closure table one concept at a time. The tests depend on each other, so the suite runs in order, on one thread, after all the other suites. The table is reset by the first test, and the code system it uses is only sent in that request
+
+  it("closure-init" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-init"}, "5.0");
+  });
+
+  it("closure-add-code2a" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2a"}, "5.0");
+  });
+
+  it("closure-add-code2aI" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI"}, "5.0");
+  });
+
+  it("closure-add-code2" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2"}, "5.0");
+  });
+
+  it("closure-add-code1" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code1"}, "5.0");
+  });
+
+  it("closure-add-code2aII" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aII"}, "5.0");
+  });
+
+  it("closure-add-code2aI-again" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI-again"}, "5.0");
+  });
+
+  it("closure-add-code2b" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2b"}, "5.0");
+  });
+
+  it("closure-resync-2" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-2"}, "5.0");
+  });
+
+  it("closure-resync-0" + 'R5', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-0"}, "5.0");
+  });
+
+  it("closure-init" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-init"}, "4.0");
+  });
+
+  it("closure-add-code2a" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2a"}, "4.0");
+  });
+
+
+});
+
 describe('cached (forced caching)', () => {
   beforeAll(() => { setForcedCaching(true); });
   afterAll(() => { setForcedCaching(false); });
@@ -9861,6 +9979,14 @@ describe('simple-cases', () => {
 
   it("simple-expand-contained" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-contained"}, "5.0");
+  });
+
+  it("simple-expand-contained-nested" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-nested"}, "5.0");
+  });
+
+  it("simple-expand-contained-circular" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-contained-circular"}, "5.0");
   });
 
   it("simple-subsumes-parent" + 'R5-cached', async () => {
@@ -10586,6 +10712,10 @@ describe('validation', () => {
 
   it("validation-contained-bad" + 'R5-cached', async () => {
     await runTest({"suite":"validation","test":"validation-contained-bad"}, "5.0");
+  });
+
+  it("validation-contained-nested" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-contained-nested"}, "5.0");
   });
 
   it("validation-missing-vs-code-no-system" + 'R5-cached', async () => {
@@ -12025,6 +12155,14 @@ describe('inactive', () => {
     await runTest({"suite":"inactive","test":"inactive-3b-validate"}, "5.0");
   });
 
+  it("inactive-4-validate" + 'R5-cached', async () => {
+    await runTest({"suite":"inactive","test":"inactive-4-validate"}, "5.0");
+  });
+
+  it("inactive-5-validate" + 'R5-cached', async () => {
+    await runTest({"suite":"inactive","test":"inactive-5-validate"}, "5.0");
+  });
+
 });
 
 describe('case', () => {
@@ -12292,6 +12430,14 @@ describe('exclude', () => {
 
   it("exclude-combo" + 'R5-cached', async () => {
     await runTest({"suite":"exclude","test":"exclude-combo"}, "5.0");
+  });
+
+  it("exclude-valueset" + 'R5-cached', async () => {
+    await runTest({"suite":"exclude","test":"exclude-valueset"}, "5.0");
+  });
+
+  it("exclude-contained" + 'R5-cached', async () => {
+    await runTest({"suite":"exclude","test":"exclude-contained"}, "5.0");
   });
 
   it("include-combo" + 'R5-cached', async () => {
@@ -14732,6 +14878,51 @@ describe('langcodes', () => {
 
   it("expand-langcodes-all" + 'R5-cached', async () => {
     await runTest({"suite":"langcodes","test":"expand-langcodes-all"}, "5.0");
+  });
+
+});
+
+describe('closure', () => {
+  // $closure: build a closure table one concept at a time. The tests depend on each other, so the suite runs in order, on one thread, after all the other suites. The table is reset by the first test, and the code system it uses is only sent in that request
+
+  it("closure-init" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-init"}, "5.0");
+  });
+
+  it("closure-add-code2a" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2a"}, "5.0");
+  });
+
+  it("closure-add-code2aI" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI"}, "5.0");
+  });
+
+  it("closure-add-code2" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2"}, "5.0");
+  });
+
+  it("closure-add-code1" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code1"}, "5.0");
+  });
+
+  it("closure-add-code2aII" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aII"}, "5.0");
+  });
+
+  it("closure-add-code2aI-again" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI-again"}, "5.0");
+  });
+
+  it("closure-add-code2b" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2b"}, "5.0");
+  });
+
+  it("closure-resync-2" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-2"}, "5.0");
+  });
+
+  it("closure-resync-0" + 'R5-cached', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-0"}, "5.0");
   });
 
 });

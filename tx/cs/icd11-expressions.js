@@ -232,12 +232,11 @@ async function parseExpression(ctx, text) {
  */
 function notOnAnyAxis(ctx, stem, token) {
   const axes = stem.axes.map(a => a.axis_name).join(', ');
-  const msg = axes
-    ? `'${token.text}' is not a permitted value on any postcoordination axis of `
-      + `'${stem.stem.text}'. That stem declares: ${axes}`
-    : `'${token.text}' cannot be postcoordinated onto '${stem.stem.text}': that concept `
-      + `declares no postcoordination axes`;
-  return new Issue('error', 'code-invalid', null, null, msg, 'invalid-code', 400).handleAsOO(400);
+  const [msgId, params] = axes
+    ? ['ICD11_PC_VALUE_NOT_ON_AXIS', [token.text, stem.stem.text, axes]]
+    : ['ICD11_PC_NO_AXES', [token.text, stem.stem.text]];
+  return new Issue('error', 'code-invalid', null, msgId, ctx.translate(msgId, params),
+    'invalid-code', 400).handleAsOO(400);
 }
 
 module.exports = { ICD11Expression, ExpressionToken, parseExpression, tokenize, SCHEMA_NS };

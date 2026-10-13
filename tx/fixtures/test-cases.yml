@@ -15,6 +15,6 @@ sources:
   - snomed!:sct_intl_20250201.cache
   - snomed:sct_test_20250909b.cache
   - omop:omop_v20250227.db
-  - icd11:icd11-2026-01.db
+  - icd11:icd11-2026-01-b.db
   - npm:hl7.terminology=tho
   - npm:fhir.tx.support=tx

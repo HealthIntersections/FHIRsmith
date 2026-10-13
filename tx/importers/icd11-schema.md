@@ -42,6 +42,7 @@ text lives in `designation`. The untouched native JSON for each concept is kept 
 |---|---|
 | `meta` | key/value: release, languages, endpoints, tool version, request count |
 | `system` | one row per code system — `mms`, `icf`, `foundation` — with its canonical url, release and `is_tree` |
+| `system_title` | the code system's title per language (`system.title` is the primary one); only titles WHO actually translated |
 | `concept` | one row per entity |
 | `concept_parent` | parent/child edges, `seq` preserving the API's order |
 | `concept_closure` | transitive closure including the reflexive row, so is-a never needs recursion |

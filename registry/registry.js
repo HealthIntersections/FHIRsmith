@@ -582,9 +582,16 @@ class RegistryModule {
   // what the server says about its release (CapabilityStatement.software.releaseDate) -
   // the only source for software other than FHIRsmith
   _reportedReleaseDay(row) {
-    // the day as the server gives it - converting to UTC can move it a day
-    const m = /^(\d{4}-\d{2}-\d{2})/.exec(row.softwareReleaseDate || '');
-    return m ? m[1] : '';
+    const value = row.softwareReleaseDate || '';
+    const m = /^(\d{4}-\d{2}-\d{2})/.exec(value);
+    if (!m) {
+      return '';
+    }
+    // a date is the day as given. A dateTime is an instant, and different servers running
+    // the same release report it in their own time zones (2026-09-05T00:37:46+10:00 and
+    // 2026-09-04T16:37:46+02:00), so the day is the UTC day, to be the same for all of them
+    const t = value.length > 10 ? new Date(value).getTime() : NaN;
+    return isNaN(t) ? m[1] : new Date(t).toISOString().substring(0, 10);
   }
 
   _renderReportedReleaseCells(row, now) {

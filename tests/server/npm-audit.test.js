@@ -56,9 +56,32 @@ describe('collectPackages', () => {
     expect(Object.keys(audit.collectPackages())).toContain('axios');
   });
 
-  test('no lock file at all is an error', () => {
+  test('with no lock file, reads what is installed in node_modules (a global install)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-audit-'));
-    expect(() => new NpmAudit({}, null, dir).collectPackages()).toThrow('No package-lock.json');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fhirsmith', version: '0.15.0' }));
+    const install = (rel, name, version) => {
+      fs.mkdirSync(path.join(dir, rel), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel, 'package.json'), JSON.stringify({ name, version }));
+    };
+    install('node_modules/axios', 'axios', '1.15.2');
+    install('node_modules/tar', 'tar', '7.5.1');
+    install('node_modules/foo', 'foo', '1.0.0');
+    install('node_modules/foo/node_modules/tar', 'tar', '6.2.0');
+    install('node_modules/@scope/pkg', '@scope/pkg', '2.0.0');
+    fs.mkdirSync(path.join(dir, 'node_modules', '.bin'));
+    fs.mkdirSync(path.join(dir, 'node_modules', 'not-a-package'));
+    expect(new NpmAudit({}, null, dir).collectPackages()).toEqual({
+      axios: ['1.15.2'],
+      tar: ['6.2.0', '7.5.1'],
+      foo: ['1.0.0'],
+      '@scope/pkg': ['2.0.0'],
+      fhirsmith: ['0.15.0']
+    });
+  });
+
+  test('no lock file and no node_modules is an error', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-audit-'));
+    expect(() => new NpmAudit({}, null, dir).collectPackages()).toThrow('No package-lock.json or node_modules');
   });
 });
 

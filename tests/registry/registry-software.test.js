@@ -145,6 +145,7 @@ describe('software page', () => {
     addServer(registry, 'Other', 'https://other.example.org/r4', 'Other <Server>', '6.1', 'HTTP 503');
     addServer(registry, 'Silent', 'https://silent.example.org/r4', 'unknown', '');
     addServer(registry, 'Onto', 'https://onto.example.org/fhir', 'Ontoserver', '6.29.0', '', '2026-09-05T00:37:46+10:00');
+    addServer(registry, 'Nordic', 'https://nordic.example.org/fhir', 'Ontoserver', '6.29.0', '', '2026-09-04T16:37:46+02:00');
     addServer(registry, 'Future', 'https://future.example.org/r4', 'FHIRsmith', '0.15.3', '', '2026-12-01');
     data.registries.push(registry);
 
@@ -173,7 +174,14 @@ describe('software page', () => {
 
   test('other software is dated by the release date it reports', () => {
     const row = page().split('<tr>').find(r => r.startsWith('<td>Onto</td>'));
-    expect(row).toContain('<td>2026-09-05</td><td>4 weeks</td>');
+    expect(row).toContain('<td>2026-09-04</td><td>4 weeks</td>');
+  });
+
+  test('the same release reported in different time zones is dated the same day (the UTC day)', () => {
+    const html = page();
+    for (const name of ['Onto', 'Nordic']) {
+      expect(html.split('<tr>').find(r => r.startsWith(`<td>${name}</td>`))).toContain('<td>2026-09-04</td>');
+    }
   });
 
   test('a FHIRsmith release the release list does not know yet falls back to its reported date', () => {
