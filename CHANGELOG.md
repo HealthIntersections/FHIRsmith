@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Text filters on code systems loaded from files and packages ignore case and accents (`colera` finds `Cólera`), and a search of several words matches when each word starts a word of the display or of one designation, in any order (`diabetes tipo 2` finds `Diabetes mellitus tipo 2`). These matches rank below matches of the whole text, shorter displays first.
+- `$expand` with a text filter returns the best matches first.
 
 ### Fixed
 
