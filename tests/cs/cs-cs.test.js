@@ -1512,6 +1512,14 @@ describe('FHIR CodeSystem Provider', () => {
             const words = await ptProvider.searchFilter(filterContext, new SearchFilterText('2 tipo'), true);
             expect(Math.min(...results.concepts.map(item => item.rating))).toBeGreaterThan(Math.max(...words.concepts.map(item => item.rating)));
           });
+
+          test('should rate a match of the words the same whatever separates them in the search', async () => {
+            const rating = async (search) => (await ptProvider.searchFilter(filterContext, new SearchFilterText(search), true))
+              .concepts.find(item => item.concept.code === 'E11').rating;
+            const spaced = await rating('2   ,   tipo   ...   diabetes');
+            expect(spaced).toBe(await rating('2 tipo diabetes'));
+            expect(spaced).toBeLessThan(30);
+          });
         });
       });
 

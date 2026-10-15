@@ -65,6 +65,14 @@ function startsWords(text, words) {
 }
 
 /**
+ * How much of the text the words cover, from 0 to 1, counting one space between words
+ * whatever separated them in the search.
+ */
+function wordsRatio(words, text) {
+  return Math.min(1, words.join(' ').length / text.text.length);
+}
+
+/**
  * Context class for FHIR CodeSystem provider concepts
  */
 class FhirCodeSystemProviderContext {
@@ -1264,13 +1272,13 @@ class FhirCodeSystemProvider extends BaseCSServices {
     // Each word of a search of several starts a word of the display, in any order;
     // the shorter the display, the closer the match
     else if (searchWords.length > 1 && display && startsWords(display, searchWords)) {
-      rating = 20 + (10 * searchTerm.length / display.text.length);
+      rating = 20 + (10 * wordsRatio(searchWords, display));
     }
     // Or of one designation
     else if (searchWords.length > 1) {
       const designation = texts.designations.find(designation => startsWords(designation, searchWords));
       if (designation) {
-        rating = 10 + (10 * searchTerm.length / designation.text.length);
+        rating = 10 + (10 * wordsRatio(searchWords, designation));
       }
     }
 
