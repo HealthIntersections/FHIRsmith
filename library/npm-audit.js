@@ -12,6 +12,11 @@
 //
 // Config (all optional), top level of config.json:
 //   "npmAudit": { "enabled": true, "intervalHours": 24 }
+//
+// Each check also looks up the latest fhirsmith release on npm, so the advice can say
+// whether upgrading will help. When this server is already on the latest release it won't:
+// npm ignores our package.json "overrides" for anything but a clone + npm ci, so an
+// npm-installed server can carry transitive versions the repo itself has overridden away.
 
 const fs = require('fs');
 const path = require('path');
@@ -19,6 +24,7 @@ const axios = require('axios');
 const escape = require('escape-html');
 
 const DEFAULT_URL = 'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk';
+const DEFAULT_LATEST_URL = 'https://registry.npmjs.org/fhirsmith/latest';
 const SEVERITIES = ['critical', 'high', 'moderate', 'low', 'info'];
 const HOUR_MS = 60 * 60 * 1000;
 const FIRST_RUN_DELAY_MS = 60 * 1000; // let startup finish first
@@ -38,11 +44,34 @@ function describeAgo(time, now = Date.now()) {
   return `${Math.floor(hours / 24)} days ago`;
 }
 
+/**
+ * Compare two x.y.z versions numerically (pre-release and build suffixes ignored).
+ * Returns <0, 0 or >0, or null if either can't be read
+ */
+function compareVersions(a, b) {
+  const parse = v => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+    return m ? m.slice(1).map(Number) : null;
+  };
+  const x = parse(a);
+  const y = parse(b);
+  if (!x || !y) {
+    return null;
+  }
+  for (let i = 0; i < 3; i++) {
+    if (x[i] !== y[i]) {
+      return x[i] - y[i];
+    }
+  }
+  return 0;
+}
+
 class NpmAudit {
   constructor(config = {}, logger = null, appDir = path.join(__dirname, '..'), stats = null) {
     this.enabled = config.enabled !== false;
     this.intervalHours = config.intervalHours > 0 ? config.intervalHours : 24;
     this.url = config.url || DEFAULT_URL;
+    this.latestUrl = config.latestUrl || DEFAULT_LATEST_URL;
     this.timeout = config.timeout || 60000;
     this.logger = logger;
     this.appDir = appDir;
@@ -55,6 +84,8 @@ class NpmAudit {
     this.findings = []; // [{name, installed: [versions], id, severity, title, url, range}]
     this.lastError = null; // message from the last attempt, if it failed
     this.lastAttempt = null;
+    this.installedVersion = null; // this server's fhirsmith version, from package.json
+    this.latestVersion = null; // the latest fhirsmith release on npm, if it could be found
   }
 
   /**
@@ -93,6 +124,7 @@ class NpmAudit {
       const pkg = JSON.parse(fs.readFileSync(path.join(this.appDir, 'package.json'), 'utf8'));
       if (pkg.name && pkg.version) {
         add(pkg.name, pkg.version);
+        this.installedVersion = pkg.version;
       }
     } catch (e) {
       // no package.json - nothing to add
@@ -153,6 +185,39 @@ class NpmAudit {
     return true;
   }
 
+  /**
+   * Look up the latest fhirsmith release. A failure only means the advice is less specific,
+   * so it is logged and otherwise ignored (the previous answer is kept)
+   */
+  async checkLatest() {
+    try {
+      const response = await axios.get(this.latestUrl, { timeout: this.timeout, headers: { 'Accept': 'application/json' } });
+      const version = response.data && response.data.version;
+      if (typeof version === 'string' && compareVersions(version, version) === 0) {
+        this.latestVersion = version;
+      }
+    } catch (error) {
+      if (this.logger) {
+        this.logger.info('npm audit: could not look up the latest FHIRsmith release: ' + error.message);
+      }
+    }
+  }
+
+  /**
+   * What the administrator can do about the findings
+   */
+  advice() {
+    const cmp = compareVersions(this.installedVersion, this.latestVersion);
+    if (cmp === null) {
+      return 'The server administrator should upgrade to the latest FHIRsmith release.';
+    }
+    if (cmp < 0) {
+      return `The server administrator should upgrade to FHIRsmith ${this.latestVersion} (this server is running ${this.installedVersion}).`;
+    }
+    return `This server is already running the latest FHIRsmith release (${this.installedVersion}), ` +
+      'so these will be fixed by a future FHIRsmith release.';
+  }
+
   async run() {
     if (this.running) {
       return;
@@ -190,6 +255,7 @@ class NpmAudit {
       this.lastError = null;
       const summary = this.summary();
       if (findings.length > 0) {
+        await this.checkLatest();
         if (this.logger) {
           this.logger.warn(`npm audit: ${summary} in ${this.packageCount} packages: ` +
             findings.map(f => `${f.name} (${f.severity}) ${f.url}`).join('; '));
@@ -278,7 +344,7 @@ class NpmAudit {
     return `<div class="alert ${cls}" role="alert"><strong>Security:</strong> npm audit found ` +
       `${escape(this.summary())} in the packages this server uses ` +
       `(checked ${escape(describeAgo(this.checkedAt.getTime(), now))}). ` +
-      'The server administrator should upgrade to the latest FHIRsmith release. ' +
+      `${escape(this.advice())} ` +
       '<a href="/dashboard#npm-audit">Details</a></div>';
   }
 
@@ -303,6 +369,7 @@ class NpmAudit {
     }
     html += '</p>';
     if (this.findings.length > 0) {
+      html += `<p>${escape(this.advice())}</p>`;
       html += '<table class="grid"><tr><th>Severity</th><th>Package</th><th>Installed</th><th>Vulnerable</th><th>Advisory</th></tr>';
       for (const f of this.findings) {
         const link = /^https:\/\//.test(f.url) ? `<a href="${escape(f.url)}">${escape(f.title || f.url)}</a>` : escape(f.title);
@@ -315,4 +382,4 @@ class NpmAudit {
   }
 }
 
-module.exports = { NpmAudit, describeAgo };
+module.exports = { NpmAudit, describeAgo, compareVersions };

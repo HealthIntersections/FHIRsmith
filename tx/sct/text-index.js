@@ -27,7 +27,7 @@
  * event loop as it goes, and a search takes milliseconds once it exists.
  */
 
-const natural = require('natural');
+const natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
 
 const stemmer = natural.PorterStemmer;
 

@@ -11,7 +11,6 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const FacebookStrategy = require('passport-facebook').Strategy;
@@ -19,6 +18,7 @@ const GitHubStrategy = require('passport-github2').Strategy;
 const rateLimit = require('express-rate-limit');
 const lusca = require('lusca');
 const folders = require('../library/folder-setup');
+const { SqliteSessionStore } = require('../library/sqlite-session-store');
 const escape = require('escape-html');
 
 
@@ -155,17 +155,11 @@ class TokenModule {
   }
 
   initializeSession() {
-    const configDb = this.config.database || 'token.db';
-    const sessionDbPath = path.isAbsolute(configDb)
-      ? configDb
-      : folders.ensureFilePath('token', configDb);
+    // sessions live in the module's own database (initializeDatabase has opened it)
+    this.sessionStore = new SqliteSessionStore({ db: this.db, table: 'sessions' });
 
     const sessionConfig = {
-      store: new SQLiteStore({
-        dir: path.dirname(sessionDbPath),
-        db: path.basename(sessionDbPath),
-        table: 'sessions'
-      }),
+      store: this.sessionStore,
       secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
       name: 'fhir.token.sid', // Don't use default session name
       resave: false,
@@ -1287,6 +1281,9 @@ class TokenModule {
   }
 
   async shutdown() {
+    if (this.sessionStore) {
+      this.sessionStore.close();
+    }
     if (this.db) {
       await new Promise((resolve) => {
         this.db.close((err) => {
