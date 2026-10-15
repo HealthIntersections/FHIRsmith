@@ -99,8 +99,9 @@ paths:
           npm qualifiers (`keywords:`, `author:`, `scope:`, `not:`, `is:` ...) are
           ignored.
         * There is no relevance ranking: `quality`, `popularity` and `maintenance` are
-          accepted and ignored, every `score` is 1, and results are in publication
-          order unless `sort` is given.
+          accepted and ignored, and every `score` is 1. Unless `sort` is given, a
+          package whose id is the whole of `text` comes first (as on npm), then the
+          rest in publication order.
         * Without `size`, every result is returned (npm defaults to 20, but npm's own
           clients always send `size`).
         * `keywords` and `maintainers` are always empty, and there is no `publisher`.
@@ -272,9 +273,19 @@ paths:
     get:
       tags: [registry]
       operationId: downloadPackage
-      summary: Download a package tarball
+      summary: Download a package tarball, or get a version's document
       description: |
-        Returns the package tarball (`.tgz`).
+        Returns the package tarball (`.tgz`) - or, when the request's `Accept` header
+        asks for `application/json` (or npm's `application/vnd.npm.install-v1+json`),
+        the version's npm document: the same object as that version's entry in the
+        package document. The response varies on `Accept` and `FHIR-Package-Download`.
+
+        A request with a `FHIR-Package-Download` header always gets the tarball. The
+        HL7 Java tools send it; a client that downloads tarballs from this URL while
+        asking for JSON should send it too.
+
+        `latest` in place of a version (npm's dist-tag) means the version in the package
+        document's `dist-tags.latest`.
 
         If no version matches exactly, the most recently published pre-release of that
         version (`{version}-*`) is returned instead, so `1.0.0` will find `1.0.0-ballot`
@@ -302,9 +313,15 @@ paths:
             maxLength: 50
             pattern: '^[a-zA-Z0-9._-]+$'
           example: 1.1.0
+        - name: FHIR-Package-Download
+          in: header
+          required: false
+          description: Present (with any value, conventionally `tarball`), the tarball is returned whatever `Accept` says.
+          schema: { type: string }
+          example: tarball
       responses:
         '200':
-          description: The package tarball
+          description: The package tarball, or the version document
           headers:
             Content-Disposition:
               description: '`attachment; filename="{id}#{version}.tgz"`'
@@ -314,6 +331,8 @@ paths:
               schema:
                 type: string
                 contentEncoding: binary
+            application/json:
+              schema: { $ref: '#/components/schemas/PackageVersion' }
         '302':
           description: Redirect to the tarball in bucket storage
           headers:
@@ -325,6 +344,8 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/ServerError' }
 
 components:
@@ -545,6 +566,16 @@ components:
           type: object
           description: Every version this registry holds, keyed by version.
           additionalProperties: { $ref: '#/components/schemas/PackageVersion' }
+        time:
+          type: object
+          description: |
+            Publication time of each version, keyed by version, plus `created` (the
+            earliest) and `modified` (the latest), as in npm's package document.
+          required: [created, modified]
+          properties:
+            created: { type: string, format: date-time }
+            modified: { type: string, format: date-time }
+          additionalProperties: { type: string, format: date-time }
 
     PackageVersion:
       type: object

@@ -79,6 +79,20 @@ const PACKAGE_ID_MAX_LENGTH = 100;
 const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const PACKAGE_VERSION_MAX_LENGTH = 50;
 
+// The query string of a request, for logging (the parameters were validated before the handler runs)
+function queryString(req) {
+  const i = req.originalUrl.indexOf('?');
+  return i < 0 ? '' : req.originalUrl.substring(i + 1);
+}
+
+// A request for /{id}/{version} with this header gets the tarball, whatever its Accept header
+// says. The HL7 Java PackageClient sends it; any client that downloads from that URL while
+// asking for JSON can send it too.
+const TARBALL_HEADER = 'FHIR-Package-Download';
+
+// Each id#version is stored once (see PackageCrawler.checkVersion)
+const UNIQUE_ID_VERSION_INDEX = 'CREATE UNIQUE INDEX SK_PackageVersions_IdVersion ON PackageVersions (Id, Version)';
+
 class PackagesModule {
   constructor(stats) {
     this.router = express.Router();
@@ -708,6 +722,11 @@ class PackagesModule {
             )`, (err) => {
               if (err) pckLog.error('Failed to create FeedPages table:', err.message);
             });
+            // Fails while the database still holds duplicate id#version rows (from before the
+            // crawler checked for them): packages/dedupe-versions.js removes them
+            this.db.run(UNIQUE_ID_VERSION_INDEX.replace('CREATE UNIQUE INDEX', 'CREATE UNIQUE INDEX IF NOT EXISTS'), (err) => {
+              if (err) pckLog.warn('PackageVersions has duplicate id#version rows, so they are not yet unique; run packages/dedupe-versions.js: ' + err.message);
+            });
             resolve();
           }
         }
@@ -797,6 +816,7 @@ class PackagesModule {
         'CREATE INDEX SK_Packages_Id ON Packages (Id, PackageKey)',
         'CREATE INDEX SK_Packages_Canonical ON Packages (Canonical, PackageKey)',
         'CREATE INDEX SK_PackageVersions_Id ON PackageVersions (Id, Version, PackageVersionKey)',
+        UNIQUE_ID_VERSION_INDEX,
         'CREATE INDEX SK_PackageVersions_Canonical ON PackageVersions (Canonical, PackageVersionKey)',
         'CREATE INDEX SK_PackageVersions_PubDate ON PackageVersions (Id, PubDate, PackageVersionKey)',
         'CREATE INDEX SK_PackageVersions_Indexed ON PackageVersions (Indexed, PackageVersionKey)',
@@ -1057,7 +1077,7 @@ class PackagesModule {
       try {
         try {
           await this.serveSearch(req, res);
-          pckLog.info("/catalog" + searchParams);
+          pckLog.info("/catalog?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/catalog:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -1073,7 +1093,7 @@ class PackagesModule {
       try {
         try {
           await this.serveV1Search(req, res);
-          pckLog.info("/search?" + searchParams);
+          pckLog.info("/search?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/-/v1/search:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -1093,7 +1113,7 @@ class PackagesModule {
           let days = daysValue || '10';
           let date = dateValue || new Date().toISOString().split('T')[0];
           await this.serveUpdates(req.secure, res, req, dt, days, date);
-          pckLog.info("/updates?" + searchParams);
+          pckLog.info("/updates?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/updates:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -1221,8 +1241,16 @@ class PackagesModule {
       try {
         try {
           const {id, version} = req.params;
-          await this.serveDownload(req.secure, id, version, res);
-          pckLog.info(`/download/${id}/${version}`);
+          // The same URL gives the tarball or (npm) the version's JSON document
+          res.vary('Accept');
+          res.vary(TARBALL_HEADER);
+          if (this.wantsVersionDocument(req)) {
+            await this.serveVersionDocument(req.secure, id, version, req, res);
+            pckLog.info(`/version/${id}/${version}`);
+          } else {
+            await this.serveDownload(req.secure, id, version, res);
+            pckLog.info(`/download/${id}/${version}`);
+          }
         } catch (error) {
           pckLog.error('Error in /packages/:id/:version:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -1645,8 +1673,47 @@ class PackagesModule {
     });
   }
 
+  // GET /{id}/{version} is npm's version document when the request asks for JSON, and the
+  // tarball otherwise - which is what FHIR clients have always got there, without asking
+  // for JSON. A request carrying the TARBALL_HEADER always gets the tarball.
+  wantsVersionDocument(req) {
+    if (req.get(TARBALL_HEADER) !== undefined) {
+      return false;
+    }
+    return /application\/(json|vnd\.npm\.install-v1\+json)/i.test(req.get('accept') || '');
+  }
+
+  async serveVersionDocument(secure, id, version, req, res) {
+    const packageVersions = await this.getPackageVersions(id);
+    if (packageVersions.length === 0) {
+      res.status(404).json({error: `Package "${id}" not found`});
+      return;
+    }
+    const registry = await this.buildRegistryResponse(id, packageVersions, secure, req);
+    // Resolved as a download is: the exact version, a dist-tag, or the most recently
+    // published pre-release of that version
+    let v = Object.hasOwn(registry.versions, version) ? version
+      : Object.hasOwn(registry['dist-tags'], version) ? registry['dist-tags'][version] : undefined;
+    if (!v) {
+      v = packageVersions.find(pv => pv.Version.startsWith(`${version}-`))?.Version;
+    }
+    if (!v) {
+      res.status(404).json({error: `Version "${version}" of package "${id}" not found`});
+      return;
+    }
+    res.json(registry.versions[v]);
+  }
+
   async serveDownload(secure, id, version, res) {
     try {
+      // A dist-tag in place of a version (npm). The only tag is latest.
+      if (version === 'latest') {
+        const versions = await this.getPackageVersions(id);
+        if (versions.length > 0) {
+          version = versions[0].Version; // as dist-tags.latest: the most recently published
+        }
+      }
+
       // First try exact version match
       let packageData = await this.findPackageVersion(id, version, true);
 
@@ -1951,6 +2018,13 @@ class PackagesModule {
       registry.versions[pv.Version] = versionObj;
     }
 
+    // Publication times, as npm gives them: one per version, plus created and modified
+    const dates = packageVersions.map(pv => new Date(pv.PubDate).toISOString()).sort();
+    registry.time = {created: dates[0], modified: dates[dates.length - 1]};
+    for (const pv of packageVersions) {
+      registry.time[pv.Version] = new Date(pv.PubDate).toISOString();
+    }
+
     // Set latest version and description at package level
     registry['dist-tags'].latest = latestVersion;
     if (description) {
@@ -2118,7 +2192,7 @@ class PackagesModule {
     const q = req.query;
     const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
     try {
-      const results = await this.searchPackages({
+      let results = await this.searchPackages({
         name: q.name,
         dependson: q.dependson,
         canonicalPkg: q.pkgcanonical,
@@ -2128,6 +2202,16 @@ class PackagesModule {
         text: q.text,
         sort: q.sort
       }, req, secure);
+
+      // npm puts the package whose name is the search text first. Without a sort, the
+      // rest stay in publication order.
+      if (q.text && !q.sort) {
+        const name = q.text.trim().toLowerCase();
+        const exact = results.filter(r => r.name.toLowerCase() === name);
+        if (exact.length > 0) {
+          results = [...exact, ...results.filter(r => r.name.toLowerCase() !== name)];
+        }
+      }
 
       const from = parseInt(q.from, 10) || 0;
       const page = q.size
