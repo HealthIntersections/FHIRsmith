@@ -7,9 +7,11 @@
 const axios = require('axios');
 const {XMLParser} = require('fast-xml-parser');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
+const net = require('net');
 const http = require('http');
 const https = require('https');
 const ipaddr = require('ipaddr.js');
@@ -27,6 +29,19 @@ function isNonPublicAddress(ip) {
     return addr.range() !== 'unicast';
   } catch (e) {
     return true; // unparseable - treat as unsafe
+  }
+}
+
+// True for a loopback address: 127.0.0.0/8, ::1, and IPv4-mapped forms of them
+function isLoopbackAddress(ip) {
+  try {
+    let addr = ipaddr.parse(ip);
+    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
+      addr = addr.toIPv4Address();
+    }
+    return addr.range() === 'loopback';
+  } catch (e) {
+    return false;
   }
 }
 
@@ -180,7 +195,8 @@ class PackageCrawler {
   // Enforced at connection time (so it also covers redirect targets and defeats
   // DNS-rebinding), this is the SSRF guard for all outbound http(s) fetches.
   // Set config.allowPrivateAddresses = true to disable (e.g. for local test registries).
-  ssrfLookup() {
+  // allowLoopback lets loopback addresses through, and nothing else that isn't public.
+  ssrfLookup(allowLoopback = false) {
     const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
     return (hostname, options, callback) => {
       if (typeof options === 'function') {
@@ -195,7 +211,7 @@ class PackageCrawler {
         }
         if (!allowPrivate) {
           for (const a of addresses) {
-            if (isNonPublicAddress(a.address)) {
+            if (isNonPublicAddress(a.address) && !(allowLoopback && isLoopbackAddress(a.address))) {
               callback(new Error('Blocked request to non-public address ' + a.address + ' (host ' + hostname + ')'));
               return;
             }
@@ -211,26 +227,49 @@ class PackageCrawler {
   }
 
   // http/https agents that route every connection through the SSRF lookup. Cached so
-  // connections can be pooled across requests.
-  guardedAgents() {
-    if (!this._guardedAgents) {
-      const lookup = this.ssrfLookup();
+  // connections can be pooled across requests. Node doesn't do a lookup when the host is
+  // an IP address (http://127.0.0.1/, http://169.254.169.254/), so those are checked here.
+  // allowLoopback: loopback addresses are allowed too (/npm-check, so it can check this
+  // server itself); other non-public addresses are still refused. The crawler doesn't use it.
+  guardedAgents({allowLoopback = false} = {}) {
+    this._guardedAgentSets = this._guardedAgentSets || {};
+    const key = allowLoopback ? 'loopback' : 'public';
+    if (!this._guardedAgentSets[key]) {
+      const lookup = this.ssrfLookup(allowLoopback);
+      const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
+      const blockedLiteral = (options) => {
+        const host = String(options.host || options.hostname || '').replace(/^\[(.*)\]$/, '$1');
+        if (!allowPrivate && net.isIP(host) && isNonPublicAddress(host) && !(allowLoopback && isLoopbackAddress(host))) {
+          return new Error('Blocked request to non-public address ' + host);
+        }
+        return null;
+      };
       class GuardedHttpAgent extends http.Agent {
         createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
           return super.createConnection(Object.assign({}, options, { lookup }), cb);
         }
       }
       class GuardedHttpsAgent extends https.Agent {
         createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
           return super.createConnection(Object.assign({}, options, { lookup }), cb);
         }
       }
-      this._guardedAgents = {
+      this._guardedAgentSets[key] = {
         httpAgent: new GuardedHttpAgent({ keepAlive: true }),
         httpsAgent: new GuardedHttpsAgent({ keepAlive: true })
       };
     }
-    return this._guardedAgents;
+    return this._guardedAgentSets[key];
   }
 
   // Resolve a local feed path and confine it to an allowed root (path-injection guard).
@@ -319,6 +358,8 @@ class PackageCrawler {
         const response = await axios.get(url, {
           timeout: 60000,
           responseType: 'arraybuffer',
+          // We want the package file's own bytes: decodePackageBody undoes the Content-Encoding
+          decompress: false,
           signal: this.abortController?.signal,
           headers: {
             'User-Agent': 'FHIR Package Crawler/1.0'
@@ -328,7 +369,7 @@ class PackageCrawler {
         });
 
         this.totalBytes += response.data.byteLength;
-        return Buffer.from(response.data);
+        return this.decodePackageBody(Buffer.from(response.data), response.headers['content-encoding']);
       }
     } catch (error) {
       debugLog(`Failed to fetch ${url}: ${error.message}`);
@@ -337,6 +378,35 @@ class PackageCrawler {
       }
       throw new Error(`Failed to fetch ${url}: ${error.message}`);
     }
+  }
+
+  // Undoes the HTTP Content-Encoding of a downloaded package. A .tgz is already gzip, and some
+  // servers (doc.mednet.swiss, for one) label it Content-Encoding: gzip / x-gzip whatever the
+  // request asks for, as if the tar had been compressed for transfer. Unzipping that, as an
+  // HTTP client normally would, leaves a bare tar. So for gzip, the body is taken as the
+  // package unless unzipping it gives another gzip file - a server that really did compress
+  // a .tgz for transfer.
+  decodePackageBody(body, contentEncoding) {
+    const encodings = String(contentEncoding || '').toLowerCase().split(',').map(e => e.trim()).filter(e => e && e !== 'identity');
+    for (const enc of encodings.reverse()) {
+      if (enc === 'gzip' || enc === 'x-gzip') {
+        try {
+          const inner = zlib.gunzipSync(body);
+          if (inner[0] === 0x1f && inner[1] === 0x8b) {
+            body = inner;
+          }
+        } catch (e) {
+          // not gzip after all: leave it for extractNpmPackage to report
+        }
+      } else if (enc === 'br') {
+        body = zlib.brotliDecompressSync(body);
+      } else if (enc === 'deflate') {
+        body = zlib.inflateSync(body);
+      } else {
+        throw new Error(`Unsupported Content-Encoding ${enc}`);
+      }
+    }
+    return body;
   }
 
   async updateTheFeed(url, source, email, packageRestrictions) {
@@ -493,6 +563,7 @@ class PackageCrawler {
 
       if (this.packages.has(id)) {
         this.log.info(`Ignoring package ${id} because it's already been seen in another feed`);
+        itemLog.status = 'Seen in another feed';
         return;
       }
       this.packages.add(id);
@@ -501,6 +572,23 @@ class PackageCrawler {
       if (await this.hasStored(guid)) {
         itemLog.status = 'Already Processed';
         return;
+      }
+
+      // A new GUID for an id#version we already hold: decide before downloading anything.
+      // store() checks again against the id#version inside the tarball.
+      const [titleId, titleVersion] = id.split('#');
+      if (titleId && titleVersion) {
+        const check = await this.checkVersion(titleId, titleVersion, guid);
+        if (check.action === 'skip') {
+          itemLog.status = 'Already Stored';
+          return;
+        }
+        if (check.action === 'error') {
+          this.log.error(check.reason);
+          itemLog.status = 'error';
+          itemLog.error = check.reason;
+          return;
+        }
       }
 
       // Parse publication date
@@ -527,9 +615,9 @@ class PackageCrawler {
       this.log.info('Fetching package: ' + url);
 
       const packageContent = await this.fetchUrl(url, 'application/tar+gzip');
-      await this.store(source, url, guid, pubDate, packageContent, id, itemLog);
+      const outcome = await this.store(source, url, guid, pubDate, packageContent, id, itemLog);
 
-      itemLog.status = 'Fetched';
+      itemLog.status = {stored: 'Fetched', replaced: 'Replaced Simplifier copy', skipped: 'Already Stored'}[outcome];
 
     } catch (error) {
       this.log.error(`Exception processing item ${itemLog.guid || index} from ${source}: `+ error.message);
@@ -602,6 +690,82 @@ class PackageCrawler {
     });
   }
 
+  // Simplifier re-publishes packages that other feeds publish directly. Its copy is a
+  // secondary echo: kept only until the version arrives directly from a publisher's feed.
+  isSimplifierGuid(guid) {
+    return /^https?:\/\/packages\.simplifier\.net\//i.test(guid || '');
+  }
+
+  async findStoredVersions(id, version) {
+    return new Promise((resolve, reject) => {
+      this.db.all('SELECT PackageVersionKey, GUID FROM PackageVersions WHERE Id = ? AND Version = ? ORDER BY PackageVersionKey',
+        [id, version], (err, rows) => err ? reject(err) : resolve(rows || []));
+    });
+  }
+
+  // An id#version is stored once. For a copy arriving with a GUID we haven't stored:
+  //   store    - we don't hold id#version
+  //   replace  - we only hold Simplifier copies, and this copy is direct: it takes their place
+  //   skip     - we already hold it, and this copy is a Simplifier echo
+  //   error    - we already hold it directly, from a different GUID: the new copy is ignored
+  async checkVersion(id, version, guid) {
+    const rows = await this.findStoredVersions(id, version);
+    if (rows.length === 0) {
+      return { action: 'store' };
+    }
+    if (this.isSimplifierGuid(guid)) {
+      return { action: 'skip', reason: `${id}#${version} from ${guid} ignored: already stored from ${rows[0].GUID}` };
+    }
+    const direct = rows.filter(r => !this.isSimplifierGuid(r.GUID));
+    if (direct.length === 0) {
+      return { action: 'replace', keys: rows.map(r => r.PackageVersionKey) };
+    }
+    return { action: 'error', reason: `${id}#${version} from ${guid} ignored: already stored from ${direct[0].GUID}` };
+  }
+
+  run(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, (err) => err ? reject(err) : resolve());
+    });
+  }
+
+  // Point Packages.CurrentVersion at the most recent version of id
+  async refreshCurrentVersion(id) {
+    const latest = await new Promise((resolve, reject) => {
+      this.db.get(`SELECT PackageVersionKey, Canonical FROM PackageVersions
+                   WHERE Id = ? AND Version != 'current'
+                   ORDER BY PubDate DESC, Version DESC LIMIT 1`, [id], (err, row) => err ? reject(err) : resolve(row));
+    });
+    if (latest) {
+      await this.run('UPDATE Packages SET CurrentVersion = ?, Canonical = ? WHERE Id = ?',
+        [latest.PackageVersionKey, latest.Canonical, id]);
+    }
+  }
+
+  // A direct copy replacing the Simplifier copies we held: it takes over the first row (so its
+  // key and download count survive), and any further Simplifier rows go.
+  async replaceVersion(keys, packageBuffer, npmPackage, date, guid, id, canonical, urls) {
+    const [vkey, ...extra] = keys;
+    await this.run(`UPDATE PackageVersions
+                    SET GUID = ?, PubDate = ?, Indexed = datetime('now'), Kind = ?, Canonical = ?,
+                        FhirVersions = ?, Description = ?, Hash = ?, Author = ?, License = ?,
+                        HomePage = ?, Content = ?
+                    WHERE PackageVersionKey = ?`,
+      [guid, date.toISOString(), npmPackage.kind, canonical, npmPackage.fhirVersionList,
+        npmPackage.description, this.genHash(packageBuffer), npmPackage.author, npmPackage.license,
+        npmPackage.url, packageBuffer, vkey]);
+    for (const key of keys) {
+      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs']) {
+        await this.run(`DELETE FROM ${table} WHERE PackageVersionKey = ?`, [key]);
+      }
+    }
+    for (const key of extra) {
+      await this.run('DELETE FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+    }
+    await this.insertRelatedData(vkey, npmPackage, urls);
+    await this.refreshCurrentVersion(id);
+  }
+
   parsePubDate(dateStr) {
     // Handle various RSS date formats
     let cleanDate = dateStr.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -645,12 +809,14 @@ class PackageCrawler {
         throw new Error(`NPM Id "${id}" is not valid from ${source}`);
       }
 
-      // Save to mirror if configured
-      if (this.config.mirrorPath) {
-        let fid = this.fixPrefix(id);
-        const filename = `${fid}-${version}.tgz`;
-        const filepath = path.join(this.config.mirrorPath, filename);
-        fs.writeFileSync(filepath, packageBuffer);
+      // The id#version in the tarball is what counts, which need not be what the feed said
+      const check = await this.checkVersion(id, version, guid);
+      if (check.action === 'skip') {
+        this.log.info(check.reason);
+        return 'skipped';
+      }
+      if (check.action === 'error') {
+        throw new Error(check.reason);
       }
 
       if (!this.isValidSemVersion(version)) {
@@ -680,7 +846,18 @@ class PackageCrawler {
       const urls = this.processPackageUrls(npmPackage);
 
       // Commit to database
-      await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls);
+      await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
+
+      // Only now write the mirror copy: a package that failed validation or didn't commit
+      // must not replace the file that is served for the copy we hold
+      if (this.config.mirrorPath) {
+        let fid = this.fixPrefix(id);
+        const filename = `${fid}-${version}.tgz`;
+        const filepath = path.join(this.config.mirrorPath, filename);
+        fs.writeFileSync(filepath, packageBuffer);
+      }
+
+      return check.action === 'replace' ? 'replaced' : 'stored';
 
     } catch (error) {
       debugLog(error);
@@ -692,7 +869,10 @@ class PackageCrawler {
   async extractNpmPackage(packageBuffer, source) {
     try {
       const files = {};
-      const zlib = require('zlib');
+      if (packageBuffer.length < 2 || packageBuffer[0] !== 0x1f || packageBuffer[1] !== 0x8b) {
+        const start = packageBuffer.subarray(0, 8).toString('hex');
+        throw new Error(`not a gzip file (it starts with ${start || 'nothing'})`);
+      }
 
       // First decompress the gzip
       const decompressed = zlib.gunzipSync(packageBuffer);
@@ -975,7 +1155,10 @@ class PackageCrawler {
     return crypto.createHash('sha1').update(data).digest('hex');
   }
 
-  async commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls) {
+  async commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, replaceKeys = null) {
+    if (replaceKeys && replaceKeys.length > 0) {
+      return this.replaceVersion(replaceKeys, packageBuffer, npmPackage, date, guid, id, canonical, urls);
+    }
     return new Promise((resolve, reject) => {
       // Get next version key
       this.db.get('SELECT MAX(PackageVersionKey) as maxKey FROM PackageVersions', (err, row) => {

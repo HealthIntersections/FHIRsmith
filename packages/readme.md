@@ -31,9 +31,10 @@ In summary:
 | `GET /packages/catalog` | Search packages: `name`, `canonical`, `pkgcanonical`, `fhirversion`, `dependency`, `dependson`, `sort` |
 | `GET /packages/-/v1/search` | npm search API: `text`, `size`, `from`, plus the `/catalog` parameters |
 | `GET /packages/{id}` | npm package document: all versions, dependencies, tarball URLs |
-| `GET /packages/{id}/{version}` | Download a package tarball |
+| `GET /packages/{id}/{version}` | Download a package tarball; or, when the request's `Accept` asks for JSON, npm's document for that version. A `FHIR-Package-Download` header always gets the tarball (the HL7 Java tools send it) |
 | `GET /packages/updates` | Versions published since a date |
 | `GET /packages/broken` | Package versions whose dependencies this registry doesn't hold |
+| `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |
 
 Most endpoints return an HTML page instead of JSON when the request's `Accept`
 header contains `text/html`. The JSON is the contract; the HTML is for people.
@@ -93,7 +94,33 @@ In the server config, under `modules.packages`:
 | `crawler.schedule` | Cron expression for crawls. |
 | `masterUrl` | The list of feeds to crawl. Defaults to `https://fhir.github.io/ig-registry/package-feeds.json`. |
 | `localFeedDirs` | Optional. Directories feeds may be read from as local files (for testing). |
-| `allowPrivateAddresses` | Optional, for testing only. Lets the crawler fetch from private and loopback addresses, which it otherwise refuses (SSRF protection). |
+| `allowPrivateAddresses` | Optional, for testing only. Lets the crawler and `/npm-check` fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
+| `npmCheck.enabled` | `/packages/npm-check`. On unless set to `false`. |
+| `npmCheck.maxConcurrentRuns` | Runs at once, across all users; more get a 503. Default 2. |
+| `npmCheck.runsPerWindow` | Runs per client address per 10 minutes; more get a 429. Default 10. |
+| `npmCheck.requestTimeout` | Milliseconds allowed for each request a run makes. Default 30000. |
+| `npmCheck.maxDownloadMB` | Largest response a run will read (so, the tarball). Default 50. |
+| `npmCheck.control` | The registry, package and version the checks are verified against daily; default `registry.npmjs.org`, `fhirpath` 3.15.0. `false` turns that off. |
+
+## Checking npm compatibility
+
+This server aims to be an npm registry, carrying FHIR fields as well. `npm-check.js`
+holds checks of the npm registry protocol, written from the way npm clients use it:
+search by name, the package document, one version's document, and the tarball. They
+are used three ways:
+
+* `/packages/npm-check` runs them against any registry and shows a report. Its requests
+  go through the crawler's SSRF guard, with a timeout and a size cap, and runs are rate
+  limited. Unlike the crawler, it may use loopback addresses (`localhost`, `127.0.0.1`,
+  `::1`), so it can check this server itself; other non-public addresses are refused.
+* `tests/packages/npm-registry.test.js` runs them against registry.npmjs.org, which must
+  pass every check: if npm changes its behaviour, that test is how we find out. Set
+  `NPM_REGISTRY_TARGETS` to run them against other registries too.
+* `tests/packages/npm-registry-local.test.js` runs them against this module, started
+  locally with known packages.
+
+`/packages/npm-check` also runs them against registry.npmjs.org once a day, and says on
+the page if any fail there.
 
 ## Crawling
 
@@ -108,6 +135,16 @@ stores it.
   crawl; older pages are read once and remembered in the `FeedPages` table.
 * A feed that rate-limits (HTTP 429) is abandoned for that crawl and retried next
   time.
+* Each id#version is stored once. Simplifier re-publishes packages that other feeds
+  publish directly, so its copy is a secondary echo: a version we already hold is
+  never fetched from Simplifier, and a version we only hold from Simplifier is
+  replaced when it arrives directly. A second direct copy of a version we already
+  hold, from a different GUID, is logged as an error and ignored. This is checked
+  against the feed's title before downloading, and against the tarball's own
+  package.json before storing. The database enforces it with a unique index on
+  `(Id, Version)`.
+* The mirror copy of a tarball is written only after the package has passed
+  validation and been stored.
 
 `/packages/log` shows what the last crawl did, feed by feed and item by item.
 
@@ -118,3 +155,19 @@ metadata and the tarball itself. `Packages` holds one row per package id, with i
 current version and download count. `PackageDependencies` (stored as `id@version`),
 `PackageFHIRVersions` and `PackageURLs` (the canonical URLs of the resources in each
 version) support search.
+
+### Repairing an older database
+
+Databases built before each id#version was stored once can hold duplicate rows, and
+mirror files that don't match the stored hash. `dedupe-versions.js` repairs both:
+
+```
+node packages/dedupe-versions.js -db <packages.db> -mirror <mirror folder>          # report only
+node packages/dedupe-versions.js -db <packages.db> -mirror <mirror folder> -apply
+```
+
+It keeps one row per id#version by the crawler's rule (direct beats Simplifier,
+otherwise the first stored), lists any id#version with two different direct copies
+for manual cleanup, creates the unique index once no duplicates remain, and rewrites
+any mirror file whose content doesn't match its row's hash, from the database. Back up
+the database first. Until the index exists, the server logs a warning at startup.

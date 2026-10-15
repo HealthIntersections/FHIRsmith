@@ -74,6 +74,16 @@
       "crawler": {
         "enabled": true,
         "schedule": "0 * * * *"
+      },
+      // /packages/npm-check: checks any registry against the npm registry protocol. On by
+      // default; the other settings are the defaults. "control": false stops the daily
+      // check against the npm registry itself.
+      "npmCheck": {
+        "enabled": true,
+        "maxConcurrentRuns": 2,
+        "runsPerWindow": 10,
+        "requestTimeout": 30000,
+        "maxDownloadMB": 50
       }
     },
     "registry": {

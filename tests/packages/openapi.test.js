@@ -84,6 +84,10 @@ describe('package server OpenAPI description', () => {
       expectParametersMatch(spec, 'listBrokenDependencies', 'query', PackagesModule.QUERY_PARAMS.broken);
     });
 
+    test('npm-check parameters match the server validation rules', () => {
+      expectParametersMatch(spec, 'checkNpmRegistry', 'query', PackagesModule.QUERY_PARAMS.npmCheck);
+    });
+
     test('download path parameters match the server validation rules', () => {
       expectParametersMatch(spec, 'downloadPackage', 'path', PackagesModule.PATH_PARAMS);
     });

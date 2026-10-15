@@ -9,19 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
--
+- Packages: the SSRF guard on the crawler's outbound requests could be bypassed with an IP address in the URL (`http://127.0.0.1/`, `http://169.254.169.254/`, `http://[::1]/`), because Node makes no DNS lookup for an IP address and the guard only ran there. IP addresses are now checked too
 
 ### Added
 
--
+- Packages: `/packages/npm-check` checks any registry against the npm registry protocol, the way npm clients use it (search by name, package document, version document, tarball), and reports each check with the reason for any failure. In a browser it is a form; otherwise it returns the report as JSON. The checks also run once a day against registry.npmjs.org, and the page says if any fail there. Requests are limited in time and size, may not go to non-public addresses other than loopback (so a server can check itself), and are rate limited per client. `npmCheck` in the packages config sets the limits; `"enabled": false` turns it off
+- Packages: npm-protocol test suites that run the same checks against registry.npmjs.org (the control: if npm changes its behaviour, this is where it shows), and against the packages module with known content
+- Packages: the package document has npm's `time` (each version's publication date, plus `created` and `modified`)
+- Packages: `latest` can be used in place of a version (`/packages/{id}/latest`)
+- Packages: `packages/dedupe-versions.js`, a one-off repair for an existing database: removes duplicate id#version rows, rewrites mirror files that don't match the database, and adds the unique index. It needs nothing but Node 24; see Repairing an older database in packages/readme.md
 
 ### Changed
 
--
+- Packages: `GET /packages/{id}/{version}` returns npm's version document (JSON) when the request's `Accept` asks for `application/json` (or `application/vnd.npm.install-v1+json`), and the tarball otherwise. On the npm registry this URL is always the version document, and npm clients and tools that treat this server as an npm registry (including the HL7 Java tools, when they are configured with a server of npm type) ask for it with `Accept: application/json` and then download from `dist.tarball`. But FHIR clients have always downloaded the tarball from this URL - the Java tools without sending an `Accept` header at all, browsers and curl with ones that don't ask for JSON - so the tarball stays the default, and only a request that explicitly asks for JSON gets the document. The risk is a client that downloads the tarball from here while asking for JSON (typically a generic HTTP wrapper that sets `Accept: application/json` on every request). For those, and as a guarantee for the Java tools, a request with a `FHIR-Package-Download` header (any value; the Java PackageClient sends `tarball`) always gets the tarball, whatever its `Accept`. The response carries `Vary: Accept, FHIR-Package-Download` so caches keep the two apart
+- Packages: `/packages/-/v1/search` puts the package whose id is the whole search text first, as npm does. `/packages/catalog` is unchanged
+- Packages: each id#version is stored once. Simplifier republishes packages that other feeds publish directly, so its copy is a secondary echo: a version already held is not fetched from Simplifier, and a version held only from Simplifier is replaced when it arrives directly from its publisher's feed. A second direct copy from a different GUID is logged as an error and ignored. The database enforces this with a unique index on (Id, Version); on an existing database the server logs a warning until `dedupe-versions.js` has been run
+- Packages: package downloads keep the bytes the server sent: a `.tgz` labelled `Content-Encoding: gzip` is no longer unzipped by the HTTP client
 
 ### Fixed
 
--
+- Packages: the tarball served for some versions didn't match the shasum in the package document (46 of 6961 versions on packages2.fhir.org), so npm clients would reject them. Two causes: the same id#version stored twice from different feeds (the document showed one copy's hash, the mirror held the other), and a tarball that failed validation (e.g. a draft flagged `notForPublication`) overwriting the mirror file before it was rejected. The mirror file is now written only after the package has been validated and stored
+- Packages: packages from feeds that label `.tgz` files `Content-Encoding: x-gzip` (e.g. doc.mednet.swiss) failed with "incorrect header check"
+- Packages: the search, catalog and updates log lines showed `[object Object]` instead of the query
+- Packages: the crawler log showed `??` for an item skipped because another feed had it in the same crawl
 
 ### Tx Conformance Statement
 
