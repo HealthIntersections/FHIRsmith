@@ -8,6 +8,14 @@
 
 const zlib = require('zlib');
 const { runNpmCheck, makeGetter, STEPS, CHECKS, untar } = require('../../packages/npm-check');
+const PackageCrawler = require('../../packages/package-crawler');
+
+// The same SSRF-guarded agents /npm-check uses: public addresses, and loopback for local servers
+function guardedGetter() {
+  const crawler = Object.create(PackageCrawler.prototype);
+  crawler.config = {};
+  return makeGetter(crawler.guardedAgents({ allowLoopback: true }));
+}
 
 // Defines the checks for one registry. target is { name, base, pkg, version }; base may be
 // filled in later (by a beforeAll in the enclosing describe), as long as it is set before
@@ -17,7 +25,7 @@ function defineNpmRegistryChecks(target) {
     let report;
 
     beforeAll(async () => {
-      report = await runNpmCheck({ registry: target.base, pkg: target.pkg, version: target.version }, makeGetter());
+      report = await runNpmCheck({ registry: target.base, pkg: target.pkg, version: target.version }, guardedGetter());
     }, 120000);
 
     for (const step of STEPS) {

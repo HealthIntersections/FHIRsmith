@@ -36,7 +36,7 @@ function targets() {
       if (!base || !pkg || !version) {
         throw new Error(`NPM_REGISTRY_TARGETS entry "${entry}" is neither a preset (${Object.keys(PRESETS).join(', ')}) nor "baseUrl|package|version"`);
       }
-      list.push({ name: base, base: base.replace(/\/+$/, ''), pkg, version });
+      list.push({ name: base, base, pkg, version }); // runNpmCheck drops trailing slashes
     }
   }
   return list;

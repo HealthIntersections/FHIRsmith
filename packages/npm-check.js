@@ -341,18 +341,28 @@ function untar(buf) {
 }
 
 function packageUrl(base, name, version) {
-  // npm escapes the '/' of a scoped name; '@' is left alone
-  const id = name.startsWith('@') ? name.replace('/', '%2f') : encodeURIComponent(name);
+  // npm's form: everything escaped, including the '/' of a scoped name, except its leading '@'
+  const id = encodeURIComponent(name).replace(/^%40/, '@');
   return version ? `${base}/${id}/${encodeURIComponent(version)}` : `${base}/${id}`;
 }
 
 /**
  * An HTTP GET for the checks: { url, status, contentType, body } or { url, error }.
- * options: httpAgent / httpsAgent (the server passes its SSRF-guarded agents), timeout (ms),
- * maxBytes (per response), userAgent.
+ *
+ * The URLs come from whoever asks for a check (the registry), and from the registry itself
+ * (the tarball URL, redirects), so every request must go through SSRF-guarded agents:
+ * PackageCrawler.guardedAgents(), which refuse non-public addresses at connection time,
+ * redirects included. httpAgent and httpsAgent are required for that reason.
+ * options: httpAgent, httpsAgent, timeout (ms), maxBytes (per response), userAgent.
  */
 function makeGetter(options = {}) {
+  if (!options.httpAgent || !options.httpsAgent) {
+    throw new Error('makeGetter needs the SSRF-guarded httpAgent and httpsAgent (PackageCrawler.guardedAgents())');
+  }
   return async (url, accept = 'application/json') => {
+    if (!/^https?:\/\//i.test(url)) {
+      return { url, error: 'not an http(s) URL' };
+    }
     try {
       const res = await axios.get(url, {
         responseType: 'arraybuffer',
@@ -378,7 +388,10 @@ function makeGetter(options = {}) {
  * message, and the requests the checks were based on.
  */
 async function runNpmCheck(target, get) {
-  const base = target.registry.replace(/\/+$/, '');
+  let base = target.registry;
+  while (base.endsWith('/')) {
+    base = base.slice(0, -1);
+  }
   const { pkg, version } = target;
   const started = new Date();
   const search = extra => get(`${base}/-/v1/search?text=${encodeURIComponent(pkg)}${extra}`);

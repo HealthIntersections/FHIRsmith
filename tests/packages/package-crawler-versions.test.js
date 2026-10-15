@@ -342,6 +342,29 @@ describe('crawler: requests to non-public addresses are refused', () => {
     expect(await fetchVia({}, url, { allowLoopback: true })).toMatch(/Blocked request to non-public address/);
   });
 
+  test('a redirect to a non-public address is refused too', async () => {
+    const { makeGetter } = require('../../packages/npm-check');
+    const redirector = http.createServer((req, res) => {
+      res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' });
+      res.end();
+    });
+    await new Promise(resolve => redirector.listen(0, '127.0.0.1', resolve));
+    try {
+      const crawler = Object.create(PackageCrawler.prototype);
+      crawler.config = {};
+      const get = makeGetter({ ...crawler.guardedAgents({ allowLoopback: true }), timeout: 5000 });
+      const res = await get(`http://127.0.0.1:${redirector.address().port}/`);
+      expect(res.error).toMatch(/Blocked request to non-public address 169\.254\.169\.254/);
+    } finally {
+      await new Promise(resolve => redirector.close(resolve));
+    }
+  });
+
+  test('the npm check\'s HTTP client refuses to run without the guarded agents', () => {
+    const { makeGetter } = require('../../packages/npm-check');
+    expect(() => makeGetter()).toThrow(/SSRF-guarded/);
+  });
+
   test('unless allowPrivateAddresses is set', async () => {
     expect(await fetchVia({ allowPrivateAddresses: true }, `http://127.0.0.1:${port}/`)).toBe('reached');
   });
