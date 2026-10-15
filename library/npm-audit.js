@@ -13,8 +13,9 @@
 // Config (all optional), top level of config.json:
 //   "npmAudit": { "enabled": true, "intervalHours": 24 }
 //
-// Each check also looks up the latest fhirsmith release on npm, so the advice can say
-// whether upgrading will help. When this server is already on the latest release it won't:
+// Each check also looks up the latest fhirsmith release on npm. The dashboard always says
+// whether a newer release is available, and the advice about any findings says whether
+// upgrading will help. When this server is already on the latest release it won't:
 // npm ignores our package.json "overrides" for anything but a clone + npm ci, so an
 // npm-installed server can carry transitive versions the repo itself has overridden away.
 
@@ -186,6 +187,41 @@ class NpmAudit {
   }
 
   /**
+   * This server's own version, from package.json (collectPackages reads it too, but that
+   * can fail for reasons that have nothing to do with the version)
+   */
+  readInstalledVersion() {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(this.appDir, 'package.json'), 'utf8'));
+      if (pkg.version) {
+        this.installedVersion = pkg.version;
+      }
+    } catch (e) {
+      // leave it as it was
+    }
+  }
+
+  /**
+   * Dashboard line: this server's version, and whether there is a newer release
+   */
+  renderRelease() {
+    if (!this.installedVersion) {
+      return '';
+    }
+    let html = `<p><strong>FHIRsmith release:</strong> this server runs ${escape(this.installedVersion)}`;
+    const cmp = compareVersions(this.installedVersion, this.latestVersion);
+    if (cmp === null) {
+      html += ' (the latest release could not be checked)';
+    } else if (cmp < 0) {
+      html += ` - <span style="color:#b60">FHIRsmith ${escape(this.latestVersion)} is available</span>` +
+        ' (<a href="https://github.com/HealthIntersections/FHIRsmith/releases">release notes</a>)';
+    } else {
+      html += ', the latest release';
+    }
+    return html + '</p>';
+  }
+
+  /**
    * Look up the latest fhirsmith release. A failure only means the advice is less specific,
    * so it is logged and otherwise ignored (the previous answer is kept)
    */
@@ -227,6 +263,9 @@ class NpmAudit {
     if (this.stats) {
       this.stats.task('npm audit', 'Checking');
     }
+    // independent of the audit: failures here are logged and otherwise ignored
+    this.readInstalledVersion();
+    await this.checkLatest();
     try {
       const packages = this.collectPackages();
       const response = await axios.post(this.url, packages, {
@@ -255,7 +294,6 @@ class NpmAudit {
       this.lastError = null;
       const summary = this.summary();
       if (findings.length > 0) {
-        await this.checkLatest();
         if (this.logger) {
           this.logger.warn(`npm audit: ${summary} in ${this.packageCount} packages: ` +
             findings.map(f => `${f.name} (${f.severity}) ${f.url}`).join('; '));
@@ -356,6 +394,7 @@ class NpmAudit {
     if (!this.enabled) {
       return html + '<p><strong>npm audit:</strong> disabled (npmAudit.enabled = false)</p></div>';
     }
+    html += this.renderRelease();
     if (!this.checkedAt) {
       html += '<p><strong>npm audit:</strong> ';
       html += this.lastError ? `<span style="color:#b00">could not be run: ${escape(this.lastError)}</span>` : 'not run yet';

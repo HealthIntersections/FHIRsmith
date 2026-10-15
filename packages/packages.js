@@ -944,11 +944,13 @@ class PackagesModule {
     }
   }
 
-  stopCrawlerJob() {
+  // node-cron 4: stop() may return a promise
+  async stopCrawlerJob() {
     if (this.crawlerJob) {
       this.crawler.shutdown();
-      this.crawlerJob.stop();
+      const job = this.crawlerJob;
       this.crawlerJob = null;
+      await job.stop();
       pckLog.info('Package crawler job stopped');
     }
   }
@@ -1831,14 +1833,34 @@ class PackagesModule {
     res.send(htmlServer.renderPage('packages', 'npm Registry Check', content, stats));
   }
 
-  // GET /{id}/{version} is npm's version document when the request asks for JSON, and the
-  // tarball otherwise - which is what FHIR clients have always got there, without asking
-  // for JSON. A request carrying the TARBALL_HEADER always gets the tarball.
+  // GET /{id}/{version} is npm's version document when the request prefers JSON, and the
+  // tarball otherwise - which is what FHIR clients have always got there. Preferring JSON
+  // means ranking it above anything else the request accepts: a JSON type with a higher q
+  // than any */*, application/* or tarball type. Many clients send JSON together with */*
+  // at the same q - axios's default, application/json, text/plain, */*, which is what
+  // SUSHI (fhir-package-loader) sends when it downloads a tarball from here - and they get
+  // the tarball. A request carrying the TARBALL_HEADER always gets the tarball.
   wantsVersionDocument(req) {
     if (req.get(TARBALL_HEADER) !== undefined) {
       return false;
     }
-    return /application\/(json|vnd\.npm\.install-v1\+json)/i.test(req.get('accept') || '');
+    let json = 0;
+    let other = 0;
+    for (const part of String(req.get('accept') || '').split(',')) {
+      const [type, ...params] = part.split(';').map(s => s.trim().toLowerCase());
+      const qParam = params.find(p => p.startsWith('q='));
+      const q = qParam ? parseFloat(qParam.substring(2)) : 1;
+      if (!type || Number.isNaN(q)) {
+        continue;
+      }
+      if (type === 'application/json' || type === 'application/vnd.npm.install-v1+json') {
+        json = Math.max(json, q);
+      } else if (['*/*', 'application/*', 'application/tar+gzip', 'application/gzip', 'application/x-gzip',
+        'application/x-tar', 'application/octet-stream'].includes(type)) {
+        other = Math.max(other, q);
+      }
+    }
+    return json > 0 && json > other;
   }
 
   async serveVersionDocument(secure, id, version, req, res) {
@@ -2844,7 +2866,7 @@ class PackagesModule {
   async shutdown() {
     pckLog.info('Shutting down Packages module...');
 
-    this.stopCrawlerJob();
+    await this.stopCrawlerJob();
 
     // Close database connection
     if (this.db) {

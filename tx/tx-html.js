@@ -1330,6 +1330,30 @@ class TxHtmlRenderer {
   }
 
   /**
+   * The page for a read of an id that nothing has, but that several resources had in their
+   * source (see ReadWorker.notFound): a list of them, to pick from.
+   *
+   * @param {string} resourceType
+   * @param {string} id - the id that was asked for
+   * @param {Array<{id, url, version, title, source}>} matches
+   * @returns {string} html
+   */
+  renderIdChoices(resourceType, id, matches) {
+    let html = `<p>There is no ${escape(resourceType)} with the id <code>${escape(id)}</code> on this server. ` +
+      `Every resource here has an id that starts with a prefix for the source it came from, and ` +
+      `${matches.length} ${escape(resourceType)} resources had the id <code>${escape(id)}</code> in their source:</p>`;
+    html += '<table class="grid"><tr><th>Id</th><th>URL</th><th>Version</th><th>Title</th><th>Source</th></tr>';
+    for (const m of matches) {
+      // relative to /{type}/{id}, like the redirect when there is only one
+      html += `<tr><td><a href="${escape(encodeURIComponent(m.id))}">${escape(m.id)}</a></td>` +
+        `<td>${escape(m.url || '')}</td><td>${escape(m.version || '')}</td>` +
+        `<td>${escape(m.title || '')}</td><td>${escape(m.source || '')}</td></tr>`;
+    }
+    html += '</table>';
+    return html;
+  }
+
+  /**
    * Render Bundle resource
    */
   async renderBundle(json, req) {

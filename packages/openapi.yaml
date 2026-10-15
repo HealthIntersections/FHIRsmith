@@ -350,9 +350,12 @@ paths:
       summary: Download a package tarball, or get a version's document
       description: |
         Returns the package tarball (`.tgz`) - or, when the request's `Accept` header
-        asks for `application/json` (or npm's `application/vnd.npm.install-v1+json`),
-        the version's npm document: the same object as that version's entry in the
-        package document. The response varies on `Accept` and `FHIR-Package-Download`.
+        prefers JSON, the version's npm document: the same object as that version's entry
+        in the package document. Preferring JSON means ranking `application/json` (or npm's
+        `application/vnd.npm.install-v1+json`) above any `*/*`, `application/*` or tarball
+        type by q-value: `application/json` alone does, but `application/json, text/plain, */*`
+        (axios's default, which SUSHI sends) does not. The response varies on `Accept` and
+        `FHIR-Package-Download`.
 
         A request with a `FHIR-Package-Download` header always gets the tarball. The
         HL7 Java tools send it; a client that downloads tarballs from this URL while

@@ -40,6 +40,16 @@ describe('Read Worker', () => {
       expect(response.status).toBe(404);
     });
 
+    test('should redirect a browser from the id the CodeSystem has in its package', async () => {
+      // published IGs link to resources by the id they had in their source
+      const response = await request(app)
+        .get('/tx/r5/CodeSystem/administrative-gender')
+        .set('Accept', 'text/html');
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toBe('core-administrative-gender');
+    });
+
     test('should return 404 for non-existent CodeSystem', async () => {
       const response = await request(app)
         .get('/tx/r5/CodeSystem/non-existent-id')

@@ -234,4 +234,40 @@ describe('TX Module', () => {
       expect(response.body.resourceType).toBe('OperationOutcome');
     });
   });
+
+  describe('Content-Type', () => {
+    test('should say so when a POST has no Content-Type', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json');
+
+      expect(response.status).toBe(415);
+      expect(response.body.resourceType).toBe('OperationOutcome');
+      expect(response.body.issue[0].details.text).toBe(
+        'No Content-Type was given for this POST; use application/fhir+json or application/fhir+xml');
+    });
+
+    test('should name an unsupported Content-Type', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'text/plain')
+        .send('hello');
+
+      expect(response.status).toBe(415);
+      expect(response.body.issue[0].details.text).toBe('Unsupported Media Type: text/plain');
+    });
+
+    test('should accept a form post with a charset', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8')
+        .send('code=x');
+
+      // past the media type check, to the unknown operation
+      expect(response.status).toBe(404);
+      expect(response.body.resourceType).toBe('OperationOutcome');
+    });
+  });
 });
