@@ -472,7 +472,12 @@ class MetadataHandler {
         { name: 'useSupplement' },
         { name: 'valueSet' },
         { name: 'valueSetVersion' }
-      ]
+      ],
+      textFilter: 'On code systems loaded from files and packages, a text filter ignores case and accents. ' +
+        'It matches concepts whose code, display, definition or a designation contains the text. ' +
+        'A filter of several words also matches a display or designation in which each word starts a word, ' +
+        'in any order; for this, punctuation and spaces only separate words. The closest matches come first. ' +
+        'Other code systems, such as SNOMED CT, LOINC and RxNorm, match text in their own way.'
     };
   }
 
