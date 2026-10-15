@@ -5,6 +5,24 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-10-16
+
+### Added
+
+- The dashboard always says which FHIRsmith release the server runs, and whether a newer one is available (looked up once a day with the npm audit check; before, the latest release was only looked up, and only mentioned, when the audit found something)
+- README: how to follow releases (GitHub release emails, the releases Atom feed, and the dashboard)
+
+### Fixed
+
+- Packages: SUSHI (and anything else using fhir-package-loader) couldn't download packages from this server: `GET /packages/{id}/{version}` returned the version's JSON document instead of the tarball (since 0.16.0). The rule was "JSON when Accept includes `application/json`", but fhir-package-loader downloads with axios's default `Accept: application/json, text/plain, */*`, and plenty of other HTTP clients send JSON alongside `*/*` by default without wanting it. The version document is now returned only when the request prefers JSON: a JSON type ranked above any `*/*`, `application/*` or tarball type by q-value (`application/json` alone, or `application/json, */*;q=0.1`). Everything else gets the tarball, and `FHIR-Package-Download` still forces it
+- A POST with no Content-Type now says so (it gave "Unsupported Media Type: " with nothing after it)
+- A form post whose Content-Type has a charset (`application/x-www-form-urlencoded; charset=UTF-8`) was refused as an unsupported media type
+- Links in published IGs to a resource by the id it had in its source (`ValueSet/2.16.840.1.113762.1.4.1`, from before ids were prefixed, as in `ValueSet/vsac-2.16.840.1.113762.1.4.1`) work again in a browser: a read of an id nothing has redirects to the one resource that had that id in its source, or lists them when there are several. Other requests still get a 404
+
+### Tx Conformance Statement
+
+FHIRsmith v0.16.1 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.2)
+
 ## [0.16.0] - 2026-10-15
 
 ### Security

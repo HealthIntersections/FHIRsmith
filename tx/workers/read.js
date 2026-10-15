@@ -8,6 +8,9 @@ const { TerminologyWorker } = require('./worker');
 const {debugLog} = require("../operation-context");
 
 const { buildOperationOutcome } = require('../library/operation-outcome');
+const { originalId } = require('../library/resource-ids');
+const { acceptsHtml } = require('../tx-html');
+
 class ReadWorker extends TerminologyWorker {
   /**
    * @param {OperationContext} opContext - Operation context
@@ -32,10 +35,12 @@ class ReadWorker extends TerminologyWorker {
    * @param {express.Request} req - Express request (with txProvider attached)
    * @param {express.Response} res - Express response
    * @param {string} resourceType - The resource type (CodeSystem, ValueSet, ConceptMap)
-   * @param {Object} log - Logger instance
+   * @param {Function} [renderChoices] - (req, res, resourceType, id, matches) renders the
+   *   page that lists the resources an unprefixed id could mean (see notFound)
    */
-  async handle(req, res, resourceType) {
+  async handle(req, res, resourceType, renderChoices = null) {
     const { id } = req.params;
+    this.renderChoices = renderChoices;
 
     this.log.debug(`Read ${resourceType}/${id}`);
 
@@ -114,7 +119,7 @@ class ReadWorker extends TerminologyWorker {
       }
     }
 
-    return res.status(404).json(buildOperationOutcome('error', 'not-found', `CodeSystem/${id} not found`));
+    return await this.notFound(req, res, 'CodeSystem', id);
   }
 
   /**
@@ -131,7 +136,7 @@ class ReadWorker extends TerminologyWorker {
       }
     }
 
-    return res.status(404).json(buildOperationOutcome('error', 'not-found', `ValueSet/${id} not found`));
+    return await this.notFound(req, res, 'ValueSet', id);
   }
   /**
    * Handle ConceptMap read
@@ -147,7 +152,84 @@ class ReadWorker extends TerminologyWorker {
       }
     }
 
-    return res.status(404).json(buildOperationOutcome('error', 'not-found', `ConceptMap/${id} not found`));
+    return await this.notFound(req, res, 'ConceptMap', id);
+  }
+
+  /**
+   * Nothing has the id asked for. Published IGs link to resources by the id they had in
+   * their source (ValueSet/2.16.840.1.113762.1.4.1), from before every id was put in its
+   * provider's id space (ValueSet/vsac-2.16.840.1.113762.1.4.1). So for a browser, look
+   * for resources that had that id in their source: if there's one, redirect to it, and
+   * if there are several, list them. Anything other than a browser still gets a 404 -
+   * an unprefixed id can't say which resource it means (see library/resource-ids.js).
+   */
+  async notFound(req, res, resourceType, id) {
+    if (this.renderChoices && acceptsHtml(req)) {
+      const matches = await this.findByOriginalId(resourceType, id);
+      if (matches.length === 1) {
+        req.logInfo = `redirected to ${matches[0].id}`;
+        // relative, so that it works whatever path the server is behind; keeps the query
+        const q = req.originalUrl.indexOf('?');
+        return res.redirect(302, encodeURIComponent(matches[0].id) + (q >= 0 ? req.originalUrl.substring(q) : ''));
+      }
+      if (matches.length > 1) {
+        req.logInfo = `${matches.length} matches`;
+        return await this.renderChoices(req, res, resourceType, id, matches);
+      }
+    }
+    return res.status(404).json(buildOperationOutcome('error', 'not-found', `${resourceType}/${id} not found`));
+  }
+
+  /**
+   * The resources of a type that had this id in their source, across all the providers.
+   *
+   * @returns {Promise<Array<{id, url, version, title, source}>>} in provider order
+   */
+  async findByOriginalId(resourceType, id) {
+    const found = [];
+    const add = (resource) => {
+      const json = resource.jsonObj || resource;
+      if (json.id && !found.some(m => m.id === json.id)) {
+        found.push({
+          id: json.id,
+          url: json.url || null,
+          version: json.version || null,
+          title: json.title || json.name || null,
+          source: typeof resource.sourcePackage === 'string' ? resource.sourcePackage : null
+        });
+      }
+    };
+
+    switch (resourceType) {
+      case 'CodeSystem':
+        // the map holds a code system under more than one key (url, url|version)
+        for (const cs of new Set(this.provider.codeSystems.values())) {
+          this.deadCheck('findByOriginalId-cs');
+          if (originalId(cs.jsonObj.id) === id) {
+            add(cs);
+          }
+        }
+        break;
+      case 'ValueSet':
+        for (const vsp of this.provider.valueSetProviders) {
+          this.deadCheck('findByOriginalId-vs');
+          const vs = vsp.spaceId ? await vsp.fetchValueSetById(`${vsp.spaceId}-${id}`) : null;
+          if (vs) {
+            add(vs);
+          }
+        }
+        break;
+      case 'ConceptMap':
+        for (const cmp of this.provider.conceptMapProviders) {
+          this.deadCheck('findByOriginalId-cm');
+          const cm = cmp.spaceId ? await cmp.fetchConceptMapById(`${cmp.spaceId}-${id}`) : null;
+          if (cm) {
+            add(cm);
+          }
+        }
+        break;
+    }
+    return found;
   }
 }
 
