@@ -249,6 +249,9 @@ describe('packages module: GET /npm-check', () => {
     expect((await check({ registry: base })).status).toBe(400);
     expect((await check({ registry: 'ftp://example.org', package: PKG, version: '1.0.0' })).status).toBe(400);
     expect((await check({ registry: 'https://user:pw@example.org', package: PKG, version: '1.0.0' })).status).toBe(400);
+    // a repeated parameter, which Express turns into an array
+    expect((await request(app).get(`/packages/npm-check?registry=${encodeURIComponent(base)}&registry=x&package=${PKG}&version=1.0.0`)).status).toBe(400);
+    expect((await request(app).get(`/packages/npm-check?registry=${encodeURIComponent(base)}&package=${PKG}&package=y&version=1.0.0`)).status).toBe(400);
   });
 
   test.each([

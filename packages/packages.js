@@ -1785,6 +1785,11 @@ class PackagesModule {
       }
       return res.status(400).json({error: 'Parameter registry is required'});
     }
+    // validateQueryParams already refuses a repeated parameter (which Express makes an array);
+    // checked again here so this handler doesn't depend on that
+    if (typeof registry !== 'string' || typeof pkg !== 'string' || typeof version !== 'string') {
+      return fail(400, 'The registry, package and version must each be given once');
+    }
     if (!pkg || !version) {
       return fail(400, 'Give the package and version to check, as well as the registry');
     }
