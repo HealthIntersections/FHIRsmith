@@ -418,10 +418,12 @@ class SHLModule {
     }
   }
 
-  stopCleanupJob() {
+  // node-cron 4: stop() may return a promise
+  async stopCleanupJob() {
     if (this.cleanupJob) {
-      this.cleanupJob.stop();
+      const job = this.cleanupJob;
       this.cleanupJob = null;
+      await job.stop();
     }
   }
 
@@ -1060,7 +1062,7 @@ class SHLModule {
   async shutdown() {
     shlLog.info('Shutting down SHL module...');
 
-    this.stopCleanupJob();
+    await this.stopCleanupJob();
 
     // Stop FHIR validator
     if (this.fhirValidator) {

@@ -944,11 +944,13 @@ class PackagesModule {
     }
   }
 
-  stopCrawlerJob() {
+  // node-cron 4: stop() may return a promise
+  async stopCrawlerJob() {
     if (this.crawlerJob) {
       this.crawler.shutdown();
-      this.crawlerJob.stop();
+      const job = this.crawlerJob;
       this.crawlerJob = null;
+      await job.stop();
       pckLog.info('Package crawler job stopped');
     }
   }
@@ -2864,7 +2866,7 @@ class PackagesModule {
   async shutdown() {
     pckLog.info('Shutting down Packages module...');
 
-    this.stopCrawlerJob();
+    await this.stopCrawlerJob();
 
     // Close database connection
     if (this.db) {
