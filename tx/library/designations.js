@@ -1,6 +1,6 @@
 const { LanguagePartType, Languages, Language, LanguageDefinitions} = require('../../library/languages');
 const {validateParameter, validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
-const natural = require('natural');
+const natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
 /**
  * Display checking modes for concept designations
  */

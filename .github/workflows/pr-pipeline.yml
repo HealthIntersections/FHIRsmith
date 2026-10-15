@@ -56,21 +56,26 @@ jobs:
         run: npm ci
 
       - name: Run npm audit
-        run: npm audit --audit-level=moderate
-        continue-on-error: true  # Don't fail on low-severity issues
+        # Everything, dev tooling included. These all have fixes at the time of writing, so fail on
+        # high/critical; moderate and low are reported here but don't fail the build
+        run: npm audit --audit-level=high
 
-      - name: Check for known vulnerabilities
+      - name: Check what ships for known vulnerabilities
+        # What the Docker image gets (it is built with npm ci --omit=dev): fail on anything moderate or worse
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Audit a fresh install of the published package
+        # npm ignores package.json "overrides" when FHIRsmith is installed (npm install -g fhirsmith)
+        # rather than cloned, and the published package has no lock file. So the repo's own audit can
+        # be clean while installed servers get vulnerable transitive versions. This installs the
+        # package the way users do, into an empty folder, and audits what that actually gets
         run: |
-          # Check for high/critical vulnerabilities only, in what ships (the image is built with
-          # npm ci --omit=dev). Dev tooling is reported by the step above, but doesn't fail the
-          # build: jest and nodemon depend on braces, which has an advisory with no fixed version.
-          # npm audit returns non-zero exit code if vulnerabilities are found at the specified level
-          if npm audit --omit=dev --audit-level=high; then
-            echo "No high or critical vulnerabilities found"
-          else
-            echo "High or critical vulnerabilities found!"
-            exit 1
-          fi
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/fresh-install"
+          cd "$RUNNER_TEMP/fresh-install"
+          npm init -y > /dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/fhirsmith-*.tgz
+          npm audit --omit=dev --audit-level=moderate
 
   dependency-check:
     name: Dependency Analysis

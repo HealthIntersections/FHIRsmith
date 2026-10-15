@@ -780,7 +780,7 @@ class RxNormImporter {
     if (this.options.verbose) console.log('Generating word stems...');
 
     // Simple English stemmer implementation
-    var natural = require('natural');
+    var natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
     const stems = new Map();
 
     // Get all RXNORM concepts

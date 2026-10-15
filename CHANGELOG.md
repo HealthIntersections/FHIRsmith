@@ -5,6 +5,24 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-10-15
+
+### Security
+- 
+- Token: the login session store is now FHIRsmith's own (`library/sqlite-session-store.js`), in place of connect-sqlite3. connect-sqlite3 depends on sqlite3 5, which brought node-gyp 8, tar 6 and @tootallnate/once into every npm install of FHIRsmith (12 advisories, one critical). The `overrides` in package.json kept them out of a clone + `npm ci` (and so out of the Docker image and the repo's own `npm audit`), but npm ignores overrides when installing the published package, so `npm install -g fhirsmith` still got them. Sessions are kept in the same `sessions` table of the token database, in the same layout, so existing logins carry over
+- Dependencies: fhirpath 5 (its ucum-lhc no longer brings csv-parse 4) and node-cron 4 (no longer depends on uuid), for the same reason: the csv-parse and uuid overrides didn't reach npm installs. The csv-parse override is gone
+- Dependencies: natural 8 (uuid 13). Its stemmers are unchanged - every stemmer we use gives the same stem as natural 6 on ~1.6M words (RxNorm, LOINC's translations, and English, French, Spanish, Italian and Portuguese word lists), so existing SNOMED caches and RxNorm databases don't need rebuilding. FHIRsmith now loads only `natural/lib/natural/stemmers`: the package index also loads natural's storage backends, which run dotenv (reading any `.env` in the working directory into the environment, and in natural 8 printing a banner to stdout)
+- Development: jest 30 and jest-junit 17, and `npm run dev` uses Node's own `node --watch` in place of nodemon. With these, `npm audit` is clean for the dev tooling too (jest 29 and nodemon brought braces, and jest's coverage tooling sprintf-js, neither of which has a fixed version). The package.json overrides are down to one, js-yaml 4 for @istanbuljs/load-nyc-config, which only affects the dev install; the rest were no longer doing anything
+- The PR pipeline fails on high/critical advisories anywhere in the dependency tree, on moderate ones in what ships, and audits a fresh install of the packed package (installed the way users install it, so the repo's overrides don't apply)
+
+### Changed
+
+- The npm audit self-check looks up the latest FHIRsmith release, and only tells the administrator to upgrade when there is a newer release to upgrade to; a server already on the latest release says so instead
+
+### Tx Conformance Statement
+
+FHIRsmith v0.16.0 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.1)
+
 ## [0.15.1] - 2026-10-15
 
 ### Security

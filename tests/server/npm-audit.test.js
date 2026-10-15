@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const axios = require('axios');
-const { NpmAudit, describeAgo } = require('../../library/npm-audit');
+const { NpmAudit, describeAgo, compareVersions } = require('../../library/npm-audit');
 
 
 const NOW = new Date('2026-10-06T12:00:00Z').getTime();
@@ -37,7 +37,11 @@ function stats() {
   return { addTask: jest.fn(), task: jest.fn(), taskDone: jest.fn(), taskError: jest.fn() };
 }
 
-beforeEach(() => jest.spyOn(axios, 'post'));
+beforeEach(() => {
+  jest.spyOn(axios, 'post');
+  // the latest-release lookup: unreachable unless a test says otherwise
+  jest.spyOn(axios, 'get').mockRejectedValue(new Error('offline'));
+});
 afterEach(() => jest.restoreAllMocks());
 
 describe('collectPackages', () => {
@@ -98,6 +102,7 @@ describe('run', () => {
     expect(s.taskDone).toHaveBeenCalled();
     expect(audit.renderBanner()).toBe('');
     expect(audit.renderDashboard()).toContain('no known vulnerabilities</span> in 4 packages');
+    expect(axios.get).not.toHaveBeenCalled();
   });
 
   test('advisories are reported, worst first', async () => {
@@ -149,6 +154,57 @@ describe('run', () => {
     await audit.run();
     expect(audit.renderBanner()).toBe('');
     expect(audit.renderDashboard()).toContain('could not be run: timeout');
+  });
+});
+
+describe('advice', () => {
+  const FINDING = { data: { tar: [{ severity: 'critical', title: 't', url: 'https://github.com/advisories/GHSA-2' }] } };
+
+  test('an older server is told which release to upgrade to', async () => {
+    axios.post.mockResolvedValue(FINDING);
+    axios.get.mockResolvedValue({ data: { name: 'fhirsmith', version: '0.15.1' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    expect(axios.get.mock.calls[0][0]).toBe('https://registry.npmjs.org/fhirsmith/latest');
+    const expected = 'The server administrator should upgrade to FHIRsmith 0.15.1 (this server is running 0.13.4).';
+    expect(audit.renderBanner()).toContain(expected);
+    expect(audit.renderDashboard()).toContain(expected);
+  });
+
+  test('a server on the latest release is not told to upgrade', async () => {
+    axios.post.mockResolvedValue(FINDING);
+    axios.get.mockResolvedValue({ data: { name: 'fhirsmith', version: '0.13.4' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    const banner = audit.renderBanner();
+    expect(banner).toContain('already running the latest FHIRsmith release (0.13.4)');
+    expect(banner).not.toContain('should upgrade');
+  });
+
+  test('if the latest release cannot be found, the advice is generic and the audit still reports', async () => {
+    axios.post.mockResolvedValue(FINDING);
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    expect(audit.lastError).toBeNull();
+    expect(audit.renderBanner()).toContain('should upgrade to the latest FHIRsmith release.');
+  });
+
+  test('a later failed lookup keeps the previous answer', async () => {
+    axios.post.mockResolvedValue(FINDING);
+    axios.get.mockResolvedValueOnce({ data: { version: '0.15.1' } }).mockRejectedValueOnce(new Error('timeout'));
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    await audit.run();
+    expect(audit.latestVersion).toBe('0.15.1');
+  });
+
+  test('compareVersions', () => {
+    expect(compareVersions('0.13.4', '0.15.1')).toBeLessThan(0);
+    expect(compareVersions('0.15.1', '0.15.1')).toBe(0);
+    expect(compareVersions('0.15.10', '0.15.9')).toBeGreaterThan(0);
+    expect(compareVersions('v1.0.0-beta.1', '1.0.0')).toBe(0);
+    expect(compareVersions('0.15.1', null)).toBeNull();
+    expect(compareVersions('garbage', '0.15.1')).toBeNull();
   });
 });
 
