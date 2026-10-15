@@ -19,6 +19,9 @@ const {describeCron} = require("../library/cron-utilities");
 const {tokenMatches, tokenConfigured} = require("../library/request-token");
 const pckLog = Logger.getInstance().child({ module: 'packages' });
 const packagesOpenApi = require('./openapi');
+const rateLimit = require('express-rate-limit');
+const { runNpmCheck, makeGetter } = require('./npm-check');
+const npmCheckPage = require('./npm-check-page');
 
 // Query parameter rules for validateQueryParams. These are also the contract published in
 // openapi.yaml, and tests/packages/openapi.test.js checks that the two agree - so change
@@ -78,6 +81,25 @@ const PACKAGE_ID_PATTERN = /^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/;
 const PACKAGE_ID_MAX_LENGTH = 100;
 const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._-]+$/;
 const PACKAGE_VERSION_MAX_LENGTH = 50;
+
+// GET /npm-check: run the npm registry protocol checks against a registry (also in openapi.yaml)
+const NPM_CHECK_PARAMS = {
+  registry: { maxLength: 500, pattern: /^https?:\/\/[^\s<>"'`]+$/ },
+  package: { maxLength: PACKAGE_ID_MAX_LENGTH, pattern: PACKAGE_ID_PATTERN },
+  version: { maxLength: PACKAGE_VERSION_MAX_LENGTH, pattern: PACKAGE_VERSION_PATTERN }
+};
+
+// npm-check defaults; all can be set under modules.packages.npmCheck in the config
+const NPM_CHECK_DEFAULTS = {
+  enabled: true,
+  maxConcurrentRuns: 2, // across all users; more get a 503
+  runsPerWindow: 10, // per client IP, per 10 minutes
+  requestTimeout: 30000, // ms, per request the checks make
+  maxDownloadMB: 50, // per response, so for the tarball
+  // the npm registry itself, checked once a day so the page can show the checks still hold
+  control: { registry: 'https://registry.npmjs.org', package: 'fhirpath', version: '3.15.0' }
+};
+const NPM_CHECK_CONTROL_MAX_AGE = 24 * 60 * 60 * 1000;
 
 // The query string of a request, for logging (the parameters were validated before the handler runs)
 function queryString(req) {
@@ -624,6 +646,9 @@ class PackagesModule {
     content += '<div class="card-body">';
     content += '<p><a href="/packages/search" class="btn btn-primary mb-2">Search Packages</a></p>';
     content += '<p><a href="/packages/log" class="btn btn-secondary mb-2">View Crawler Log</a></p>';
+    if (this.npmCheckConfig().enabled) {
+      content += '<p><a href="/packages/npm-check" class="btn btn-secondary mb-2">Check an npm Registry</a></p>';
+    }
     if (this.config.crawler.enabled) {
       content += '<p><button onclick="triggerCrawl()" class="btn btn-warning mb-2">Manual Crawl</button></p>';
     }
@@ -723,9 +748,9 @@ class PackagesModule {
               if (err) pckLog.error('Failed to create FeedPages table:', err.message);
             });
             // Fails while the database still holds duplicate id#version rows (from before the
-            // crawler checked for them): packages/dedupe-versions.js removes them
+            // crawler checked for them): packages/utilities/dedupe-versions.js removes them
             this.db.run(UNIQUE_ID_VERSION_INDEX.replace('CREATE UNIQUE INDEX', 'CREATE UNIQUE INDEX IF NOT EXISTS'), (err) => {
-              if (err) pckLog.warn('PackageVersions has duplicate id#version rows, so they are not yet unique; run packages/dedupe-versions.js: ' + err.message);
+              if (err) pckLog.warn('PackageVersions has duplicate id#version rows, so they are not yet unique; run packages/utilities/dedupe-versions.js: ' + err.message);
             });
             resolve();
           }
@@ -1071,6 +1096,27 @@ class PackagesModule {
       }
     });
 
+    // GET /packages/npm-check - the npm registry protocol checks, against any registry
+    const npmCheckLimiter = rateLimit({
+      windowMs: 10 * 60 * 1000,
+      limit: () => this.npmCheckConfig().runsPerWindow,
+      skip: req => !req.query.registry, // only runs count, not the form
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: {error: 'Too many npm registry checks from this address; try again in a few minutes'}
+    });
+    this.router.get('/npm-check', npmCheckLimiter, this.validateQueryParams(NPM_CHECK_PARAMS), async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveNpmCheck(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/npm-check:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('npm-check', Date.now() - start);
+      }
+    });
+
     // GET /packages/catalog - Search packages or get updates
     this.router.get('/catalog', this.validateQueryParams(searchParams), async (req, res) => {
       const start = Date.now();
@@ -1304,7 +1350,7 @@ class PackagesModule {
           // Don't process routes that are handled elsewhere. These must call next():
           // returning without responding leaves the request hanging, which is what
           // /status, /stats and /search (registered after this route) used to do.
-          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates'].includes(id) ||
+          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates', 'npm-check'].includes(id) ||
             id.endsWith('.html') || id === '-') {
             next();
             return;
@@ -1671,6 +1717,113 @@ class PackagesModule {
         }
       });
     });
+  }
+
+  npmCheckConfig() {
+    const cfg = this.config?.npmCheck || {};
+    const control = cfg.control === false ? null : {...NPM_CHECK_DEFAULTS.control, ...(cfg.control || {})};
+    return {...NPM_CHECK_DEFAULTS, ...cfg, control};
+  }
+
+  // The HTTP client for the checks: the crawler's SSRF-guarded agents, a timeout and a size
+  // cap on every response. Loopback addresses are allowed, so the checks can run against this
+  // server itself; every other non-public address (the server's network, cloud metadata) is not.
+  npmCheckGetter() {
+    const cfg = this.npmCheckConfig();
+    return makeGetter({
+      ...this.crawler.guardedAgents({allowLoopback: true}),
+      timeout: cfg.requestTimeout,
+      maxBytes: cfg.maxDownloadMB * 1024 * 1024,
+      userAgent: 'FHIRsmith npm registry check (+https://github.com/HealthIntersections/FHIRsmith)'
+    });
+  }
+
+  // Runs the checks against the npm registry itself, at most once a day, in the background
+  refreshNpmCheckControl() {
+    const control = this.npmCheckConfig().control;
+    if (!control || this.npmCheckControlRunning) {
+      return;
+    }
+    if (this.npmCheckControlReport && Date.now() - Date.parse(this.npmCheckControlReport.finished) < NPM_CHECK_CONTROL_MAX_AGE) {
+      return;
+    }
+    this.npmCheckControlRunning = true;
+    runNpmCheck({registry: control.registry, pkg: control.package, version: control.version}, this.npmCheckGetter())
+      .then(report => {
+        this.npmCheckControlReport = report;
+        if (report.failed > 0) {
+          pckLog.warn(`npm-check: ${report.failed} checks fail against the control ${control.registry} - they may be out of date`);
+        }
+      })
+      .catch(error => pckLog.error('npm-check control run failed: ' + error.message))
+      .finally(() => {
+        this.npmCheckControlRunning = false;
+      });
+  }
+
+  async serveNpmCheck(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const cfg = this.npmCheckConfig();
+    const fail = (status, message) => {
+      if (acceptsHtml) {
+        return this.sendNpmCheckPage(res, status, `<div class="alert alert-danger">${escape(message)}</div>` +
+          npmCheckPage.renderForm({values: req.query, control: cfg.control, controlReport: this.npmCheckControlReport}));
+      }
+      return res.status(status).json({error: message});
+    };
+
+    if (!cfg.enabled) {
+      const message = 'The npm registry check is not enabled on this server';
+      return acceptsHtml ? this.sendNpmCheckPage(res, 404, `<div class="alert alert-info">${escape(message)}</div>`)
+        : res.status(404).json({error: message});
+    }
+    const {registry, package: pkg, version} = req.query;
+    if (!registry) {
+      if (acceptsHtml) {
+        this.refreshNpmCheckControl();
+        return this.sendNpmCheckPage(res, 200, npmCheckPage.renderForm({values: req.query, control: cfg.control, controlReport: this.npmCheckControlReport}));
+      }
+      return res.status(400).json({error: 'Parameter registry is required'});
+    }
+    if (!pkg || !version) {
+      return fail(400, 'Give the package and version to check, as well as the registry');
+    }
+    let url;
+    try {
+      url = new URL(registry);
+    } catch (e) {
+      return fail(400, `The registry URL isn't valid: ${registry}`);
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return fail(400, 'The registry URL must be http(s), with no user name or password');
+    }
+    if ((this.npmChecksRunning || 0) >= cfg.maxConcurrentRuns) {
+      res.setHeader('Retry-After', '30');
+      return fail(503, 'This server is already running as many npm registry checks as it allows; try again in a minute');
+    }
+
+    this.npmChecksRunning = (this.npmChecksRunning || 0) + 1;
+    let report;
+    try {
+      report = await runNpmCheck({registry, pkg, version}, this.npmCheckGetter());
+    } finally {
+      this.npmChecksRunning--;
+    }
+    pckLog.info(`npm-check ${registry} ${pkg}#${version}: ${report.passed} passed, ${report.failed} failed`);
+    if (acceptsHtml) {
+      this.refreshNpmCheckControl();
+      return this.sendNpmCheckPage(res, 200, npmCheckPage.renderReport({report, control: cfg.control, controlReport: this.npmCheckControlReport}));
+    }
+    res.json(report);
+  }
+
+  async sendNpmCheckPage(res, status, content) {
+    if (!htmlServer.hasTemplate('packages')) {
+      htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+    }
+    const stats = await this.gatherPackageStatistics();
+    res.status(status).setHeader('Content-Type', 'text/html');
+    res.send(htmlServer.renderPage('packages', 'npm Registry Check', content, stats));
   }
 
   // GET /{id}/{version} is npm's version document when the request asks for JSON, and the
@@ -3139,7 +3292,7 @@ class PackagesModule {
   }
 }
 
-PackagesModule.QUERY_PARAMS = { search: SEARCH_PARAMS, v1Search: V1_SEARCH_PARAMS, updates: UPDATES_PARAMS, broken: BROKEN_PARAMS };
+PackagesModule.QUERY_PARAMS = { search: SEARCH_PARAMS, v1Search: V1_SEARCH_PARAMS, updates: UPDATES_PARAMS, broken: BROKEN_PARAMS, npmCheck: NPM_CHECK_PARAMS };
 PackagesModule.FHIR_RELEASE_VERSIONS = FHIR_RELEASE_VERSIONS;
 PackagesModule.PATH_PARAMS = {
   id: { maxLength: PACKAGE_ID_MAX_LENGTH, pattern: PACKAGE_ID_PATTERN },

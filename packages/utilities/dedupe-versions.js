@@ -9,7 +9,7 @@
  * One-off repair of a package server's database and mirror, for a database built before
  * the crawler stored each id#version only once.
  *
- *   node packages/dedupe-versions.js -db <packages.db> -mirror <mirror folder> [-apply] [-verbose]
+ *   node packages/utilities/dedupe-versions.js -db <packages.db> -mirror <mirror folder> [-apply] [-verbose]
  *
  * Without -apply it reports what it would do and changes nothing. Back up the database
  * first. It is safe to run while the server is up, but best between crawler runs. It can be
@@ -219,7 +219,7 @@ function main(argv) {
   const dbPath = arg('-db');
   const mirrorPath = arg('-mirror');
   if (!dbPath) {
-    console.error('usage: node packages/dedupe-versions.js -db <packages.db> [-mirror <mirror folder>] [-apply] [-verbose]');
+    console.error('usage: node packages/utilities/dedupe-versions.js -db <packages.db> [-mirror <mirror folder>] [-apply] [-verbose]');
     return 1;
   }
   const apply = argv.includes('-apply');

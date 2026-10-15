@@ -1,6 +1,6 @@
 // Each id#version is stored once: how the crawler treats a second copy of a version
 // (PackageCrawler.checkVersion), the mirror only being written for stored packages, and
-// packages/dedupe-versions.js, which repairs databases built before that.
+// packages/utilities/dedupe-versions.js, which repairs databases built before that.
 
 const fs = require('fs');
 const os = require('os');
@@ -8,7 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const PackagesModule = require('../../packages/packages');
-const { dedupe, isSimplifier, fixPrefix } = require('../../packages/dedupe-versions');
+const { dedupe, isSimplifier, fixPrefix } = require('../../packages/utilities/dedupe-versions');
 const PackageCrawler = require('../../packages/package-crawler');
 const { tgz } = require('./npm-registry-checks');
 
@@ -289,5 +289,60 @@ describe('crawler: package downloads keep the file\'s own bytes', () => {
     const tar = zlib.gunzipSync(pkg);
     await expect(PackageCrawler.prototype.extractNpmPackage.call({ log: { warn() {} } }, tar, 'test'))
       .rejects.toThrow(/not a gzip file \(it starts with 7061636b6167652f/);
+  });
+});
+
+// The SSRF guard on the crawler's (and /npm-check's) HTTP agents
+describe('crawler: requests to non-public addresses are refused', () => {
+  const http = require('http');
+  const axios = require('axios');
+  let server, port;
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => res.end('reached'));
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    port = server.address().port;
+  });
+
+  afterAll(() => new Promise(resolve => server.close(resolve)));
+
+  const fetchVia = async (config, url, options) => {
+    const crawler = Object.create(PackageCrawler.prototype);
+    crawler.config = config;
+    const agents = crawler.guardedAgents(options);
+    try {
+      return (await axios.get(url, { ...agents, timeout: 5000 })).data;
+    } catch (e) {
+      return e.message;
+    }
+  };
+
+  test.each([
+    ['an IP address, which Node connects to without a lookup', () => `http://127.0.0.1:${port}/`],
+    ['an IPv6 address', () => `http://[::1]:${port}/`],
+    ['an IP address in another notation', () => `http://2130706433:${port}/`],
+    ['a name that resolves to a non-public address', () => `http://localhost:${port}/`]
+  ])('%s', async (_, url) => {
+    expect(await fetchVia({}, url())).toMatch(/Blocked request to non-public address/);
+  });
+
+  test.each([
+    ['127.0.0.1', () => `http://127.0.0.1:${port}/`],
+    ['localhost', () => `http://localhost:${port}/`],
+    ['another notation', () => `http://2130706433:${port}/`]
+  ])('allowLoopback (for /npm-check) lets loopback through: %s', async (_, url) => {
+    expect(await fetchVia({}, url(), { allowLoopback: true })).toBe('reached');
+  });
+
+  test.each([
+    ['http://169.254.169.254/'],
+    ['http://10.1.2.3/'],
+    ['http://[fd00::1]/']
+  ])('allowLoopback still refuses other non-public addresses: %s', async (url) => {
+    expect(await fetchVia({}, url, { allowLoopback: true })).toMatch(/Blocked request to non-public address/);
+  });
+
+  test('unless allowPrivateAddresses is set', async () => {
+    expect(await fetchVia({ allowPrivateAddresses: true }, `http://127.0.0.1:${port}/`)).toBe('reached');
   });
 });

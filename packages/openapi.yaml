@@ -42,6 +42,8 @@ tags:
     description: npm-compatible package documents and downloads
   - name: reports
     description: Registry-wide reports
+  - name: tools
+    description: Tools for other registries
 
 paths:
   /catalog:
@@ -236,6 +238,78 @@ paths:
             text/html:
               schema: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /npm-check:
+    get:
+      tags: [tools]
+      operationId: checkNpmRegistry
+      summary: Check a registry against the npm registry protocol
+      description: |
+        Runs the npm registry protocol checks against any registry, the way an npm client
+        uses it: search for the package by name, read its package document, read the
+        version's document, and download the version's tarball. Returns a report of each
+        check, pass or fail, with the reason for each failure and the requests it was based
+        on. The same checks run, as a control, against registry.npmjs.org once a day.
+
+        With `Accept: text/html` and no parameters, this is a form for running the checks.
+
+        A run makes about ten requests, each limited in time and size, and only to public
+        addresses. Runs are rate limited per client address, and the server runs only a
+        few at once. A server can turn the check off (`npmCheck.enabled` in its
+        configuration), and then this returns 404.
+      parameters:
+        - name: registry
+          in: query
+          required: true
+          description: The registry's base URL, as given to `npm --registry`.
+          schema:
+            type: string
+            maxLength: 500
+            pattern: '^https?:\/\/[^\s<>"''`]+$'
+          example: https://packages2.fhir.org/packages
+        - name: package
+          in: query
+          required: true
+          description: A package the registry holds.
+          schema:
+            type: string
+            maxLength: 100
+            pattern: '^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$'
+          example: hl7.fhir.r4.core
+        - name: version
+          in: query
+          required: true
+          description: A version of that package the registry holds.
+          schema:
+            type: string
+            maxLength: 50
+            pattern: '^[a-zA-Z0-9._-]+$'
+          example: 4.0.1
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NpmCheckReport' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: The check is turned off on this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many runs from this client address; try again later
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The server is already running as many checks as it allows; try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/ServerError' }
 
   /{id}:
@@ -624,6 +698,54 @@ components:
       example:
         date: '2026-10-04T00:00:00.000Z'
         'example.fhir.ig#1.0.0': ['hl7.fhir.uv.missing@2.0.0']
+
+    NpmCheckReport:
+      type: object
+      description: The result of running the npm registry protocol checks against a registry.
+      required: [registry, package, version, started, finished, passed, failed, steps, requests]
+      properties:
+        registry: { type: string, format: uri }
+        package: { type: string }
+        version: { type: string }
+        started: { type: string, format: date-time }
+        finished: { type: string, format: date-time }
+        passed: { type: integer, description: Checks that passed }
+        failed: { type: integer, description: Checks that failed }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, title, request, checks]
+            properties:
+              id: { type: string, enum: [search, package, version, tarball] }
+              title: { type: string }
+              request: { type: string, description: The request the step is about }
+              checks:
+                type: array
+                items:
+                  type: object
+                  required: [step, title, uses, status]
+                  properties:
+                    step: { type: string }
+                    title: { type: string }
+                    status: { type: string, enum: [pass, fail] }
+                    message: { type: string, description: Why the check failed }
+                    uses:
+                      type: array
+                      description: The requests (keys of `requests`) the check is based on
+                      items: { type: string }
+        requests:
+          type: object
+          description: Every request the checks made, by name.
+          additionalProperties:
+            type: object
+            required: [url]
+            properties:
+              url: { type: string, format: uri }
+              status: { type: integer }
+              contentType: { type: string }
+              bytes: { type: integer }
+              error: { type: string, description: Why the request failed, when it did }
 
     Error:
       type: object

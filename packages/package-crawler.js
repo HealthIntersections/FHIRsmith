@@ -11,6 +11,7 @@ const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
+const net = require('net');
 const http = require('http');
 const https = require('https');
 const ipaddr = require('ipaddr.js');
@@ -28,6 +29,19 @@ function isNonPublicAddress(ip) {
     return addr.range() !== 'unicast';
   } catch (e) {
     return true; // unparseable - treat as unsafe
+  }
+}
+
+// True for a loopback address: 127.0.0.0/8, ::1, and IPv4-mapped forms of them
+function isLoopbackAddress(ip) {
+  try {
+    let addr = ipaddr.parse(ip);
+    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
+      addr = addr.toIPv4Address();
+    }
+    return addr.range() === 'loopback';
+  } catch (e) {
+    return false;
   }
 }
 
@@ -181,7 +195,8 @@ class PackageCrawler {
   // Enforced at connection time (so it also covers redirect targets and defeats
   // DNS-rebinding), this is the SSRF guard for all outbound http(s) fetches.
   // Set config.allowPrivateAddresses = true to disable (e.g. for local test registries).
-  ssrfLookup() {
+  // allowLoopback lets loopback addresses through, and nothing else that isn't public.
+  ssrfLookup(allowLoopback = false) {
     const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
     return (hostname, options, callback) => {
       if (typeof options === 'function') {
@@ -196,7 +211,7 @@ class PackageCrawler {
         }
         if (!allowPrivate) {
           for (const a of addresses) {
-            if (isNonPublicAddress(a.address)) {
+            if (isNonPublicAddress(a.address) && !(allowLoopback && isLoopbackAddress(a.address))) {
               callback(new Error('Blocked request to non-public address ' + a.address + ' (host ' + hostname + ')'));
               return;
             }
@@ -212,26 +227,49 @@ class PackageCrawler {
   }
 
   // http/https agents that route every connection through the SSRF lookup. Cached so
-  // connections can be pooled across requests.
-  guardedAgents() {
-    if (!this._guardedAgents) {
-      const lookup = this.ssrfLookup();
+  // connections can be pooled across requests. Node doesn't do a lookup when the host is
+  // an IP address (http://127.0.0.1/, http://169.254.169.254/), so those are checked here.
+  // allowLoopback: loopback addresses are allowed too (/npm-check, so it can check this
+  // server itself); other non-public addresses are still refused. The crawler doesn't use it.
+  guardedAgents({allowLoopback = false} = {}) {
+    this._guardedAgentSets = this._guardedAgentSets || {};
+    const key = allowLoopback ? 'loopback' : 'public';
+    if (!this._guardedAgentSets[key]) {
+      const lookup = this.ssrfLookup(allowLoopback);
+      const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
+      const blockedLiteral = (options) => {
+        const host = String(options.host || options.hostname || '').replace(/^\[(.*)\]$/, '$1');
+        if (!allowPrivate && net.isIP(host) && isNonPublicAddress(host) && !(allowLoopback && isLoopbackAddress(host))) {
+          return new Error('Blocked request to non-public address ' + host);
+        }
+        return null;
+      };
       class GuardedHttpAgent extends http.Agent {
         createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
           return super.createConnection(Object.assign({}, options, { lookup }), cb);
         }
       }
       class GuardedHttpsAgent extends https.Agent {
         createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
           return super.createConnection(Object.assign({}, options, { lookup }), cb);
         }
       }
-      this._guardedAgents = {
+      this._guardedAgentSets[key] = {
         httpAgent: new GuardedHttpAgent({ keepAlive: true }),
         httpsAgent: new GuardedHttpsAgent({ keepAlive: true })
       };
     }
-    return this._guardedAgents;
+    return this._guardedAgentSets[key];
   }
 
   // Resolve a local feed path and confine it to an allowed root (path-injection guard).
