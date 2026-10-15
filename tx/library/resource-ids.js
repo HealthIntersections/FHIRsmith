@@ -59,6 +59,21 @@ function stripIdPrefix(id, spaceId) {
 }
 
 /**
+ * The id a resource had in its source, for an id in any id space: everything after the
+ * prefix, which never contains a '-' (see checkIdPrefix). Null if the id has no prefix.
+ *
+ * @param {string} id
+ * @returns {string|null}
+ */
+function originalId(id) {
+  if (typeof id !== 'string') {
+    return null;
+  }
+  const i = id.indexOf('-');
+  return i > 0 && i < id.length - 1 ? id.substring(i + 1) : null;
+}
+
+/**
  * Whether a prefix given in the library YAML is acceptable. It's the start of an id, so it
  * may only use id characters, and no '-', so that the prefix of any id is unambiguous.
  * 'core' is the endpoints' own core package, and 'x' is the code system factories
@@ -104,4 +119,4 @@ function assignIdSpace(provider, spaceId) {
 
 const CORE_PREFIX = 'core';
 
-module.exports = { applyIdPrefix, stripIdPrefix, checkIdPrefix, assignIdSpace, CORE_PREFIX };
+module.exports = { applyIdPrefix, stripIdPrefix, originalId, checkIdPrefix, assignIdSpace, CORE_PREFIX };

@@ -516,8 +516,12 @@ class TXModule {
             return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid XML: ${e.message}`));
           }
         }
-      } else if (contentType != 'application/x-www-form-urlencoded') {
-        return res.status(415).json(buildOperationOutcome('error', 'invalid', `Unsupported Media Type: ${contentType}`));
+      } else if (contentType.split(';')[0].trim().toLowerCase() != 'application/x-www-form-urlencoded') {
+        // compare the media type alone: a form post may carry a charset parameter
+        const message = contentType
+          ? `Unsupported Media Type: ${contentType}`
+          : `No Content-Type was given for this ${req.method}; use application/fhir+json or application/fhir+xml`;
+        return res.status(415).json(buildOperationOutcome('error', 'invalid', message));
       }
 
       if (req.body) {
@@ -994,7 +998,7 @@ class TXModule {
             ));
           }
           let worker = new ReadWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
-          await worker.handle(req, res, resourceType);
+          await worker.handle(req, res, resourceType, (req, res, resourceType, id, matches) => this.renderIdChoices(req, res, resourceType, id, matches));
         } finally {
           this.countRequest(endpointPath, 'read', Date.now() - start);
         }
@@ -1430,6 +1434,17 @@ class TXModule {
       count = count + ep.resourceCache.size();
     }
     return count;
+  }
+
+  // A read of an unprefixed id that several resources had in their source: the page
+  // that lists them (status 300, Multiple Choices). See ReadWorker.notFound.
+  async renderIdChoices(req, res, resourceType, id, matches) {
+    const txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+    const content = txhtml.renderIdChoices(resourceType, id, matches);
+    const html = await txhtml.renderPage(`${resourceType}/${id}`, content, req.txEndpoint, req.txStartTime);
+    res.status(300);
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(html);
   }
 
   // $closure usage for the home page: null when closure isn't turned on
