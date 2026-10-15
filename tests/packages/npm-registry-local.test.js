@@ -131,14 +131,21 @@ describe('packages module: GET /{id}/{version} content negotiation', () => {
     ['no Accept header (the Java tools, against a FHIR server)', {}],
     ['Accept: */*', { accept: '*/*' }],
     ['a browser', { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' }],
-    ['Accept: application/json with FHIR-Package-Download', { accept: 'application/json', 'FHIR-Package-Download': 'tarball' }]
+    ['Accept: application/json with FHIR-Package-Download', { accept: 'application/json', 'FHIR-Package-Download': 'tarball' }],
+    // axios's default: SUSHI (fhir-package-loader) downloads tarballs from here with it
+    ['axios\'s default Accept (SUSHI)', { accept: 'application/json, text/plain, */*' }],
+    ['the npm CLI\'s Accept, which ranks */* with npm\'s JSON', { accept: 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*' }],
+    ['JSON and the tarball type at the same q', { accept: 'application/json, application/tar+gzip' }],
+    ['JSON at q=0', { accept: 'application/json;q=0, */*;q=0.1' }]
   ])('%s gets the tarball', async (_, headers) => {
     expect(await isTarball(await get(`${PKG}/1.0.0`, headers))).toBe(true);
   });
 
   test.each([
     ['application/json'],
-    ['application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*']
+    ['application/vnd.npm.install-v1+json'],
+    ['application/json, */*;q=0.1'],
+    ['application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*; q=0.5']
   ])('Accept: %s gets the version document', async (accept) => {
     const res = await get(`${PKG}/1.0.0`, { accept });
     expect(res.status).toBe(200);

@@ -102,7 +102,7 @@ describe('run', () => {
     expect(s.taskDone).toHaveBeenCalled();
     expect(audit.renderBanner()).toBe('');
     expect(audit.renderDashboard()).toContain('no known vulnerabilities</span> in 4 packages');
-    expect(axios.get).not.toHaveBeenCalled();
+    expect(audit.renderDashboard()).toContain('this server runs 0.13.4 (the latest release could not be checked)');
   });
 
   test('advisories are reported, worst first', async () => {
@@ -196,6 +196,34 @@ describe('advice', () => {
     await audit.run();
     await audit.run();
     expect(audit.latestVersion).toBe('0.15.1');
+  });
+
+  test('the dashboard says when a newer release is available, even with nothing to report', async () => {
+    axios.post.mockResolvedValue({ data: {} });
+    axios.get.mockResolvedValue({ data: { version: '0.16.0' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    expect(audit.renderBanner()).toBe('');
+    const dash = audit.renderDashboard();
+    expect(dash).toContain('this server runs 0.13.4');
+    expect(dash).toContain('FHIRsmith 0.16.0 is available');
+  });
+
+  test('the dashboard says when this server is on the latest release', async () => {
+    axios.post.mockResolvedValue({ data: {} });
+    axios.get.mockResolvedValue({ data: { version: '0.13.4' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    expect(audit.renderDashboard()).toContain('this server runs 0.13.4, the latest release');
+  });
+
+  test('the release is still checked when the audit itself fails', async () => {
+    axios.post.mockRejectedValue(new Error('timeout'));
+    axios.get.mockResolvedValue({ data: { version: '0.16.0' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    expect(audit.renderDashboard()).toContain('FHIRsmith 0.16.0 is available');
+    expect(audit.renderDashboard()).toContain('could not be run: timeout');
   });
 
   test('compareVersions', () => {

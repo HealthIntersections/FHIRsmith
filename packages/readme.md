@@ -31,7 +31,7 @@ In summary:
 | `GET /packages/catalog` | Search packages: `name`, `canonical`, `pkgcanonical`, `fhirversion`, `dependency`, `dependson`, `sort` |
 | `GET /packages/-/v1/search` | npm search API: `text`, `size`, `from`, plus the `/catalog` parameters |
 | `GET /packages/{id}` | npm package document: all versions, dependencies, tarball URLs |
-| `GET /packages/{id}/{version}` | Download a package tarball; or, when the request's `Accept` asks for JSON, npm's document for that version. A `FHIR-Package-Download` header always gets the tarball (the HL7 Java tools send it) |
+| `GET /packages/{id}/{version}` | Download a package tarball; or, when the request's `Accept` prefers JSON (ranks it above `*/*`), npm's document for that version. A `FHIR-Package-Download` header always gets the tarball (the HL7 Java tools send it) |
 | `GET /packages/updates` | Versions published since a date |
 | `GET /packages/broken` | Package versions whose dependencies this registry doesn't hold |
 | `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |

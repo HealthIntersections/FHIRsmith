@@ -259,7 +259,7 @@ Each GitHub Release includes:
     - `ghcr.io/healthintersections/fhirsmith:latest`
     - `ghcr.io/healthintersections/fhirsmith:vX.Y.Z`
     - `ghcr.io/healthintersections/fhirsmith:X.Y.Z`
-- **npm package** published to npmjs.org as `fhirsmith` *(if you add this)*
+- **npm package** published to npmjs.org as [`fhirsmith`](https://www.npmjs.com/package/fhirsmith)
 
 Release images carry OCI labels, so an image says which release it is without
 having to trust the tag it was pulled under:
@@ -270,6 +270,19 @@ docker inspect --format '{{json .Config.Labels}}' ghcr.io/healthintersections/fh
 
 `org.opencontainers.image.version` is the release, `.revision` the commit it was
 built from, and `.source` is what links the package to this repository on GHCR.
+
+### Tracking Releases
+
+Server administrators should follow releases: a server is only as safe as the
+release it runs.
+
+- **Email**: on the [GitHub repository](https://github.com/HealthIntersections/FHIRsmith),
+  choose **Watch → Custom → Releases**. Each release is emailed with its notes (needs a GitHub account)
+- **Atom feed**: `https://github.com/HealthIntersections/FHIRsmith/releases.atom` - each
+  entry carries the release notes, for a feed reader or a Slack/Teams feed integration
+- **The server itself**: once a day the server looks up the latest release on npm, and the
+  dashboard says whether a newer one is available (this is part of the npm audit check, so
+  `npmAudit.enabled = false` turns it off too)
 
 ### CI Images
 
