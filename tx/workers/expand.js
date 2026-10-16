@@ -836,7 +836,7 @@ class ValueSetExpander {
               notClosed.value = true;
             }
             const prep = await cs.getPrepContext(true);
-            const ctxt = await cs.searchFilter(prep, filter, false);
+            const ctxt = await cs.searchFilter(prep, filter, true);
             let set = await cs.executeFilters(prep);
             if (this.count === 0 && valueSets.length === 0) {
               // count=0 (count only): report the filtered size directly without
