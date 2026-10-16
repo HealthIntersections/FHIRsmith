@@ -61,7 +61,11 @@
     },
     "xig": {
       "enabled": false,
-      "autoUpdate": true
+      "autoUpdate": true,
+      // shared secret for POST /xig/update, which re-downloads the database on demand. Send
+      // it in the x-update-token header. Omit this and the endpoint is disabled entirely -
+      // the scheduled update (autoUpdate) is unaffected either way.
+      "updateToken": "change-this-to-a-secure-random-string"
     },
     "packages": {
       "enabled": false,
@@ -73,7 +77,17 @@
       "crawlToken": "change-this-to-a-secure-random-string",
       "crawler": {
         "enabled": true,
-        "schedule": "0 * * * *"
+        "schedule": "0 * * * *",
+        // limits on a package, so a hostile or broken one (a decompression bomb, say) costs
+        // a bounded amount. These are the defaults. maxDownloadMB: the package file;
+        // maxUnpackedMB: its files once unzipped (streamed, so this limits work, not
+        // memory); maxFileMB: a file the crawler reads (package.json, .index.json, ig.ini
+        // and each .json, for its url) - memory use is bounded by this; maxFiles: the number
+        // of files in a package
+        "maxDownloadMB": 250,
+        "maxUnpackedMB": 4096,
+        "maxFileMB": 50,
+        "maxFiles": 250000
       },
       // /packages/npm-check: checks any registry against the npm registry protocol. On by
       // default; the other settings are the defaults. "control": false stops the daily
@@ -92,7 +106,9 @@
       "crawlInterval": 30,
       "timeout": 30000,
       "userAgent": "YourServer/1.0",
-      "apiKeys": {}
+      "apiKeys": {},
+      // the most a crawled server's response can be, once unzipped
+      "maxResponseMB": 100
     },
     "publisher": {
       "enabled": true,
@@ -271,7 +287,12 @@
     "ext-tracker": {
       "enabled": true,
       "database": "/var/fhir/data/extension-tracker.db",
-      "url": "/ext-tracker"
+      "url": "/ext-tracker",
+      // the token submissions must carry (Authorization: Bearer ...). The IG Publisher sends
+      // 9D1C23C0-3915-4542-882E-2BCC55645DF8 - it's in the publisher's source, so it is not a
+      // secret, but it keeps out submissions that aren't from the publisher. Omit it and
+      // submissions need no token
+      "token": "9D1C23C0-3915-4542-882E-2BCC55645DF8"
     },
     // TestReports from TxTester and other tools, at /testing. See testing/readme.md
     "testing": {

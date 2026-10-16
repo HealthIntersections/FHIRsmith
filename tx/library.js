@@ -5,6 +5,7 @@ const yaml = require('yaml'); // npm install yaml
 const { PackageManager, PackageContentLoader } = require('../library/package-manager');
 const { FolderContentLoader, FileContentLoader } = require('../library/folder-content-loader');
 const { CodeSystem } = require("./library/codesystem");
+const { assertNoActiveContent } = require('../library/narrative-check');
 const {CountryCodeFactoryProvider} = require("./cs/cs-country");
 const {Iso4217FactoryProvider} = require("./cs/cs-currency");
 const {AreaCodeFactoryProvider} = require("./cs/cs-areacode");
@@ -738,7 +739,10 @@ class Library {
     for (const resource of resources) {
       let cs;
       try {
-        cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+        const json = await contentLoader.loadFile(resource, contentLoader.fhirVersion());
+        // narrative is shown as-is in a page, so it must not carry script (see narrative-check.js)
+        assertNoActiveContent(json);
+        cs = new CodeSystem(json);
       } catch (e) {
         // one unacceptable resource (e.g. contained resources the server doesn't support)
         // must not stop the rest of the package loading
@@ -857,7 +861,10 @@ class Library {
     for (const entry of csEntries) {
       let cs;
       try {
-        cs = new CodeSystem(await contentLoader.loadFile(entry, contentLoader.fhirVersion()));
+        const json = await contentLoader.loadFile(entry, contentLoader.fhirVersion());
+        // narrative is shown as-is in a page, so it must not carry script (see narrative-check.js)
+        assertNoActiveContent(json);
+        cs = new CodeSystem(json);
       } catch (e) {
         // one unacceptable resource must not stop the rest of the package loading
         this.log.warn(`Package ${contentLoader.pid()}: skipping CodeSystem ${entry.id || entry.filename || ''}: ${e.message}`);

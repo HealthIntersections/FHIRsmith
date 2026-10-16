@@ -1,4 +1,6 @@
 const path = require('path');
+const fs = require('fs').promises;
+const { assertNoActiveContent } = require('../../library/narrative-check');
 const { AbstractConceptMapProvider } = require('./cm-api');
 const { PackageContentLoader } = require('../../library/package-manager');
 const { ConceptMapDatabase } = require('./cm-database');
@@ -20,7 +22,9 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
-    this.dbPath = path.join(packageLoader.packageFolder, '.conceptmaps.db');
+    // -2: caches from before concept maps were checked for active content in their
+    // narrative are rebuilt (see initialize)
+    this.dbPath = path.join(packageLoader.packageFolder, '.conceptmaps-2.db');
     this.database = new ConceptMapDatabase(this.dbPath);
     this.conceptMapMap = new Map();
     this.initialized = false;
@@ -36,6 +40,7 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
       return;
     }
     await this.packageLoader.initialize();
+    await fs.rm(path.join(this.packageLoader.packageFolder, '.conceptmaps.db'), { force: true }); // the old cache
 
     const dbExists = await this.database.exists();
 
@@ -68,6 +73,8 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
       const conceptMap = await this.packageLoader.loadFile(entry);
       if (conceptMap.url) {
         try {
+          // its narrative is shown as-is in a page, so it must not carry script
+          assertNoActiveContent(conceptMap);
           conceptMaps.push(new ConceptMap(conceptMap, this.packageLoader.fhirVersion())); // get in converted to R5 format
         } catch (e) {
           // one unacceptable concept map (e.g. one with contained resources, which the

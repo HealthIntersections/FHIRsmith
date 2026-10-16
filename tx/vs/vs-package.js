@@ -1,4 +1,5 @@
 const path = require('path');
+const { assertNoActiveContent } = require('../../library/narrative-check');
 const fs = require('fs').promises;
 const { AbstractValueSetProvider } = require('./vs-api');
 const { PackageContentLoader } = require('../../library/package-manager');
@@ -21,7 +22,9 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
-    this.dbPath = path.join(packageLoader.packageFolder, '.valuesets.db');
+    // -2: caches from before value sets were checked for active content in their narrative
+    // are rebuilt (see initialize)
+    this.dbPath = path.join(packageLoader.packageFolder, '.valuesets-2.db');
     this.database = new ValueSetDatabase(this.dbPath);
     this.valueSetMap = new Map();
     this.initialized = false;
@@ -45,6 +48,7 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
       return;
     }
     await this.packageLoader.initialize();
+    await fs.rm(path.join(this.packageLoader.packageFolder, '.valuesets.db'), { force: true }); // the old cache
 
     const dbExists = await this.database.exists();
 
@@ -134,6 +138,8 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
           // don't store a value set the server can't use (e.g. one that contains a
           // CodeSystem): it would be listed by search, and fail when read
           checkContained(valueSet);
+          // its narrative is shown as-is in a page, so it must not carry script
+          assertNoActiveContent(valueSet);
         } catch (e) {
           require('../../library/logger').getInstance().child({ module: 'tx' })
             .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: skipping ValueSet ${valueSet.url}: ${e.message}`);

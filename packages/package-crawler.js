@@ -16,6 +16,33 @@ const http = require('http');
 const https = require('https');
 const ipaddr = require('ipaddr.js');
 const {debugLog} = require("../tx/operation-context");
+const {Parser: TarParser} = require('tar');
+
+const MB = 1024 * 1024;
+
+// Limits on what a package can make the crawler download, unpack and hold in memory, so
+// that a hostile or broken package (a decompression bomb, say) costs a bounded amount.
+// All can be set in the packages "crawler" config section:
+//   maxDownloadMB  the package file as downloaded (or read from a local feed)
+//   maxUnpackedMB  the total of the package's files once unzipped. The files are streamed,
+//                  not held, so this limits the work, not the memory
+//   maxFileMB      a file the crawler reads: package.json, .index.json, ig.ini, and each
+//                  .json file (for its url). Memory is bounded by this, not by the package
+//   maxFiles       the number of files in the package
+const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: 4096, maxFileMB: 50, maxFiles: 250000 };
+
+function crawlerLimits(config) {
+  const c = { ...LIMIT_DEFAULTS, ...(config?.crawler || {}) };
+  return {
+    maxDownloadBytes: c.maxDownloadMB * MB,
+    maxUnpackedBytes: c.maxUnpackedMB * MB,
+    maxFileBytes: c.maxFileMB * MB,
+    maxFiles: c.maxFiles
+  };
+}
+
+// The files in a package that the crawler reads for its metadata
+const META_FILES = new Set(['package.json', '.index.json', 'ig.ini']);
 
 // True if an IP literal is anything other than a normal public (unicast) address:
 // loopback, private, link-local (incl. 169.254.169.254 cloud metadata), unique-local,
@@ -350,8 +377,14 @@ class PackageCrawler {
 
   async fetchUrl(url) {
     try {
+      const limits = crawlerLimits(this.config);
       if (url.startsWith("/")) {
-        const buffer = await fs.promises.readFile(this.resolveLocalReadPath(url));
+        const localPath = this.resolveLocalReadPath(url);
+        const size = (await fs.promises.stat(localPath)).size;
+        if (size > limits.maxDownloadBytes) {
+          throw new Error(`the package is ${Math.round(size / MB)} MB, more than the limit of ${limits.maxDownloadBytes / MB} MB (maxDownloadMB)`);
+        }
+        const buffer = await fs.promises.readFile(localPath);
         this.totalBytes += buffer.byteLength;
         return buffer;
       } else {
@@ -360,6 +393,7 @@ class PackageCrawler {
           responseType: 'arraybuffer',
           // We want the package file's own bytes: decodePackageBody undoes the Content-Encoding
           decompress: false,
+          maxContentLength: limits.maxDownloadBytes,
           signal: this.abortController?.signal,
           headers: {
             'User-Agent': 'FHIR Package Crawler/1.0'
@@ -373,6 +407,9 @@ class PackageCrawler {
       }
     } catch (error) {
       debugLog(`Failed to fetch ${url}: ${error.message}`);
+      if (/maxContentLength/.test(error.message)) {
+        throw new Error(`Failed to fetch ${url}: the package is more than the limit of ${crawlerLimits(this.config).maxDownloadBytes / MB} MB (maxDownloadMB)`);
+      }
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
@@ -387,21 +424,41 @@ class PackageCrawler {
   // package unless unzipping it gives another gzip file - a server that really did compress
   // a .tgz for transfer.
   decodePackageBody(body, contentEncoding) {
+    // undoing the transfer encoding gives the package file, so the download limit applies
+    const max = { maxOutputLength: crawlerLimits(this.config).maxDownloadBytes };
+    const tooBig = (e) => e.code === 'ERR_BUFFER_TOO_LARGE'
+      ? new Error(`the package is more than the limit of ${max.maxOutputLength / MB} MB (maxDownloadMB) once its Content-Encoding is undone`) : e;
     const encodings = String(contentEncoding || '').toLowerCase().split(',').map(e => e.trim()).filter(e => e && e !== 'identity');
     for (const enc of encodings.reverse()) {
       if (enc === 'gzip' || enc === 'x-gzip') {
+        let start;
         try {
-          const inner = zlib.gunzipSync(body);
-          if (inner[0] === 0x1f && inner[1] === 0x8b) {
-            body = inner;
-          }
+          // only the start is needed to see whether it is gzip inside: a tar unzipped
+          // from a .tgz can be far larger than the download limit
+          start = zlib.gunzipSync(body.subarray(0, 4096), { finishFlush: zlib.constants.Z_SYNC_FLUSH });
         } catch (e) {
           // not gzip after all: leave it for extractNpmPackage to report
+          continue;
+        }
+        if (start[0] === 0x1f && start[1] === 0x8b) {
+          try {
+            body = zlib.gunzipSync(body, max);
+          } catch (e) {
+            throw tooBig(e);
+          }
         }
       } else if (enc === 'br') {
-        body = zlib.brotliDecompressSync(body);
+        try {
+          body = zlib.brotliDecompressSync(body, max);
+        } catch (e) {
+          throw tooBig(e);
+        }
       } else if (enc === 'deflate') {
-        body = zlib.inflateSync(body);
+        try {
+          body = zlib.inflateSync(body, max);
+        } catch (e) {
+          throw tooBig(e);
+        }
       } else {
         throw new Error(`Unsupported Content-Encoding ${enc}`);
       }
@@ -854,6 +911,10 @@ class PackageCrawler {
         let fid = this.fixPrefix(id);
         const filename = `${fid}-${version}.tgz`;
         const filepath = path.join(this.config.mirrorPath, filename);
+        // id and version are validated, but the file must land in the mirror whatever they say
+        if (path.dirname(path.resolve(filepath)) !== path.resolve(this.config.mirrorPath)) {
+          throw new Error(`Package ${id}#${version} rejected: its mirror file name is not a plain file name`);
+        }
         fs.writeFileSync(filepath, packageBuffer);
       }
 
@@ -866,59 +927,122 @@ class PackageCrawler {
     }
   }
 
+  // Reads what the crawler needs from a package as the package is unzipped and untarred:
+  // package.json, .index.json and ig.ini, the file names, and the url of each resource. Only
+  // those files are held, one at a time, so memory is bounded by maxFileMB however large
+  // the package unpacks to (see crawlerLimits)
+  async unpackPackage(packageBuffer) {
+    const limits = crawlerLimits(this.config);
+    const meta = {};
+    const fileNames = [];
+    const resourceUrls = [];
+    const skipped = [];
+
+    await new Promise((resolve, reject) => {
+      let unpacked = 0;
+      let failed = false;
+      const gunzip = zlib.createGunzip();
+      const fail = (e) => {
+        if (!failed) {
+          failed = true;
+          gunzip.destroy();
+          reject(e);
+        }
+      };
+
+      const parser = new TarParser({
+        onReadEntry: (entry) => {
+          if (failed || !['File', 'OldFile', 'ContiguousFile'].includes(entry.type)) {
+            entry.resume();
+            return;
+          }
+          const name = entry.path.replace(/^package\//, '');
+          fileNames.push(name);
+          if (fileNames.length > limits.maxFiles) {
+            fail(new Error(`the package has more than ${limits.maxFiles} files (maxFiles)`));
+            entry.resume();
+            return;
+          }
+          const isMeta = META_FILES.has(name);
+          if (!isMeta && !name.endsWith('.json')) {
+            entry.resume();
+            return;
+          }
+          if (entry.size > limits.maxFileBytes) {
+            if (name === 'package.json') {
+              fail(new Error(`package.json is ${Math.round(entry.size / MB)} MB, more than the limit of ${limits.maxFileBytes / MB} MB (maxFileMB)`));
+            } else {
+              skipped.push(name);
+            }
+            entry.resume();
+            return;
+          }
+          const chunks = [];
+          entry.on('data', (chunk) => chunks.push(chunk));
+          entry.on('end', () => {
+            if (failed) {
+              return;
+            }
+            const text = Buffer.concat(chunks).toString('utf8');
+            if (isMeta) {
+              meta[name] = text;
+            }
+            if (name.endsWith('.json') && name !== 'package.json' && name !== '.index.json') {
+              try {
+                const json = JSON.parse(text);
+                if (json.url && json.resourceType) {
+                  resourceUrls.push(json.url);
+                }
+              } catch (e) {
+                // not a resource
+              }
+            }
+          });
+        }
+      });
+      parser.on('warn', (code, message) => {
+        if (code === 'TAR_BAD_ARCHIVE') {
+          fail(new Error(`not a tar file once unzipped (${message})`));
+        }
+      });
+      parser.on('error', fail);
+      parser.on('end', () => {
+        if (!failed) {
+          resolve();
+        }
+      });
+
+      gunzip.on('data', (chunk) => {
+        if (failed) {
+          return;
+        }
+        unpacked += chunk.length;
+        if (unpacked > limits.maxUnpackedBytes) {
+          fail(new Error(`the package unzips to more than the limit of ${limits.maxUnpackedBytes / MB} MB (maxUnpackedMB)`));
+          return;
+        }
+        parser.write(chunk);
+      });
+      gunzip.on('end', () => {
+        if (!failed) {
+          parser.end();
+        }
+      });
+      gunzip.on('error', (e) => fail(new Error(`could not unzip the package: ${e.message}`)));
+      gunzip.end(packageBuffer);
+    });
+
+    return { meta, fileNames, resourceUrls, skipped };
+  }
+
   async extractNpmPackage(packageBuffer, source) {
     try {
-      const files = {};
       if (packageBuffer.length < 2 || packageBuffer[0] !== 0x1f || packageBuffer[1] !== 0x8b) {
         const start = packageBuffer.subarray(0, 8).toString('hex');
         throw new Error(`not a gzip file (it starts with ${start || 'nothing'})`);
       }
 
-      // First decompress the gzip
-      const decompressed = zlib.gunzipSync(packageBuffer);
-
-      // Parse tar manually without any file system operations
-      let offset = 0;
-
-      while (offset < decompressed.length) {
-        // Read tar header (512 bytes)
-        if (offset + 512 > decompressed.length) break;
-
-        const header = decompressed.slice(offset, offset + 512);
-
-        // Check if this is the end (null header)
-        if (header[0] === 0) break;
-
-        // Extract filename (first 100 bytes, null-terminated)
-        let filename = '';
-        for (let i = 0; i < 100; i++) {
-          if (header[i] === 0) break;
-          filename += String.fromCharCode(header[i]);
-        }
-
-        // Extract file size (12 bytes starting at offset 124, octal)
-        let sizeStr = '';
-        for (let i = 124; i < 136; i++) {
-          if (header[i] === 0 || header[i] === 32) break; // null or space
-          sizeStr += String.fromCharCode(header[i]);
-        }
-        const fileSize = parseInt(sizeStr, 8) || 0;
-
-        // Move past header
-        offset += 512;
-
-        // Extract file content if we need this file
-        if (fileSize > 0) {
-          const cleanFilename = filename.replace(/^package\//, ''); // Remove package/ prefix
-
-          const fileContent = decompressed.slice(offset, offset + fileSize);
-          files[cleanFilename] = fileContent.toString('utf8');
-        }
-
-        // Move to next file (files are padded to 512-byte boundaries)
-        const paddedSize = Math.ceil(fileSize / 512) * 512;
-        offset += paddedSize;
-      }
+      const { meta: files, fileNames, resourceUrls, skipped } = await this.unpackPackage(packageBuffer);
 
       // Parse package.json (required)
       if (!files['package.json']) {
@@ -933,7 +1057,7 @@ class PackageCrawler {
           packageJson.scripts.postinstall
         )
       );
-      const hasJavaScript = Object.keys(files).some(f => f.endsWith('.js') || f.endsWith('.mjs') || f.endsWith('.cjs'));
+      const hasJavaScript = fileNames.some(f => f.endsWith('.js') || f.endsWith('.mjs') || f.endsWith('.cjs'));
 
       // Extract basic NPM fields
       const id = packageJson.name || '';
@@ -1025,6 +1149,10 @@ class PackageCrawler {
         }
       }
 
+      if (skipped.length > 0) {
+        this.log.warn(`Package ${id}#${version}: ${skipped.length} file(s) are more than the limit of ${crawlerLimits(this.config).maxFileBytes / MB} MB (maxFileMB), so were not read for their url: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? ', ...' : ''}`);
+      }
+
       // Default fhirVersion if not found
       if (!fhirVersion) {
         fhirVersion = '4.0.1'; // Default to R4
@@ -1046,7 +1174,8 @@ class PackageCrawler {
         hasInstallScripts,
         hasJavaScript,
         notForPublication,
-        files
+        fileNames,
+        resourceUrls
       };
 
     } catch (error) {
@@ -1103,8 +1232,9 @@ class PackageCrawler {
   }
 
   isValidSemVersion(version) {
-    // Simple semantic version validation
-    return /^\d+\.\d+\.\d+/.test(version);
+    // The whole version must be semver: it goes into the database, URLs and the mirror
+    // file name, so a version like 1.0.0/../../x must not get through
+    return /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version);
   }
 
   isAbsoluteUrl(url) {
@@ -1117,31 +1247,8 @@ class PackageCrawler {
   }
 
   processPackageUrls(npmPackage) {
-    const urls = [];
-
-    try {
-
-      for (const filename of Object.keys(npmPackage.files)) {
-        try {
-          const bytes = npmPackage.files[filename];
-          if (filename.endsWith('.json')) {
-            try {
-              const jsonContent = JSON.parse(bytes);
-
-              if (jsonContent.url && jsonContent.resourceType) {
-                urls.push(jsonContent.url);
-              }
-            } catch (fileError) {
-              // this.log.warn(`Error processing package file ${npmPackage.name}#${npmPackage.version}/package/${filename}: ${fileError.message}`);
-            }
-          }
-        } catch (fileError) {
-          this.log.warn(`Error processing package file ${npmPackage.name}#${npmPackage.version}/package/${filename}: ${fileError.message}`);
-        }
-      }
-    } catch (error) {
-      this.log.warn(`Error processing package URLs for ${npmPackage.name}#${npmPackage.version}:`, error.message);
-    }
+    // the resources' urls are read as the package is unpacked (unpackPackage)
+    const urls = [...(npmPackage.resourceUrls || [])];
 
     // Include main package URL
     if (npmPackage.url) {

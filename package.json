@@ -1,6 +1,6 @@
 {
   "name": "fhirsmith",
-  "version": "0.16.1",
+  "version": "0.17.0-snapshot",
   "txVersion": "1.9.6",
   "description": "A Node.js server that provides a collection of tools to serve the FHIR ecosystem",
   "main": "server.js",
@@ -56,6 +56,7 @@
     "natural": "^8.1.1",
     "node-cron": "^4.6.0",
     "pako": "^2.1.0",
+    "parse5": "^7.3.0",
     "passport": "^0.7.0",
     "passport-facebook": "^3.0.0",
     "passport-github2": "^0.1.12",

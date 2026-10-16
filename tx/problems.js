@@ -36,7 +36,7 @@ class ProblemFinder {
         }
         let list = await this.unknownVersionsHtml(sourceUnknownVersions, provider, sp);
         if (list) {
-          result = result + `<h4>${sp}</h4>` + list;
+          result = result + `<h4>${escape(sp)}</h4>` + list;
         }
       }
     }
@@ -51,14 +51,16 @@ class ProblemFinder {
     entries.sort((a, b) => a[0].localeCompare(b[0]));
     let html = '<table class="grid"><thead><tr><th>System</th><th>Unknown Versions</th><th>Known Versions</th></tr></thead><tbody>';
     for (const [system, vset] of entries) {
-      const systemEsc = escape(system);
+      // values from the loaded packages: URL-encoded in links, HTML-escaped everywhere
+      const elements = '&_elements=url%2Cversion%2Cname%2Ctitle%2Cstatus%2Ccontent%2Cdate';
       const versions = [...vset].sort((a, b) => a.localeCompare(b));
       const versionRefs = [];
       for (const v of versions) {
-        versionRefs.push(`<a href="ValueSet?system=${systemEsc}|${escape(v)}&source=${source}&_elements=url%2Cversion%2Cname%2Ctitle%2Cstatus%2Ccontent%2Cdate">${v}</a>`);
+        const href = `ValueSet?system=${encodeURIComponent(system + '|' + v)}&source=${encodeURIComponent(source)}${elements}`;
+        versionRefs.push(`<a href="${escape(href)}">${escape(v)}</a>`);
       }
-      const knownVersions = [...await provider.listCodeSystemVersions(system)].join('<br/>');
-      html += `<tr><td><a href="CodeSystem?url=${systemEsc}&_elements=url%2Cversion%2Cname%2Ctitle%2Cstatus%2Ccontent%2Cdate">${system}</a></td>`+
+      const knownVersions = [...await provider.listCodeSystemVersions(system)].map(v => escape(v)).join('<br/>');
+      html += `<tr><td><a href="${escape(`CodeSystem?url=${encodeURIComponent(system)}${elements}`)}">${escape(system)}</a></td>`+
         `<td>${versionRefs.join('<br/>')}</td><td>${knownVersions}</td></tr>`;
     }
     html += '</tbody></table>';

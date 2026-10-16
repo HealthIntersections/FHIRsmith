@@ -211,7 +211,7 @@ class TXModule {
           }
         };
         void prune(); // errors are logged inside
-        this.timers.push(setInterval(prune, 24 * 60 * 60 * 1000));
+        this.timers.push(setInterval(() => void prune(), 24 * 60 * 60 * 1000));
       }
     }
 
@@ -305,13 +305,14 @@ class TXModule {
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }
-    this.timers.push(setInterval(async () => {
+    const updateCodeSystemList = async () => {
       try {
         await endpointInfo.provider.updateCodeSystemList();
       } catch (error) {
         this.log.error(`Error updating CodeSystem list for ${endpointPath}: ${error.message}`);
       }
-    }, 60 * 1000));
+    };
+    this.timers.push(setInterval(() => void updateCodeSystemList(), 60 * 1000)); // errors are logged inside
     this.log.info(`CodeSystem list update scheduled for ${endpointPath}`);
     this.timers.push(setInterval(() => {
       endpointInfo.resourceCache.prune(cacheTimeoutMs);

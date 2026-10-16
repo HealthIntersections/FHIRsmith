@@ -19,12 +19,14 @@ const escape = require('escape-html');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
+const {tokenMatches, tokenConfigured} = require('../library/request-token');
 const xigLog = Logger.getInstance().child({ module: 'xig' });
 
 const router = express.Router();
 
 // Configuration
-const XIG_DB_URL = 'http://fhir.org/guides/stats/xig.db';
+// https: the database is trusted content (its HTML is shown as is), so it must come from fhir.org
+const XIG_DB_URL = 'https://fhir.org/guides/stats/xig.db';
 const XIG_DB_PATH = folders.filePath('xig', 'xig.db');
 const TEMPLATE_PATH = path.join(__dirname, 'xig-template.html');
 
@@ -1718,6 +1720,11 @@ function downloadFile(url, destination, maxRedirects = 5) {
               }
             }
 
+            // never be redirected off https
+            if (new URL(redirectUrl).protocol !== 'https:') {
+              reject(Object.assign(new Error(`Refused a redirect to ${redirectUrl}: the database is only downloaded over https`), { downloadMeta }));
+              return;
+            }
             attemptDownload(redirectUrl, redirectCount + 1);
             return;
           }
@@ -2203,6 +2210,23 @@ function getDatabaseAgeInfo() {
   };
 }
 
+// The form on /xig/stats that starts an update (POST /xig/update), when an updateToken is configured
+function buildUpdateForm() {
+  if (!tokenConfigured(xigSettings.updateToken)) {
+    return '<p class="text-muted">An update can be started from here when an updateToken is set in the xig configuration.</p>';
+  }
+  let html = '<h4>Update the database now</h4>';
+  html += '<form method="POST" action="/xig/update" class="mb-4">';
+  html += '<p>Downloads the current database from fhir.org (about 3 GB) and switches to it. ';
+  html += updateInProgress ? '<strong>An update is running now.</strong>' : 'It takes several minutes.';
+  html += '</p>';
+  html += '<label for="xig-update-token">Update token</label> ';
+  html += '<input type="password" id="xig-update-token" name="token" required autocomplete="off" maxlength="200"> ';
+  html += '<button type="submit" class="btn btn-primary">Start the update</button>';
+  html += '</form>';
+  return html;
+}
+
 function buildStatsTable(statsData) {
   let html = '<table class="table table-striped table-bordered">';
   html += '<thead class="table-dark">';
@@ -2429,16 +2453,25 @@ router.get('/', async (req, res) => {
       const title = 'FHIR Resources';
 
       // Parse query parameters
+      // Each a string: a repeated parameter (?text=a&text=b) arrives as an array, which
+      // the filters and SQL builders would fail on. Capped in length
+      const qp = (name, dflt = '') => {
+        let v = req.query[name];
+        if (Array.isArray(v)) {
+          v = v[0];
+        }
+        return typeof v === 'string' && v !== '' ? v.substring(0, 200) : dflt;
+      };
       const queryParams = {
-        ver: req.query.ver || '',
-        auth: req.query.auth || '',
-        realm: req.query.realm || '',
-        type: req.query.type || '',
-        rt: req.query.rt || '',
-        text: req.query.text || '',
-        pkg: req.query.pkg || '',
-        onlyUsed: req.query.onlyUsed || '',
-        offset: req.query.offset || '0'
+        ver: qp('ver'),
+        auth: qp('auth'),
+        realm: qp('realm'),
+        type: qp('type'),
+        rt: qp('rt'),
+        text: qp('text'),
+        pkg: qp('pkg'),
+        onlyUsed: qp('onlyUsed'),
+        offset: qp('offset', '0')
       };
 
       // Parse offset for pagination
@@ -2600,7 +2633,7 @@ router.get('/stats', async (req, res) => {
         introContent += `</div>`;
       }
 
-      const fullContent = introContent + content;
+      const fullContent = introContent + content + buildUpdateForm();
 
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
@@ -3125,8 +3158,44 @@ router.get('/cache', async (req, res) => {
   }
 });
 
-router.post('/update', async (req, res) => {
+// POST /xig/update re-downloads the database (about 3 GB), so it needs the updateToken from
+// the xig config: in the x-update-token header, or (from the form on /xig/stats) in a
+// "token" form field. With no updateToken it is disabled.
+//
+// The form gets a page back straight away, while the update runs on (it takes minutes);
+// /xig/stats shows how it went. Other callers wait for the update and get JSON.
+router.post('/update', express.urlencoded({ extended: false, limit: '2kb' }), async (req, res) => {
+  const fromForm = !!req.is('application/x-www-form-urlencoded');
+  const page = (status, alert, message) => {
+    const content = `<div class="alert alert-${alert}">${escape(message)}</div><p><a href="/xig/stats">Back to the status page</a></p>`;
+    res.status(status).setHeader('Content-Type', 'text/html');
+    res.send(renderPage('Update the XIG database', content));
+  };
+  const refuse = (message) => fromForm ? page(403, 'danger', message) : res.status(403).json({ status: 'ERROR', error: 'forbidden: ' + message });
+
   try {
+    if (!tokenConfigured(xigSettings.updateToken)) {
+      refuse('no updateToken is configured, so this endpoint is disabled');
+      return;
+    }
+    const supplied = req.headers['x-update-token'] ?? req.body?.token;
+    if (!tokenMatches(xigSettings.updateToken, supplied)) {
+      xigLog.warn('Rejected /xig/update: missing or invalid token (from ' + req.ip + ')');
+      refuse('missing or invalid x-update-token');
+      return;
+    }
+
+    if (fromForm) {
+      if (updateInProgress) {
+        page(200, 'info', 'An update is already running. The status page shows how it is going.');
+        return;
+      }
+      xigLog.info('Manual update triggered from the status page');
+      updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
+      page(202, 'success', 'The update has started. It takes several minutes; the status page shows how it is going.');
+      return;
+    }
+
     xigLog.info('Manual update triggered via API');
     await updateXigDatabase();
     res.json({
@@ -3143,10 +3212,16 @@ router.post('/update', async (req, res) => {
 });
 
 let globalStats;
+let xigSettings = {};
+// The xig section of the config (initializeXigModule; tests set it directly)
+function setXigSettings(xigConfig) {
+  xigSettings = xigConfig || {};
+}
 // Initialize the XIG module
 async function initializeXigModule(stats, xigConfig) {
   try {
     globalStats = stats;
+    setXigSettings(xigConfig);
     loadTemplate();
 
     await initializeDatabase();
@@ -3196,6 +3271,7 @@ function shutdown() {
 // Export everything
 module.exports = {
   router,
+  setXigSettings,
   updateXigDatabase,
   getDatabaseInfo,
   shutdown,

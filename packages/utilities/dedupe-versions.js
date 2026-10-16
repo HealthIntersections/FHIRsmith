@@ -9,7 +9,7 @@
  * One-off repair of a package server's database and mirror, for a database built before
  * the crawler stored each id#version only once.
  *
- *   node packages/utilities/dedupe-versions.js -db <packages.db> -mirror <mirror folder> [-apply] [-verbose]
+ *   node packages/utilities/dedupe-versions.js -db <packages.db> -mirror <mirror folder> [-apply] [-verbose] [-keep <GUID>]...
  *
  * Without -apply it reports what it would do and changes nothing. Back up the database
  * first. It is safe to run while the server is up, but best between crawler runs. It can be
@@ -19,7 +19,8 @@
  *    crawler's rule: a direct copy beats a Simplifier copy (a secondary echo); otherwise the
  *    first stored wins. Two direct copies with different content are a conflict - only their
  *    Simplifier rows are removed, and they are listed for manual cleanup. Deleted rows'
- *    download counts are added to the kept row.
+ *    download counts are added to the kept row. To settle a conflict, run it again with
+ *    -keep and the GUID (the URL it lists) of the copy to keep, once per conflict.
  * 2. The unique index on (Id, Version), once there are no duplicates left.
  * 3. The mirror. Every row's mirror file must be the bytes that row's Hash describes; a file
  *    that is missing or different is rewritten from the row's Content. Conflicts are skipped.
@@ -59,8 +60,13 @@ function keepOwnership(file, like) {
 }
 const sha1 = buf => crypto.createHash('sha1').update(buf).digest('hex');
 
-// Which rows of one id#version to keep and delete. rows are in PackageVersionKey order.
-function plan(rows) {
+// Which rows of one id#version to keep and delete. rows are in PackageVersionKey order;
+// keepGuids are the copies chosen (-keep) to settle conflicts.
+function plan(rows, keepGuids = new Set()) {
+  const chosen = rows.filter(r => keepGuids.has(r.GUID));
+  if (chosen.length === 1) {
+    return { keep: chosen, conflict: false };
+  }
   const direct = rows.filter(r => !isSimplifier(r.GUID));
   if (direct.length === 0) {
     return { keep: [rows[0]], conflict: false };
@@ -71,7 +77,8 @@ function plan(rows) {
   return { keep: direct, conflict: true };
 }
 
-function dedupe({ dbPath, mirrorPath, apply = false, verbose = false, log = console.log }) {
+function dedupe({ dbPath, mirrorPath, apply = false, verbose = false, keep = [], log = console.log }) {
+  const keepGuids = new Set(keep);
   if (!fs.existsSync(dbPath)) {
     throw new Error(`No database at ${dbPath}`); // DatabaseSync would create an empty one
   }
@@ -87,7 +94,7 @@ function dedupe({ dbPath, mirrorPath, apply = false, verbose = false, log = cons
     const changes = [];
     for (const g of groups) {
       const rows = rowsOf.all(g.Id, g.Version);
-      const { keep, conflict } = plan(rows);
+      const { keep, conflict } = plan(rows, keepGuids);
       const del = rows.filter(r => !keep.includes(r));
       if (conflict) {
         report.conflicts.push({ id: g.Id, version: g.Version, kept: keep.map(r => r.GUID) });
@@ -100,6 +107,12 @@ function dedupe({ dbPath, mirrorPath, apply = false, verbose = false, log = cons
       }
     }
     report.groups = groups.length;
+    const used = new Set(changes.flatMap(c => [c.keep.GUID]));
+    for (const g of keepGuids) {
+      if (!used.has(g)) {
+        log(`-keep ${g}: not a copy of any duplicated id#version, so ignored`);
+      }
+    }
     const toDelete = new Set(changes.flatMap(c => c.del.map(r => r.PackageVersionKey)));
     const conflicted = new Set(report.conflicts.map(c => `${c.id}#${c.version}`));
 
@@ -219,15 +232,16 @@ function main(argv) {
   const dbPath = arg('-db');
   const mirrorPath = arg('-mirror');
   if (!dbPath) {
-    console.error('usage: node packages/utilities/dedupe-versions.js -db <packages.db> [-mirror <mirror folder>] [-apply] [-verbose]');
+    console.error('usage: node packages/utilities/dedupe-versions.js -db <packages.db> [-mirror <mirror folder>] [-apply] [-verbose] [-keep <GUID>]...');
     return 1;
   }
   const apply = argv.includes('-apply');
+  const keep = argv.flatMap((a, i) => a === '-keep' && argv[i + 1] ? [argv[i + 1]] : []);
   if (!apply) {
     console.log('Dry run: nothing will be changed (use -apply)');
   }
   try {
-    dedupe({ dbPath, mirrorPath, apply, verbose: argv.includes('-verbose') });
+    dedupe({ dbPath, mirrorPath, apply, keep, verbose: argv.includes('-verbose') });
   } catch (e) {
     console.error(e.message);
     return 1;
