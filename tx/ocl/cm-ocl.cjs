@@ -7,6 +7,11 @@ const { stripIdPrefix } = require('../library/resource-ids');
 
 const DEFAULT_MAX_SEARCH_PAGES = 10;
 
+// OCL map types that relate concepts without mapping one to the other, so they must
+// not surface as $translate matches: CIEL uses Q-AND-A (question -> answer) and
+// CONCEPT-SET (set -> member). Unknown types still map to related-to.
+const NON_TRANSLATION_MAP_TYPES = new Set(['Q-AND-A', 'CONCEPT-SET']);
+
 class OCLConceptMapProvider extends AbstractConceptMapProvider {
   constructor(config = {}) {
     super();
@@ -194,7 +199,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       const sourceCode = mapping.from_concept_code || mapping.fromConceptCode;
       const targetCode = mapping.to_concept_code || mapping.toConceptCode;
 
-      if (!fromSource || !toSource || !sourceCode || !targetCode) {
+      if (!fromSource || !toSource || !sourceCode || !targetCode || !this.#isTranslation(mapping)) {
         continue;
       }
 
@@ -410,7 +415,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     const sourceCode = mapping.from_concept_code || mapping.fromConceptCode;
     const targetCode = mapping.to_concept_code || mapping.toConceptCode;
 
-    if (!source || !target || !sourceCode || !targetCode) {
+    if (!source || !target || !sourceCode || !targetCode || !this.#isTranslation(mapping)) {
       return null;
     }
 
@@ -466,7 +471,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   // OCL map_type expresses "from concept <relation> to concept", which lines up
   // with the R5 ConceptMapRelationship codes (source <relation> target).
   #toRelationship(mapType) {
-    switch (String(mapType || '').trim().toUpperCase().replace(/[\s_]+/g, '-')) {
+    switch (this.#normalizeMapType(mapType)) {
       case 'SAME-AS':
         return 'equivalent';
       case 'NARROWER-THAN':
@@ -479,6 +484,14 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       default:
         return 'related-to';
     }
+  }
+
+  #isTranslation(mapping) {
+    return !NON_TRANSLATION_MAP_TYPES.has(this.#normalizeMapType(mapping.map_type || mapping.mapType));
+  }
+
+  #normalizeMapType(mapType) {
+    return String(mapType || '').trim().toUpperCase().replace(/[\s_]+/g, '-');
   }
 
   async #searchMappings(params = {}, maxPages = this.maxSearchPages) {

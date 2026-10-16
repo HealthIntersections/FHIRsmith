@@ -146,7 +146,7 @@ describe('OCLConceptMapProvider', () => {
       ['NOT-SAME-AS', 'not-related-to'],
       ['NOT-EQUIVALENT', 'not-related-to'],
       ['narrower than', 'source-is-narrower-than-target'],
-      ['Q-AND-A', 'related-to'],
+      ['ASSOCIATED-WITH', 'related-to'],
       [undefined, 'related-to']
     ])('should translate OCL map_type %s to FHIR relationship %s', async (mapType, expected) => {
       const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
@@ -172,6 +172,16 @@ describe('OCLConceptMapProvider', () => {
       expect(result.targetScope).toBeUndefined();
       expect(result.jsonObj.group[0].source).toBe('/orgs/TestOrg/sources/SourceA/');
     });
+
+    it.each(['Q-AND-A', 'CONCEPT-SET', 'concept set'])(
+      'should not build a ConceptMap from the non-translation map type %s', async (mapType) => {
+        const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
+        const provider = createProvider({ get: getMock });
+
+        provider.assignIds('5');
+        const result = await provider.fetchConceptMapById('5-map-1');
+        expect(result).toBeNull();
+      });
 
     it('should return null on HTTP error', async () => {
       const getMock = jest.fn().mockRejectedValue(new Error('404'));
@@ -251,6 +261,12 @@ describe('OCLConceptMapProvider', () => {
           from_source_url: '/orgs/TestOrg/sources/SourceA/',
           to_source_url: '/orgs/TestOrg/sources/SourceB/'
         }),
+        // not a translation: must not become a target of A1
+        makeMapping({
+          id: 'm3', from_concept_code: 'A1', to_concept_code: 'B9', map_type: 'Q-AND-A',
+          from_source_url: '/orgs/TestOrg/sources/SourceA/',
+          to_source_url: '/orgs/TestOrg/sources/SourceB/'
+        }),
       ];
 
       const getMock = jest.fn().mockImplementation((url) => {
@@ -267,7 +283,7 @@ describe('OCLConceptMapProvider', () => {
           return Promise.resolve({ data: [{ id: 'A1' }, { id: 'A2' }] });
         }
         if (url.includes('/concepts/A1/mappings/')) {
-          return Promise.resolve({ data: [mappings[0]] });
+          return Promise.resolve({ data: [mappings[0], mappings[2]] });
         }
         if (url.includes('/concepts/A2/mappings/')) {
           return Promise.resolve({ data: [mappings[1]] });
@@ -293,6 +309,8 @@ describe('OCLConceptMapProvider', () => {
       expect(cm.jsonObj.resourceType).toBe('ConceptMap');
       expect(cm.jsonObj.group).toHaveLength(1);
       expect(cm.jsonObj.group[0].element).toHaveLength(2);
+      const a1 = cm.jsonObj.group[0].element.find(e => e.code === 'A1');
+      expect(a1.target.map(t => t.code)).toEqual(['B1']);
       expect(cm.jsonObj.group[0].source).toBe('http://example.org/SourceA');
       expect(cm.jsonObj.group[0].target).toBe('http://example.org/SourceB');
       // a CodeSystem canonical is not a ValueSet, so it must not be declared as the scope
