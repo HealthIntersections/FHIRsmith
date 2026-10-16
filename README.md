@@ -81,7 +81,7 @@ During development with a cloned repository, the data directory defaults to `[ro
 is provided by the host — see Deployment below.
 
 ### Prerequisites
-- Node.js 16+
+- Node.js 24+
 - NPM or Yarn
 - Java 17+ (for FHIR validator, also for the test cases)
 
@@ -206,6 +206,15 @@ Or run it inline:
 ```bash
 FHIRSMITH_DATA_DIR=/var/lib/fhirsmith fhirsmith
 ```
+
+### Changing the Node.js version
+
+Some of FHIRsmith's dependencies (the SQLite drivers) are native modules, built for the
+version of Node.js that installed them. After upgrading Node.js, rebuild them - `npm rebuild`
+in the FHIRsmith folder, or `npm rebuild -g fhirsmith` for a global install - or reinstall
+FHIRsmith. Otherwise the server stops at startup with "compiled against a different Node.js
+version". (With nvm, each Node.js version has its own global packages, so install FHIRsmith
+again under the new version.) Docker images aren't affected.
 
 ### Docker Installation
 

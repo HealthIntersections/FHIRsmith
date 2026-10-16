@@ -322,4 +322,34 @@ describe('PackageConceptMapProvider', () => {
       expect(reduced.sourcePackage()).toBe('ch.fhir.ig.ch-core');
     });
   });
+
+  describe('incomplete cache', () => {
+    // a cache whose population was cut short (process killed part way through) has no
+    // complete marker, and must be rebuilt rather than trusted with what it holds
+    const sqlite3 = require('sqlite3');
+    const exec = (dbPath, sql) => new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, (err) => {
+        if (err) { reject(err); return; }
+        db.exec(sql, (err) => db.close(() => err ? reject(err) : resolve()));
+      });
+    });
+
+    test('a finished cache is marked complete', async () => {
+      expect(await provider.database.isComplete()).toBe(true);
+    });
+
+    test('a cache without the complete marker is rebuilt', async () => {
+      const fullSize = provider.getMapSize();
+      const dbPath = provider.dbPath;
+      await provider.close?.();
+      // simulate a truncated population: half the rows written, no marker
+      await exec(dbPath, `DELETE FROM conceptmaps WHERE rowid % 2 = 0; DELETE FROM cache_status WHERE key = 'cache-complete';`);
+
+      const again = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await again.initialize();
+      expect(again.getMapSize()).toBe(fullSize);
+      expect(await again.database.isComplete()).toBe(true);
+      await again.close?.();
+    });
+  });
 });

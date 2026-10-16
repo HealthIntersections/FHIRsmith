@@ -42,11 +42,21 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     await this.packageLoader.initialize();
     await fs.rm(path.join(this.packageLoader.packageFolder, '.conceptmaps.db'), { force: true }); // the old cache
 
-    const dbExists = await this.database.exists();
+    // A cache is only used once its population finished. One that was cut short
+    // (the process killed part way through) would otherwise be trusted forever,
+    // silently missing whatever hadn't been written yet
+    let dbExists = await this.database.exists();
+    if (dbExists && !(await this.database.isComplete())) {
+      require('../../library/logger').getInstance().child({ module: 'tx' })
+        .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: concept map cache ${this.dbPath} is incomplete - rebuilding it`);
+      await fs.rm(this.dbPath, { force: true });
+      dbExists = false;
+    }
 
     if (!dbExists) {
       await this.database.create();
       await this._populateDatabase();
+      await this.database.markComplete();
     }
 
     this.conceptMapMap = await this.database.loadAllConceptMaps();

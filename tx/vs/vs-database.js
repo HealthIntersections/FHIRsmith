@@ -4,6 +4,9 @@ const sqlite3 = require('sqlite3').verbose();
 const { VersionUtilities } = require('../../library/version-utilities');
 const ValueSet = require("../library/valueset");
 
+// Settings key written once a package cache has been fully populated (see isComplete)
+const CACHE_COMPLETE_KEY = 'cache-complete';
+
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
 
@@ -483,6 +486,29 @@ class ValueSetDatabase {
           err => err ? reject(err) : resolve()
       );
     });
+  }
+
+  /**
+   * True if this cache was fully populated: markComplete() was reached. A cache
+   * whose population was cut short (the process killed part way through) has no
+   * marker - and so does a file too damaged to open or read - so it reports false.
+   * @returns {Promise<boolean>}
+   */
+  async isComplete() {
+    try {
+      return (await this.getSetting(CACHE_COMPLETE_KEY)) != null;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Record that this cache has been fully populated. Called once, after the last
+   * value set has been written
+   * @returns {Promise<void>}
+   */
+  async markComplete() {
+    await this.setSetting(CACHE_COMPLETE_KEY, new Date().toISOString());
   }
 
   /**
