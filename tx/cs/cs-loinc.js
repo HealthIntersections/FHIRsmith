@@ -859,12 +859,7 @@ class LoincServices extends BaseCSServices {
     }
     // Concept hierarchy filters (is-a, descendent-of)
     else if (prop === 'concept' && ['is-a', 'descendent-of'].includes(op)) {
-      sql = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-             ORDER BY DescendentKey ASC`;
-      lsql = `SELECT COUNT(DescendentKey) FROM Closure
-              WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-                AND DescendentKey = `;
+      ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
     }
     // Concept equal filter (workaround for VSAC misuse)
     else if (prop === 'concept' && op === '=') {
@@ -887,12 +882,7 @@ class LoincServices extends BaseCSServices {
     }
     // Code property filters (workaround for VSAC misuse)
     else if (prop === 'code' && ['is-a', 'descendent-of'].includes(op)) {
-      sql = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-             ORDER BY DescendentKey ASC`;
-      lsql = `SELECT COUNT(DescendentKey) FROM Closure
-              WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-                AND DescendentKey = `;
+      ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
     }
     else if (prop === 'code' && op === '=') {
       sql = `SELECT CodeKey as Key FROM Codes
@@ -934,6 +924,33 @@ class LoincServices extends BaseCSServices {
     } else {
       throw new Error(`The filter "${prop} ${op} ${value}" is not supported for LOINC`);
     }
+  }
+
+  /**
+   * The SQL for an is-a or descendent-of filter. The Closure table holds the strict descendants
+   * of each part (and never the part itself), which is descendent-of. is-a also includes the
+   * concept itself, as FHIR defines it.
+   *
+   * The closure follows LOINC's ComponentHierarchyBySystem path by path: a code is a descendant
+   * of the parts on its own PATH_TO_ROOT. A part that sits under two parents has its children by
+   * system listed separately under each, and they are not inherited across the paths - reading
+   * the file as a graph would, for example, put Glucose in Serum or Plasma under Urinalysis,
+   * because Protein appears under both.
+   */
+  #hierarchyFilterSql(op, value) {
+    const code = this.#sqlWrapString(value);
+    const descendants = `SELECT DescendentKey as Key FROM Closure
+             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${code}')`;
+    const set = op === 'is-a'
+      ? `${descendants}
+             UNION
+             SELECT CodeKey as Key FROM Codes WHERE Code = '${code}'`
+      : descendants;
+    return {
+      sql: `${set}
+             ORDER BY Key ASC`,
+      lsql: `SELECT COUNT(*) FROM (${set}) WHERE Key = `
+    };
   }
 
 // Helper method for regex matching
