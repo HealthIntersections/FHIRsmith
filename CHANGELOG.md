@@ -5,7 +5,9 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.17.0] - 2026-mm-dd
+## [0.17.0] - 2026-10-17
+
+An extensive security review, which hardened many things, but no actual securty notifications needed. Plus improvemnts to text search in terminology filters
 
 ### Security
 
@@ -14,31 +16,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rendered resources: links to `javascript:`, `data:` or `vbscript:` URLs taken from resource content are neutralised
 - tx: values from loaded packages are escaped (and URL-encoded in links) on the problems page, the resource tabs, and the operations form's list of value sets
 - tx: CodeSystems, ValueSets and ConceptMaps whose narrative (or a contained resource's) has active content - script, event handler attributes, `javascript:` URLs, frames, objects, forms, svg and the like - are not loaded, and a warning says what was found. The Original Narrative tab also refuses such a narrative. The check is in `library/narrative-check.js` for other uses. The package value set and concept map caches are renamed so that they are rebuilt and re-checked once
-- xig: the database is downloaded over https (it was http, so it could have been replaced in transit, and its narratives are shown as they are), and a redirect off https is refused
+- xig: the database is downloaded over https (it was http, so it could theoretically have been replaced in transit, and its narratives are shown as they are), and a redirect off https is refused
 - Extension tracker: the profiles page put the resource types from submissions into a script without escaping, so anyone could submit data that ran script on that page. They are now escaped
 - Extension tracker: submissions must carry the token the IG Publisher sends (`token` in the ext-tracker config; without it, no token is needed), and must look like what the IG Publisher sends - the expected properties only, codes, URLs, resource types and element paths where those belong, and limited sizes. Anything else is refused, and the refusal logged
 - Registry: server and registry URLs from registry lists (which other people host) were put into links without escaping, so a listed URL could add script to the registry's pages; and links were made from any URL, including `javascript:`. Links are now escaped, and made only from http(s) URLs
 - Registry: the crawler limits each server's response to `maxResponseMB` (default 100) once unzipped, so a server can't exhaust the registry's memory
 - xig: POST /xig/update, which re-downloads the database (about 3 GB), needed no authentication. It now needs the `updateToken` from the xig config in an `x-update-token` header (or the form now on /xig/stats, which starts an update and returns straight away), and is disabled when no updateToken is configured
 - xig: a search parameter given more than once, or a very long one, is handled (the first is used, and each is capped at 200 characters) instead of failing the page
+- OCL: the configured token can see the private repos of its account, and what it finds is served to anyone through the terminology server. Sources and collections are now served only when they are public (`public_access` View or Edit), whether they are found by discovery or by `$resolveReference`; anything that can't be confirmed public is left out. The token's account should still be one that can see only public repos
+- OCL: a repo path returned by OCL is only used if it is a relative path on the OCL server, so a request carrying the token can't be sent to another host
 - Packages: the crawler limits what a package can cost it: the download (`maxDownloadMB`, default 250), the total unzipped (`maxUnpackedMB`, 4096), the files it reads (`maxFileMB`, 50) and the number of files (`maxFiles`, 250000), all in the packages `crawler` config. Packages are now unpacked as a stream, keeping only package.json, .index.json, ig.ini and one .json file at a time, so a decompression bomb can't exhaust memory
 
 ### Added
 
 - `TerminologyCapabilities.expansion.textFilter` describes how text filters match
+- OCL: with a `token=` on the `ocl:` source line, canonical URLs are resolved through OCL's `$resolveReference` (ConceptMap source systems, ValueSet collections and their compose sources), rather than by searching the listings. Without a token nothing changes
+- OCL: a source's latest released version is served as its default version, as OCL itself does; HEAD is still available as version `HEAD` (needs the token)
+- README: what to do after upgrading Node.js (`npm rebuild`, or reinstall)
 
 ### Changed
 
 - Text filters on code systems loaded from files and packages ignore case, and accents on Latin, Greek and Cyrillic letters (`colera` finds `Cólera`), and a search of several words matches when each word starts a word of the display or of one designation, in any order (`diabetes tipo 2` finds `Diabetes mellitus tipo 2`). These matches rank below matches of the whole text, shorter displays first.
 - `$expand` with a text filter returns the best matches first on code systems loaded from files and packages, and on OCL code systems, as it already did on SNOMED CT
+- OCL: sources and collections are discovered from the global `/sources/` and `/collections/` listings (falling back to each organisation's), and only organisation-owned ones are served - repos owned by a user are not
+- OCL: a source's mappings are fetched from `{source}/mappings/` instead of walking every concept
 
 ### Fixed
 
 - LOINC: text filter matches came in reverse description order (Z to A) when the expansion asked for them sorted. They now come in description order either way
+- LOINC: an `is-a` filter left out the concept itself, so it gave the same codes as `descendent-of`. It now includes the concept, as FHIR defines `is-a`
+- OCL: `$translate` never returned anything from OCL concept maps. The maps declared OCL repo paths as their source and target scopes, which aren't value sets, so every translation failed with not-found; and `NARROWER-THAN` / `BROADER-THAN` mappings had relationship codes that aren't FHIR codes. The scopes are gone, the map types become `source-is-narrower-than-target` / `source-is-broader-than-target` (and `NOT-SAME-AS` becomes `not-related-to`), and `Q-AND-A` and `CONCEPT-SET` mappings, which aren't translations, are left out
+- tx: a package value set or concept map cache whose build was cut short (the server stopped part way through) was used as it was, missing whatever hadn't been written. A cache is now marked complete when it's built, and one without the mark is rebuilt - so existing caches are rebuilt once, on the first start of this version
 
 ### Tx Conformance Statement
 
-(paste)
+FHIRsmith v0.17.0 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.2)
 
 ## [0.16.1] - 2026-10-16
 

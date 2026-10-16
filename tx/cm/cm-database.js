@@ -2,6 +2,9 @@ const fs = require('fs').promises;
 const sqlite3 = require('sqlite3').verbose();
 const { VersionUtilities } = require('../../library/version-utilities');
 const { ConceptMap } = require('../library/conceptmap');
+// Key of the row written once the cache has been fully populated (see isComplete)
+const CACHE_COMPLETE_KEY = 'cache-complete';
+
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
 
@@ -113,6 +116,14 @@ class ConceptMapDatabase {
           db.run('CREATE INDEX idx_jurisdictions_code ON conceptmap_jurisdictions(code)');
           db.run('CREATE INDEX idx_systems_system ON conceptmap_systems(system)');
 
+          // Cache status (key-value) - holds the marker that population finished
+          db.run(`
+              CREATE TABLE cache_status (
+                                          key TEXT PRIMARY KEY,
+                                          value TEXT
+              )
+          `);
+
           db.close((err) => {
             if (err) {
               reject(new Error(`Failed to close database after creation: ${err.message}`));
@@ -120,6 +131,57 @@ class ConceptMapDatabase {
               resolve();
             }
           });
+        });
+      });
+    });
+  }
+
+  /**
+   * True if this cache was fully populated: markComplete() was reached. A cache
+   * whose population was cut short (the process killed part way through) has no
+   * marker - nor does one built before the marker existed, or a file too damaged
+   * to read - so it reports false.
+   * @returns {Promise<boolean>}
+   */
+  async isComplete() {
+    return new Promise((resolve) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+        db.get('SELECT value FROM cache_status WHERE key = ?', [CACHE_COMPLETE_KEY], (err, row) => {
+          db.close(() => resolve(!err && row != null));
+        });
+      });
+    });
+  }
+
+  /**
+   * Record that this cache has been fully populated. Called once, after the last
+   * concept map has been written
+   * @returns {Promise<void>}
+   */
+  async markComplete() {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(this.dbPath, (err) => {
+        if (err) {
+          reject(new Error(`Failed to open database: ${err.message}`));
+          return;
+        }
+        db.serialize(() => {
+          db.run('CREATE TABLE IF NOT EXISTS cache_status (key TEXT PRIMARY KEY, value TEXT)');
+          db.run(`INSERT INTO cache_status (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+            [CACHE_COMPLETE_KEY, new Date().toISOString()], (err) => {
+              db.close((closeErr) => {
+                if (err || closeErr) {
+                  reject(new Error(`Failed to mark cache complete: ${(err || closeErr).message}`));
+                } else {
+                  resolve();
+                }
+              });
+            });
         });
       });
     });

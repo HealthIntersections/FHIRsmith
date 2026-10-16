@@ -50,11 +50,19 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     await this.packageLoader.initialize();
     await fs.rm(path.join(this.packageLoader.packageFolder, '.valuesets.db'), { force: true }); // the old cache
 
-    const dbExists = await this.database.exists();
+    // A cache is only used once its population finished. One that was cut short
+    // (the process killed part way through) would otherwise be trusted forever,
+    // silently missing whatever hadn't been written yet
+    let dbExists = await this.database.exists();
+    if (dbExists && !(await this.database.isComplete())) {
+      require('../../library/logger').getInstance().child({ module: 'tx' })
+        .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: value set cache ${this.dbPath} is incomplete - rebuilding it`);
+      await this.#discardDatabase();
+      dbExists = false;
+    }
 
     if (!dbExists) {
-      await this.database.create();
-      await this._populateDatabase();
+      await this.#buildDatabase();
     }
 
     this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
@@ -64,11 +72,8 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     // package-manager.js): if any cached value set still carries a "system|version"
     // include or a pipe in its url, rebuild this cache from the package.
     if (dbExists && this.#hasPipeVersionedCanonicals()) {
-      await this.database.close();
-      await fs.rm(this.dbPath, { force: true });
-      this.database = new ValueSetDatabase(this.dbPath);
-      await this.database.create();
-      await this._populateDatabase();
+      await this.#discardDatabase();
+      await this.#buildDatabase();
       this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
     }
 
@@ -86,6 +91,27 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     // nothing, unless the spaceId was assigned before the provider was initialized
     this.#applyIdPrefix();
     this.initialized = true;
+  }
+
+  /**
+   * Create the cache and fill it from the package. The complete marker is written
+   * last, so a build that doesn't finish is detected (and redone) next time
+   * @private
+   */
+  async #buildDatabase() {
+    await this.database.create();
+    await this._populateDatabase();
+    await this.database.markComplete();
+  }
+
+  /**
+   * Close and delete the cache file, leaving a fresh (not yet created) database
+   * @private
+   */
+  async #discardDatabase() {
+    await this.database.close();
+    await fs.rm(this.dbPath, { force: true });
+    this.database = new ValueSetDatabase(this.dbPath);
   }
 
   /**

@@ -846,6 +846,41 @@ describe('LOINC Provider', () => {
   });
 
   describe('Filter Operations', () => {
+    // is-a includes the concept itself; descendent-of does not
+    test.each([
+      ['concept', 'is-a', true],
+      ['concept', 'descendent-of', false],
+      ['code', 'is-a', true],
+      ['code', 'descendent-of', false]
+    ])('%s %s LP7786-9 includes LP7786-9 itself: %s', async (property, operator, includesSelf) => {
+      const codes = [];
+      const filterContext = await provider.getPrepContext(true);
+      await provider.filter(filterContext, true, property, operator, 'LP7786-9');
+      const filters = await provider.executeFilters(filterContext);
+      while (await provider.filterMore(filterContext, filters[0])) {
+        codes.push(await provider.code(await provider.filterConcept(filterContext, filters[0])));
+      }
+      expect(codes.length).toBeGreaterThan(1);
+      expect(codes.includes('LP7786-9')).toBe(includesSelf);
+      expect(codes.filter(code => code !== 'LP7786-9')).toEqual(
+        // the same descendants either way
+        await descendantsOf('LP7786-9'));
+
+      const self = await provider.locate('LP7786-9');
+      expect(!!(await provider.filterCheck(filterContext, filters[0], self.context))).toBe(includesSelf);
+    });
+
+    async function descendantsOf(code) {
+      const codes = [];
+      const filterContext = await provider.getPrepContext(true);
+      await provider.filter(filterContext, true, 'concept', 'descendent-of', code);
+      const filters = await provider.executeFilters(filterContext);
+      while (await provider.filterMore(filterContext, filters[0])) {
+        codes.push(await provider.code(await provider.filterConcept(filterContext, filters[0])));
+      }
+      return codes;
+    }
+
     test('should locate codes within filters', async () => {
       const testCase = expectedResults.filters.relationships[0]; // Use first relationship filter
       const filterContext = await provider.getPrepContext(false);
