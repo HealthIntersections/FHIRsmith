@@ -25,10 +25,14 @@ const FILTER_ANALYSIS = Symbol('filterAnalysis');
 const SEARCH_TEXTS = new WeakMap();
 
 /**
- * Lower case without accents, so "colera" finds "Cólera".
+ * Lower case without accents, so "colera" finds "Cólera". Only marks on Latin, Greek and
+ * Cyrillic letters are accents: in other scripts, such as kana or Devanagari, marks are
+ * part of how a word is spelt, and dropping them would make "がん" find "かん".
  */
 function foldSearchText(text) {
-  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+  return text.normalize('NFD')
+    .replace(/([\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])\p{M}+/gu, '$1')
+    .toLowerCase();
 }
 
 /**

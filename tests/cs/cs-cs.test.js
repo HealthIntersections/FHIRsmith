@@ -1487,6 +1487,28 @@ describe('FHIR CodeSystem Provider', () => {
             expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('MIOCÁRDIO'), true))).toEqual(['I21']);
           });
 
+          test('should ignore accents only on Latin, Greek and Cyrillic letters', async () => {
+            const provider = factory.build(opContext, [], new CodeSystem({
+              resourceType: 'CodeSystem',
+              url: 'http://example.org/scripts',
+              status: 'active',
+              content: 'complete',
+              concept: [
+                {code: 'heart', display: 'Καρδιά'},
+                {code: 'tree', display: 'Ёлка'},
+                {code: 'cancer', display: 'がん'},
+                {code: 'kan', display: 'かん'},
+                {code: 'book', display: 'किताब'}
+              ]
+            }));
+            const search = async (text) => codes(await provider.searchFilter(filterContext, new SearchFilterText(text), true));
+            expect(await search('καρδια')).toEqual(['heart']);
+            expect(await search('елка')).toEqual(['tree']);
+            expect(await search('がん')).toEqual(['cancer']);
+            expect(await search('かん')).toEqual(['kan']);
+            expect(await search('कतब')).toEqual([]);
+          });
+
           test('should match a search whose words start words of the display, in any order', async () => {
             expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes tipo 2'), true))).toEqual(['E11', 'E119']);
             expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('enfarte miocardio'), true))).toEqual(['I21']);
