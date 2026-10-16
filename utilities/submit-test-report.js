@@ -11,7 +11,7 @@
  *
  *   node utilities/submit-test-report.js [-server url] [-file path] [-token token] [-header name]
  *
- *   -server  the /testing base; default https://testing.fhir.org/testing
+ *   -server  the /testing base; default https://npm.fhir.org/testing
  *   -file    default test-cases-report.json in the FHIRsmith root
  *   -token   if the server requires one; or set FHIRSMITH_TESTING_TOKEN
  *   -header  the header the token goes in; default Authorization (sent as "Bearer <token>")

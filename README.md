@@ -14,7 +14,7 @@ This server provides a set of server-side services that are useful for the FHIR 
 * [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
 * [XIG server](xig/readme.md) -  **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
 * [Publisher](publisher/readme.md) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
-* [Testing](testing/readme.md) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://testing.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
+* [Testing](testing/readme.md) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://npm.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
 * [VCL](vcl/readme.md) - **Parse VCL expressions** into FHIR ValueSet resources (as running at http://fhir.org/vcl)
 * (Coming) Token services
 
@@ -348,30 +348,29 @@ GitHub Actions will automatically:
 
 or do it via a PR
 
-4. Tag and push the release:
+4. Run the tx tests (`npx jest tests/tx/test-cases.test.js`), then tag and push the release:
 ```bash
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   ./release.sh X.Y.Z
 ```
+
+   `gr.sh` checks that the release is ready - on `main` and pushed, the three versions in
+   `package.json` and `package-lock.json` match, `CHANGELOG.md` has a dated section with the
+   conformance statement, and `test-cases-report.json` passed, is from this version and is
+   newer than the last code change - then submits the report to
+   [npm.fhir.org](https://npm.fhir.org/testing) (set `FHIRSMITH_TESTING_TOKEN` if it needs a
+   token), and only if that is accepted, tags `vX.Y.Z` and pushes the tag.
+
+   The tx test run writes `test-cases-report.json` next to `test-cases-summary.txt` (both
+   are ignored by git). The report records the version in `package.json` when the tests
+   ran, so run the tx tests after step 2. To submit a report on its own (to a different
+   /testing server, say): `node utilities/submit-test-report.js [-server {url}] [-token {token}]`.
 
 5. Monitor the release:
     - Check [GitHub Actions](https://github.com/HealthIntersections/fhirsmith/actions) for the Release workflow
     - Verify the [GitHub Release](https://github.com/HealthIntersections/fhirsmith/releases) was created
     - Confirm Docker images are available at [GHCR](https://github.com/HealthIntersections/fhirsmith/pkgs/container/fhirsmith)
 
-6. Submit the tx conformance report to [testing.fhir.org](https://testing.fhir.org/testing):
-```bash
-   node utilities/submit-test-report.js -token {token}
-```
-
-   The tx test run writes `test-cases-report.json` next to `test-cases-summary.txt` (both
-   are ignored by git); this uploads it as a TestReport. The report records the version in
-   `package.json` when the tests ran, so for it to name the release, run the tx tests
-   after step 2 - the script warns if the report is from a different version, or from a
-   snapshot. Use `-server {url}` to send it to a different /testing server; the token can
-   also come from `FHIRSMITH_TESTING_TOKEN`.
-
-7. Update `package.json` to have the next release version -SNAPSHOT
+6. Update `package.json` to have the next release version -SNAPSHOT
 
 **If a release fails:**
 - Delete the tag: `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`

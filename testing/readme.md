@@ -31,7 +31,7 @@ shown on any page.
 
 FHIRsmith's own tx test run writes its results as `test-cases-report.json` in the
 FHIRsmith root; `node utilities/submit-test-report.js [-server url] [-token token]` sends it
-to a /testing server (by default https://testing.fhir.org/testing).
+to a /testing server (by default https://npm.fhir.org/testing).
 
 ## Reading and searching
 
