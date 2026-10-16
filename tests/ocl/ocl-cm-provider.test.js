@@ -152,7 +152,8 @@ describe('OCLConceptMapProvider', () => {
       const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
       const provider = createProvider({ get: getMock });
 
-      const result = await provider.fetchConceptMapById('map-1');
+      provider.assignIds('5');
+      const result = await provider.fetchConceptMapById('5-map-1');
       expect(result.jsonObj.group[0].element[0].target[0].relationship).toBe(expected);
     });
 
@@ -164,7 +165,8 @@ describe('OCLConceptMapProvider', () => {
       const getMock = jest.fn().mockResolvedValue({ data: mapping });
       const provider = createProvider({ get: getMock });
 
-      const result = await provider.fetchConceptMapById('map-1');
+      provider.assignIds('5');
+      const result = await provider.fetchConceptMapById('5-map-1');
       // $translate resolves a scope as a ValueSet; an OCL path would fail with not-found
       expect(result.sourceScope).toBeUndefined();
       expect(result.targetScope).toBeUndefined();
