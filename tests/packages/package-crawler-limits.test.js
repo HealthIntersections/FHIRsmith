@@ -69,7 +69,11 @@ function unpackAndMeasure(pkg, crawlerPath = require.resolve('../../packages/pac
       const used = () => { global.gc(); const m = process.memoryUsage(); return m.heapUsed + m.external + m.arrayBuffers; };
       const base = used() - pkg.length;
       let peak = 0;
-      const timer = setInterval(() => { peak = Math.max(peak, used() - base); }, 2);
+      // every 20 ms: each reading is a full garbage collection, and at 2 ms they took up the
+      // whole process, so unpacking that takes a quarter of a second took minutes on a busy
+      // CI runner. Unpacking still spans a dozen readings, and holding the package (the bug
+      // this checks for) shows up in every one of them
+      const timer = setInterval(() => { peak = Math.max(peak, used() - base); }, 20);
       const c = Object.create(PackageCrawler.prototype);
       c.config = {};
       c.log = { info() {}, warn() {}, error() {} };
