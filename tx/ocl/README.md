@@ -54,15 +54,23 @@ terminology service. User-owned repos (`/users/{user}/...`) are experimental by
 convention and are excluded from both discovery and `$resolveReference` results
 (a canonical resolving to a user-owned repo is treated as unresolved).
 
-In addition, a resolved repo is only served when it is **publicly viewable**
-(`public_access` is `View`/`Edit`; `None`/unknown is treated as unresolved,
+In addition, a repo is only served when it is **publicly viewable**
+(`public_access` is `View`/`Edit`; `None`/unknown is treated as not servable,
 fail-closed). Because the configured token can see every repo its OCL account has
-access to — and `$resolveReference` answers canonicals for anonymous terminology
+access to — and both `$resolveReference` and discovery answer anonymous terminology
 requests — without this gate a *private* repo in the token's org could be surfaced
-publicly. `public_access` is not returned inline by `$resolveReference` today, so
-for a resolved repo the resolver fetches the repo once to read it (cached with the
-result; concurrent across a batch). It also rejects any `repoUrl` that is not a
-safe same-host relative path, so an unexpected response can never redirect an
+publicly. This gate is applied in **both** paths:
+
+- **`$resolveReference`**: a resolved repo that is not public is treated as unresolved.
+- **Discovery**: the global (`/sources/`, `/collections/`) and per-org listing crawls
+  drop non-public (and non-org-owned) repos before they are registered.
+
+`public_access` is not returned by the listing endpoints or by `$resolveReference`
+today, so a shared `PublicAccessChecker` fetches each repo once to read it, caching
+the verdict by `repoUrl` (bounded LRU) and running batch checks with a concurrency
+limit. A check that *errors* is not cached, so a transient blip is retried rather
+than pinning a repo as private. The resolver also rejects any `repoUrl` that is not
+a safe same-host relative path, so an unexpected response can never redirect an
 authenticated request off-host.
 
 > **Operational guidance (defense-in-depth):** configure the `token=` account with

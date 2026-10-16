@@ -10,6 +10,7 @@ const { OCLSourceCodeSystemFactory, OCLBackgroundJobQueue } = require('./cs-ocl'
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
+const { PublicAccessChecker } = require('./resolve/public-access');
 const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
 const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
@@ -47,10 +48,12 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
     // Resolves a canonical to its OCL repo authoritatively. Disabled without a
     // token, in which case the search paths below run exactly as before.
+    this.publicAccess = new PublicAccessChecker({ httpClient: this.httpClient, logger: oclVsLog });
     this.referenceResolver = new OclReferenceResolver({
       httpClient: this.httpClient,
       token: options.token || null,
-      logger: oclVsLog
+      logger: oclVsLog,
+      publicAccess: this.publicAccess
     });
 
     this.valueSetMap = new Map();
@@ -1404,7 +1407,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
           orgOwned.push(collection);
         }
         if (orgOwned.length > 0) {
-          return orgOwned;
+          // Public-only: a private collection the token can see must not be served.
+          return await this.publicAccess.filterPublic(orgOwned);
         }
       }
     } catch (error) {
@@ -1423,7 +1427,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       const endpoint = `/orgs/${encodeURIComponent(orgId)}/collections/`;
       const collections = await this.#fetchAllPages(endpoint);
       for (const collection of collections) {
-        if (!collection || typeof collection !== 'object') {
+        // Org-only policy applies to the per-org fallback too, not just the global
+        // listing (an org listing can still surface non-org-owned entries).
+        if (!collection || typeof collection !== 'object' || !isOrgOwned(collection)) {
           continue;
         }
         const key = this.#collectionIdentity(collection);
@@ -1435,7 +1441,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       }
     }
 
-    return allCollections;
+    // Public-only: a private collection the token can see must not be served.
+    return await this.publicAccess.filterPublic(allCollections);
   }
 
   async #fetchOrganizationIds() {

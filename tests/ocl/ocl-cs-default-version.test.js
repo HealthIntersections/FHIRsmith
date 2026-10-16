@@ -16,6 +16,7 @@ function cmedSource() {
     short_code: 'cmed',
     owner: 'ANVISA',
     owner_type: 'Organization',
+    public_access: 'View',
     url: '/orgs/ANVISA/sources/cmed/',
     canonical_url: CANONICAL,
     version: 'HEAD',

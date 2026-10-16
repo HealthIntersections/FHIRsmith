@@ -12,6 +12,8 @@
 // Plain .js rather than tx/ocl's .cjs+stub convention: jest's collectCoverageFrom
 // globs **/*.js only, so a .cjs module would be invisible to coverage.
 
+const { PublicAccessChecker, safeForLog, mapLimit } = require('./public-access');
+
 const RESOLVE_PATH = '/$resolveReference/';
 
 // The live instance rejects large batches (403 somewhere between 150 and 200
@@ -31,6 +33,9 @@ const MAX_REFERENCE_LENGTH = 2048;
 // on a busy instance) backs the resolver off for a while rather than disabling it
 // for the whole process life. 404 (endpoint not implemented) stays permanent.
 const DEFAULT_AUTH_BACKOFF_MS = 60_000;
+
+// Cap on concurrent public_access repo GETs when gating a batch of resolutions.
+const PUBLIC_ACCESS_CONCURRENCY = 8;
 
 // Org-only visibility policy: an artifact is expected to live in an organization
 // to be visible through the terminology service. The path must be a concrete
@@ -77,17 +82,6 @@ function isOclRepoPath(value) {
 function isSafeRelativeOclPath(value) {
   const s = String(value == null ? '' : value).trim();
   return s.startsWith('/') && !s.startsWith('//') && !s.includes('..');
-}
-
-/**
- * Whether an OCL repo's public_access makes it publicly viewable. OCL uses
- * 'View' | 'Edit' | 'None' ('None' = private, members only). Fail-closed:
- * anything that is not an explicit public value (including null/unknown) is NOT
- * public, so a repo is only served when we can positively confirm it is.
- */
-function isPublicAccess(value) {
-  const s = String(value == null ? '' : value).trim().toLowerCase();
-  return s === 'view' || s === 'edit';
 }
 
 /**
@@ -147,14 +141,6 @@ function referenceLength(body) {
   return (typeof body === 'string' ? body : String(body?.url ?? '')).length;
 }
 
-// Client input ends up in log lines; strip control characters / newlines and cap
-// the length so a crafted reference cannot forge log entries or flood the log.
-function safeForLog(value) {
-  // Matching control characters is the whole point here (we are scrubbing them).
-  // eslint-disable-next-line no-control-regex
-  const s = String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]+/g, ' ');
-  return s.length > 200 ? `${s.slice(0, 200)}…` : s;
-}
 
 function unresolved(request) {
   return {
@@ -220,6 +206,7 @@ class OclReferenceResolver {
   #disabledReason = null;
   #authBackoffMs;
   #backoffUntil = 0;
+  #publicAccess;
 
   /**
    * @param {object} options
@@ -232,8 +219,10 @@ class OclReferenceResolver {
    *   a last resort (callers pass their child logger)
    * @param {number} [options.cacheLimit] - max cached references (bounded LRU)
    * @param {number} [options.authBackoffMs] - cooldown after a transient 401/403
+   * @param {PublicAccessChecker} [options.publicAccess] - shared public-access gate
+   *   (so discovery and the resolver share one repoUrl cache); created if absent
    */
-  constructor({ httpClient, token = null, logger = console, cacheLimit = DEFAULT_CACHE_LIMIT, authBackoffMs = DEFAULT_AUTH_BACKOFF_MS } = {}) {
+  constructor({ httpClient, token = null, logger = console, cacheLimit = DEFAULT_CACHE_LIMIT, authBackoffMs = DEFAULT_AUTH_BACKOFF_MS, publicAccess = null } = {}) {
     if (!httpClient) {
       throw new Error('OCL reference resolver requires an http client');
     }
@@ -242,6 +231,7 @@ class OclReferenceResolver {
     this.#logger = logger;
     this.#cacheLimit = cacheLimit > 0 ? cacheLimit : DEFAULT_CACHE_LIMIT;
     this.#authBackoffMs = authBackoffMs >= 0 ? authBackoffMs : DEFAULT_AUTH_BACKOFF_MS;
+    this.#publicAccess = publicAccess || new PublicAccessChecker({ httpClient, logger });
     this.#enabled = Boolean(token);
     if (!this.#enabled) {
       this.#disabledReason = 'no token configured';
@@ -392,47 +382,33 @@ class OclReferenceResolver {
     // Pass 2 (async): public-access gate. A private repo (public_access other than
     // View/Edit) that the configured token can see must NOT be served through the
     // public terminology server, so anything not positively confirmed public is
-    // dropped. public_access is not in the resolve result today, so for a resolved
-    // repo we fetch it once (cached via the result below); done concurrently.
-    await Promise.all(prelim.map(async entry => {
+    // dropped. public_access is not in the resolve result today, so the shared
+    // checker fetches the repo once (cached by repoUrl, concurrency-limited). A
+    // transient fetch error is NOT cached — that reference is left out of the
+    // result cache below and retried next time rather than pinned as unresolved.
+    await mapLimit(prelim, PUBLIC_ACCESS_CONCURRENCY, async entry => {
       if (!entry.value.resolved) {
         return;
       }
-      const access = await this.#publicAccessOf(entry.value);
-      if (!isPublicAccess(access)) {
+      const { public: isPublic, determined } = await this.#publicAccess.check(entry.value.repoUrl, entry.value.publicAccess);
+      if (!isPublic) {
         this.#logger.info(
           `$resolveReference resolved ${safeForLog(cacheKey(entry.body))} to a non-public repo ` +
-          `(${safeForLog(entry.value.repoUrl)}, public_access=${safeForLog(access)}); not served`
+          `(${safeForLog(entry.value.repoUrl)}); not served`
         );
         entry.value = unresolved(entry.body);
+        entry.skipCache = !determined;
       }
-    }));
+    });
 
-    for (const { body, index, value } of prelim) {
-      this.#cachePut(cacheKey(body), value);
+    for (const { body, index, value, skipCache } of prelim) {
+      if (!skipCache) {
+        this.#cachePut(cacheKey(body), value);
+      }
       output[index] = value;
     }
 
     return output;
-  }
-
-  // The repo's public_access, preferring the value inlined in the resolve result
-  // and otherwise fetching the repo once. Returns null (→ fail-closed, not served)
-  // when it cannot be determined, including on a fetch error.
-  async #publicAccessOf(value) {
-    if (value.publicAccess != null) {
-      return value.publicAccess;
-    }
-    try {
-      const response = await this.#httpClient.get(value.repoUrl);
-      const repo = response?.data && typeof response.data === 'object' ? response.data : null;
-      return repo ? (repo.public_access ?? repo.publicAccess ?? null) : null;
-    } catch (error) {
-      this.#logger.warn(
-        `public_access check failed for ${safeForLog(value.repoUrl)}: ${safeForLog(error.message)}`
-      );
-      return null;
-    }
   }
 
   #handleError(error, misses, output) {

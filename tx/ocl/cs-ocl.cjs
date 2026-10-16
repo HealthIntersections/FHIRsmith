@@ -8,6 +8,7 @@ const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MA
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
+const { PublicAccessChecker } = require('./resolve/public-access');
 const { CACHE_CS_DIR, CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
 const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
 const { computeCodeSystemFingerprint } = require('./fingerprint/fingerprint');
@@ -47,9 +48,12 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     // Resolves each source's DEFAULT version (latest release, else HEAD) so both
     // get registered. Disabled without a token, in which case discovery stays
     // HEAD-only exactly as before.
+    this.publicAccess = new PublicAccessChecker({ httpClient: this.httpClient, logger: oclLog });
     this.referenceResolver = new OclReferenceResolver({
       httpClient: this.httpClient,
-      token: options.token || null
+      token: options.token || null,
+      logger: oclLog,
+      publicAccess: this.publicAccess
     });
     this._defaultVersionByCanonical = new Map();
     this._headMetaByCanonical = new Map();
@@ -318,7 +322,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
           orgOwned.push(source);
         }
         if (orgOwned.length > 0) {
-          return orgOwned;
+          // Public-only: a private source the token can see must not be served.
+          return await this.publicAccess.filterPublic(orgOwned);
         }
       }
     } catch (error) {
@@ -337,7 +342,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       const endpoint = `/orgs/${encodeURIComponent(orgId)}/sources/`;
       const sources = await this.#fetchAllPages(endpoint);
       for (const source of sources) {
-        if (!source || typeof source !== 'object') {
+        // Org-only policy applies to the per-org fallback too, not just the global
+        // listing (an org listing can still surface non-org-owned entries).
+        if (!source || typeof source !== 'object' || !isOrgOwned(source)) {
           continue;
         }
         const key = this.#sourceIdentity(source);
@@ -349,7 +356,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       }
     }
 
-    return allSources;
+    // Public-only: a private source the token can see must not be served.
+    return await this.publicAccess.filterPublic(allSources);
   }
 
   async #fetchOrganizationIds() {
