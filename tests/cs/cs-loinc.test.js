@@ -829,6 +829,20 @@ describe('LOINC Provider', () => {
       const size = await provider.filterSize(filterContext, filter);
       expect(size).toBeGreaterThanOrEqual(0);
     });
+
+    test('lists text filter matches in description order, sorted or not', async () => {
+      for (const sort of [false, true]) {
+        const filterContext = await provider.getPrepContext(true);
+        await provider.searchFilter(filterContext, new SearchFilterText('serum'), sort);
+        const filters = await provider.executeFilters(filterContext);
+        const displays = [];
+        while (await provider.filterMore(filterContext, filters[0])) {
+          displays.push(await provider.display(await provider.filterConcept(filterContext, filters[0])));
+        }
+        expect(displays.length).toBeGreaterThan(1);
+        expect(displays).toEqual([...displays].sort());
+      }
+    });
   });
 
   describe('Filter Operations', () => {

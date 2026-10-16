@@ -664,9 +664,10 @@ class LoincServices extends BaseCSServices {
     filterContext.filters.push(filter);
   }
 
-  async searchFilter(filterContext, filterText, sort) {
+  async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
-    await this.#executeFilterQuery('$text', (sort ? '>' : '<'), filterText.filter, filter);
+    // LOINC does not rate its matches, so sorted or not they come in description order
+    await this.#executeFilterQuery('$text', '<', filterText.filter, filter);
     filterContext.filters.push(filter);
   }
 

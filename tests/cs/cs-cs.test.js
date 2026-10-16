@@ -1459,6 +1459,90 @@ describe('FHIR CodeSystem Provider', () => {
             lastRating = item.rating;
           });
         });
+
+        describe('across accents and words', () => {
+          let ptProvider;
+
+          beforeEach(() => {
+            ptProvider = factory.build(opContext, [], new CodeSystem({
+              resourceType: 'CodeSystem',
+              url: 'http://example.org/icd-10-cm-pt',
+              status: 'active',
+              content: 'complete',
+              language: 'pt',
+              concept: [
+                {code: 'A00', display: 'Cólera'},
+                {code: 'E119', display: 'Diabetes mellitus tipo 2 sem complicações'},
+                {code: 'E11', display: 'Diabetes mellitus tipo 2'},
+                {code: 'I21', display: 'Enfarte agudo do miocárdio', designation: [{language: 'en', value: 'Acute myocardial infarction'}]},
+                {code: 'E10', display: 'Diabetes mellitus tipo 1'}
+              ]
+            }));
+          });
+
+          const codes = (results) => results.concepts.map(item => item.concept.code);
+
+          test('should match whatever the accents and case', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('colera'), true))).toEqual(['A00']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('MIOCÁRDIO'), true))).toEqual(['I21']);
+          });
+
+          test('should ignore accents only on Latin, Greek and Cyrillic letters', async () => {
+            const provider = factory.build(opContext, [], new CodeSystem({
+              resourceType: 'CodeSystem',
+              url: 'http://example.org/scripts',
+              status: 'active',
+              content: 'complete',
+              concept: [
+                {code: 'heart', display: 'Καρδιά'},
+                {code: 'tree', display: 'Ёлка'},
+                {code: 'cancer', display: 'がん'},
+                {code: 'kan', display: 'かん'},
+                {code: 'book', display: 'किताब'}
+              ]
+            }));
+            const search = async (text) => codes(await provider.searchFilter(filterContext, new SearchFilterText(text), true));
+            expect(await search('καρδια')).toEqual(['heart']);
+            expect(await search('елка')).toEqual(['tree']);
+            expect(await search('がん')).toEqual(['cancer']);
+            expect(await search('かん')).toEqual(['kan']);
+            expect(await search('कतब')).toEqual([]);
+          });
+
+          test('should match a search whose words start words of the display, in any order', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes tipo 2'), true))).toEqual(['E11', 'E119']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('enfarte miocardio'), true))).toEqual(['I21']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('tipo 2 diab'), true))).toEqual(['E11', 'E119']);
+          });
+
+          test('should match a search whose words all start words of one designation', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('myocardial acute'), true))).toEqual(['I21']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('acute miocardio'), true))).toEqual([]);
+          });
+
+          test('should not match a word that is only inside another word', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes ellitus'), true))).toEqual([]);
+          });
+
+          test('should rate a match of the words of a shorter display higher', async () => {
+            const results = await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes 2'), true);
+            expect(codes(results)).toEqual(['E11', 'E119']);
+          });
+
+          test('should rate a match of the whole search above a match of its words', async () => {
+            const results = await ptProvider.searchFilter(filterContext, new SearchFilterText('tipo 2'), true);
+            const words = await ptProvider.searchFilter(filterContext, new SearchFilterText('2 tipo'), true);
+            expect(Math.min(...results.concepts.map(item => item.rating))).toBeGreaterThan(Math.max(...words.concepts.map(item => item.rating)));
+          });
+
+          test('should rate a match of the words the same whatever separates them in the search', async () => {
+            const rating = async (search) => (await ptProvider.searchFilter(filterContext, new SearchFilterText(search), true))
+              .concepts.find(item => item.concept.code === 'E11').rating;
+            const spaced = await rating('2   ,   tipo   ...   diabetes');
+            expect(spaced).toBe(await rating('2 tipo diabetes'));
+            expect(spaced).toBeLessThan(30);
+          });
+        });
       });
 
       describe('Concept/Code Filters', () => {

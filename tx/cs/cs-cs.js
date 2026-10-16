@@ -19,6 +19,63 @@ const regexUtilities = require("../../library/regex-utilities");
 // filter results do not depend on forIteration, so one form is stored per version.
 const FILTER_ANALYSIS = Symbol('filterAnalysis');
 
+// The texts of each concept as a text filter compares them, by concept. Folding is
+// the costly part of a search over a large code system, so it is done once per
+// concept, and dropped with the code system.
+const SEARCH_TEXTS = new WeakMap();
+
+/**
+ * Lower case without accents, so "colera" finds "Cólera". Only marks on Latin, Greek and
+ * Cyrillic letters are accents: in other scripts, such as kana or Devanagari, marks are
+ * part of how a word is spelt, and dropping them would make "がん" find "かん".
+ */
+function foldSearchText(text) {
+  return text.normalize('NFD')
+    .replace(/([\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])\p{M}+/gu, '$1')
+    .toLowerCase();
+}
+
+/**
+ * A text as a text filter compares it: `text` folded, and `words` the same with each
+ * run of other characters made one space and a space in front, so that " " + word
+ * finds where a word starts.
+ */
+function searchText(text) {
+  const folded = foldSearchText(text);
+  return { text: folded, words: ' ' + folded.replace(/[^\p{L}\p{N}]+/gu, ' ') };
+}
+
+function conceptSearchTexts(concept) {
+  let texts = SEARCH_TEXTS.get(concept);
+  if (texts === undefined) {
+    texts = {
+      code: foldSearchText(concept.code),
+      display: concept.display ? searchText(concept.display) : null,
+      definition: concept.definition ? foldSearchText(concept.definition) : null,
+      designations: Array.isArray(concept.designation)
+        ? concept.designation.filter(designation => designation.value).map(designation => searchText(designation.value))
+        : []
+    };
+    SEARCH_TEXTS.set(concept, texts);
+  }
+  return texts;
+}
+
+/**
+ * Whether every word starts a word of the text.
+ */
+function startsWords(text, words) {
+  return words.every(word => text.words.includes(' ' + word));
+}
+
+/**
+ * How much of the text the words cover, from 0 to 1, counting one space between words
+ * whatever separated them in the search.
+ */
+function wordsRatio(words, text) {
+  return Math.min(1, words.join(' ').length / text.text.length);
+}
+
 /**
  * Context class for FHIR CodeSystem provider concepts
  */
@@ -1145,14 +1202,15 @@ class FhirCodeSystemProvider extends BaseCSServices {
     
 
     const results = new FhirCodeSystemProviderFilterContext();
-    const searchTerm = filter.filter.toLowerCase();
+    const searchTerm = foldSearchText(filter.filter);
+    const searchWords = searchTerm.split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
 
     // Search through all concepts
     const allConcepts = this.codeSystem.getAllConcepts();
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:searchFilter');
-      const rating = this._calculateSearchRating(concept, searchTerm);
+      const rating = this._calculateSearchRating(concept, searchTerm, searchWords);
       if (rating > 0) {
         results.add(concept, rating);
       }
@@ -1174,47 +1232,57 @@ class FhirCodeSystemProvider extends BaseCSServices {
   /**
    * Calculate search relevance rating for a concept
    * @param {Object} concept - The concept to rate
-   * @param {string} searchTerm - The search term (lowercase)
+   * @param {string} searchTerm - The search term (folded: lower case, no accents)
+   * @param {string[]} searchWords - The words of the search term
    * @returns {number} Rating (0 = no match, higher = better match)
    * @private
    */
-  _calculateSearchRating(concept, searchTerm) {
+  _calculateSearchRating(concept, searchTerm, searchWords) {
+    const texts = conceptSearchTexts(concept);
+    const display = texts.display;
     let rating = 0;
 
     // Exact matches get highest rating
-    if (concept.code.toLowerCase() === searchTerm) {
+    if (texts.code === searchTerm) {
       rating = 100;
-    } else if (concept.display && concept.display.toLowerCase() === searchTerm) {
+    } else if (display && display.text === searchTerm) {
       rating = 100;
     }
     // Code starts with search term
-    else if (concept.code.toLowerCase().startsWith(searchTerm)) {
+    else if (texts.code.startsWith(searchTerm)) {
       rating = 90;
     }
     // Display starts with search term
-    else if (concept.display && concept.display.toLowerCase().startsWith(searchTerm)) {
-      const lengthRatio = searchTerm.length / concept.display.length;
+    else if (display && display.text.startsWith(searchTerm)) {
+      const lengthRatio = searchTerm.length / display.text.length;
       rating = 80 + (10 * lengthRatio);
     }
     // Code contains search term
-    else if (concept.code.toLowerCase().includes(searchTerm)) {
+    else if (texts.code.includes(searchTerm)) {
       rating = 60;
     }
     // Display contains search term
-    else if (concept.display && concept.display.toLowerCase().includes(searchTerm)) {
+    else if (display && display.text.includes(searchTerm)) {
       rating = 50;
     }
     // Definition contains search term
-    else if (concept.definition && concept.definition.toLowerCase().includes(searchTerm)) {
+    else if (texts.definition && texts.definition.includes(searchTerm)) {
       rating = 30;
     }
     // Check designations
-    else if (concept.designation && Array.isArray(concept.designation)) {
-      for (const designation of concept.designation) {
-        if (designation.value && designation.value.toLowerCase().includes(searchTerm)) {
-          rating = 40;
-          break;
-        }
+    else if (texts.designations.some(designation => designation.text.includes(searchTerm))) {
+      rating = 40;
+    }
+    // Each word of a search of several starts a word of the display, in any order;
+    // the shorter the display, the closer the match
+    else if (searchWords.length > 1 && display && startsWords(display, searchWords)) {
+      rating = 20 + (10 * wordsRatio(searchWords, display));
+    }
+    // Or of one designation
+    else if (searchWords.length > 1) {
+      const designation = texts.designations.find(designation => startsWords(designation, searchWords));
+      if (designation) {
+        rating = 10 + (10 * wordsRatio(searchWords, designation));
       }
     }
 

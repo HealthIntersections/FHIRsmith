@@ -139,6 +139,50 @@ describe('OCLConceptMapProvider', () => {
       expect(getMock).toHaveBeenCalledWith('/mappings/map-1/');
     });
 
+    it.each([
+      ['SAME-AS', 'equivalent'],
+      ['NARROWER-THAN', 'source-is-narrower-than-target'],
+      ['BROADER-THAN', 'source-is-broader-than-target'],
+      ['NOT-SAME-AS', 'not-related-to'],
+      ['NOT-EQUIVALENT', 'not-related-to'],
+      ['narrower than', 'source-is-narrower-than-target'],
+      ['ASSOCIATED-WITH', 'related-to'],
+      [undefined, 'related-to']
+    ])('should translate OCL map_type %s to FHIR relationship %s', async (mapType, expected) => {
+      const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
+      const provider = createProvider({ get: getMock });
+
+      provider.assignIds('5');
+      const result = await provider.fetchConceptMapById('5-map-1');
+      expect(result.jsonObj.group[0].element[0].target[0].relationship).toBe(expected);
+    });
+
+    it('should not declare a source/target scope from OCL repo paths', async () => {
+      const mapping = makeMapping({
+        from_collection_url: '/orgs/TestOrg/collections/ColA/',
+        to_collection_url: '/orgs/TestOrg/collections/ColB/'
+      });
+      const getMock = jest.fn().mockResolvedValue({ data: mapping });
+      const provider = createProvider({ get: getMock });
+
+      provider.assignIds('5');
+      const result = await provider.fetchConceptMapById('5-map-1');
+      // $translate resolves a scope as a ValueSet; an OCL path would fail with not-found
+      expect(result.sourceScope).toBeUndefined();
+      expect(result.targetScope).toBeUndefined();
+      expect(result.jsonObj.group[0].source).toBe('/orgs/TestOrg/sources/SourceA/');
+    });
+
+    it.each(['Q-AND-A', 'CONCEPT-SET', 'concept set'])(
+      'should not build a ConceptMap from the non-translation map type %s', async (mapType) => {
+        const getMock = jest.fn().mockResolvedValue({ data: makeMapping({ map_type: mapType }) });
+        const provider = createProvider({ get: getMock });
+
+        provider.assignIds('5');
+        const result = await provider.fetchConceptMapById('5-map-1');
+        expect(result).toBeNull();
+      });
+
     it('should return null on HTTP error', async () => {
       const getMock = jest.fn().mockRejectedValue(new Error('404'));
       const provider = createProvider({ get: getMock });
@@ -217,9 +261,20 @@ describe('OCLConceptMapProvider', () => {
           from_source_url: '/orgs/TestOrg/sources/SourceA/',
           to_source_url: '/orgs/TestOrg/sources/SourceB/'
         }),
+        // not a translation: must not become a target of A1
+        makeMapping({
+          id: 'm3', from_concept_code: 'A1', to_concept_code: 'B9', map_type: 'Q-AND-A',
+          from_source_url: '/orgs/TestOrg/sources/SourceA/',
+          to_source_url: '/orgs/TestOrg/sources/SourceB/'
+        }),
       ];
 
       const getMock = jest.fn().mockImplementation((url) => {
+        // {source}/mappings/ — one request returns every mapping the source owns.
+        // Must precede the '/sources/' branch below, which would otherwise swallow it.
+        if (url.endsWith('/mappings/') && !url.includes('/concepts/')) {
+          return Promise.resolve({ data: mappings });
+        }
         // source search — resolve canonical for SourceA
         if (url.includes('/sources/') && !url.includes('/concepts/')) {
           return Promise.resolve({
@@ -233,7 +288,7 @@ describe('OCLConceptMapProvider', () => {
           return Promise.resolve({ data: [{ id: 'A1' }, { id: 'A2' }] });
         }
         if (url.includes('/concepts/A1/mappings/')) {
-          return Promise.resolve({ data: [mappings[0]] });
+          return Promise.resolve({ data: [mappings[0], mappings[2]] });
         }
         if (url.includes('/concepts/A2/mappings/')) {
           return Promise.resolve({ data: [mappings[1]] });
@@ -259,8 +314,13 @@ describe('OCLConceptMapProvider', () => {
       expect(cm.jsonObj.resourceType).toBe('ConceptMap');
       expect(cm.jsonObj.group).toHaveLength(1);
       expect(cm.jsonObj.group[0].element).toHaveLength(2);
+      const a1 = cm.jsonObj.group[0].element.find(e => e.code === 'A1');
+      expect(a1.target.map(t => t.code)).toEqual(['B1']);
       expect(cm.jsonObj.group[0].source).toBe('http://example.org/SourceA');
       expect(cm.jsonObj.group[0].target).toBe('http://example.org/SourceB');
+      // a CodeSystem canonical is not a ValueSet, so it must not be declared as the scope
+      expect(cm.sourceScope).toBeUndefined();
+      expect(cm.targetScope).toBeUndefined();
     });
 
     it('should handle target-system parameter', async () => {
@@ -415,5 +475,184 @@ describe('OCLConceptMapProvider', () => {
       const provider = new OCLConceptMapProvider();
       await expect(provider.close()).resolves.not.toThrow();
     });
+  });
+});
+
+// ---------------------------------------------------------------
+// $resolveReference integration
+// ---------------------------------------------------------------
+describe('OCLConceptMapProvider $resolveReference integration', () => {
+  const { OclReferenceResolver } = require('../../tx/ocl/resolve/reference-resolver');
+
+  const SEARCH_ENDPOINT = '/orgs/TestOrg/sources/';
+
+  function makeProvider({ token = 'Token abc', post } = {}) {
+    const provider = new OCLConceptMapProvider({ org: 'TestOrg', token });
+    const httpClient = {
+      get: jest.fn(async () => ({ data: [] })),
+      post: post || jest.fn(async () => ({ data: [] }))
+    };
+    // The provider captures httpClient at construction, so rebuild the resolver
+    // on the mock the same way the other tests swap httpClient.
+    provider.httpClient = httpClient;
+    provider.referenceResolver = new OclReferenceResolver({
+      httpClient,
+      token,
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() }
+    });
+    return { provider, httpClient };
+  }
+
+  function resolveReferenceReply(url) {
+    return jest.fn(async () => ({
+      data: [
+        {
+          reference_type: 'canonical',
+          resolved: true,
+          request: null,
+          resolution_url: url,
+          url_registry_entry: null,
+          result: { type: 'Source', short_code: 'S', url, canonical_url: 'http://x.org/cs', owner_type: 'Organization', public_access: 'View' }
+        }
+      ]
+    }));
+  }
+
+  function getPaths(httpClient) {
+    return httpClient.get.mock.calls.map(call => call[0]);
+  }
+
+  const searchParams = [{ name: 'source-system', value: 'http://x.org/cs' }];
+
+  it('uses the resolved repo and skips the heuristic source search', async () => {
+    const { provider, httpClient } = makeProvider({
+      post: resolveReferenceReply('/orgs/OtherOrg/sources/S/')
+    });
+
+    await provider.searchConceptMaps(searchParams);
+
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    // The authoritative answer makes the q= text search unnecessary.
+    expect(getPaths(httpClient)).not.toContain(SEARCH_ENDPOINT);
+    expect(getPaths(httpClient)).toContain('/orgs/OtherOrg/sources/S/mappings/');
+  });
+
+  it('falls back to the source search when the canonical resolves to a user-owned repo', async () => {
+    // Org-only policy: user artifacts are experimental and not visible through
+    // the terminology service, so the resolver reports them as unresolved.
+    const post = jest.fn(async () => ({
+      data: [{
+        reference_type: 'canonical',
+        resolved: true,
+        result: { url: '/users/joe/sources/S/', owner_type: 'User', canonical_url: 'http://x.org/cs' }
+      }]
+    }));
+    const { provider, httpClient } = makeProvider({ post });
+
+    await provider.searchConceptMaps(searchParams);
+
+    expect(getPaths(httpClient)).not.toContain('/users/joe/sources/S/mappings/');
+    expect(getPaths(httpClient)).toContain(SEARCH_ENDPOINT);
+  });
+
+  it('falls back to the source search when no token is configured', async () => {
+    const { provider, httpClient } = makeProvider({ token: null });
+
+    await provider.searchConceptMaps(searchParams);
+
+    expect(httpClient.post).not.toHaveBeenCalled();
+    expect(getPaths(httpClient)).toContain(SEARCH_ENDPOINT);
+  });
+
+  it('falls back to the source search when OCL cannot resolve the canonical', async () => {
+    const post = jest.fn(async () => ({
+      data: [{ reference_type: 'canonical', resolved: false, result: null }]
+    }));
+    const { provider, httpClient } = makeProvider({ post });
+
+    await provider.searchConceptMaps(searchParams);
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(getPaths(httpClient)).toContain(SEARCH_ENDPOINT);
+  });
+
+  it('falls back to the source search when $resolveReference is unavailable', async () => {
+    const error = new Error('Request failed with status code 404');
+    error.response = { status: 404 };
+    const { provider, httpClient } = makeProvider({ post: jest.fn().mockRejectedValue(error) });
+
+    await provider.searchConceptMaps(searchParams);
+
+    expect(getPaths(httpClient)).toContain(SEARCH_ENDPOINT);
+  });
+
+  it('resolves mapping source canonicals in one batch, not one GET per source', async () => {
+    // Flow: resolve source-system (1 ref) -> fetch {source}/mappings/ -> resolve
+    // the from/to source canonicals of the mappings in a single batched POST.
+    const post = jest.fn(async (path, body) => ({
+      data: body.map(ref => {
+        const url = typeof ref === 'string' ? ref : ref.url;
+        const repo = url.startsWith('/') ? url : '/orgs/TestOrg/sources/A/';
+        return {
+          reference_type: url.startsWith('/') ? 'relative' : 'canonical',
+          resolved: true,
+          result: {
+            url: repo,
+            owner_type: 'Organization',
+            public_access: 'View',
+            type: 'Source',
+            canonical_url: `http://canon.example.org${repo}`
+          }
+        };
+      })
+    }));
+    const get = jest.fn(async (url) => {
+      if (url.endsWith('/mappings/')) {
+        return {
+          data: [makeMapping({
+            from_source_url: '/orgs/TestOrg/sources/SourceA/',
+            to_source_url: '/orgs/TestOrg/sources/SourceB/'
+          })]
+        };
+      }
+      return { data: [] };
+    });
+    const { provider, httpClient } = makeProvider({ post });
+    httpClient.get = get;
+    provider.httpClient.get = get;
+
+    const results = await provider.searchConceptMaps(searchParams);
+
+    // POST #1 resolves the source-system; POST #2 is the batch with BOTH
+    // mapping source paths in one request.
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1]).toEqual([
+      '/orgs/TestOrg/sources/SourceA/',
+      '/orgs/TestOrg/sources/SourceB/'
+    ]);
+    // No per-source detail GETs: only the mappings listing was fetched.
+    const detailGets = get.mock.calls.filter(c => /\/sources\/Source[AB]\/$/.test(c[0]));
+    expect(detailGets).toHaveLength(0);
+    // Aggregation used the canonicals from the batch.
+    expect(results).toHaveLength(1);
+    expect(results[0].jsonObj.group[0].source).toBe('http://canon.example.org/orgs/TestOrg/sources/SourceA/');
+  });
+
+  // Regression: searchConceptMaps used to lower-case every param value. The old
+  // text search tolerated it (#norm lower-cases anyway), but $resolveReference
+  // matches the canonical exactly, so a lower-cased URL never resolved.
+  it('sends the canonical to $resolveReference with its original casing', async () => {
+    const { provider, httpClient } = makeProvider({
+      post: resolveReferenceReply('/orgs/Mangara/sources/S/')
+    });
+
+    await provider.searchConceptMaps([
+      { name: 'source-system', value: 'https://mangara.hsl.org.br/fhir/CodeSystem/AlcoolSPA_uso_Mangara' }
+    ]);
+
+    expect(httpClient.post).toHaveBeenCalledTimes(1);
+    expect(httpClient.post.mock.calls[0][1]).toEqual([
+      'https://mangara.hsl.org.br/fhir/CodeSystem/AlcoolSPA_uso_Mangara'
+    ]);
   });
 });

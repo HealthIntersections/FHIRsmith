@@ -163,6 +163,44 @@ describe('Expand Worker', () => {
       expect(response.body.resourceType).toBe('ValueSet');
       expect(response.body.expansion).toBeDefined();
     });
+    test('should list the best matches of a text filter first', async () => {
+      const response = await request(app)
+        .post('/tx/r5/ValueSet/$expand')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/json')
+        .send({
+          resourceType: 'Parameters',
+          parameter: [
+            {
+              name: 'tx-resource',
+              resource: {
+                resourceType: 'CodeSystem',
+                url: 'http://example.org/fhir/CodeSystem/icd-10-cm-pt',
+                version: '1.0.0',
+                status: 'active',
+                content: 'complete',
+                concept: [
+                  { code: 'E10.A2', display: 'Diabetes mellitus tipo 1, pré-sintomática, fase 2' },
+                  { code: 'E11.9', display: 'Diabetes mellitus tipo 2 sem complicações' },
+                  { code: 'E11', display: 'Diabetes mellitus tipo 2' }
+                ]
+              }
+            },
+            {
+              name: 'valueSet',
+              resource: {
+                resourceType: 'ValueSet',
+                status: 'active',
+                compose: { include: [{ system: 'http://example.org/fhir/CodeSystem/icd-10-cm-pt' }] }
+              }
+            },
+            { name: 'filter', valueString: 'diabetes tipo 2' }
+          ]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.expansion.contains.map(c => c.code)).toEqual(['E11', 'E11.9', 'E10.A2']);
+    });
   });
 
   describe('POST /tx/r5/ValueSet/$expand with ValueSet body', () => {
