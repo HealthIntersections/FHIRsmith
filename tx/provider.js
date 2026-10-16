@@ -1,4 +1,5 @@
 const { CodeSystem } = require("./library/codesystem");
+const { assertNoActiveContent } = require('../library/narrative-check');
 const {VersionUtilities} = require("../library/version-utilities");
 const { FhirCodeSystemProvider} = require("./cs/cs-cs");
 const {OperationContext} = require("./operation-context");
@@ -184,7 +185,10 @@ class Provider {
     for (const resource of resources) {
       let cs;
       try {
-        cs = new CodeSystem(await contentLoader.loadFile(resource, contentLoader.fhirVersion()));
+        const json = await contentLoader.loadFile(resource, contentLoader.fhirVersion());
+        // narrative is shown as-is in a page, so it must not carry script (see narrative-check.js)
+        assertNoActiveContent(json);
+        cs = new CodeSystem(json);
       } catch (e) {
         // one unacceptable resource (e.g. contained resources the server doesn't support)
         // must not stop the rest of the package loading

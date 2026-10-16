@@ -19,6 +19,12 @@ const { FhirsmithReleases, isFhirsmith, describeAge } = require('./fhirsmith-rel
 const DISCOVERY_PARAMS = ['registry', 'server', 'fhirVersion', 'url', 'authoritativeOnly', 'language'];
 const RESOLVE_PARAMS = ['fhirVersion', 'url', 'version', 'valueSet', 'authoritativeOnly', 'language', 'usage'];
 
+// A link to a URL from a registry list or a crawled server: those are other people's
+// content, so only an http(s) URL is linked, and it is escaped
+function safeHref(url) {
+  return typeof url === 'string' && /^https?:\/\//i.test(url.trim()) ? escape(url) : '#';
+}
+
 class RegistryModule {
   constructor(stats) {
     this.router = express.Router();
@@ -50,7 +56,8 @@ class RegistryModule {
         masterUrl: config.masterUrl || 'https://fhir.github.io/ig-registry/tx-servers.json',
         timeout: config.timeout || 30000,
         userAgent: config.userAgent || 'FHIRRegistryServer/1.0',
-        apiKeys: config.apiKeys || {}
+        apiKeys: config.apiKeys || {},
+        maxResponseMB: config.maxResponseMB
       };
 
       this.crawler = new RegistryCrawler(crawlerConfig, this.stats);
@@ -536,7 +543,7 @@ class RegistryModule {
     for (const row of rows) {
       html += '<tr>';
       html += `<td>${escape(row.name)}</td>`;
-      html += `<td><a href="${escape(row.url)}" target="_blank" rel="noopener">${escape(row.url)}</a>`;
+      html += `<td><a href="${safeHref(row.url)}" target="_blank" rel="noopener">${escape(row.url)}</a>`;
       if (row.error) {
         html += ` <span class="text-danger" title="${escape(row.error)}">(unreachable)</span>`;
       }
@@ -682,7 +689,7 @@ class RegistryModule {
 
     for (const server of serverVersions) {
       html += '<tr>';
-      html += `<td><a href="${server.serverUrl}" target="_blank">${escape(server.serverUrl)}</a></td>`;
+      html += `<td><a href="${safeHref(server.serverUrl)}" target="_blank">${escape(server.serverUrl)}</a></td>`;
       html += `<td>${escape(server.software.replace("Reference Server", "HealthIntersections"))}</td>`;
       html += `<td>${escape(server.authority.replace("Published by", ""))}</td>`;
       html += `<td>${escape(server.version)}</td>`;
@@ -1032,7 +1039,7 @@ class RegistryModule {
       const rowspan = cs.servers.length;
       html += '<tr>';
       html += `<td rowspan="${rowspan}">${this._highlightWildcard(escape(formattedMask))}</td>`;
-      html += `<td><a href="${escape(cs.servers[0].url)}" target="_blank">${escape(cs.servers[0].url)}</a>${this._renderLanguageScope(cs.servers[0])}</td>`;
+      html += `<td><a href="${safeHref(cs.servers[0].url)}" target="_blank">${escape(cs.servers[0].url)}</a>${this._renderLanguageScope(cs.servers[0])}</td>`;
 
       // Format versions as R3/R4/R5
       const formattedVersions = cs.servers[0].versions.map(v => this._formatFhirVersion(v));
@@ -1042,7 +1049,7 @@ class RegistryModule {
       // Additional rows for this code system (if any)
       for (let i = 1; i < cs.servers.length; i++) {
         html += '<tr>';
-        html += `<td><a href="${escape(cs.servers[i].url)}" target="_blank">${escape(cs.servers[i].url)}</a>${this._renderLanguageScope(cs.servers[i])}</td>`;
+        html += `<td><a href="${safeHref(cs.servers[i].url)}" target="_blank">${escape(cs.servers[i].url)}</a>${this._renderLanguageScope(cs.servers[i])}</td>`;
 
         // Format versions as R3/R4/R5
         const formattedVersions = cs.servers[i].versions.map(v => this._formatFhirVersion(v));
@@ -1088,7 +1095,7 @@ class RegistryModule {
       const rowspan = vs.servers.length;
       html += '<tr>';
       html += `<td rowspan="${rowspan}">${this._highlightWildcard(escape(vs.mask))}</td>`;
-      html += `<td><a href="${escape(vs.servers[0].url)}" target="_blank">${escape(vs.servers[0].url)}</a>${this._renderLanguageScope(vs.servers[0])}</td>`;
+      html += `<td><a href="${safeHref(vs.servers[0].url)}" target="_blank">${escape(vs.servers[0].url)}</a>${this._renderLanguageScope(vs.servers[0])}</td>`;
 
       // Format versions as R3/R4/R5
       const formattedVersions = vs.servers[0].versions.map(v => this._formatFhirVersion(v));
@@ -1098,7 +1105,7 @@ class RegistryModule {
       // Additional rows for this value set (if any)
       for (let i = 1; i < vs.servers.length; i++) {
         html += '<tr>';
-        html += `<td><a href="${escape(vs.servers[i].url)}" target="_blank">${escape(vs.servers[i].url)}</a>${this._renderLanguageScope(vs.servers[i])}</td>`;
+        html += `<td><a href="${safeHref(vs.servers[i].url)}" target="_blank">${escape(vs.servers[i].url)}</a>${this._renderLanguageScope(vs.servers[i])}</td>`;
 
         // Format versions as R3/R4/R5
         const formattedVersions = vs.servers[i].versions.map(v => this._formatFhirVersion(v));
@@ -1322,7 +1329,7 @@ class RegistryModule {
     html += '<div class="card-body">';
     html += `<p><strong>FHIR Version:</strong> ${escape(fhirVersion)}</p>`;
     html += `<p><strong>Resource URL:</strong> ${escape(resourceUrl)}</p>`;
-    html += `<p><strong>Registry URL:</strong> <a href="${result['registry-url']}" target="_blank">${escape(result['registry-url'])}</a></p>`;
+    html += `<p><strong>Registry URL:</strong> <a href="${safeHref(result['registry-url'])}" target="_blank">${escape(result['registry-url'])}</a></p>`;
     if (usage) {
       html += `<p><strong>Usage:</strong> ${escape(usage)}</p>`;
     }
@@ -1355,7 +1362,7 @@ class RegistryModule {
       result.authoritative.forEach(server => {
         html += '<tr>';
         html += `<td>${escape(server['server-name'])}</td>`;
-        html += `<td><a href="${server.url}" target="_blank">${escape(server.url)}</a></td>`;
+        html += `<td><a href="${safeHref(server.url)}" target="_blank">${escape(server.url)}</a></td>`;
         html += `<td>${this.renderSecurityTags(server)}</td>`;
         html += `<td>${server.languages ? escape(server.languages.join(', ')) : ''}</td>`;
         html += `<td>${server.access_info ? escape(server.access_info) : ''}</td>`;
@@ -1395,7 +1402,7 @@ class RegistryModule {
       result.candidates.forEach(server => {
         html += '<tr>';
         html += `<td>${escape(server['server-name'])}</td>`;
-        html += `<td><a href="${server.url}" target="_blank">${escape(server.url)}</a></td>`;
+        html += `<td><a href="${safeHref(server.url)}" target="_blank">${escape(server.url)}</a></td>`;
         html += `<td>${this.renderSecurityTags(server)}</td>`;
         if (server['language-support'] === 'unknown') {
           html += '<td><span class="text-muted" title="This server hosts the code system, but the ecosystem does not know whether it can supply the requested language">unknown</span></td>';
@@ -1570,7 +1577,7 @@ class RegistryModule {
             res.send(html);
           } catch (error) {
             this.logger.error('Error rendering log page:', error);
-            res.status(500).send(`<pre>Error rendering log page: ${error.message}</pre>`);
+            res.status(500).send(`<pre>Error rendering log page: ${escape(error.message)}</pre>`);
           }
         } else {
           // Return JSON logs

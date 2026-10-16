@@ -253,6 +253,20 @@ describe('dedupe-versions.js', () => {
     expect(query('SELECT COUNT(*) AS n FROM PackageFHIRVersions WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)')).toEqual([{ n: 0 }]);
   });
 
+  test('-keep settles a conflict: the chosen copy stays, its mirror file is written, and the index is created', async () => {
+    await build({ withConflict: true });
+    dedupe({ dbPath, mirrorPath, apply: true, log() {} });
+    const logged = [];
+    const report = dedupe({ dbPath, mirrorPath, apply: true, keep: [direct('d.conflict', '1.0.0', '-b'), 'http://nothing/here'], log: m => logged.push(m) });
+    expect(report.conflicts).toEqual([]);
+    expect(report.indexCreated).toBe(true);
+    expect(versions().filter(v => v.Id === 'd.conflict')).toEqual([
+      { Id: 'd.conflict', Version: '1.0.0', GUID: direct('d.conflict', '1.0.0', '-b'), Hash: sha1(bufs.conflict2) }
+    ]);
+    expect(mirror('d.conflict', '1.0.0')).toEqual(bufs.conflict2);
+    expect(logged.join('\n')).toMatch(/-keep http:\/\/nothing\/here: not a copy of any duplicated id#version/);
+  });
+
   test('with no conflicts left, -apply creates the unique index, and a second run finds nothing to do', async () => {
     await build({ withConflict: false });
     expect(dedupe({ dbPath, mirrorPath, apply: true, log() {} }).indexCreated).toBe(true);
@@ -367,5 +381,17 @@ describe('crawler: requests to non-public addresses are refused', () => {
 
   test('unless allowPrivateAddresses is set', async () => {
     expect(await fetchVia({ allowPrivateAddresses: true }, `http://127.0.0.1:${port}/`)).toBe('reached');
+  });
+});
+
+describe('crawler: package versions must be whole semver', () => {
+  const valid = v => PackageCrawler.prototype.isValidSemVersion(v);
+
+  test.each(['1.0.0', '6.0.0-ballot3', '2.0.0-cibuild', '1.0.0-snapshot.1+build.5', '2027.0.0-ballot.rc1'])('%s is accepted', (v) => {
+    expect(valid(v)).toBe(true);
+  });
+
+  test.each(['1.0.0/../../../tmp/x', '1.0.0 ', '1.0.0<script>', '1.0', '1.0.0-', 'current'])('%j is refused', (v) => {
+    expect(valid(v)).toBe(false);
   });
 });

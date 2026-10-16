@@ -42,7 +42,9 @@ class RegistryCrawler {
       userAgent: config.userAgent || 'HealthIntersections/FhirServer',
       crawlInterval: config.crawlInterval || 5 * 60 * 1000, // 5 minutes default
       apiKeys: config.apiKeys || {}, // Map of server URL or code to API key
-      allowPrivateAddresses: config.allowPrivateAddresses || false // SSRF opt-out for local test servers
+      allowPrivateAddresses: config.allowPrivateAddresses || false, // SSRF opt-out for local test servers
+      // the most a server's response can be, once unzipped: the servers are other people's
+      maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024
     };
     this.stats = stats;
 
@@ -588,6 +590,8 @@ class RegistryCrawler {
         headers: headers,
         signal: this.abortController?.signal,
         validateStatus: (status) => status < 500, // Don't throw on 4xx
+        // counted as it is unzipped, so a small response that unzips to a lot is stopped too
+        maxContentLength: this.config.maxResponseBytes,
         httpAgent: this.guardedAgents().httpAgent,
         httpsAgent: this.guardedAgents().httpsAgent
       });
@@ -608,6 +612,9 @@ class RegistryCrawler {
       
     } catch (error) {
       debugLog(error);
+      if (/maxContentLength/.test(error.message)) {
+        throw new Error(`The response from ${url} is more than ${this.config.maxResponseBytes / (1024 * 1024)} MB`);
+      }
       if (error.response) {
         throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
       } else if (error.request) {

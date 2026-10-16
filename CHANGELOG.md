@@ -5,6 +5,40 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-mm-dd
+
+### Security
+
+- HTML pages (all modules using the shared page template): content containing `` $` `` or `$'` - which HTML escaping leaves alone - made the template insert a copy of part of itself into the page, garbling it. No way to inject script through it was found, but the page is now built without that substitution
+- Packages: a tarball whose package.json version was not entirely semver (e.g. `1.0.0/../../x`) was accepted, and its mirror file written outside the mirror folder. The version must now be whole semver, and the mirror file must be in the mirror folder
+- Rendered resources: links to `javascript:`, `data:` or `vbscript:` URLs taken from resource content are neutralised
+- tx: values from loaded packages are escaped (and URL-encoded in links) on the problems page, the resource tabs, and the operations form's list of value sets
+- tx: CodeSystems, ValueSets and ConceptMaps whose narrative (or a contained resource's) has active content - script, event handler attributes, `javascript:` URLs, frames, objects, forms, svg and the like - are not loaded, and a warning says what was found. The Original Narrative tab also refuses such a narrative. The check is in `library/narrative-check.js` for other uses. The package value set and concept map caches are renamed so that they are rebuilt and re-checked once
+- xig: the database is downloaded over https (it was http, so it could have been replaced in transit, and its narratives are shown as they are), and a redirect off https is refused
+- Extension tracker: the profiles page put the resource types from submissions into a script without escaping, so anyone could submit data that ran script on that page. They are now escaped
+- Extension tracker: submissions must carry the token the IG Publisher sends (`token` in the ext-tracker config; without it, no token is needed), and must look like what the IG Publisher sends - the expected properties only, codes, URLs, resource types and element paths where those belong, and limited sizes. Anything else is refused, and the refusal logged
+- Registry: server and registry URLs from registry lists (which other people host) were put into links without escaping, so a listed URL could add script to the registry's pages; and links were made from any URL, including `javascript:`. Links are now escaped, and made only from http(s) URLs
+- Registry: the crawler limits each server's response to `maxResponseMB` (default 100) once unzipped, so a server can't exhaust the registry's memory
+- xig: POST /xig/update, which re-downloads the database (about 3 GB), needed no authentication. It now needs the `updateToken` from the xig config in an `x-update-token` header (or the form now on /xig/stats, which starts an update and returns straight away), and is disabled when no updateToken is configured
+- xig: a search parameter given more than once, or a very long one, is handled (the first is used, and each is capped at 200 characters) instead of failing the page
+- Packages: the crawler limits what a package can cost it: the download (`maxDownloadMB`, default 250), the total unzipped (`maxUnpackedMB`, 4096), the files it reads (`maxFileMB`, 50) and the number of files (`maxFiles`, 250000), all in the packages `crawler` config. Packages are now unpacked as a stream, keeping only package.json, .index.json, ig.ini and one .json file at a time, so a decompression bomb can't exhaust memory
+
+### Added
+
+-
+
+### Changed
+
+-
+
+### Fixed
+
+-
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [0.16.1] - 2026-10-16
 
 ### Added

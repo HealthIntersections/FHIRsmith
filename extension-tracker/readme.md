@@ -14,10 +14,13 @@ Tracks extensions, profiles, and extension usage across FHIR Implementation Guid
 
 - **database**: path to the SQLite database file (auto-created if missing)
 - **url** (optional): URL base to mount at (defaults to `/ext-tracker`)
+- **token** (optional): the token a submission must carry, as `Authorization: Bearer <token>`. The IG Publisher sends `9D1C23C0-3915-4542-882E-2BCC55645DF8`. It is in the publisher's source, so it is not a secret, but it keeps out submissions that aren't from the publisher. Without it, submissions need no token
 
 ## POST — Submit IG Data
 
 POST JSON to the module root. Required fields: `package`, `version`, `fhirVersion`. Optional: `jurisdiction`, `extensions`, `profiles`, `usage`.
+
+A submission must look like what the IG Publisher sends, or it is refused (400): no other properties; `package`, `version`, `fhirVersion` and `jurisdiction` are codes; extension, profile and usage keys are URLs; `profiles` is keyed by resource type; usage locations are element paths; titles are text of at most 1024 characters; and no more than 20000 items in all.
 
 ```
 POST /ext-tracker

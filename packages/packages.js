@@ -1026,15 +1026,16 @@ class PackagesModule {
     if (this.config.crawler.enabled) {
       pckLog.info('Starting initial package crawler...');
 
-      // Run crawler in background (non-blocking)
-      setImmediate(async () => {
+      // Run crawler in background (non-blocking); errors are logged inside
+      const crawl = async () => {
         try {
           await this.runCrawler();
           pckLog.info('Initial package crawler completed successfully');
         } catch (error) {
           pckLog.error('Initial package crawler failed:', error.message);
         }
-      });
+      };
+      setImmediate(() => void crawl());
     }
   }
 
@@ -2802,65 +2803,6 @@ class PackagesModule {
       return -1;
     }
     return va.pre.localeCompare(vb.pre, undefined, { numeric: true });
-  }
-
-  generateSearchHtml(req, results, params) {
-    // Simplified HTML generation - you'd want to use a proper template engine
-    const {name, dependson, canonicalPkg, canonicalUrl, fhirVersion} = params;
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>FHIR Package Search</title>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .search-form { background: #f5f5f5; padding: 20px; margin-bottom: 20px; }
-        .search-form input, .search-form select { margin: 5px; padding: 5px; }
-        .results { margin-top: 20px; }
-        .package { border: 1px solid #ddd; margin: 10px 0; padding: 15px; }
-        .package-name { font-weight: bold; font-size: 1.2em; }
-        .package-details { color: #666; margin-top: 5px; }
-      </style>
-    </head>
-    <body>
-      <h1>FHIR Package Search</h1>
-      
-      <form class="search-form" method="GET">
-        <input type="text" name="name" placeholder="Package name" value="${escape(name)}">
-        <input type="text" name="dependson" placeholder="Depends on" value="${escape(dependson)}">
-        <input type="text" name="canonicalPkg" placeholder="Canonical package" value="${escape(canonicalPkg)}">
-        <input type="text" name="canonicalUrl" placeholder="Canonical URL" value="${escape(canonicalUrl)}">
-        <select name="fhirVersion">
-          <option value="">Any FHIR version</option>
-          <option value="R2" ${fhirVersion === 'R2' ? 'selected' : ''}>R2</option>
-          <option value="R3" ${fhirVersion === 'R3' ? 'selected' : ''}>R3</option>
-          <option value="R4" ${fhirVersion === 'R4' ? 'selected' : ''}>R4</option>
-          <option value="R5" ${fhirVersion === 'R5' ? 'selected' : ''}>R5</option>
-        </select>
-        <button type="submit">Search</button>
-      </form>
-      
-      <div class="results">
-        <h2>Results (${results.length} packages found)</h2>
-        ${results.map(pkg => `
-          <div class="package">
-            <div class="package-name">
-              <a href="${pkg.url}">${escape(pkg.name)}</a> v${escape(pkg.version)}
-            </div>
-            <div class="package-details">
-              <strong>FHIR Version:</strong> ${escape(pkg.fhirVersion)}<br>
-              <strong>Type:</strong> ${escape(pkg.kind)}<br>
-              <strong>Canonical:</strong> ${escape(pkg.canonical)}<br>
-              ${pkg.description ? `<strong>Description:</strong> ${escape(pkg.description)}<br>` : ''}
-              ${pkg.date ? `<strong>Published:</strong> ${new Date(pkg.date).toLocaleDateString()}<br>` : ''}
-              ${pkg.count ? `<strong>Downloads:</strong> ${pkg.count}<br>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    </body>
-    </html>
-  `;
   }
 
   async shutdown() {

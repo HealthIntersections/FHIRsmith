@@ -1,6 +1,12 @@
 const {validateParameter, validateOptionalParameter} = require("./utilities");
 const escape = require('escape-html');
 
+// Attributes that take a URL, and the schemes that make a URL run script. Browsers ignore
+// leading whitespace and control characters, and embedded tabs and newlines, in the scheme.
+const URL_ATTRIBUTES = new Set(['href', 'src', 'action', 'formaction', 'xlink:href']);
+// eslint-disable-next-line no-control-regex -- control characters are exactly what browsers skip
+const UNSAFE_URL = /^[\s\x00-\x1f]*(j[\s]*a[\s]*v[\s]*a[\s]*s[\s]*c[\s]*r[\s]*i[\s]*p[\s]*t|v[\s]*b[\s]*s[\s]*c[\s]*r[\s]*i[\s]*p[\s]*t|d[\s]*a[\s]*t[\s]*a)[\s]*:/i;
+
 const NodeType = {
   Document: 'Document',
   Element: 'Element',
@@ -25,6 +31,9 @@ class XhtmlNode {
   // Attribute methods
   setAttribute(name, value) {
     if (value != null) {
+      if (URL_ATTRIBUTES.has(String(name).toLowerCase()) && UNSAFE_URL.test(String(value))) {
+        value = '#'; // a link that runs script (javascript:, data:, vbscript:) - from resource content
+      }
       this.attributes.set(name, value);
     }
     return this;

@@ -9,6 +9,7 @@ const htmlServer = require('../library/html-server');
 const Logger = require('../library/logger');
 const packageJson = require("../package.json");
 const escape = require('escape-html');
+const { checkResourceNarratives } = require('../library/narrative-check');
 const {ExpandWorker} = require("./workers/expand");
 const ValueSet = require("./library/valueset");
 const {CodeSystemXML} = require("./xml/codesystem-xml");
@@ -1017,7 +1018,7 @@ class TxHtmlRenderer {
       } else if (_fmt == "html/xml") {
         html += await this.renderResourceXml(json);
       } else if (_fmt == "html/narrative") {
-        html += await this.renderResourceWithNarrative(json, json.text?.div);
+        html += await this.renderOriginalNarrative(json);
       } else if (_fmt == "html/ops") {
         html += await this.liquid.renderFile('codesystem-operations', {
           opsId: this.generateResourceId(),
@@ -1040,9 +1041,10 @@ class TxHtmlRenderer {
 
   tab(b, name, rtype, type, id) {
     if (b) {
-      return `<li class="active"><a href="#">${name}</a></li>`;
+      return `<li class="active"><a href="#">${escape(name)}</a></li>`;
     } else {
-      return `<li><a href="${this.path}/${rtype}/${id}?_format=${type}">${name}</a></li>`;
+      const href = `${this.path}/${encodeURIComponent(rtype)}/${encodeURIComponent(id)}?_format=${encodeURIComponent(type)}`;
+      return `<li><a href="${escape(href)}">${escape(name)}</a></li>`;
     }
   }
   /**
@@ -1078,7 +1080,7 @@ class TxHtmlRenderer {
       } else if (_fmt == "html/xml") {
         html += await this.renderResourceXml(json);
       } else if (_fmt == "html/narrative") {
-        html += await this.renderResourceWithNarrative(json, json.text?.div);
+        html += await this.renderOriginalNarrative(json);
       } else if (_fmt == "html/ops") {
         html += await this.liquid.renderFile('valueset-operations', {
           opsId: this.generateResourceId(),
@@ -1218,7 +1220,7 @@ class TxHtmlRenderer {
       } else if (_fmt == "html/json") {
         html += await this.renderResourceJson(json);
       } else if (_fmt == "html/narrative") {
-        html += await this.renderResourceWithNarrative(json, json.text?.div);
+        html += await this.renderOriginalNarrative(json);
       } else if (_fmt == "html/ops") {
         const sourceSet = new Set();
         const codeSet = new Set();
@@ -1725,7 +1727,7 @@ class TxHtmlRenderer {
     html += '<div class="card-header">Bundle</div>';
     html += '<div class="card-body">';
     html += `<p><strong>Type:</strong> ${escape(json.type)}</p>`;
-    html += `<p><strong>Total:</strong> ${json.total || 'N/A'}</p>`;
+    html += `<p><strong>Total:</strong> ${escape(String(json.total ?? 'N/A'))}</p>`;
     html += '</div>';
     html += '</div>';
 
@@ -1826,6 +1828,18 @@ class TxHtmlRenderer {
     return html;
   }
 
+  /**
+   * The resource's own narrative, as it is - unless it carries active content, which is
+   * refused at load time but may reach here from a source that isn't loaded that way
+   */
+  async renderOriginalNarrative(json) {
+    const found = checkResourceNarratives({ resourceType: json.resourceType, id: json.id, text: json.text });
+    if (found) {
+      return `<div class="alert alert-danger">This narrative is not shown: ${escape(found)}</div>`;
+    }
+    return this.renderResourceWithNarrative(json, json.text?.div);
+  }
+
   async renderResourceJson(json) {
     let html = "";
     html += `<div class="json-content" style="margin-top: 10px;">`;
@@ -1864,7 +1878,8 @@ class TxHtmlRenderer {
     return await this.liquid.renderFile('operations-form', {
       vcSystemId,
       inferSystemId,
-      valueSetsJson: JSON.stringify(json.valueSets || [])
+      // inside a <script>: no '<', so no value can close it
+      valueSetsJson: JSON.stringify(json.valueSets || []).replace(/</g, '\\u003c')
     });
   }
 
