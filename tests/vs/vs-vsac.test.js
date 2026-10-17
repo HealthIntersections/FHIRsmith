@@ -50,7 +50,7 @@ describe('VSACValueSetProvider', () => {
         apiKey: apiKey,
         cacheFolder: cacheFolder,
         refreshIntervalHours: 24, // Set high to prevent auto-refresh during tests
-        baseUrl: 'http://cts.nlm.nih.gov/fhir'
+        baseUrl: 'https://cts.nlm.nih.gov/fhir'
       });
       provider.initialize();
 
@@ -360,7 +360,7 @@ describe('VSACValueSetProvider', () => {
       const badProvider = new VSACValueSetProvider({
         apiKey: 'invalid-key',
         cacheFolder: path.join(cacheFolder, 'auth-test'),
-        baseUrl: 'http://cts.nlm.nih.gov/fhir'
+        baseUrl: 'https://cts.nlm.nih.gov/fhir'
       });
 
       await expect(badProvider.forceRefresh()).rejects.toThrow();
