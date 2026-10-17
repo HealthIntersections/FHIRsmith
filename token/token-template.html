@@ -150,23 +150,24 @@
 
 <div class="api-docs">
   <h4>API Documentation</h4>
-  <p>Use these endpoints to validate and track API key usage:</p>
+  <p>Use these endpoints to validate and track API key usage. Send the key in a header:
+    <code>Authorization: Bearer {api_key}</code> (or <code>X-API-Key: {api_key}</code>).</p>
   
   <div class="mb-3">
     <strong>Validate API Key:</strong>
-    <div class="api-endpoint">GET /token/api/validate/{api_key}</div>
+    <div class="api-endpoint">GET /token/api/validate</div>
     <p>Returns user information and allowed request count.</p>
   </div>
   
   <div class="mb-3">
     <strong>Record Usage:</strong>
-    <div class="api-endpoint">POST /token/api/usage/{api_key}</div>
+    <div class="api-endpoint">POST /token/api/usage</div>
     <p>Records API usage. Send <code>{"count": 1}</code> in request body.</p>
   </div>
   
   <div class="mb-3">
     <strong>Get Usage Statistics:</strong>
-    <div class="api-endpoint">GET /token/api/stats/{api_key}?days=30</div>
+    <div class="api-endpoint">GET /token/api/stats?days=30</div>
     <p>Returns usage statistics for the specified number of days.</p>
   </div>
 </div>
