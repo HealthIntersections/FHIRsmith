@@ -271,7 +271,7 @@ class LookupWorker extends TerminologyWorker {
     // name (required)
     responseParams.push({
       name: 'name',
-      valueString: csProvider.name(params.workingLanguages())
+      valueString: csProvider.lookupName(params.workingLanguages())
     });
     responseParams.push({
       name: 'code',
@@ -389,7 +389,7 @@ class LookupWorker extends TerminologyWorker {
     // primitive belongs is a provider bug, and shipping it would produce a
     // response that isn't valid FHIR (and, in XML, isn't even parseable).
     const providerParamsFrom = responseParams.length;
-    await csProvider.extendLookup(ctxt, params.properties || [], responseParams);
+    await csProvider.extendLookup(ctxt, params.properties || [], responseParams, params);
     let providerName;
     try {
       providerName = csProvider.system();

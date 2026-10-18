@@ -84,6 +84,37 @@ describe('FHIR CodeSystem Provider', () => {
 
     });
 
+    describe('lookupName()', () => {
+      const langs = async (header) => Languages.fromAcceptLanguage(header, await TestUtilities.loadLanguageDefinitions(), false);
+
+      test('is the title, not the name', async () => {
+        expect(simpleProvider.lookupName(await langs('en'))).toBe('Simple Test Code System');
+      });
+
+      test('is the title as written when no languages are given', () => {
+        expect(simpleProvider.lookupName()).toBe('Simple Test Code System');
+        expect(deProvider.lookupName()).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('uses the translation of the title for the requested language', async () => {
+        expect(deProvider.lookupName(await langs('en'))).toBe('Test Code System with Multiple Languages');
+        expect(deProvider.lookupName(await langs('de'))).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('falls back to the title when there is no translation for the language', async () => {
+        expect(deProvider.lookupName(await langs('fr'))).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('falls back to the name when there is no title', () => {
+        const noTitle = factory.build(opContext, [], new CodeSystem({ ...simpleCS.jsonObj, title: undefined }));
+        expect(noTitle.lookupName()).toBe('SimpleTestCodeSystem');
+      });
+
+      test('does not change name()', () => {
+        expect(deProvider.name()).toBe('TestCodeSystemMultiLangDE');
+      });
+    });
+
     describe('system()', () => {
       test('should return correct system URI', () => {
         expect(simpleProvider.system()).toBe('http://hl7.org/fhir/test/CodeSystem/simple');

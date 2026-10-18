@@ -198,6 +198,33 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
+   * $lookup's display name: CodeSystem.title, translated where the resource carries a
+   * translation for one of the request's languages, else the title as written, else name.
+   * @param {Languages} [languages] - the request's working languages
+   * @returns {string}
+   */
+  lookupName(languages) {
+    const cs = this.codeSystem.jsonObj;
+    if (!cs.title) return this.name();
+    const base = (c) => String(c || '').toLowerCase().split('-')[0];
+    const translations = (cs._title?.extension || [])
+      .filter(e => e.url === 'http://hl7.org/fhir/StructureDefinition/translation')
+      .map(e => ({
+        lang: (e.extension || []).find(x => x.url === 'lang')?.valueCode,
+        content: (e.extension || []).find(x => x.url === 'content')?.valueString,
+      }))
+      .filter(t => t.lang && t.content);
+    for (const l of languages || []) {
+      const want = base(l.language || l.code);
+      if (!want) continue;
+      if (cs.language && base(cs.language) === want) return cs.title;
+      const t = translations.find(t => base(t.lang) === want);
+      if (t) return t.content;
+    }
+    return cs.title;
+  }
+
+  /**
    * @returns {string} URI for the code system
    */
   system() {

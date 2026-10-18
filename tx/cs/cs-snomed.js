@@ -1690,6 +1690,15 @@ class SnomedProvider extends BaseCSServices {
     return this.sct.getDescription();
   }
 
+  /**
+   * $lookup's display name: the edition description (e.g. "SNOMED CT International
+   * Edition"), which says more than the bare code system title.
+   */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return this.sct.getDescription();
+  }
+
   description() {
     return this.sct.getDescription();
   }
