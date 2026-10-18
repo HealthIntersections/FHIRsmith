@@ -23,6 +23,7 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { Command } = require('commander');
+const { axisLabel } = require('../cs/icd11-expressions');
 
 const TOOL_VERSION = '1.0.0';
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
@@ -158,9 +159,13 @@ class CodeSystemExporter {
    *   short  : the short code; concepts without one are dropped from the resource
    *   uri    : the unversioned entity uri, always
    *   id     : the bare entity id, always (straw poll option 4)
+   *
+   * Without --code-form, each system gets the form the server uses for it: id for MMS and
+   * ICF (the October 2026 WHO meeting), uri for the Foundation, which that decision did not
+   * cover.
    */
   codeOf(c) {
-    switch (this.opts.codeForm) {
+    switch (this.codeForm) {
       case 'short': return c.code;
       case 'uri':   return c.uri;
       case 'id':    return c.entity_id;
@@ -194,9 +199,9 @@ class CodeSystemExporter {
       { code: 'parent', uri: 'http://hl7.org/fhir/concept-properties#parent', type: 'code',
         description: 'A parent of this concept.' },
     ];
-    if (this.opts.codeForm !== 'short') {
-      p.push({ code: 'shortCode', uri: `${SCHEMA_NS}/code`, type: 'string',
-        description: 'The short "pretty" code, where the entity has one. Short codes may change between releases; entity ids do not.' });
+    if (this.codeForm !== 'short') {
+      p.push({ code: 'classificationCode', uri: `${SCHEMA_NS}/code`, type: 'code',
+        description: 'The short classification code (e.g. 1A00), where the entity has one. Short codes may change between releases; entity ids do not.' });
     }
     if (sys.code !== 'foundation') {
       p.push(
@@ -300,7 +305,7 @@ class CodeSystemExporter {
     const put = (c_, k, v) => { if (v != null && v !== '') property.push({ code: c_, [k]: v }); };
     put('entityId', 'valueString', c.entity_id);
     put('uri', 'valueString', c.uri);
-    if (this.opts.codeForm !== 'short') put('shortCode', 'valueString', c.code);
+    if (this.codeForm !== 'short') put('classificationCode', 'valueCode', c.code);
     if (c.class_kind) property.push({ code: 'classKind',
       valueCoding: { system: SCHEMA_NS, code: c.class_kind } });
     if (!c.selectable) property.push({ code: 'notSelectable', valueBoolean: true });
@@ -430,7 +435,7 @@ class CodeSystemExporter {
     await finished;
     const size = fs.statSync(target).size;
     this.log(`  ${path.basename(target)}  ${written} concepts, ${(size / 1048576).toFixed(1)} MB`
-             + `  [${nested ? 'nested' : 'flat'}, ${this.opts.codeForm}]`);
+             + `  [${nested ? 'nested' : 'flat'}, ${this.codeForm}]`);
     return { target, written, ctx };
   }
 
@@ -532,6 +537,12 @@ class CodeSystemExporter {
         { code: 'block', display: 'Block', definition: 'A grouper. Has no short code and cannot be used to code with.' },
         { code: 'window', display: 'Window', definition: 'A presentation grouper. Cannot be used to code with.' },
         { code: 'category', display: 'Category', definition: 'A codeable entity.' },
+        // the postcoordination axes, named as WHO names them; $lookup on an expression
+        // reports each axis as a Coding in this code system. WHO publishes no labels for
+        // them, so the display is made from the name (specificAnatomy -> Specific anatomy)
+        ...this.db.prepare('SELECT DISTINCT axis_name FROM pc_scale ORDER BY axis_name').all()
+          .map(r => ({ code: r.axis_name, display: axisLabel(r.axis_name),
+                       definition: 'A postcoordination axis.' })),
       ],
     };
     cs.count = cs.concept.length;
@@ -540,6 +551,40 @@ class CodeSystemExporter {
     this.index.push({ filename: 'CodeSystem-icd11-schema.json', resourceType: 'CodeSystem',
                       id: cs.id, url: cs.url, version: cs.version });
     this.log(`  ${path.basename(file)}  ${cs.count} concepts  [schema vocabulary]`);
+    this.writeAllowMultipleCodeSystem();
+  }
+
+  /**
+   * The values of a postcoordination axis's allowMultipleValues - WHO's own three codes. $lookup
+   * on an expression reports them as Codings in this code system.
+   */
+  writeAllowMultipleCodeSystem() {
+    const cs = {
+      resourceType: 'CodeSystem',
+      id: 'icd11-allow-multiple-values',
+      url: `${SCHEMA_NS}/allowMultipleValues`,
+      version: this.meta('release') || '2026-01',
+      name: 'ICD11AllowMultipleValues',
+      title: 'ICD-11 postcoordination: whether an axis takes several values',
+      status: 'active',
+      experimental: false,
+      publisher: 'World Health Organization',
+      description: 'Whether a postcoordination axis of an ICD-11 entity may be given more than one value.',
+      caseSensitive: true,
+      content: 'complete',
+      concept: [
+        { code: 'AllowAlways', display: 'Allow always', definition: 'The axis may take any number of values.' },
+        { code: 'NotAllowed', display: 'Not allowed', definition: 'The axis takes at most one value.' },
+        { code: 'AllowedExceptFromSameBlock', display: 'Allowed except from the same block',
+          definition: 'The axis may take several values, but not two from the same block.' },
+      ],
+    };
+    cs.count = cs.concept.length;
+    const file = path.join(this.dir, 'CodeSystem-icd11-allow-multiple-values.json');
+    fs.writeFileSync(file, JSON.stringify(cs, null, 2) + '\n');
+    this.index.push({ filename: 'CodeSystem-icd11-allow-multiple-values.json', resourceType: 'CodeSystem',
+                      id: cs.id, url: cs.url, version: cs.version });
+    this.log(`  ${path.basename(file)}  ${cs.count} concepts  [allowMultipleValues]`);
   }
 
   // -- postcoordination value sets -----------------------------------------
@@ -745,7 +790,7 @@ class CodeSystemExporter {
     this.log(`ICD-11 FHIR export`);
     this.log(`  source    : ${this.opts.src}`);
     this.log(`  out       : ${this.dir}`);
-    this.log(`  code form : ${this.opts.codeForm}`);
+    this.log(`  code form : ${this.opts.codeForm || 'id (mms, icf), uri (foundation)'}`);
     this.log(`  languages : ${languages.join(', ')} (base ${this.baseLang})`);
     this.log(`  value sets: ${this.opts.valueSets ? 'yes' : 'no'}`
            + `   package: ${this.opts.package ? `${this.opts.packageId}#${this.opts.packageVersion}` : 'no'}`);
@@ -759,6 +804,7 @@ class CodeSystemExporter {
       const sys = this.db.prepare('SELECT * FROM system WHERE code=?').get(code);
       if (!sys) { this.log(`  ! ${code} is not in this database, skipping`); continue; }
       this.log(`\n${sys.code} -- ${sys.title}`);
+      this.codeForm = this.opts.codeForm || (sys.code === 'foundation' ? 'uri' : 'id');
       const { ctx } = await this.exportSystem(sys, languages);
       for (const lang of languages.slice(1)) await this.exportSupplement(sys, lang, ctx);
       if (this.opts.valueSets) this.writeValueSets(sys);
@@ -792,7 +838,7 @@ function main(argv) {
     .requiredOption('-o, --out <dir>', 'output directory')
     .option('--systems <list>', 'which code systems to export', 'mms,icf,foundation')
     .option('-l, --languages <list>', "comma separated, or 'all'; the first is the base language", 'all')
-    .option('--code-form <form>', 'hybrid | short | uri | id -- what goes in concept.code', 'hybrid')
+    .option('--code-form <form>', 'id | uri | hybrid | short -- what goes in concept.code (default: id, uri for the Foundation)')
     .option('--hierarchy <how>', 'nested | flat (the Foundation is always flat)', 'nested')
     .option('--no-value-set', 'do not declare an all-codes value set in CodeSystem.valueSet')
     .option('--case-sensitive <b>', 'value for CodeSystem.caseSensitive', v => v !== 'false', true)
@@ -805,7 +851,7 @@ function main(argv) {
 
   program.parse(argv);
   const opts = program.opts();
-  if (!['hybrid', 'short', 'uri', 'id'].includes(opts.codeForm)) {
+  if (opts.codeForm && !['hybrid', 'short', 'uri', 'id'].includes(opts.codeForm)) {
     throw new Error(`--code-form must be hybrid, short, uri or id`);
   }
   // A package holds plain JSON; the tarball does the compressing.

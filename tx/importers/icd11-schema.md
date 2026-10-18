@@ -190,16 +190,20 @@ tree and avoids repeating parent codes; the Foundation is a DAG so it is emitted
 keeps the base file usable on its own and matches WHO treating translations as separately
 governed. `--languages en,fr` picks a subset.
 
-**Codes.** `--code-form` decides what goes in `concept.code`, because the community has not:
+**Codes.** `--code-form` decides what goes in `concept.code`. The October 2026 decisions
+made the bare entity id the code in MMS and ICF (the uri is the system url + `/` + the id)
+and the short code its `classificationCode`. The Foundation was not part of that decision
+and keeps the entity uri. Without `--code-form` each system gets its decided form; the
+option forces one form for all of them, for comparison:
 
 | form | `concept.code` | notes |
 |---|---|---|
-| `hybrid` (default) | short code where there is one, entity uri otherwise | what the WHO FHIR server does today |
+| `id` (default for MMS, ICF) | the bare entity id, always | the decided form; Geneva straw poll option 4, which won 7-1 |
+| `uri` (default for the Foundation) | the unversioned entity uri, always | uniform, always present |
+| `hybrid` | short code where there is one, entity uri otherwise | what the WHO FHIR server did before the decisions |
 | `short` | the short code | drops the 1,519 MMS concepts that have none |
-| `uri` | the unversioned entity uri, always | uniform, always present |
-| `id` | the bare entity id, always | Geneva straw poll option 4, which won 7-1 |
 
-Whichever is chosen, the others are still available as `entityId`, `uri` and `shortCode`
+Whichever is chosen, the others are still available as `entityId`, `uri` and `classificationCode`
 properties, so nothing is lost and the four can be generated and compared.
 
 **Declarations.** The exported resources declare `filter` (concept is-a/descendent-of,

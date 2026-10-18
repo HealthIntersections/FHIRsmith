@@ -18,12 +18,21 @@ const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemFactoryProvider, FilterExecutionContext } = require('./cs-api');
 const { BaseCSServices } = require('./cs-base');
 const { validateArrayParameter } = require('../../library/utilities');
-const { ICD11Expression, parseExpression } = require('./icd11-expressions');
+const { ICD11Expression, parseExpression, axisLabel } = require('./icd11-expressions');
 const { Issue } = require('../library/operation-outcome');
 const assert = require('assert');
 
 // WHO's own vocabulary for the kinds of text an entity carries, used as designation.use.
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
+
+// The extension a Coding may carry to save the reader a lookup: the short code (or the
+// short-code form of an expression) for the entity id in Coding.code. Provisional url.
+const CLASSIFICATION_CODE_EXT = 'http://id.who.int/icd/schema/extension/classificationCode';
+// The only system it is defined for
+const MMS_URL = 'http://id.who.int/icd/release/11/mms';
+
+// The code system of allowMultipleValues: AllowAlways | NotAllowed | AllowedExceptFromSameBlock
+const ALLOW_MULTIPLE_CS = `${SCHEMA_NS}/allowMultipleValues`;
 
 // designation.kind values that are not designations: `definition` is
 // CodeSystem.concept.definition, and is returned by definition() instead.
@@ -34,7 +43,12 @@ const NOT_A_DESIGNATION = new Set(['definition']);
  * enough of the concept row that the cheap accessors never go back to the database.
  */
 class ICD11Concept {
-  constructor(row) {
+  /**
+   * @param row     the concept row
+   * @param bareIds true for the linearizations (MMS, ICF), whose code is the bare entity id;
+   *                false for the Foundation, whose code is still the entity uri
+   */
+  constructor(row, bareIds) {
     this.id = row.id;                 // internal rowid, used for joins
     this.entityId = row.entity_id;    // 257068234, or 1363559646/other for a residual
     this.uri = row.uri;               // unversioned canonical uri
@@ -49,17 +63,18 @@ class ICD11Concept {
     this.browserUrl = row.browser_url;
     this.lft = row.lft;               // nested set; null for the Foundation (a DAG)
     this.rgt = row.rgt;
+    this.bareIds = !!bareIds;
   }
 
   /**
-   * What this concept answers to. WHO's server accepts both the short code and the entity
-   * uri, and the test suite asserts both address the same concept, so the provider echoes
-   * back whichever form is canonical for the concept: the short code where there is one,
-   * the uri otherwise. If the community settles the straw poll differently, this is the
-   * one place that changes.
+   * The concept's code. In MMS and ICF it is the bare entity id (257068234, or
+   * 1363559646/other for a residual): the full uri is the system url + '/' + the id, so
+   * the prefix carries nothing (the October 2026 WHO meeting). The short code (this.code)
+   * is its classificationCode, reported beside it. The Foundation was not part of that
+   * decision, and keeps the entity uri.
    */
   get canonicalCode() {
-    return this.code || this.uri;
+    return this.bareIds ? this.entityId : this.uri;
   }
 }
 
@@ -105,19 +120,34 @@ class ICD11Services extends BaseCSServices {
     });
   }
 
+  /** MMS and ICF codes are bare entity ids; the Foundation's are still entity uris. */
+  get #bareIds() { return this.shared.systemCode !== 'foundation'; }
+
+  #concept(row) { return new ICD11Concept(row, this.#bareIds); }
+
+  /** The code of a concept row, for references to it (parent, child, stem, values). */
+  #ref(row) { return this.#bareIds ? row.entity_id : row.uri; }
+
   // -- metadata -------------------------------------------------------------------------
 
   system() { return this.shared.url; }
   version() { return this.shared.version; }
 
   /**
-   * The default is system|version, but $lookup's `name` is meant to be a display name for
-   * the code system. OMOP overrides it the same way; WHO returns the linearization title.
-   * It follows the request's languages like any other display, falling back to the primary
-   * title. $lookup passes its working languages (displayLanguage, else Accept-Language),
-   * since displayLanguage never reaches opContext.langs; other callers pass nothing.
+   * CodeSystem.name, as export-icd11-codesystem.js writes it: ICD11MMS, ICD11ICF,
+   * ICD11FOUNDATION.
    */
-  name(languages) { return this.shared.titles?.[this.#displayLang(languages)] || this.shared.title; }
+  name() { return `ICD11${this.shared.systemCode.toUpperCase()}`; }
+
+  /**
+   * $lookup's display name: the linearization title in the request's language where WHO
+   * translated it, else the primary title. $lookup passes its working languages
+   * (displayLanguage, else Accept-Language), since displayLanguage never reaches
+   * opContext.langs.
+   */
+  lookupName(languages) {
+    return this.shared.titles?.[this.#displayLang(languages)] || this.shared.title || this.name();
+  }
   description() { return this.shared.title; }
   totalCount() { return this.shared.count; }
   defLang() { return 'en'; }
@@ -164,8 +194,8 @@ class ICD11Services extends BaseCSServices {
   // -- locating -------------------------------------------------------------------------
 
   /**
-   * Accepts the short code and the unversioned entity uri, matching what WHO's server
-   * accepts. Returns { context, message }; a plain miss carries no message, which the
+   * MMS and ICF accept the bare entity id (the code) and the short classification code;
+   * the Foundation accepts its entity uri and the short code. Returns { context, message }; a plain miss carries no message, which the
    * validation worker treats as "not there" rather than "malformed".
    */
   async locate(code) {
@@ -186,12 +216,18 @@ class ICD11Services extends BaseCSServices {
     return { context: null, message: undefined };
   }
 
-  /** A plain code or entity uri, as written; null if it is neither. */
+  /**
+   * A plain code as written - the short code, or the entity id (MMS, ICF) or uri
+   * (Foundation); null if it is none of them. An id is looked up as system + '/' + id,
+   * which is what its uri is, so the uri index serves both. The full uri is not accepted
+   * in MMS or ICF: it is not a code there.
+   */
   async #resolve(code) {
+    const uri = this.#bareIds ? `${this.shared.url}/${code}` : code;
     const row = await this.#get(
       `SELECT * FROM concept WHERE system = ? AND (code = ? OR uri = ?)`,
-      [this.shared.systemId, code, code]);
-    return row ? new ICD11Concept(row) : null;
+      [this.shared.systemId, code, uri]);
+    return row ? this.#concept(row) : null;
   }
 
   /** What the expression parser needs: the database, and the request's translations. */
@@ -260,6 +296,58 @@ class ICD11Services extends BaseCSServices {
     return ctxt === null ? null : ctxt.canonicalCode;
   }
 
+  /** The short-code form (1A00, or 1A00&XN8P1 for an expression), where there is one. */
+  async classificationCode(context) {
+    const ctxt = await this.#ensureContext(context);
+    if (ctxt === null) return null;
+    return (ctxt instanceof ICD11Expression ? ctxt.classificationCode : ctxt.code) || null;
+  }
+
+  /** Value sets may enumerate short codes; the expansion carries the code, the uri. */
+  async expansionCode(context, requested) {
+    return (await this.code(context)) || requested;
+  }
+
+  mandatoryExpansionProperties() { return ['classificationCode']; }
+
+  /** A postcoordinated expression's parse records what validation should say about it. */
+  async codeIssues(context) {
+    const ctxt = await this.#ensureContext(context);
+    return ctxt instanceof ICD11Expression ? ctxt.issues : [];
+  }
+
+  /**
+   * The classificationCode extension on a Coding, when present, has to be true: it is there
+   * so software can show the short code without a lookup, and a wrong one would be shown.
+   * It is only defined for an MMS coding whose code is the entity id (or the id form of an
+   * expression) - a short code needs no other short code beside it - and its value has to be
+   * that code's classificationCode exactly.
+   */
+  async checkCodingExtensions(coding, context) {
+    const out = [];
+    const exts = coding.extension || [];
+    for (let index = 0; index < exts.length; index++) {
+      const ext = exts[index];
+      if (ext.url !== CLASSIFICATION_CODE_EXT) continue;
+      const value = ext.valueCode ?? '';
+      if (this.shared.url !== MMS_URL) {
+        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_SYSTEM', params: [MMS_URL, this.shared.url] });
+        continue;
+      }
+      const ctxt = await this.#ensureContext(context);
+      const id = await this.code(ctxt);
+      const expected = await this.classificationCode(ctxt);
+      if (coding.code !== id) {
+        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_NOT_ID', params: [coding.code, id] });
+      } else if (!expected) {
+        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_NONE', params: [value, coding.code] });
+      } else if (value !== expected) {
+        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_WRONG', params: [value, coding.code, expected] });
+      }
+    }
+    return out;
+  }
+
   async display(context) {
     const ctxt = await this.#ensureContext(context);
     if (ctxt === null) return null;
@@ -303,9 +391,9 @@ class ICD11Services extends BaseCSServices {
     // narrower thing than any concept in the classification
     if (ctxt === null || ctxt instanceof ICD11Expression) return null;
     const row = await this.#get(
-      `SELECT c.code, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.parent
+      `SELECT c.entity_id, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.parent
         WHERE cp.child = ? ORDER BY cp.seq LIMIT 1`, [ctxt.id]);
-    return row ? (row.code || row.uri) : null;
+    return row ? this.#ref(row) : null;
   }
 
   /**
@@ -371,12 +459,15 @@ class ICD11Services extends BaseCSServices {
    */
   propertyDefinitions() {
     const defs = [
-      // code, not string: the entity uri identifies a concept in this code system, and
-      // that is what the Geneva review concluded WHO gets wrong by returning valueString.
-      { code: 'id', uri: `${SCHEMA_NS}/entityId`, type: 'code',
-        description: 'The stable WHO entity uri.' },
-      { code: 'code', uri: `${SCHEMA_NS}/code`, type: 'string',
-        description: 'The short code, where the entity has one.' },
+      // The entity uri is the code (decided at the October 2026 test-case review); the short
+      // code is reported alongside it as classificationCode. Both are codes in this code
+      // system, so both are type code.
+      { code: 'code', uri: `${SCHEMA_NS}/entityId`, type: 'code',
+        description: this.#bareIds
+          ? 'The code: the WHO entity id. The entity uri is the system url + \'/\' + the id.'
+          : 'The code: the stable, unversioned WHO entity uri.' },
+      { code: 'classificationCode', uri: `${SCHEMA_NS}/code`, type: 'code',
+        description: 'The short classification code (e.g. 1A00), where the entity has one.' },
       { code: 'classKind', uri: `${SCHEMA_NS}/classKind`, type: 'code',
         description: 'chapter | block | window | category.' },
       { code: 'notSelectable', uri: 'http://hl7.org/fhir/concept-properties#notSelectable',
@@ -391,13 +482,25 @@ class ICD11Services extends BaseCSServices {
           description: 'The Foundation entity this linearization entry came from.' },
         { code: 'blockId', uri: `${SCHEMA_NS}/blockId`, type: 'string' },
         { code: 'codeRange', uri: `${SCHEMA_NS}/codeRange`, type: 'string' },
-        { code: 'postcoordinationScale', uri: `${SCHEMA_NS}/postcoordinationScale`, type: 'string',
-          description: 'A postcoordination axis of this concept; repeats once per axis.' },
+        { code: 'postcoordination', uri: `${SCHEMA_NS}/postcoordination`, type: 'string',
+          description: 'One per axis the code declares, with subproperties axis, required, '
+            + 'allowMultipleValues and valueSet; for an expression, also value (repeating), valued '
+            + 'or not, and a value that is a cluster member carries its own postcoordination '
+            + 'entries. Has no value of its own.' },
+        { code: 'allowMultipleValues', uri: `${SCHEMA_NS}/allowMultipleValues`, type: 'Coding',
+          description: 'Subproperty of postcoordination: AllowAlways | NotAllowed | AllowedExceptFromSameBlock.' },
+        { code: 'valueSet', uri: `${SCHEMA_NS}/valueSet`, type: 'string',
+          description: 'Subproperty of postcoordination: the canonical of the ValueSet of the values '
+            + 'permitted on the axis.' },
         // only ever returned for a postcoordinated expression, never for a plain concept
-        { code: 'stem', uri: `${SCHEMA_NS}/stem`, type: 'string',
-          description: 'A concept in the expression that carries axes of its own.' },
-        { code: 'postcoordinationValues', uri: `${SCHEMA_NS}/postcoordinationValues`, type: 'string',
-          description: 'A value in the expression, with the axis it was placed on.' });
+        { code: 'stem', uri: `${SCHEMA_NS}/stem`, type: 'Coding',
+          description: 'The root of the expression.' },
+        { code: 'axis', uri: `${SCHEMA_NS}/axis`, type: 'Coding',
+          description: 'Subproperty of postcoordination: the axis, in the schema vocabulary.' },
+        { code: 'required', uri: `${SCHEMA_NS}/requiredPostcoordination`, type: 'boolean',
+          description: 'Subproperty of postcoordination: the axis must be given a value.' },
+        { code: 'value', uri: `${SCHEMA_NS}/value`, type: 'Coding',
+          description: 'Subproperty of postcoordination: a code on the axis.' });
     }
     return defs;
   }
@@ -406,11 +509,13 @@ class ICD11Services extends BaseCSServices {
     const ctxt = await this.#ensureContext(context);
     if (!ctxt) return [];
     if (ctxt instanceof ICD11Expression) {
-      return [{ code: 'id', valueCode: ctxt.uriForm }, { code: 'code', valueString: ctxt.canonicalCode }];
+      const out = [{ code: 'code', valueCode: ctxt.canonicalCode }];
+      if (ctxt.classificationCode) out.push({ code: 'classificationCode', valueCode: ctxt.classificationCode });
+      return out;
     }
-    const out = [{ code: 'id', valueCode: ctxt.uri }];
+    const out = [{ code: 'code', valueCode: ctxt.canonicalCode }];
     if (ctxt.classKind) out.push({ code: 'classKind', valueCode: ctxt.classKind });
-    if (ctxt.code) out.push({ code: 'code', valueString: ctxt.code });
+    if (ctxt.code) out.push({ code: 'classificationCode', valueCode: ctxt.code });
     if (!ctxt.selectable) out.push({ code: 'notSelectable', valueBoolean: true });
     return out;
   }
@@ -424,20 +529,25 @@ class ICD11Services extends BaseCSServices {
    * the lot -- for 1A00 that is 7.5KB, mostly index terms -- which is one of the things
    * the test suite pins.
    */
-  async extendLookup(ctxt, props, params) {
+  async extendLookup(ctxt, props, params, txParams) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
     const concept = await this.#ensureContext(ctxt);
     if (!concept) return;
+    // post-coordination-metadata=true asks for every axis, with its rules; otherwise only the
+    // axes that carry a value are described, and only by what is on them
+    const meta = !!txParams?.postCoordinationMetadata;
     if (concept instanceof ICD11Expression) {
-      return this.#extendLookupExpression(concept, props, params);
+      return this.#extendLookupExpression(concept, props, params, meta);
     }
 
-    if (this._hasProp(props, 'id', true)) {
-      this._addCodeProperty(params, 'property', 'id', concept.uri);
+    // code is the entity id (uri in the Foundation); classificationCode the short code,
+    // only where there is one
+    if (this._hasProp(props, 'code', true)) {
+      this._addCodeProperty(params, 'property', 'code', concept.canonicalCode);
     }
-    if (concept.code && this._hasProp(props, 'code', true)) {
-      this._addCodeProperty(params, 'property', 'code', concept.code);
+    if (concept.code && this._hasProp(props, 'classificationCode', true)) {
+      this._addCodeProperty(params, 'property', 'classificationCode', concept.code);
     }
     if (this._hasProp(props, 'classKind', true) && concept.classKind) {
       this._addCodeProperty(params, 'property', 'classKind', concept.classKind);
@@ -461,87 +571,148 @@ class ICD11Services extends BaseCSServices {
       this._addStringProperty(params, 'property', 'browserUrl', concept.browserUrl);
     }
 
-    // hierarchy. Parents and children are codes in this code system, so they use whichever
-    // form is canonical for the target -- the short code where there is one.
+    // hierarchy. Parents and children are codes in this code system, so they are spelled
+    // the same way as the code.
     if (this._hasProp(props, 'parent', true)) {
       for (const r of await this.#all(
-          `SELECT c.code, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.parent
+          `SELECT c.entity_id, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.parent
             WHERE cp.child = ? ORDER BY cp.seq`, [concept.id])) {
-        this._addCodeProperty(params, 'property', 'parent', r.code || r.uri);
+        this._addCodeProperty(params, 'property', 'parent', this.#ref(r));
       }
     }
     if (this._hasProp(props, 'child', false)) {
       for (const r of await this.#all(
-          `SELECT c.code, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.child
+          `SELECT c.entity_id, c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.child
             WHERE cp.parent = ? ORDER BY cp.seq`, [concept.id])) {
-        this._addCodeProperty(params, 'property', 'child', r.code || r.uri);
+        this._addCodeProperty(params, 'property', 'child', this.#ref(r));
       }
     }
 
-    // The postcoordination axes this concept declares, as the canonical of the ValueSet
-    // that enumerates each one. The cardinality rules live on those value sets.
-    if (this.shared.systemCode !== 'foundation' && this._hasProp(props, 'postcoordinationScale', true)) {
-      for (const r of await this.#all(
-          `SELECT value_set_uri FROM pc_scale WHERE concept = ? ORDER BY seq`, [concept.id])) {
-        this._addStringProperty(params, 'property', 'postcoordinationScale', r.value_set_uri);
+    // The postcoordination axes this concept declares: one postcoordination property per
+    // axis, in the shape a postcoordinated expression uses, with nothing on any axis. Only
+    // with post-coordination-metadata: without it only valued axes are listed, and a plain
+    // concept has none.
+    if (meta && this.shared.systemCode !== 'foundation' && this._hasProp(props, 'postcoordination', true)) {
+      for (const axis of await this.#all(
+          `SELECT id, seq, axis, axis_name, required, allow_multiple, value_set_uri FROM pc_scale
+            WHERE concept = ? ORDER BY seq`, [concept.id])) {
+        params.push({ name: 'property', part: this.#axisEntry(axis, true) });
       }
     }
   }
 
   /**
-   * $lookup for a postcoordinated expression. Two properties carry what a client cannot
-   * work out from the code string:
+   * $lookup for a postcoordinated expression (the October 2026 WHO meeting):
    *
-   *   stem                   which parts of the expression are concepts in their own right
-   *   postcoordinationValues which value went on which axis
+   *   code, classificationCode  the id form and the short-code form, as for a plain concept
+   *   stem                      the root, as a Coding
+   *   postcoordination          one per axis the root declares, valued or not:
+   *                               axis                 Coding in the schema vocabulary
+   *                               required             boolean
+   *                               allowMultipleValues  Coding (AllowAlways | NotAllowed | ...)
+   *                               valueSet             string: the canonical of the axis's ValueSet
+   *                               value                Coding, repeating: what is on the axis
+   *                             plus one with only `value`s, for `/` members on no axis of the
+   *                             root.
    *
-   * The second is the one that matters. `1D01.0Y/1G41/1G40` says nothing about whether
-   * 1G40 is the causing condition or the manifestation, and both are legal there -- so a
-   * client that only has the string cannot tell, and a server that reports both on the
-   * first axis has told it something untrue. Each (axis, value) pair is therefore kept
-   * distinct, and the axis is named by its schema uri, the same identifier the
-   * postcoordinationScale property uses on a stem.
+   * Without post-coordination-metadata=true only the axes that carry a value are listed, and
+   * each carries only `axis` and its values: required, allowMultipleValues and valueSet, and
+   * the unvalued axes, are the metadata. (A `/` member with no qualifiers is then just its
+   * Coding.)
+   *
+   * A `value` that is a `/` member is a code with axes of its own, and carries its own
+   * postcoordination entries inside it, one level down - the same shape. That nesting is the
+   * only way to keep a member's qualifiers with that member: the same code can be a member
+   * twice with different qualifiers. ($lookup does not describe subproperties inside
+   * subproperties; Parameters allows them.)
+   *
+   * Everything comes out in normal-form order: axes in the order the code defines them,
+   * values in the order the normal form puts them.
    */
-  async #extendLookupExpression(expr, props, params) {
+  async #extendLookupExpression(expr, props, params, meta) {
     if (this._hasProp(props, 'code', true)) {
       this._addCodeProperty(params, 'property', 'code', expr.canonicalCode);
     }
-    if (this._hasProp(props, 'id', true)) {
-      this._addCodeProperty(params, 'property', 'id', expr.uriForm);
+    if (expr.classificationCode && this._hasProp(props, 'classificationCode', true)) {
+      this._addCodeProperty(params, 'property', 'classificationCode', expr.classificationCode);
     }
+    const root = expr.stems[0];
     if (this._hasProp(props, 'stem', true)) {
-      for (const stem of expr.stems) {
-        const label = await this.#title(stem.stem.concept);
-        const part = [{ name: 'code', valueCode: 'stem' }];
-        if (label) {
-          part.push({ name: 'subproperty', part: [
-            { name: 'code', valueCode: 'stemLabel' },
-            { name: 'value', valueString: label }] });
-        }
-        part.push({ name: 'subproperty', part: [
-          { name: 'code', valueCode: 'stemUri' },
-          { name: 'value', valueUri: stem.stem.concept.uri }] });
-        part.push({ name: 'value', valueCode: stem.stem.concept.canonicalCode });
+      params.push({ name: 'property', part: [
+        { name: 'code', valueCode: 'stem' },
+        { name: 'value', valueCoding: await this.#coding(root.stem.concept) }] });
+    }
+    if (this._hasProp(props, 'postcoordination', true)) {
+      for (const part of await this.#postcoordination(expr, root, true, meta)) {
         params.push({ name: 'property', part });
       }
     }
-    if (this._hasProp(props, 'postcoordinationValues', true)) {
-      // no sorting here: the test harness normalises repeated `property` parameters by
-      // (code, value) before it compares, so these arrive ordered by axis whatever order
-      // they leave in. Left in expression order, which is the one a reader of the raw
-      // response would expect.
-      const bindings = expr.stems.flatMap(stem => stem.bindings);
-      for (const b of bindings) {
-        const label = await this.#title(b.token.concept);
-        const sub = [{ name: 'code', valueCode: b.token.concept.canonicalCode }];
-        if (label) sub.push({ name: 'description', valueString: label });
-        sub.push({ name: 'value', valueUri: b.token.concept.uri });
-        params.push({ name: 'property', part: [
-          { name: 'code', valueCode: 'postcoordinationValues' },
-          { name: 'subproperty', part: sub },
-          { name: 'value', valueCode: b.axis.axis }] });
+  }
+
+  /** A concept in this code system as a Coding, with its display. */
+  async #coding(concept) {
+    const c = { system: this.shared.url, code: concept.canonicalCode };
+    const label = await this.#title(concept);
+    if (label) c.display = label;
+    return c;
+  }
+
+  /**
+   * The postcoordination entries for one code of an expression - the root, or a `/` member -
+   * each as the `part` list of a property (or, one level down, of a subproperty).
+   */
+  async #postcoordination(expr, st, isRoot, meta) {
+    const pos = (t) => expr.tokens.indexOf(t);
+    const out = [];
+    for (const axis of [...st.axes].sort((a, b) => a.seq - b.seq)) {
+      const values = st.bindings.filter(b => b.axis === axis).map(b => b.token).sort((a, b) => pos(a) - pos(b));
+      if (!meta && values.length === 0) continue;   // unvalued axes only with the metadata
+      const part = this.#axisEntry(axis, meta);
+      for (const t of values) part.push(await this.#valuePart(expr, t, meta));
+      out.push(part);
+    }
+    if (isRoot) {
+      // `/` members that are on no axis of the root still qualify it
+      const loose = expr.tokens.filter(t => t.sep === '/' && !t.axis);
+      if (loose.length) {
+        const part = [{ name: 'code', valueCode: 'postcoordination' }];
+        for (const t of loose) part.push(await this.#valuePart(expr, t, meta));
+        out.push(part);
       }
     }
+    return out;
+  }
+
+  /**
+   * The start of a postcoordination entry: the axis and what is known about it. A plain
+   * concept's lookup stops here; an expression's adds the values.
+   */
+  #axisEntry(axis, meta) {
+    const sub = (code, value) => ({ name: 'subproperty', part: [{ name: 'code', valueCode: code }, { name: 'value', ...value }] });
+    const part = [
+      { name: 'code', valueCode: 'postcoordination' },
+      sub('axis', { valueCoding: { system: SCHEMA_NS, code: axis.axis_name, display: axisLabel(axis.axis_name) } })];
+    if (!meta) return part;      // the axis rules are post-coordination-metadata
+    part.push(sub('required', { valueBoolean: !!axis.required }));
+    if (axis.allow_multiple) {
+      part.push(sub('allowMultipleValues', { valueCoding: { system: ALLOW_MULTIPLE_CS, code: axis.allow_multiple } }));
+    }
+    if (axis.value_set_uri) {
+      part.push(sub('valueSet', { valueString: axis.value_set_uri }));
+    }
+    return part;
+  }
+
+  /** One `value` subproperty; a `/` member carries its own axes inside it. */
+  async #valuePart(expr, token, meta) {
+    const part = [{ name: 'code', valueCode: 'value' }, { name: 'value', valueCoding: await this.#coding(token.concept) }];
+    const member = token.sep === '/' ? expr.stems.find(st => st.stem === token) : null;
+    if (member) {
+      for (const p of await this.#postcoordination(expr, member, false, meta)) {
+        part.push({ name: 'subproperty', part: p });
+      }
+    }
+    return { name: 'subproperty', part };
   }
 
   // -- subsumption -----------------------------------------------------------------------
@@ -591,15 +762,15 @@ class ICD11Services extends BaseCSServices {
 
   async nextContext(iteratorContext) {
     if (!iteratorContext || iteratorContext.cursor >= iteratorContext.rows.length) return null;
-    return new ICD11Concept(iteratorContext.rows[iteratorContext.cursor++]);
+    return this.#concept(iteratorContext.rows[iteratorContext.cursor++]);
   }
 
   // -- filters ---------------------------------------------------------------------------
 
   /**
    * `concept is-a` and `concept descendent-of` are what WHO's own value sets use, and what
-   * a postcoordination scale is expressed with. The filter value may be a short code or an
-   * entity uri: WHO's published value sets mix the two, so both have to work.
+   * a postcoordination scale is expressed with. The filter value is a code as #resolve
+   * reads it: the short code, or the entity id (MMS, ICF) or uri (Foundation).
    */
   async doesFilter(prop, op, value) {
     return prop === 'concept' && (op === 'is-a' || op === 'descendent-of') && !!value;
@@ -653,13 +824,18 @@ class ICD11Services extends BaseCSServices {
           WHERE cl.ancestor = ? AND cl.depth >= ?
           ORDER BY COALESCE(c.lft, c.id)`, [set.ancestorId, set.minDepth]);
     } else {
+      // the text, or the start of a short code (searching 1A0 finds 1A00..1A09): the code
+      // is a uri now, so the short code is the one a person types
       set.rows = await this.#all(
-        `SELECT DISTINCT c.* FROM designation d JOIN concept c ON c.id = d.concept
-          WHERE c.system = ? AND d.lang IN (?, ?)
-            AND d.kind IN ('title', 'indexTerm', 'inclusion', 'fullySpecifiedName')
-            AND LOWER(d.value) LIKE ?
+        `SELECT c.* FROM concept c
+          WHERE c.system = ?
+            AND (LOWER(c.code) LIKE ?
+              OR EXISTS (SELECT 1 FROM designation d
+                          WHERE d.concept = c.id AND d.lang IN (?, ?)
+                            AND d.kind IN ('title', 'indexTerm', 'inclusion', 'fullySpecifiedName')
+                            AND LOWER(d.value) LIKE ?))
           ORDER BY COALESCE(c.lft, c.id)`,
-        [this.shared.systemId, this.#displayLang(), this.defLang(), `%${set.text}%`]);
+        [this.shared.systemId, `${set.text}%`, this.#displayLang(), this.defLang(), `%${set.text}%`]);
     }
     return set.rows;
   }
@@ -675,7 +851,7 @@ class ICD11Services extends BaseCSServices {
   async filterConcept(filterContext, set) {
     const rows = await this.#materialise(set);
     if (set.cursor >= rows.length) return null;
-    return new ICD11Concept(rows[set.cursor++]);
+    return this.#concept(rows[set.cursor++]);
   }
 
   async filterLocate(filterContext, set, code) {
@@ -694,11 +870,11 @@ class ICD11Services extends BaseCSServices {
         `SELECT 1 AS ok FROM concept_closure
           WHERE ancestor = ? AND descendant = ? AND depth >= ? LIMIT 1`,
         [set.ancestorId, concept.id, set.minDepth]);
-      return row ? true : `'${concept.canonicalCode}' is not in the value set`;
+      return row ? true : `'${concept.code || concept.canonicalCode}' is not in the value set`;
     }
     const rows = await this.#materialise(set);
     return rows.some(r => r.id === concept.id)
-      ? true : `'${concept.canonicalCode}' is not in the value set`;
+      ? true : `'${concept.code || concept.canonicalCode}' is not in the value set`;
   }
 
   /** The filter sets are closed, whatever the code system as a whole may be. */
@@ -791,7 +967,7 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
 
   /**
    * The postcoordination scale value sets. WHO publishes one per axis per stem -- 25,354 of
-   * them for 2026-01 -- and $lookup hands out their canonicals as the postcoordinationScale
+   * them for 2026-01 -- and $lookup hands out their canonicals as the valueSet of each postcoordination
    * property of a concept, so a client that follows one has to find something at the other
    * end. They are built on demand from pc_scale rather than shipped: the compose is three
    * or four is-a includes, and pre-expanding the lot would be 14.6 million rows.
@@ -811,8 +987,11 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
            FROM pc_scale ps JOIN concept c ON c.id = ps.concept
           WHERE ps.value_set_uri = ? AND c.system = ?`, [url, this._shared.systemId]);
       if (!scale) return null;
+      // the filter values are codes, so ids: the scale root's uri is system + '/' + its id
       const roots = await all(
         `SELECT target_uri FROM pc_scale_entity WHERE scale = ? ORDER BY seq`, [scale.id]);
+      const prefix = `${this._shared.url}/`;
+      const rootCode = (u) => (u.startsWith(prefix) ? u.slice(prefix.length) : u);
 
       const slug = `${this._shared.systemCode}-${scale.entity_id}-${scale.axis_name}`.replace(/\//g, '-');
       return {
@@ -827,14 +1006,14 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
         date: this._shared.version,
         publisher: 'World Health Organization',
         description: `The values WHO permits on the ${scale.axis_name} postcoordination axis `
-          + `of ${scale.stem_code || scale.stem_uri}.`,
+          + `of ${scale.stem_code || scale.entity_id}.`,
         compose: {
           // one include per scale root: membership is the root and everything under it,
           // which is exactly how WHO expresses it in its own published value sets
           include: roots.map(r => ({
             system: this._shared.url,
             version: this._shared.version,
-            filter: [{ property: 'concept', op: 'is-a', value: r.target_uri }],
+            filter: [{ property: 'concept', op: 'is-a', value: rootCode(r.target_uri) }],
           })),
         },
       };

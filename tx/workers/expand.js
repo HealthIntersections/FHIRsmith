@@ -458,6 +458,19 @@ class ValueSetExpander {
           }
         }
 
+        // properties the code system always reports (ICD-11's classificationCode), unless
+        // the request asked for them anyway and the loops here add them
+        if (csProps != null && cs != null && !this.params.properties.includes('*')) {
+          for (const pn of cs.mandatoryExpansionProperties()) {
+            if (!this.params.properties.includes(pn)) {
+              for (const cp of csProps.filter(p => p.code === pn)) {
+                const vn = getValueName(cp);
+                this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, cp[vn], true);
+              }
+            }
+          }
+        }
+
         for (const pn of this.params.properties) {
           if (pn === '*') {
             continue; // done above
@@ -890,8 +903,9 @@ class ValueSetExpander {
             const cctxt = await cs.locate(cc.code, this.allAltCodes);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
+              const ecode = await cs.expansionCode(cctxt.context, cc.code);
               if (this.noDetails) {
-                added = await this.includeCode(cs, null, cs.system(), cs.version(), cc.code, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
+                added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
                     null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
@@ -901,7 +915,7 @@ class ValueSetExpander {
                   if (!ov) {
                     ov = await cs.itemWeight(cctxt.context);
                   }
-                  added = await this.includeCode(cs, null, cs.system(), cs.version(), cc.code, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), await cs.isDeprecated(cctxt.context), await cs.getStatus(cctxt.context), cds,
+                  added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), await cs.isDeprecated(cctxt.context), await cs.getStatus(cctxt.context), cds,
                       await cs.definition(cctxt.context), ov, expansion, valueSets, await cs.extensions(cctxt.context), cc.extension, await cs.properties(cctxt.context), null, excludeInactive, vsSrc.url);
                 }
                 if (added) {
