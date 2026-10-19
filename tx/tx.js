@@ -1515,8 +1515,11 @@ class TXModule {
     if (hdr) {
       return parseInt(hdr);
     }
+    // the tx-ecosystem test runner (Tools/Java) always gets the test limit, so every server
+    // gives it the same answer. Otherwise the configured externalLimit - it used to be read
+    // only when internalLimit was configured too, so setting it alone did nothing
     let isTest = req.header("User-Agent") == 'Tools/Java';
-    if (this.config.internalLimit && !isTest) return this.config.externalLimit; else return EXTERNAL_TEST_DEFAULT_LIMIT;
+    if (this.config.externalLimit && !isTest) return this.config.externalLimit; else return EXTERNAL_TEST_DEFAULT_LIMIT;
   }
 
 }

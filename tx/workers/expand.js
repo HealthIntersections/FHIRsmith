@@ -953,16 +953,29 @@ class ValueSetExpander {
           }
 
           const fset = await cs.executeFilters(prep);
-          if (await cs.filtersNotClosed(prep)) {
+          const filtersOpen = await cs.filtersNotClosed(prep);
+          if (filtersOpen) {
             notClosed.value = true;
-          } else if (fset.length === 1 && !excludeInactive && !this.params.activeOnly) {
-            // this.addToTotal(await cs.filterSize(prep, fset[0]));
+          }
+
+          // count=0 asks only for the total. When this include is the whole value set and its one
+          // filter set is the whole answer - nothing else to add, overlap, exclude or skip - the
+          // total is the set's size, and walking it would only end in VALUESET_TOO_COSTLY once
+          // the set is bigger than the limit. Anything less certain is counted by walking, as
+          // before: an earlier version added filterSize *and* walked, and double counted (#91, #93).
+          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && filter.isNull
+            && !excludeInactive && !this.params.activeOnly && !this.hasExclusions
+            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length)
+            && (compose.include || []).length === 1 && (compose.exclude || []).length === 0;
+          if (countOnly) {
+            this.worker.opContext.log('count only: the filter size is the total');
+            this.addToTotal(await cs.filterSize(prep, fset[0]));
           }
 
           this.worker.opContext.log('iterate filters');
           this.addToTotal(0);
           const cds = new Designations(this.worker.i18n.languageDefinitions);
-          while (await cs.filterMore(prep, fset[0])) {
+          while (!countOnly && await cs.filterMore(prep, fset[0])) {
             await this.worker.checkAndYield('processCodes#5');
             const c = await cs.filterConcept(prep, fset[0]);
             const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1));

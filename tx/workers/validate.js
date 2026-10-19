@@ -581,9 +581,8 @@ class ValueSetChecker {
             if (normalised && normalised !== code) {
               messages.push(this.addNormalisationIssue(op, path, code, normalised, cs));
               normalForm.value = normalised;
-            } else {
-              await this.noteClassificationCode(cs, ctxt.context, code, normalForm);
             }
+            await this.noteClassificationCode(cs, ctxt.context, code, normalForm);
             let msg = await cs.incompleteValidationMessage(ctxt.context, this.params.HTTPLanguages);
             if (msg) {
               op.addIssue(new Issue('information', 'informational', addToPath(path, 'code'), null, msg, 'process-note'));
@@ -1361,9 +1360,8 @@ class ValueSetChecker {
     }
     if (outCode) {
       result.addParamCode('code', outCode);
-      // only when the code was given in its normal form: otherwise normalized-code says it all
       const cc = normalForm.classificationCodes?.get(outCode);
-      if (cc && !normalForm.value) {
+      if (cc) {
         result.addParamCode('classificationCode', cc);
       }
     }
@@ -1594,9 +1592,8 @@ class ValueSetChecker {
     if (normalised && normalised !== code) {
       this.addNormalisationIssue(op, path, code, normalised, cs);
       normalForm.value = normalised;
-    } else {
-      await this.noteClassificationCode(cs, context, code, normalForm);
     }
+    await this.noteClassificationCode(cs, context, code, normalForm);
   }
 
   /**
@@ -1618,7 +1615,10 @@ class ValueSetChecker {
   }
 
   async noteClassificationCode(cs, context, code, normalForm) {
-    const cc = await cs.classificationCode(context);
+    // the code system decides whether this spelling of the code earns a classificationCode
+    // (ICD-11: when it was written with entity ids, in any order - not when it was written
+    // with the classification codes themselves)
+    const cc = await cs.reportedClassificationCode(context, code);
     if (cc && cc !== code) {
       if (!normalForm.classificationCodes) {
         normalForm.classificationCodes = new Map();
@@ -1662,9 +1662,8 @@ class ValueSetChecker {
         if (normalised && normalised != code) {
           this.addNormalisationIssue(op, path, code, normalised, cs);
           normalForm.value = normalised;
-        } else {
-          await this.noteClassificationCode(cs, loc.context, code, normalForm);
         }
+        await this.noteClassificationCode(cs, loc.context, code, normalForm);
         let msg = await cs.incompleteValidationMessage(loc.context, this.params.HTTPLanguages);
         if (msg) {
           op.addIssue(new Issue('information', 'informational', addToPath(path, 'code'), null, msg, 'process-note'));
