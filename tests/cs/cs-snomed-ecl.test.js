@@ -32,6 +32,381 @@ describe('ECL Validator Test Suite', () => {
     eclValidator = new ECLValidator(snomedServices);
   });
 
+  describe('ECL 2.x member filters ({{ M ... }})', () => {
+    // The test edition has one REPLACED BY (900000000000526001) member:
+    // 307530000 -> 74400008, module 900000000000207008, effectiveTime 20240601.
+    const expandCodes = (ecl) => {
+      const ctx = snomedServices.filterECL(ecl, true, opContext);
+      return (ctx.descendants || []).map(i => snomedServices.concepts.getConceptId(i).toString());
+    };
+    const errorFor = (ecl) => {
+      try {
+        snomedServices.filterECL(ecl, true, opContext);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    };
+
+    test.each([
+      ['^ 900000000000526001 {{ M effectiveTime >= "20240101" }}', ['307530000']],
+      ['^ 900000000000526001 {{ M effectiveTime >= "20250101" }}', []],
+      ['^ 900000000000526001 {{ M effectiveTime = "20240601" }}', ['307530000']],
+      ['^ 900000000000526001 {{ M effectiveTime != "20240601" }}', []],
+      ['^ 900000000000526001 {{ M effectiveTime < "20240601" }}', []],
+      ['^ 900000000000526001 {{ M effectiveTime <= "20240601" }}', ['307530000']],
+      ['^ 900000000000526001 {{ M effectiveTime = ("20230101" "20240601") }}', ['307530000']],
+      ['^ 900000000000526001 {{ M active = true }}', ['307530000']],
+      ['^ 900000000000526001 {{ M active = 0 }}', []],
+      ['^ 900000000000526001 {{ M active != false }}', ['307530000']],
+      ['^ 900000000000526001 {{ M moduleId = 900000000000207008 }}', ['307530000']],
+      ['^ 900000000000526001 {{ M moduleId != 900000000000207008 }}', []],
+      ['^ 900000000000526001 {{ M targetComponentId = 74400008 }}', ['307530000']],
+      ['^ 900000000000526001 {{ M targetComponentId = << 64572001 }}', ['307530000']],
+      ['^ 900000000000526001 {{ M targetComponentId != 74400008 }}', []],
+      ['^ 900000000000526001 {{ M targetComponentId = * }}', ['307530000']],
+      ['^ 900000000000526001 {{ M active = true, effectiveTime >= "20240101" }} {{ M targetComponentId = 74400008 }}', ['307530000']],
+      ['^ 900000000000526001 {{ M active = true, effectiveTime >= "20250101" }}', []],
+      ['^ (900000000000526001 OR 64572001) {{ M effectiveTime >= "20240101" }}', ['307530000']],
+    ])('%s', (ecl, expected) => {
+      expect(expandCodes(ecl).sort()).toEqual(expected);
+    });
+
+    test('a member filter must directly follow a memberOf constraint (syntax error)', () => {
+      const e = errorFor('( ^ 900000000000526001 OR ^ 900000000000526001 ) {{ M effectiveTime >= "20250101" }}');
+      expect(e).not.toBeNull();
+      expect(e.message).toContain('may only follow a memberOf');
+      expect(e.msgId).toBe('INVALID_ECL');
+    });
+
+    test('an unknown reference set field is rejected', () => {
+      const e = errorFor('^ 900000000000526001 {{ M mapTarget = "x" }}');
+      expect(e).not.toBeNull();
+      expect(e.message).toContain('no field named mapTarget');
+    });
+
+    test('a malformed effectiveTime value is a syntax error', () => {
+      const e = errorFor('^ 900000000000526001 {{ M effectiveTime >= "2025-01-01" }}');
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('INVALID_ECL');
+    });
+
+    test.each([
+      ['< 64572001 {{ + HISTORY-MIN }}', 'history supplements'],
+    ])('%s is reported as unsupported', (ecl, what) => {
+      const e = errorFor(ecl);
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain(what);
+    });
+  });
+
+  describe('ECL 2.x syntax that used to be reported as invalid', () => {
+    const codes = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || [])
+      .map(i => snomedServices.concepts.getConceptId(i).toString()).sort();
+    const count = (ecl) => codes(ecl).length;
+    const errorFor = (ecl) => {
+      try {
+        snomedServices.filterECL(ecl, true, opContext);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    };
+
+    test('a hierarchy operator on a bracketed set applies to every member', () => {
+      const disease = count('< 64572001');
+      const liver = count('< 10200004');
+      expect(count('< (64572001 OR 10200004)')).toBe(count('< 64572001 OR < 10200004'));
+      expect(count('< (64572001 OR 10200004)')).toBeGreaterThan(Math.max(disease, liver));
+      expect(count('<< (64572001 OR 10200004)')).toBe(count('< (64572001 OR 10200004)') + 2);
+      expect(codes('>> (39607008)')).toEqual(codes('>> 39607008'));
+      expect(codes('<! (64572001 OR 10200004)')).toEqual(codes('<! 64572001 OR <! 10200004'));
+    });
+
+    test('a hierarchy operator on the wildcard', () => {
+      const all = count('*');
+      expect(count('<< *')).toBe(all);
+      expect(count('>> *')).toBe(all);
+      expect(count('< *')).toBe(all - count('!!> *'));
+      expect(count('> *')).toBeGreaterThan(0);
+      expect(count('> *')).toBeLessThan(all);
+    });
+
+    test('a hierarchy operator on a member-of', () => {
+      expect(codes('<< ^ 900000000000526001')).toEqual(codes('^ 900000000000526001'));
+      expect(count('< ^ 900000000000526001')).toBe(0);
+      expect(codes('< (^ 900000000000526001 OR 64572001)')).toEqual(codes('< 64572001'));
+    });
+
+    test('comments are whitespace', () => {
+      expect(count('/* lead */ < 64572001 /* mid */ AND /* mid */ < 64572001 /* trail */')).toBe(count('< 64572001'));
+      expect(errorFor('< 64572001 /* unterminated').msgId).toBe('INVALID_ECL');
+    });
+
+    test('top of set', () => {
+      expect(codes('!!> (<< 64572001)')).toEqual(['64572001']);
+      expect(codes('!!> (< 64572001)')).toEqual(codes('<! 64572001'));
+      expect(codes('!!> (<< 39607008 OR << 10200004)')).toEqual(['10200004', '39607008']);
+    });
+
+    test('bottom of set', () => {
+      const leaves = codes('!!< (<< 64572001)');
+      expect(leaves.length).toBeGreaterThan(0);
+      expect(leaves).not.toContain('64572001');
+      expect(codes('!!< (<< 39607008)')).toEqual(codes('<< 39607008').filter(c => c !== '39607008'));
+    });
+
+    test('attribute names may be expressions', () => {
+      const plain = codes('< 64572001 : 363698007 = << 39607008');
+      expect(plain.length).toBeGreaterThan(0);
+      expect(codes('< 64572001 : << 363698007 = << 39607008')).toEqual(plain);
+      expect(codes('< 64572001 : (363698007 OR 116676008) = << 39607008')).toEqual(plain);
+      expect(codes('< 64572001 : << 762705008 |Concept model object attribute| = << 39607008')).toEqual(plain);
+      expect(codes('< 64572001 : * = << 39607008')).toEqual(plain);
+      expect(codes('< 64572001 : { << 363698007 = << 39607008 }')).toEqual(codes('< 64572001 : { 363698007 = << 39607008 }'));
+      expect(count('< 64572001 : ^ 900000000000526001 = << 39607008')).toBe(0);
+    });
+
+    test('dotted attribute names may be expressions', () => {
+      const plain = codes('< 64572001 . 363698007');
+      expect(plain.length).toBeGreaterThan(0);
+      expect(codes('< 64572001 . << 363698007')).toEqual(plain);
+      expect(codes('< 64572001 . (363698007 OR 116676008)').length).toBeGreaterThan(plain.length);
+    });
+
+    test('a bracketed attribute name is told apart from a bracketed sub refinement', () => {
+      const a = count('< 64572001 : (363698007 OR 116676008) = << 39607008');
+      const b = count('< 64572001 : (363698007 = << 39607008 OR 116676008 = << 39607008)');
+      expect(a).toBe(b);
+    });
+
+    test.each([
+      '* : 1142139005 = #1',
+      '* : 1142139005 != #-1.5',
+      '* : 1142139005 = "x"',
+      '* : 1142139005 != ("x" "y")',
+      '* : 1142139005 = match:"x"',
+      '* : 1142139005 = wild:"x*"',
+      '* : 1142139005 = true',
+      '* : 1142139005 != false',
+      '* : 1142139005 >= #5',
+    ])('concrete value %s parses and is reported as unsupported', (ecl) => {
+      const e = errorFor(ecl);
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain('concrete value');
+    });
+
+    test.each([
+      '("ICD10#A01.1")',
+      '< SCTID#64572001',
+      '< ICD10#A01.1 |Typhoid|',
+    ])('alternate identifier %s parses and is reported as unsupported', (ecl) => {
+      const e = errorFor(ecl);
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain('alternate identifiers');
+    });
+
+    test('a non-numeric or unknown concept id is still invalid', () => {
+      expect(errorFor('<< abc').msgId).toBe('INVALID_ECL');
+      expect(errorFor('<< 123').msgId).toBe('INVALID_ECL');
+      expect(errorFor('<< 999999999999').msgId).toBe('INVALID_ECL');
+      expect(errorFor('< 64572001 : 999999999999 = *').msgId).toBe('INVALID_ECL');
+    });
+  });
+
+  describe('ECL 2.x description filters ({{ D ... }})', () => {
+    const codes = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || [])
+      .map(i => snomedServices.concepts.getConceptId(i).toString()).sort();
+    const count = (ecl) => codes(ecl).length;
+
+    test('term match: every search word is a prefix of a word in the description', () => {
+      const liver = count('<< 10200004 {{ D term = "liver" }}');
+      expect(liver).toBeGreaterThan(0);
+      expect(liver).toBeLessThan(count('<< 10200004'));
+      expect(count('<< 10200004 {{ D term = "liv" }}')).toBe(liver);
+      expect(count('<< 10200004 {{ D term = "LIVER" }}')).toBe(liver);
+      expect(count('<< 10200004 {{ D term = "lobe liv" }}')).toBe(count('<< 10200004 {{ D term = "liver lobe" }}'));
+      expect(count('<< 10200004 {{ D term = "lobe liv" }}')).toBeLessThan(liver);
+      expect(codes('<< 10200004 {{ D term = "lobe liv" }}')).toEqual(codes('<< 10200004 {{ D term = "liver" }} {{ D term = "lobe" }}'));
+      expect(count('<< 10200004 {{ D term = match:"liver" }}')).toBe(liver);
+    });
+
+    test('term sets and wild terms', () => {
+      const caudate = count('<< 10200004 {{ D term = "caudate" }}');
+      const quadrate = count('<< 10200004 {{ D term = "quadrate" }}');
+      expect(count('<< 10200004 {{ D term = ("caudate" "quadrate") }}')).toBeGreaterThanOrEqual(Math.max(caudate, quadrate));
+      expect(count('<< 10200004 {{ D term = ("caudate" "quadrate") }}')).toBeLessThanOrEqual(caudate + quadrate);
+      expect(count('<< 10200004 {{ D term = wild:"*lobe*" }}')).toBeGreaterThanOrEqual(count('<< 10200004 {{ D term = "lobe" }}'));
+      expect(count('<< 10200004 {{ D term = wild:"Liver structure" }}')).toBe(1);
+      expect(count('<< 10200004 {{ D term = wild:"liver" }}')).toBe(1);
+    });
+
+    test('!= keeps concepts with a description that does not match', () => {
+      // "Liver structure" has the synonym "Liver" and the FSN, both matching
+      expect(codes('<< 10200004 {{ D term != "liver" }}')).not.toContain('10200004');
+      expect(count('<< 10200004 {{ D term != "liver" }}')).toBeGreaterThan(0);
+    });
+
+    test('type and typeId', () => {
+      const all = count('<< 10200004');
+      expect(count('<< 10200004 {{ D type = fsn }}')).toBe(all);
+      expect(count('<< 10200004 {{ D typeId = 900000000000003001 }}')).toBe(all);
+      expect(count('<< 10200004 {{ D typeId = << 900000000000446008 }}')).toBe(all);
+      expect(count('<< 10200004 {{ D type = (syn fsn) }}')).toBe(all);
+      expect(count('<< 10200004 {{ D type = def }}')).toBe(0);
+      expect(count('* {{ D type = def }}')).toBeGreaterThan(0);
+      // the FSN carries the semantic tag, synonyms do not
+      expect(count('<< 10200004 {{ D type = fsn, term = "body structure" }}')).toBe(all);
+      expect(count('<< 10200004 {{ D type = syn, term = "body structure" }}')).toBe(0);
+    });
+
+    test('language', () => {
+      const all = count('<< 10200004');
+      expect(count('<< 10200004 {{ D language = en }}')).toBe(all);
+      expect(count('<< 10200004 {{ D language = (en fr) }}')).toBe(all);
+      expect(count('<< 10200004 {{ D language = fr }}')).toBe(0);
+      expect(count('<< 10200004 {{ D language != en }}')).toBe(0);
+    });
+
+    test('active: only active descriptions are considered unless asked', () => {
+      // "Liver structure" has the inactive synonym "Liver, NOS"
+      expect(codes('<< 10200004 {{ D term = "nos" }}')).not.toContain('10200004');
+      expect(codes('<< 10200004 {{ D term = "nos", active = false }}')).toContain('10200004');
+      expect(count('<< 10200004 {{ D active = true }}')).toBe(count('<< 10200004'));
+    });
+
+    test('dialect and dialectId with acceptability', () => {
+      // the committed jest cache carries the US English language refset only
+      const all = count('<< 10200004');
+      expect(count('<< 10200004 {{ D dialect = en-us }}')).toBe(all);
+      expect(count('<< 10200004 {{ D dialectId = 900000000000509007 }}')).toBe(all);
+      expect(count('<< 10200004 {{ D dialect = en-us (prefer) }}')).toBe(all);
+      expect(count('<< 10200004 {{ D dialect = (en-us (prefer) en-gb (accept)) }}')).toBe(all);
+      const acceptableOnly = count('<< 10200004 {{ D dialectId = 900000000000509007 (acceptable) }}');
+      expect(acceptableOnly).toBeLessThan(all);
+      expect(count('<< 10200004 {{ D dialectId = (900000000000509007 (acceptable)) }}')).toBe(acceptableOnly);
+      expect(count('<< 10200004 {{ D dialect = fr-ca }}')).toBe(0);
+      const liver = count('<< 10200004 {{ D term = "liver" }}');
+      expect(count('<< 10200004 {{ D dialect = en-us (prefer), term = "liver" }}')).toBeLessThanOrEqual(liver);
+      expect(() => snomedServices.filterECL('<< 10200004 {{ D dialect = xx-yy }}', true, opContext)).toThrow('Unknown dialect alias');
+    });
+
+    test('moduleId, effectiveTime and id', () => {
+      const all = count('<< 10200004');
+      expect(count('<< 10200004 {{ D moduleId = 900000000000207008 }}') + count('<< 10200004 {{ D moduleId != 900000000000207008 }}')).toBeGreaterThanOrEqual(all);
+      const since = count('<< 10200004 {{ D effectiveTime >= "20200101" }}');
+      expect(since).toBeGreaterThan(0);
+      expect(since).toBeLessThan(all);
+      const r = snomedServices.concepts.findConcept('10200004');
+      const descId = snomedServices.descriptions.getDescription(snomedServices.refs.getReferences(snomedServices.concepts.getConcept(r.index).descriptions)[0]).id;
+      expect(codes(`<< 10200004 {{ D id = ${descId} }}`)).toEqual(['10200004']);
+      expect(count('<< 10200004 {{ D id = 123456789 }}')).toBe(0);
+    });
+
+    test('description filters combine with concept filters and refinements', () => {
+      const lobe = count('<< 10200004 {{ D term = "lobe" }}');
+      expect(count('<< 10200004 {{ C definitionStatus = primitive }} {{ D term = "lobe" }}')).toBeLessThanOrEqual(lobe);
+      expect(count('< 64572001 : 363698007 = (<< 10200004 {{ D term = "lobe" }})')).toBeLessThanOrEqual(count('< 64572001 : 363698007 = << 10200004'));
+    });
+
+    test('an unknown description filter field is a syntax error', () => {
+      expect(() => snomedServices.filterECL('< 64572001 {{ D foo = 1 }}', true, opContext)).toThrow('Unknown description filter field');
+    });
+  });
+
+  describe('ECL refinement conjunction and disjunction', () => {
+    const count = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || []).length;
+
+    test('AND, "," and OR between attributes', () => {
+      const site = count('< 64572001 : 363698007 = << 39607008');
+      const morph = count('< 64572001 : 116676008 = << 442021009');
+      const both = count('< 64572001 : 363698007 = << 39607008, 116676008 = << 442021009');
+      expect(count('< 64572001 : 363698007 = << 39607008 AND 116676008 = << 442021009')).toBe(both);
+      expect(count('< 64572001 : 363698007 = << 39607008 OR 116676008 = << 442021009')).toBe(site + morph - both);
+    });
+
+    test('bracketed sub refinements', () => {
+      const liver = count('< 64572001 : 363698007 = << 10200004');
+      expect(count('< 64572001 : (363698007 = << 39607008 AND 116676008 = << 442021009) OR 363698007 = << 10200004'))
+        .toBeGreaterThanOrEqual(liver);
+    });
+
+    test('AND / OR between and within attribute groups', () => {
+      const lung = count('< 64572001 : { 363698007 = << 39607008 }');
+      const liver = count('< 64572001 : { 363698007 = << 10200004 }');
+      const both = count('< 64572001 : { 363698007 = << 39607008 } AND { 363698007 = << 10200004 }');
+      expect(lung).toBeGreaterThan(0);
+      expect(liver).toBeGreaterThan(0);
+      expect(count('< 64572001 : { 363698007 = << 39607008 } OR { 363698007 = << 10200004 }')).toBe(lung + liver - both);
+      expect(count('< 64572001 : { 363698007 = << 39607008 OR 363698007 = << 10200004 }')).toBe(lung + liver - both);
+    });
+
+    test('AND and OR may not be mixed without brackets', () => {
+      expect(() => snomedServices.filterECL('< 64572001 : 363698007 = << 39607008, 116676008 = * OR 363698007 = << 10200004', true, opContext))
+        .toThrow('cannot be mixed');
+    });
+  });
+
+  describe('ECL 2.x concept filters ({{ C ... }})', () => {
+    const count = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || []).length;
+
+    test('active partitions the result', () => {
+      const all = count('*');
+      expect(count('* {{ C active = true }}') + count('* {{ C active = false }}')).toBe(all);
+      expect(count('* {{ C active = false }}')).toBeGreaterThan(0);
+      expect(count('< 64572001 {{ C active = false }}')).toBe(0);
+    });
+
+    test('definitionStatus and definitionStatusId agree and partition the result', () => {
+      const all = count('< 64572001');
+      const prim = count('< 64572001 {{ C definitionStatus = primitive }}');
+      const def = count('< 64572001 {{ C definitionStatus = defined }}');
+      expect(prim + def).toBe(all);
+      expect(all).toBeGreaterThan(0);
+      expect(count('< 64572001 {{ C definitionStatus = (primitive defined) }}')).toBe(all);
+      expect(count('< 64572001 {{ C definitionStatusId = 900000000000074008 }}')).toBe(prim);
+      expect(count('< 64572001 {{ C definitionStatusId != 900000000000074008 }}')).toBe(def);
+    });
+
+    test('moduleId with a concept, a reference set and an expression', () => {
+      // the committed jest cache predates module ids on concepts, so only the
+      // partition is asserted, not which side the concepts fall on
+      const all = count('< 64572001');
+      const core = count('< 64572001 {{ C moduleId = 900000000000207008 }}');
+      expect(count('< 64572001 {{ C moduleId != 900000000000207008 }}')).toBe(all - core);
+      expect(count('< 64572001 {{ C moduleId = (900000000000207008 900000000000012004) }}')).toBe(core);
+      expect(count('< 64572001 {{ C moduleId = << 900000000000443000 }}')).toBe(core);
+      expect(count('< 64572001 {{ C moduleId = * }}')).toBe(all);
+    });
+
+    test('effectiveTime partitions the result', () => {
+      const all = count('< 64572001');
+      const since = count('< 64572001 {{ C effectiveTime >= "20200101" }}');
+      expect(since).toBeGreaterThan(0);
+      expect(since).toBeLessThan(all);
+      expect(count('< 64572001 {{ C effectiveTime < "20200101" }}')).toBe(all - since);
+    });
+
+    test('several filters AND together', () => {
+      const def = count('< 64572001 {{ C definitionStatus = defined }}');
+      const both = count('< 64572001 {{ C effectiveTime >= "20200101", definitionStatus = defined }} {{ C active = true }}');
+      expect(both).toBeGreaterThan(0);
+      expect(both).toBeLessThan(def);
+    });
+
+    test('a concept filter after a member filter', () => {
+      expect(count('^ 900000000000526001 {{ M effectiveTime >= "20240101" }} {{ C active = false }}')).toBe(1);
+      expect(count('^ 900000000000526001 {{ M effectiveTime >= "20240101" }} {{ C active = true }}')).toBe(0);
+    });
+
+    test('an unknown concept filter field is a syntax error', () => {
+      expect(() => snomedServices.filterECL('< 64572001 {{ C foo = 1 }}', true, opContext)).toThrow('Unknown concept filter field');
+    });
+  });
+
   describe('ECL cardinality counts per-group occurrences (SNOMED CLG ruling)', () => {
     const expandCodes = (ecl) => {
       const ctx = snomedServices.filterECL(ecl, true, opContext);

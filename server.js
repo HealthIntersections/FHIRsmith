@@ -51,7 +51,7 @@ serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
 const activeModules = config.modules ? Object.keys(config.modules)
-    .filter(mod => config.modules[mod].enabled)
+    .filter(mod => config.modules[mod]?.enabled)
     .join(', ') : [];
 serverLog.info(`Loaded Configuration. Active modules = ${activeModules}`);
 
@@ -66,6 +66,7 @@ const TokenModule = require('./token/token.js');
 const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
 const TestingModule = require('./testing/testing.js');
+const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
@@ -247,6 +248,17 @@ async function initializeModules() {
       throw error;
     }
   }
+  if (config.modules?.ips?.enabled) {
+    try {
+      serverLog.info('Initializing module: ips...');
+      modules.ips = new IpsModule(stats.forModule('ips'));
+      await modules.ips.initialize(config.modules.ips, app);
+      app.use('/ips', modules.ips.router);
+    } catch (error) {
+      serverLog.error('Failed to initialize ips module:', error);
+      throw error;
+    }
+  }
 
   // Initialize TX module
   // Note: TX module registers its own endpoints directly on the app
@@ -317,52 +329,52 @@ async function buildRootPageContent() {
   content += '<ul class="list-group">';
 
   // Check which modules are enabled and add them to the list
-  if (config.modules.packages.enabled) {
+  if (config.modules?.packages?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
     content += '</li>';
   }
 
-  if (config.modules.xig.enabled) {
+  if (config.modules?.xig?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/xig" class="text-decoration-none">FHIR IG Statistics</a>: Statistics and analysis of FHIR Implementation Guides';
     content += '</li>';
   }
 
-  if (config.modules.shl.enabled) {
+  if (config.modules?.shl?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/shl" class="text-decoration-none">SHL Server</a>: SMART Health Links management and validation';
     content += '</li>';
   }
 
-  if (config.modules.vcl.enabled) {
+  if (config.modules?.vcl?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/VCL" class="text-decoration-none">VCL Server</a>: ValueSet Compose Language expression parsing';
     content += '</li>';
   }
 
-  if (config.modules.registry && config.modules.registry.enabled) {
+  if (config.modules?.registry?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/tx-reg" class="text-decoration-none">Terminology Server Registry</a>: ';
     content += 'Discover and query FHIR terminology servers for code system and value set support (<a href="/tx-reg/openapi">API</a>)';
     content += '</li>';
   }
 
-  if (config.modules.publisher && config.modules.publisher.enabled) {
+  if (config.modules?.publisher?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/publisher" class="text-decoration-none">FHIR Publisher</a>: ';
     content += 'Manage FHIR Implementation Guide publication tasks and approvals';
     content += '</li>';
   }
 
-  if (config.modules.token && config.modules.token.enabled) {
+  if (config.modules?.token?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/token" class="text-decoration-none">Token Server</a>: ';
     content += 'OAuth authentication and API key management for FHIR services';
     content += '</li>';
   }
 
-  if (config.modules.npmprojector && config.modules.npmprojector.enabled) {
+  if (config.modules?.npmprojector?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/npmprojector" class="text-decoration-none">NpmProjector</a>: ';
     content += 'Hot-reloading FHIR server with FHIRPath-based search indexes';
@@ -383,7 +395,14 @@ async function buildRootPageContent() {
     content += '</li>';
   }
 
-  if (config.modules.folder && config.modules.folder.enabled) {
+  if (config.modules?.ips?.enabled) {
+    content += '<li class="list-group-item">';
+    content += '<a href="/ips" class="text-decoration-none">IPS</a>: ';
+    content += 'Collections of International Patient Summary documents, each with its own FHIR endpoint';
+    content += '</li>';
+  }
+
+  if (config.modules?.folder?.enabled) {
     content += '<li class="list-group-item">';
     content += '<strong>Cache Folder</strong>: ';
     content += 'Cache Folder for Kindling';
@@ -400,7 +419,7 @@ async function buildRootPageContent() {
   }
 
 
-  if (config.modules.tx && config.modules.tx.enabled) {
+  if (config.modules?.tx?.enabled) {
     content += '<li class="list-group-item">';
     content += '<strong>TX Terminology Server</strong>: ';
     content += 'FHIR terminology services (CodeSystem, ValueSet, ConceptMap)';
@@ -550,7 +569,7 @@ app.get('/', async (req, res) => {
       // Build basic stats for root page
       const stats = {
         version: packageJson.version,
-        enabledModules: Object.keys(config.modules).filter(m => config.modules[m].enabled).length,
+        enabledModules: Object.keys(config.modules).filter(m => config.modules[m]?.enabled).length,
         processingTime: Date.now() - startTime,
         about
       };
@@ -674,7 +693,7 @@ app.get('/dashboard', async (req, res) => {
 
     const pageStats = {
       version: packageJson.version,
-      enabledModules: Object.keys(config.modules).filter(m => config.modules[m].enabled).length,
+      enabledModules: Object.keys(config.modules).filter(m => config.modules[m]?.enabled).length,
       processingTime: Date.now() - startTime
     };
 
@@ -801,7 +820,7 @@ async function startServer() {
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
     npmAudit.start();
-    if (modules.packages && config.modules.packages.enabled) {
+    if (modules.packages && config.modules?.packages?.enabled) {
       modules.packages.startInitialCrawler();
     }
     // Run usage tracker in background after startup
@@ -868,7 +887,7 @@ async function serveFhirsmithHome(req, res) {
       // Build basic stats for root page
       const stats = {
         version: packageJson.version,
-        enabledModules: Object.keys(config.modules).filter(m => config.modules[m].enabled).length,
+        enabledModules: Object.keys(config.modules).filter(m => config.modules[m]?.enabled).length,
         processingTime: Date.now() - startTime
       };
 
@@ -885,7 +904,7 @@ async function serveFhirsmithHome(req, res) {
     // Return JSON response for API clients
     const enabledModules = {};
     Object.keys(config.modules).forEach(moduleName => {
-      if (config.modules[moduleName].enabled) {
+      if (config.modules[moduleName]?.enabled) {
         if (moduleName === 'tx') {
           // TX module has multiple endpoints
           enabledModules[moduleName] = {
