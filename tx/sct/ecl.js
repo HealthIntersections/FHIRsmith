@@ -4,7 +4,10 @@
  * This implementation provides parsing, validation, and evaluation of ECL expressions
  * against SNOMED CT data using the existing SnomedServices infrastructure.
  *
- * Supports ECL v2.1 specification from SNOMED International
+ * Supports the ECL v2.2 grammar from SNOMED International (the parser); which
+ * constructs are evaluated is documented on SnomedServices.filterECL in
+ * cs-snomed.js. The ECLValidator evaluate* methods in this file are a legacy
+ * evaluator that the server does not use.
  */
 
 // ECL Token Types
@@ -25,6 +28,8 @@ const ECLTokenType = {
   PARENT_OR_SELF_OF: 'PARENT_OR_SELF_OF', // >>!  self + direct parents
   ANCESTOR_OF: 'ANCESTOR_OF',             // >    all transitive ancestors, no self
   ANCESTOR_OR_SELF_OF: 'ANCESTOR_OR_SELF_OF', // >>   self + all transitive ancestors
+  TOP_OF_SET: 'TOP_OF_SET',               // !!>  members of the set with no ancestor in the set
+  BOTTOM_OF_SET: 'BOTTOM_OF_SET',         // !!<  members of the set with no descendant in the set
 
   // Set operators
   AND: 'AND',
@@ -54,6 +59,8 @@ const ECLTokenType = {
   RPAREN: 'RPAREN',                       // )
   LBRACE: 'LBRACE',                       // {
   RBRACE: 'RBRACE',                       // }
+  LFILTER: 'LFILTER',                     // {{  (filter constraint open)
+  RFILTER: 'RFILTER',                     // }}  (filter constraint close)
   LBRACKET: 'LBRACKET',                   // [
   RBRACKET: 'RBRACKET',                   // ]
 
@@ -61,6 +68,7 @@ const ECLTokenType = {
   COMMA: 'COMMA',                         // ,
   PIPE: 'PIPE',                           // |
   HASH: 'HASH',                           // #
+  PLUS: 'PLUS',                           // +  (history supplement)
 
   // Special tokens
   WS: 'WS',
@@ -78,6 +86,10 @@ const ECLNodeType = {
   CONCEPT_REFERENCE: 'ConceptReference',
   WILDCARD: 'Wildcard',
   MEMBER_OF: 'MemberOf',
+  MEMBER_FILTER: 'MemberFilter',          // one {{ M ... }} term
+  CONCEPT_FILTER: 'ConceptFilter',        // one {{ C ... }} term
+  DESCRIPTION_FILTER: 'DescriptionFilter', // one {{ D ... }} term
+  FILTER_CONSTRAINT: 'FilterConstraint',  // a {{ D ... }} / {{ C ... }} / {{ + ... }} block (parsed, not evaluated)
 
   REFINEMENT: 'Refinement',
   ATTRIBUTE_SET: 'AttributeSet',
@@ -88,6 +100,8 @@ const ECLNodeType = {
   EXPRESSION_COMPARISON: 'ExpressionComparison',
   NUMERIC_COMPARISON: 'NumericComparison',
   STRING_COMPARISON: 'StringComparison',
+  BOOLEAN_COMPARISON: 'BooleanComparison',
+  ALT_IDENTIFIER: 'AltIdentifier',        // scheme#code (ECL 2.1 alternate identifier)
 
   CONJUNCTION: 'Conjunction',
   DISJUNCTION: 'Disjunction',
@@ -213,6 +227,23 @@ class ECLLexer {
         continue;
       }
 
+      // ECL comments: /* ... */ are whitespace
+      if (this.current === '/' && this.peek() === '*') {
+        const start = this.position;
+        this.advance();
+        this.advance();
+        while (this.current && !(this.current === '*' && this.peek() === '/')) {
+          this.advance();
+        }
+        if (!this.current) {
+          this.position = start;
+          this.error('Unterminated comment - missing */');
+        }
+        this.advance();
+        this.advance();
+        continue;
+      }
+
       // Single character tokens
       switch (this.current) {
         case '(':
@@ -222,9 +253,21 @@ class ECLLexer {
           this.advance();
           return { type: ECLTokenType.RPAREN, value: ')' };
         case '{':
+          // "{{" opens an ECL 2.x filter constraint; attribute groups never nest,
+          // so a doubled brace is unambiguous.
+          if (this.peek() === '{') {
+            this.advance();
+            this.advance();
+            return { type: ECLTokenType.LFILTER, value: '{{' };
+          }
           this.advance();
           return { type: ECLTokenType.LBRACE, value: '{' };
         case '}':
+          if (this.peek() === '}') {
+            this.advance();
+            this.advance();
+            return { type: ECLTokenType.RFILTER, value: '}}' };
+          }
           this.advance();
           return { type: ECLTokenType.RBRACE, value: '}' };
         case '[':
@@ -332,7 +375,24 @@ class ECLLexer {
         return { type: ECLTokenType.EQUALS, value: '=' };
       }
 
+      if (this.current === '+') {
+        this.advance();
+        return { type: ECLTokenType.PLUS, value: '+' };
+      }
+
       if (this.current === '!') {
+        if (this.peek() === '!' && this.peek(2) === '>') {
+          this.advance();
+          this.advance();
+          this.advance();
+          return { type: ECLTokenType.TOP_OF_SET, value: '!!>' };
+        }
+        if (this.peek() === '!' && this.peek(2) === '<') {
+          this.advance();
+          this.advance();
+          this.advance();
+          return { type: ECLTokenType.BOTTOM_OF_SET, value: '!!<' };
+        }
         if (this.peek() === '=') {
           this.advance();
           this.advance();
@@ -379,7 +439,7 @@ class ECLLexer {
       // Keywords and identifiers
       if (/[a-zA-Z_]/.test(this.current)) {
         let value = '';
-        while (this.current && /[a-zA-Z0-9_]/.test(this.current)) {
+        while (this.current && (/[a-zA-Z0-9_]/.test(this.current) || (this.current === '-' && /[a-zA-Z]/.test(this.peek() || '')))) {
           value += this.current;
           this.advance();
         }
@@ -550,7 +610,8 @@ class ECLParser {
         ECLTokenType.CHILD_OF, ECLTokenType.CHILD_OR_SELF_OF,
         ECLTokenType.DESCENDANT_OF, ECLTokenType.DESCENDANT_OR_SELF_OF,
         ECLTokenType.PARENT_OF, ECLTokenType.PARENT_OR_SELF_OF,
-        ECLTokenType.ANCESTOR_OF, ECLTokenType.ANCESTOR_OR_SELF_OF
+        ECLTokenType.ANCESTOR_OF, ECLTokenType.ANCESTOR_OR_SELF_OF,
+        ECLTokenType.TOP_OF_SET, ECLTokenType.BOTTOM_OF_SET
     )) {
       operator = this.current;
       this.advance();
@@ -584,13 +645,510 @@ class ECLParser {
       focus = this.parseEclFocusConcept();
     }
 
+    // ECL 2.x filter constraints: *(memberFilterConstraint) directly after a
+    // memberOf focus, then *(descriptionFilter / conceptFilter) and an optional
+    // history supplement after any sub expression. Member filters are parsed
+    // into focus.memberFilters; the others are parsed into focus-level
+    // `filters` and rejected (as unsupported) at evaluation time.
+    const filters = [];
+    while (this.match(ECLTokenType.LFILTER)) {
+      const fc = this.parseFilterConstraint();
+      if (fc.kind === 'M') {
+        if (focus.type !== ECLNodeType.MEMBER_OF) {
+          throw new Error('A member filter ({{ M ... }}) may only follow a memberOf (^) expression constraint');
+        }
+        if (filters.length > 0) {
+          throw new Error('A member filter ({{ M ... }}) must precede any description, concept or history filter');
+        }
+        focus.memberFilters = (focus.memberFilters || []).concat(fc.filters);
+      } else {
+        filters.push(fc);
+      }
+    }
+
     const result = {
       type: ECLNodeType.SUB_EXPRESSION_CONSTRAINT,
       operator: operator ? operator.type : null,
       focus
     };
+    if (filters.length > 0) {
+      result.filters = filters;
+    }
 
     return result;
+  }
+
+  /**
+   * Parse one "{{ ... }}" block. Returns { kind: 'M'|'D'|'C'|'+', filters } where
+   * filters is only populated for member filters; the other kinds keep their
+   * raw token text so the evaluator can report them as unsupported.
+   */
+  parseFilterConstraint() {
+    this.expect(ECLTokenType.LFILTER);
+    let kind;
+    if (this.match(ECLTokenType.PLUS)) {
+      kind = '+';
+      this.advance();
+    } else if (this.match(ECLTokenType.SCTID) && /^[MDCmdc]$/.test(this.current.value)) {
+      kind = this.current.value.toUpperCase();
+      this.advance();
+    } else {
+      this.error('Expected M, D, C or + after {{');
+    }
+
+    if (kind === 'C' || kind === 'D') {
+      const parseOne = kind === 'C' ? () => this.parseConceptFilter() : () => this.parseDescriptionFilter();
+      const filters = [parseOne()];
+      while (this.match(ECLTokenType.COMMA)) {
+        this.advance();
+        filters.push(parseOne());
+      }
+      this.expect(ECLTokenType.RFILTER);
+      return { type: ECLNodeType.FILTER_CONSTRAINT, kind, filters };
+    }
+
+    if (kind !== 'M') {
+      // Skip to the closing }} keeping the raw text for diagnostics
+      const raw = [];
+      while (!this.match(ECLTokenType.RFILTER)) {
+        if (this.match(ECLTokenType.EOF)) {
+          this.error('Unterminated filter constraint - missing }}');
+        }
+        raw.push(this.current.value);
+        this.advance();
+      }
+      this.advance(); // }}
+      return { type: ECLNodeType.FILTER_CONSTRAINT, kind, raw: raw.join(' ') };
+    }
+
+    const filters = [this.parseMemberFilter()];
+    while (this.match(ECLTokenType.COMMA)) {
+      this.advance();
+      filters.push(this.parseMemberFilter());
+    }
+    this.expect(ECLTokenType.RFILTER);
+    return { type: ECLNodeType.FILTER_CONSTRAINT, kind, filters };
+  }
+
+  /**
+   * descriptionFilter = termFilter / languageFilter / typeFilter / dialectFilter
+   *                   / moduleFilter / effectiveTimeFilter / activeFilter / descriptionIdFilter
+   *
+   *   term          = / != (typedSearchTerm / "(" typedSearchTerm* ")")   typedSearchTerm = [match:]"..." / wild:"..."
+   *   language      = / != (languageCode / "(" languageCode* ")")        e.g. en, fr
+   *   typeId        = / != (subExpressionConstraint / "(" conceptRef* ")")
+   *   type          = / != (syn / fsn / def, or a bracketed set of them)
+   *   dialectId     = / != (subExpressionConstraint / "(" dialectId [acceptabilitySet]* ")") [acceptabilitySet]
+   *   dialect       = / != (dialectAlias / "(" dialectAlias [acceptabilitySet]* ")") [acceptabilitySet]
+   *   moduleId      = / != (subExpressionConstraint / "(" conceptRef* ")")
+   *   effectiveTime timeComparisonOperator (timeValue / "(" timeValue* ")")
+   *   active        = / != (true / false / 1 / 0)
+   *   id            = / != (descriptionId / "(" descriptionId* ")")
+   *
+   * acceptabilitySet = "(" (preferred / acceptable / prefer / accept / conceptRef)* ")"
+   */
+  parseDescriptionFilter() {
+    if (!this.match(ECLTokenType.SCTID) || !/^[A-Za-z_]/.test(this.current.value)) {
+      this.error('Expected term, language, typeId, type, dialectId, dialect, moduleId, effectiveTime, active or id in description filter');
+    }
+    const field = this.current.value;
+    const lower = field.toLowerCase();
+    this.advance();
+    const operator = this.parseComparisonOperator(field);
+    const node = { type: ECLNodeType.DESCRIPTION_FILTER, field, operator };
+    const booleanOnly = () => {
+      if (operator !== '=' && operator !== '!=') {
+        throw new Error(`Operator ${operator} is not valid for ${field} in a description filter`);
+      }
+    };
+    switch (lower) {
+      case 'term':
+        booleanOnly();
+        node.valueType = 'term';
+        node.values = this.parseStringValueSet(true).map(v => typeof v === 'string' ? { kind: 'match', value: v } : v);
+        for (const v of node.values) {
+          if (v.value.trim() === '') {
+            throw new Error('A term filter needs a non-empty search term');
+          }
+        }
+        break;
+      case 'language':
+        booleanOnly();
+        node.valueType = 'language';
+        node.values = this.parseTokenSet(/^[a-z]{2}$/i, 'a two-letter language code').map(v => v.toLowerCase());
+        break;
+      case 'typeid':
+      case 'moduleid':
+        booleanOnly();
+        node.valueType = 'expression';
+        node.value = this.parseConceptReferenceSetOrExpression();
+        break;
+      case 'type':
+        booleanOnly();
+        node.valueType = 'type';
+        node.values = this.parseTokenSet(/^(syn|fsn|def)$/i, 'syn, fsn or def').map(v => v.toLowerCase());
+        break;
+      case 'dialectid':
+      case 'dialect': {
+        booleanOnly();
+        node.valueType = lower === 'dialectid' ? 'dialectId' : 'dialect';
+        node.dialects = this.parseDialectSet(lower === 'dialectid');
+        if (this.match(ECLTokenType.LPAREN)) {
+          const acc = this.parseAcceptabilitySet();
+          for (const d of node.dialects) {
+            if (!d.acceptability) d.acceptability = acc;
+          }
+        }
+        break;
+      }
+      case 'effectivetime':
+        node.valueType = 'time';
+        node.values = this.parseTimeValueSet();
+        break;
+      case 'active':
+        booleanOnly();
+        node.valueType = 'boolean';
+        node.value = this.parseBooleanValue();
+        break;
+      case 'id':
+        booleanOnly();
+        node.valueType = 'id';
+        node.values = this.parseTokenSet(/^\d{6,18}$/, 'a description id');
+        break;
+      default:
+        throw new Error(`Unknown description filter field ${field} - expected term, language, typeId, type, dialectId, dialect, moduleId, effectiveTime, active or id`);
+    }
+    return node;
+  }
+
+  // token / "(" token* ")" where each token is an identifier matching `pattern`
+  parseTokenSet(pattern, what) {
+    const values = [];
+    const readOne = () => {
+      if (this.match(ECLTokenType.SCTID) && pattern.test(this.current.value)) {
+        values.push(this.current.value);
+        this.advance();
+      } else {
+        this.error(`Expected ${what}`);
+      }
+    };
+    if (this.match(ECLTokenType.LPAREN)) {
+      this.advance();
+      do {
+        readOne();
+      } while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF));
+      this.expect(ECLTokenType.RPAREN);
+    } else {
+      readOne();
+    }
+    return values;
+  }
+
+  /**
+   * The dialects of a dialect filter: [{ id | alias, acceptability? }]. A
+   * dialectId value may be a sub expression (one entry with `expression`), or a
+   * bracketed list of ids each optionally followed by its own acceptability set;
+   * a dialect alias (en-us, en-gb, ...) is an identifier.
+   */
+  parseDialectSet(byId) {
+    const readAlias = () => {
+      // "en-gb" lexes as SCTID(en-gb) because '-' followed by a letter is kept in identifiers
+      if (this.match(ECLTokenType.SCTID) && /^[a-z]{2}(-[a-z0-9]+)*$/i.test(this.current.value)) {
+        const alias = this.current.value.toLowerCase();
+        this.advance();
+        return { alias };
+      }
+      this.error('Expected a dialect alias such as en-us or en-gb');
+    };
+    if (!byId) {
+      if (!this.match(ECLTokenType.LPAREN)) {
+        return [readAlias()];
+      }
+      this.advance();
+      const dialects = [];
+      while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF)) {
+        const d = readAlias();
+        if (this.match(ECLTokenType.LPAREN)) d.acceptability = this.parseAcceptabilitySet();
+        dialects.push(d);
+      }
+      this.expect(ECLTokenType.RPAREN);
+      return dialects;
+    }
+    // by id: "(" id [acceptabilitySet] ... ")" or a sub expression
+    if (this.match(ECLTokenType.LPAREN) && this.peek().type === ECLTokenType.SCTID && /^\d+$/.test(this.peek().value)) {
+      this.advance();
+      const dialects = [];
+      while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF)) {
+        const d = { expression: { type: ECLNodeType.SUB_EXPRESSION_CONSTRAINT, operator: null, focus: this.parseEclFocusConcept() } };
+        if (this.match(ECLTokenType.LPAREN)) d.acceptability = this.parseAcceptabilitySet();
+        dialects.push(d);
+      }
+      this.expect(ECLTokenType.RPAREN);
+      return dialects;
+    }
+    return [{ expression: this.parseSubExpressionConstraint() }];
+  }
+
+  // "(" (preferred / acceptable / prefer / accept / conceptRef)* ")" -> ['preferred'|'acceptable'|conceptId ...]
+  parseAcceptabilitySet() {
+    this.expect(ECLTokenType.LPAREN);
+    const values = [];
+    while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF)) {
+      if (this.match(ECLTokenType.SCTID) && /^(prefer|preferred|accept|acceptable)$/i.test(this.current.value)) {
+        values.push(/^pref/i.test(this.current.value) ? 'preferred' : 'acceptable');
+        this.advance();
+      } else if (this.match(ECLTokenType.SCTID) && /^\d+$/.test(this.current.value)) {
+        values.push(this.parseEclFocusConcept().conceptId);
+      } else {
+        this.error('Expected preferred, acceptable or an acceptability concept id');
+      }
+    }
+    this.expect(ECLTokenType.RPAREN);
+    if (values.length === 0) {
+      this.error('An acceptability set must not be empty');
+    }
+    return values;
+  }
+
+  /**
+   * conceptFilter = definitionStatusIdFilter / definitionStatusTokenFilter / moduleFilter
+   *               / effectiveTimeFilter / activeFilter
+   *
+   *   definitionStatusId = / != (subExpressionConstraint / "(" conceptRef* ")")
+   *   definitionStatus   = / != (primitive / defined / "(" (primitive / defined)* ")")
+   *   moduleId           = / != (subExpressionConstraint / "(" conceptRef* ")")
+   *   effectiveTime      timeComparisonOperator (timeValue / "(" timeValue* ")")
+   *   active             = / != (true / false / 1 / 0)
+   */
+  parseConceptFilter() {
+    if (!this.match(ECLTokenType.SCTID) || !/^[A-Za-z_]/.test(this.current.value)) {
+      this.error('Expected definitionStatusId, definitionStatus, moduleId, effectiveTime or active in concept filter');
+    }
+    const field = this.current.value;
+    const lower = field.toLowerCase();
+    this.advance();
+    const operator = this.parseComparisonOperator(field);
+    const node = { type: ECLNodeType.CONCEPT_FILTER, field, operator };
+    const booleanOnly = () => {
+      if (operator !== '=' && operator !== '!=') {
+        throw new Error(`Operator ${operator} is not valid for ${field} in a concept filter`);
+      }
+    };
+    switch (lower) {
+      case 'effectivetime':
+        node.valueType = 'time';
+        node.values = this.parseTimeValueSet();
+        break;
+      case 'active':
+        booleanOnly();
+        node.valueType = 'boolean';
+        node.value = this.parseBooleanValue();
+        break;
+      case 'moduleid':
+      case 'definitionstatusid':
+        booleanOnly();
+        node.valueType = 'expression';
+        node.value = this.parseConceptReferenceSetOrExpression();
+        break;
+      case 'definitionstatus': {
+        booleanOnly();
+        node.valueType = 'definitionStatus';
+        node.values = [];
+        const readToken = () => {
+          if (this.match(ECLTokenType.SCTID) && /^(primitive|defined)$/i.test(this.current.value)) {
+            node.values.push(this.current.value.toLowerCase());
+            this.advance();
+          } else {
+            this.error('Expected primitive or defined');
+          }
+        };
+        if (this.match(ECLTokenType.LPAREN)) {
+          this.advance();
+          do {
+            readToken();
+          } while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF));
+          this.expect(ECLTokenType.RPAREN);
+        } else {
+          readToken();
+        }
+        break;
+      }
+      default:
+        throw new Error(`Unknown concept filter field ${field} - expected definitionStatusId, definitionStatus, moduleId, effectiveTime or active`);
+    }
+    return node;
+  }
+
+  parseComparisonOperator(field) {
+    if (this.match(ECLTokenType.EQUALS, ECLTokenType.NOT_EQUALS, ECLTokenType.LT, ECLTokenType.LTE,
+        ECLTokenType.GT, ECLTokenType.GTE, ECLTokenType.DESCENDANT_OF, ECLTokenType.ANCESTOR_OF)) {
+      // "<" and ">" lex as hierarchy operators; in a comparison they are less/greater than
+      const t = this.current.type;
+      const operator = t === ECLTokenType.DESCENDANT_OF ? '<' : t === ECLTokenType.ANCESTOR_OF ? '>' : this.current.value;
+      this.advance();
+      return operator;
+    }
+    this.error(`Expected comparison operator after ${field}`);
+  }
+
+  parseTimeValueSet() {
+    const values = this.parseStringValueSet();
+    for (const v of values) {
+      if (!/^\d{8}$/.test(v)) {
+        throw new Error(`Invalid effectiveTime value "${v}" - expected "YYYYMMDD"`);
+      }
+    }
+    return values;
+  }
+
+  /**
+   * subExpressionConstraint / eclConceptReferenceSet. The reference set form
+   * "( 123 |a| 456 |b| )" is a bare list of concept references, which is not a
+   * valid expression; it is parsed into an OR of the references.
+   */
+  parseConceptReferenceSetOrExpression() {
+    if (this.match(ECLTokenType.LPAREN)) {
+      // look ahead: "(" SCTID [TERM] (SCTID / ")") marks a reference set
+      let i = 1;
+      if (this.peek(i).type === ECLTokenType.SCTID && /^\d+$/.test(this.peek(i).value)) {
+        i++;
+        if (this.peek(i).type === ECLTokenType.TERM) i++;
+        if (this.peek(i).type === ECLTokenType.SCTID || this.peek(i).type === ECLTokenType.RPAREN) {
+          this.advance(); // (
+          let node = null;
+          while (!this.match(ECLTokenType.RPAREN)) {
+            if (!this.match(ECLTokenType.SCTID)) {
+              this.error('Expected a concept reference in the reference set');
+            }
+            const ref = { type: ECLNodeType.SUB_EXPRESSION_CONSTRAINT, operator: null, focus: this.parseEclFocusConcept() };
+            node = node === null ? ref : {
+              type: ECLNodeType.COMPOUND_EXPRESSION_CONSTRAINT, operator: ECLNodeType.DISJUNCTION, left: node, right: ref
+            };
+          }
+          this.advance(); // )
+          return node;
+        }
+      }
+    }
+    return this.parseSubExpressionConstraint();
+  }
+
+  /**
+   * memberFilter = (refsetFieldName / "moduleId" / "effectiveTime" / "active") ws comparison
+   *
+   * The comparison form is decided by the field name for the three standard
+   * fields, and otherwise by the token that follows the operator:
+   *   "#" number                 -> numeric
+   *   string / ( string ... )    -> string (or time, for an 8-digit value)
+   *   true/false/1/0             -> boolean
+   *   anything else              -> subExpressionConstraint (a concept-valued field)
+   */
+  parseMemberFilter() {
+    if (!this.match(ECLTokenType.SCTID) || !/^[A-Za-z_]/.test(this.current.value)) {
+      this.error('Expected a reference set field name in member filter');
+    }
+    const field = this.current.value;
+    this.advance();
+
+    const operator = this.parseComparisonOperator(field);
+    const node = { type: ECLNodeType.MEMBER_FILTER, field, operator };
+    const lower = field.toLowerCase();
+
+    if (lower === 'effectivetime') {
+      node.valueType = 'time';
+      node.values = this.parseTimeValueSet();
+    } else if (lower === 'active') {
+      node.valueType = 'boolean';
+      node.value = this.parseBooleanValue();
+      if (operator !== '=' && operator !== '!=') {
+        throw new Error(`Operator ${operator} is not valid for a boolean member filter`);
+      }
+    } else if (lower === 'moduleid') {
+      node.valueType = 'expression';
+      node.value = this.parseConceptReferenceSetOrExpression();
+      if (operator !== '=' && operator !== '!=') {
+        throw new Error(`Operator ${operator} is not valid for moduleId in a member filter`);
+      }
+    } else if (this.match(ECLTokenType.HASH)) {
+      this.advance();
+      if (!this.match(ECLTokenType.INTEGER, ECLTokenType.DECIMAL, ECLTokenType.SCTID)) {
+        this.error('Expected a number after #');
+      }
+      node.valueType = 'numeric';
+      node.value = this.current.value;
+      this.advance();
+    } else if (this.match(ECLTokenType.STRING, ECLTokenType.LPAREN) && this.#looksLikeStringSet()) {
+      node.valueType = 'string';
+      node.values = this.parseStringValueSet();
+    } else if (this.match(ECLTokenType.SCTID) && /^(true|false|1|0)$/i.test(this.current.value) &&
+        !this.#followedByTerm()) {
+      node.valueType = 'boolean';
+      node.value = this.parseBooleanValue();
+    } else {
+      node.valueType = 'expression';
+      node.value = this.parseSubExpressionConstraint();
+      if (operator !== '=' && operator !== '!=') {
+        throw new Error(`Operator ${operator} is not valid for a concept-valued member filter field`);
+      }
+    }
+    return node;
+  }
+
+  // Is the current token a string, or a bracketed list of strings (as opposed to
+  // a bracketed sub expression constraint)?
+  #looksLikeStringSet() {
+    if (this.match(ECLTokenType.STRING)) return true;
+    return this.peek().type === ECLTokenType.STRING;
+  }
+
+  #followedByTerm() {
+    return this.peek().type === ECLTokenType.TERM;
+  }
+
+  // string / "(" string *(ws string) ")"   (also accepts the typed forms match:"x" / wild:"x")
+  parseStringValueSet(allowWild = false) {
+    const values = [];
+    const readOne = () => {
+      if (this.match(ECLTokenType.SCTID) && /^(match|wild)$/i.test(this.current.value) &&
+          this.peek().type === ECLTokenType.COLON) {
+        const kind = this.current.value.toLowerCase();
+        this.advance();
+        this.advance();
+        if (kind === 'wild' && !allowWild) {
+          throw new Error('wild: search terms are not supported in member filters');
+        }
+        if (!this.match(ECLTokenType.STRING)) {
+          this.error('Expected a quoted string value');
+        }
+        values.push({ kind, value: this.current.value });
+        this.advance();
+        return;
+      }
+      if (!this.match(ECLTokenType.STRING)) {
+        this.error('Expected a quoted string value');
+      }
+      values.push(this.current.value);
+      this.advance();
+    };
+    if (this.match(ECLTokenType.LPAREN)) {
+      this.advance();
+      do {
+        readOne();
+      } while (!this.match(ECLTokenType.RPAREN) && !this.match(ECLTokenType.EOF));
+      this.expect(ECLTokenType.RPAREN);
+    } else {
+      readOne();
+    }
+    return values;
+  }
+
+  parseBooleanValue() {
+    if (this.match(ECLTokenType.SCTID) && /^(true|false|1|0)$/i.test(this.current.value)) {
+      const v = this.current.value.toLowerCase();
+      this.advance();
+      return v === 'true' || v === '1';
+    }
+    this.error('Expected true, false, 1 or 0');
   }
 
   parseEclFocusConcept() {
@@ -601,8 +1159,33 @@ class ECLParser {
       };
     }
 
+    // ECL 2.1 alternate identifiers: "scheme#code" (quoted) or scheme#code
+    if (this.match(ECLTokenType.STRING) && /^[A-Za-z0-9_-]+#.+$/.test(this.current.value)) {
+      const [scheme, ...rest] = this.current.value.split('#');
+      this.advance();
+      return this.#altIdentifier(scheme, rest.join('#'));
+    }
+    if (this.match(ECLTokenType.SCTID) && /^[A-Za-z]/.test(this.current.value) && this.peek().type === ECLTokenType.HASH) {
+      const scheme = this.current.value;
+      this.advance();
+      this.advance(); // #
+      let code = '';
+      // the code runs until whitespace: alphanumerics, "-", "." and "_"
+      while (this.match(ECLTokenType.SCTID, ECLTokenType.INTEGER, ECLTokenType.DECIMAL, ECLTokenType.DOT, ECLTokenType.CARDINALITY_RANGE)) {
+        code += this.current.value;
+        this.advance();
+      }
+      if (code === '') {
+        this.error(`Expected a code after ${scheme}#`);
+      }
+      return this.#altIdentifier(scheme, code);
+    }
+
     if (this.match(ECLTokenType.SCTID)) {
       const conceptId = this.current.value;
+      if (!/^\d{6,18}$/.test(conceptId)) {
+        this.error(`"${conceptId}" is not a valid SNOMED CT concept id`);
+      }
       this.advance();
 
       let term = null;
@@ -621,60 +1204,130 @@ class ECLParser {
     this.error('Expected concept reference or wildcard');
   }
 
-  parseRefinement() {
-    return this.parseAttributeSet();
+  #altIdentifier(scheme, code) {
+    let term = null;
+    if (this.match(ECLTokenType.TERM)) {
+      term = this.current.value;
+      this.advance();
+    }
+    return { type: ECLNodeType.ALT_IDENTIFIER, scheme, code, term };
   }
 
-  parseAttributeSet() {
-    const attributes = [];
+  /**
+   * eclRefinement = subRefinement *(ws (AND / OR / ",") ws subRefinement)
+   * subRefinement = eclAttributeSet / eclAttributeGroup / "(" eclRefinement ")"
+   *
+   * "," is a conjunction. As with compound expressions, AND and OR may not be
+   * mixed in one un-bracketed sequence (ECL 6.4). A single sub refinement is
+   * returned as-is; otherwise an ATTRIBUTE_SET with operator 'AND' or 'OR'.
+   */
+  parseRefinement() {
+    return this.parseRefinementSet(() => this.parseSubRefinement(), 'refinement');
+  }
 
-    do {
-      // A leading cardinality may prefix either a single attribute
-      // ([m..n] attr = v) or an attribute group ([m..n] { ... }). Parse it once,
-      // then dispatch on whether a group ({) or an attribute follows.
-      let cardinality = null;
-      if (this.match(ECLTokenType.LBRACKET)) {
-        cardinality = this.parseCardinality();
-      }
-      if (this.match(ECLTokenType.LBRACE)) {
-        // Attribute group
-        attributes.push(this.parseAttributeGroup(cardinality));
+  parseRefinementSet(parseItem, what) {
+    const items = [parseItem()];
+    let operator = null;
+    for (;;) {
+      let op;
+      if (this.match(ECLTokenType.COMMA, ECLTokenType.AND)) {
+        op = 'AND';
+      } else if (this.match(ECLTokenType.OR)) {
+        op = 'OR';
       } else {
-        // Single attribute
-        attributes.push(this.parseAttribute(cardinality));
+        break;
       }
-    } while (this.match(ECLTokenType.COMMA) && (this.advance(), true));
-
-    if (attributes.length === 1) {
-      return attributes[0];
+      if (operator !== null && op !== operator) {
+        throw new Error(
+          `Ambiguous ECL ${what}: AND (or ",") and OR cannot be mixed without parentheses (ECL 6.4). ` +
+          'Use round brackets to disambiguate.');
+      }
+      operator = op;
+      this.advance();
+      items.push(parseItem());
     }
-
+    if (items.length === 1) {
+      return items[0];
+    }
     return {
       type: ECLNodeType.ATTRIBUTE_SET,
-      attributes
+      operator,
+      attributes: items
     };
   }
 
+  parseSubRefinement() {
+    // A leading cardinality may prefix either a single attribute
+    // ([m..n] attr = v) or an attribute group ([m..n] { ... }). Parse it once,
+    // then dispatch on whether a group ({) or an attribute follows.
+    let cardinality = null;
+    if (this.match(ECLTokenType.LBRACKET)) {
+      cardinality = this.parseCardinality();
+    }
+    if (this.match(ECLTokenType.LBRACE)) {
+      return this.parseAttributeGroup(cardinality);
+    }
+    if (cardinality === null && this.match(ECLTokenType.LPAREN) && !this.#parenIsAttributeName()) {
+      this.advance();
+      const inner = this.parseRefinement();
+      this.expect(ECLTokenType.RPAREN);
+      return inner;
+    }
+    return this.parseAttribute(cardinality);
+  }
+
+  // At a "(" inside a refinement: is this a bracketed attribute name
+  // ("(A OR B) = x") rather than a bracketed sub refinement ("(A = x OR B = y)")?
+  // It is when the token after the matching ")" is a comparison operator.
+  #parenIsAttributeName() {
+    let depth = 0;
+    for (let i = 0; ; i++) {
+      const t = this.peek(i).type;
+      if (t === ECLTokenType.EOF) return false;
+      if (t === ECLTokenType.LPAREN) depth++;
+      if (t === ECLTokenType.RPAREN && --depth === 0) {
+        return [ECLTokenType.EQUALS, ECLTokenType.NOT_EQUALS, ECLTokenType.LT, ECLTokenType.LTE, ECLTokenType.GT,
+          ECLTokenType.GTE, ECLTokenType.DESCENDANT_OF, ECLTokenType.ANCESTOR_OF].includes(this.peek(i + 1).type);
+      }
+    }
+  }
+
+  /**
+   * eclAttributeSet = subAttributeSet *(ws (AND / OR / ",") ws subAttributeSet)
+   * subAttributeSet = eclAttribute / "(" eclAttributeSet ")"
+   * (the contents of an attribute group - no nested groups)
+   */
+  parseAttributeSet() {
+    return this.parseRefinementSet(() => {
+      if (this.match(ECLTokenType.LPAREN) && !this.#parenIsAttributeName()) {
+        this.advance();
+        const inner = this.parseAttributeSet();
+        this.expect(ECLTokenType.RPAREN);
+        return inner;
+      }
+      return this.parseAttribute();
+    }, 'attribute set');
+  }
+
   parseAttributeGroup(cardinality = null) {
-    // Cardinality may have been parsed by the caller (parseAttributeSet); if
+    // Cardinality may have been parsed by the caller (parseSubRefinement); if
     // not, check for it here (before the opening brace).
     if (cardinality === null && this.match(ECLTokenType.LBRACKET)) {
       cardinality = this.parseCardinality();
     }
 
     this.expect(ECLTokenType.LBRACE);
-
-    const attributes = [];
-    do {
-      attributes.push(this.parseAttribute());
-    } while (this.match(ECLTokenType.COMMA) && (this.advance(), true));
-
+    const content = this.parseAttributeSet();
     this.expect(ECLTokenType.RBRACE);
 
     return {
       type: ECLNodeType.ATTRIBUTE_GROUP,
       cardinality,
-      attributes
+      // A plain conjunction of attributes ("{ a = x, b = y }") stays a flat
+      // list, as it always was; anything with OR or nesting is a single
+      // ATTRIBUTE_SET entry carrying that structure.
+      attributes: content.type === ECLNodeType.ATTRIBUTE_SET && content.operator === 'AND' &&
+        content.attributes.every(a => a.type === ECLNodeType.ATTRIBUTE) ? content.attributes : [content]
     };
   }
 
@@ -700,13 +1353,30 @@ class ECLParser {
     if (this.match(ECLTokenType.EQUALS, ECLTokenType.NOT_EQUALS)) {
       const operator = this.current;
       this.advance();
-      const value = this.parseSubExpressionConstraint();
-
-      comparison = {
-        type: ECLNodeType.EXPRESSION_COMPARISON,
-        operator: operator.type,
-        value
-      };
+      if (this.match(ECLTokenType.HASH)) {
+        // numeric concrete value: = #5, != #1.5
+        this.advance();
+        if (!this.match(ECLTokenType.SCTID, ECLTokenType.DECIMAL, ECLTokenType.INTEGER)) {
+          this.error('Expected numeric value after #');
+        }
+        comparison = { type: ECLNodeType.NUMERIC_COMPARISON, operator: operator.type, value: this.current.value };
+        this.advance();
+      } else if (this.match(ECLTokenType.STRING) ||
+          (this.match(ECLTokenType.LPAREN) && this.peek().type === ECLTokenType.STRING) ||
+          (this.match(ECLTokenType.SCTID) && /^(match|wild)$/i.test(this.current.value) && this.peek().type === ECLTokenType.COLON)) {
+        // string concrete value: = "x", != ("x" "y"), = match:"x"
+        comparison = { type: ECLNodeType.STRING_COMPARISON, operator: operator.type, values: this.parseStringValueSet(true) };
+      } else if (this.match(ECLTokenType.SCTID) && /^(true|false)$/i.test(this.current.value) && this.peek().type !== ECLTokenType.TERM) {
+        // boolean concrete value: = true, != false
+        comparison = { type: ECLNodeType.BOOLEAN_COMPARISON, operator: operator.type, value: this.parseBooleanValue() };
+      } else {
+        const value = this.parseSubExpressionConstraint();
+        comparison = {
+          type: ECLNodeType.EXPRESSION_COMPARISON,
+          operator: operator.type,
+          value
+        };
+      }
     } else if (this.match(ECLTokenType.LT, ECLTokenType.LTE, ECLTokenType.DESCENDANT_OF, ECLTokenType.ANCESTOR_OF, ECLTokenType.GTE)) {
       // In ECL, bare `<` and `>` are overloaded: they lex as hierarchy
       // operators (DESCENDANT_OF / ANCESTOR_OF) but in an attribute comparison
@@ -750,8 +1420,18 @@ class ECLParser {
     };
   }
 
+  /**
+   * eclAttributeName = subExpressionConstraint. A plain concept reference or
+   * wildcard is returned unwrapped (the shape every consumer expects); anything
+   * else (<< 363698007, (A OR B), ^ refset) is returned as the sub expression.
+   */
   parseAttributeName() {
-    return this.parseEclFocusConcept();
+    const node = this.parseSubExpressionConstraint();
+    if (node.type === ECLNodeType.SUB_EXPRESSION_CONSTRAINT && !node.operator && !node.filters &&
+        (node.focus.type === ECLNodeType.CONCEPT_REFERENCE || node.focus.type === ECLNodeType.WILDCARD)) {
+      return node.focus;
+    }
+    return node;
   }
 
   parseCardinality() {
@@ -865,11 +1545,23 @@ class ECLValidator {
 
       case ECLNodeType.SUB_EXPRESSION_CONSTRAINT:
         this.validateAST(node.focus);
+        for (const fc of node.filters || []) {
+          for (const f of fc.filters || []) {
+            if (f.valueType === 'expression') {
+              this.validateAST(f.value);
+            }
+          }
+        }
         break;
 
       case ECLNodeType.MEMBER_OF:
         this.validateAST(node.refSet);
         this.validateReferenceSet(node.refSet);
+        for (const f of node.memberFilters || []) {
+          if (f.valueType === 'expression') {
+            this.validateAST(f.value);
+          }
+        }
         break;
 
       case ECLNodeType.ATTRIBUTE_SET:
@@ -1002,7 +1694,8 @@ class ECLValidator {
         break;
 
       case ECLNodeType.STRING_COMPARISON:
-        // String values are always valid
+      case ECLNodeType.BOOLEAN_COMPARISON:
+        // String and boolean values are always valid
         break;
     }
   }
@@ -1606,10 +2299,10 @@ class ECLValidator {
         attributes.push(refinementNode);
         break;
       case ECLNodeType.ATTRIBUTE_SET:
-        attributes.push(...refinementNode.attributes);
-        break;
       case ECLNodeType.ATTRIBUTE_GROUP:
-        attributes.push(...refinementNode.attributes);
+        for (const a of refinementNode.attributes) {
+          attributes.push(...this.extractAttributesFromRefinement(a));
+        }
         break;
     }
 
