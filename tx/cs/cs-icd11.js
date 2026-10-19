@@ -28,8 +28,6 @@ const SCHEMA_NS = 'http://id.who.int/icd/schema';
 // The extension a Coding may carry to save the reader a lookup: the short code (or the
 // short-code form of an expression) for the entity id in Coding.code. Provisional url.
 const CLASSIFICATION_CODE_EXT = 'http://id.who.int/icd/schema/extension/classificationCode';
-// The only system it is defined for
-const MMS_URL = 'http://id.who.int/icd/release/11/mms';
 
 // The code system of allowMultipleValues: AllowAlways | NotAllowed | AllowedExceptFromSameBlock
 const ALLOW_MULTIPLE_CS = `${SCHEMA_NS}/allowMultipleValues`;
@@ -123,7 +121,14 @@ class ICD11Services extends BaseCSServices {
   /** MMS and ICF codes are bare entity ids; the Foundation's are still entity uris. */
   get #bareIds() { return this.shared.systemCode !== 'foundation'; }
 
-  #concept(row) { return new ICD11Concept(row, this.#bareIds); }
+  #concept(row) {
+    const c = new ICD11Concept(row, this.#bareIds);
+    // "selectable" is a linearization's notion - a category with a short code. The importer
+    // records 0 for every Foundation entity, which has neither; but nothing in the Foundation is
+    // a grouper in that sense, so none of it is reported as not selectable
+    if (!this.#bareIds) c.selectable = true;
+    return c;
+  }
 
   /** The code of a concept row, for references to it (parent, child, stem, values). */
   #ref(row) { return this.#bareIds ? row.entity_id : row.uri; }
@@ -310,6 +315,21 @@ class ICD11Services extends BaseCSServices {
 
   mandatoryExpansionProperties() { return ['classificationCode']; }
 
+  /**
+   * $validate-code reports the classificationCode only for a code written with entity ids - in
+   * any order, since the classificationCode is the short-code form of the normal form, beside
+   * normalized-code. A code written with short codes (wholly or in part) gets none: it already
+   * is, or contains, the classification code.
+   */
+  async reportedClassificationCode(context, code) {
+    const ctxt = await this.#ensureContext(context);
+    if (ctxt === null) return null;
+    const idForm = ctxt instanceof ICD11Expression
+      ? ctxt.tokens.every(t => t.text === t.concept.canonicalCode)
+      : code === ctxt.canonicalCode;
+    return idForm ? this.classificationCode(ctxt) : null;
+  }
+
   /** A postcoordinated expression's parse records what validation should say about it. */
   async codeIssues(context) {
     const ctxt = await this.#ensureContext(context);
@@ -319,7 +339,7 @@ class ICD11Services extends BaseCSServices {
   /**
    * The classificationCode extension on a Coding, when present, has to be true: it is there
    * so software can show the short code without a lookup, and a wrong one would be shown.
-   * It is only defined for an MMS coding whose code is the entity id (or the id form of an
+   * It is defined for an MMS or ICF coding whose code is the entity id (or the id form of an
    * expression) - a short code needs no other short code beside it - and its value has to be
    * that code's classificationCode exactly.
    */
@@ -330,8 +350,9 @@ class ICD11Services extends BaseCSServices {
       const ext = exts[index];
       if (ext.url !== CLASSIFICATION_CODE_EXT) continue;
       const value = ext.valueCode ?? '';
-      if (this.shared.url !== MMS_URL) {
-        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_SYSTEM', params: [MMS_URL, this.shared.url] });
+      // the linearizations have classification codes; the Foundation has none
+      if (this.shared.systemCode === 'foundation') {
+        out.push({ index, msgId: 'ICD11_CLASSIFICATION_CODE_SYSTEM', params: [this.shared.url] });
         continue;
       }
       const ctxt = await this.#ensureContext(context);

@@ -209,6 +209,7 @@ const OPERATIONS = [
       p('version', 'string', '1', 'The version of the code system'),
       p('coding', 'Coding', '1', 'The code, as a Coding'),
       p('property', 'code', '*', 'A property to return (by default, all of them)'),
+      p('post-coordination-metadata', 'boolean', '1', 'For a post-coordinated code: describe every post-coordination axis in full - the axis rules, and the axes that carry no value (ICD-11). By default only the axes that carry a value are listed'),
     ],
     out: [
       p('name', 'string', '1', 'The name of the code system', { min: 1 }),

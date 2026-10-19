@@ -100,6 +100,16 @@ class CodeSystemProvider {
   async classificationCode(context) { return null; }
 
   /**
+   * The classificationCode $validate-code reports for a code as it was given: by default the
+   * concept's classificationCode, whatever spelling was used.
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @param {string} code the code as given
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async reportedClassificationCode(context, code) { return this.classificationCode(context); }
+
+  /**
    * The code to put in an expansion for a concept the value set enumerated as `requested`.
    * The default keeps the value set's own spelling; a code system whose normal form differs
    * from what a value set may write (ICD-11: short code vs entity uri) returns code().
