@@ -26,8 +26,6 @@ sources:
   - unii:unii_20240622.db
   - snomed:sct_intl_20240201.cache
   - snomed!:sct_intl_20250201.cache
-  - snomed:sct_ch_20230607.cache
-  - snomed:sct_dk_20260331.cache
   - snomed:sct_ips_20241216.cache
   - snomed:sct_nl_20240930.cache
   - snomed:sct_uk_20230412.cache
