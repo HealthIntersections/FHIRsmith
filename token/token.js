@@ -435,12 +435,19 @@ class TokenModule {
     this.router.post('/keys', this.requireAuth.bind(this), this.createApiKey.bind(this));
     this.router.delete('/keys/:id', this.requireAuth.bind(this), this.deleteApiKey.bind(this));
     
-    // JSON API routes for other servers
-    this.router.get('/api/validate/:key', this.validateApiKey.bind(this));
-    this.router.post('/api/usage/:key', this.recordUsage.bind(this));
+    // JSON API routes for other servers. The key goes in a header (Authorization: Bearer, or
+    // X-API-Key), not the path, so that it doesn't end up in access logs
+    this.router.get('/api/validate', this.validateApiKey.bind(this));
+    this.router.post('/api/usage', this.recordUsage.bind(this));
     
     // Statistics
-    this.router.get('/api/stats/:key', this.getUsageStats.bind(this));
+    this.router.get('/api/stats', this.getUsageStats.bind(this));
+  }
+
+  // The API key a request carries: Authorization: Bearer <key>, or X-API-Key: <key>
+  apiKeyFrom(req) {
+    const auth = /^Bearer\s+(\S+)$/i.exec(req.get('Authorization') || '');
+    return auth ? auth[1] : (req.get('X-API-Key') || null);
   }
 
   // Middleware
@@ -627,7 +634,7 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
+        const apiKey = this.apiKeyFrom(req);
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
           return res.status(400).json({
@@ -700,7 +707,7 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
+        const apiKey = this.apiKeyFrom(req);
         const {count = 1} = req.body;
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
@@ -737,8 +744,8 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
-        const days = Math.min(parseInt(req.query.days) || 30, 365); // Max 1 year
+        const apiKey = this.apiKeyFrom(req);
+        const days = Math.max(1, Math.min(parseInt(req.query.days) || 30, 365)); // Max 1 year
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
           return res.status(400).json({error: 'Invalid key format'});
@@ -989,7 +996,7 @@ class TokenModule {
   async getApiKeyUsageStats(keyId, days = 30) {
     return new Promise((resolve, reject) => {
       this.db.all(`
-        SELECT date, request_count, last_request_ip
+        SELECT date, request_count
         FROM usage_stats 
         WHERE api_key_id = ? AND date >= date('now', '-${days} days')
         ORDER BY date DESC
@@ -1134,7 +1141,7 @@ class TokenModule {
             <td><span class="${statusClass}">${status}</span></td>
             <td>
               ${key.is_active ? 
-                `<button class="btn btn-sm btn-danger" onclick="deleteKey(${key.id}, '${escape(key.name)}')">Delete</button>` :
+                `<button class="btn btn-sm btn-danger" onclick="deleteKey(${Number(key.id)})">Delete</button>` :
                 '<span class="text-muted">-</span>'
               }
             </td>

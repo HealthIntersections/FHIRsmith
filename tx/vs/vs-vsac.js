@@ -26,7 +26,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {string} config.apiKey - API key for VSAC authentication
    * @param {string} config.cacheFolder - Local folder for cached database
    * @param {number} [config.refreshIntervalHours=24] - Hours between refresh scans
-   * @param {string} [config.baseUrl='http://cts.nlm.nih.gov/fhir'] - Base URL for VSAC FHIR server
+   * @param {string} [config.baseUrl='https://cts.nlm.nih.gov/fhir'] - Base URL for VSAC FHIR server
    * @param {number} [config.timeoutMs=120000] - HTTP request timeout in milliseconds
    * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
@@ -43,7 +43,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // Optional operator password for the on-demand resync form (see info()).
     this.resyncPassword = config.resyncPassword || null;
     this.cacheFolder = folders.ensureFilePath("terminology-cache/vsac");
-    this.baseUrl = config.baseUrl || 'http://cts.nlm.nih.gov/fhir';
+    // https: every request carries the API key. (VSAC redirects http to https, but only after
+    // the key has been sent in the clear)
+    this.baseUrl = (config.baseUrl || 'https://cts.nlm.nih.gov/fhir').replace(/\/+$/, '');
+    if (this.baseUrl.startsWith('http://')) {
+      console.warn(`VSAC: baseUrl ${this.baseUrl} is http, so the API key is sent unencrypted - use https`);
+    }
     this.refreshIntervalHours = config.refreshIntervalHours || 24;
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
@@ -397,10 +402,24 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       return null;
     }
 
-    // Extract relative path from full URL
-    let s = nextLink.url;
-    s = s.replace(this.baseUrl, '');
-    return s;
+    // Followed only on the VSAC server itself, as a path under baseUrl: the request carries the
+    // API key, so a next link must not be able to send it anywhere else. The scheme is ignored -
+    // VSAC's links can say http - and the request goes out on baseUrl's
+    let next;
+    let base;
+    try {
+      base = new URL(this.baseUrl);
+      next = new URL(nextLink.url, this.baseUrl + '/');
+    } catch (e) {
+      console.warn(`VSAC: ignoring next link ${String(nextLink.url).substring(0, 200)}: ${e.message}`);
+      return null;
+    }
+    const basePath = base.pathname.replace(/\/+$/, '');
+    if (next.host !== base.host || !(next.pathname === basePath || next.pathname.startsWith(basePath + '/'))) {
+      console.warn(`VSAC: ignoring next link ${String(nextLink.url).substring(0, 200)}: it is not on ${this.baseUrl}`);
+      return null;
+    }
+    return next.pathname.substring(basePath.length) + next.search;
   }
 
   /**

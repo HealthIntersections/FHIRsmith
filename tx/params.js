@@ -380,6 +380,12 @@ class TxParameters {
         if (claim('includeDefinition')) this.includeDefinition = asBool();
         break;
       }
+      // $lookup: describe each postcoordination axis in full (ICD-11) - the axis rules, and the
+      // axes that carry no value. Off unless asked for
+      case 'post-coordination-metadata': {
+        if (claim('post-coordination-metadata')) this.postCoordinationMetadata = asBool();
+        break;
+      }
       case 'activeOnly': {
         if (claim('activeOnly')) this.activeOnly = asBool();
         break;
@@ -624,7 +630,7 @@ class TxParameters {
     // are included, and diagnostics.
     // filter is free text, so JSON.stringify it to avoid delimiter collisions.
     s = s + 'f:' + JSON.stringify(this.filter || '') + '|' +
-      b(this.abstractOk) + b(this.diagnostics);
+      b(this.abstractOk) + b(this.diagnostics) + b(this.postCoordinationMetadata);
     for (let t of this.FVersionRules) {
       s = s + t.asString() + '|';
     }
@@ -676,6 +682,7 @@ class TxParameters {
     this.hasVersionsMatch = other.hasVersionsMatch;
     this.hasDisplayWarning = other.hasDisplayWarning;
     this.sort = other.sort;
+    this.postCoordinationMetadata = other.postCoordinationMetadata;
 
     if (other.FSeen) {
       this.FSeen = new Set(other.FSeen);

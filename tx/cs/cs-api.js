@@ -67,19 +67,89 @@ class CodeSystemProvider {
    */
 
   /**
-   * The display name of the code system - what $lookup reports as its name parameter, and
-   * what a person reads. Every provider should override this; the fallback is the
-   * versioned uri, which is not a name, and a provider that forgets ends up reporting
+   * The name of the code system (CodeSystem.name, or the provider's equivalent). Every
+   * provider should override this; the fallback is the versioned uri, which is not a name,
+   * and a provider that forgets ends up reporting
    * "http://snomed.info/sct|http://snomed.info/sct/731000124108/version/20230301" where
    * the others report "LOINC".
+   * @returns {string} name of the code system
+   */
+  name() { return this.system() + (this.version() ? "|"+this.version() : "") }
+
+  /**
+   * What $lookup reports as its `name` parameter - "a display name for the code system".
+   * That is the title, translated into the request's language where the provider can,
+   * falling back to name(). Only $lookup uses this; everything else keeps using name().
+   * The default has no title to offer, so it is name().
+   * @param {Languages} [languages] - the request's working languages (displayLanguage, else
+   *   Accept-Language)
    * @returns {string} display name for the code system
    */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) { return this.name(); }
+
   /**
-   * @param {Languages} [languages] - the request's working languages, for a provider whose name
-   *   is translated; the default ignores them
+   * A second, shorter form of the code that some code systems also carry - ICD-11's short
+   * classification code (1A00) beside its code, the entity uri. $validate-code reports it as
+   * the classificationCode output parameter when the request used the code itself, and
+   * $expand always reports it as a contains property. Null (the default) when there is none.
+   * @param {CodeSystemProviderContext} context
+   * @returns {Promise<string|null>}
    */
   // eslint-disable-next-line no-unused-vars
-  name(languages) { return this.system() + (this.version() ? "|"+this.version() : "") }
+  async classificationCode(context) { return null; }
+
+  /**
+   * The classificationCode $validate-code reports for a code as it was given: by default the
+   * concept's classificationCode, whatever spelling was used.
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @param {string} code the code as given
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async reportedClassificationCode(context, code) { return this.classificationCode(context); }
+
+  /**
+   * The code to put in an expansion for a concept the value set enumerated as `requested`.
+   * The default keeps the value set's own spelling; a code system whose normal form differs
+   * from what a value set may write (ICD-11: short code vs entity uri) returns code().
+   * @param {CodeSystemProviderContext} context
+   * @param {string} requested - the code as the value set wrote it
+   * @returns {Promise<string>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async expansionCode(context, requested) { return requested; }
+
+  /**
+   * Properties an expansion carries on every contains entry whatever the request asked
+   * for (each must also come back from properties()). None by default.
+   * @returns {string[]}
+   */
+  mandatoryExpansionProperties() { return []; }
+
+  /**
+   * Check the extensions on a Coding that this code system defines - ICD-11's
+   * classificationCode, say. Called by $validate-code once the coding's code has validated.
+   * Extensions the code system does not define are not its business, and are ignored.
+   *
+   * @param {Object} coding the Coding as given
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @returns {Promise<{index: number, msgId: string, params: string[]}[]>} one entry per problem,
+   *   naming the extension (its index in coding.extension) and the message; none by default
+   */
+  // eslint-disable-next-line no-unused-vars
+  async checkCodingExtensions(coding, context) { return []; }
+
+  /**
+   * Things $validate-code should say about a code that is valid - for a postcoordinated
+   * expression, say, a qualifier the grammar allows but a rule of the code system does not
+   * (ICD-11: two values on an axis that takes one).
+   *
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @returns {Promise<{severity: string, msgId: string, params: string[]}[]>} none by default
+   */
+  // eslint-disable-next-line no-unused-vars
+  async codeIssues(context) { return []; }
 
   /**
    * @returns {string} uri for the code system
@@ -540,9 +610,11 @@ class CodeSystemProvider {
    * @param {CodeSystemProviderContext} ctxt the context to add properties for
    * @param {string[]} props the properties requested
    * @param {Parameters} params the parameters response to add to
+   * @param {TxParameters} [txParams] the parsed request parameters, for providers whose output
+   *   depends on more than the property list (ICD-11's post-coordination-metadata)
    */
-
-  async extendLookup(ctxt, props, params) { }
+  // eslint-disable-next-line no-unused-vars
+  async extendLookup(ctxt, props, params, txParams) { }
 
   // procedure getCDSInfo(card : TCDSHookCard; langList : THTTPLanguageList; baseURL, code, display : String); virtual;
 

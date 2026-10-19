@@ -151,7 +151,13 @@ class OMOPServices extends BaseCSServices {
   }
 
   name() {
-    return `OMOP Concepts`;
+    return 'OMOP_Concepts';
+  }
+
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'OMOP Unified Vocabularies';
   }
 
   description() {
@@ -1007,7 +1013,7 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
 
 
   name() {
-    return `OMOP Concepts`;
+    return 'OMOP_Concepts';
   }
 
   id() {

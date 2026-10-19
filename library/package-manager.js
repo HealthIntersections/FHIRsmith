@@ -520,8 +520,10 @@ class PackageManager {
         const packagePath = path.join(this.cacheFolder, packageName);
 
         try {
-            const stats = await fs.stat(packagePath);
-            if (stats.isDirectory()) {
+            // the folder alone is not enough: a download that failed after the folder was made
+            // leaves an empty one, which must not count as the package
+            const stats = await fs.stat(path.join(packagePath, 'package', 'package.json'));
+            if (stats.isFile()) {
                 return packageName;
             }
         } catch (error) {

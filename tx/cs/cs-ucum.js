@@ -69,6 +69,12 @@ class UcumCodeSystemProvider extends BaseCSServices {
     return 'UCUM';
   }
 
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'Unified Code for Units of Measure (UCUM)';
+  }
+
   totalCount() {
     return -1; // Unbounded due to grammar
   }

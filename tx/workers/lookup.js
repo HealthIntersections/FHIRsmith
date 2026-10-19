@@ -15,6 +15,7 @@ const {Parameters} = require("../library/parameters");
 const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const {debugLog} = require("../operation-context");
 const {checkAddedParameters} = require("../library/parameter-check");
+const { Languages } = require("../../library/languages");
 
 class LookupWorker extends TerminologyWorker {
   /**
@@ -247,6 +248,11 @@ class LookupWorker extends TerminologyWorker {
       );
     };
 
+    // Explicitly asked for: named in the property list, or '*'. An empty list is not asking for
+    // anything in particular (the server chooses), which is not the same thing for abstract and
+    // notSelectable - see below.
+    const asked = (name) => (params.properties || []).some(p => p === '*' || p.toLowerCase() === name.toLowerCase());
+
     // Locate the code in the code system
     const locateResult = await csProvider.locate(code);
 
@@ -271,7 +277,7 @@ class LookupWorker extends TerminologyWorker {
     // name (required)
     responseParams.push({
       name: 'name',
-      valueString: csProvider.name(params.workingLanguages())
+      valueString: csProvider.lookupName(params.workingLanguages())
     });
     responseParams.push({
       name: 'code',
@@ -303,6 +309,32 @@ class LookupWorker extends TerminologyWorker {
       valueString: disp || display || code
     });
 
+    // A displayLanguage the code system has no display in, for this concept, still gets an
+    // answer - in the default language - but the client is told so: a display in a language it
+    // did not ask for, offered without comment, reads as an answer in the language it did.
+    // Only for an explicit displayLanguage: Accept-Language is a browser's standing preference,
+    // not a request about this code.
+    if (params.hasDisplayLanguages) {
+      // the languages actually asked for: displayLanguage is parsed with a wildcard appended,
+      // and the wildcard matches whatever display there is
+      const langs = new Languages(this.languages);
+      for (const l of params.workingLanguages()) {
+        if (l.code !== '*') langs.add(l);
+      }
+      const covered = langs.length === 0 || (designations.designations.length > 0
+        ? designations.hasAnyDisplays(langs)
+        : csProvider.hasAnyDisplays(langs));
+      if (!covered) {
+        const used = (pd && pd.language) ? String(pd.language) : (csProvider.defLang() || 'en');
+        const csDesc = version ? csProvider.system() + '|' + version : csProvider.system();
+        responseParams.push({
+          name: 'warning',
+          valueString: this.i18n.translate('LOOKUP_DISPLAY_LANGUAGE_FALLBACK', params.HTTPLanguages,
+            [langs.asString(false), code, csDesc, used])
+        });
+      }
+    }
+
     // definition (optional) - top-level parameter
     if (hasProp('definition', true)) {
       const definition = await csProvider.definition(ctxt);
@@ -314,9 +346,12 @@ class LookupWorker extends TerminologyWorker {
       }
     }
 
-    // abstract property (optional)
-    if (hasProp('abstract', true)) {
-      const isAbstract = await csProvider.isAbstract(ctxt);
+    // abstract and notSelectable (agreed for the tx-ecosystem tests, October 2026): a concept that
+    // is not selectable always says so, both ways, whatever properties were asked for - that is
+    // the fact a client most needs about it. A selectable one says neither unless asked.
+    // notSelectable is reconciled after the provider has added its properties, below.
+    const isAbstract = await csProvider.isAbstract(ctxt);
+    if (isAbstract || asked('abstract')) {
       responseParams.push({
         name: 'abstract',
         valueBoolean: isAbstract
@@ -389,7 +424,7 @@ class LookupWorker extends TerminologyWorker {
     // primitive belongs is a provider bug, and shipping it would produce a
     // response that isn't valid FHIR (and, in XML, isn't even parseable).
     const providerParamsFrom = responseParams.length;
-    await csProvider.extendLookup(ctxt, params.properties || [], responseParams);
+    await csProvider.extendLookup(ctxt, params.properties || [], responseParams, params);
     let providerName;
     try {
       providerName = csProvider.system();
@@ -397,6 +432,26 @@ class LookupWorker extends TerminologyWorker {
       providerName = 'unknown';
     }
     checkAddedParameters(responseParams, providerParamsFrom, providerName);
+
+    // notSelectable, the property: present (true) for every concept that is not selectable;
+    // for a selectable one only when asked for (false), and taken out if a provider added it
+    // anyway
+    const isNotSelectable = (p) => p.name === 'property' &&
+      (p.part || []).some(x => x.name === 'code' && x.valueCode === 'notSelectable');
+    const nsAt = responseParams.findIndex(isNotSelectable);
+    if (isAbstract) {
+      if (nsAt < 0) {
+        responseParams.push({ name: 'property', part: [
+          { name: 'code', valueCode: 'notSelectable' }, { name: 'value', valueBoolean: true }] });
+      }
+    } else if (asked('notSelectable')) {
+      if (nsAt < 0) {
+        responseParams.push({ name: 'property', part: [
+          { name: 'code', valueCode: 'notSelectable' }, { name: 'value', valueBoolean: false }] });
+      }
+    } else if (nsAt >= 0) {
+      responseParams.splice(nsAt, 1);
+    }
 
     if (reportedSupplements) {
       for (const supplement of reportedSupplements) {

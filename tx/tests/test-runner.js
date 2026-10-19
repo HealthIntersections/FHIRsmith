@@ -237,9 +237,17 @@ async function ensureValidatorJar(jarPath) {
 }
 
 async function loadValidator() {
-    const validatorJarPath = folders.ensureFilePath('bin/validator_cli.jar');
+    // FHIRSMITH_VALIDATOR_JAR runs the tests with a validator built locally from org.hl7.fhir.core
+    // (the fat jar, org.hl7.fhir.validation.cli/target/org.hl7.fhir.validation.cli-<version>.jar)
+    // instead of the released one - so that a change to TxTester (its sorters, its comparison)
+    // can be tested here before it is released. It is used as is: never updated or downloaded
+    const localJar = process.env.FHIRSMITH_VALIDATOR_JAR;
+    if (localJar && !fs.existsSync(localJar)) {
+        throw new Error(`FHIRSMITH_VALIDATOR_JAR is set, but ${localJar} does not exist`);
+    }
+    const validatorJarPath = localJar ? path.resolve(localJar) : folders.ensureFilePath('bin/validator_cli.jar');
     const inCI = !!process.env.CI;
-    if (inCI) {
+    if (inCI && !localJar) {
         await ensureValidatorJar(validatorJarPath);
     }
     log =  Logger.getInstance().child({ module: 'test-runner' });
@@ -256,8 +264,9 @@ async function loadValidator() {
         // content is our own fixtures, so there is nothing untrusted that could redirect the validator
         // anywhere. Protection has to be off for these tests to connect at all.
         ssrfProtection: false,
-        // see ensureValidatorJar: no GitHub API call in CI
-        skipUpdateCheck: inCI
+        // see ensureValidatorJar: no GitHub API call in CI; and a local jar is never replaced
+        autoDownload: !localJar,
+        skipUpdateCheck: inCI || !!localJar
     }
     await validator.start(validatorConfig);
     await validator.loadIG("hl7.fhir.uv.tx-ecosystem", "current");

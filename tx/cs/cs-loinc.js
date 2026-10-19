@@ -149,6 +149,12 @@ class LoincServices extends BaseCSServices {
     return 'LOINC';
   }
 
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'Logical Observation Identifier Names and Codes (LOINC)';
+  }
+
   description() {
     return 'LOINC';
   }

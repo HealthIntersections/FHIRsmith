@@ -5,6 +5,40 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-mm-dd
+
+### Security
+
+- VSAC: the default base URL is now `https://cts.nlm.nih.gov/fhir`. It was http, and VSAC only redirects to https after the request (which carries the API key) has been sent. A configured `baseUrl` that is http is logged as a warning
+- VSAC: a search bundle's `next` link is only followed on the VSAC server (the same host, under `baseUrl`), and always over `baseUrl`'s scheme, so a link can't send the API key elsewhere or over http
+- Token: the JSON API takes the API key in a header - `Authorization: Bearer {key}` or `X-API-Key: {key}` - instead of the URL path (`/token/api/validate`, `/token/api/usage`, `/token/api/stats`), so keys don't end up in access logs. The usage statistics no longer include the IP address of the last request, and the key list's delete button no longer puts the key's name into an inline script
+
+### Added
+
+- IPS module (`/ips`): collections ("projects") of International Patient Summary documents, each with its own FHIR endpoint (`POST`/`GET {project}/Bundle`, `Bundle/{id}`, `metadata`) and web pages - a filterable list, the document's assembled narrative, and a submission form. The administrator (login in the configuration) creates projects and users and assigns managers; managers set a project's submission token and delete documents. Searches support Bundle's parameters and chain to the Composition's and Patient's (`composition.date`, `composition.patient.name`, ...), indexed with fhirpath.js. A document's page has narrative, terminology (every CodeableConcept, with code systems linked to the configured terminology server or, for SNOMED CT, LOINC etc., to their browsers), validation and JSON views. Received documents are queued for a background processing pipeline, of which two steps exist: validation with the FHIR validator (as the shl module runs it) against the IPS Bundle profile, the outcome kept with the document; and a terminology check of every CodeableConcept against the value sets the IPS profiles bind to its element (read from the IPS package), by `ValueSet/$validate-code` on the configured terminology server, the verdicts written as extensions into a second, analysed copy of the document and shown in the terminology view. See `ips/readme.md`
+- `library/fhir-search-values.js`: the date range, prefix and comma-splitting parts of FHIR search, moved out of the testing module for sharing
+- `library/package-manager.js`: a cached package folder with no `package/package.json` (a download that failed after the folder was made) is fetched again instead of being used
+
+### Security
+
+- Narrative check (`library/narrative-check.js`): the regex that stripped CSS comments from a `style` attribute was quadratic in the attribute's length - a few hundred KB of `/* ` held the event loop for seconds, and a resource with such a narrative could be sent to any module that checks narratives. Comments are now stripped in one pass
+- IPS: narratives are shown as parsed, never as the string submitted, so an unterminated tag at the end of one narrative can't swallow the start of the next on the page and turn its text into attributes of a live element (the active-content check parses each narrative on its own, so it didn't see this). Reference resolution within a document is indexed rather than scanned (a document with tens of thousands of entries took a minute of CPU per page view); index rows per search parameter, sort keys per search, the JSON a search page carries, the terminology-server questions per document and the remembered answers are all bounded; an in-process terminology request has a timeout; error responses and the public document pages no longer carry internal detail (the reason a document's processing failed is shown to its project's managers); the submission form no longer gives every visitor a session; an unknown login takes as long as a known one; verdicts in a submitted document's own extensions are never shown as analysis
+- SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`). Description filters (`{{ D }}`), concept filters (`{{ C }}`) and history supplements (`{{ + }}`) are now parsed and rejected as `UNSUPPORTED_ECL` rather than failing as a lexer error
+- SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
+- SNOMED CT ECL: `AND` and `OR` between refinements - between attributes (`: A = x AND B = y`, `: A = x OR B = y`, with brackets for nesting), within an attribute group (`{ A = x OR B = y }`) and between groups (`{ ... } OR { ... }`). Mixing AND and OR without brackets is rejected, as for compound expressions. Previously only `,` (conjunction) was accepted
+- SNOMED CT ECL: description filters (`{{ D ... }}`) - `term` (match and `wild:` search terms, single or a set), `language`, `typeId` and `type` (syn/fsn/def), `dialectId` and `dialect` (en-us, en-gb and the other aliases in the ECL specification) with acceptability sets, `moduleId`, `effectiveTime`, `active` and `id`. The filters in one block apply to the same description; only active descriptions are considered unless `active` is given
+- SNOMED CT ECL: comments (`/* ... */`), top and bottom of set (`!!> (...)`, `!!< (...)`), and attribute names that are expressions rather than a single concept (`: << 762705008 = ...`, `: (A OR B) = ...`, `: ^ refset = ...`, `: * = ...`, and the same after `.` in dotted expressions)
+- SNOMED CT ECL: concrete values in refinements (`= #5`, `!= "x"`, `= match:"x"`, `= true`, ...) and alternate identifiers (`"ICD10#A01.1"`, `SCTID#123`) are now parsed, so they are reported as `UNSUPPORTED_ECL` with a message saying what is missing (concrete value relationships / alternate identifier reference sets are not loaded) rather than as a syntax error
+
+### Fixed
+
+- SNOMED CT ECL: a hierarchy operator on a bracketed expression was silently dropped - `< (A OR B)` returned A and B themselves rather than their descendants. It now applies to every member of the set, as do operators on `*` and on `^ refset`, which were previously rejected as unsupported
+- SNOMED CT ECL: an evaluation error is now `UNSUPPORTED_ECL` unless it is about a concept that does not exist (`INVALID_ECL`); it was classified by matching the error text, which filed `= true` as a syntax error. A concept id that is not 6-18 digits is rejected by the parser
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [0.17.0] - 2026-10-17
 
 An extensive security review, which hardened many things, but no actual securty notifications needed. Plus improvemnts to text search in terminology filters

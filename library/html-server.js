@@ -88,6 +88,9 @@ class HtmlServer {
       .replace(/\[%library-link%\]/g, () => renderOptions.libraryLink || '')
       // raw HTML too: the OpenAPI description, where a template's module has one in some places only
       .replace(/\[%api-link%\]/g, () => renderOptions.apiLink || '')
+      // raw HTML: a link to the current project (or other context) in the nav bar, where the
+      // module has one
+      .replace(/\[%context-link%\]/g, () => renderOptions.contextLink || '')
       .replace(/\[%api-head%\]/g, () => renderOptions.apiHead || '');
     
     // Handle any custom template variables

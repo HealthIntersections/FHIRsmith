@@ -209,6 +209,14 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-lookup-2"}, "4.0");
   });
 
+  it("simple-lookup-zxx" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-lookup-zxx"}, "5.0");
+  });
+
+  it("simple-lookup-zxx" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-lookup-zxx"}, "4.0");
+  });
+
   it("simple-expand-all-count" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-all-count"}, "5.0");
   });
@@ -8777,6 +8785,14 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"lookup-mms-uri"}, "4.0");
   });
 
+  it("lookup-mms-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-id"}, "5.0");
+  });
+
+  it("lookup-mms-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-id"}, "4.0");
+  });
+
   it("lookup-mms-grouper" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"lookup-mms-grouper"}, "5.0");
   });
@@ -8873,12 +8889,36 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"lookup-bad-language"}, "4.0");
   });
 
+  it("lookup-mms-zxx" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-zxx"}, "5.0");
+  });
+
+  it("lookup-mms-zxx" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-zxx"}, "4.0");
+  });
+
   it("lookup-pc-simple" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-simple"}, "5.0");
   });
 
   it("lookup-pc-simple" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-simple"}, "4.0");
+  });
+
+  it("lookup-pc-breast" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast"}, "5.0");
+  });
+
+  it("lookup-pc-breast" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast"}, "4.0");
+  });
+
+  it("lookup-pc-breast-no-metadata" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast-no-metadata"}, "5.0");
+  });
+
+  it("lookup-pc-breast-no-metadata" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast-no-metadata"}, "4.0");
   });
 
   it("lookup-pc-uri-form" + 'R5', async () => {
@@ -8889,12 +8929,84 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-uri-form"}, "4.0");
   });
 
+  it("lookup-pc-id-form" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-id-form"}, "5.0");
+  });
+
+  it("lookup-pc-id-form" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-id-form"}, "4.0");
+  });
+
+  it("lookup-pc-residual-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-residual-id"}, "5.0");
+  });
+
+  it("lookup-pc-residual-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-residual-id"}, "4.0");
+  });
+
   it("lookup-pc-cluster" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-cluster"}, "5.0");
   });
 
   it("lookup-pc-cluster" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-cluster"}, "4.0");
+  });
+
+  it("lookup-pc-cluster-properties" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-properties"}, "5.0");
+  });
+
+  it("lookup-pc-cluster-properties" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-properties"}, "4.0");
+  });
+
+  it("lookup-pc-cluster-medication" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-medication"}, "5.0");
+  });
+
+  it("lookup-pc-cluster-medication" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-medication"}, "4.0");
+  });
+
+  it("lookup-pc-injury-fall" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall"}, "5.0");
+  });
+
+  it("lookup-pc-injury-fall" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall"}, "4.0");
+  });
+
+  it("lookup-pc-injury-fall-no-metadata" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall-no-metadata"}, "5.0");
+  });
+
+  it("lookup-pc-injury-fall-no-metadata" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall-no-metadata"}, "4.0");
+  });
+
+  it("lookup-pc-retinopathy" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-retinopathy"}, "5.0");
+  });
+
+  it("lookup-pc-retinopathy" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-retinopathy"}, "4.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster"}, "5.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster"}, "4.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster-no-metadata" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster-no-metadata"}, "5.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster-no-metadata" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster-no-metadata"}, "4.0");
   });
 
   it("lookup-pc-repeated-value" + 'R5', async () => {
@@ -8961,6 +9073,70 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-good-display"}, "4.0");
   });
 
+  it("cs-validate-display-case" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-display-case"}, "5.0");
+  });
+
+  it("cs-validate-display-case" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-display-case"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-good" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-good"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-good" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-good"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-pc" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-pc"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-pc" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-pc"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-wrong" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-wrong"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-wrong" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-wrong"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-no-short" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-no-short"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-no-short" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-no-short"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-short" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-short"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-short" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-short"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-icf" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-icf"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-icf" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-icf"}, "4.0");
+  });
+
+  it("cs-validate-coding-cc-foundation" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-foundation"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-foundation" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-foundation"}, "4.0");
+  });
+
   it("cs-validate-bad-display" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-bad-display"}, "5.0");
   });
@@ -9001,12 +9177,156 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-pc"}, "4.0");
   });
 
+  it("cs-validate-pc-injury-fall" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-injury-fall"}, "5.0");
+  });
+
+  it("cs-validate-pc-injury-fall" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-injury-fall"}, "4.0");
+  });
+
+  it("cs-validate-pc-retinopathy" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-retinopathy"}, "5.0");
+  });
+
+  it("cs-validate-pc-retinopathy" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-retinopathy"}, "4.0");
+  });
+
+  it("cs-validate-pc-pneumonia-cluster" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-pneumonia-cluster"}, "5.0");
+  });
+
+  it("cs-validate-pc-pneumonia-cluster" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-pneumonia-cluster"}, "4.0");
+  });
+
+  it("cs-validate-nf-normal" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-normal"}, "5.0");
+  });
+
+  it("cs-validate-nf-normal" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-normal"}, "4.0");
+  });
+
+  it("cs-validate-nf-qualifier-order" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-qualifier-order"}, "5.0");
+  });
+
+  it("cs-validate-nf-qualifier-order" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-qualifier-order"}, "4.0");
+  });
+
+  it("cs-validate-nf-same-axis" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-same-axis"}, "5.0");
+  });
+
+  it("cs-validate-nf-same-axis" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-same-axis"}, "4.0");
+  });
+
+  it("cs-validate-nf-member-order" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-order"}, "5.0");
+  });
+
+  it("cs-validate-nf-member-order" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-order"}, "4.0");
+  });
+
+  it("cs-validate-nf-member-qualifiers" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-qualifiers"}, "5.0");
+  });
+
+  it("cs-validate-nf-member-qualifiers" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-qualifiers"}, "4.0");
+  });
+
+  it("cs-validate-nf-binding-a" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-a"}, "5.0");
+  });
+
+  it("cs-validate-nf-binding-a" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-a"}, "4.0");
+  });
+
+  it("cs-validate-nf-binding-b" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-b"}, "5.0");
+  });
+
+  it("cs-validate-nf-binding-b" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-b"}, "4.0");
+  });
+
+  it("cs-validate-nf-duplicate-qualifier" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-qualifier"}, "5.0");
+  });
+
+  it("cs-validate-nf-duplicate-qualifier" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-qualifier"}, "4.0");
+  });
+
+  it("cs-validate-nf-duplicate-member" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-member"}, "5.0");
+  });
+
+  it("cs-validate-nf-duplicate-member" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-member"}, "4.0");
+  });
+
+  it("cs-validate-nf-not-duplicate" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-not-duplicate"}, "5.0");
+  });
+
+  it("cs-validate-nf-not-duplicate" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-not-duplicate"}, "4.0");
+  });
+
+  it("cs-validate-nf-syntax-kept" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-syntax-kept"}, "5.0");
+  });
+
+  it("cs-validate-nf-syntax-kept" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-syntax-kept"}, "4.0");
+  });
+
+  it("cs-validate-nf-icf-dot" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-icf-dot"}, "5.0");
+  });
+
+  it("cs-validate-nf-icf-dot" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-icf-dot"}, "4.0");
+  });
+
+  it("cs-validate-nf-axis-not-multiple" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-axis-not-multiple"}, "5.0");
+  });
+
+  it("cs-validate-nf-axis-not-multiple" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-axis-not-multiple"}, "4.0");
+  });
+
+  it("cs-validate-nf-short-codes" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-short-codes"}, "5.0");
+  });
+
+  it("cs-validate-nf-short-codes" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-short-codes"}, "4.0");
+  });
+
   it("cs-validate-uri" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-uri"}, "5.0");
   });
 
   it("cs-validate-uri" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-uri"}, "4.0");
+  });
+
+  it("cs-validate-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-id"}, "5.0");
+  });
+
+  it("cs-validate-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-id"}, "4.0");
   });
 
   it("expand-pcs" + 'R5', async () => {
@@ -9039,6 +9359,14 @@ describe('icd-11', () => {
 
   it("expand-pcs-filter" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"expand-pcs-filter"}, "4.0");
+  });
+
+  it("expand-pcs-filter-code" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-filter-code"}, "5.0");
+  });
+
+  it("expand-pcs-filter-code" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-filter-code"}, "4.0");
   });
 
   it("expand-pcs-fr" + 'R5', async () => {
@@ -9081,6 +9409,14 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-enum-uri"}, "4.0");
   });
 
+  it("expand-adhoc-enum-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-enum-id"}, "5.0");
+  });
+
+  it("expand-adhoc-enum-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-enum-id"}, "4.0");
+  });
+
   it("expand-adhoc-isa" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-isa"}, "5.0");
   });
@@ -9097,6 +9433,14 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-isa-uri"}, "4.0");
   });
 
+  it("expand-adhoc-isa-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-isa-id"}, "5.0");
+  });
+
+  it("expand-adhoc-isa-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-isa-id"}, "4.0");
+  });
+
   it("expand-adhoc-bad-code" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-bad-code"}, "5.0");
   });
@@ -9111,6 +9455,14 @@ describe('icd-11', () => {
 
   it("expand-pcs-uri-form" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"expand-pcs-uri-form"}, "4.0");
+  });
+
+  it("expand-pcs-id-form" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-id-form"}, "5.0");
+  });
+
+  it("expand-pcs-id-form" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-id-form"}, "4.0");
   });
 
   it("expand-pcs-code-form" + 'R5', async () => {
@@ -9145,12 +9497,252 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"vs-validate-adhoc"}, "4.0");
   });
 
+  it("vs-validate-adhoc-uri" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-uri"}, "5.0");
+  });
+
+  it("vs-validate-adhoc-uri" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-uri"}, "4.0");
+  });
+
+  it("vs-validate-adhoc-id" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-id"}, "5.0");
+  });
+
+  it("vs-validate-adhoc-id" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-id"}, "4.0");
+  });
+
   it("vs-validate-adhoc-out" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"vs-validate-adhoc-out"}, "5.0");
   });
 
   it("vs-validate-adhoc-out" + 'R4', async () => {
     await runTest({"suite":"icd-11","test":"vs-validate-adhoc-out"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-good" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-good"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-good" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-good"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-pc" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-pc"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-pc" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-pc"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-wrong" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-wrong"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-wrong" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-wrong"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-no-short" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-no-short"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-no-short" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-no-short"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-short" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-short"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-short" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-short"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-icf" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-icf"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-icf" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-icf"}, "4.0");
+  });
+
+  it("vs-validate-coding-cc-foundation" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-foundation"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-foundation" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-foundation"}, "4.0");
+  });
+
+  it("expand-mms-total" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-total"}, "5.0");
+  });
+
+  it("expand-mms-total" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-total"}, "4.0");
+  });
+
+  it("expand-icf-total" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-icf-total"}, "5.0");
+  });
+
+  it("expand-icf-total" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-icf-total"}, "4.0");
+  });
+
+  it("expand-foundation-total" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-foundation-total"}, "5.0");
+  });
+
+  it("expand-foundation-total" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-foundation-total"}, "4.0");
+  });
+
+  it("expand-mms-extension-total" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-extension-total"}, "5.0");
+  });
+
+  it("expand-mms-extension-total" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-extension-total"}, "4.0");
+  });
+
+  it("expand-mms-medicaments-total" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-medicaments-total"}, "5.0");
+  });
+
+  it("expand-mms-medicaments-total" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-medicaments-total"}, "4.0");
+  });
+
+  it("lookup-mms-chapter-x" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-chapter-x"}, "5.0");
+  });
+
+  it("lookup-mms-chapter-x" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-chapter-x"}, "4.0");
+  });
+
+  it("lookup-mms-window" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-window"}, "5.0");
+  });
+
+  it("lookup-mms-window" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-window"}, "4.0");
+  });
+
+  it("lookup-mms-large-parent" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-large-parent"}, "5.0");
+  });
+
+  it("lookup-mms-large-parent" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-large-parent"}, "4.0");
+  });
+
+  it("lookup-mms-deepest" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-deepest"}, "5.0");
+  });
+
+  it("lookup-mms-deepest" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-deepest"}, "4.0");
+  });
+
+  it("lookup-mms-residual-unspecified" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-residual-unspecified"}, "5.0");
+  });
+
+  it("lookup-mms-residual-unspecified" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-residual-unspecified"}, "4.0");
+  });
+
+  it("lookup-mms-pc-scales" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales"}, "4.0");
+  });
+
+  it("lookup-mms-pc-scales-no-metadata" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-no-metadata"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales-no-metadata" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-no-metadata"}, "4.0");
+  });
+
+  it("lookup-mms-pc-scales-required" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-required"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales-required" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-required"}, "4.0");
+  });
+
+  it("lookup-mms-source" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-source"}, "5.0");
+  });
+
+  it("lookup-mms-source" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-source"}, "4.0");
+  });
+
+  it("lookup-mms-es" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-es"}, "5.0");
+  });
+
+  it("lookup-mms-es" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-es"}, "4.0");
+  });
+
+  it("lookup-mms-text" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-text"}, "5.0");
+  });
+
+  it("lookup-mms-text" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-text"}, "4.0");
+  });
+
+  it("lookup-foundation-multi-parent" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-foundation-multi-parent"}, "5.0");
+  });
+
+  it("lookup-foundation-multi-parent" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-foundation-multi-parent"}, "4.0");
+  });
+
+  it("lookup-mms-foundation-only" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-foundation-only"}, "5.0");
+  });
+
+  it("lookup-mms-foundation-only" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-foundation-only"}, "4.0");
+  });
+
+  it("subsumes-chapter" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-chapter"}, "5.0");
+  });
+
+  it("subsumes-chapter" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-chapter"}, "4.0");
+  });
+
+  it("subsumes-subsumed-by" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-subsumed-by"}, "5.0");
+  });
+
+  it("subsumes-subsumed-by" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-subsumed-by"}, "4.0");
+  });
+
+  it("subsumes-unrelated" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-unrelated"}, "5.0");
+  });
+
+  it("subsumes-unrelated" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-unrelated"}, "4.0");
   });
 
 });
@@ -9861,6 +10453,37 @@ describe('closure', () => {
     await runTest({"suite":"closure","test":"closure-add-code2a"}, "4.0");
   });
 
+  it("closure-add-code2aI" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI"}, "4.0");
+  });
+
+  it("closure-add-code2" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2"}, "4.0");
+  });
+
+  it("closure-add-code1" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code1"}, "4.0");
+  });
+
+  it("closure-add-code2aII" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aII"}, "4.0");
+  });
+
+  it("closure-add-code2aI-again" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2aI-again"}, "4.0");
+  });
+
+  it("closure-add-code2b" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-add-code2b"}, "4.0");
+  });
+
+  it("closure-resync-2" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-2"}, "4.0");
+  });
+
+  it("closure-resync-0" + 'R4', async () => {
+    await runTest({"suite":"closure","test":"closure-resync-0"}, "4.0");
+  });
 
 });
 
@@ -9971,6 +10594,10 @@ describe('simple-cases', () => {
 
   it("simple-lookup-2" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-lookup-2"}, "5.0");
+  });
+
+  it("simple-lookup-zxx" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-lookup-zxx"}, "5.0");
   });
 
   it("simple-expand-all-count" + 'R5-cached', async () => {
@@ -14357,6 +14984,10 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"lookup-mms-uri"}, "5.0");
   });
 
+  it("lookup-mms-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-id"}, "5.0");
+  });
+
   it("lookup-mms-grouper" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"lookup-mms-grouper"}, "5.0");
   });
@@ -14405,16 +15036,64 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"lookup-bad-language"}, "5.0");
   });
 
+  it("lookup-mms-zxx" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-zxx"}, "5.0");
+  });
+
   it("lookup-pc-simple" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-simple"}, "5.0");
+  });
+
+  it("lookup-pc-breast" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast"}, "5.0");
+  });
+
+  it("lookup-pc-breast-no-metadata" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-breast-no-metadata"}, "5.0");
   });
 
   it("lookup-pc-uri-form" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-uri-form"}, "5.0");
   });
 
+  it("lookup-pc-id-form" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-id-form"}, "5.0");
+  });
+
+  it("lookup-pc-residual-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-residual-id"}, "5.0");
+  });
+
   it("lookup-pc-cluster" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"lookup-pc-cluster"}, "5.0");
+  });
+
+  it("lookup-pc-cluster-properties" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-properties"}, "5.0");
+  });
+
+  it("lookup-pc-cluster-medication" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-cluster-medication"}, "5.0");
+  });
+
+  it("lookup-pc-injury-fall" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall"}, "5.0");
+  });
+
+  it("lookup-pc-injury-fall-no-metadata" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-injury-fall-no-metadata"}, "5.0");
+  });
+
+  it("lookup-pc-retinopathy" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-retinopathy"}, "5.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster"}, "5.0");
+  });
+
+  it("lookup-pc-pneumonia-cluster-no-metadata" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-pc-pneumonia-cluster-no-metadata"}, "5.0");
   });
 
   it("lookup-pc-repeated-value" + 'R5-cached', async () => {
@@ -14449,6 +15128,38 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-good-display"}, "5.0");
   });
 
+  it("cs-validate-display-case" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-display-case"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-good" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-good"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-pc" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-pc"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-wrong" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-wrong"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-no-short" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-no-short"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-short" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-short"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-icf" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-icf"}, "5.0");
+  });
+
+  it("cs-validate-coding-cc-foundation" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-coding-cc-foundation"}, "5.0");
+  });
+
   it("cs-validate-bad-display" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-bad-display"}, "5.0");
   });
@@ -14469,8 +15180,80 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-pc"}, "5.0");
   });
 
+  it("cs-validate-pc-injury-fall" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-injury-fall"}, "5.0");
+  });
+
+  it("cs-validate-pc-retinopathy" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-retinopathy"}, "5.0");
+  });
+
+  it("cs-validate-pc-pneumonia-cluster" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-pneumonia-cluster"}, "5.0");
+  });
+
+  it("cs-validate-nf-normal" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-normal"}, "5.0");
+  });
+
+  it("cs-validate-nf-qualifier-order" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-qualifier-order"}, "5.0");
+  });
+
+  it("cs-validate-nf-same-axis" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-same-axis"}, "5.0");
+  });
+
+  it("cs-validate-nf-member-order" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-order"}, "5.0");
+  });
+
+  it("cs-validate-nf-member-qualifiers" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-member-qualifiers"}, "5.0");
+  });
+
+  it("cs-validate-nf-binding-a" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-a"}, "5.0");
+  });
+
+  it("cs-validate-nf-binding-b" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-binding-b"}, "5.0");
+  });
+
+  it("cs-validate-nf-duplicate-qualifier" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-qualifier"}, "5.0");
+  });
+
+  it("cs-validate-nf-duplicate-member" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-duplicate-member"}, "5.0");
+  });
+
+  it("cs-validate-nf-not-duplicate" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-not-duplicate"}, "5.0");
+  });
+
+  it("cs-validate-nf-syntax-kept" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-syntax-kept"}, "5.0");
+  });
+
+  it("cs-validate-nf-icf-dot" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-icf-dot"}, "5.0");
+  });
+
+  it("cs-validate-nf-axis-not-multiple" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-axis-not-multiple"}, "5.0");
+  });
+
+  it("cs-validate-nf-short-codes" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-nf-short-codes"}, "5.0");
+  });
+
   it("cs-validate-uri" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-uri"}, "5.0");
+  });
+
+  it("cs-validate-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-id"}, "5.0");
   });
 
   it("expand-pcs" + 'R5-cached', async () => {
@@ -14487,6 +15270,10 @@ describe('icd-11', () => {
 
   it("expand-pcs-filter" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"expand-pcs-filter"}, "5.0");
+  });
+
+  it("expand-pcs-filter-code" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-filter-code"}, "5.0");
   });
 
   it("expand-pcs-fr" + 'R5-cached', async () => {
@@ -14509,6 +15296,10 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-enum-uri"}, "5.0");
   });
 
+  it("expand-adhoc-enum-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-enum-id"}, "5.0");
+  });
+
   it("expand-adhoc-isa" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-isa"}, "5.0");
   });
@@ -14517,12 +15308,20 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-isa-uri"}, "5.0");
   });
 
+  it("expand-adhoc-isa-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-adhoc-isa-id"}, "5.0");
+  });
+
   it("expand-adhoc-bad-code" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"expand-adhoc-bad-code"}, "5.0");
   });
 
   it("expand-pcs-uri-form" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"expand-pcs-uri-form"}, "5.0");
+  });
+
+  it("expand-pcs-id-form" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-pcs-id-form"}, "5.0");
   });
 
   it("expand-pcs-code-form" + 'R5-cached', async () => {
@@ -14541,8 +15340,128 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"vs-validate-adhoc"}, "5.0");
   });
 
+  it("vs-validate-adhoc-uri" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-uri"}, "5.0");
+  });
+
+  it("vs-validate-adhoc-id" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-adhoc-id"}, "5.0");
+  });
+
   it("vs-validate-adhoc-out" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"vs-validate-adhoc-out"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-good" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-good"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-pc" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-pc"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-wrong" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-wrong"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-no-short" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-no-short"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-short" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-short"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-icf" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-icf"}, "5.0");
+  });
+
+  it("vs-validate-coding-cc-foundation" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"vs-validate-coding-cc-foundation"}, "5.0");
+  });
+
+  it("expand-mms-total" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-total"}, "5.0");
+  });
+
+  it("expand-icf-total" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-icf-total"}, "5.0");
+  });
+
+  it("expand-foundation-total" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-foundation-total"}, "5.0");
+  });
+
+  it("expand-mms-extension-total" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-extension-total"}, "5.0");
+  });
+
+  it("expand-mms-medicaments-total" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"expand-mms-medicaments-total"}, "5.0");
+  });
+
+  it("lookup-mms-chapter-x" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-chapter-x"}, "5.0");
+  });
+
+  it("lookup-mms-window" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-window"}, "5.0");
+  });
+
+  it("lookup-mms-large-parent" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-large-parent"}, "5.0");
+  });
+
+  it("lookup-mms-deepest" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-deepest"}, "5.0");
+  });
+
+  it("lookup-mms-residual-unspecified" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-residual-unspecified"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales-no-metadata" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-no-metadata"}, "5.0");
+  });
+
+  it("lookup-mms-pc-scales-required" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-pc-scales-required"}, "5.0");
+  });
+
+  it("lookup-mms-source" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-source"}, "5.0");
+  });
+
+  it("lookup-mms-es" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-es"}, "5.0");
+  });
+
+  it("lookup-mms-text" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-text"}, "5.0");
+  });
+
+  it("lookup-foundation-multi-parent" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-foundation-multi-parent"}, "5.0");
+  });
+
+  it("lookup-mms-foundation-only" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"lookup-mms-foundation-only"}, "5.0");
+  });
+
+  it("subsumes-chapter" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-chapter"}, "5.0");
+  });
+
+  it("subsumes-subsumed-by" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-subsumed-by"}, "5.0");
+  });
+
+  it("subsumes-unrelated" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"subsumes-unrelated"}, "5.0");
   });
 
 });

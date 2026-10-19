@@ -60,113 +60,7 @@ const MODIFIERS = {
 // parameters that control the search rather than filter it
 const CONTROL = new Set(['_sort', '_count', '_offset', '_summary', '_format', '_total', '_pretty']);
 
-const PREFIXES = ['eq', 'ne', 'gt', 'lt', 'ge', 'le', 'sa', 'eb', 'ap'];
-
-const DATE_RE = /^(\d{4})(?:-(\d{2})(?:-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?)?)?$/;
-
-/**
- * The range of instants a FHIR date, dateTime or instant covers, as [lo, hi) in epoch
- * milliseconds. "2026" covers the whole year; "2026-09-24T10:00:00.5Z" covers 100ms.
- * A time with no zone is taken as UTC (FHIR requires a zone, but search values often
- * leave it off).
- *
- * @param {string} value
- * @returns {{lo: number, hi: number}|null} null if the value isn't a date
- */
-function dateRange(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const m = DATE_RE.exec(value.trim());
-  if (!m) {
-    return null;
-  }
-  const [, y, mo, d, h, mi, s, frac, tz] = m;
-  const year = parseInt(y, 10);
-  if (!mo) {
-    return { lo: Date.UTC(year, 0, 1), hi: Date.UTC(year + 1, 0, 1) };
-  }
-  const month = parseInt(mo, 10) - 1;
-  if (month < 0 || month > 11) {
-    return null;
-  }
-  if (!d) {
-    return { lo: Date.UTC(year, month, 1), hi: Date.UTC(year, month + 1, 1) };
-  }
-  const day = parseInt(d, 10);
-  if (day < 1 || day > new Date(Date.UTC(year, month + 1, 0)).getUTCDate()) {
-    return null;
-  }
-  if (!h) {
-    return { lo: Date.UTC(year, month, day), hi: Date.UTC(year, month, day + 1) };
-  }
-  const zone = tz || 'Z';
-  const text = `${y}-${mo}-${d}T${h}:${mi}:${s || '00'}${frac || ''}${zone}`;
-  const lo = Date.parse(text);
-  if (Number.isNaN(lo) || parseInt(h, 10) > 23 || parseInt(mi, 10) > 59 || (s && parseInt(s, 10) > 59)) {
-    return null;
-  }
-  let width;
-  if (!s) {
-    width = 60000;
-  } else if (!frac) {
-    width = 1000;
-  } else {
-    // .5 is 100ms wide, .50 10ms, .500 and beyond 1ms
-    width = Math.max(1, Math.pow(10, 3 - (frac.length - 1)));
-  }
-  return { lo, hi: lo + width };
-}
-
-function splitPrefix(value) {
-  const p = value.substring(0, 2);
-  if (PREFIXES.includes(p) && value.length > 2 && !/^[a-z]/.test(value.substring(2))) {
-    return { prefix: p, rest: value.substring(2) };
-  }
-  return { prefix: 'eq', rest: value };
-}
-
-function escapeLike(value) {
-  return value.replace(/[\\%_]/g, (c) => '\\' + c);
-}
-
-/**
- * Split a parameter value on commas, honouring \, as an escaped comma.
- */
-function splitValues(value) {
-  const out = [];
-  let cur = '';
-  for (let i = 0; i < value.length; i++) {
-    const c = value[i];
-    if (c === '\\' && i + 1 < value.length) {
-      cur += value[i + 1];
-      i++;
-    } else if (c === ',') {
-      out.push(cur);
-      cur = '';
-    } else {
-      cur += c;
-    }
-  }
-  out.push(cur);
-  return out.filter(v => v.length > 0);
-}
-
-function dateClause(def, prefix, range) {
-  const { lo, hi } = def;
-  switch (prefix) {
-    case 'eq': return { sql: `(${lo} >= ? AND ${hi} <= ?)`, args: [range.lo, range.hi] };
-    case 'ne': return { sql: `NOT (${lo} >= ? AND ${hi} <= ?)`, args: [range.lo, range.hi] };
-    case 'gt': return { sql: `${hi} > ?`, args: [range.hi] };
-    case 'lt': return { sql: `${lo} < ?`, args: [range.lo] };
-    case 'ge': return { sql: `${hi} > ?`, args: [range.lo] };
-    case 'le': return { sql: `${lo} < ?`, args: [range.hi] };
-    case 'sa': return { sql: `${lo} >= ?`, args: [range.hi] };
-    case 'eb': return { sql: `${hi} <= ?`, args: [range.lo] };
-    case 'ap': return { sql: `(${lo} < ? AND ${hi} > ?)`, args: [range.hi, range.lo] };
-  }
-  return null;
-}
+const { dateRange, splitPrefix, escapeLike, splitValues, dateClause: dateRangeClause } = require('../library/fhir-search-values');
 
 function numberClause(col, prefix, text) {
   if (!/^[+-]?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(text)) {
@@ -230,7 +124,7 @@ function valueClause(def, modifier, value) {
     case 'date': {
       const { prefix, rest } = splitPrefix(value);
       const range = dateRange(rest);
-      return range ? dateClause(def, prefix, range) : null;
+      return range ? dateRangeClause(def, prefix, range) : null;
     }
   }
   return null;

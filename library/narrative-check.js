@@ -61,10 +61,29 @@ function urlsIn(name, value) {
   return [value];
 }
 
+// CSS comments removed by a single pass: the obvious regex, /\/\*[\s\S]*?\*\//g, rescans to
+// the end of the string for every unterminated '/*', which is quadratic - a style attribute
+// of a few hundred KB of '/* ' held the event loop for seconds
+function stripCssComments(css) {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = css.indexOf('/*', i);
+    if (start < 0) {
+      return out + css.substring(i);
+    }
+    out += css.substring(i, start);
+    const end = css.indexOf('*/', start + 2);
+    if (end < 0) {
+      return out;
+    }
+    i = end + 2;
+  }
+}
+
 // CSS with comments removed and escapes decoded, so \65 xpression( is seen as expression(
 function normaliseCss(css) {
-  return String(css)
-    .replace(/\/\*[\s\S]*?\*\//g, '')
+  return stripCssComments(String(css))
     .replace(/\\([0-9a-fA-F]{1,6})\s?/g, (_, hex) => {
       const cp = parseInt(hex, 16);
       return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';

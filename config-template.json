@@ -318,6 +318,55 @@
       "rateLimit": { "windowMinutes": 1, "max": 60 }
       // delete reports received more than this many days ago. Leave it out to keep everything
       // , "retentionDays": 365
+    },
+    // International Patient Summary documents, in projects, at /ips. See ips/readme.md
+    "ips": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "ips/ips-content.db",
+      // the administrator: creates and deletes projects and users, and says who manages
+      // which project. No adminPassword, no administrator
+      "adminUsername": "admin",
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
+      // failed-login attempts allowed per IP per 15 minutes (default 20)
+      "loginAttemptsPerWindow": 20,
+      // the biggest document accepted, in bytes (default 10MB)
+      "maxSize": 10485760,
+      // documents submitted per IP address per window; max 0 turns the limit off
+      "rateLimit": { "windowMinutes": 1, "max": 60 },
+      // the background loop that processes received documents
+      "processing": { "enabled": true, "intervalSeconds": 5 },
+      // the terminology server, for links to code systems and for analysing documents:
+      // an http(s) URL, or - when the tx module is enabled - one of its endpoint paths
+      // (modules.tx.endpoints[].path, e.g. /r4), to which requests are then routed
+      // in-process. Omit it for no links and no analysis
+      "txServer": "/tx/r4",
+      // "txServer": "https://tx.fhir.org/r4",
+      // the IPS package whose profiles say which value sets the IPS prefers for each element
+      // (the terminology check). Defaults to the IPS package the validator loads, else 1.1.0;
+      // false turns the check off
+      // "ipsPackage": "hl7.fhir.uv.ips#1.1.0",
+      // the FHIR validator the processing pipeline validates documents with - the same
+      // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
+      // the data folder's bin directory), on its own port. Documents are validated against the
+      // IPS Bundle profile unless "profiles" says otherwise. Omit the block, or set enabled
+      // false, and documents are not validated (processing fails)
+      "validator": {
+        "enabled": true,
+        "version": "4.0.1",
+        "txServer": "http://tx.fhir.org/r4",
+        "txLog": "./ips-validator-tx.log",
+        "port": 8082,
+        "packages": ["hl7.fhir.uv.ips#1.1.0"],
+        "timeout": 120000,
+        // the validator's own IPS code checks (default true)
+        "checkIpsCodes": true
+        // , "profiles": ["http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips"]
+      }
     }
   }
 }

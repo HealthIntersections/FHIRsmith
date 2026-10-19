@@ -458,6 +458,19 @@ class ValueSetExpander {
           }
         }
 
+        // properties the code system always reports (ICD-11's classificationCode), unless
+        // the request asked for them anyway and the loops here add them
+        if (csProps != null && cs != null && !this.params.properties.includes('*')) {
+          for (const pn of cs.mandatoryExpansionProperties()) {
+            if (!this.params.properties.includes(pn)) {
+              for (const cp of csProps.filter(p => p.code === pn)) {
+                const vn = getValueName(cp);
+                this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, cp[vn], true);
+              }
+            }
+          }
+        }
+
         for (const pn of this.params.properties) {
           if (pn === '*') {
             continue; // done above
@@ -890,8 +903,9 @@ class ValueSetExpander {
             const cctxt = await cs.locate(cc.code, this.allAltCodes);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
+              const ecode = await cs.expansionCode(cctxt.context, cc.code);
               if (this.noDetails) {
-                added = await this.includeCode(cs, null, cs.system(), cs.version(), cc.code, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
+                added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
                     null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
@@ -901,7 +915,7 @@ class ValueSetExpander {
                   if (!ov) {
                     ov = await cs.itemWeight(cctxt.context);
                   }
-                  added = await this.includeCode(cs, null, cs.system(), cs.version(), cc.code, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), await cs.isDeprecated(cctxt.context), await cs.getStatus(cctxt.context), cds,
+                  added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), await cs.isDeprecated(cctxt.context), await cs.getStatus(cctxt.context), cds,
                       await cs.definition(cctxt.context), ov, expansion, valueSets, await cs.extensions(cctxt.context), cc.extension, await cs.properties(cctxt.context), null, excludeInactive, vsSrc.url);
                 }
                 if (added) {
@@ -939,16 +953,29 @@ class ValueSetExpander {
           }
 
           const fset = await cs.executeFilters(prep);
-          if (await cs.filtersNotClosed(prep)) {
+          const filtersOpen = await cs.filtersNotClosed(prep);
+          if (filtersOpen) {
             notClosed.value = true;
-          } else if (fset.length === 1 && !excludeInactive && !this.params.activeOnly) {
-            // this.addToTotal(await cs.filterSize(prep, fset[0]));
+          }
+
+          // count=0 asks only for the total. When this include is the whole value set and its one
+          // filter set is the whole answer - nothing else to add, overlap, exclude or skip - the
+          // total is the set's size, and walking it would only end in VALUESET_TOO_COSTLY once
+          // the set is bigger than the limit. Anything less certain is counted by walking, as
+          // before: an earlier version added filterSize *and* walked, and double counted (#91, #93).
+          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && filter.isNull
+            && !excludeInactive && !this.params.activeOnly && !this.hasExclusions
+            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length)
+            && (compose.include || []).length === 1 && (compose.exclude || []).length === 0;
+          if (countOnly) {
+            this.worker.opContext.log('count only: the filter size is the total');
+            this.addToTotal(await cs.filterSize(prep, fset[0]));
           }
 
           this.worker.opContext.log('iterate filters');
           this.addToTotal(0);
           const cds = new Designations(this.worker.i18n.languageDefinitions);
-          while (await cs.filterMore(prep, fset[0])) {
+          while (!countOnly && await cs.filterMore(prep, fset[0])) {
             await this.worker.checkAndYield('processCodes#5');
             const c = await cs.filterConcept(prep, fset[0]);
             const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1));

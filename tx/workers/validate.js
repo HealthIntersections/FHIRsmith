@@ -582,6 +582,7 @@ class ValueSetChecker {
               messages.push(this.addNormalisationIssue(op, path, code, normalised, cs));
               normalForm.value = normalised;
             }
+            await this.noteClassificationCode(cs, ctxt.context, code, normalForm);
             let msg = await cs.incompleteValidationMessage(ctxt.context, this.params.HTTPLanguages);
             if (msg) {
               op.addIssue(new Issue('information', 'informational', addToPath(path, 'code'), null, msg, 'process-note'));
@@ -1079,6 +1080,8 @@ class ValueSetChecker {
         } else if (c.display && list.designations.length > 0) {
           await this.checkDisplays(list, defLang, c, msg, op, path);
         }
+        await this.checkCodingExtensions(csd, c, path, op, msg);
+        await this.checkCodeIssues(csd, c, path, op, msg);
         // Report the FIRST matching coding, not the last: when a CodeableConcept
         // has several valid codings, the code/system/version/display echoed back
         // are those of the earliest coding that validated. Only capture once
@@ -1349,10 +1352,18 @@ class ValueSetChecker {
       result.addParamCode('normalized-code', normalForm.value);
     }
 
+    let outCode = null;
     if (pcode) {
-      result.addParamCode('code', pcode);
+      outCode = pcode;
     } else if (tcode && mode !== 'codeableConcept') {
-      result.addParamCode('code', tcode);
+      outCode = tcode;
+    }
+    if (outCode) {
+      result.addParamCode('code', outCode);
+      const cc = normalForm.classificationCodes?.get(outCode);
+      if (cc) {
+        result.addParamCode('classificationCode', cc);
+      }
     }
     if (pver) {
       result.addParamStr('version', pver);
@@ -1414,6 +1425,46 @@ class ValueSetChecker {
       result.addParamResource('issues', op.jsonObj);
     }
     return result;
+  }
+
+  /**
+   * Extensions on the coding that its code system defines and so can check (ICD-11's
+   * classificationCode). Anything wrong is an error: the extension is there to be relied on.
+   */
+  async checkCodingExtensions(cs, c, path, op, msg) {
+    if (!cs || typeof cs.checkCodingExtensions !== 'function' || !c.extension || c.extension.length === 0) {
+      return;
+    }
+    const loc = await cs.locate(c.code);
+    if (!loc.context) {
+      return;
+    }
+    for (const p of await cs.checkCodingExtensions(c, loc.context)) {
+      const m = this.worker.i18n.translate(p.msgId, this.params.HTTPLanguages, p.params);
+      msg(m);
+      op.addIssue(new Issue('error', 'invalid', addToPath(path, 'extension[' + p.index + ']'), p.msgId, m, 'invalid-data'));
+    }
+  }
+
+  /**
+   * What the code system has to say about a code that is valid (an ICD-11 expression with two
+   * values on an axis that takes one, say).
+   */
+  async checkCodeIssues(cs, c, path, op, msg) {
+    if (!cs || typeof cs.codeIssues !== 'function' || !c.code) {
+      return;
+    }
+    const loc = await cs.locate(c.code);
+    if (!loc.context) {
+      return;
+    }
+    for (const p of await cs.codeIssues(loc.context)) {
+      const m = this.worker.i18n.translate(p.msgId, this.params.HTTPLanguages, p.params);
+      if (p.severity === 'error') {
+        msg(m);
+      }
+      op.addIssue(new Issue(p.severity, 'business-rule', addToPath(path, 'code'), p.msgId, m, 'code-rule'));
+    }
   }
 
   async checkDisplays(list, defLang, c, msg, op, path) {
@@ -1522,6 +1573,60 @@ class ValueSetChecker {
    *
    * @returns {string} the message, for callers that also collect it into `messages`
    */
+  /**
+   * The code came in its normal form; if the code system also has a classification code for
+   * it (ICD-11's short code), remember it against that code, so the output can report the
+   * one that belongs to whatever ends up in the `code` parameter.
+   */
+  /**
+   * For value set membership found through an enumerated concept or a filter: the same
+   * normal-form reporting the whole-code-system path does, but only for code systems that
+   * have a classification code (ICD-11), so that other code systems' value set results are
+   * unchanged.
+   */
+  async noteValueSetNormalForm(op, path, cs, context, code, normalForm) {
+    if (!(await cs.classificationCode(context))) {
+      return;
+    }
+    const normalised = await cs.code(context);
+    if (normalised && normalised !== code) {
+      this.addNormalisationIssue(op, path, code, normalised, cs);
+      normalForm.value = normalised;
+    }
+    await this.noteClassificationCode(cs, context, code, normalForm);
+  }
+
+  /**
+   * True when an enumerated concept in a value set denotes the same concept as the code
+   * asked about, though spelled differently - ICD-11's short code and entity id. Only
+   * code systems with a classification code have two spellings, so for the rest this is
+   * one call and false.
+   */
+  async sameConceptDifferentForm(cs, code, enumerated) {
+    if (code === enumerated) {
+      return false;
+    }
+    const a = await cs.locate(code);
+    if (!a.context || !(await cs.classificationCode(a.context))) {
+      return false;
+    }
+    const b = await cs.locate(enumerated);
+    return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
+  }
+
+  async noteClassificationCode(cs, context, code, normalForm) {
+    // the code system decides whether this spelling of the code earns a classificationCode
+    // (ICD-11: when it was written with entity ids, in any order - not when it was written
+    // with the classification codes themselves)
+    const cc = await cs.reportedClassificationCode(context, code);
+    if (cc && cc !== code) {
+      if (!normalForm.classificationCodes) {
+        normalForm.classificationCodes = new Map();
+      }
+      normalForm.classificationCodes.set(code, cc);
+    }
+  }
+
   addNormalisationIssue(op, path, code, normalised, cs) {
     const caseOnly = normalised.toLowerCase() === code.toLowerCase();
     const id = caseOnly ? 'CODE_CASE_DIFFERENCE' : 'CODE_NOT_IN_NORMAL_FORM';
@@ -1558,6 +1663,7 @@ class ValueSetChecker {
           this.addNormalisationIssue(op, path, code, normalised, cs);
           normalForm.value = normalised;
         }
+        await this.noteClassificationCode(cs, loc.context, code, normalForm);
         let msg = await cs.incompleteValidationMessage(loc.context, this.params.HTTPLanguages);
         if (msg) {
           op.addIssue(new Issue('information', 'informational', addToPath(path, 'code'), null, msg, 'process-note'));
@@ -1623,10 +1729,20 @@ class ValueSetChecker {
       }
     }
 
+    // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
+    let altMatch = null;
+    if (cset.concept && !cset.concept.some(cc => cc.code === code)) {
+      for (const cc of cset.concept) {
+        if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
+          altMatch = cc;
+          break;
+        }
+      }
+    }
     for (let cc of cset.concept || []) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
-      if (code === c) {
+      if (code === c || cc === altMatch) {
         let loc = await cs.locate(code);
         if (loc.context !== null) {
           loc = loc.context;
@@ -1661,6 +1777,9 @@ class ValueSetChecker {
               inactive.path = path;
               inactive.code = code;
               vstatus.value = await cs.getStatus(loc);
+            }
+            if (role !== 'not in') {
+              await this.noteValueSetNormalForm(op, path, cs, loc, code, normalForm);
             }
             result = true;
             return result;
@@ -1732,6 +1851,9 @@ class ValueSetChecker {
                 vstatus.value = st;
               }
             }
+          }
+          if (role !== 'not in') {
+            await this.noteValueSetNormalForm(op, path, cs, loc, code, normalForm);
           }
           result = true;
           return result;
