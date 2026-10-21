@@ -1,0 +1,43 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-immunization-status-reason",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-immunization-status-reason",
+  "name": "IpsImmunizationStatusReason",
+  "title": "Immunization status reasons (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "Why an immunization was not given: v3 ActReason IMMUNE, MEDPREC, OSTOCK and PATOBJ, and SNOMED CT International descendants of 310376006 |Immunization consent not given|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ActReason",
+        "concept": [
+          {
+            "code": "IMMUNE"
+          },
+          {
+            "code": "MEDPREC"
+          },
+          {
+            "code": "OSTOCK"
+          },
+          {
+            "code": "PATOBJ"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "310376006"
+          }
+        ]
+      }
+    ]
+  }
+}

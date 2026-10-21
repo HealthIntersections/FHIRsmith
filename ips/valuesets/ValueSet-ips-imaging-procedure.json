@@ -1,0 +1,25 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-imaging-procedure",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-imaging-procedure",
+  "name": "IpsImagingProcedure",
+  "title": "Imaging procedures (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "LOINC codes of class RAD.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://loinc.org",
+        "filter": [
+          {
+            "property": "CLASS",
+            "op": "=",
+            "value": "RAD"
+          }
+        ]
+      }
+    ]
+  }
+}

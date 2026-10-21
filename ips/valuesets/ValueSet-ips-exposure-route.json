@@ -1,0 +1,26 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-exposure-route",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-exposure-route",
+  "name": "IpsExposureRoute",
+  "title": "Exposure routes (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 284009009 |Route of administration value|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "284009009"
+          }
+        ]
+      }
+    ]
+  }
+}

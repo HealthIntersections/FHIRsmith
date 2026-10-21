@@ -1,0 +1,50 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-medication",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-medication",
+  "name": "IpsMedication",
+  "title": "Medications (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "Medicinal products, SNOMED CT International: descendants of 373873005 |Pharmaceutical / biologic product| other than vaccines (787859002 |Vaccine product|), and 787481004 |No known medications|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "373873005"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "787481004"
+          }
+        ]
+      }
+    ],
+    "exclude": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "787859002"
+          }
+        ]
+      }
+    ]
+  }
+}

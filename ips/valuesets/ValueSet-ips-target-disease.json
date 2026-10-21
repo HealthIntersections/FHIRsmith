@@ -1,0 +1,171 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-target-disease",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-target-disease",
+  "name": "IpsTargetDisease",
+  "title": "Vaccine target diseases (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT: the diseases vaccines target.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "concept": [
+          {
+            "code": "4834000"
+          },
+          {
+            "code": "6142004"
+          },
+          {
+            "code": "16541001"
+          },
+          {
+            "code": "14189004"
+          },
+          {
+            "code": "14168008"
+          },
+          {
+            "code": "18624000"
+          },
+          {
+            "code": "23502006"
+          },
+          {
+            "code": "23511006"
+          },
+          {
+            "code": "24662006"
+          },
+          {
+            "code": "25225006"
+          },
+          {
+            "code": "27836007"
+          },
+          {
+            "code": "32398004"
+          },
+          {
+            "code": "36653000"
+          },
+          {
+            "code": "36989005"
+          },
+          {
+            "code": "37246009"
+          },
+          {
+            "code": "38907003"
+          },
+          {
+            "code": "40468003"
+          },
+          {
+            "code": "50711007"
+          },
+          {
+            "code": "52947006"
+          },
+          {
+            "code": "56717001"
+          },
+          {
+            "code": "58750007"
+          },
+          {
+            "code": "63650001"
+          },
+          {
+            "code": "66071002"
+          },
+          {
+            "code": "67924001"
+          },
+          {
+            "code": "70036007"
+          },
+          {
+            "code": "75702008"
+          },
+          {
+            "code": "76902006"
+          },
+          {
+            "code": "85904008"
+          },
+          {
+            "code": "111852003"
+          },
+          {
+            "code": "186150001"
+          },
+          {
+            "code": "186772009"
+          },
+          {
+            "code": "186788009"
+          },
+          {
+            "code": "240532009"
+          },
+          {
+            "code": "240613006"
+          },
+          {
+            "code": "372244006"
+          },
+          {
+            "code": "397430003"
+          },
+          {
+            "code": "398102009"
+          },
+          {
+            "code": "398565003"
+          },
+          {
+            "code": "409498004"
+          },
+          {
+            "code": "417093003"
+          },
+          {
+            "code": "442438000"
+          },
+          {
+            "code": "442696006"
+          },
+          {
+            "code": "450715004"
+          },
+          {
+            "code": "707448003"
+          },
+          {
+            "code": "709410003"
+          },
+          {
+            "code": "712986001"
+          },
+          {
+            "code": "713083002"
+          },
+          {
+            "code": "772810003"
+          },
+          {
+            "code": "772828001"
+          },
+          {
+            "code": "840539006"
+          }
+        ]
+      }
+    ]
+  }
+}

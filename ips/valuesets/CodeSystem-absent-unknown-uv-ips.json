@@ -1,0 +1,206 @@
+{
+  "resourceType": "CodeSystem",
+  "id": "absent-unknown-uv-ips",
+  "url": "http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips",
+  "version": "1.1.0",
+  "name": "AbsentAndUnknownDataUvIps",
+  "title": "Absent and Unknown Data - IPS",
+  "status": "active",
+  "experimental": false,
+  "date": "2022-11-22T03:24:39+00:00",
+  "publisher": "Health Level Seven International - Patient Care Work Group",
+  "contact": [
+    {
+      "telecom": [
+        {
+          "system": "url",
+          "value": "http://www.hl7.org/Special/committees/patientcare"
+        }
+      ]
+    }
+  ],
+  "description": "International Patient Summary (IPS) codes for \"known absent\" and \"not known\" data.",
+  "jurisdiction": [
+    {
+      "coding": [
+        {
+          "system": "http://unstats.un.org/unsd/methods/m49/m49.htm",
+          "code": "001"
+        }
+      ]
+    }
+  ],
+  "copyright": "Produced by HL7 under the terms of HL7\u00ae Governance and Operations Manual relating to Intellectual Property (Section 16), specifically its copyright, trademark and patent provisions. This document is licensed under Creative Commons \"No Rights Reserved\" (CC0).",
+  "caseSensitive": true,
+  "hierarchyMeaning": "is-a",
+  "content": "complete",
+  "concept": [
+    {
+      "code": "no-allergy-info",
+      "display": "No information about allergies",
+      "definition": "There is no information available regarding the subject's allergy conditions.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione sulle allergie"
+        }
+      ]
+    },
+    {
+      "code": "no-known-allergies",
+      "display": "No known allergies",
+      "definition": "The subject has no known allergy conditions.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna allergia nota"
+        }
+      ],
+      "concept": [
+        {
+          "code": "no-known-medication-allergies",
+          "display": "No known medication allergies",
+          "definition": "The subject has no known medication allergy conditions.",
+          "designation": [
+            {
+              "language": "it-IT",
+              "value": "Nessuna allergia ai farmaci nota"
+            }
+          ]
+        },
+        {
+          "code": "no-known-environmental-allergies",
+          "display": "No known environmental allergies",
+          "definition": "The subject has no known environmental allergy conditions.",
+          "designation": [
+            {
+              "language": "it-IT",
+              "value": "Nessuna allergia nota ad allergeni ambientali"
+            }
+          ]
+        },
+        {
+          "code": "no-known-food-allergies",
+          "display": "No known food allergies",
+          "definition": "The subject has no known food allergy conditions.",
+          "designation": [
+            {
+              "language": "it-IT",
+              "value": "Nessuna allergia alimentare nota"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "code": "no-device-info",
+      "display": "No information about devices",
+      "definition": "There is no information available regarding implanted or external devices for the subject.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione sui dispositivi medici"
+        }
+      ]
+    },
+    {
+      "code": "no-known-devices",
+      "display": "No known devices in use",
+      "definition": "There are no devices known to be implanted in or used by the subject that have to be reported in this record. This can mean either that there are none known, or that those known are not relevant for the purpose of this record.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Non sono noti dispositivi medici in uso"
+        }
+      ]
+    },
+    {
+      "code": "no-immunization-info",
+      "display": "No information about immunizations",
+      "definition": "The subject's history of previous immunizations is not known.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione sulle vaccinazioni"
+        }
+      ]
+    },
+    {
+      "code": "no-known-immunizations",
+      "display": "No known immunizations",
+      "definition": "There is no history of previous immunizations for the subject that have to be reported in this record. This can mean either that there are none known, or that those known are not relevant for the purpose of this record.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna vaccinazione nota"
+        }
+      ]
+    },
+    {
+      "code": "no-medication-info",
+      "display": "No information about medications",
+      "definition": "There is no information available about the subject's medication use or administration.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione disponibile su terapie farmacologiche"
+        }
+      ]
+    },
+    {
+      "code": "no-known-medications",
+      "display": "No known medications",
+      "definition": "There are no medications for the subject that have to be reported in this record. This can mean either that there are none known, or that those known are not relevant for the purpose of this record.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna terapia farmacologica nota"
+        }
+      ]
+    },
+    {
+      "code": "no-problem-info",
+      "display": "No information about problems",
+      "definition": "There is no information available about the subject's health problems or disabilities.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione disponibile su problemi o disabilit\u00e0"
+        }
+      ]
+    },
+    {
+      "code": "no-known-problems",
+      "display": "No known problems",
+      "definition": "The subject is not known to have any health problems or disabilities that have to be reported in this record. This can mean either that there are none known, or that those known are not relevant for the purpose of this record.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessun problema o disabilit\u00e0 rilevante nota"
+        }
+      ]
+    },
+    {
+      "code": "no-procedure-info",
+      "display": "No information about past history of procedures",
+      "definition": "There is no information available about the subject's past history of procedures.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna informazione disponibile su procedure pregresse"
+        }
+      ]
+    },
+    {
+      "code": "no-known-procedures",
+      "display": "No known procedures",
+      "definition": "The subject has no history of procedures that have to be reported in this record. This can mean either that there are none known, or that those known are not relevant for the purpose of this record.",
+      "designation": [
+        {
+          "language": "it-IT",
+          "value": "Nessuna procedure pregressa rilevante nota"
+        }
+      ]
+    }
+  ]
+}

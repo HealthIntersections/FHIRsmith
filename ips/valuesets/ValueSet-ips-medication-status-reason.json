@@ -1,0 +1,37 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-medication-status-reason",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-medication-status-reason",
+  "name": "IpsMedicationStatusReason",
+  "title": "Medication status reasons (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "Why a medication is not being taken, or was stopped: SNOMED CT International descendants of 266710000 |Drug therapy discontinued| and 410684002 |Drug therapy status|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "266710000"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "410684002"
+          }
+        ]
+      }
+    ]
+  }
+}
