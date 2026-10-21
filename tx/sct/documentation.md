@@ -216,6 +216,17 @@ role group pairing.
   Simple and extended map reference sets (ICD-10, ICD-O, ...) are loaded but
   are not exposed as implicit concept maps, and reverse translation is not
   supported.
+- Edition to edition translation (`<edition>/version/<date>?fhir_cm=edition/<module>`):
+  a `$translate` from an edition to one it depends on (per the module dependency
+  reference set) needs no map - the answer comes from the definitions. A concept in
+  the target edition's modules is its own translation; an inactive concept translates
+  through its historical associations; a fully defined extension concept translates
+  to its normal form (or to the target concept with that normal form, if there is
+  one), provided the normal form uses only target edition content; anything else
+  translates to its proximal target-edition ancestors as `source-is-narrower-than-target`,
+  unless the only such ancestors are top-level hierarchies, which is reported as a
+  reason for no translation. The map is found from `targetSystem` =
+  `http://snomed.info/sct|<target edition[/version/date]>`, or nominated by url.
 - `$closure` works through `subsumesTest`, so adding a post-coordinated
   expression to a closure table hits the `cannot-determine` rule above whenever
   it is unrelated to an existing entry.

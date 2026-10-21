@@ -3786,7 +3786,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
    * comes from the definitions (see SnomedProvider.translateToEdition). The request names
    * the source by its edition URI (with or without a version) and the target as
    * system|edition URI (with or without a version); the map's url is the versioned source
-   * edition URI plus ?fhir_cm=<target edition module>
+   * edition URI plus ?fhir_cm=edition/<target edition module>
    */
   async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
     if (source !== this.system() || !sourceVersion || !dest || !this.isMyEdition(sourceVersion)) {
@@ -3797,14 +3797,22 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
       return;
     }
     const dep = this.snomedServices.editionDependency(dest.substring(bar + 1));
-    if (!dep) {
-      return;
+    if (dep) {
+      conceptMaps.push(this.editionTranslationMap(dep));
     }
-    conceptMaps.push(new ConceptMap({
+  }
+
+  /**
+   * The implicit map from this edition to an edition it depends on. Its url is the one
+   * agreed with SNOMED International: <source edition>/version/<date>?fhir_cm=edition/<target module>
+   * (the source always versioned, whatever the request said)
+   */
+  editionTranslationMap(dep) {
+    return new ConceptMap({
       resourceType: 'ConceptMap',
       internalSource: this,
       editionTranslation: dep,
-      url: `${this.version()}?fhir_cm=${dep.moduleId}`,
+      url: `${this.version()}?fhir_cm=edition/${dep.moduleId}`,
       name: `SNOMED CT ${this.describeVersion(this.version())} to ${getEditionName(dep.moduleId)} Concept Map`,
       description: `The translation implied by the concept definitions of the edition ${this.version()} to the ${getEditionName(dep.moduleId)} that it depends on`,
       status: 'active',
@@ -3812,7 +3820,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         source: this.system(),
         target: this.system()
       }]
-    }));
+    });
   }
 
   /** Whether a source version names this edition: exactly, or the edition without a version */
@@ -3825,7 +3833,20 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
     if (version && (version !== this.version())) {
       return null;
     }
-    if (!url || !url.startsWith(this.system()+"?fhir_cm=")) {
+    if (!url) {
+      return null;
+    }
+    // <edition[/version/date]>?fhir_cm=edition/<module>: this edition's definition-based
+    // translation to an edition it depends on, nominated by url
+    const q = url.indexOf('?fhir_cm=edition/');
+    if (q !== -1) {
+      if (!this.isMyEdition(url.substring(0, q))) {
+        return null;
+      }
+      const dep = this.snomedServices.editionDependency(`http://snomed.info/sct/${url.substring(q + '?fhir_cm=edition/'.length)}`);
+      return dep ? this.editionTranslationMap(dep) : null;
+    }
+    if (!url.startsWith(this.system()+"?fhir_cm=")) {
       return null;
     }
     let id = url.substring(url.indexOf("=")+1);
