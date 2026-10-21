@@ -1001,7 +1001,7 @@ class IpsModule {
       } catch (e) {
         return this.sendOutcome(res, 400, 'structure', 'The body is not valid JSON: ' + e.message);
       }
-    } else if (req.body && typeof req.body === 'object') {
+    } else if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       bundle = req.body;
       if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > this.maxSize) {
         return this.sendOutcome(res, 413, 'too-costly', `Documents can't be bigger than ${this.maxSize} bytes`);
