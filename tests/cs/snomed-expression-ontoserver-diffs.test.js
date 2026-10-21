@@ -7,7 +7,6 @@
  * these concepts), so they are skipped when sct_intl_20250201.cache isn't present.
  */
 
-const path = require('path');
 const fs = require('fs');
 const { SnomedFileReader } = require('../../tx/sct/structures');
 const { SnomedServices } = require('../../tx/cs/cs-snomed');

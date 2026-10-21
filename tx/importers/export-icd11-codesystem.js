@@ -397,7 +397,6 @@ class CodeSystemExporter {
       // Depth-first, emitting each concept with its children inline. Children are written
       // by hand rather than nested into the parent object, so no subtree is ever fully
       // materialised in memory.
-      const self = this;
       const walk = async (id, depth) => {
         const c = ctx.byId.get(id);
         const json = this.conceptJson(c, ctx, { nested: true });
