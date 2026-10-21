@@ -3,7 +3,7 @@ const {
 } = require('../../ips/terminology');
 const { renderTerminology } = require('../../ips/render');
 const { issueCounts, issueSummary } = require('../../ips/pipeline');
-const { IpsBindings } = require('../../ips/ips-bindings');
+const { IpsValueSets, isHl7System } = require('../../ips/ips-valuesets');
 
 const sct = (code, display) => ({ system: 'http://snomed.info/sct', code, display });
 const loinc = (code) => ({ coding: [{ system: 'http://loinc.org', code }] });
@@ -221,8 +221,8 @@ describe('renderTerminology', () => {
   test('can show only the concepts with a problem', () => {
     const { addCheck } = require('../../ips/pipeline');
     const d = doc();
-    addCheck(d.entry[3].resource.code, { result: 'not-in', message: 'no' }, [{ valueSet: 'http://x' }]);
-    addCheck(d.entry[2].resource.code, { result: 'in', valueSet: 'http://x', coding: d.entry[2].resource.code.coding[0], message: 'yes' }, [{ valueSet: 'http://x' }]);
+    addCheck(d.entry[3].resource.code, { result: 'not-in', message: 'no' }, 'http://x');
+    addCheck(d.entry[2].resource.code, { result: 'in', valueSet: 'http://x', coding: d.entry[2].resource.code.coding[0], message: 'yes' }, 'http://x');
     const all = renderTerminology(d, { analysed: true });
     expect(all).toContain('ips-check-not-in" title=');
     // the same document, not analysed: the verdicts are not believed
@@ -266,107 +266,73 @@ describe('issue summaries', () => {
   });
 });
 
-describe('IpsBindings', () => {
-  const IPS = 'http://hl7.org/fhir/uv/ips/';
-  const sd = (url, type, elements, base = 'http://hl7.org/fhir/StructureDefinition/' + type) => ({
-    resourceType: 'StructureDefinition', url, kind: 'resource', derivation: 'constraint', type, baseDefinition: base, snapshot: { element: elements }
-  });
-  const bound = (path, valueSet, strength) => ({ path, type: [{ code: 'CodeableConcept' }], binding: { strength, valueSet } });
+describe('IpsValueSets', () => {
+  const BASE = 'http://healthintersections.com.au/fhirsmith/ValueSet/';
+  const SCT_INTERNATIONAL = 'http://snomed.info/sct/900000000000207008';
 
-  function make() {
-    const b = new IpsBindings('hl7.fhir.uv.ips#1.1.0', { packageManager: {} });
-    b.valueSets.set(IPS + 'ValueSet/problems-uv-ips', { resourceType: 'ValueSet', url: IPS + 'ValueSet/problems-uv-ips', compose: { include: [{ valueSet: [IPS + 'ValueSet/inner|1.1.0'] }] } });
-    b.valueSets.set(IPS + 'ValueSet/inner', { resourceType: 'ValueSet', url: IPS + 'ValueSet/inner', compose: { include: [{ valueSet: [IPS + 'ValueSet/problems-uv-ips'] }, { system: IPS + 'CodeSystem/absent-unknown-uv-ips' }, { system: 'http://snomed.info/sct' }] } });
-    b.codeSystems.set(IPS + 'CodeSystem/absent-unknown-uv-ips', { resourceType: 'CodeSystem', url: IPS + 'CodeSystem/absent-unknown-uv-ips' });
-    b.valueSets.set(IPS + 'ValueSet/labs', { resourceType: 'ValueSet', url: IPS + 'ValueSet/labs' });
-    b.valueSets.set(IPS + 'ValueSet/meds', { resourceType: 'ValueSet', url: IPS + 'ValueSet/meds' });
-    for (const u of b.valueSets.keys()) {
-      b.ipsValueSets.add(u);
-    }
-    b.addProfile(sd(IPS + 'StructureDefinition/Condition-uv-ips', 'Condition', [
-      { path: 'Condition' },
-      bound('Condition.code', IPS + 'ValueSet/problems-uv-ips|1.1.0', 'preferred'),
-      // the base specification's binding: kept at preferred, dropped at example
-      bound('Condition.severity', 'http://hl7.org/fhir/ValueSet/condition-severity', 'preferred'),
-      bound('Condition.bodySite', 'http://hl7.org/fhir/ValueSet/body-site', 'example'),
-      { path: 'Condition.clinicalStatus', type: [{ code: 'code' }], binding: { strength: 'required', valueSet: IPS + 'ValueSet/meds' } }
-    ]));
-    b.addProfile({ ...sd(IPS + 'StructureDefinition/MedicationStatement-uv-ips', 'MedicationStatement', []), snapshot: undefined, differential: { element: [
-      bound('MedicationStatement.medication[x]', IPS + 'ValueSet/meds', 'preferred')
-    ] } });
-    // an abstract results profile with a base binding only, and a lab profile derived from it
-    b.addProfile(sd(IPS + 'StructureDefinition/Observation-results-uv-ips', 'Observation', [bound('Observation.code', 'http://hl7.org/fhir/ValueSet/observation-codes', 'example')]));
-    b.addProfile(sd(IPS + 'StructureDefinition/Observation-results-laboratory-uv-ips', 'Observation', [bound('Observation.code', IPS + 'ValueSet/labs', 'preferred')], IPS + 'StructureDefinition/Observation-results-uv-ips'));
-    // a pattern, as the tobacco use profile has
-    b.addProfile(sd(IPS + 'StructureDefinition/Observation-tobaccouse-uv-ips', 'Observation', [
-      { ...bound('Observation.code', 'http://hl7.org/fhir/ValueSet/observation-codes', 'example'), patternCodeableConcept: { coding: [{ system: 'http://loinc.org', code: '72166-2' }] } }
-    ]));
-    // a logical model and a base resource are ignored
-    b.addProfile({ resourceType: 'StructureDefinition', url: 'x', kind: 'logical', derivation: 'specialization', type: 'X', differential: { element: [] } });
-    return b;
-  }
-
-  test('reads CodeableConcept bindings and patterns from profiles', () => {
-    const b = make();
-    expect(b.count()).toBe(5);
-    expect(b.bindingsFor('Condition.code')).toEqual([{ valueSet: IPS + 'ValueSet/problems-uv-ips', strength: 'preferred', profile: IPS + 'StructureDefinition/Condition-uv-ips' }]);
-    expect(b.bindingsFor('Condition.severity').map(x => x.valueSet)).toEqual(['http://hl7.org/fhir/ValueSet/condition-severity']);
-    expect(b.bindingsFor('Condition.bodySite')).toEqual([]);
-    expect(b.bindingsFor('Condition.clinicalStatus')).toEqual([]);
-    expect(b.bindingsFor('MedicationStatement.medicationCodeableConcept').map(x => x.valueSet)).toEqual([IPS + 'ValueSet/meds']);
-    expect(b.bindingsFor('Observation.code').map(x => x.valueSet || x.pattern)).toEqual([IPS + 'ValueSet/labs', [{ system: 'http://loinc.org', code: '72166-2' }]]);
-    expect(b.bindingsFor('nonsense')).toEqual([]);
-    expect(b.valueSet(IPS + 'ValueSet/problems-uv-ips|1.1.0').url).toBe(IPS + 'ValueSet/problems-uv-ips');
-    // includes are followed, once each, without looping; the IPS's own code systems come too
-    expect(b.referencedValueSets(IPS + 'ValueSet/problems-uv-ips').map(v => v.url)).toEqual([IPS + 'ValueSet/inner', IPS + 'CodeSystem/absent-unknown-uv-ips']);
-    expect(() => new IpsBindings('hl7.fhir.uv.ips', { packageManager: {} })).toThrow(/id#version/);
-  });
-
-  test('chooses profiles by section, following derived profiles and the core package', async () => {
-    const b = make();
-    // a core package with the vitalsigns profile and its value set
-    b.core = {
-      async loadByReference({ url }) {
-        if (url === 'http://hl7.org/fhir/StructureDefinition/vitalsigns') {
-          return sd(url, 'Observation', [bound('Observation.code', 'http://hl7.org/fhir/ValueSet/observation-vitalsignresult', 'extensible')]);
+  test('reads the module\'s own value sets and the elements they apply to', () => {
+    const v = new IpsValueSets().load();
+    expect(v.loaded).toBe(true);
+    expect(v.fallback).toBe(BASE + 'ips-international-codes');
+    expect(v.valueSetFor('Condition.code')).toBe(BASE + 'ips-condition-code');
+    expect(v.valueSetFor('MedicationStatement.medicationCodeableConcept')).toBe(BASE + 'ips-medication');
+    expect(v.valueSetFor('Medication.ingredient.itemCodeableConcept')).toBe(BASE + 'ips-medication-ingredient');
+    expect(v.valueSetFor('Observation.code')).toBe(BASE + 'ips-observation-code');
+    expect(v.valueSetFor('Patient.maritalStatus')).toBeNull();
+    expect(v.valueSetFor('Composition.type')).toBeNull();
+    expect(v.table().length).toBeGreaterThan(30);
+    // every value set is ours or the IPS's; every SNOMED CT include is pinned to the International edition
+    for (const vs of v.valueSets.values()) {
+      expect(vs.url.startsWith(BASE) || vs.url.startsWith('http://hl7.org/fhir/uv/ips/')).toBe(true);
+      for (const part of ['include', 'exclude']) {
+        for (const inc of vs.compose?.[part] || []) {
+          if (inc.system === 'http://snomed.info/sct') {
+            expect(inc.version).toBe(SCT_INTERNATIONAL);
+          }
         }
-        if (url === 'http://hl7.org/fhir/ValueSet/observation-vitalsignresult') {
-          return { resourceType: 'ValueSet', url, compose: { include: [{ system: 'http://loinc.org' }] } };
-        }
-        return null;
       }
-    };
-    const section = (name, code, entries) => [
-      { id: `Composition.section:${name}`, path: 'Composition.section' },
-      { id: `Composition.section:${name}.code`, path: 'Composition.section.code', patternCodeableConcept: { coding: [{ system: 'http://loinc.org', code }] } },
-      { id: `Composition.section:${name}.entry`, path: 'Composition.section.entry', type: [{ code: 'Reference', targetProfile: ['http://hl7.org/fhir/StructureDefinition/Observation'] }] },
-      ...entries.map(([slice, profile]) => ({ id: `Composition.section:${name}.entry:${slice}`, path: 'Composition.section.entry', type: [{ code: 'Reference', targetProfile: [profile] }] }))
-    ];
-    await b.readSections({ snapshot: { element: [
-      { id: 'Composition', path: 'Composition' },
-      ...section('sectionProblems', '11450-4', [['problem', IPS + 'StructureDefinition/Condition-uv-ips']]),
-      ...section('sectionResults', '30954-2', [['results', IPS + 'StructureDefinition/Observation-results-uv-ips']]),
-      ...section('sectionVitalSigns', '8716-3', [['vitalSign', 'http://hl7.org/fhir/StructureDefinition/vitalsigns']]),
-      ...section('sectionSocialHistory', '29762-2', [['tobacco', IPS + 'StructureDefinition/Observation-tobaccouse-uv-ips']]),
-      ...section('sectionOdd', '99999-9', [['x', 'http://example.org/not-anywhere']])
-    ] } });
-    expect([...b.sections.keys()]).toEqual(['http://loinc.org|11450-4', 'http://loinc.org|30954-2', 'http://loinc.org|8716-3', 'http://loinc.org|29762-2', 'http://loinc.org|99999-9']);
-    expect(b.sections.get('http://loinc.org|99999-9')).toEqual([]);
-    // results: the abstract profile's derived lab profile
-    expect(b.bindingsFor('Observation.code', { sectionCode: 'http://loinc.org|30954-2' }).map(x => x.valueSet)).toEqual([IPS + 'ValueSet/labs']);
-    expect(b.bindingsFor('Observation.code', { sectionCode: '30954-2' }).map(x => x.valueSet)).toEqual([IPS + 'ValueSet/labs']);
-    // vital signs: from the core package
-    expect(b.bindingsFor('Observation.code', { sectionCode: 'http://loinc.org|8716-3' }).map(x => x.valueSet)).toEqual(['http://hl7.org/fhir/ValueSet/observation-vitalsignresult']);
-    // social history: the pattern
-    expect(b.bindingsFor('Observation.code', { sectionCode: 'http://loinc.org|29762-2' })).toEqual([{ pattern: [{ system: 'http://loinc.org', code: '72166-2' }], profile: IPS + 'StructureDefinition/Observation-tobaccouse-uv-ips' }]);
-    // a section the IPS doesn't know, or whose profiles don't cover the type: every IPS profile of the type
-    expect(b.bindingsFor('Observation.code', { sectionCode: 'http://loinc.org|11450-4' })).toHaveLength(2);
-    expect(b.bindingsFor('Observation.code', { sectionCode: 'http://loinc.org|99999-9' })).toHaveLength(2);
-    expect(b.bindingsFor('Condition.code', { sectionCode: 'http://loinc.org|11450-4' })).toHaveLength(1);
-    // a core value set is fetched on demand, once
-    expect(b.valueSet('http://hl7.org/fhir/ValueSet/observation-vitalsignresult')).toBeNull();
-    expect((await b.fetchValueSet('http://hl7.org/fhir/ValueSet/observation-vitalsignresult')).url).toBe('http://hl7.org/fhir/ValueSet/observation-vitalsignresult');
-    expect(b.valueSet('http://hl7.org/fhir/ValueSet/observation-vitalsignresult')).not.toBeNull();
-    expect(await b.fetchValueSet('http://nope')).toBeNull();
+    }
+    // the vaccine value set draws on the IPS's absent/unknown codes, which go with the question
+    expect(v.referencedResources(BASE + 'ips-vaccine').map(r => r.url)).toEqual([
+      'http://hl7.org/fhir/uv/ips/ValueSet/absent-or-unknown-immunizations-uv-ips',
+      'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips'
+    ]);
+    expect(v.referencedResources(BASE + 'ips-international-codes').map(r => r.url)).toEqual(['http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips']);
+    expect(v.referencedResources(BASE + 'ips-condition-code')).toEqual([]);
+    expect(v.valueSet(BASE + 'ips-route|1').compose.include.some(i => i.system === 'http://standardterms.edqm.eu')).toBe(true);
+    expect(v.valueSet('http://nowhere')).toBeNull();
+  });
+
+  test('refuses a folder whose map points at a value set that is not there', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ips-vs-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'elements.json'), JSON.stringify({ fallback: 'http://x/fb', elements: { 'Condition.code': 'http://x/missing' } }));
+      fs.writeFileSync(path.join(dir, 'ValueSet-fb.json'), JSON.stringify({ resourceType: 'ValueSet', url: 'http://x/fb', compose: { include: [{ system: 'http://loinc.org' }] } }));
+      expect(() => new IpsValueSets(dir).load()).toThrow(/Condition.code is checked against http:\/\/x\/missing/);
+      fs.writeFileSync(path.join(dir, 'elements.json'), JSON.stringify({ fallback: 'http://x/fb', elements: {} }));
+      fs.writeFileSync(path.join(dir, 'ValueSet-other.json'), JSON.stringify({ resourceType: 'ValueSet', url: 'http://x/other', compose: { include: [{ valueSet: ['http://x/nothere'] }] } }));
+      expect(() => new IpsValueSets(dir).load()).toThrow(/includes http:\/\/x\/nothere/);
+      fs.writeFileSync(path.join(dir, 'ValueSet-other.json'), JSON.stringify({ resourceType: 'Patient' }));
+      expect(() => new IpsValueSets(dir).load()).toThrow(/not a ValueSet or CodeSystem/);
+      fs.unlinkSync(path.join(dir, 'ValueSet-other.json'));
+      fs.writeFileSync(path.join(dir, 'elements.json'), JSON.stringify({ elements: {} }));
+      expect(() => new IpsValueSets(dir).load()).toThrow(/fallback value set is missing/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('knows an HL7 terminology by its URL', () => {
+    expect(isHl7System('http://terminology.hl7.org/CodeSystem/v3-ActReason')).toBe(true);
+    expect(isHl7System('http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips')).toBe(true);
+    expect(isHl7System('http://hl7.org/fhir/sid/icd-10')).toBe(false);
+    expect(isHl7System('http://hl7.org/fhir/sid/cvx')).toBe(false);
+    expect(isHl7System('http://snomed.info/sct')).toBe(false);
+    expect(isHl7System('http://loinc.org')).toBe(false);
+    expect(isHl7System('http://example.org/hl7.org/fhir')).toBe(false);
+    expect(isHl7System(undefined)).toBe(false);
   });
 });
