@@ -958,7 +958,8 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
    * @param version
    * @returns {ConceptMap}
    */
-  async findImplicitConceptMaps(conceptMaps, source, dest) {
+  // eslint-disable-next-line no-unused-vars
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
     if (source == 'https://fhir-terminology.ohdsi.org') {
       let key = this.#getVocabId(dest);
       if (key) {

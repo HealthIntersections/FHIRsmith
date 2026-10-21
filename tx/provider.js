@@ -331,16 +331,25 @@ class Provider {
 
 
 
-  async findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceScope, targetScope, targetSystem, sourceCode = null) {
+  async findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceVersion, sourceScope, targetScope, targetSystem, sourceCode = null) {
     for (let cmp of this.conceptMapProviders) {
       await cmp.findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceScope, targetScope, targetSystem, sourceCode);
     }
     if (sourceSystem && targetSystem) {
+      // Each code system is asked once - except the source system itself, where every
+      // version (every SNOMED edition, say) is asked, since whether a map exists and what
+      // it says can depend on which version the source coding is in. The factory decides
+      // from sourceVersion whether it is the one being asked about.
       let uris = new Set();
+      let asked = new Set(); // a factory is registered under several keys (system, system|version...)
       for (let csp of this.codeSystemFactories.values()) {
-        if (!uris.has(csp.system())) {
+        if (asked.has(csp)) {
+          continue;
+        }
+        if (csp.system() === sourceSystem || !uris.has(csp.system())) {
           uris.add(csp.system());
-          await csp.findImplicitConceptMaps(conceptMaps, sourceSystem, targetSystem);
+          asked.add(csp);
+          await csp.findImplicitConceptMaps(conceptMaps, sourceSystem, sourceVersion, targetSystem);
         }
       }
     }

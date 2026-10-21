@@ -346,10 +346,23 @@
       // in-process. Omit it for no links and no analysis
       "txServer": "/tx/r4",
       // "txServer": "https://tx.fhir.org/r4",
-      // the IPS package whose profiles say which value sets the IPS prefers for each element
-      // (the terminology check). Defaults to the IPS package the validator loads, else 1.1.0;
-      // false turns the check off
-      // "ipsPackage": "hl7.fhir.uv.ips#1.1.0",
+      // the AI assessment (the last processing step; a project turns it on in its settings).
+      // The server's default account, used by a project that has not set its own: provider
+      // is openai (any chat-completions service: OpenAI, OpenRouter, LiteLLM, Groq, Ollama...)
+      // or anthropic (the Messages API); baseUrl is optional (the provider's own by default;
+      // for an OpenAI-compatible service, up to the version, e.g. https://openrouter.ai/api/v1).
+      // dailyCap: assessments per project per day (50); maxBytes: the biggest document sent
+      // (300000); maxTokens: of the answer (16384); timeout: seconds (120); sendNarrative: send
+      // the narratives as submitted (false: the structured data only); a project can override
+      // all but maxBytes, maxTokens and timeout
+      // prices: USD per million tokens by model (or a prefix of the model name), to work out what
+      // each assessment cost, for services that don't say (OpenRouter does). Anthropic's current
+      // models are built in (ips/ai-client.js DEFAULT_PRICES); anything here overrides them
+      // "ai": { "provider": "anthropic", "model": "claude-sonnet-5-5", "apiKey": "...", "dailyCap": 50,
+      //         "prices": { "claude-sonnet-5-5": { "input": 3, "output": 15 } } },
+      // the secret the projects' own AI keys are encrypted with in the database (else the
+      // sessionSecret is used; with neither, projects cannot keep their own accounts)
+      // "aiKeySecret": "<!-- random string -->",
       // the FHIR validator the processing pipeline validates documents with - the same
       // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
       // the data folder's bin directory), on its own port. Documents are validated against the

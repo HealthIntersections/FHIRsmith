@@ -1026,15 +1026,19 @@ class CodeSystemFactoryProvider {
   }
 
   /**
-   * build and return a known concept map from the URL, if there is one.
+   * Add any concept maps this code system implies for translating from source
+   * (a system URI, with the version of the source coding, which may be empty)
+   * to dest (a system URI, possibly with |version).
    *
-   * the conceptmap is never visible to a user; if it has an implicitSource, then
+   * The conceptmap is never visible to a user; if it has an internalSource, then
    * provider.getTranslations will be called when it's actually used
-   * @param url
-   * @param version
-   * @returns {ConceptMap}
+   * @param conceptMaps - the list to add to
+   * @param source - the source system URI
+   * @param sourceVersion - the version of the source coding (may be null)
+   * @param dest - the target system URI, possibly with |version
    */
-  async findImplicitConceptMaps(conceptMaps, source, dest) {
+  // eslint-disable-next-line no-unused-vars
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
     return null;
   }
 

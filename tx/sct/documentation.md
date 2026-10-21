@@ -69,6 +69,11 @@ that the server does not use. `filterECL` is the one that matters.
   relationship record, and rebuilding every cache.
 - Alternate identifiers (`"ICD10#A01.1"`, `SCTID#123`). No alternate
   identifier reference sets are loaded.
+- Reference set field selection on member-of (`^ [targetComponentId] refset`,
+  `^ [referencedComponentId, targetComponentId] refset`). Deliberate: the
+  selected fields, and the referenced components of many reference sets,
+  are descriptions or other non-concept components, which an expansion has
+  no way to represent.
 - History supplements (`{{ + HISTORY-MIN / MOD / MAX }}`). The association
   reference sets they draw on are loaded, so this is implementable.
 
@@ -93,6 +98,8 @@ that the server does not use. `filterECL` is the one that matters.
   this.
 - `^` on a concept that is not a reference set yields an empty result rather
   than an error (Snowstorm's behaviour; agreed in the tx-ecosystem suite).
+  `^` on a reference set whose members are descriptions (a language reference
+  set) is reported as unsupported - there are no concepts to return.
 - The ECL result for a value set filter is cached per (value set, code system
   version), so the first expansion of a large constraint is slow and later ones
   are not.
