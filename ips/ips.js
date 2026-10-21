@@ -60,7 +60,8 @@ const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, p
 const render = require('./render');
 const { TxClient } = require('./tx-client');
 const { STEPS, stripChecks } = require('./pipeline');
-const { IpsBindings, DEFAULT_PACKAGE } = require('./ips-bindings');
+const { IpsValueSets } = require('./ips-valuesets');
+const aiClient = require('./ai-client');
 
 const TEMPLATE = 'ips';
 const DEFAULT_DATABASE = 'ips/ips-content.db';
@@ -185,9 +186,8 @@ class IpsModule {
     // Starting it takes a while, so it happens in the background and the queue waits for it
     this.validator = null;
     this.validatorStarting = null;
-    // the IPS package's bindings, for the terminology check; loaded in the background too
-    this.ipsBindings = null;
-    this.bindingsLoading = null;
+    // the value sets the terminology check holds documents to (ips/valuesets/)
+    this.valueSets = null;
     if (log) {
       this.log = log;
     } else {
@@ -237,11 +237,26 @@ class IpsModule {
       this.log.warn('IPS module: no txServer configured - code systems will not be linked, and documents will not be analysed');
     }
 
+    // the secret the projects' AI keys are encrypted with: its own, else the session's
+    // (when that is configured - a random one would make the keys unreadable after a restart)
+    this.aiSecret = typeof this.config.aiKeySecret === 'string' && this.config.aiKeySecret ? this.config.aiKeySecret : (this.config.sessionSecret || null);
+    if (!this.aiSecret) {
+      this.log.warn('IPS module: no aiKeySecret or sessionSecret configured - projects cannot keep their own AI accounts');
+    }
+    if (this.config.ai?.apiKey) {
+      try {
+        aiClient.checkAccount({ provider: this.config.ai.provider || 'openai', baseUrl: this.config.ai.baseUrl, model: this.config.ai.model, apiKey: this.config.ai.apiKey });
+        this.log.info(`IPS module: AI assessments use ${this.config.ai.provider || 'openai'} / ${this.config.ai.model} by default`);
+      } catch (e) {
+        this.log.error(`IPS module: modules.ips.ai: ${e.message}`);
+      }
+    }
+
     this.setupSession();
     this.setupRootRoutes();
     this.setupProjectRoutes();
     this.setupValidator();
-    this.setupBindings();
+    this.setupValueSets();
     this.setupQueue();
     this.log.info(`IPS module: ${this.store.projects().length} projects, ${this.store.count()} documents in ${dbPath}; max ${this.maxSize} bytes; ` +
       `terminology server ${this.tx ? (this.tx.internal ? `${this.tx.url} (this server)` : this.tx.url) : 'none'}`);
@@ -460,37 +475,41 @@ class IpsModule {
     });
   }
 
-  /**
-   * Load the IPS package the terminology check takes its value sets from: modules.ips.ipsPackage,
-   * else the IPS package the validator loads, else the default. In the background, like the
-   * validator; the queue waits.
-   */
-  setupBindings() {
-    if (this.config.ipsPackage === false) {
-      // no terminology check (tests, or a server with no network)
-      return;
-    }
-    const fromValidator = (this.config.validator?.packages || []).find(p => typeof p === 'string' && p.startsWith('hl7.fhir.uv.ips#'));
-    const pkg = this.config.ipsPackage || fromValidator || DEFAULT_PACKAGE;
+  /** Read the value sets the terminology check holds documents to: the module's own, in ips/valuesets/. */
+  setupValueSets() {
     try {
-      this.ipsBindings = new IpsBindings(pkg, { cacheFolder: folders.subDir('terminology-cache') });
+      this.valueSets = new IpsValueSets().load();
+      this.log.info(`IPS module: ${this.valueSets.valueSets.size} value sets for ${this.valueSets.elements.size} elements read for the terminology check`);
     } catch (e) {
-      this.log.error(`IPS module: ${e.message}`);
-      return;
+      this.valueSets = null;
+      this.log.error(`IPS module: could not read the value sets for the terminology check: ${e.message}`);
     }
-    this.log.info(`IPS module: loading ${pkg} for the terminology check`);
-    this.bindingsLoading = this.ipsBindings.load().then(() => {
-      this.log.info(`IPS module: ${this.ipsBindings.count()} value set bindings to ${this.ipsBindings.valueSets.size} value sets read from ${pkg}`);
-    }).catch(e => {
-      this.log.error(`IPS module: could not load ${pkg}: ${e.message} - documents will not be checked against the IPS value sets`);
-    }).finally(() => {
-      this.bindingsLoading = null;
-    });
   }
 
-  /** Whether the pipeline can run now: not while the validator or the IPS package is still loading. */
+  /**
+   * The AI account a project's assessments use: the project's own, when it has a key, else
+   * the server's default (modules.ips.ai), else null.
+   * @returns {{account: Object, source: 'project'|'server'}|null}
+   */
+  aiAccountFor(project) {
+    const own = this.store.projectAi(project);
+    if (own.keyEnc) {
+      const apiKey = this.aiSecret ? aiClient.decryptKey(own.keyEnc, this.aiSecret) : null;
+      if (apiKey) {
+        return { account: { provider: own.provider, baseUrl: own.baseUrl || '', model: own.model, apiKey }, source: 'project' };
+      }
+      this.log.warn(`IPS module: the AI key for '${project.code}' cannot be read (the key secret has changed?) - using the server's default, if any`);
+    }
+    const cfg = this.config.ai;
+    if (cfg && typeof cfg.apiKey === 'string' && cfg.apiKey && typeof cfg.model === 'string') {
+      return { account: { provider: cfg.provider || 'openai', baseUrl: cfg.baseUrl || '', model: cfg.model, apiKey: cfg.apiKey }, source: 'server' };
+    }
+    return null;
+  }
+
+  /** Whether the pipeline can run now: not while the validator is still starting. */
   pipelineReady() {
-    return !this.validatorStarting && !this.bindingsLoading;
+    return !this.validatorStarting;
   }
 
   /**
@@ -589,14 +608,25 @@ class IpsModule {
     // the analysed copy starts as the master, and the steps adorn it; whatever they managed
     // is kept, even when one of them fails
     row.analysed = stripChecks(structuredClone(row.bundle));
+    this.store.clearResults(row.id);
+    for (const step of this.steps) {
+      this.store.saveStepStatus(row.id, step.name, 'waiting');
+    }
     try {
       for (const step of this.steps) {
+        this.store.saveStepStatus(row.id, step.name, 'running');
+        this.log.info(`IPS module: document ${row.id} ('${project.code}'): ${step.name} starting`);
+        const started = Date.now();
         let note;
         try {
           note = await step.run(row, project, this);
         } catch (e) {
+          this.store.saveStepStatus(row.id, step.name, 'failed', e.message);
+          this.log.error(`IPS module: document ${row.id}: ${step.name} failed after ${Date.now() - started} ms: ${e.message}`);
           throw new Error(`${step.name}: ${e.message}`);
         }
+        this.store.saveStepStatus(row.id, step.name, 'done', typeof note === 'string' ? note : null);
+        this.log.info(`IPS module: document ${row.id}: ${step.name} done in ${Date.now() - started} ms${typeof note === 'string' && note ? ` - ${note}` : ''}`);
         if (typeof note === 'string' && note) {
           notes.push(note);
         }
@@ -841,11 +871,25 @@ class IpsModule {
 
   sendSettings(req, res, message, status = 200) {
     res.status(status);
+    const ai = this.store.projectAi(req.project);
+    const now = Date.now();
+    const usage = {
+      day: this.store.aiUsage(req.project.id, now - 24 * 60 * 60 * 1000),
+      month: this.store.aiUsage(req.project.id, now - 30 * 24 * 60 * 60 * 1000),
+      all: this.store.aiUsage(req.project.id, 0)
+    };
     this.sendHtml(res, `${req.project.name}: Settings`,
-      render.renderSettings(this.projectWithManagers(req.project), this.ctx(req, res), message), Date.now(), req);
+      render.renderSettings(this.projectWithManagers(req.project), this.ctx(req, res), message, {
+        ai, serverDefault: !!(this.config.ai?.apiKey && this.config.ai?.model), canKeep: !!this.aiSecret,
+        serverModel: this.config.ai?.model || null, dailyCap: Number.isInteger(this.config.ai?.dailyCap) ? this.config.ai.dailyCap : 50,
+        serverNarrative: this.config.ai?.sendNarrative === true, usage
+      }), Date.now(), req);
   }
 
   saveSettings(req, res) {
+    if (req.body.form === 'ai') {
+      return this.saveAiSettings(req, res);
+    }
     let token = typeof req.body.token === 'string' ? req.body.token.trim() : '';
     if (req.body.generate === '1') {
       token = crypto.randomUUID();
@@ -857,6 +901,59 @@ class IpsModule {
     this.log.info(`IPS module: submission token for '${req.project.code}' ${token ? 'set' : 'cleared'} by ${req.user.name}`);
     req.project = this.store.projectById(req.project.id);
     this.sendSettings(req, res, token ? 'The token has been set' : 'The token has been cleared; anyone can submit');
+  }
+
+  /** The AI assessment settings: on/off, the account (its key encrypted), the daily cap. */
+  saveAiSettings(req, res) {
+    const b = req.body;
+    const text = (v, max) => (typeof v === 'string' ? v.trim().substring(0, max) : '');
+    const current = this.store.projectAi(req.project);
+    const settings = {
+      enabled: b.enabled === '1',
+      provider: text(b.provider, 20),
+      baseUrl: text(b.baseUrl, 500),
+      model: text(b.model, 200),
+      keyEnc: current.keyEnc || null,
+      dailyCap: current.dailyCap
+    };
+    if (b.narrative === 'send' || b.narrative === 'strip') {
+      settings.sendNarrative = b.narrative === 'send';
+    }
+    if (!aiClient.PROVIDERS[settings.provider]) {
+      settings.provider = 'openai';
+    }
+    const cap = text(b.dailyCap, 10);
+    if (cap !== '') {
+      if (!/^\d{1,6}$/.test(cap)) {
+        return this.sendSettings(req, res, 'The daily cap must be a whole number', 400);
+      }
+      settings.dailyCap = parseInt(cap, 10);
+    } else {
+      delete settings.dailyCap;
+    }
+    const apiKey = text(b.apiKey, 1000);
+    if (b.clearKey === '1') {
+      settings.keyEnc = null;
+    } else if (apiKey) {
+      if (!this.aiSecret) {
+        return this.sendSettings(req, res, 'This server cannot keep AI keys: it has no aiKeySecret (or sessionSecret) configured', 400);
+      }
+      settings.keyEnc = aiClient.encryptKey(apiKey, this.aiSecret);
+    }
+    if (settings.keyEnc) {
+      try {
+        aiClient.checkAccount({ provider: settings.provider, baseUrl: settings.baseUrl, model: settings.model, apiKey: 'x' });
+      } catch (e) {
+        return this.sendSettings(req, res, e.message, 400);
+      }
+    }
+    if (!settings.keyEnc) {
+      settings.keyEnc = null;
+    }
+    this.store.setProjectAi(req.project.id, settings);
+    this.log.info(`IPS module: AI assessment settings for '${req.project.code}' saved by ${req.user.name} (${settings.enabled ? 'on' : 'off'}, ${settings.keyEnc ? 'own account' : 'server default'})`);
+    req.project = this.store.projectById(req.project.id);
+    this.sendSettings(req, res, 'The AI assessment settings have been saved');
   }
 
   // ---- receiving documents ----
@@ -935,7 +1032,7 @@ class IpsModule {
   sendSubmit(req, res, options = {}, status = 200) {
     res.status(status);
     this.sendHtml(res, `${req.project.name}: Submit a Document`,
-      render.renderSubmit(req.project, this.ctx(req, res), { needsToken: tokenConfigured(req.project.token), ...options }), Date.now(), req);
+      render.renderSubmit(req.project, this.ctx(req, res), { needsToken: tokenConfigured(req.project.token), aiEnabled: this.store.projectAi(req.project).enabled === true, ...options }), Date.now(), req);
   }
 
   async submitForm(req, res) {
@@ -968,14 +1065,19 @@ class IpsModule {
     const start = Date.now();
     const id = docId(req.params.id);
     const row = this.store.read(id, req.project.id);
-    if (wantsHtml(req)) {
+    // ?download=1 is the JSON as a file, whatever the client is
+    if (wantsHtml(req) && req.query.download !== '1') {
       if (!row) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
       }
       const view = render.VIEWS.some(([v]) => v === req.query.view) ? req.query.view : render.VIEWS[0][0];
-      row.results = { validation: this.store.readResult(row.id, 'validation') };
+      row.results = {};
+      for (const step of this.steps) {
+        row.results[step.name] = this.store.readResult(row.id, step.name);
+      }
       const ctx = {
         ...this.ctx(req, res),
+        steps: this.steps.map(st => st.name),
         level: typeof req.query.level === 'string' ? req.query.level : undefined,
         problemsOnly: req.query.problems === '1'
       };
@@ -985,6 +1087,9 @@ class IpsModule {
       return this.sendOutcome(res, 404, 'not-found', `No Bundle with id '${req.params.id}'`);
     }
     res.set('Last-Modified', new Date(row.received).toUTCString());
+    if (req.query.download === '1') {
+      res.set('Content-Disposition', `attachment; filename="ips-${req.project.code}-${row.id}.json"`);
+    }
     return this.sendJson(res, 200, row.bundle);
   }
 

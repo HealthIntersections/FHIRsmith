@@ -26,6 +26,10 @@ function elementComment(em) {
   return em.comment || Extensions.readString(em, EXT_ELEMENT_COMMENT);
 }
 
+// marks a match whose target came from the code system itself (translateUsingCodeSystem), so
+// checkTargetConcepts leaves it alone. A symbol key, so it never reaches the JSON output
+const TRUSTED_TARGET = Symbol('trustedTarget');
+
 class TranslateWorker extends TerminologyWorker {
   /**
    * @param {OperationContext} opContext - Operation context
@@ -281,10 +285,10 @@ class TranslateWorker extends TerminologyWorker {
     if (conceptMaps.length == 0) {
       if (reverse) {
         await this.findConceptMapsInAdditionalResources(conceptMaps,targetSystem, targetScope, sourceScope, coding.system);
-        await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, targetSystem, targetScope, sourceScope, coding.system, coding.code);
+        await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, targetSystem, null, targetScope, sourceScope, coding.system, coding.code);
       } else {
         await this.findConceptMapsInAdditionalResources(conceptMaps, coding.system, sourceScope, targetScope, targetSystem);
-        await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, coding.system, sourceScope, targetScope, targetSystem, coding.code);
+        await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, coding.system, coding.version, sourceScope, targetScope, targetSystem, coding.code);
       }
     }
 
@@ -390,7 +394,7 @@ class TranslateWorker extends TerminologyWorker {
     }
 
     // Perform the translation
-    const result = await this.doTranslate(scoped.maps, coding, targetScope, targetSystem, params);
+    const result = await this.doTranslate(scoped.maps, coding, targetScope, targetSystem, txp);
     return res.status(200).json(result);
   }
 
@@ -419,7 +423,11 @@ class TranslateWorker extends TerminologyWorker {
     // speak for another group, and does not suppress another group's fallback.
     for (const g of cm.listGroupsInScope(coding, targetScope, targetSystem)) {
       let groupResult = false;
-      for (const em of (g.element || []).filter(e => e.code === coding.code)) {
+      // the code as given, then its normal form (see sourceCodes): an element written in the
+      // normal form matches a code given in another form, but not the other way round
+      const codes = this.sourceCodes(coding);
+      const elements = codes.flatMap(c => (g.element || []).filter(e => e.code === c));
+      for (const em of elements) {
         // ConceptMap.group.element.noMap says, positively, that this concept has no
         // mapping in this map - which is an answer, not the absence of one. Report it
         // as a match that states the source concept and the map it came from, with no
@@ -871,11 +879,19 @@ class TranslateWorker extends TerminologyWorker {
 
     let translations = await prov.getTranslations(cm, coding, target, reverse);
 
+    // The code system can say why there is no translation (an extension concept whose only
+    // International ancestor is a top-level hierarchy, say): that comes back as an entry
+    // with no code, and goes out as the message in place of the generic one
+    const explanations = translations.filter(t => !t.code && t.message);
+    translations = translations.filter(t => t.code);
+
     if (translations.length > 0) {
       result = true;
+      const usedMaps = new Set();
 
       for (const t of translations) {
-        if (t.map) {
+        if (t.map && !usedMaps.has(t.map)) {
+          usedMaps.add(t.map);
           output.push({
             name: 'used-conceptmap',
             valueUri: t.map
@@ -889,6 +905,15 @@ class TranslateWorker extends TerminologyWorker {
           display: t.display
         };
 
+        const sourceConcept = {
+          system: coding.system,
+          code: coding.code
+        };
+        if (coding.version) {
+          // as given: the version says which edition the code came from, which is
+          // the point of an edition to edition translation
+          sourceConcept.version = coding.version;
+        }
         const matchParts = [];
         matchParts.push({
           name: 'concept',
@@ -896,10 +921,7 @@ class TranslateWorker extends TerminologyWorker {
         });
         matchParts.push({
           name: 'sourceConcept',
-          valueCoding: {
-            system: coding.system,
-            code: coding.code
-          }
+          valueCoding: sourceConcept
         });
         matchParts.push({
           name: 'relationship',
@@ -911,13 +933,26 @@ class TranslateWorker extends TerminologyWorker {
             valueString: t.message
           });
         }
-        matchParts.push({
-          name: 'originMap',
-          valueCanonical: cm.vurl
-        });
+        if (cm.url) {
+          matchParts.push({
+            name: 'originMap',
+            valueCanonical: cm.vurl
+          });
+        }
+        // the code system produced this target itself, from its own content (and for an
+        // edition to edition translation that content may be a version the server does not
+        // hold separately), so there is nothing to check it against: see checkTargetConcepts
         output.push({
           name: 'match',
-          part: matchParts
+          part: matchParts,
+          [TRUSTED_TARGET]: true
+        });
+      }
+    } else {
+      for (const e of explanations) {
+        output.push({
+          name: 'message',
+          valueString: e.message
         });
       }
     }
@@ -1075,6 +1110,9 @@ class TranslateWorker extends TerminologyWorker {
       // across groups - one group having mapped the concept does not stop another group
       // from saying what it does with it.
       const maps = this.sortConceptMaps(conceptMaps);
+      if (!reverse) {
+        await this.noteSourceNormalForm(coding, params);
+      }
       let added = false;
       for (const cm of maps) {
         if (cm.jsonObj.internalSource) {
@@ -1089,12 +1127,13 @@ class TranslateWorker extends TerminologyWorker {
       // or R4's unmatched/disjoint). That is still reported as a match - it is what the map
       // says - but it is not a translation: "The value can only be true if at least one
       // returned match has a relationship other than 'not-related-to'" (tx-ecosystem translate-2b)
+      await this.checkTargetConcepts(result, params);
       const translated = added && result.some(p => p.name === 'match' && this.isPositiveMatch(p));
       result.push({
         name: 'result',
         valueBoolean: translated
       });
-      if (!added) {
+      if (!added && !result.some(p => p.name === 'message')) {
         result.push({
           name: 'message',
           valueString: 'No translations found'
@@ -1123,6 +1162,118 @@ class TranslateWorker extends TerminologyWorker {
       resourceType: 'Parameters',
       parameter: result
     };
+  }
+
+  /**
+   * What the server can say about a code: whether its code system is known, whether the code
+   * is valid there (undefined when the code system's content cannot tell - a fragment), and -
+   * when it is - its normal form, as the code system has it (the same
+   * normal form $validate-code reports as normalized-code) and its display. A code system
+   * (or version) the server cannot resolve is not known.
+   *
+   * @returns {Promise<{known: boolean, valid?: boolean, normal?: string, display?: string}>}
+   */
+  async resolveCode(system, version, code, params) {
+    if (!system || !code) {
+      return { known: false };
+    }
+    this.deadCheck('translate-resolve');
+    let cs;
+    try {
+      cs = await this.findCodeSystem(system, version || '', params, ['complete', 'fragment'], null, true);
+    } catch (error) {
+      if (error instanceof Issue) {
+        return { known: false }; // an unknown version, say
+      }
+      throw error;
+    }
+    if (!cs) {
+      return { known: false };
+    }
+    const loc = await cs.locate(code);
+    if (!loc || !loc.context) {
+      // a fragment, or a code system without its content, cannot say a code is not in it
+      const mode = cs.contentMode ? String(cs.contentMode() || 'complete') : 'complete';
+      return mode === 'complete' ? { known: true, valid: false } : { known: true };
+    }
+    const normal = await cs.code(loc.context);
+    return { known: true, valid: true, normal: normal || code, display: await cs.display(loc.context) };
+  }
+
+  /** The normal form of a code, with its display; null when it is the code as given, or unknown. */
+  async normalForm(system, version, code, params) {
+    const r = await this.resolveCode(system, version, code, params);
+    if (!r.valid || r.normal === code) {
+      return null;
+    }
+    return { code: r.normal, display: r.display };
+  }
+
+  /**
+   * The source code may not be in its code system's normal form (an ICD-11 expression written
+   * with short codes, say). A map element written in the normal form still applies to it, so
+   * translation looks for the code as given first, and then for its normal form. The map's own
+   * codes are not normalised: an element written in some other form matches only that code.
+   */
+  async noteSourceNormalForm(coding, params) {
+    const normal = await this.normalForm(coding.system, coding.version, coding.code, params);
+    this.sourceNormal = normal ? { system: coding.system, code: coding.code, normal: normal.code } : null;
+  }
+
+  /** The codes a map element may have for this source: as given, then the normal form. */
+  sourceCodes(coding) {
+    const n = this.sourceNormal;
+    if (n && n.system === coding.system && n.code === coding.code) {
+      return [coding.code, n.normal];
+    }
+    return [coding.code];
+  }
+
+  /**
+   * The target concepts the maps produced are checked against their code systems:
+   *
+   *  - a target in a code system the server does not know gets a `note` part in its match,
+   *    saying that the code has not been validated
+   *  - a target that is not valid in its code system is still reported as the map has it, and
+   *    the response gets an `error` parameter for it (one per invalid target)
+   *  - a valid target that is not in its code system's normal form - an ICD-11 map written with
+   *    short codes, where the normal form is the entity id, say - also carries
+   *    `normalized-concept`: the same concept, as the code system has it
+   *
+   * This applies to any code system. `concept` is always the target as the map states it.
+   */
+  async checkTargetConcepts(result, params) {
+    const errors = [];
+    for (const match of result) {
+      if (match.name !== 'match' || !Array.isArray(match.part) || match[TRUSTED_TARGET]) {
+        continue;
+      }
+      const concept = match.part.find(p => p.name === 'concept')?.valueCoding;
+      if (!concept || !concept.system || !concept.code) {
+        continue;
+      }
+      const r = await this.resolveCode(concept.system, concept.version, concept.code, params);
+      const at = match.part.findIndex(p => p.name === 'concept');
+      const csName = concept.version ? `${concept.system}|${concept.version}` : concept.system;
+      if (!r.known) {
+        match.part.splice(at + 1, 0, { name: 'note', valueString:
+          this.i18n.translate('TRANSLATE_TARGET_CS_UNKNOWN', params.FHTTPLanguages, [csName, concept.code]) });
+      } else if (r.valid === false) {
+        errors.push({ name: 'error', valueString:
+          this.i18n.translate('CONCEPTMAP_GROUP_TARGET_CODE_INVALID', params.FHTTPLanguages, [concept.code, csName]) });
+      } else if (r.valid && r.normal !== concept.code) {
+        const coding = { system: concept.system };
+        if (concept.version) {
+          coding.version = concept.version;
+        }
+        coding.code = r.normal;
+        if (r.display) {
+          coding.display = r.display;
+        }
+        match.part.splice(at + 1, 0, { name: 'normalized-concept', valueCoding: coding });
+      }
+    }
+    result.push(...errors);
   }
 
   /**

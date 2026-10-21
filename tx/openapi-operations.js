@@ -284,11 +284,14 @@ const OPERATIONS = [
         parts: [
           p('relationship', 'code', '1', 'How the target relates to the source'),
           p('concept', 'Coding', '1', 'The target'),
+          p('normalized-concept', 'Coding', '1', 'The target in its code system\'s normal form, when the map states it in another form'),
+          p('note', 'string', '1', 'The target\'s code system is not known, so the code has not been validated'),
           p('product', '(parts)', '*', 'Another element of the product (element, concept)'),
           p('originMap', 'canonical', '1', 'The concept map'),
           p('sourceConcept', 'Coding', '1', 'What was translated (for a translation in reverse)')
         ]
       }),
+      p('error', 'string', '*', 'A target code the maps gave that is not valid in its code system'),
       p('used-conceptmap', 'canonical', '*', 'A concept map that was used')
     ]
   },

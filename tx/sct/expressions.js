@@ -22,10 +22,14 @@ const NO_REFERENCE = 0xFFFFFFFF;
 const MRCM_ATTRIBUTE_DOMAIN_REFSET = 723561005n;
 const MRCM_ATTRIBUTE_RANGE_REFSET = 723562003n;
 // contentTypeId values that apply when validating a postcoordinated expression.
-// 723593002 (precoordinated only) and 723595009 (new precoordinated only) are
-// rules about authoring precoordinated concepts and do not constrain expressions.
+// 723594008 (all precoordinated content) and 723593002 (all new precoordinated
+// content) are rules about authoring precoordinated concepts and do not constrain
+// expressions. (723594008 was used here as the postcoordinated type until Oct 2026,
+// which brought the body-structure part-of attributes into the domain rules and
+// dropped |Has ingredient|, and swapped the range used for the attributes that
+// have a precoordinated-specific range.)
 const MRCM_CONTENT_TYPE_ALL = 723596005n;
-const MRCM_CONTENT_TYPE_POSTCOORDINATED = 723594008n;
+const MRCM_CONTENT_TYPE_POSTCOORDINATED = 723595009n;
 // ruleStrengthId value for an optional rule (the other value, 723597001, is mandatory).
 const MRCM_RULE_STRENGTH_OPTIONAL = 723598006n;
 
@@ -1657,8 +1661,8 @@ class SnomedExpressionServices {
         this.checkRefinement(refinement);
         this.checkRefinementDomain(expression, refinement);
         this.checkRefinementRange(refinement);
-        this.checkRefinementGrouped(expression, refinement);
       }
+      this.selfGroupRefinements(expression);
     }
 
     if (expression.hasRefinementGroups()) {
@@ -1679,9 +1683,10 @@ class SnomedExpressionServices {
    * focus concept the attribute is applied to must be in one of the attribute's
    * domains (see applicableDomainRules for how several rules combine).
    *
-   * Attributes with no rule in this edition's MRCM are not checked, and neither
-   * is cardinality (checkExpressionCardinality), grouping (checkRefinementGrouped)
-   * or the range constraint (checkRefinementRange, which needs ECL).
+   * An attribute with no rule in this edition's MRCM is not allowed at all (see
+   * applicableDomainRules). Cardinality (checkExpressionCardinality), grouping
+   * (selfGroupRefinements) and the range constraint (checkRefinementRange, which
+   * needs ECL) are checked elsewhere.
    *
    * @param {SnomedExpression} expression - the expression the refinement is on
    * @param {SnomedRefinement} refinement
@@ -1692,6 +1697,11 @@ class SnomedExpressionServices {
       return;
     }
     const result = this.applicableDomainRules(expression, attribute);
+    if (result.noDomain) {
+      const attrDesc = this.describeConceptForMessage(attribute);
+      throw new Error(`The SNOMED CT concept model does not define any domain for the attribute ${attrDesc},`
+        + ` so it cannot be used in an expression`);
+    }
     if (result.failed) {
       const attrDesc = this.describeConceptForMessage(attribute);
       const focusDesc = result.focus.map(f => this.describeConceptForMessage(f)).join(' + ');
@@ -1722,10 +1732,11 @@ class SnomedExpressionServices {
    *
    * @param {SnomedExpression} expression
    * @param {number} attribute - concept index of the attribute
-   * @returns {{rules: Array, focus: number[], failed: string|null}} the rules that
+   * @returns {{rules: Array, focus: number[], failed: string|null, noDomain?: boolean}} the rules that
    *   apply (for cardinality and grouping - empty when the attribute is out of
    *   domain), the focus concepts, and when the attribute is not allowed on this
-   *   focus, a description of the domain(s) it is restricted to
+   *   focus, a description of the domain(s) it is restricted to (noDomain is set
+   *   when there are none at all)
    */
   applicableDomainRules(expression, attribute) {
     const rules = this.mrcmAttributeDomains().get(attribute);
@@ -1735,11 +1746,20 @@ class SnomedExpressionServices {
         focus.push(concept.reference);
       }
     }
-    if (!rules || rules.length === 0 || focus.length === 0) {
-      // This edition's concept model says nothing about this attribute (3 active
-      // attributes internationally have no domain rule and appear in no
-      // postcoordination domain template), so there is nothing to check it against.
+    if (this.mrcmAttributeDomains().size === 0 || focus.length === 0) {
+      // No MRCM in this edition (or nothing to check against), so the domain check is off
       return { rules: rules || [], focus, failed: null };
+    }
+    if (!rules || rules.length === 0) {
+      // The MRCM attribute domain reference set is the list of attributes that may
+      // be used, and in which domains: an attribute it says nothing about (for
+      // postcoordinated content) is not allowed anywhere. Internationally that is
+      // a handful of concept model attributes that only appear in precoordinated
+      // definitions (|Has definitional manifestation|, |Subject of information|,
+      // the body structure part-of attributes), and it also catches the linkage
+      // concepts that are not concept model attributes at all. This matches
+      // Ontoserver (Oct 2026); before that an attribute with no rule was not checked.
+      return { rules: [], focus, failed: 'nowhere', noDomain: true };
     }
 
     const holds = rule => focus.some(f => rule.isRefset
@@ -1772,44 +1792,77 @@ class SnomedExpressionServices {
   }
 
   /**
-   * Check that an attribute the MRCM marks as grouped is actually in a relationship
-   * group. This is only ever called for refinements that are NOT in a group.
+   * Move each ungrouped refinement whose attribute the MRCM marks as grouped into a
+   * relationship group of its own.
    *
-   * The MRCM attribute domain reference set carries a `grouped` flag per rule, and it
-   * is a real constraint rather than a stylistic preference: `363698007 |Finding site|`
-   * is grouped, so `40468003:363698007=10200004` is not a valid expression even though
-   * every part of it is - it has to be written `40468003:{363698007=10200004}`. The
-   * distinction matters because a group is what ties an attribute to the others that
-   * apply with it, and an expression that omits the braces has not said which.
+   * The MRCM attribute domain reference set carries a `grouped` flag per rule:
+   * `363698007 |Finding site|` is grouped, so the classifiable form of
+   * `40468003:363698007=10200004` is `40468003:{363698007=10200004}`. SNOMED's
+   * postcoordination guide calls the ungrouped spelling Close To User Form and
+   * defines the transformation to the Classifiable Form ("Adding a Self-grouped
+   * Attribute"): each such attribute is placed in a group by itself. That is what
+   * this does, so the ungrouped spelling is accepted (as Ontoserver and Snowstorm
+   * accept it) and everything downstream - cardinality, rendering, the normal form
+   * and so subsumption - sees the grouped form. Until Oct 2026 the ungrouped
+   * spelling was rejected instead.
    *
-   * SNOMED's postcoordination guide calls the ungrouped form Close To User Form and
-   * defines a transformation ("Adding a Self-grouped Attribute") that converts it to
-   * the Classifiable Form. That transformation is not implemented here, so the
-   * ungrouped form is rejected rather than silently repaired: telling the caller their
-   * expression is not classifiable is honest, quietly guessing what they meant is not.
+   * Only the rules for the domain(s) the focus concept is in count (see
+   * applicableDomainRules); an attribute that is ungrouped in every applicable
+   * rule, or that has no applicable rule, is left where it is.
    *
-   * As elsewhere in this check, an attribute with no rule in this edition's MRCM is
-   * left alone. Only the rules for the domain(s) the focus concept is in count
-   * (see applicableDomainRules), and where several of those apply the strictest wins.
-   *
-   * @param {SnomedExpression} expression - the expression the refinement is on
-   * @param {SnomedRefinement} refinement - a refinement outside any group
+   * @param {SnomedExpression} expression - an expression with ungrouped refinements,
+   *   whose references have already been resolved and whose domains have been checked
    */
-  checkRefinementGrouped(expression, refinement) {
-    const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
-    if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
-      return;
+  selfGroupRefinements(expression) {
+    const keep = [];
+    for (const refinement of expression.refinements) {
+      const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
+      let grouped = false;
+      if (attribute !== undefined && attribute !== null && attribute !== NO_REFERENCE) {
+        const rules = this.applicableDomainRules(expression, attribute).rules;
+        grouped = rules.some(rule => rule.grouped);
+      }
+      if (grouped) {
+        const group = new SnomedRefinementGroup();
+        group.refinements.push(refinement);
+        expression.refinementGroups.push(group);
+      } else {
+        keep.push(refinement);
+      }
     }
-    const rules = this.applicableDomainRules(expression, attribute).rules;
-    if (rules.length === 0) {
-      return;
+    expression.refinements = keep;
+  }
+
+  /**
+   * The inverse of selfGroupRefinements, for rendering an expression for a user: a
+   * group holding a single refinement whose attribute the MRCM never groups (laterality,
+   * say) is written as an ungrouped refinement, which is how the normal form rules put
+   * it. The canonical form groups every refinement (see SnomedExpression.canonical), which
+   * is right for subsumption but reads oddly as output. An attribute with any applicable
+   * grouped rule, or no rule at all, stays in its group.
+   *
+   * @param {SnomedExpression} expression - with its references resolved; modified in place
+   * @returns {SnomedExpression} the same expression
+   */
+  ungroupNeverGroupedRefinements(expression) {
+    const keep = [];
+    for (const group of expression.refinementGroups) {
+      let ungroup = false;
+      if (group.refinements.length === 1) {
+        const attribute = group.refinements[0].name ? group.refinements[0].name.reference : NO_REFERENCE;
+        if (attribute !== undefined && attribute !== null && attribute !== NO_REFERENCE) {
+          const rules = this.applicableDomainRules(expression, attribute).rules;
+          ungroup = rules.length > 0 && rules.every(rule => !rule.grouped);
+        }
+      }
+      if (ungroup) {
+        expression.refinements.push(group.refinements[0]);
+      } else {
+        keep.push(group);
+      }
     }
-    if (!rules.some(rule => rule.grouped)) {
-      return;
-    }
-    const attrDesc = this.describeConceptForMessage(attribute);
-    throw new Error(`The SNOMED CT concept model requires the attribute ${attrDesc} to be in a`
-      + ` relationship group, so it cannot be used ungrouped (write it as {${attrDesc} = ...})`);
+    expression.refinementGroups = keep;
+    return expression;
   }
 
   /**
@@ -2022,10 +2075,9 @@ class SnomedExpressionServices {
    * rangeConstraint ECL string.
    *
    * Where an attribute has a range specifically for postcoordinated content
-   * (contentTypeId 723594008) that one replaces the general "all content" range
-   * rather than adding to it - 11 attributes internationally do this. After that
-   * rule every attribute has exactly one applicable constraint, so there is no
-   * question of ANDing or ORing them.
+   * (contentTypeId 723595009) that one replaces the general "all content" range
+   * rather than adding to it. After that rule every attribute has exactly one
+   * applicable constraint, so there is no question of ANDing or ORing them.
    *
    * @returns {Map<number, string>}
    */
@@ -2260,10 +2312,15 @@ class SnomedExpressionServices {
         }
       }
       if (!ok) {
+        const desc = this.describeConceptForMessage(concept.reference);
+        const limitDesc = limits.map(l => {
+          const ix = this.conceptIndexOf(BigInt(l));
+          return ix === null ? l : this.describeConceptForMessage(ix);
+        });
         if (limits.length == 1) {
-          throw new Error(`Concept ${concept.code} is not valid in this context (must be a ${limits[0]})`);
+          throw new Error(`Concept ${desc} is not valid in this context (must be a descendant of ${limitDesc[0]})`);
         } else {
-          throw new Error(`Concept ${concept.code} is not valid in this context (must be a descendent of one of ${limits})`);
+          throw new Error(`Concept ${desc} is not valid in this context (must be a descendant of one of ${limitDesc.join(', ')})`);
         }
       }
     }
@@ -2420,7 +2477,11 @@ class SnomedExpressionServices {
    * Validate refinement
    */
   checkRefinement(refinement) {
-    this.checkConcept(refinement.name, ['410662002', '106237007']);
+    // Only concept model attributes (410662002) may be used as attributes. The wider
+    // 106237007 |Linkage concept| used to be allowed too, which let in things like
+    // 20401003 |With| and 280452008 |Interpretation| that are not attributes in the
+    // concept model (and could never have an MRCM rule anyway).
+    this.checkConcept(refinement.name, ['410662002']);
     this.checkExpression(refinement.value);
   }
 

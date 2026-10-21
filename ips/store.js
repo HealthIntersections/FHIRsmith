@@ -82,6 +82,18 @@ const SCHEMA = `
     PRIMARY KEY (doc_id, step)
   );
 
+  -- the AI assessment calls made, per project: for the daily cap, and what they cost
+  CREATE TABLE IF NOT EXISTS ai_calls (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    at_ms         INTEGER NOT NULL,
+    model         TEXT,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cost_usd      REAL
+  );
+  CREATE INDEX IF NOT EXISTS ai_calls_project ON ai_calls (project_id, at_ms);
+
   CREATE TABLE IF NOT EXISTS ips_index (
     doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     res      TEXT NOT NULL,     -- Bundle | Composition | Patient
@@ -181,6 +193,27 @@ class IpsStore {
     if (!has('documents', 'analysed_json')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN analysed_json TEXT');
     }
+    if (!has('projects', 'ai_json')) {
+      // the project's AI assessment settings (JSON; the API key encrypted)
+      this.db.exec('ALTER TABLE projects ADD COLUMN ai_json TEXT');
+    }
+    if (!has('ai_calls', 'id')) {
+      // the first shape of ai_calls had no id and no usage columns: rebuild it, keeping the calls
+      this.db.exec(`
+        ALTER TABLE ai_calls RENAME TO ai_calls_old;
+        CREATE TABLE ai_calls (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          at_ms         INTEGER NOT NULL,
+          model         TEXT,
+          input_tokens  INTEGER,
+          output_tokens INTEGER,
+          cost_usd      REAL
+        );
+        INSERT INTO ai_calls (project_id, at_ms) SELECT project_id, at_ms FROM ai_calls_old;
+        DROP TABLE ai_calls_old;
+        CREATE INDEX IF NOT EXISTS ai_calls_project ON ai_calls (project_id, at_ms);`);
+    }
   }
 
   close() {
@@ -230,6 +263,48 @@ class IpsStore {
 
   updateProject(id, name, description) {
     return this.db.prepare('UPDATE projects SET name = ?, description = ? WHERE id = ?').run(name, description || null, id).changes > 0;
+  }
+
+  /** A project's AI assessment settings ({enabled, provider, baseUrl, model, keyEnc, dailyCap}), or {}. */
+  projectAi(project) {
+    if (!project || typeof project.ai_json !== 'string') {
+      return {};
+    }
+    try {
+      const v = JSON.parse(project.ai_json);
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    } catch {
+      return {};
+    }
+  }
+
+  setProjectAi(id, settings) {
+    return this.db.prepare('UPDATE projects SET ai_json = ? WHERE id = ?').run(settings ? JSON.stringify(settings) : null, id).changes > 0;
+  }
+
+  /** Record an AI assessment call for a project (the daily cap). @returns {number} its id */
+  recordAiCall(projectId, atMs = Date.now()) {
+    return Number(this.db.prepare('INSERT INTO ai_calls (project_id, at_ms) VALUES (?, ?)').run(projectId, atMs).lastInsertRowid);
+  }
+
+  /** What a call used, once it has answered: the model, the tokens, the cost (when known). */
+  finishAiCall(id, { model, input, output, cost }) {
+    this.db.prepare('UPDATE ai_calls SET model = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?')
+      .run(model || null, Number.isFinite(input) ? input : null, Number.isFinite(output) ? output : null, Number.isFinite(cost) ? cost : null, id);
+  }
+
+  /** The AI assessment calls a project has made since a time. */
+  aiCallsSince(projectId, sinceMs) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM ai_calls WHERE project_id = ? AND at_ms >= ?').get(projectId, sinceMs).n;
+  }
+
+  /**
+   * What a project's AI assessments have used since a time: calls, tokens, cost (the sum
+   * of the calls with a known cost, and how many had one).
+   */
+  aiUsage(projectId, sinceMs = 0) {
+    return this.db.prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output,
+      COALESCE(SUM(cost_usd), 0) AS cost, SUM(cost_usd IS NOT NULL) AS costed FROM ai_calls WHERE project_id = ? AND at_ms >= ?`).get(projectId, sinceMs);
   }
 
   /** Set (or, with null, clear) the token submissions to the project must carry. */
@@ -456,7 +531,11 @@ class IpsStore {
 
   /** Put a document back in the queue. @returns {boolean} whether there was one */
   requeue(id, projectId) {
-    return Number.isInteger(id) && this.stmts.requeue.run(id, projectId).changes > 0;
+    if (!Number.isInteger(id) || this.stmts.requeue.run(id, projectId).changes === 0) {
+      return false;
+    }
+    this.stmts.clearResults.run(id);
+    return true;
   }
 
   // ---- the processing steps' results ----
@@ -470,6 +549,23 @@ class IpsStore {
   readResult(docId, step) {
     const row = this.stmts.readResult.get(docId, step);
     return row ? { made: new Date(row.made_ms).toISOString(), result: JSON.parse(row.json) } : null;
+  }
+
+  /**
+   * Record where a step is with a document - waiting, running, done or failed - with its
+   * note or error, merged into whatever result the step has kept.
+   */
+  saveStepStatus(docId, step, status, message) {
+    const existing = this.readResult(docId, step);
+    const result = existing ? existing.result : {};
+    result.status = status;
+    result.message = message || null;
+    this.saveResult(docId, step, result);
+  }
+
+  /** Drop every step's result for a document (it is being processed again). */
+  clearResults(docId) {
+    this.stmts.clearResults.run(docId);
   }
 
   /** The steps that have results for a document. */

@@ -1,0 +1,18 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-observation-interpretation",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-observation-interpretation",
+  "name": "IpsObservationInterpretation",
+  "title": "Observation interpretations (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "Any v3 ObservationInterpretation code.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation"
+      }
+    ]
+  }
+}

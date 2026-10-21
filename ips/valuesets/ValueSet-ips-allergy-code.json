@@ -1,0 +1,59 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-allergy-code",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-allergy-code",
+  "name": "IpsAllergyCode",
+  "title": "Allergies and intolerances (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 373873005 |Pharmaceutical / biologic product|, 105590001 |Substance|, 420134006 |Propensity to adverse reaction|, and 716186003 |No known allergy|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "373873005"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "105590001"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "420134006"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "716186003"
+          }
+        ]
+      }
+    ]
+  }
+}

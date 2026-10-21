@@ -205,7 +205,7 @@ class CodeSystemExporter {
     }
     if (sys.code !== 'foundation') {
       p.push(
-        { code: 'foundationUri', uri: `${SCHEMA_NS}/source`, type: 'string',
+        { code: 'foundationUri', uri: `${SCHEMA_NS}/source`, type: 'Coding',
           description: 'The Foundation entity this linearization entry was derived from.' },
         { code: 'blockId', uri: `${SCHEMA_NS}/blockId`, type: 'string' },
         { code: 'codeRange', uri: `${SCHEMA_NS}/codeRange`, type: 'string' },
@@ -311,7 +311,8 @@ class CodeSystemExporter {
     if (!c.selectable) property.push({ code: 'notSelectable', valueBoolean: true });
     put('blockId', 'valueString', c.block_id);
     put('codeRange', 'valueString', c.code_range);
-    put('foundationUri', 'valueString', c.source_uri);
+    if (c.source_uri) property.push({ code: 'foundationUri',
+      valueCoding: { system: 'http://id.who.int/icd/entity', code: c.source_uri } });
     put('browserUrl', 'valueString', c.browser_url);
     for (const s of ctx.scales.get(c.id) || []) {
       property.push({ code: 'postcoordinationScale', valueString: s.value_set_uri });
@@ -396,7 +397,6 @@ class CodeSystemExporter {
       // Depth-first, emitting each concept with its children inline. Children are written
       // by hand rather than nested into the parent object, so no subtree is ever fully
       // materialised in memory.
-      const self = this;
       const walk = async (id, depth) => {
         const c = ctx.byId.get(id);
         const json = this.conceptJson(c, ctx, { nested: true });

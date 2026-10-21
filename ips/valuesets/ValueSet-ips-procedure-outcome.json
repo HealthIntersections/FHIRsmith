@@ -1,0 +1,30 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-procedure-outcome",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-procedure-outcome",
+  "name": "IpsProcedureOutcome",
+  "title": "Procedure outcomes (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT: 385669000 |Successful|, 385671000 |Unsuccessful|, 385670004 |Partially successful|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "concept": [
+          {
+            "code": "385669000"
+          },
+          {
+            "code": "385671000"
+          },
+          {
+            "code": "385670004"
+          }
+        ]
+      }
+    ]
+  }
+}

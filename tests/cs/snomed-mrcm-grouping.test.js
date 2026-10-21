@@ -48,45 +48,58 @@ describeIfCache('MRCM attribute grouping', () => {
     services.checkExpression(new SnomedExpressionParser().parse(expression));
   }
 
-  describe('attributes the MRCM marks as grouped', () => {
-    test('rejects an ungrouped |Finding site|', () => {
-      expect(() => check('40468003:363698007=10200004'))
-        .toThrow(/requires the attribute 363698007 \|Finding site\| to be in a relationship group/);
+  /** Validate, and return the (possibly transformed) expression. */
+  function checked(expression) {
+    const e = new SnomedExpressionParser().parse(expression);
+    services.checkExpression(e);
+    return e;
+  }
+
+  describe('attributes the MRCM marks as grouped are self-grouped when written ungrouped', () => {
+    // Close To User Form -> Classifiable Form ("Adding a Self-grouped Attribute"),
+    // as Ontoserver and Snowstorm do. Until Oct 2026 the ungrouped spelling was rejected.
+    test('accepts an ungrouped |Finding site|, and moves it into a group of its own', () => {
+      const e = checked('40468003:363698007=10200004');
+      expect(e.refinements).toHaveLength(0);
+      expect(e.refinementGroups).toHaveLength(1);
+      expect(e.refinementGroups[0].refinements).toHaveLength(1);
+      expect(e.refinementGroups[0].refinements[0].name.code).toBe('363698007');
     });
 
-    test('accepts the same refinement inside a group', () => {
-      expect(() => check('40468003:{363698007=10200004}')).not.toThrow();
+    test('accepts the same refinement inside a group, unchanged', () => {
+      const e = checked('40468003:{363698007=10200004}');
+      expect(e.refinements).toHaveLength(0);
+      expect(e.refinementGroups).toHaveLength(1);
     });
 
-    test('rejects an ungrouped |Associated morphology| too, so the rule is not hard-coded to one attribute', () => {
-      expect(() => check('64572001:116676008=57977008'))
-        .toThrow(/requires the attribute 116676008 \|Associated morphology\| to be in a relationship group/);
+    test('self-groups an ungrouped |Associated morphology| too, so the rule is not hard-coded to one attribute', () => {
+      const e = checked('64572001:116676008=57977008');
+      expect(e.refinements).toHaveLength(0);
+      expect(e.refinementGroups).toHaveLength(1);
     });
 
     test('accepts several grouped attributes together', () => {
       expect(() => check('64572001:{363698007=10200004,116676008=57977008}')).not.toThrow();
     });
 
-    test('rejects a mixed expression where only one refinement escaped the braces', () => {
-      expect(() => check('64572001:{363698007=10200004},116676008=57977008'))
-        .toThrow(/to be in a relationship group/);
+    test('a mixed expression where one refinement escaped the braces gets a second group, not a merged one', () => {
+      const e = checked('64572001:{363698007=10200004},116676008=57977008');
+      expect(e.refinements).toHaveLength(0);
+      expect(e.refinementGroups).toHaveLength(2);
+      expect(e.refinementGroups[1].refinements[0].name.code).toBe('116676008');
     });
 
-    test('names the attribute and shows the corrected form, so the caller can act on it', () => {
-      let message = '';
-      try {
-        check('40468003:363698007=10200004');
-      } catch (e) {
-        message = e.message;
-      }
-      expect(message).toContain('363698007 |Finding site|');
-      expect(message).toContain('{363698007 |Finding site| = ...}');
+    test('the self-grouped form renders with braces', () => {
+      const e = checked('40468003:363698007=10200004');
+      expect(services.renderExpression(e)).toContain('{');
     });
   });
 
   describe('attributes the MRCM marks as ungrouped', () => {
-    test('accepts |Laterality| outside a group, because the concept model says it is ungrouped', () => {
-      expect(() => check('39607008:272741003=24028007')).not.toThrow();
+    test('leaves |Laterality| outside a group, because the concept model says it is ungrouped', () => {
+      const e = checked('39607008:272741003=24028007');
+      expect(e.refinements).toHaveLength(1);
+      expect(e.refinementGroups).toHaveLength(0);
     });
 
     test('accepts a lateralised body structure nested inside a grouped |Finding site|', () => {

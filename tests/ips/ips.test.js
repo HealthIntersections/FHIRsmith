@@ -4,7 +4,9 @@ const request = require('supertest');
 const IpsModule = require('../../ips/ips');
 const { validateDocument } = require('../../ips/ips');
 const { parseSearch, indexDocument, listQueryToSearch, resolveParam } = require('../../ips/search');
-const { STEPS, CHECK_EXTENSION } = require('../../ips/pipeline');
+const { STEPS, CHECK_EXTENSION, TRANSLATION_EXTENSION } = require('../../ips/pipeline');
+const { fakeService } = require('./fake-ai');
+const render = require('../../ips/render');
 const htmlServer = require('../../library/html-server');
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
@@ -87,7 +89,7 @@ async function makeApp(config = {}) {
   const mod = new IpsModule(makeStats(), quietLog);
   await mod.initialize({
     database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false,
-    processing: { enabled: false }, ipsPackage: false, ...config
+    processing: { enabled: false }, ...config
   }, app);
   app.use('/ips', mod.router);
   return { app, mod };
@@ -402,6 +404,19 @@ describe('the web pages', () => {
     expect(all.text).toContain('Jane Alexandra Smith');
     expect(all.text).toContain('Minh Nguyen');
     expect(all.text).not.toContain('delete');
+    // the banner, the actions, the search box and the documentation at the foot
+    expect(all.text).toContain('<div class="ips-banner"><div class="ips-project-name"><b>Demo Project</b></div>');
+    expect(all.text).toContain('<a class="btn btn-primary" href="/ips/demo/submit">Submit a document</a>');
+    expect(all.text).not.toContain('/ips/demo/settings');
+    expect(all.text).toContain('<form method="get" action="/ips/demo" class="ips-filter ips-search mb-3">');
+    expect(all.text).toContain('<a href="/ips/demo/metadata">CapabilityStatement</a>');
+    expect(all.text).toContain('<code>POST /ips/demo/Bundle</code></td><td>submit a document; the response');
+    expect(all.text.indexOf('<h4>Documentation</h4>')).toBeGreaterThan(all.text.indexOf('Minh Nguyen'));
+    mod.store.setProjectToken(1, 'secret-token');
+    expect((await html('/ips/demo')).text).toContain('submit a document (this project requires a token: <code>Authorization: Bearer {token}</code>)');
+    mod.store.setProjectToken(1, null);
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/settings">Settings</a>');
     expect((await html('/ips/demo?name=ngu')).text).toContain('1-1 of 1 document');
     expect((await html('/ips/demo?gender=female')).text).toContain('1-1 of 1 document');
     expect((await html('/ips/demo?date=2026-03-01')).text).toContain('1-1 of 1 document');
@@ -428,18 +443,24 @@ describe('the web pages', () => {
     expect(page.text).toContain('Allergies and Intolerances');
     expect(page.text).toContain('<td>Penicillin</td>');
     expect(page.text).toContain('No known medications');
-    expect(page.text).toContain('submitted');
+    expect(page.text).toContain('<span class="ips-step ips-step-waiting" title="validation - waiting">');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?download=1">Download</a>');
     expect(page.text).not.toContain('Process again');
     const term = await html('/ips/demo/Bundle/1?view=terminology');
-    expect(term.text).toContain('<b>Terminology</b>');
+    expect(term.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=terminology">Terminology</a></li>');
     expect(term.text).toContain('<code>AllergyIntolerance.code</code>');
     expect(term.text).not.toContain('<code>Composition.type</code>');
     expect(term.text).toContain('>Allergies and Intolerances</th>');
     expect(term.text).toContain('<a href="https://browser.ihtsdotools.org/" title="http://snomed.info/sct">SNOMED CT</a>');
     expect(term.text).not.toContain('CodeSystem?url=');
     const json = await html('/ips/demo/Bundle/1?view=json');
-    expect(json.text).toContain('&quot;resourceType&quot;: &quot;Bundle&quot;');
+    expect(json.text).toContain('<pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;Bundle&quot;');
     expect((await html('/ips/demo/Bundle/9')).status).toBe(404);
+    const dl = await request(app).get('/ips/demo/Bundle/1?download=1').set('Accept', 'text/html');
+    expect(dl.headers['content-type']).toMatch(/fhir\+json/);
+    expect(dl.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.json"');
+    expect(dl.body.resourceType).toBe('Bundle');
     const fhir = await request(app).get('/ips/demo/Bundle/1?_format=json').set('Accept', 'text/html');
     expect(fhir.headers['content-type']).toMatch(/fhir\+json/);
   });
@@ -744,6 +765,8 @@ describe('the processing queue', () => {
     await post(app, 'demo', ips());
     await post(app, 'demo', ips());
     const seen = [];
+    const logged = [];
+    mod.log = { info: (m) => logged.push(m), warn() {}, error: (m) => logged.push('ERROR ' + m), debug() {} };
     mod.steps = [{ name: 'test', run: async (row, project) => {
       seen.push([row.id, project.code]);
       if (row.id === 2) {
@@ -753,6 +776,13 @@ describe('the processing queue', () => {
     } }];
     expect(mod.store.statusCounts()).toEqual({ submitted: 2 });
     expect(await mod.processQueue()).toBe(2);
+    // each step's start and end is logged
+    expect(logged.filter(m => /: test /.test(m))).toEqual([
+      "IPS module: document 1 ('demo'): test starting",
+      expect.stringMatching(/^IPS module: document 1: test done in \d+ ms - looked at it$/),
+      "IPS module: document 2 ('demo'): test starting",
+      expect.stringMatching(/^ERROR IPS module: document 2: test failed after \d+ ms: boom$/)
+    ]);
     expect(seen).toEqual([[1, 'demo'], [2, 'demo']]);
     expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'looked at it' });
     expect(mod.store.read(2)).toMatchObject({ status: 'error', status_message: 'test: boom' });
@@ -845,15 +875,21 @@ describe('the validation step', () => {
 
     // the page
     const page = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
-    expect(page.text).toContain('<b>Validation</b>');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=validation">Validation</a></li>');
+    expect(page.text).toContain('<span class="ips-step ips-step-done" title="validation - done: validation: 1 error, 1 warning, 1 note">');
     expect(page.text).toContain('with validator 6.5.0');
     expect(page.text).toContain('<b>1 error, 1 warning, 1 note</b>');
     expect(page.text).toContain('Constraint failed: dom-6');
-    expect(page.text).toContain('<code>Bundle.entry[1].resource</code>');
-    expect(page.text).toContain('<code>Bundle.entry[0].resource.type</code><br/><code>Line 12, Col 3</code>');
+    expect(page.text).toContain('<button type="button" class="btn btn-default ips-btn ips-oo-toggle">Show the OperationOutcome</button></summary><pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;OperationOutcome&quot;');
+    // the severity colours the code; paths can break at the dots
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #c82333" title="error">invariant</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[1].<wbr/>resource</code></td>');
+    // slashes and hyphens break too
+    expect(render.renderValidation({ status: 'processed', results: { validation: { made: 'now', result: { status: 'done', counts: {}, outcome: { resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', expression: ['Bundle.entry[0].resource/*Composition/ab-cd*/.identifier'] }] } } } } }))
+      .toContain('<code>Bundle.<wbr/>entry[0].<wbr/>resource/<wbr/>*Composition/<wbr/>ab-<wbr/>cd*/<wbr/>.<wbr/>identifier</code>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #d39e00" title="warning">code-invalid</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[0].<wbr/>resource.<wbr/>type</code><br/><code>Line 12, Col 3</code>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #17a2b8" title="information">informational</span>');
     expect(page.text).toContain('Unknown code');
     expect(page.text).toContain('All OK &lt;b&gt;');
-    expect(page.text).toContain('>error</span>');
     expect(page.text).toContain('name="level"');
 
     // hiding the lesser issues
@@ -898,14 +934,15 @@ describe('the validation step', () => {
     await mod.processQueue();
     expect(mod.store.read(1)).toMatchObject({ status: 'error', status_message: 'validation: The validator is not configured (modules.ips.validator)' });
     const page = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
-    expect(page.text).toContain('no validation result');
     // the reason is for managers, not the public
-    expect(page.text).toContain('processing failed.');
+    expect(page.text).toContain("The validation step failed (the reason is shown to the project's managers).");
     expect(page.text).not.toContain('The validator is not configured');
     const { agent } = await loginAs(app, 'admin', 'admin-secret');
     const mine = await agent.get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
-    expect(mine.text).toContain('processing failed: validation: The validator is not configured');
-    expect(mine.text).toContain('Status: <span class="ips-badge" style="background-color: #c82333">error</span> validation: The validator is not configured');
+    expect(mine.text).toContain('The validation step failed: The validator is not configured (modules.ips.validator).');
+    expect(mine.text).toContain('<span class="ips-step ips-step-failed" title="validation - failed: The validator is not configured (modules.ips.validator)">');
+    expect(page.text).toContain('<span class="ips-step ips-step-failed" title="validation - failed">');
+    expect(mine.text).toContain('>Process again</button>');
     mod.validator = fakeValidator(false);
     mod.store.requeue(1, 1);
     await mod.processQueue();
@@ -917,26 +954,16 @@ describe('the terminology step', () => {
   let app;
   let mod;
   let calls;
-  const VS = 'http://hl7.org/fhir/uv/ips/ValueSet/';
-  // the bindings the IPS would give, without the package
-  const fakeBindings = {
-    loaded: true,
-    table: {
-      'Composition.identifier': [],
-      'AllergyIntolerance.code': [{ valueSet: VS + 'allergy-intolerance-uv-ips', strength: 'preferred' }],
-      'Observation.code': [{ valueSet: VS + 'results-laboratory-observations-uv-ips', strength: 'preferred' }, { valueSet: VS + 'vital-signs', strength: 'required' }],
-      'Observation.valueCodeableConcept': [{ pattern: [{ system: 'http://loinc.org', code: 'LA1' }], profile: 'http://example.org/p' }]
-    },
-    seen: [],
-    bindingsFor(element, context) { this.seen.push([element, context]); return this.table[element] || []; },
-    valueSet(url) { return url === VS + 'allergy-intolerance-uv-ips' ? { resourceType: 'ValueSet', url, compose: { include: [{ valueSet: [VS + 'inner'] }] } } : null; },
-    referencedValueSets(url) { return url === VS + 'allergy-intolerance-uv-ips' ? [{ resourceType: 'ValueSet', url: VS + 'inner' }] : []; }
-  };
+  const VS = 'http://healthintersections.com.au/fhirsmith/ValueSet/';
+  const FALLBACK = VS + 'ips-international-codes';
+  const SCT = 'http://snomed.info/sct';
   beforeEach(async () => {
     ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
     calls = [];
-    // a terminology server: 91936005 (penicillin allergy) is in the allergy value set, a
-    // code of 'boom' breaks the server, 'odd' gets an answer with no result
+    // a terminology server: 91936005 (penicillin allergy) is in the allergy value set, LOINC
+    // codes starting 1234 are observation codes, 'intl' is in the fallback (as is any LOINC
+    // code), no-known-immunizations is a vaccine code; a code of 'boom' breaks the server,
+    // 'odd' gets an answer with no result. In an HL7 code system, every code but 'bad' exists
     app.post('/tx/r4/ValueSet/\\$validate-code', (req, res) => {
       const p = JSON.parse(req.body.toString());
       const coding = p.parameter.find(x => x.name === 'coding').valueCoding;
@@ -949,10 +976,40 @@ describe('the terminology step', () => {
       if (coding.code === 'odd') {
         return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [] }));
       }
-      const result = vs === VS + 'allergy-intolerance-uv-ips' && coding.code === '91936005';
-      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: result }, { name: 'message', valueString: result ? 'ok' : 'nope' }] }));
+      const result = (vs === VS + 'ips-allergy-code' && coding.code === '91936005') ||
+        (vs === VS + 'ips-observation-code' && coding.system === 'http://loinc.org' && coding.code.startsWith('1234')) ||
+        (vs === VS + 'ips-vaccine' && coding.code === 'no-known-immunizations') ||
+        (vs === VS + 'ips-condition-severity' && coding.code === '6736007') ||
+        (vs === FALLBACK && (coding.system === 'http://loinc.org' || coding.code === 'intl' || coding.code === '91936005'));
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: result }, { name: 'message', valueString: result ? 'ok' : 'nope' }, ...(coding.code === 'intl' ? [{ name: 'inactive', valueBoolean: true }] : [])] }));
     });
-    mod.ipsBindings = fakeBindings;
+    app.post('/tx/r4/CodeSystem/\\$validate-code', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const system = p.parameter.find(x => x.name === 'url').valueUri;
+      const code = p.parameter.find(x => x.name === 'code').valueCode;
+      calls.push({ system, code });
+      res.type('application/fhir+json');
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: code !== 'bad' }] }));
+    });
+    // translation: a LOINC answer 'LA-mod' translates to SNOMED 6736007 (two maps say so, one
+    // of them narrower); 'intl' has no translation; 'boom' and 'tboom' break the server
+    app.post('/tx/r4/ConceptMap/\\$translate', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const cc = p.parameter.find(x => x.name === 'sourceCodeableConcept').valueCodeableConcept;
+      const target = p.parameter.find(x => x.name === 'targetScope').valueUri;
+      calls.push({ translate: cc, target, txResources: p.parameter.filter(x => x.name === 'tx-resource').map(x => x.resource.url) });
+      res.type('application/fhir+json');
+      if (cc.coding.some(c => c.code === 'boom' || c.code === 'tboom')) {
+        return res.status(500).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'exception', details: { text: 'kaboom' } }] }));
+      }
+      if (cc.coding.some(c => c.code === 'LA-mod')) {
+        return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: true },
+          { name: 'match', part: [{ name: 'relationship', valueCode: 'equivalent' }, { name: 'concept', valueCoding: { system: SCT, code: '6736007', display: 'Moderate' } }, { name: 'originMap', valueCanonical: 'http://example.org/ConceptMap/loinc-sct' }] },
+          { name: 'match', part: [{ name: 'equivalence', valueCode: 'wider' }, { name: 'concept', valueCoding: { system: SCT, code: '6736007' } }, { name: 'source', valueUri: 'http://example.org/ConceptMap/other' }] },
+          { name: 'match', part: [{ name: 'relationship', valueCode: 'source-is-narrower-than-target' }, { name: 'concept', valueCoding: { system: SCT, code: '272141005', display: 'Severities' } }] }] }));
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: false }, { name: 'message', valueString: 'No ConceptMap is available' }] }));
+    });
     mod.steps = STEPS.filter(s => s.name === 'terminology');
     mod.store.createProject('demo', 'Demo', null);
   });
@@ -978,75 +1035,131 @@ describe('the terminology step', () => {
     walk(bundle, '');
     return out;
   };
+  const extOf = (concept) => concept.extension.find(e => e.url === CHECK_EXTENSION).extension;
+  const msg = (concept) => extOf(concept).find(e => e.url === 'message').valueString;
 
   // an Observation with the given code, in the medication section (the second section)
-  const withObservation = (code, extra = {}) => {
+  const withObservation = (code, extra = {}, system = 'http://loinc.org') => {
     const d = ips();
     d.entry[0].resource.section[1].entry = [{ reference: 'urn:uuid:obs-1' }];
-    d.entry.push({ fullUrl: 'urn:uuid:obs-1', resource: { resourceType: 'Observation', id: 'obs-1', status: 'final', code: { coding: [{ system: 'http://loinc.org', code }] }, ...extra } });
+    d.entry.push({ fullUrl: 'urn:uuid:obs-1', resource: { resourceType: 'Observation', id: 'obs-1', status: 'final', code: { coding: [{ system, code }] }, ...extra } });
     return d;
   };
 
-  test('checks each bound concept and writes the verdict into the analysed copy, leaving the master alone', async () => {
+  test('the value sets are read at startup', () => {
+    expect(mod.valueSets.loaded).toBe(true);
+    expect(mod.valueSets.valueSetFor('AllergyIntolerance.code')).toBe(VS + 'ips-allergy-code');
+  });
+
+  test('checks each concept against its element\'s value set and writes the verdict into the analysed copy, leaving the master alone', async () => {
     await post(app, 'demo', withObservation('odd'));
     expect(await mod.processQueue()).toBe(1);
     const row = mod.store.read(1);
     expect(row.status).toBe('processed');
-    expect(row.status_message).toBe('terminology: 1 in, 0 not in, 1 unknown');
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 0 not in, 1 unknown');
     expect(checks(row.bundle)).toEqual({});
     expect(checks(row.analysed)).toEqual({
       'entry[3].resource.code': 'in',
       'entry[4].resource.code': 'unknown'
     });
-    // the section's code went with the question
-    expect(mod.ipsBindings.seen).toEqual(expect.arrayContaining([
-      ['AllergyIntolerance.code', { sectionCode: 'http://loinc.org|48765-2' }],
-      ['Observation.code', { sectionCode: 'http://loinc.org|10160-0' }]
-    ]));
-    const allergy = row.analysed.entry[3].resource.code.extension.find(e => e.url === CHECK_EXTENSION).extension;
-    expect(allergy).toEqual(expect.arrayContaining([
+    expect(extOf(row.analysed.entry[3].resource.code)).toEqual([
       { url: 'result', valueCode: 'in' },
-      { url: 'valueSet', valueCanonical: VS + 'allergy-intolerance-uv-ips' },
-      { url: 'coding', valueCoding: { system: 'http://snomed.info/sct', code: '91936005', display: 'Allergy to penicillin' } }
-    ]));
-    // the value set and what it includes went with the request
-    const c = calls.find(x => x.vs === VS + 'allergy-intolerance-uv-ips');
-    expect(c.txResources).toEqual([VS + 'inner']);
-    expect(c.coding).toEqual({ system: 'http://snomed.info/sct', code: '91936005', display: 'Allergy to penicillin' });
-    // the ones with no definition went by url
-    expect(calls.find(x => x.vs === VS + 'vital-signs')).toBeDefined();
+      { url: 'valueSet', valueCanonical: VS + 'ips-allergy-code' },
+      { url: 'coding', valueCoding: { system: SCT, code: '91936005', display: 'Allergy to penicillin' } },
+      { url: 'message', valueString: `${SCT}|91936005 is in ${VS}ips-allergy-code` }
+    ]);
+    // the value set went with the request, and the coding as it is
+    const c = calls.find(x => x.vs === VS + 'ips-allergy-code');
+    expect(c.txResources).toEqual([]);
+    expect(c.coding).toEqual({ system: SCT, code: '91936005', display: 'Allergy to penicillin' });
+    // the server could not say for 'odd', against the element's value set or the fallback
+    expect(calls.filter(x => x.coding?.code === 'odd').map(x => x.vs)).toEqual([VS + 'ips-observation-code', FALLBACK]);
+    expect(msg(row.analysed.entry[4].resource.code)).toBe(`Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result`);
     // the JSON view is still the master
     const json = await request(app).get('/ips/demo/Bundle/1');
     expect(JSON.stringify(json.body)).not.toContain(CHECK_EXTENSION);
   });
 
-  test('a cross when no coding is in any candidate, and a question mark when the server fails', async () => {
-    // an observation with a text-only value: two candidate value sets for the code, both false
-    const d = withObservation('1234-5', { valueCodeableConcept: { text: 'just text' } });
-    d.entry[3].resource.code = { coding: [{ system: 'http://snomed.info/sct', code: '12345' }, { system: 'http://snomed.info/sct', code: 'boom' }] };
+  test('a coding that misses the element\'s value set but is international is marked so', async () => {
+    const d = withObservation('intl', {}, SCT);
     await post(app, 'demo', d);
     await mod.processQueue();
     const row = mod.store.read(1);
-    expect(checks(row.analysed)).toEqual({ 'entry[3].resource.code': 'unknown', 'entry[4].resource.code': 'not-in', 'entry[4].resource.valueCodeableConcept': 'not-in' });
-    const msg = (res) => res.extension.find(e => e.url === CHECK_EXTENSION).extension.find(e => e.url === 'message').valueString;
-    expect(msg(row.analysed.entry[4].resource.valueCodeableConcept)).toBe('The concept has no codings');
-    expect(msg(row.analysed.entry[3].resource.code)).toMatch(/Could not be determined.*kaboom/);
-    expect(msg(row.analysed.entry[4].resource.code)).toBe('No coding is in http://hl7.org/fhir/uv/ips/ValueSet/results-laboratory-observations-uv-ips or http://hl7.org/fhir/uv/ips/ValueSet/vital-signs');
-    expect(calls.filter(c => c.coding.code === '1234-5')).toHaveLength(2);
-    expect(row.status_message).toBe('terminology: 0 in, 2 not in, 1 unknown');
+    expect(checks(row.analysed)['entry[4].resource.code']).toBe('international');
+    expect(extOf(row.analysed.entry[4].resource.code)).toEqual([
+      { url: 'result', valueCode: 'international' },
+      { url: 'valueSet', valueCanonical: FALLBACK },
+      { url: 'coding', valueCoding: { system: SCT, code: 'intl' } },
+      { url: 'message', valueString: `${SCT}|intl is in ${FALLBACK}, but not in ${VS}ips-observation-code (the code is inactive)` }
+    ]);
+    expect(row.status_message).toBe('terminology: 1 in, 1 international only, 0 not in, 0 unknown');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain(`<span class="ips-check ips-check-international" title="${SCT}|intl is in ${FALLBACK}, but not in ${VS}ips-observation-code (the code is inactive)\nValue set: ${FALLBACK}">&#9888;</span> <span class="ips-small">ips-international-codes</span>`);
   });
 
-  test('a fixed code is a value set of one, answered without the server', async () => {
-    await post(app, 'demo', withObservation('1234-5', { valueCodeableConcept: { coding: [{ system: 'http://loinc.org', code: 'LA1', display: 'yes' }] } }));
+  test('an element with no value set of its own takes any international code, including an HL7 one', async () => {
+    const d = withObservation('1234-5', {
+      method: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' }] },
+      // a code that no HL7 code system has, and a local one
+      dataAbsentReason: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/x', code: 'bad' }, { system: 'http://example.org/local', code: 'zz' }] }
+    });
+    await post(app, 'demo', d);
     await mod.processQueue();
     const row = mod.store.read(1);
-    expect(checks(row.analysed)['entry[4].resource.valueCodeableConcept']).toBe('in');
-    const ext = row.analysed.entry[4].resource.valueCodeableConcept.extension[0].extension;
-    expect(ext).toEqual(expect.arrayContaining([{ url: 'pattern', valueCoding: { system: 'http://loinc.org', code: 'LA1' } }, { url: 'coding', valueCoding: { system: 'http://loinc.org', code: 'LA1', display: 'yes' } }]));
-    expect(calls.filter(c => c.coding.code === 'LA1')).toHaveLength(0);
+    expect(checks(row.analysed)).toEqual({
+      'entry[3].resource.code': 'in',
+      'entry[4].resource.code': 'in',
+      'entry[4].resource.method': 'in',
+      'entry[4].resource.dataAbsentReason': 'not-in'
+    });
+    expect(extOf(row.analysed.entry[4].resource.method)).toEqual([
+      { url: 'result', valueCode: 'in' },
+      { url: 'system', valueUri: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod' },
+      { url: 'coding', valueCoding: { system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' } },
+      { url: 'message', valueString: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod|M is a code in an HL7 terminology' }
+    ]);
+    // the HL7 codes were asked of their code systems, the local one of the fallback value set
+    expect(calls.filter(c => c.system)).toEqual([{ system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' }, { system: 'http://terminology.hl7.org/CodeSystem/x', code: 'bad' }]);
+    expect(calls.find(c => c.coding?.code === 'zz').vs).toBe(FALLBACK);
+    expect(msg(row.analysed.entry[4].resource.dataAbsentReason)).toBe('No coding is in an international terminology (SNOMED CT International, LOINC, or an HL7 terminology)');
+    expect(row.status_message).toBe('terminology: 3 in, 0 international only, 1 not in, 0 unknown');
     const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
-    expect(page.text).toContain('<span class="ips-small">fixed LA1</span>');
-    expect(page.text).toContain('Fixed code: http://loinc.org|LA1');
+    expect(page.text).toContain('>&#10003;</span> <span class="ips-small">v3-ObservationMethod</span>');
+  });
+
+  test('the resources a value set draws on go with the question', async () => {
+    const d = ips();
+    d.entry[0].resource.section.push({ title: 'Immunizations', code: { coding: [{ system: 'http://loinc.org', code: '11369-6' }] }, text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>None</p></div>' }, entry: [{ reference: 'urn:uuid:imm-1' }] });
+    d.entry.push({ fullUrl: 'urn:uuid:imm-1', resource: { resourceType: 'Immunization', id: 'imm-1', status: 'completed', patient: { reference: 'urn:uuid:pat-1' }, vaccineCode: { coding: [{ system: 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips', code: 'no-known-immunizations' }] } } });
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(checks(mod.store.read(1).analysed)['entry[4].resource.vaccineCode']).toBe('in');
+    const c = calls.find(x => x.vs === VS + 'ips-vaccine');
+    expect(c.txResources).toEqual(['http://hl7.org/fhir/uv/ips/ValueSet/absent-or-unknown-immunizations-uv-ips', 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips']);
+  });
+
+  test('a cross when no coding is anywhere, and a question mark when the server fails', async () => {
+    // an observation with a text-only value, and a code the server breaks on
+    const d = withObservation('1234-5', { valueCodeableConcept: { text: 'just text' } });
+    d.entry[3].resource.code = { coding: [{ system: SCT, code: '12345' }, { system: SCT, code: 'boom' }] };
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(checks(row.analysed)).toEqual({ 'entry[3].resource.code': 'unknown', 'entry[4].resource.code': 'in', 'entry[4].resource.valueCodeableConcept': 'not-in' });
+    expect(msg(row.analysed.entry[4].resource.valueCodeableConcept)).toBe('The concept has no codings');
+    expect(msg(row.analysed.entry[3].resource.code)).toMatch(/Could not be determined.*kaboom/);
+    // 12345 was asked of the allergy value set and the fallback, boom of both too
+    expect(calls.filter(c => c.coding?.code === '12345').map(c => c.vs)).toEqual([VS + 'ips-allergy-code', FALLBACK]);
+    expect(calls.filter(c => c.coding?.code === 'boom')).toHaveLength(2);
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 1 not in, 1 unknown');
+    // and a plain miss
+    d.entry[3].resource.code = { coding: [{ system: SCT, code: '12345' }] };
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const miss = mod.store.read(2);
+    expect(checks(miss.analysed)['entry[3].resource.code']).toBe('not-in');
+    expect(msg(miss.analysed.entry[3].resource.code)).toBe(`No coding is in ${VS}ips-allergy-code, and none is in an international terminology (SNOMED CT International, LOINC, or an HL7 terminology)`);
+    expect(extOf(miss.analysed.entry[3].resource.code).find(e => e.url === 'valueSet')).toEqual({ url: 'valueSet', valueCanonical: VS + 'ips-allergy-code' });
   });
 
   test('the questions asked for one document are bounded, and identical concepts are asked once', async () => {
@@ -1055,15 +1168,15 @@ describe('the terminology step', () => {
     // twenty allergies with the same (cached) code and twenty with their own
     for (let i = 0; i < 40; i++) {
       d.entry[0].resource.section[0].entry.push({ reference: `urn:uuid:a${i}` });
-      d.entry.push({ fullUrl: `urn:uuid:a${i}`, resource: { resourceType: 'AllergyIntolerance', id: `a${i}`, patient: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: 'http://snomed.info/sct', code: i < 20 ? 'same' : `c${i}` }] } } });
+      d.entry.push({ fullUrl: `urn:uuid:a${i}`, resource: { resourceType: 'AllergyIntolerance', id: `a${i}`, patient: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: SCT, code: i < 20 ? 'same' : `c${i}` }] } } });
     }
     await post(app, 'demo', d);
     await mod.processQueue();
     const row = mod.store.read(1);
-    // 1 (the fixture's allergy) + 1 (same) + 20 distinct = 22 questions, not 41
-    expect(calls).toHaveLength(22);
-    expect(row.status_message).toBe('terminology: 1 in, 40 not in, 0 unknown');
-    expect(pipeline.MAX_CHECKS_PER_DOCUMENT).toBeGreaterThan(22);
+    // 1 (the fixture's allergy) + 2 (same: the value set, then the fallback) + 20 x 2 = 43 questions, not 81
+    expect(calls).toHaveLength(43);
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 40 not in, 0 unknown');
+    expect(pipeline.MAX_CHECKS_PER_DOCUMENT).toBeGreaterThan(43);
   });
 
   test('the answer cache is bounded', async () => {
@@ -1072,13 +1185,14 @@ describe('the terminology step', () => {
     for (let i = 0; i < MAX_CACHED_ANSWERS; i++) {
       mod.txCache.set(`k${i}`, { result: false });
     }
-    await checkConcept(mod, { coding: [{ system: 'http://snomed.info/sct', code: 'new' }] }, [{ valueSet: VS + 'allergy-intolerance-uv-ips' }]);
+    await checkConcept(mod, { coding: [{ system: SCT, code: 'new' }] }, VS + 'ips-allergy-code');
     expect(mod.txCache.size).toBe(MAX_CACHED_ANSWERS);
     expect(mod.txCache.has('k0')).toBe(false);
-    expect(mod.txCache.has(`${VS}allergy-intolerance-uv-ips|http://snomed.info/sct||new`)).toBe(true);
+    expect(mod.txCache.has(`${VS}ips-allergy-code|${SCT}||new`)).toBe(true);
+    expect(mod.txCache.has(`${FALLBACK}|${SCT}||new`)).toBe(true);
     // over budget: unknown, without a question
     const n = calls.length;
-    const out = await checkConcept(mod, { coding: [{ system: 'http://snomed.info/sct', code: 'another' }] }, [{ valueSet: VS + 'allergy-intolerance-uv-ips' }], { left: 0 });
+    const out = await checkConcept(mod, { coding: [{ system: SCT, code: 'another' }] }, VS + 'ips-allergy-code', { left: 0 });
     expect(out.result).toBe('unknown');
     expect(out.message).toMatch(/more codes than are checked/);
     expect(calls).toHaveLength(n);
@@ -1105,11 +1219,11 @@ describe('the terminology step', () => {
     const before = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
     expect(before.text).not.toContain('ips-check-in" title=');
     expect(before.text).toContain('until the document has been processed');
+    expect((await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html')).text).toContain('There is no translation record for this document - the document is waiting in the queue');
     await mod.processQueue();
     const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
-    expect(page.text).toContain('<span class="ips-check ips-check-in" title="http://snomed.info/sct|91936005 is in http://hl7.org/fhir/uv/ips/ValueSet/allergy-intolerance-uv-ips\nValue set: http://hl7.org/fhir/uv/ips/ValueSet/allergy-intolerance-uv-ips">&#10003;</span> <span class="ips-small">allergy-intolerance-uv-ips</span>');
-    expect(page.text).toContain('ips-check-unknown" title="Could not be determined');
-    expect(page.text).toContain('ips-check-unknown" title="Could not be determined - http://loinc.org|odd in http://hl7.org/fhir/uv/ips/ValueSet/results-laboratory-observations-uv-ips: The terminology server gave no result');
+    expect(page.text).toContain(`<span class="ips-check ips-check-in" title="${SCT}|91936005 is in ${VS}ips-allergy-code\nValue set: ${VS}ips-allergy-code">&#10003;</span> <span class="ips-small">ips-allergy-code</span>`);
+    expect(page.text).toContain(`ips-check-unknown" title="Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result\nValue set: ${VS}ips-observation-code">?</span> <span class="ips-small">ips-observation-code</span>`);
     expect(page.text).not.toContain('until the document has been processed');
     // the terminology view's concept rows are unchanged by the extensions
     expect((page.text.match(/class="btn btn-default ips-copy"/g) || []).length).toBe((before.text.match(/class="btn btn-default ips-copy"/g) || []).length);
@@ -1126,13 +1240,166 @@ describe('the terminology step', () => {
     expect(problems.text).not.toContain('class="ips-section">Composition</th>');
   });
 
-  test('without a terminology server or the IPS package the step fails', async () => {
-    mod.ipsBindings = null;
+  // a Condition in the medication section (the second section), with a severity
+  const withCondition = (severity) => {
+    const d = ips();
+    d.entry[0].resource.section[1].entry = [{ reference: 'urn:uuid:cond-1' }];
+    d.entry.push({ fullUrl: 'urn:uuid:cond-1', resource: { resourceType: 'Condition', id: 'cond-1', subject: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: SCT, code: 'intl' }] }, severity } });
+    return d;
+  };
+
+  test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
+    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'ai']);
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('translate: 1 of 2 concepts translated (2 codings added); terminology: 2 in, 1 international only, 0 not in, 0 unknown');
+    // the master is untouched; the analysed copy has the new codings, each saying where it came from
+    expect(row.bundle.entry[4].resource.severity.coding).toHaveLength(1);
+    const sev = row.analysed.entry[4].resource.severity;
+    expect(sev.coding).toEqual([
+      { system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' },
+      { system: SCT, code: '6736007', display: 'Moderate', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: '/tx/r4' }, { url: 'conceptMap', valueCanonical: 'http://example.org/ConceptMap/loinc-sct' }, { url: 'relationship', valueCode: 'equivalent' }] }] },
+      { system: SCT, code: '272141005', display: 'Severities', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: '/tx/r4' }, { url: 'relationship', valueCode: 'source-is-narrower-than-target' }] }] }
+    ]);
+    // the check after translation finds the translated coding
+    expect(checks(row.analysed)['entry[4].resource.severity']).toBe('in');
+    expect(extOf(sev).find(e => e.url === 'coding').valueCoding).toMatchObject({ system: SCT, code: '6736007' });
+    // what was sent: the concept as submitted, the element's value set as the target, the value set as tx-resource
+    const t = calls.filter(c => c.translate);
+    expect(t.map(x => x.target)).toEqual([VS + 'ips-condition-code', VS + 'ips-condition-severity']);
+    expect(t[1].translate).toEqual({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] });
+    expect(t[1].txResources).toEqual([VS + 'ips-condition-severity']);
+    // the condition's code was international only: tried, not translated; the allergy was in: not tried
+    expect(t[0].translate).toEqual({ coding: [{ system: SCT, code: 'intl' }] });
+    expect(calls.filter(c => c.translate && c.translate.coding[0].code === '91936005')).toHaveLength(0);
+    // the page shows the translated codings
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain('>6736007</a></code> "Moderate" <span class="ips-translated" title="translated by /tx/r4 with http://example.org/ConceptMap/loinc-sct (equivalent)">translated, equivalent</span>');
+    expect(page.text).toContain('>272141005</a></code> "Severities" <span class="ips-translated" title="translated by /tx/r4 (source-is-narrower-than-target)">translated, source-is-narrower-than-target</span>');
+    // the step's record, and the translation view
+    const rec = mod.store.readResult(1, 'translate').result;
+    expect(rec).toMatchObject({ status: 'done', server: '/tx/r4', counts: { tried: 2, translated: 1, codings: 2, failed: 0 } });
+    expect(rec.entries.map(e => [e.path, e.outcome, e.target.split('/').pop(), e.ownValueSet])).toEqual([
+      ['AllergyIntolerance.code', 'not-needed', 'ips-allergy-code', true],
+      ['Condition.code', 'no-translation', 'ips-condition-code', true],
+      ['Condition.severity', 'translated', 'ips-condition-severity', true]
+    ]);
+    expect(rec.entries[1]).toMatchObject({ check: { result: 'international' }, message: 'No ConceptMap is available', added: [] });
+    expect(rec.entries[2].added).toEqual([
+      { coding: { system: SCT, code: '6736007', display: 'Moderate' }, relationship: 'equivalent', conceptMap: 'http://example.org/ConceptMap/loinc-sct' },
+      { coding: { system: SCT, code: '6736007' }, relationship: 'wider', conceptMap: 'http://example.org/ConceptMap/other', present: true },
+      { coding: { system: SCT, code: '272141005', display: 'Severities' }, relationship: 'source-is-narrower-than-target', conceptMap: null }
+    ]);
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=translation">Translation</a></li>');
+    expect(view.text).toContain('<b>1 of 2 concepts translated (2 codings added)</b>');
+    expect(view.text).toContain('<td><code>Condition.severity</code></td><td><ul><li><code>LOINC|LA-mod</code> "Moderate"</li></ul></td><td><span title="http://healthintersections.com.au/fhirsmith/ValueSet/ips-condition-severity">ips-condition-severity</span></td><td><span class="ips-badge" style="background-color: #1e7e34">Translated</span></td><td>2 codings added<ul><li><code>SNOMED CT|6736007</code> "Moderate" <i>equivalent</i> from <code>http://example.org/ConceptMap/loinc-sct</code></li><li><code>SNOMED CT|6736007</code> <i>wider</i> from <code>http://example.org/ConceptMap/other</code> (already in the concept)</li><li><code>SNOMED CT|272141005</code> "Severities" <i>source-is-narrower-than-target</i></li></ul></td></tr>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #6c757d">Not needed</span></td><td>http://snomed.info/sct|91936005 is in http://healthintersections.com.au/fhirsmith/ValueSet/ips-allergy-code</td>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #c82333">No translation</span></td><td>No ConceptMap is available</td>');
+    // the translations are cached: the same document again asks nothing
+    const n = calls.length;
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    await mod.processQueue();
+    expect(calls.length).toBe(n);
+    expect(mod.store.read(2).analysed.entry[4].resource.severity.coding).toHaveLength(3);
+  });
+
+  test('a concept with no value set of its own is translated into the fallback, a failed translation is logged, and a resubmitted copy is cleaned', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
+    const logged = [];
+    mod.log = { info() {}, warn: (m) => logged.push(m), error() {}, debug() {} };
+    const d = withCondition({ coding: [{ system: 'http://loinc.org', code: 'boom' }] });
+    d.entry[4].resource.stage = [{ type: { coding: [{ system: 'http://example.org/local', code: 'zz' }] } }];
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    // boom: the check could not say (unknown), so it was not translated; zz: not in, translated into the fallback (nothing came back)
+    expect(row.status_message).toBe('translate: 0 of 2 concepts translated (0 codings added); terminology: 1 in, 1 international only, 1 not in, 1 unknown');
+    expect(calls.filter(c => c.translate).map(c => [c.translate.coding[0].code, c.target])).toEqual([['intl', VS + 'ips-condition-code'], ['zz', FALLBACK]]);
+    expect(logged).toEqual([]);
+    const entries = mod.store.readResult(1, 'translate').result.entries;
+    expect(entries.map(e => [e.path, e.outcome])).toEqual([['AllergyIntolerance.code', 'not-needed'], ['Condition.code', 'no-translation'], ['Condition.severity', 'not-checked'], ['Condition.stage[0].type', 'no-translation']]);
+    expect(entries[3]).toMatchObject({ ownValueSet: false, target: FALLBACK });
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('>ips-international-codes</span> <small>(fallback)</small></td>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #fd7e14">Not checked</span></td><td>Could not be determined - ');
+    // a server failure on the translation itself: logged, and the document still processed
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'tboom' }] }));
+    await mod.processQueue();
+    const row2 = mod.store.read(2);
+    expect(row2.status).toBe('processed');
+    expect(row2.status_message).toMatch(/^translate: 0 of 2 concepts translated \(0 codings added\), 1 not translated \(see the log\); terminology/);
+    expect(logged).toEqual(['IPS module: document 2: Condition.severity could not be translated: kaboom']);
+    expect(mod.store.readResult(2, 'translate').result.entries[2]).toMatchObject({ outcome: 'failed', message: 'kaboom' });
+    expect((await request(app).get('/ips/demo/Bundle/2?view=translation').set('Accept', 'text/html')).text).toContain('<span class="ips-badge" style="background-color: #c82333">Failed</span></td><td>kaboom</td>');
+    const { translateConcept } = require('../../ips/pipeline');
+    expect(await translateConcept(mod.tx, mod.valueSets, { coding: [{ system: 'http://loinc.org', code: 'tboom' }] }, VS + 'ips-condition-severity')).toEqual({ matches: [], message: 'kaboom', failed: true });
+    // resubmitting an analysed copy: the translation extensions go, the codings stay
+    const analysed = mod.store.read(1).analysed;
+    analysed.entry[4].resource.stage[0].type.coding.push({ system: SCT, code: '91936005', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: 'http://elsewhere' }] }] });
+    await post(app, 'demo', analysed);
+    await mod.processQueue();
+    const row3 = mod.store.read(3);
+    expect(row3.analysed.entry[4].resource.stage[0].type.coding[1]).toEqual({ system: SCT, code: '91936005' });
+  });
+
+  test('the narrative step generates the narrative into the analysed copy, looking up displays, and the page shows it', async () => {
+    app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
+      calls.push({ lookup: `${req.query.system}|${req.query.code}` });
+      res.type('application/fhir+json');
+      if (req.query.code === '91936005') {
+        return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'name', valueString: 'SNOMED CT' }, { name: 'display', valueString: 'Allergy to penicillin (looked up)' }] }));
+      }
+      res.status(404).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'narrative');
+    const d = ips();
+    delete d.entry[3].resource.code.text;
+    delete d.entry[3].resource.code.coding[0].display;
+    await post(app, 'demo', d);
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html');
+    expect(waiting.text).toContain('no generated narrative for this document - the document is waiting in the queue');
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('narrative: 2 sections (1 display lookup)');
+    // the allergy's code was looked up (the Composition's type has a display; the section codes are not shown)
+    expect(calls.map(c => c.lookup).filter(Boolean)).toEqual(['http://snomed.info/sct|91936005']);
+    const r = mod.store.readResult(1, 'narrative').result;
+    expect(r.status).toBe('done');
+    expect(r.html).toContain('<h1>Patient Summary as of 1 March 2026</h1><p class="ips-patient"><b>Jane Alexandra Smith</b>, female, DoB: 06-May 70, ( 1.2.36.146.595.217.0.1: MRN-12345 )</p>');
+    expect(r.html).toContain('<h2>Allergies and Intolerances</h2><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table>');
+    expect(r.html).toContain('<h2>Medication Summary</h2><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p>');
+    expect(r.sections.map(s => s.title)).toEqual(['Allergies and Intolerances', 'Medication Summary']);
+    // written into the analysed copy, not the master
+    expect(row.bundle.entry[0].resource.text.div).toContain('Summary for <b>Jane Smith</b>');
+    expect(row.analysed.entry[0].resource.text).toEqual({ status: 'generated', div: expect.stringContaining('<h1>Patient Summary as of 1 March 2026</h1>') });
+    expect(row.analysed.entry[0].resource.section[0].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table></div>');
+    expect(row.analysed.entry[0].resource.section[1].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p></div>');
+    // the page
+    const page = await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=generated">Generated Narrative</a></li>');
+    expect(page.text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated"><div xmlns="http://www.w3.org/1999/xhtml"><h1>Patient Summary as of 1 March 2026</h1>');
+    // the Narrative tab is still the submitted narrative
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).toContain('Summary for <b>Jane Smith</b>');
+    // the same document again: the lookups are remembered
+    const n = calls.length;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(calls.length).toBe(n);
+    expect(mod.store.read(2).status_message).toBe('narrative: 2 sections');
+  });
+
+  test('without a terminology server or the value sets the step fails', async () => {
+    mod.valueSets = null;
     await post(app, 'demo', ips());
     await mod.processQueue();
-    expect(mod.store.read(1).status_message).toBe('terminology: The IPS package has not been loaded');
+    expect(mod.store.read(1).status_message).toBe('terminology: The value sets have not been loaded');
     const other = await makeApp();
-    other.mod.ipsBindings = fakeBindings;
     other.mod.steps = STEPS.filter(s => s.name === 'terminology');
     other.mod.store.createProject('demo', 'Demo', null);
     await post(other.app, 'demo', ips());
@@ -1145,7 +1412,6 @@ describe('the terminology step', () => {
     const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
     const logged = [];
     mod2.log = { info() {}, warn() {}, error: (m) => logged.push(m), debug() {} };
-    mod2.ipsBindings = fakeBindings;
     mod2.steps = STEPS.filter(s => s.name === 'terminology');
     mod2.store.createProject('demo', 'Demo', null);
     await post(app2, 'demo', ips());
@@ -1153,19 +1419,183 @@ describe('the terminology step', () => {
     await mod2.processQueue();
     expect(logged.filter(m => /nothing answers at the terminology server \/nowhere\/r4/.test(m))).toHaveLength(1);
     const row = mod2.store.read(1);
-    expect(row.status_message).toBe('terminology: 0 in, 0 not in, 1 unknown');
+    expect(row.status_message).toBe('terminology: 0 in, 0 international only, 0 not in, 1 unknown');
     expect(JSON.stringify(row.analysed)).toContain('The terminology server is not configured correctly');
     expect(JSON.stringify(row.analysed)).not.toContain('/nowhere/r4');
     mod2.shutdown();
   });
+});
 
-  test('the queue waits while the IPS package is loading', async () => {
+describe('the AI assessment step', () => {
+  let svc;
+  let app;
+  let mod;
+  beforeAll(async () => { svc = await fakeService(); });
+  afterAll(() => svc.server.close());
+  beforeEach(async () => {
+    svc.calls.length = 0;
+    ({ app, mod } = await makeApp({ sessionSecret: 'the-secret', ai: { provider: 'openai', baseUrl: svc.url + '/v1', model: 'server-model', apiKey: 'server-key', dailyCap: 2, prices: { 'server-model': { input: 2, output: 10 } } } }));
+    mod.steps = STEPS.filter(s => s.name === 'ai');
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const aiView = (id = 1) => request(app).get(`/ips/demo/Bundle/${id}?view=ai`).set('Accept', 'text/html').then(r => r.text);
+
+  test('is off unless the project turns it on, and then uses the server account up to the daily cap', async () => {
     await post(app, 'demo', ips());
-    let release;
-    mod.bindingsLoading = new Promise(r => { release = r; });
-    expect(await mod.processQueue()).toBe(0);
-    release();
-    mod.bindingsLoading = null;
-    expect(await mod.processQueue()).toBe(1);
+    expect(await aiView()).toContain('There is no AI assessment for this document - the document is waiting in the queue');
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: not enabled for this project');
+    expect(await aiView()).toContain('The document was not assessed: not enabled for this project.');
+    expect(svc.calls).toHaveLength(0);
+    // the submit page says nothing about AI
+    expect((await request(app).get('/ips/demo/submit')).text).not.toContain('external AI service');
+    // on
+    mod.store.setProjectAi(1, { enabled: true });
+    expect((await request(app).get('/ips/demo/submit')).text).toContain('Documents submitted to this project are sent to an external AI service');
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const row = mod.store.read(2);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('ai: grade A, 0 findings (server-model-2026)');
+    expect(svc.calls).toHaveLength(1);
+    expect(svc.calls[0].auth).toBe('Bearer server-key');
+    expect(svc.calls[0].body.messages[0].content).toContain('International Patient Summary');
+    // the document went without its narratives
+    const sent = svc.calls[0].body.messages[1].content;
+    expect(sent).toContain('"resourceType":"Bundle"');
+    expect(sent).not.toContain('Summary for <b>Jane Smith</b>');
+    expect(svc.calls[0].body.messages[0].content).toContain('narratives have been removed');
+    const r = mod.store.readResult(2, 'ai').result;
+    expect(r).toMatchObject({ status: 'done', provider: 'openai', model: 'server-model-2026', account: 'server', usage: { input: 100, output: 20 }, assessment: { grade: 'A', consistency: [], missing: [], terminology: [] } });
+    // 100 tokens at $2/M + 20 at $10/M (the price list matches the model's prefix)
+    expect(r.cost).toBeCloseTo(0.0004, 8);
+    expect(r.bytesSent).toBeGreaterThan(1000);
+    const page = await aiView(2);
+    expect(page).toContain('<li class="active"><a href="/ips/demo/Bundle/2?view=ai">AI Assessment</a></li>');
+    expect(page).toContain("by server-model-2026 (openai, the server's account), without the narrative");
+    expect(page).toContain('100 tokens in, 20 out ($0.0004)');
+    expect(page).toContain('<span class="ips-badge ips-grade" style="background-color: #1e7e34">Grade A</span> Consistent (');
+    expect(page).toContain('<h4>Consistency and integrity</h4><p><i>No findings</i></p>');
+    expect(page).toContain("Show the model's answer</button>");
+    // the cap: two a day
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(3).status_message).toMatch(/^ai: grade A/);
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(4).status_message).toBe("ai: the project's daily cap of 2 assessments is spent");
+    expect(svc.calls).toHaveLength(2);
+    // the project's own cap, and the narrative as submitted
+    mod.store.setProjectAi(1, { enabled: true, dailyCap: 3, sendNarrative: true });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(5).status_message).toMatch(/^ai: grade A/);
+    expect(mod.store.aiCallsSince(1, 0)).toBe(3);
+    // the usage, on the settings page
+    expect(mod.store.aiUsage(1, 0)).toEqual({ calls: 3, input: 300, output: 60, cost: expect.closeTo(0.0012, 8), costed: 3 });
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const settings = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(settings.text).toContain('<tr><td>Today</td><td>3</td><td>300</td><td>60</td><td>$0.0012</td></tr>');
+    expect(settings.text).toContain('<tr><td>All time</td><td>3</td><td>300</td><td>60</td><td>$0.0012</td></tr>');
+    const withNarrative = svc.calls[2].body;
+    expect(withNarrative.messages[1].content).toContain('Summary for <b>Jane Smith</b>');
+    expect(withNarrative.messages[0].content).toContain('what does the narrative say that the structured data does not back up');
+    expect(await aiView(5)).toContain(', with the narrative as submitted');
+  });
+
+  test('copes with answers that are not quite JSON, and with a service that fails', async () => {
+    mod.store.setProjectAi(1, { enabled: true, dailyCap: 10 });
+    mod.config.ai.model = 'prose';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: grade C, 3 findings (prose-2026)');
+    const page = await aiView(1);
+    expect(page).toContain('style="background-color: #d39e00">Grade C</span> Some issues</p>');
+    expect(page).toContain('<tr><td><span class="ips-badge" style="background-color: #c82333">high</span></td><td>x</td><td>y</td></tr>');
+    expect(page).toContain('<h4>Missing</h4><ul><li>z</li></ul>');
+    expect(page).toContain('<td><span class="ips-badge" style="background-color: #d39e00">medium</span></td><td>t</td><td><code>http://snomed.info/sct|1</code></td></tr>');
+    mod.config.ai.model = 'bad-json';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(2).status_message).toBe('ai: bad-json-2026 answered, but not with the expected JSON - the answer was cut off at 16384 tokens (modules.ips.ai.maxTokens) (see the AI view)');
+    expect(await aiView(2)).toContain('<p><b>The model did not answer with the expected JSON.</b> Its answer was cut off at the limit of 16,384 tokens - raise <code>modules.ips.ai.maxTokens</code>. Its answer:</p><pre class="ips-json">Sure! Here you go: {&quot;grade&quot;');
+    // a failure: the step fails, the document is in error, and the cap still counts the call
+    mod.config.ai.model = 'boom';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(3)).toMatchObject({ status: 'error', status_message: 'ai: The AI service (openai, boom) answered HTTP 500: kaboom' });
+    expect(mod.store.aiCallsSince(1, 0)).toBe(3);
+    // a failed call has no usage; a service that says what it cost is believed
+    expect(mod.store.aiUsage(1, 0)).toMatchObject({ calls: 3, costed: 0, cost: 0 });
+    mod.config.ai.model = 'router';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.readResult(4, 'ai').result.cost).toBe(0.0042);
+    expect(mod.store.aiUsage(1, 0)).toMatchObject({ calls: 4, costed: 1, cost: 0.0042 });
+    const { agent: mgr } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await mgr.get('/ips/demo/settings').set('Accept', 'text/html')).text).toContain('<td>$0.0042 <small>(3 calls with no known cost)</small></td>');
+    expect(await aiView(3)).toContain("The ai step failed (the reason is shown to the project's managers).");
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo/Bundle/3?view=ai').set('Accept', 'text/html')).text).toContain('The ai step failed: The AI service (openai, boom) answered HTTP 500: kaboom.');
+    // too big to send
+    mod.config.ai.model = 'ok';
+    mod.config.ai.maxBytes = 100;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(5).status_message).toMatch(/^ai: the document is too big to send \(\d+ bytes; the limit is 100\)$/);
+    // no account anywhere
+    delete mod.config.ai;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(6).status_message).toBe('ai: no AI account: the project has none and the server has no default (modules.ips.ai)');
+  });
+
+  test('a project keeps its own account, through the settings page, with the key encrypted', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const page = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(page.text).toContain('<h3>AI assessment</h3>');
+    expect(page.text).toContain('This server has a default account (server-model)');
+    expect(page.text).toContain('Currently: <b>off</b>, using the server\'s default account</p>');
+    // bad input
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', apiKey: 'sk-own', dailyCap: 'lots' })).status).toBe(400);
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', apiKey: 'sk-own', baseUrl: 'nope' })).status).toBe(400);
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: '', apiKey: 'sk-own' })).status).toBe(400);
+    // the account
+    const saved = await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own', dailyCap: '5', narrative: 'send' });
+    expect(saved.status).toBe(200);
+    expect(saved.text).toContain('The AI assessment settings have been saved');
+    expect(saved.text).toContain("Currently: <b>on</b>, with the project's own account (Anthropic (Messages API), model <code>claude</code>)");
+    expect(saved.text).toContain('leave blank to keep the current key');
+    const stored = mod.store.projectAi(mod.store.projectById(1));
+    expect(stored).toMatchObject({ enabled: true, provider: 'anthropic', model: 'claude', dailyCap: 5, sendNarrative: true });
+    expect(saved.text).toContain('<option value="send" selected>');
+    expect(stored.keyEnc.startsWith('v1:')).toBe(true);
+    expect(JSON.stringify(mod.store.projectById(1))).not.toContain('sk-own');
+    expect(mod.aiAccountFor(mod.store.projectById(1))).toEqual({ account: { provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' }, source: 'project' });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: grade A, 0 findings (claude)');
+    expect(svc.calls[0]).toMatchObject({ shape: 'anthropic', key: 'sk-own' });
+    expect(await aiView(1)).toContain("by claude (anthropic, the project's account)");
+    // a save with no key keeps the key; forgetting it goes back to the server's
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: '', dailyCap: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBe(stored.keyEnc);
+    expect(mod.store.projectAi(mod.store.projectById(1)).dailyCap).toBeUndefined();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', clearKey: '1' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    expect(mod.aiAccountFor(mod.store.projectById(1)).source).toBe('server');
+    // a key the server can't read any more: the server's default, with a warning
+    mod.store.setProjectAi(1, { enabled: true, provider: 'openai', model: 'm', keyEnc: 'v1:AAAA:AAAA:AAAA' });
+    const logged = [];
+    mod.log = { info() {}, warn: (m) => logged.push(m), error() {}, debug() {} };
+    expect(mod.aiAccountFor(mod.store.projectById(1)).source).toBe('server');
+    expect(logged[0]).toMatch(/AI key for 'demo' cannot be read/);
+    // without a secret, keys can't be kept
+    mod.aiSecret = null;
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', model: 'm', apiKey: 'sk-x' })).status).toBe(400);
+    const noSecret = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(noSecret.text).toContain('This server cannot keep a key for the project');
   });
 });

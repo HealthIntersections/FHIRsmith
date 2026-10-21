@@ -586,6 +586,122 @@ class SnomedServices {
     }
   }
 
+  /**
+   * The module this edition is published under, as a concept index (0 if it cannot be found),
+   * taken from the edition URI http://snomed.info/[x]sct/<module>[/version/<date>]
+   */
+  editionModule() {
+    const m = /^http:\/\/snomed\.info\/x?sct\/(\d+)/.exec(this.getVersion() || '');
+    if (!m) return 0;
+    const r = this.concepts.findConcept(m[1]);
+    return r.found ? r.index : 0;
+  }
+
+  /**
+   * The module dependency reference set (900000000000534007). Found by its defining concept
+   * when that is present; a subontology extract may carry the members without the concept,
+   * so the filename-derived refset name is the fallback.
+   * @returns {object|null} the reference set record
+   */
+  moduleDependencyRefSet() {
+    if (this._mdrs !== undefined) return this._mdrs;
+    this._mdrs = null;
+    const r = this.concepts.findConcept('900000000000534007');
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      const rs = this.refSetIndex.getReferenceSet(i);
+      if ((r.found && rs.definition === r.index) || this.strings.getEntry(rs.name).startsWith('ModuleDependency')) {
+        this._mdrs = rs;
+        break;
+      }
+    }
+    return this._mdrs;
+  }
+
+  /**
+   * The modules that the given module depends on, per the module dependency reference set:
+   * [{module: <concept index>, sourceEffectiveTime, targetEffectiveTime}]. Only the direct
+   * dependencies - the dependencies of those modules are their own rows.
+   */
+  moduleDependencies(moduleIndex) {
+    const rs = this.moduleDependencyRefSet();
+    if (!rs || !moduleIndex) return [];
+    const result = [];
+    for (const m of this.refSetMembers.getMembers(rs.membersByRef)) {
+      if (m.module !== moduleIndex || !m.ref) continue;
+      // values are [value, type, value, type...]; both fields here are strings
+      const vals = m.values ? this.refs.getReferences(m.values) || [] : [];
+      const str = (i) => vals.length > i && vals[i + 1] === 5 ? this.strings.getEntry(vals[i]) : null;
+      result.push({ module: m.ref, sourceEffectiveTime: str(0), targetEffectiveTime: str(2) });
+    }
+    return result;
+  }
+
+  /**
+   * The concept indexes of all the modules that make up the edition published under the
+   * given module: the module itself and, transitively, everything it depends on.
+   */
+  editionModules(moduleIndex) {
+    const result = new Set();
+    const todo = [moduleIndex];
+    while (todo.length) {
+      const m = todo.pop();
+      if (!m || result.has(m)) continue;
+      result.add(m);
+      for (const d of this.moduleDependencies(m)) todo.push(d.module);
+    }
+    return result;
+  }
+
+  /**
+   * Translation from this edition to another edition it depends on (see
+   * SnomedProvider.translateToEdition). The target is an edition URI,
+   * http://snomed.info/sct/<module>[/version/<date>]; the result says which module and
+   * version that is, and which modules' content belongs to it, or null if this edition
+   * does not depend on it (or not on that version of it).
+   */
+  editionDependency(targetEdition) {
+    const m = /^http:\/\/snomed\.info\/x?sct\/(\d+)(?:\/version\/(\d{8}))?$/.exec(targetEdition || '');
+    if (!m) return null;
+    const mine = this.editionModule();
+    const target = this.concepts.findConcept(m[1]);
+    if (!mine || !target.found) return null;
+    for (const d of this.moduleDependencies(mine)) {
+      if (d.module === target.index && (!m[2] || m[2] === d.targetEffectiveTime)) {
+        const version = d.targetEffectiveTime ? `http://snomed.info/sct/${m[1]}/version/${d.targetEffectiveTime}` : `http://snomed.info/sct/${m[1]}`;
+        return { moduleId: m[1], moduleIndex: target.index, version, modules: this.editionModules(target.index) };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The concept whose normal form is the given expression, if there is one. The index is
+   * built on first use: every defined concept's stored normal form, rendered in the minimal
+   * form so that two expressions compare as strings.
+   * @param {string} rendered - the expression, rendered with SnomedServicesRenderOption.Minimal
+   * @returns {number} the concept index, or -1
+   */
+  conceptWithNormalForm(rendered) {
+    if (!this._normalFormIndex) {
+      const index = new Map();
+      const total = this.concepts.count();
+      for (let ord = 0; ord < total; ord++) {
+        const c = this.concepts.getConceptByCount(ord);
+        if ((c.flags & 0x0F) !== 0 || this.concepts.getNormalForm(c.index) === 0) continue;
+        try {
+          const nf = this.expressionServices.createNormalForm(c.index);
+          const key = this.expressionServices.renderExpression(nf, SnomedServicesRenderOption.Minimal);
+          if (!index.has(key)) index.set(key, c.index);
+        } catch (e) {
+          // a normal form that cannot be built is simply not indexed
+        }
+      }
+      this._normalFormIndex = index;
+    }
+    const r = this._normalFormIndex.get(rendered);
+    return r === undefined ? -1 : r;
+  }
+
   getConceptRefSet(conceptIndex, byName = false) {
     for (let i = 0; i < this.refSetIndex.count(); i++) {
       const refSet = this.refSetIndex.getReferenceSet(i);
@@ -601,13 +717,8 @@ class SnomedServices {
   // members" (returns a numeric membersByRef, which may be 0 or the
   // MAGIC_NO_CHILDREN sentinel). Used by memberOf to reject non-refset operands.
   _findRefSetMembersRef(conceptIndex) {
-    for (let i = 0; i < this.refSetIndex.count(); i++) {
-      const refSet = this.refSetIndex.getReferenceSet(i);
-      if (refSet.definition === conceptIndex) {
-        return refSet.membersByRef;
-      }
-    }
-    return null;
+    const refSet = this._findRefSetRecord(conceptIndex);
+    return refSet ? refSet.membersByRef : null;
   }
 
   // Filter support methods
@@ -754,9 +865,9 @@ class SnomedServices {
    *   filters, comments
    *
    * Everything else (reverse attributes, != and concrete (numeric/string/
-   * boolean) values in refinements, alternate identifiers, {{ + ... }} history
-   * supplements) throws an informative error which is reported as
-   * UNSUPPORTED_ECL.
+   * boolean) values in refinements, alternate identifiers, reference set field
+   * selection on ^, {{ + ... }} history supplements) throws an informative
+   * error which is reported as UNSUPPORTED_ECL.
    */
 
   /**
@@ -1144,6 +1255,13 @@ class SnomedServices {
    * @returns {SnomedFilterContext}
    */
   _evalMemberOf = function (memberOfNode, opContext) {
+    // ^ [field, ...] refset selects which field of the member rows to return
+    // instead of the referenced component. Not supported: the referenced
+    // components, and the fields, may be descriptions or other non-concept
+    // components, which an expansion cannot carry.
+    if (memberOfNode.fields) {
+      throw new Error(`ECL reference set field selection (^ [${memberOfNode.fields.join(', ')}] ...) is not supported`);
+    }
     const refsetConcepts = this._eclResolveSet(this._evalECLNode(memberOfNode.refSet, opContext), opContext);
     const memberFilters = this._eclPrepareMemberFilters(memberOfNode.memberFilters, opContext);
 
@@ -1161,8 +1279,14 @@ class SnomedServices {
       if (membersRef === 0 || membersRef === 0xFFFFFFFF) {
         continue; // a reference set with no members
       }
-      const memberList = this.refSetMembers.getMembers(membersRef);
-      for (const m of memberList || []) {
+      const memberList = this.refSetMembers.getMembers(membersRef) || [];
+      // A reference set whose members are descriptions (a language reference
+      // set, say) has no concept members to return. Say so rather than
+      // answering with an empty set, which would read as "no members".
+      if (memberList.length > 0 && !memberList.some(m => m.kind === 0)) {
+        throw new Error(`The members of reference set ${this.concepts.getConceptId(refsetIdx)} are descriptions, not concepts, so ^ cannot be evaluated for it`);
+      }
+      for (const m of memberList) {
         // Concept referenced components only (kind 0). Description/other members
         // are excluded, which also prevents the no-component sentinel (0xFFFFFFFF)
         // from leaking in. The referenced concept may itself be INACTIVE and is
@@ -1544,7 +1668,9 @@ class SnomedServices {
   _findRefSetRecord = function (conceptIndex) {
     for (let i = 0; i < this.refSetIndex.count(); i++) {
       const refSet = this.refSetIndex.getReferenceSet(i);
-      if (refSet.definition === conceptIndex) {
+      // definition 0 means the importer could not resolve the reference set's
+      // concept (it is outside the subset) - not "the concept at offset 0"
+      if (refSet.definition === conceptIndex && refSet.definition !== 0) {
         return refSet;
       }
     }
@@ -3216,7 +3342,13 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async getTranslations(map, coding, target, reverse) {
-    if (!map || (target && target !== this.system()) || reverse) {
+    if (!map || reverse) {
+      return [];
+    }
+    if (map.jsonObj.editionTranslation) {
+      return this.translateToEdition(map, coding);
+    }
+    if (target && target !== this.system()) {
       return [];
     }
     let ref = this.sct.concepts.findConcept(map.id);
@@ -3271,6 +3403,133 @@ class SnomedProvider extends BaseCSServices {
     }
 
     return result;
+  }
+
+  /**
+   * Translate a concept of this edition to the edition it depends on (typically a national
+   * extension to the International Edition). There is no map: the answer comes from the
+   * definitions.
+   *  - a concept in one of the target edition's modules is its own translation
+   *  - an inactive concept translates via its historical associations (REPLACED BY, SAME AS,
+   *    POSSIBLY EQUIVALENT TO, ALTERNATIVE) to concepts in the target edition
+   *  - a fully defined extension concept translates to its normal form, provided every concept
+   *    in it belongs to the target edition; if the target edition has a concept with that same
+   *    normal form, to that concept
+   *  - otherwise (a primitive extension concept, or a definition that uses other extension
+   *    content) to its proximal ancestors in the target edition, which it is narrower than -
+   *    unless the only such ancestors are top-level hierarchies (or the root), which carry no
+   *    information: that is reported as a reason rather than a translation
+   */
+  async translateToEdition(map, coding) {
+    const ed = map.jsonObj.editionTranslation;
+    const sct = this.sct;
+    const src = sct.concepts.findConcept(coding.code);
+    if (!src.found) {
+      return [];
+    }
+    const inTarget = (ref) => ed.modules.has(sct.concepts.getModuleId(ref));
+    const mk = (code, display, relationship) => ({
+      map: map.vurl, system: this.system(), version: ed.version, code, display, relationship
+    });
+    const named = (ref) => `${sct.getConceptId(ref)} |${sct.getDisplayName(ref, sct.defaultLanguage)}|`;
+
+    if (inTarget(src.index)) {
+      return [mk(sct.getConceptId(src.index), sct.getDisplayName(src.index, sct.defaultLanguage), 'equivalent')];
+    }
+
+    if (!sct.isActive(src.index)) {
+      const result = [];
+      for (const [refset, relationship] of [['900000000000527005', 'equivalent'], ['900000000000526001', 'equivalent'],
+        ['900000000000523009', 'related-to'], ['900000000000530003', 'related-to']]) {
+        for (const tgt of this.#historicalAssociations(refset, src.index)) {
+          if (inTarget(tgt)) {
+            result.push(mk(sct.getConceptId(tgt), sct.getDisplayName(tgt, sct.defaultLanguage), relationship));
+          }
+        }
+      }
+      return result;
+    }
+
+    if (!sct.isPrimitive(src.index)) {
+      const nf = sct.expressionServices.createNormalForm(src.index);
+      if (this.#expressionConcepts(nf).every(inTarget)) {
+        const same = sct.conceptWithNormalForm(sct.expressionServices.renderExpression(nf, SnomedServicesRenderOption.Minimal));
+        if (same >= 0 && same !== src.index && inTarget(same)) {
+          return [mk(sct.getConceptId(same), sct.getDisplayName(same, sct.defaultLanguage), 'equivalent')];
+        }
+        // the canonical form self-groups every attribute; for output, never-grouped ones go back ungrouped
+        const out = sct.expressionServices.ungroupNeverGroupedRefinements(nf);
+        return [mk(sct.expressionServices.renderExpression(out, SnomedServicesRenderOption.Minimal),
+          sct.expressionServices.renderExpression(out, SnomedServicesRenderOption.FillMissing), 'equivalent')];
+      }
+    }
+
+    const ancestors = this.#proximalAncestorsIn(src.index, inTarget);
+    if (ancestors.length === 0) {
+      return [];
+    }
+    const useful = ancestors.filter(a => sct.concepts.getDepth(a) >= 2);
+    if (useful.length === 0) {
+      const list = ancestors.map(named);
+      const msgId = list.length === 1 ? 'TRANSLATE_SCT_EDITION_TOP_LEVEL_ONE' : 'TRANSLATE_SCT_EDITION_TOP_LEVEL_MANY';
+      return [{ message: this.opContext.i18n.translate(msgId, this.opContext.langs,
+        [getEditionName(ed.moduleId), named(src.index), list.join(', ')]) }];
+    }
+    return useful.map(a => mk(sct.getConceptId(a), sct.getDisplayName(a, sct.defaultLanguage), 'source-is-narrower-than-target'));
+  }
+
+  /** The target components of the given association reference set for a concept */
+  #historicalAssociations(refsetId, conceptIndex) {
+    const sct = this.sct;
+    const rs = sct.concepts.findConcept(refsetId);
+    if (!rs.found) return [];
+    const rref = sct.refSetIndex.getRefSetByConcept(rs.index);
+    if (rref === -1) return [];
+    const members = sct.refSetMembers.getMembers(sct.refSetIndex.getReferenceSet(rref).membersByRef);
+    const result = [];
+    for (const m of members) {
+      if (m.ref !== conceptIndex) continue;
+      const values = m.values ? sct.refs.getReferences(m.values) : null;
+      if (values && values.length >= 1 && values[0]) {
+        result.push(values[0]);
+      }
+    }
+    return result;
+  }
+
+  /** Every concept reference used anywhere in an expression */
+  #expressionConcepts(exp, into = []) {
+    for (const c of exp.concepts) {
+      if (c.reference !== NO_REFERENCE) into.push(c.reference);
+    }
+    const refinements = [...exp.refinements, ...exp.refinementGroups.flatMap(g => g.refinements)];
+    for (const r of refinements) {
+      if (r.name && r.name.reference !== NO_REFERENCE) into.push(r.name.reference);
+      if (r.value) this.#expressionConcepts(r.value, into);
+    }
+    return into;
+  }
+
+  /**
+   * The nearest ancestors of a concept that satisfy the test: a parent that does is taken
+   * and not looked beyond; one that does not is replaced by its own parents.
+   */
+  #proximalAncestorsIn(conceptIndex, test) {
+    const result = [];
+    const seen = new Set();
+    const todo = [...this.sct.expressionServices.getConceptParents(conceptIndex)];
+    while (todo.length) {
+      const p = todo.shift();
+      if (seen.has(p)) continue;
+      seen.add(p);
+      if (test(p)) {
+        result.push(p);
+      } else {
+        todo.push(...this.sct.expressionServices.getConceptParents(p));
+      }
+    }
+    // an ancestor that is itself subsumed by another in the list is not proximal
+    return result.filter(a => !result.some(b => b !== a && this.sct.subsumes(a, b)));
   }
 
   hasMultiHierarchy() {
@@ -3520,6 +3779,46 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
     if (!match[2]) return edition;
 
     return edition + ' ' + formatDateMMDDYYYY(match[2].substring(4, 6) + match[2].substring(6, 8) + match[2].substring(0, 4));
+  }
+
+  /**
+   * A translation from this edition to an edition it depends on needs no map: the answer
+   * comes from the definitions (see SnomedProvider.translateToEdition). The request names
+   * the source by its edition URI (with or without a version) and the target as
+   * system|edition URI (with or without a version); the map's url is the versioned source
+   * edition URI plus ?fhir_cm=<target edition module>
+   */
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
+    if (source !== this.system() || !sourceVersion || !dest || !this.isMyEdition(sourceVersion)) {
+      return;
+    }
+    const bar = dest.indexOf('|');
+    if (bar === -1 || dest.substring(0, bar) !== this.system()) {
+      return;
+    }
+    const dep = this.snomedServices.editionDependency(dest.substring(bar + 1));
+    if (!dep) {
+      return;
+    }
+    conceptMaps.push(new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      editionTranslation: dep,
+      url: `${this.version()}?fhir_cm=${dep.moduleId}`,
+      name: `SNOMED CT ${this.describeVersion(this.version())} to ${getEditionName(dep.moduleId)} Concept Map`,
+      description: `The translation implied by the concept definitions of the edition ${this.version()} to the ${getEditionName(dep.moduleId)} that it depends on`,
+      status: 'active',
+      group: [{
+        source: this.system(),
+        target: this.system()
+      }]
+    }));
+  }
+
+  /** Whether a source version names this edition: exactly, or the edition without a version */
+  isMyEdition(version) {
+    const mine = this.version();
+    return version === mine || mine.startsWith(version + '/version/');
   }
 
   async findImplicitConceptMap(url, version) {

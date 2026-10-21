@@ -20,10 +20,12 @@ const { BaseCSServices } = require('./cs-base');
 const { validateArrayParameter } = require('../../library/utilities');
 const { ICD11Expression, parseExpression, axisLabel } = require('./icd11-expressions');
 const { Issue } = require('../library/operation-outcome');
+const { DesignationUse } = require('../library/designations');
 const assert = require('assert');
 
 // WHO's own vocabulary for the kinds of text an entity carries, used as designation.use.
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
+const FOUNDATION_URL = 'http://id.who.int/icd/entity';
 
 // The extension a Coding may carry to save the reader a lookup: the short code (or the
 // short-code form of an expression) for the entity id in Coding.code. Provisional url.
@@ -499,8 +501,10 @@ class ICD11Services extends BaseCSServices {
     ];
     if (this.shared.systemCode !== 'foundation') {
       defs.push(
-        { code: 'source', uri: `${SCHEMA_NS}/source`, type: 'string',
-          description: 'The Foundation entity this linearization entry came from.' },
+        { code: 'source', uri: `${SCHEMA_NS}/source`, type: 'Coding',
+          description: 'The Foundation entity this linearization entry came from, as a Coding in '
+            + 'the Foundation. Requested as `source.details`, it also carries what a $lookup of '
+            + 'that entity returns: subproperties (definition, parent) and designation parts.' },
         { code: 'blockId', uri: `${SCHEMA_NS}/blockId`, type: 'string' },
         { code: 'codeRange', uri: `${SCHEMA_NS}/codeRange`, type: 'string' },
         { code: 'postcoordination', uri: `${SCHEMA_NS}/postcoordination`, type: 'string',
@@ -585,8 +589,11 @@ class ICD11Services extends BaseCSServices {
     if (concept.codeRange && this._hasProp(props, 'codeRange', true)) {
       this._addStringProperty(params, 'property', 'codeRange', concept.codeRange);
     }
-    if (concept.sourceUri && this._hasProp(props, 'source', false)) {
-      this._addStringProperty(params, 'property', 'source', concept.sourceUri);
+    // `source.details` is not a property of its own: it asks for source, with the Foundation
+    // entity's own lookup content inside it
+    const sourceDetails = props.some(p => String(p).toLowerCase() === 'source.details');
+    if (concept.sourceUri && (sourceDetails || this._hasProp(props, 'source', true))) {
+      params.push({ name: 'property', part: await this.#sourcePart(concept.sourceUri, sourceDetails) });
     }
     if (concept.browserUrl && this._hasProp(props, 'browserUrl', false)) {
       this._addStringProperty(params, 'property', 'browserUrl', concept.browserUrl);
@@ -668,6 +675,53 @@ class ICD11Services extends BaseCSServices {
         params.push({ name: 'property', part });
       }
     }
+  }
+
+  /**
+   * The `source` property: the Foundation entity a linearization entry came from, as a Coding
+   * in the Foundation (whose codes are entity uris), with its title. With `details`, it also
+   * carries what a $lookup of that entity would say: as subproperties, its definition and its
+   * parents in the Foundation (codes there, as $lookup returns them); and its designations, as
+   * `designation` parts shaped like a $lookup's own. The display is already on the Coding.
+   * The Foundation is in the same database, so no second provider is needed; if a
+   * database was built without it, the Coding is all there is.
+   */
+  async #sourcePart(uri, details) {
+    const row = await this.#get(
+      `SELECT c.id, s.url AS system_url FROM concept c JOIN system s ON s.id = c.system
+        WHERE s.code = 'foundation' AND c.uri = ?`, [uri]);
+    const coding = { system: row ? row.system_url : FOUNDATION_URL, code: uri };
+    const label = row ? await this.#title(row) : null;
+    if (label) coding.display = label;
+    const part = [{ name: 'code', valueCode: 'source' }, { name: 'value', valueCoding: coding }];
+    if (details && row) {
+      const sub = (code, value) => ({ name: 'subproperty', part: [{ name: 'code', valueCode: code }, { name: 'value', ...value }] });
+      const def = await this.#get(
+        `SELECT value FROM designation
+          WHERE concept = ? AND kind = 'definition' AND lang = ? ORDER BY seq LIMIT 1`,
+        [row.id, this.#displayLang()]);
+      if (def) part.push(sub('definition', { valueString: def.value }));
+      for (const r of await this.#all(
+          `SELECT c.uri FROM concept_parent cp JOIN concept c ON c.id = cp.parent
+            WHERE cp.child = ? ORDER BY cp.seq`, [row.id])) {
+        part.push(sub('parent', { valueCode: r.uri }));
+      }
+      // and its designations, in the same shape as a $lookup's own - which the operation does
+      // not describe inside a property, but they are what a $lookup of the entity would say,
+      // and a subproperty (a code and a value) cannot carry their language and use
+      for (const r of await this.#all(
+          `SELECT lang, kind, value FROM designation WHERE concept = ? ORDER BY lang, seq`, [row.id])) {
+        if (NOT_A_DESIGNATION.has(r.kind)) continue;
+        const value = r.value.trim();
+        if (!value) continue;
+        const use = r.kind === 'title' ? { ...DesignationUse.DISPLAY } : { system: SCHEMA_NS, code: r.kind };
+        part.push({ name: 'designation', part: [
+          { name: 'language', valueCode: r.lang },
+          { name: 'use', valueCoding: use },
+          { name: 'value', valueString: value }] });
+      }
+    }
+    return part;
   }
 
   /** A concept in this code system as a Coding, with its display. */

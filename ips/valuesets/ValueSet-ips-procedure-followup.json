@@ -1,0 +1,51 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-procedure-followup",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-procedure-followup",
+  "name": "IpsProcedureFollowup",
+  "title": "Procedure follow-ups (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT: the FHIR procedure follow-up codes.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "concept": [
+          {
+            "code": "18949003"
+          },
+          {
+            "code": "30549001"
+          },
+          {
+            "code": "241031001"
+          },
+          {
+            "code": "35963001"
+          },
+          {
+            "code": "225164002"
+          },
+          {
+            "code": "447346005"
+          },
+          {
+            "code": "229506003"
+          },
+          {
+            "code": "274441001"
+          },
+          {
+            "code": "394725008"
+          },
+          {
+            "code": "359825008"
+          }
+        ]
+      }
+    ]
+  }
+}

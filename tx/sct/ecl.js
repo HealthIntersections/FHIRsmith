@@ -622,6 +622,22 @@ class ECLParser {
     // Handle memberOf
     if (this.match(ECLTokenType.MEMBER_OF)) {
       this.advance(); // consume ^
+      // Optional reference set field selection: ^ [field, field] refset
+      // (ECL 2.x). Parsed into focus.fields; the evaluator decides what it
+      // can do with it.
+      let fields = null;
+      if (this.match(ECLTokenType.LBRACKET)) {
+        this.advance();
+        fields = [];
+        do {
+          if (!this.match(ECLTokenType.SCTID) || !/^[A-Za-z][A-Za-z0-9_]*$/.test(this.current.value)) {
+            this.error('Expected a reference set field name after ^ [');
+          }
+          fields.push(this.current.value);
+          this.advance();
+        } while (this.match(ECLTokenType.COMMA) && (this.advance(), true));
+        this.expect(ECLTokenType.RBRACKET);
+      }
       // Parse the reference set - can be concept reference, wildcard, or parenthesized expression
       // but NOT another constraint operator or member-of expression
       let refSet;
@@ -637,6 +653,9 @@ class ECLParser {
         type: ECLNodeType.MEMBER_OF,
         refSet
       };
+      if (fields) {
+        focus.fields = fields;
+      }
     } else if (this.match(ECLTokenType.LPAREN)) {
       this.advance(); // consume (
       focus = this.parseExpressionConstraint();

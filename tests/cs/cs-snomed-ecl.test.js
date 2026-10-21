@@ -209,6 +209,30 @@ describe('ECL Validator Test Suite', () => {
       expect(e.message).toContain('alternate identifiers');
     });
 
+    test.each([
+      '^ [referencedComponentId] 900000000000526001',
+      '^ [targetComponentId] 900000000000526001 |REPLACED BY association reference set|',
+      '^ [referencedComponentId, targetComponentId] (900000000000526001)',
+    ])('reference set field selection %s parses and is reported as unsupported', (ecl) => {
+      const e = errorFor(ecl);
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain('field selection');
+    });
+
+    test('member-of on a reference set of descriptions is unsupported, not empty', () => {
+      const e = errorFor('^ 900000000000509007 |US English|');
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain('descriptions, not concepts');
+    });
+
+    test('a malformed reference set field selection is invalid', () => {
+      expect(errorFor('^ [] 900000000000526001').msgId).toBe('INVALID_ECL');
+      expect(errorFor('^ [123] 900000000000526001').msgId).toBe('INVALID_ECL');
+      expect(errorFor('^ [targetComponentId 900000000000526001').msgId).toBe('INVALID_ECL');
+    });
+
     test('a non-numeric or unknown concept id is still invalid', () => {
       expect(errorFor('<< abc').msgId).toBe('INVALID_ECL');
       expect(errorFor('<< 123').msgId).toBe('INVALID_ECL');
