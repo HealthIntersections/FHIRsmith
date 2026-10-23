@@ -52,6 +52,7 @@ are described in [security.md](security.md); in brief:
 ```json
 "security": {
   "apiToken": "one token every client sends",
+  "failedAuthPerWindow": 60,
   "users": {
     "database": "registry-auth.db",
     "adminUsername": "admin",

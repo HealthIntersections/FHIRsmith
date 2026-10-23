@@ -1989,6 +1989,18 @@ describe('clinical profiles', () => {
     }
   });
 
+  test('the browser scripts come from memory, with an ETag', async () => {
+    for (const name of ['editor.js', 'profile-editor.js']) {
+      const r = await request(app).get(`/ips/${name}`);
+      expect(r.status).toBe(200);
+      expect(r.headers['content-type']).toMatch(/^application\/javascript/);
+      expect(r.headers['cache-control']).toBe('public, max-age=3600');
+      expect(r.text).toBe(require('fs').readFileSync(require('path').join(__dirname, '../../ips', name), 'utf8'));
+      const again = await request(app).get(`/ips/${name}`).set('If-None-Match', r.headers.etag);
+      expect(again.status).toBe(304);
+    }
+  });
+
   test('only the administrator changes them, or looks codes up', async () => {
     expect((await request(app).post('/ips/StructureDefinition').send({ title: 'x', constraints: [] })).status).toBe(403);
     const visitor = request.agent(app);

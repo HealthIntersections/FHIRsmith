@@ -26,6 +26,9 @@ const express = require('express');
 const session = require('express-session');
 const lusca = require('lusca');
 const rateLimit = require('express-rate-limit');
+
+// failed authentications allowed per address per 15 minutes, before 429s
+const DEFAULT_FAILED_AUTH_PER_WINDOW = 60;
 const bcrypt = require('bcrypt');
 const escape = require('escape-html');
 const folders = require('../library/folder-setup');
@@ -168,6 +171,32 @@ class RegistryAuth {
       }
     }
     return null;
+  }
+
+  /**
+   * Express middleware for the JSON API, before apiGuard(): a limit on failed
+   * authentications - only the requests answered 401 count, so a busy client with a good
+   * token is never slowed - per address, `failedAuthPerWindow` (default 60) in 15 minutes;
+   * past it, the address gets 429 for the rest of the window. Guessing tokens, and making
+   * the server check one bad JWT after another, is what it stops; general volume is the
+   * proxy's business. Does nothing when no security is configured, or for the HTML pages
+   * (which apiGuard lets through), or when failedAuthPerWindow is 0.
+   */
+  apiLimiter() {
+    const limit = Number.isInteger(this.config.failedAuthPerWindow) && this.config.failedAuthPerWindow >= 0 ? this.config.failedAuthPerWindow : DEFAULT_FAILED_AUTH_PER_WINDOW;
+    if (limit === 0) {
+      return (req, res, next) => next();
+    }
+    return rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit,
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      skip: (req) => !this.enabled || (req.headers.accept || '').includes('text/html'),
+      requestWasSuccessful: (req, res) => res.statusCode !== 401,
+      skipSuccessfulRequests: true,
+      handler: (req, res) => res.status(429).json({ error: 'too-many-requests', message: 'Too many requests with a token that is not valid for this registry; try again later' })
+    });
   }
 
   /**

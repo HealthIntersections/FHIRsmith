@@ -35,6 +35,14 @@ Content-Type: application/json
 (The message says `The token is not valid for this registry` when one was sent.) An open
 registry ignores any token sent to it.
 
+Failed authentications are limited per address. After `failedAuthPerWindow` requests
+answered 401 in 15 minutes (default 60), the address's API requests get
+`429 Too Many Requests` for the rest of the window. Only 401s count, so a busy client
+with a good token is never slowed. This stops anyone guessing tokens, and stops a stream of
+bad JWTs costing a signature check each. General request volume is still the proxy's
+business (nginx). `0` turns the limit off. It applies to the JSON API only; the pages
+aren't guarded, so they aren't limited.
+
 ## How a client sends a token
 
 As an HTTP bearer token, or in an `Api-Key` header (`X-API-Key` is accepted too):

@@ -23,6 +23,7 @@
 
 const crypto = require('crypto');
 const escape = require('escape-html');
+const parse5 = require('parse5');
 const { HEADER, SECTIONS, EMPTY_REASONS, EMPTY_REASON_SYSTEM, LOINC } = require('./editor-schema');
 const { Presenter } = require('./presenter');
 
@@ -135,9 +136,24 @@ function choiceName(base, field, value) {
   return base + (typeof value === 'object' ? 'CodeableConcept' : 'String');
 }
 
+// path parts that would reach an object's prototype rather than a property of its own
+const UNSAFE_PARTS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * The parts of a path. The paths are the schema's own (editor-schema.js), never a
+ * request's; even so, a part that would reach a prototype is refused.
+ */
+function pathParts(path) {
+  const parts = String(path).split('.');
+  if (parts.some(p => UNSAFE_PARTS.has(p) || UNSAFE_PARTS.has(p.replace(/\[x\]$/, '')))) {
+    throw new Error(`The path '${path}' is not one a resource can have`);
+  }
+  return parts;
+}
+
 /** Put a value at a path in a resource: a.b nests, an array element takes its first member. */
 function setPath(resource, path, value, field) {
-  const parts = path.split('.');
+  const parts = pathParts(path);
   let node = resource;
   for (let i = 0; i < parts.length; i++) {
     let name = parts[i];
@@ -170,7 +186,7 @@ function setPath(resource, path, value, field) {
 
 /** Read a value at a path: the reverse of setPath, taking first members of arrays. */
 function getPath(resource, path, field) {
-  const parts = path.split('.');
+  const parts = pathParts(path);
   let node = resource;
   for (let i = 0; i < parts.length; i++) {
     if (!isObject(node)) {
@@ -717,11 +733,36 @@ function rowOf(def, resource, resolve) {
   return row;
 }
 
-/** The text of a narrative, roughly: tags gone, block ends as line breaks. */
+// elements whose end is a line break in the text, and those whose content isn't text
+const BLOCKS = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'ul', 'ol', 'dl', 'dt', 'dd', 'pre', 'blockquote']);
+const NOT_TEXT = new Set(['script', 'style', 'template', 'head', 'title']);
+
+/**
+ * The text of a narrative, for the editor's narrative box: what a reader sees, with block
+ * ends and <br/> as line breaks. From a parse (parse5), not by stripping tags: the result
+ * is plain text - characters such as < are themselves - and is only ever used as text
+ * (a textarea's value; narrativeDiv() escapes it on the way back).
+ */
 function textOf(div) {
-  return div.replace(/<\/(p|div|li|tr|h\d)>/gi, '\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, '\'').replace(/&amp;/g, '&')
-    .split('\n').map(l => l.trim()).filter(Boolean).join('\n');
+  const out = [];
+  const walk = (node) => {
+    for (const child of node.childNodes || []) {
+      if (child.nodeName === '#text') {
+        out.push(child.value);
+      } else if (child.nodeName === 'br') {
+        out.push('\n');
+      } else if (child.tagName && !NOT_TEXT.has(child.tagName)) {
+        walk(child.content || child);
+        if (BLOCKS.has(child.tagName)) {
+          out.push('\n');
+        } else if (child.tagName === 'td' || child.tagName === 'th') {
+          out.push(' ');
+        }
+      }
+    }
+  };
+  walk(parse5.parseFragment(String(div)));
+  return out.join('').split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
 }
 
 module.exports = { build, modelOf, fhirValue, formValue, setPath, getPath, narrativeDiv, textOf, MAX_ROWS, MAX_TEXT, MAX_NARRATIVE };

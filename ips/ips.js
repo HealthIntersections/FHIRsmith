@@ -165,6 +165,25 @@ function preferValue(req, name) {
   return null;
 }
 
+// the browser scripts: the module's own files, read once and served from memory (so no
+// request reaches the file system), with an ETag so a browser can keep its copy
+const SCRIPTS = new Map();
+function script(name) {
+  if (!SCRIPTS.has(name)) {
+    const body = fs.readFileSync(path.join(__dirname, name), 'utf8');
+    SCRIPTS.set(name, { body, etag: `"${crypto.createHash('sha256').update(body).digest('base64url').substring(0, 27)}"` });
+  }
+  const s = SCRIPTS.get(name);
+  return (req, res) => {
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('ETag', s.etag);
+    if (req.get('If-None-Match') === s.etag) {
+      return res.status(304).end();
+    }
+    res.type('application/javascript').send(s.body);
+  };
+}
+
 function wantsHtml(req) {
   const f = req.query._format;
   if (typeof f === 'string' && f !== '') {
@@ -430,7 +449,7 @@ class IpsModule {
       next();
     };
 
-    r.get('/profile-editor.js', (req, res) => res.sendFile(path.join(__dirname, 'profile-editor.js'), { maxAge: '1h' }));
+    r.get('/profile-editor.js', script('profile-editor.js'));
     r.get('/lookup', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.systemLookup(req, res)));
     r.get('/lookup-vs', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.valueSetLookup(req, res)));
     r.get('/StructureDefinition', ...this.web, h('profiles', (req, res) => this.profileList(req, res)));
@@ -488,7 +507,7 @@ class IpsModule {
       next();
     };
 
-    r.get('/editor.js', (req, res) => res.sendFile(path.join(__dirname, 'editor.js'), { maxAge: '1h' }));
+    r.get('/editor.js', script('editor.js'));
     r.get('/:code', project, ...this.web, h('list', (req, res) => this.htmlList(req, res)));
     r.get('/:code/metadata', project, h('metadata', (req, res) => this.metadata(req, res)));
     // The submission form has no CSRF token and starts no session: submitting is open to

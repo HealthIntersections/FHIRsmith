@@ -316,11 +316,13 @@ class RegistryModule {
       const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
       return acceptsHtml ? next() : guard(req, res, next);
     };
+    // failed authentications are limited (successful ones aren't counted)
+    const apiLimiter = this.auth.apiLimiter();
     this.auth.setupRoutes(this.router);
 
     // Main registry page
-    this.router.get('/', apiGuard, this.handleMainPage.bind(this));
-    this.router.get('/resolve', apiGuard, this.handleResolveEndpoint.bind(this));
+    this.router.get('/', apiLimiter, apiGuard, this.handleMainPage.bind(this));
+    this.router.get('/resolve', apiLimiter, apiGuard, this.handleResolveEndpoint.bind(this));
     this.router.get('/log', this.handleLogEndpoint.bind(this));
     this.router.get('/software', this.handleSoftwarePage.bind(this));
 

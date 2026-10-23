@@ -4,7 +4,7 @@
 // Licensed under BSD-3: https://opensource.org/license/bsd-3-clause
 //
 
-const { build, modelOf, textOf, narrativeDiv } = require('../../ips/composer');
+const { build, modelOf, textOf, narrativeDiv, setPath, getPath } = require('../../ips/composer');
 const { SECTIONS, HEADER, forBrowser } = require('../../ips/editor-schema');
 const { validateDocument } = require('../../ips/ips');
 const { IpsValueSets } = require('../../ips/ips-valuesets');
@@ -184,6 +184,10 @@ describe('the composer', () => {
     expect(m.sections.immunizations).toBeUndefined();
     expect(modelOf(null)).toEqual({ patient: {}, document: {}, sections: {} });
     expect(textOf('<div><ul><li>a</li><li>b &lt;c&gt;</li></ul></div>')).toBe('a\nb <c>');
+    // from a parse, not by stripping tags: what isn't text stays out, and > in an attribute is no tag end
+    expect(textOf('<div xmlns="http://www.w3.org/1999/xhtml"><p title="a > b">one<br/>two</p><!-- note --><style>p { x: y }</style><p>three &amp; <b>four</b></p></div>')).toBe('one\ntwo\nthree & four');
+    expect(textOf('<div><scr<script>ipt>alert(1)</script></div>')).toBe('ipt>alert(1)');
+    expect(textOf('<div><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></div>')).toBe('a b\nc');
     expect(narrativeDiv('one\ntwo\n\nthree <x>')).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p>one<br/>two</p><p>three &lt;x&gt;</p></div>');
   });
 
@@ -207,5 +211,21 @@ describe('the composer', () => {
     expect(b.sections).toBe(SECTIONS);
     expect(b.header).toBe(HEADER);
     expect(b.emptyReasons.map(r => r.code)).toEqual(['nilknown', 'notasked', 'withheld', 'unavailable', 'notstarted', 'closed']);
+  });
+});
+
+describe('paths', () => {
+  test('never reach a prototype', () => {
+    for (const path of ['__proto__.polluted', 'a.__proto__.polluted', 'constructor.prototype.polluted', 'a.prototype', '__proto__[x]']) {
+      expect(() => setPath({}, path, 'yes', {})).toThrow(/is not one a resource can have/);
+      expect(() => getPath({}, path, {})).toThrow(/is not one a resource can have/);
+    }
+    expect({}.polluted).toBeUndefined();
+    expect(Object.prototype.polluted).toBeUndefined();
+    // ordinary paths are as they were
+    const r = {};
+    setPath(r, 'code.text', 'x', {});
+    expect(r).toEqual({ code: { text: 'x' } });
+    expect(getPath(r, 'code.text', {})).toBe('x');
   });
 });

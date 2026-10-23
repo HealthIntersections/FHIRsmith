@@ -82,6 +82,45 @@ describe('a single API token', () => {
   });
 });
 
+describe('failed authentications are limited', () => {
+  let app, mod;
+  beforeAll(async () => ({ app, mod } = await makeApp({ apiToken: 'open-sesame', failedAuthPerWindow: 3 })));
+  afterAll(() => mod.shutdown());
+
+  test('after too many 401s from an address, 429; good requests are never counted', async () => {
+    const good = () => request(app).get('/tx-reg/').set('Accept', 'application/json').set('Authorization', 'Bearer open-sesame');
+    const bad = () => request(app).get('/tx-reg/').set('Accept', 'application/json').set('Authorization', 'Bearer nope');
+    for (let i = 0; i < 10; i++) {
+      expect((await good()).status).toBe(200);
+    }
+    // a bad query on /resolve is a 400, not a failed authentication
+    expect((await request(app).get('/tx-reg/resolve').set('Accept', 'application/json').set('Authorization', 'Bearer open-sesame')).status).toBe(400);
+    for (let i = 0; i < 3; i++) {
+      expect((await bad()).status).toBe(401);
+    }
+    const limited = await bad();
+    expect(limited.status).toBe(429);
+    expect(limited.body.error).toBe('too-many-requests');
+    // the rest of the window is closed to the address's API requests; the pages stay open
+    expect((await good()).status).toBe(429);
+    expect((await request(app).get('/tx-reg/').set('Accept', 'text/html')).status).toBe(200);
+  });
+
+  test('an open registry is not limited, and 0 turns it off', async () => {
+    const open = await makeApp(undefined);
+    const off = await makeApp({ apiToken: 'open-sesame', failedAuthPerWindow: 0 });
+    try {
+      for (let i = 0; i < 8; i++) {
+        expect((await request(open.app).get('/tx-reg/').set('Accept', 'application/json')).status).toBe(200);
+        expect((await request(off.app).get('/tx-reg/').set('Accept', 'application/json').set('Authorization', 'Bearer nope')).status).toBe(401);
+      }
+    } finally {
+      open.mod.shutdown();
+      off.mod.shutdown();
+    }
+  });
+});
+
 describe('users and their tokens', () => {
   let app, mod;
   beforeAll(async () => ({ app, mod } = await makeApp({ users: USERS })));
