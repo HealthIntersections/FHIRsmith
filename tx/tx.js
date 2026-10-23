@@ -59,6 +59,8 @@ const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
 const { buildOperationOutcome, outcomeFromError } = require('./library/operation-outcome');
 const txOpenApi = require('./openapi');
+const { SyndicationStore } = require('./syndication/syndication-store');
+const syndicationFeed = require('./syndication/syndication-feed');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -140,9 +142,14 @@ class TXModule {
    * Initialize the TX module
    * @param {Object} config - Module configuration
    * @param {express.Application} app - Express application for registering endpoints
+   * @param {Object} [server] - server level settings: {hostName} (config.hostName)
    */
-  async initialize(config, app) {
+  async initialize(config, app, server = {}) {
     this.config = config;
+    // the server's public host name, when it is configured as one (it is also used as a
+    // display name, so anything that isn't a host name is ignored)
+    this.publicHost = typeof server.hostName === 'string' && /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/.test(server.hostName)
+      ? server.hostName : null;
     // Initialize logger with config settings
     this.log = Logger.getInstance().child({
       module: 'tx',
@@ -166,6 +173,7 @@ class TXModule {
     // Off unless the operator opts in. This gates the nav item as well as the route, so a
     // server that does not publish its library source shows no link to it.
     txHtml.setPublishLibrarySource(config.publishLibrarySource === true);
+    txHtml.setSyndicationFeed(!!(config.syndication && config.syndication.enabled));
 
     // Validate config
     if (!config.librarySource) {
@@ -236,6 +244,17 @@ class TXModule {
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats);
+
+    // The syndication feed: content is recorded in the store as the library loads it, from
+    // the time the administrator turns it on (see tx/syndication). One store serves every
+    // endpoint, since the library is shared. If it is turned on and the store can't be
+    // opened, that stops startup.
+    this.syndicationStore = null;
+    if (config.syndication && config.syndication.enabled) {
+      this.syndicationStore = new SyndicationStore(path.join(this.library.cacheFolder, 'syndication'), this.log).open();
+      this.library.syndication = this.syndicationStore;
+      this.log.info(`Syndication feed enabled: store in ${this.syndicationStore.folder}`);
+    }
     this.log.info(`Load...`);
     await this.library.load();
     this.log.info('Library loaded successfully');
@@ -1133,6 +1152,10 @@ class TXModule {
       });
     }
 
+    if (this.syndicationStore) {
+      this.setupSyndicationRoutes(router, endpointPath);
+    }
+
     // Metadata / CapabilityStatement
     router.get('/metadata', async (req, res) => {
       const start = Date.now();
@@ -1366,6 +1389,10 @@ class TXModule {
       clearInterval(timer);
     }
     this.timers = [];
+    if (this.syndicationStore) {
+      // let an induction in progress finish, so the store isn't left with a half-copied file
+      await this.syndicationStore.whenIdle();
+    }
     // Clean up any resources if needed
     await this.library.close();
     if (this.closureStore) {
@@ -1373,6 +1400,90 @@ class TXModule {
       this.closureStore = null;
     }
     this.log.info('TX module shut down');
+  }
+
+  /**
+   * The syndication feed for an endpoint (Terminology Syndication Feed IG, RFC 5005
+   * archived feeds) - see tx/syndication/syndication-feed.js. Atom unless HTML is asked for.
+   */
+  /**
+   * The public url of an endpoint, for the links in its feed: from the configured host name
+   * (config.hostName), so the links don't depend on what a client puts in the Host header.
+   * Only without one does it fall back to the request (as for a local test server).
+   */
+  syndicationBase(req, endpointPath) {
+    if (this.publicHost) {
+      return `https://${this.publicHost}${endpointPath}`;
+    }
+    return `${req.protocol}://${req.get('host')}${endpointPath}`;
+  }
+
+  setupSyndicationRoutes(router, endpointPath) {
+    const sendFeed = async (req, res, page) => {
+      const start = Date.now();
+      try {
+        const params = {
+          store: this.syndicationStore,
+          endpointPath,
+          fhirVersion: req.txEndpoint.fhirVersion,
+          base: this.syndicationBase(req, endpointPath),
+          page,
+          title: this.config.title,
+          serverVersion: packageJson.version
+        };
+        if (txHtml.acceptsHtml(req)) {
+          const content = syndicationFeed.renderHtml(params);
+          if (content == null) {
+            res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication archive'));
+            return;
+          }
+          let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, endpointPath);
+          const title = page == null ? 'Syndication Feed' : `Syndication Feed (archive ${page})`;
+          const html = await txhtml.renderPage(title, content, req.txEndpoint, req.txStartTime);
+          res.setHeader('Content-Type', 'text/html');
+          res.send(html);
+          return;
+        }
+        const xml = syndicationFeed.renderAtom(params);
+        if (xml == null) {
+          res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication archive'));
+          return;
+        }
+        // an archive never changes; the current document changes whenever content is added.
+        // An archive is only cacheable forever when its links come from the configured host
+        // name - links made from the request's Host header must not be cached for others
+        res.setHeader('Cache-Control', page == null || !this.publicHost ? 'no-cache' : 'public, max-age=31536000, immutable');
+        res.setHeader('Content-Type', 'application/atom+xml; charset=utf-8');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.send(xml);
+      } catch (error) {
+        this.log.error(`Error rendering syndication feed: ${error.message}`);
+        res.status(500).json(this.operationOutcome('error', 'exception', 'Unable to render the syndication feed'));
+      } finally {
+        this.countRequest(endpointPath, 'syndication', Date.now() - start);
+      }
+    };
+
+    router.get('/syndication', (req, res) => sendFeed(req, res, null));
+
+    router.get('/syndication/archive/:page', (req, res) => {
+      const page = /^[1-9][0-9]{0,8}$/.test(req.params.page) ? Number(req.params.page) : -1;
+      return sendFeed(req, res, page);
+    });
+
+    router.get('/syndication/files/:name', (req, res) => {
+      const file = this.syndicationStore.filePath(req.params.name);
+      if (!file) {
+        res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication file'));
+        return;
+      }
+      // copies in the store never change
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Content-Type', 'application/fhir+json');
+      // the file is whatever the source folder held: never let a browser sniff it as a page
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.sendFile(file);
+    });
   }
 
   trimParameters(params) {

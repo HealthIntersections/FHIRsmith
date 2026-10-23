@@ -1,0 +1,14 @@
+{
+  "resourceType": "CodeSystem",
+  "id": "syndication-test",
+  "url": "http://example.org/fhir/CodeSystem/syndication-test",
+  "version": "1.0.0",
+  "name": "SyndicationTest",
+  "title": "Syndication Test",
+  "description": "A code system for the syndication feed tests",
+  "status": "active",
+  "content": "complete",
+  "concept": [
+    { "code": "a", "display": "A" }
+  ]
+}

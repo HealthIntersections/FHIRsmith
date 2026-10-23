@@ -160,6 +160,8 @@ class Provider {
    * space (CodeSystem/core-v3-MaritalStatus): the core packages for different FHIR versions
    * share ids, and so does other content (hl7.terminology), so no endpoint can serve them on
    * their own ids (see tx/library/resource-ids.js)
+   *
+   * @returns {Promise<PackageContentLoader|undefined>} the loaded package (mode "npm")
    */
   async loadNpm(packageManager, cacheFolder,  details, isDefault, mode) {
     // Parse packageId and version from details (e.g., "hl7.terminology.r4#6.0.2")
@@ -216,6 +218,7 @@ class Provider {
     await cm.initialize();
     cm.assignIds(CORE_PREFIX);
     this.conceptMapProviders.push(cm);
+    return contentLoader;
   }
 
   getCodeSystemById(opContext, id) {

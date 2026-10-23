@@ -93,6 +93,12 @@ class Library {
   totalDownloaded = 0;
   vsacCfg = undefined;
 
+  /**
+   * {SyndicationStore|null} where the content this library loads is recorded for the
+   * syndication feed, when the server has one (see tx/syndication)
+   */
+  syndication = null;
+
   registerProvider(source, factory, isDefault = false) {
     this.#logSystem(factory.system(), factory.version(), source);
     if (isDefault || !this.codeSystemFactories.has(factory.system())) {
@@ -607,6 +613,7 @@ class Library {
     const loinc = new LoincServicesFactory(this.i18n, loincFN);
     await loinc.load();
     this.registerProvider(loincFN, loinc, isDefault);
+    this.#syndicateBinary('loinc', loincFN, loinc);
   }
 
   async loadRxnorm(details, isDefault, mode) {
@@ -617,6 +624,7 @@ class Library {
     const rxn = new RxNormServicesFactory(this.i18n, rxNormFN);
     await rxn.load();
     this.registerProvider(rxNormFN, rxn, isDefault);
+    this.#syndicateBinary('rxnorm', rxNormFN, rxn);
   }
 
   async loadNdc(details, isDefault, mode) {
@@ -627,6 +635,7 @@ class Library {
     const ndc = new NdcServicesFactory(this.i18n, ndcFN);
     await ndc.load();
     this.registerProvider(ndcFN, ndc, isDefault);
+    this.#syndicateBinary('ndc', ndcFN, ndc);
   }
 
   async loadUnii(details, isDefault, mode) {
@@ -637,6 +646,7 @@ class Library {
     const unii = new UniiServicesFactory(this.i18n, uniFN);
     await unii.load();
     this.registerProvider(uniFN, unii, isDefault);
+    this.#syndicateBinary('unii', uniFN, unii);
   }
 
   async loadSnomed(details, isDefault, mode) {
@@ -647,6 +657,7 @@ class Library {
     const sct = new SnomedServicesFactory(this.i18n, sctFN);
     await sct.load();
     this.registerProvider(sctFN, sct, isDefault);
+    this.#syndicateBinary('snomed', sctFN, sct);
   }
 
   async loadCpt(details, isDefault, mode) {
@@ -657,6 +668,8 @@ class Library {
     const cpt = new CPTServicesFactory(this.i18n, cptFN);
     await cpt.load();
     this.registerProvider(cptFN, cpt, isDefault);
+    // the store syndicates the public fragment only, never the full (licensed) database
+    this.#syndicateBinary('cpt', cptFN, cpt);
   }
 
   async loadOmop(details, isDefault, mode) {
@@ -667,6 +680,7 @@ class Library {
     const omop = new OMOPServicesFactory(this.i18n, omopFN);
     await omop.load();
     this.registerProvider(omopFN, omop, isDefault);
+    this.#syndicateBinary('omop', omopFN, omop);
   }
 
   /**
@@ -679,11 +693,67 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
+    // one file, so one syndication entry - identified by the MMS, if the file has it
+    let main = null;
     for (const sys of await ICD11ServicesFactory.listSystems(icdFN)) {
       const factory = new ICD11ServicesFactory(this.i18n, icdFN, sys.code);
       await factory.load();
       this.registerProvider(icdFN, factory, isDefault);
+      if (!main || sys.code === 'mms') {
+        main = factory;
+      }
     }
+    if (main) {
+      this.#syndicateBinary('icd11', icdFN, main);
+    }
+  }
+
+  /**
+   * Records a binary source file (SNOMED cache, LOINC database etc) in the syndication store,
+   * if there is one. The store works in the background, and decides itself whether the file
+   * is one it syndicates; nothing it does can stop the library loading.
+   * @private
+   */
+  #syndicateBinary(sourceType, filePath, factory) {
+    if (!this.syndication) {
+      return;
+    }
+    try {
+      let name = null;
+      try {
+        name = factory.name();
+      } catch (e) {
+        // not every factory has a name
+      }
+      void this.syndication.inductBinary({
+        sourceType, filePath, baseUrl: this.baseUrl, system: factory.system(), version: factory.version(), name
+      });
+    } catch (error) {
+      this.log.warn(`Syndication: unable to record ${filePath}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Records a package in the syndication store, if there is one.
+   * @param {PackageContentLoader} contentLoader - the loaded package
+   * @param {Object} source - {requestedVersion} for an npm: source, {url} for a url: source,
+   *   {fhirVersion} (major.minor) for an endpoint's core package
+   */
+  syndicatePackage(contentLoader, source = {}) {
+    if (!this.syndication || !contentLoader || !contentLoader.package) {
+      return;
+    }
+    const pkg = contentLoader.package;
+    void this.syndication.inductPackage({
+      id: contentLoader.id(),
+      version: contentLoader.version(),
+      canonical: pkg.canonical,
+      title: pkg.title,
+      description: pkg.description,
+      url: source.url,
+      fhirVersion: source.fhirVersion,
+      requestedVersion: source.requestedVersion
+    });
   }
 
   /**
@@ -707,12 +777,12 @@ class Library {
       version = parts[1];
     }
     const packagePath = await packageManager.fetch(packageId, version);
-    await this.#loadPackageFromPath(packagePath, mode, csOnly);
+    await this.#loadPackageFromPath(packagePath, mode, csOnly, { requestedVersion: version });
   }
 
   async loadUrl(packageManager, url, isDefault, mode, csOnly) {
     const packagePath = await packageManager.fetchUrl(url);
-    await this.#loadPackageFromPath(packagePath, mode, csOnly);
+    await this.#loadPackageFromPath(packagePath, mode, csOnly, { url });
   }
 
   /**
@@ -723,13 +793,14 @@ class Library {
    * array-backed codeSystems list, breaking url sources).
    * @private
    */
-  async #loadPackageFromPath(packagePath, mode, csOnly) {
+  async #loadPackageFromPath(packagePath, mode, csOnly, source) {
     if (mode === "fetch" || mode === "cs") {
       return;
     }
     const fullPackagePath = path.join(this.cacheFolder, packagePath);
     const contentLoader = new PackageContentLoader(fullPackagePath);
     await contentLoader.initialize();
+    this.syndicatePackage(contentLoader, source);
 
     this.packageSources.push(contentLoader.id()+"#"+contentLoader.version());
 
@@ -852,6 +923,27 @@ class Library {
    */
   async #loadLocalSource(contentLoader) {
     await contentLoader.initialize();
+    if (this.syndication) {
+      // each resource is an entry in its own right (those without a version are skipped)
+      for (const entry of contentLoader.index.files) {
+        if (this.#isIgnored(entry.url, entry.version)) {
+          continue;
+        }
+        let title = null;
+        let description = null;
+        try {
+          const json = JSON.parse(await fs.readFile(path.join(contentLoader.sourceFolder, entry.filename), 'utf8'));
+          title = json.title || json.name || null;
+          description = typeof json.description === 'string' ? json.description : null;
+        } catch (e) {
+          // initialize() already read it; if it can't now, the store will say so
+        }
+        void this.syndication.inductResource({
+          filePath: path.join(contentLoader.sourceFolder, entry.filename),
+          resourceType: entry.resourceType, url: entry.url, version: entry.version, title, description
+        });
+      }
+    }
 
     this.packageSources.push(contentLoader.id() + "#" + contentLoader.version());
 
@@ -1050,7 +1142,9 @@ class Library {
 
     // Load FHIR packages - these will be added to valueSetProviders first
     for (const packageId of fhirPackages) {
-      await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm", false);
+      const contentLoader = await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm", false);
+      // the core packages are the only version specific content in the syndication store
+      this.syndicatePackage(contentLoader, { fhirVersion: VersionUtilities.getMajMin(String(fhirVersion)) });
     }
 
 

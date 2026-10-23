@@ -1,0 +1,9 @@
+# Test library for the syndication feed tests: a folder source (one versioned resource,
+# which is syndicated, and one unversioned one, which isn't) alongside the automatic R5
+# core loading (a version specific package)
+
+base:
+  url: https://storage.googleapis.com/tx-fhir-org
+
+sources:
+  - folder:tests/tx/fixtures/syndication-folder=synd
