@@ -1791,6 +1791,9 @@ describe('sharing as SHL / VHL', () => {
     expect(calls[0].create).toEqual({ password: 'shl-secret', days: 7, vhl: true });
     const sign = calls.find(c => c.sign).sign;
     expect(sign.url.startsWith('shlink://')).toBe(true);
+    const vhlPayload = JSON.parse(Buffer.from(sign.url.substring('shlink://'.length), 'base64url').toString('utf8'));
+    expect(vhlPayload.flag).toBeUndefined();
+    expect(vhlPayload.url).toMatch(/^https:\/\/example.org\/shl\/access\//);
     expect(r.body.text).toBe(`HC1:SIGNED(${sign.url.length})`);
     expect(r.body.qr).toMatch(/^<svg /);
     const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'vhl' });

@@ -808,16 +808,26 @@ class SHLModule {
       }
     });
 
-    // Helper function for the shared access logic
+    // Helper function for the shared access logic.
+    //
+    // POST is the manifest request. GET is only defined by the SHL spec for the
+    // U flag (direct file access): the client does GET {url}?recipient=... and
+    // expects the single encrypted file (JWE) back, not a manifest. The flag is
+    // not sent to or stored on the server, so a GET is taken to mean U. If the
+    // SHL has more than one file (U isn't valid for it), or it's a VHL, GET
+    // keeps returning the manifest / VHL bundle as before.
     const handleSHLAccess = (req, res) => {
       const start = Date.now();
       try {
         const {uuid} = req.params;
+        const isGet = req.method === 'GET';
 
         let recipient, embeddedLengthMax;
 
-        if (req.method === 'GET') {
-          recipient = 'anonymous';
+        if (isGet) {
+          recipient = typeof req.query.recipient === 'string' && req.query.recipient.length > 0
+            ? req.query.recipient.substring(0, 255)
+            : 'anonymous';
           embeddedLengthMax = undefined;
         } else {
           ({recipient, embeddedLengthMax} = req.body);
@@ -846,7 +856,7 @@ class SHLModule {
 
           const logAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
 
-          this.db.run(logAccessSql, [uuid, recipient, clientIP], function (logErr) {
+          this.db.run(logAccessSql, [uuid, recipient, clientIP], (logErr) => {
             if (logErr) {
               shlLog.error('Failed to log SHL access:', logErr.message);
             }
@@ -858,24 +868,37 @@ class SHLModule {
                 return res.status(500).json({error: 'Failed to retrieve files'});
               }
 
+              // U flag: return the one file directly
+              if (isGet && !shlRow.vhl && fileRows.length === 1) {
+                try {
+                  res.set('Content-Type', 'application/jose');
+                  return res.send(Buffer.from(fileRows[0].cnt, 'base64'));
+                } catch (decodeErr) {
+                  return res.status(500).json({error: 'Failed to decode file content'});
+                }
+              }
+
+              // SHL links are always https; the server always sits behind an https proxy
               const host = req.get('host') || 'localhost:3000';
-              const protocol = req.secure ? 'https' : 'http';
               const maxLength = embeddedLengthMax ? parseInt(embeddedLengthMax) : undefined;
 
               const files = fileRows.map(file => {
                 const fileResponse = {
                   contentType: file.type,
-                  location: `${protocol}://${host}/shl/file/${file.id}`
+                  location: `https://${host}/shl/file/${file.id}`
                 };
 
-                if (maxLength === undefined || file.cnt.length <= maxLength) {
-                  fileResponse.embedded = file.cnt;
+                // cnt is stored base64-encoded; embedded must be the JWE compact serialization itself
+                const jwe = Buffer.from(file.cnt, 'base64').toString('utf8');
+                if (maxLength === undefined || jwe.length <= maxLength) {
+                  fileResponse.embedded = jwe;
                 }
 
                 return fileResponse;
               });
 
-              const standardResponse = {files};
+              // finalized: content is fixed for the life of the link (expired links 404 above)
+              const standardResponse = {status: 'finalized', files};
 
               if (shlRow.vhl && vhlProcessor) {
                 try {

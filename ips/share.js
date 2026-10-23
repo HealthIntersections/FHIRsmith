@@ -13,7 +13,8 @@
  *   1. POST {shl}/create  { password, days, vhl }       -> { uuid, pword, link }
  *   2. encrypt the document as a JWE (dir / A256GCM, a random 256-bit key)
  *   3. POST {shl}/upload  { uuid, pword, files: [{ cnt: base64(jwe), type }] }
- *   4. the shlink payload { url: link, flag: 'U', key, label }, base64url
+ *   4. the shlink payload { url: link, flag: 'U', key, label }, base64url (no flag for a VHL:
+ *      the VHL GET returns a DocumentReference bundle, not the file)
  *      SHL: {viewer}#shlink:/{payload} - the QR carries that
  *      VHL: POST {shl}/sign { url: 'shlink://{payload}' } -> { signature } (a COSE_Sign1 of
  *           the GDHCN payload, deflated and base45) - the QR carries 'HC1:' + signature
@@ -146,7 +147,9 @@ class ShlClient {
       throw new Error('The SHL server did not give a uuid, password and link');
     }
     await this.post('/upload', { uuid: created.uuid, pword: created.pword, files: [{ cnt: Buffer.from(jwe, 'utf8').toString('base64'), type: FHIR_JSON }] }, options.host);
-    const payload = { url: created.link, flag: 'U', key: b64url(keyBytes), label: options.label || 'Patient Health Document' };
+    const payload = kind === 'vhl'
+      ? { url: created.link, key: b64url(keyBytes), label: options.label || 'Patient Health Document' }
+      : { url: created.link, flag: 'U', key: b64url(keyBytes), label: options.label || 'Patient Health Document' };
     const encoded = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
     let text;
     if (kind === 'vhl') {

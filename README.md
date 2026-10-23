@@ -1,22 +1,37 @@
 # ![🔥](static/FHIRsmith64.png) FHIRsmith - FHIR Server toolkit
 
-This server provides a set of server-side services that are useful for the FHIR Community. The set of are two kinds of services:
+This server provides a set of server-side services that are useful for the FHIR Community. Each is a module, turned on and configured in `config.json`. The modules are at different stages, and stability varies between them: a module in production can still be changing in places (and the terminology server's behaviour follows decisions about its content - ICD-11, SNOMED CT - as they are made).
 
-## Modules useful to anyone in the community
+## In production
 
-* (Coming) R4/R6 interconverter
-* [terminology](tx/README.md) server (as running on [tx.fhir.org](http://tx.fhir.org/r4))
-* [SHL Server](shl/readme.md) - SHL/VHL support services (running on [healthintersections.com.au](http://www.healthintersections.com.au), supporting the ICVP demo and and the Patient Document Generator)
+* [Terminology server](tx/README.md) (`tx`) - the reference terminology server for the FHIR community and the terminology ecosystem (as running on [tx.fhir.org](http://tx.fhir.org/r4))
+* [TX Registry](registry/documentation/readme.md) (`registry`) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg, moving to https://ecosystem.hl7.org). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
+* [Package server](packages/readme.md) (`packages`) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
+* Publisher (`publisher`) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
+* XIG server (`xig`) - **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
+* [SHL Server](shl/readme.md) (`shl`) - SHL/VHL support services (running on [healthintersections.com.au](http://www.healthintersections.com.au), supporting the ICVP demo and the Patient Document Generator)
 
-## Services useful the community as a whole
+## In production, but still under development
 
-* [TX Registry](registry/documentation/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
-* [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
-* [XIG server](xig/readme.md) -  **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
-* [Publisher](publisher/readme.md) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
-* [Testing](testing/readme.md) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://npm.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
-* [VCL](vcl/readme.md) - **Parse VCL expressions** into FHIR ValueSet resources (as running at http://fhir.org/vcl)
-* (Coming) Token services
+* [Extension tracker](extension-tracker/readme.md) (`ext-tracker`) - tracks extensions, profiles and extension usage across FHIR Implementation Guides, from data the IG Publisher submits
+* [Folder](folder/readme.md) (`folder`) - serves static files from one or more directories, with optional authenticated upload
+* [Testing](testing/readme.md) (`testing`) - **TestReport repository**: receives FHIR TestReports from TxTester and other test tools, with a FHIR API and web pages (as running at https://npm.fhir.org/testing). Its API is described by an OpenAPI 3.1 spec at `/testing/openapi.json` (and `.yaml`), with a browsable reference at `/testing/openapi`
+* VCL (`vcl`) - **Parse VCL expressions** into FHIR ValueSet resources (as running at http://fhir.org/vcl)
+
+## Under development, prototyping
+
+* [IPS](ips/readme.md) (`ips`) - collections of International Patient Summary documents, each with its own FHIR endpoint, processing (validation, terminology checks, translation, narrative, clinical profiles) and web pages
+
+## On the back-burner
+
+These are not being actively developed at present.
+
+* [NpmProjector](npmprojector/readme.md) (`npmprojector`) - watches a local npm package directory and serves its FHIR resources with FHIRPath-based search
+* Token (`token`) - API key services
+
+## Planned
+
+* R4/R6 interconverter
 
 ## Summary Statement
 
