@@ -10,7 +10,7 @@ This server provides a set of server-side services that are useful for the FHIR 
 
 ## Services useful the community as a whole
 
-* [TX Registry](registry/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
+* [TX Registry](registry/documentation/readme.md) - **Terminology System Registry** as [described by the terminology ecosystem specification](https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig) (as running at http://tx.fhir.org/tx-reg). Its API is described by an OpenAPI 3.1 spec at `/tx-reg/openapi.json` (and `.yaml`), with a browsable reference at `/tx-reg/openapi`
 * [Package server](packages/readme.md) - **NPM-style FHIR package registry** with search, versioning, and downloads, consistent with the FHIR NPM Specification (as running at http://packages2.fhir.org/packages). Its API is described by an OpenAPI 3.1 spec at `/packages/openapi.json` (and `.yaml`), with a browsable reference at `/packages/openapi`
 * [XIG server](xig/readme.md) -  **Comprehensive FHIR IG analytics** with resource breakdowns by version, authority, and realm (as running at http://packages2.fhir.org/packages)
 * [Publisher](publisher/readme.md) - FHIR publishing services (as running at [healthintersections.com.au](http://www.healthintersections.com.au/publisher))
@@ -158,6 +158,58 @@ Add a `logging` section to `config.json` to control log behaviour. All fields ar
 | `flushSize` | `200` | Number of buffered log lines that trigger an immediate flush regardless of the timer |
 
 Log files are written to the `logs/` subdirectory of the data directory as `server-YYYY-MM-DD.log`. A `server.log` symlink always points to the current day's file, so `tail -f data/logs/server.log` tracks the active log without needing to know the date.
+
+### Email and the Daily Report
+
+The server can email a short markdown report on itself once a day. It needs two things in
+`config.json`: an SMTP server to send through, and someone to send to:
+
+```json
+{
+  "email": {
+    "host": "smtp.example.org",
+    "port": 587,
+    "user": "fhirsmith",
+    "password": "...",
+    "from": "FHIRsmith <fhirsmith@example.org>"
+  },
+  "dailyReport": {
+    "to": ["ops@example.org"]
+  }
+}
+```
+
+`user`/`password` are optional (an open relay); `secure` defaults to true for port 465 and
+to STARTTLS otherwise. Without an `email` block nothing is emailed, and without
+`dailyReport.to` there's no report (`dailyReport.enabled: false` turns it off explicitly).
+
+The report, titled "`{hostName}` daily report", goes out at midnight (the server's local
+time), or as soon as the server is up again if it was down at midnight. It has a paragraph
+on the server's stability since the last report - how much of the time it was up, restarts,
+the longest outage, and any upgrade (from the run history in the statistics database, so
+`stats.enabled: false` leaves the uptime unknown); a paragraph from each running module that
+has something to report (by default, none do); and a paragraph on the system - version,
+Node.js and OS, how long this run has been up, the log files and the free disk space they're
+drawing on, plus anything the npm audit check has found (packages with known vulnerabilities and
+what to do about them, or a newer FHIRsmith release). If any background task's last run failed, a
+final section lists them. When the last report was sent is kept in `daily-report.json` in the data
+directory.
+
+A module takes part by implementing `dailyReport({since, now})`, returning its paragraph as
+markdown (or a promise of it); an empty return means it has nothing to say that day. The
+request counts a module quotes come from `stats.countsSince(since, now)`, the per-operation
+counts in the statistics database for the period. The modules that report:
+
+| Module | Reports |
+|---|---|
+| Terminology server | how many of each operation were performed, over all its endpoints |
+| Terminology server registry | client requests answered by the API, servers registered, and any server that answered none of the registry's scans in the period |
+| Packages | packages served (tarball downloads) and new package versions found by the crawler |
+| XIG | pages served, and whether the database could be accessed (and whether the last download failed) |
+| Testing | pages served, test reports received, and the number held |
+| SMART Health Links | QR codes created (SMART Health Links and Verifiable Health Links), link accesses, and the documents stored to serve them |
+| IPS | pages served, IPS documents received, and the number stored |
+| Publisher | publication runs started, and how many finished successfully |
 
 ### Start the Server
 

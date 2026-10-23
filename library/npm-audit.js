@@ -372,6 +372,31 @@ class NpmAudit {
   }
 
   /**
+   * For the daily report: plain text, and only when there's something to act
+   * on - packages with known vulnerabilities (and what to do about them), a
+   * check that couldn't be run, or a newer FHIRsmith release. '' otherwise.
+   */
+  reportText() {
+    if (!this.enabled) {
+      return '';
+    }
+    const sentences = [];
+    if (this.findings.length > 0) {
+      const list = this.findings.map(f => `${f.name} ${f.installed.join('/')} (${f.severity}: ${f.range})`).join(', ');
+      sentences.push(`npm audit found ${this.summary()} in the packages this server uses: ${list}. ${this.advice()}`);
+    }
+    if (this.lastError) {
+      sentences.push(this.checkedAt
+        ? `The latest npm audit check failed: ${this.lastError}.`
+        : `The npm audit check could not be run: ${this.lastError}.`);
+    }
+    if (this.findings.length === 0 && this.installedVersion && compareVersions(this.installedVersion, this.latestVersion) < 0) {
+      sentences.push(`FHIRsmith ${this.latestVersion} is available (this server is running ${this.installedVersion}).`);
+    }
+    return sentences.join(' ');
+  }
+
+  /**
    * Home page: nothing unless there is something to report
    */
   renderBanner(now = Date.now()) {

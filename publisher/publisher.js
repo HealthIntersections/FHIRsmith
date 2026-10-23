@@ -2987,6 +2987,35 @@ class PublisherModule {
     });
   }
 
+  /**
+   * The paragraph for the server's daily report: publication runs started in
+   * the period, and how many finished successfully.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.db) {
+      return 'The database is not open.';
+    }
+    const get = (sql, params) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+    // the timestamps are CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
+    const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
+    try {
+      const started = await get('SELECT COUNT(*) AS n FROM tasks WHERE building_at > ? AND building_at <= ?', [utc(since), utc(now)]);
+      const finished = await get('SELECT COUNT(*) AS n FROM tasks WHERE completed_at > ? AND completed_at <= ?', [utc(since), utc(now)]);
+      const failed = await get('SELECT COUNT(*) AS n FROM tasks WHERE failed_at > ? AND failed_at <= ?', [utc(since), utc(now)]);
+      const waiting = await get("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('queued', 'waiting for approval')", []);
+      let text = `${plural(started.n, 'publication run')} ${started.n === 1 ? 'was' : 'were'} started, and ${finished.n} finished successfully`;
+      text += failed.n > 0 ? ` (${failed.n} failed).` : '.';
+      if (waiting.n > 0) {
+        text += ` ${plural(waiting.n, 'task')} ${waiting.n === 1 ? 'is' : 'are'} queued or waiting for approval.`;
+      }
+      return text;
+    } catch (e) {
+      return `The database could not be read: ${e.message}.`;
+    }
+  }
+
   async shutdown() {
     this.logger.info('Shutting down publisher module...');
 

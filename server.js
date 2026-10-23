@@ -18,6 +18,8 @@ const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const { NpmAudit } = require('./library/npm-audit');
+const Mailer = require('./library/mailer');
+const DailyReport = require('./library/daily-report');
 
 // Load configuration BEFORE logger
 let config;
@@ -114,6 +116,8 @@ const modules = {};
 let stats = null;
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
+// the daily report, emailed at midnight when "email" and "dailyReport.to" are configured - see library/daily-report.js
+let dailyReport = null;
 
 // Initialize modules based on configuration
 async function initializeModules() {
@@ -251,6 +255,11 @@ async function initializeModules() {
   if (config.modules?.ips?.enabled) {
     try {
       serverLog.info('Initializing module: ips...');
+      // sharing through this server's own shl module: its password, unless the ips
+      // configuration names an SHL server of its own
+      if (config.modules.ips.shl && !config.modules.ips.shl.password && config.modules.shl?.password) {
+        config.modules.ips.shl = { server: '/shl', ...config.modules.ips.shl, password: config.modules.shl.password };
+      }
       modules.ips = new IpsModule(stats.forModule('ips'));
       await modules.ips.initialize(config.modules.ips, app);
       app.use('/ips', modules.ips.router);
@@ -441,16 +450,7 @@ async function buildRootPageContent() {
 
   // Calculate uptime
   const uptimeMs = Date.now() - stats.startTime;
-  const uptimeSeconds = Math.floor(uptimeMs / 1000);
-  const uptimeDays = Math.floor(uptimeSeconds / 86400);
-  const uptimeHours = Math.floor((uptimeSeconds % 86400) / 3600);
-  const uptimeMinutes = Math.floor((uptimeSeconds % 3600) / 60);
-  const uptimeSecs = uptimeSeconds % 60;
-  let uptimeStr = '';
-  if (uptimeDays > 0) uptimeStr += `${uptimeDays}d `;
-  if (uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeHours}h `;
-  if (uptimeMinutes > 0 || uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeMinutes}m `;
-  uptimeStr += `${uptimeSecs}s`;
+  const uptimeStr = uptimeText(uptimeMs);
 
   // Memory usage
   const memUsage = process.memoryUsage();
@@ -635,16 +635,7 @@ app.get('/dashboard', async (req, res) => {
     const startTime = Date.now();
     // Calculate uptime
     const uptimeMs = Date.now() - stats.startTime;
-    const uptimeSeconds = Math.floor(uptimeMs / 1000);
-    const uptimeDays = Math.floor(uptimeSeconds / 86400);
-    const uptimeHours = Math.floor((uptimeSeconds % 86400) / 3600);
-    const uptimeMinutes = Math.floor((uptimeSeconds % 3600) / 60);
-    const uptimeSecs = uptimeSeconds % 60;
-    let uptimeStr = '';
-    if (uptimeDays > 0) uptimeStr += `${uptimeDays}d `;
-    if (uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeHours}h `;
-    if (uptimeMinutes > 0 || uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeMinutes}m `;
-    uptimeStr += `${uptimeSecs}s`;
+    const uptimeStr = uptimeText(uptimeMs);
 
     // Memory usage
     const memUsage = process.memoryUsage();
@@ -718,6 +709,30 @@ function formatBytes(bytes) {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/**
+ * "3d 4h 5m 6s" for this run, followed by the proportion of time the server has
+ * been up over all its recorded runs, when the statistics database is keeping that.
+ */
+function uptimeText(uptimeMs) {
+  const uptimeSeconds = Math.floor(uptimeMs / 1000);
+  const uptimeDays = Math.floor(uptimeSeconds / 86400);
+  const uptimeHours = Math.floor((uptimeSeconds % 86400) / 3600);
+  const uptimeMinutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const uptimeSecs = uptimeSeconds % 60;
+  let uptimeStr = '';
+  if (uptimeDays > 0) uptimeStr += `${uptimeDays}d `;
+  if (uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeHours}h `;
+  if (uptimeMinutes > 0 || uptimeHours > 0 || uptimeDays > 0) uptimeStr += `${uptimeMinutes}m `;
+  uptimeStr += `${uptimeSecs}s`;
+  const overall = stats.overallUptime();
+  if (overall) {
+    // floor rather than round, so 99.96% doesn't claim to be 100%
+    const pct = overall.percent >= 100 ? '100' : (Math.floor(overall.percent * 10) / 10).toFixed(1);
+    uptimeStr += ` (${pct}% overall)`;
+  }
+  return uptimeStr;
 }
 
 function pctColor(pct) {
@@ -816,10 +831,20 @@ async function startServer() {
 
     // Start server
     app.listen(PORT, () => {
-      stats.markStarted();
+      stats.markStarted(packageJson.version);
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
     npmAudit.start();
+    dailyReport = new DailyReport(config.dailyReport, {
+      log: Logger.getInstance().child({ module: 'daily-report' }),
+      stats: stats,
+      modules: modules,
+      mailer: new Mailer(config.email, Logger.getInstance().child({ module: 'email' })),
+      npmAudit: npmAudit,
+      version: packageJson.version,
+      serverId: config.hostName
+    });
+    dailyReport.start();
     if (modules.packages && config.modules?.packages?.enabled) {
       modules.packages.startInitialCrawler();
     }
@@ -849,6 +874,9 @@ process.on('SIGINT', async () => {
   serverLog.info('\nShutting down server...');
   if (npmAudit) {
     npmAudit.stop();
+  }
+  if (dailyReport) {
+    dailyReport.stop();
   }
 
   // Shutdown all modules

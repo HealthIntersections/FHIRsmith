@@ -1059,6 +1059,38 @@ class SHLModule {
     });
   }
 
+  /**
+   * The paragraph for the server's daily report: links (QR codes) created in
+   * the period, in either form, how often links were accessed, and the
+   * documents stored behind them.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.db) {
+      return 'The database is not open.';
+    }
+    const get = (sql, params) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+    // created_at is CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
+    const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
+    try {
+      const created = await get(
+        'SELECT SUM(CASE WHEN vhl THEN 0 ELSE 1 END) AS shl, SUM(CASE WHEN vhl THEN 1 ELSE 0 END) AS vhl FROM SHL WHERE created_at > ? AND created_at <= ?',
+        [utc(since), utc(now)]);
+      const views = await get('SELECT COUNT(*) AS n FROM SHLViews WHERE created_at > ? AND created_at <= ?', [utc(since), utc(now)]);
+      const files = await get('SELECT COUNT(*) AS n, COUNT(DISTINCT shl_uuid) AS links FROM SHLFiles', []);
+      const shl = created.shl || 0;
+      const vhl = created.vhl || 0;
+      const total = shl + vhl;
+      const sentences = [];
+      sentences.push(`${plural(total, 'QR code')} ${total === 1 ? 'was' : 'were'} served (${shl} SMART Health ${shl === 1 ? 'Link' : 'Links'}, ${plural(vhl, 'Verifiable Health Link')}), and links were accessed ${plural(views.n, 'time')}.`);
+      sentences.push(`${plural(files.n, 'document')} ${files.n === 1 ? 'is' : 'are'} stored to serve ${plural(files.links, 'QR code')}.`);
+      return sentences.join(' ');
+    } catch (e) {
+      return `The database could not be read: ${e.message}.`;
+    }
+  }
+
   async shutdown() {
     shlLog.info('Shutting down SHL module...');
 

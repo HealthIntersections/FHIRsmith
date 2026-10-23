@@ -43,6 +43,15 @@ class ModuleStats {
   get staticRequestCount() { return this.parent.staticRequestCount; }
   get history() { return this.parent.history; }
   get startTime() { return this.parent.startTime; }
+
+  /**
+   * What this module served in (since, now]: {total, operations: {name: count},
+   * endpoints: {endpoint: {name: count}}} - see ServerStats.countsSince(). This
+   * is what a module's dailyReport() builds its numbers from.
+   */
+  countsSince(since, now = Date.now()) {
+    return this.parent.countsSince(since, now, this.module);
+  }
 }
 
 class ServerStats {
@@ -62,6 +71,13 @@ class ServerStats {
   // key (module/endpoint/operation) -> counter. See countRequest().
   counters = new Map();
   db = null;
+  // this run's row in server_runs, and what the earlier runs add up to - see overallUptime()
+  runId = null;
+  earlierRuns = {firstStart: null, runningMs: 0};
+  // how often this run says "still alive"; a crash loses at most this much
+  // from the overall uptime figure
+  heartbeatMs = 60 * 1000;
+  heartbeat = null;
 
   constructor(config, log) {
     this.config = config || {};
@@ -146,14 +162,92 @@ class ServerStats {
     }
   }
 
-  markStarted() {
+  markStarted(version = null) {
     this.started = true;
+    this.version = version;
     this.startMem = process.memoryUsage().heapUsed;
     this.startTime = Date.now();
     this.lastTime = this.startTime;
     this.eventLoopMonitor = monitorEventLoopDelay({ resolution: 20 });
     this.eventLoopMonitor.enable();
+    this.startRun();
     this.recordMetrics();
+  }
+
+  /**
+   * Record this run in the database and start the heartbeat that keeps its
+   * last_seen current. As with everything else here, a failure is logged and
+   * the overall uptime just isn't available for this run.
+   */
+  startRun() {
+    if (!this.db) {
+      return;
+    }
+    try {
+      this.runId = this.db.startRun(this.startTime, this.version);
+      this.earlierRuns = this.db.loadRunHistory(this.runId);
+    } catch (e) {
+      this.log.error(`Unable to record the server run: ${e.message}. Overall uptime will not be available`);
+      this.runId = null;
+      return;
+    }
+    this.heartbeat = setInterval(() => this.touchRun(), this.heartbeatMs);
+    if (typeof this.heartbeat.unref === 'function') {
+      this.heartbeat.unref();
+    }
+  }
+
+  /**
+   * The server's runs since `since`, oldest first, each {started, lastSeen,
+   * version, current}, preceded by the run before that (if any) - see
+   * StatsDatabase.loadRuns(). The current run is reported as seen now, not as
+   * of its last heartbeat. null if the history isn't being kept.
+   */
+  runHistory(since, now = Date.now()) {
+    if (this.runId == null) {
+      return null;
+    }
+    let runs;
+    try {
+      runs = this.db.loadRuns(since);
+    } catch (e) {
+      this.log.error(`Unable to read the server run history: ${e.message}`);
+      return null;
+    }
+    return runs.map(r => r.id === this.runId
+      ? {started: r.started, lastSeen: now, version: r.version, current: true}
+      : {started: r.started, lastSeen: r.lastSeen, version: r.version, current: false});
+  }
+
+  touchRun() {
+    if (this.db && this.runId != null) {
+      try {
+        this.db.touchRun(this.runId, Date.now());
+      } catch (e) {
+        this.log.error(`Unable to record the server heartbeat: ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * The proportion of time the server has been up, over every run recorded
+   * in the statistics database: time it was known to be running (each run,
+   * from its start to the last heartbeat it wrote, plus this run up to now)
+   * as a percentage of the time since the first recorded run started.
+   *
+   * Returns {percent, since} or null if the history isn't being kept.
+   */
+  overallUptime(now = Date.now()) {
+    if (this.runId == null) {
+      return null;
+    }
+    const since = this.earlierRuns.firstStart == null ? this.startTime : Math.min(this.earlierRuns.firstStart, this.startTime);
+    const elapsed = now - since;
+    if (elapsed <= 0) {
+      return {percent: 100, since: since};
+    }
+    const running = this.earlierRuns.runningMs + (now - this.startTime);
+    return {percent: Math.min(100, (running * 100) / elapsed), since: since};
   }
 
   /**
@@ -215,6 +309,7 @@ class ServerStats {
       }
     }
     if (rows.length === 0) {
+      this.lastFlush = now;
       return 0;
     }
     try {
@@ -227,7 +322,51 @@ class ServerStats {
       counter.countDelta = 0;
       counter.timeDelta = 0;
     }
+    this.lastFlush = now;
     return rows.length;
+  }
+
+  /**
+   * Write out whatever has been counted since the last flush, so that a
+   * countsSince() up to `now` sees everything. Used by the daily report.
+   */
+  flushNow(now = Date.now()) {
+    this.flushCounters(now, now - (this.lastFlush || this.lastTime || this.startTime));
+  }
+
+  /**
+   * The requests a module served in (since, now], from the persisted rows plus
+   * anything counted since the last flush. Without the database only the
+   * unflushed counts are known, so persisted is false to say the numbers are
+   * partial.
+   */
+  countsSince(since, now, module) {
+    const result = {total: 0, operations: {}, endpoints: {}, persisted: Boolean(this.db)};
+    const add = (endpoint, operation, count) => {
+      if (!count) {
+        return;
+      }
+      result.total += count;
+      result.operations[operation] = (result.operations[operation] || 0) + count;
+      const ep = result.endpoints[endpoint] || (result.endpoints[endpoint] = {});
+      ep[operation] = (ep[operation] || 0) + count;
+    };
+    if (this.db) {
+      try {
+        for (const row of this.db.countsSince(since, now, module)) {
+          add(row.endpoint, row.operation, row.count);
+        }
+      } catch (e) {
+        this.log.error(`Unable to read request counts: ${e.message}`);
+        result.persisted = false;
+      }
+    }
+    for (const counter of this.counters.values()) {
+      if (counter.module === module) {
+        add(counter.endpoint, counter.operation, counter.countDelta);
+      }
+    }
+    return result;
   }
 
   addTask(name, frequency) {
@@ -265,6 +404,19 @@ class ServerStats {
     }
   }
 
+  /**
+   * The background tasks whose last run failed: [{name, state, frequency, date}]
+   */
+  failedTasks() {
+    const failed = [];
+    for (const [name, info] of this.taskMap) {
+      if (info.status === 'error') {
+        failed.push({name: name, state: info.state, frequency: info.frequency, date: info.date});
+      }
+    }
+    return failed;
+  }
+
   taskDetails() {
     if (this.taskMap.size == 0) {
       return "";
@@ -290,6 +442,11 @@ class ServerStats {
 
   finishStats() {
     clearInterval(this.timer);
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
+    this.touchRun();
     // Synchronous, so the last partial interval is on disk before server.js
     // calls process.exit().
     this.flushCounters(Date.now(), Date.now() - (this.lastTime || this.startTime));

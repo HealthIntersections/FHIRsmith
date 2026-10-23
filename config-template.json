@@ -27,6 +27,24 @@
     "enabled": true,
     "intervalHours": 24
   },
+  // Outbound email, over SMTP. Optional: without it nothing is emailed. user/password are
+  // optional too (an open relay); secure defaults to true for port 465, otherwise STARTTLS
+  "email": {
+    "host": "smtp.example.org",
+    "port": 587,
+    "user": "fhirsmith",
+    "password": "<!-- password -->",
+    "from": "FHIRsmith <fhirsmith@example.org>"
+  },
+  // A markdown report on the server - its uptime since the last report, restarts and
+  // upgrades, a paragraph from any module with something to say, and the version, logs
+  // and free disk space - emailed at midnight (local time), or as soon as the server is
+  // up again if it was down then. Titled "{hostName} daily report". Needs "email" above;
+  // the whole block is optional
+  "dailyReport": {
+    "enabled": true,
+    "to": ["ops@example.org"]
+  },
   "modules": {
     "shl": {
       "enabled": false,
@@ -108,7 +126,17 @@
       "userAgent": "YourServer/1.0",
       "apiKeys": {},
       // the most a crawled server's response can be, once unzipped
-      "maxResponseMB": 100
+      "maxResponseMB": 100,
+      // how far back the software page reports each server's uptime, and how long scan outcomes are kept
+      "uptimeWindowDays": 30,
+      "uptimeRetentionDays": 90
+      // Securing the JSON API (the HTML pages stay open). Omit for an open registry. Any of the
+      // three can be configured, alone or together - see registry/documentation/security.md
+      // "security": {
+      //   "apiToken": "one token every client sends",
+      //   "users": { "database": "registry-auth.db", "adminUsername": "admin", "adminPassword": "...", "sessionSecret": "...", "cookieSecure": true },
+      //   "oidc": { "issuer": "https://login.microsoftonline.com/{tenant}/v2.0", "audience": "api://ecosystem.hl7.org", "requiredScope": "registry.read" }
+      // }
     },
     "publisher": {
       "enabled": true,
@@ -346,6 +374,7 @@
       // in-process. Omit it for no links and no analysis
       "txServer": "/tx/r4",
       // "txServer": "https://tx.fhir.org/r4",
+      // (rateLimit also takes lookupMax: the editor's code lookups per window, 600)
       // the AI assessment (the last processing step; a project turns it on in its settings).
       // The server's default account, used by a project that has not set its own: provider
       // is openai (any chat-completions service: OpenAI, OpenRouter, LiteLLM, Groq, Ollama...)
@@ -363,6 +392,12 @@
       // the secret the projects' own AI keys are encrypted with in the database (else the
       // sessionSecret is used; with neither, projects cannot keep their own accounts)
       // "aiKeySecret": "<!-- random string -->",
+      // sharing a document as a QR code - a SMART Health Link, or a Verifiable Health Link
+      // signed as the GDHCN does it - through an SHL server: this server's own shl module
+      // ("server": "/shl"; the password is taken from modules.shl when left out) or another
+      // FHIRsmith's ("server": "https://host/shl", "password": its password). days: how long
+      // the shared copy lives (100); viewer: the SHL viewer the QR opens (viewer.tcpdev.org)
+      // "shl": { "server": "/shl", "days": 100 },
       // the FHIR validator the processing pipeline validates documents with - the same
       // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
       // the data folder's bin directory), on its own port. Documents are validated against the

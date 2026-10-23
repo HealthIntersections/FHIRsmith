@@ -1282,11 +1282,15 @@ class PackagesModule {
 
         next();
         pckLog.info(`/download/${id}/${version}`);
-      } finally {
+      } catch (error) {
         this.stats.countRequest('version', Date.now() - start);
+        throw error;
       }
     }, async (req, res) => {
       const start = Date.now();
+      // counted as 'download' (the tarball) or 'version' (its JSON document) - the
+      // daily report counts the downloads as packages served
+      let name = 'version';
       try {
         try {
           const {id, version} = req.params;
@@ -1297,6 +1301,7 @@ class PackagesModule {
             await this.serveVersionDocument(req.secure, id, version, req, res);
             pckLog.info(`/version/${id}/${version}`);
           } else {
+            name = 'download';
             await this.serveDownload(req.secure, id, version, res);
             pckLog.info(`/download/${id}/${version}`);
           }
@@ -1305,7 +1310,7 @@ class PackagesModule {
           res.status(500).json({error: 'Internal server error'});
         }
       } finally {
-        this.stats.countRequest('version', Date.now() - start);
+        this.stats.countRequest(name, Date.now() - start);
       }
     });
 
@@ -1322,8 +1327,9 @@ class PackagesModule {
 
         next();
         pckLog.info(`/page/${page}`);
-      } finally {
+      } catch (error) {
         this.stats.countRequest('page', Date.now() - start);
+        throw error;
       }
     }, async (req, res) => {
       const start = Date.now();
@@ -2803,6 +2809,31 @@ class PackagesModule {
       return -1;
     }
     return va.pre.localeCompare(vb.pre, undefined, { numeric: true });
+  }
+
+  /**
+   * The paragraph for the server's daily report: packages served (tarball
+   * downloads) and package versions newly indexed by the crawler in the period.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    const counts = this.stats.countsSince(since, now);
+    const downloads = counts.operations.download || 0;
+    const sentences = [`${plural(downloads, 'package')} ${downloads === 1 ? 'was' : 'were'} served (${plural(counts.total, 'request')} in all).`];
+    if (this.db) {
+      try {
+        const row = await new Promise((resolve, reject) => this.db.get(
+          'SELECT COUNT(*) AS n, COUNT(DISTINCT Id) AS ids FROM PackageVersions WHERE Indexed > ?',
+          [new Date(since).toISOString().replace('T', ' ').substring(0, 19)],
+          (err, row) => err ? reject(err) : resolve(row)));
+        sentences.push(row.n === 0
+          ? 'No new package versions were found.'
+          : `${plural(row.n, 'new package version')} ${row.n === 1 ? 'was' : 'were'} found, of ${plural(row.ids, 'package')}.`);
+      } catch (e) {
+        sentences.push(`The new packages could not be counted: ${e.message}.`);
+      }
+    }
+    return sentences.join(' ');
   }
 
   async shutdown() {
