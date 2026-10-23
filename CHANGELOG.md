@@ -86,7 +86,7 @@ Note: We are heading towards a 1.0.0 release.
 
 ### Tx Conformance Statement
 
-(paste)
+FHIRsmith v0.18.0 passed all 3860 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure, tests v1.9.6, runner v7.0.3)
 
 ## [0.17.0] - 2026-10-17
 

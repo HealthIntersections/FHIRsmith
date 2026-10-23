@@ -118,14 +118,15 @@ describe('syndication turned on', () => {
   });
 
   test('the feed is Atom, with both entries', async () => {
-    const res = await request(app).get(`${BASE}/syndication`).set('Accept', 'application/atom+xml');
+    // the Host is set: supertest's own is whichever loopback address the OS chose (127.0.0.1 or [::1])
+    const res = await request(app).get(`${BASE}/syndication`).set('Accept', 'application/atom+xml').set('Host', 'localhost:8080');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/^application\/atom\+xml/);
     expect(res.headers['cache-control']).toBe('no-cache');
     const feed = parse(res.text);
     expect(feed.title).toBe('Test Server Syndication Feed (FHIR 5.0)');
     expect(feed.entry).toHaveLength(2);
-    expect(feed.link.find(l => l['@rel'] === 'self')['@href']).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/tx\/r5\/syndication$/);
+    expect(feed.link.find(l => l['@rel'] === 'self')['@href']).toBe('http://localhost:8080/tx/r5/syndication');
     const cs = feed.entry.find(e => e.category['@term'] === 'FHIR_CodeSystem');
     expect(cs.title).toBe('Syndication Test');
     expect(cs.summary).toBe('A code system for the syndication feed tests');
