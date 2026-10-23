@@ -32,6 +32,28 @@ afterAll(async () => {
   await new Promise(resolve => setTimeout(resolve, 100));
 });
 
+// supertest's request(app) starts the app on a random port with app.listen(0) - on every
+// address, which is :: where there is IPv6 - and then connects to 127.0.0.1:port. On macOS
+// another process can be listening on 127.0.0.1 at that same port (a specific address and the
+// wildcard can share a port), and the specific binding gets the connection: now and then a
+// request hangs, or fails with "Parse Error: Expected HTTP/". So connect to the loopback
+// address of the family the server actually listens on: [::1] for ::, else 127.0.0.1.
+// (Listening on 127.0.0.1 instead isn't possible here: with a host, listen() is asynchronous,
+// and supertest needs the port at once.)
+{
+  const Test = require('supertest/lib/test.js');
+  const { Server: TlsServer } = require('tls');
+  Test.prototype.serverAddress = function (app, path) {
+    if (!app.address()) {
+      this._server = app.listen(0);
+    }
+    const { address, port } = app.address();
+    const host = address === '::' ? '[::1]' : '127.0.0.1';
+    const protocol = app instanceof TlsServer ? 'https' : 'http';
+    return `${protocol}://${host}:${port}${path}`;
+  };
+}
+
 // Increase timeout for integration tests
 jest.setTimeout(30000);
 
