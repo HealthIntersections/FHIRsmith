@@ -1810,7 +1810,7 @@ class ValueSetChecker {
       let loc = await cs.filterLocate(prep, filters[0], code);
       if (loc != null && !(typeof loc === 'string') && filters.length > 1) {
         for (let i = 1; i < filters.length; i++) {
-          if (!(await cs.filterCheck(prep, filters[i], loc))) {
+          if ((await cs.filterCheck(prep, filters[i], loc)) != true) { // a failing check may return a message, which is truthy
             loc = null;
             break;
           }
@@ -2157,7 +2157,7 @@ class ValidateWorker extends TerminologyWorker {
         return res.status(422).json(this.operationOutcome('error', 'not-found',
           `CodeSystem/${id} not found`));
       }
-      const csp = new FhirCodeSystemProvider(this.opContext, new CodeSystem(codeSystem), []);
+      const csp = FhirCodeSystemProvider.create(this.opContext, new CodeSystem(codeSystem), []);
 
       // Extract coded value
       let mode = { mode : null }
@@ -2290,7 +2290,7 @@ class ValidateWorker extends TerminologyWorker {
     // Check for codeSystem resource parameter
     const csResource = this.getResourceParam(params, 'codeSystem');
     if (csResource) {
-      return new FhirCodeSystemProvider(this.opContext, new CodeSystem(csResource), []); // todo: supplements
+      return FhirCodeSystemProvider.create(this.opContext, new CodeSystem(csResource), []); // todo: supplements
     }
     let path = coded == null ? null : this.systemPath(mode);
     let fromCoded = false;

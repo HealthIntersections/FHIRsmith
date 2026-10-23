@@ -205,7 +205,7 @@ class LookupWorker extends TerminologyWorker {
       const supplements = this.loadSupplements(codeSystem.url, codeSystem.version, txp.supplements);
 
       // Create a FhirCodeSystemProvider for this CodeSystem
-      const csProvider = new FhirCodeSystemProvider(this.opContext, codeSystem, supplements);
+      const csProvider = FhirCodeSystemProvider.create(this.opContext, codeSystem, supplements);
 
       // Perform the lookup
       const result = await this.doLookup(csProvider, code, txp);

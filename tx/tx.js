@@ -1333,6 +1333,31 @@ class TXModule {
   }
 
   /**
+   * The paragraph for the server's daily report: how many of each operation
+   * were performed, over all the endpoints.
+   */
+  dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.stats) {
+      return null;
+    }
+    const counts = this.stats.countsSince(since, now);
+    if (counts.total === 0) {
+      return 'No requests were served.';
+    }
+    // the FHIR operations first, busiest first, then the rest (pages, metadata, reads)
+    const names = Object.keys(counts.operations).sort((a, b) => {
+      const opA = a.startsWith('$') ? 0 : 1;
+      const opB = b.startsWith('$') ? 0 : 1;
+      return opA - opB || counts.operations[b] - counts.operations[a] || a.localeCompare(b);
+    });
+    const list = names.map(n => `${n} ${counts.operations[n].toLocaleString('en-US')}`).join(', ');
+    const endpoints = Object.keys(counts.endpoints).filter(e => e).length;
+    const where = endpoints > 1 ? ` over ${plural(endpoints, 'endpoint')}` : '';
+    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.`;
+  }
+
+  /**
    * Shutdown the module
    */
   async shutdown() {

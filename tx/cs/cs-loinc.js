@@ -613,12 +613,18 @@ class LoincServices extends BaseCSServices {
   // Filter support
   async doesFilter(prop, op, value) {
     // Relationship filters
-    if (this.relationships.has(prop) && ['=', 'in', 'exists', 'regex'].includes(op)) {
+    if (this.relationships.has(prop) && ['=', 'in', 'regex'].includes(op)) {
+      return true;
+    }
+    if (this.relationships.has(prop) && op === 'exists' && ['true', 'false'].includes(value)) {
       return true;
     }
 
     // Property filters
-    if (this.propertyList.has(prop) && ['=', 'in', 'exists', 'regex'].includes(op)) {
+    if (this.propertyList.has(prop) && ['=', 'in', 'regex'].includes(op)) {
+      return true;
+    }
+    if (this.propertyList.has(prop) && op === 'exists' && ['true', 'false'].includes(value)) {
       return true;
     }
 
@@ -754,26 +760,26 @@ class LoincServices extends BaseCSServices {
                 AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
                 AND SourceKey = `;
     }
-    // Relationship 'exists' filter
+    // Relationship 'exists' filter: value is true or false (doesFilter rejects anything else).
+    // true = codes that have at least one relationship of this type; false = every other code
+    // in the code system (Parts, AnswerLists and Answers included - combine with e.g.
+    // CLASSTYPE exists true to restrict to LOINC terms)
     else if (this.relationships.has(prop) && op === 'exists') {
-      if (this.codes.has(value)) {
+      const rk = this.relationships.get(prop);
+      if (value === 'true') {
         sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND EXISTS (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+               WHERE RelationshipTypeKey = ${rk}
                ORDER BY SourceKey ASC`;
-        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND EXISTS (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+        lsql = `SELECT COUNT(SourceKey) FROM Relationships
+                WHERE RelationshipTypeKey = ${rk}
                   AND SourceKey = `;
-      } else {
-        sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND EXISTS (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-               ORDER BY SourceKey ASC`;
-        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND EXISTS (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-                  AND SourceKey = `;
+      } else if (value === 'false') {
+        sql = `SELECT CodeKey as Key FROM Codes
+               WHERE NOT EXISTS (SELECT 1 FROM Relationships r WHERE r.RelationshipTypeKey = ${rk} AND r.SourceKey = Codes.CodeKey)
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Codes
+                WHERE NOT EXISTS (SELECT 1 FROM Relationships r WHERE r.RelationshipTypeKey = ${rk} AND r.SourceKey = Codes.CodeKey)
+                  AND CodeKey = `;
       }
     }
     // Relationship regex filter
@@ -826,14 +832,24 @@ class LoincServices extends BaseCSServices {
                 AND PropertyValues.Value IN (${codes}) COLLATE NOCASE
                 AND CodeKey = `;
     }
-    // Property 'exists' filter
+    // Property 'exists' filter: value is true or false, as for relationships above
     else if (this.propertyList.has(prop) && op === 'exists') {
-      sql = `SELECT DISTINCT CodeKey as Key FROM Properties
-             WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
-             ORDER BY CodeKey ASC`;
-      lsql = `SELECT COUNT(CodeKey) FROM Properties
-              WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
-                AND CodeKey = `;
+      const pk = this.propertyList.get(prop);
+      if (value === 'true') {
+        sql = `SELECT DISTINCT CodeKey as Key FROM Properties
+               WHERE Properties.PropertyTypeKey = ${pk}
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Properties
+                WHERE Properties.PropertyTypeKey = ${pk}
+                  AND CodeKey = `;
+      } else if (value === 'false') {
+        sql = `SELECT CodeKey as Key FROM Codes
+               WHERE NOT EXISTS (SELECT 1 FROM Properties p WHERE p.PropertyTypeKey = ${pk} AND p.CodeKey = Codes.CodeKey)
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Codes
+                WHERE NOT EXISTS (SELECT 1 FROM Properties p WHERE p.PropertyTypeKey = ${pk} AND p.CodeKey = Codes.CodeKey)
+                  AND CodeKey = `;
+      }
     }
     // Property regex filter
     else if (this.propertyList.has(prop) && op === 'regex') {
