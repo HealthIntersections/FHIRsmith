@@ -7,6 +7,7 @@ const { parseSearch, indexDocument, listQueryToSearch, resolveParam } = require(
 const { STEPS, CHECK_EXTENSION, TRANSLATION_EXTENSION } = require('../../ips/pipeline');
 const { fakeService } = require('./fake-ai');
 const render = require('../../ips/render');
+const profiles = require('../../ips/profiles');
 const htmlServer = require('../../library/html-server');
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
@@ -344,6 +345,10 @@ describe('the FHIR API', () => {
     expect(paged.entry.map(e => e.resource.id)).toEqual(['1']);
     expect(paged.link.find(l => l.relation === 'next').url).toContain('_offset=1');
     expect(paged.entry[0].fullUrl).toMatch(/\/ips\/demo\/Bundle\/1$/);
+    // a number too big for SQLite is a bad request, not a server error
+    const huge = await request(app).get('/ips/demo/Bundle?_offset=99999999999999999999').set('Accept', 'application/fhir+json');
+    expect(huge.status).toBe(400);
+    expect(JSON.stringify(huge.body)).toContain('_offset must be a non-negative integer');
   });
 
   test('unknown parameters are ignored with a warning, or refused when handling is strict', async () => {
@@ -960,6 +965,7 @@ describe('the terminology step', () => {
   beforeEach(async () => {
     ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
     calls = [];
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
     // a terminology server: 91936005 (penicillin allergy) is in the allergy value set, LOINC
     // codes starting 1234 are observation codes, 'intl' is in the fallback (as is any LOINC
     // code), no-known-immunizations is a vaccine code; a code of 'boom' breaks the server,
@@ -1071,7 +1077,9 @@ describe('the terminology step', () => {
     // the value set went with the request, and the coding as it is
     const c = calls.find(x => x.vs === VS + 'ips-allergy-code');
     expect(c.txResources).toEqual([]);
-    expect(c.coding).toEqual({ system: SCT, code: '91936005', display: 'Allergy to penicillin' });
+    // the code, not its display: the answer is cached by code, so a document with a wrong
+    // display can't decide it for the documents after it
+    expect(c.coding).toEqual({ system: SCT, code: '91936005' });
     // the server could not say for 'odd', against the element's value set or the fallback
     expect(calls.filter(x => x.coding?.code === 'odd').map(x => x.vs)).toEqual([VS + 'ips-observation-code', FALLBACK]);
     expect(msg(row.analysed.entry[4].resource.code)).toBe(`Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result`);
@@ -1250,7 +1258,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'profiles', 'ai']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -1347,6 +1355,35 @@ describe('the terminology step', () => {
     expect(row3.analysed.entry[4].resource.stage[0].type.coding[1]).toEqual({ system: SCT, code: '91936005' });
   });
 
+  test('a display lookup the server couldn\'t answer is asked again; a definite answer is kept', async () => {
+    let down = true;
+    let asked = 0;
+    app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
+      asked++;
+      res.type('application/fhir+json');
+      if (down) {
+        return res.status(503).send('busy');
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'display', valueString: 'Allergy to penicillin (looked up)' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'narrative');
+    const d = ips();
+    delete d.entry[3].resource.code.text;
+    delete d.entry[3].resource.code.coding[0].display;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(1);
+    expect(mod.store.readResult(1, 'narrative').result.html).not.toContain('(looked up)');
+    down = false;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+    expect(mod.store.readResult(2, 'narrative').result.html).toContain('Allergy to penicillin (looked up)');
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+  });
+
   test('the narrative step generates the narrative into the analysed copy, looking up displays, and the page shows it', async () => {
     app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
       calls.push({ lookup: `${req.query.system}|${req.query.code}` });
@@ -1377,7 +1414,8 @@ describe('the terminology step', () => {
     expect(r.sections.map(s => s.title)).toEqual(['Allergies and Intolerances', 'Medication Summary']);
     // written into the analysed copy, not the master
     expect(row.bundle.entry[0].resource.text.div).toContain('Summary for <b>Jane Smith</b>');
-    expect(row.analysed.entry[0].resource.text).toEqual({ status: 'generated', div: expect.stringContaining('<h1>Patient Summary as of 1 March 2026</h1>') });
+    expect(row.analysed.entry[0].resource.text).toEqual({ status: 'generated', div: expect.stringContaining('<p class="ips-patient"><b>Jane Alexandra Smith</b>') });
+    expect(row.analysed.entry[0].resource.text.div).not.toContain('<h1>');
     expect(row.analysed.entry[0].resource.section[0].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table></div>');
     expect(row.analysed.entry[0].resource.section[1].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p></div>');
     // the page
@@ -1408,16 +1446,72 @@ describe('the terminology step', () => {
     other.mod.shutdown();
   });
 
-  test('a path that nothing answers at is reported, once, and as unknown', async () => {
+  test('a document being processed is not requeued, and a pipeline only finishes what it is processing', async () => {
+    const { mod: mod2, app: app2 } = await makeApp({});
+    try {
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const row = mod2.store.claimNext();
+      expect(row.id).toBe(1);
+      mod2.store.saveResult(1, 'validation', { ok: true });
+      // mid-pipeline: refused, and nothing is lost
+      expect(mod2.store.requeue(1, 1)).toBe('processing');
+      expect(mod2.store.readResult(1, 'validation')).not.toBeNull();
+      mod2.store.finish(1, true, 'done');
+      expect(mod2.store.read(1).status).toBe('processed');
+      expect(mod2.store.requeue(1, 1)).toBe('queued');
+      expect(mod2.store.requeue(9, 1)).toBeNull();
+      // a pipeline that finishes after its document was requeued leaves it queued
+      mod2.store.finish(1, true, 'stale');
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
+  test('queue runs never overlap, even while the terminology server is being looked for', async () => {
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/slow/r4' });
+    try {
+      // the tx module still loading: an answer that takes a while, and then isn't one
+      let release;
+      app2.get('/slow/r4/metadata', (req, res) => { release = () => res.status(503).send('loading'); });
+      mod2.steps = [];
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const first = mod2.processQueue();
+      await new Promise(r => setTimeout(r, 20));
+      // a second tick while the first waits: nothing, and no second run
+      expect(await mod2.processQueue()).toBe(0);
+      release();
+      // a 503 is "not there yet": the document waits
+      expect(await first).toBe(0);
+      expect(mod2.txMissing).toBe(true);
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
+  test('a path that nothing answers at is waited for, then reported, once, and as unknown', async () => {
     const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
+    const warned = [];
     const logged = [];
-    mod2.log = { info() {}, warn() {}, error: (m) => logged.push(m), debug() {} };
+    mod2.log = { info() {}, warn: (m) => warned.push(m), error: (m) => logged.push(m), debug() {} };
     mod2.steps = STEPS.filter(s => s.name === 'terminology');
     mod2.store.createProject('demo', 'Demo', null);
     await post(app2, 'demo', ips());
     await post(app2, 'demo', ips());
+    // just started: the tx module may still be loading, so the documents wait
+    expect(await mod2.processQueue()).toBe(0);
+    expect(warned.filter(m => /the terminology server \/nowhere\/r4 on this server is not there \(yet\): nothing answers/.test(m))).toHaveLength(1);
+    // past the grace period, they are processed without it
+    mod2.startedAt -= 10 * 60 * 1000;
+    mod2.txCheckedAt = 0;
+    expect(await mod2.processQueue()).toBe(2);
+    mod2.txCheckedAt = 0;
     await mod2.processQueue();
-    expect(logged.filter(m => /nothing answers at the terminology server \/nowhere\/r4/.test(m))).toHaveLength(1);
+    expect(warned.filter(m => /is not there \(yet\)/.test(m))).toHaveLength(1);
+    expect(logged.filter(m => /still no terminology server at \/nowhere\/r4 on this server \(nothing answers\)/.test(m))).toHaveLength(1);
     const row = mod2.store.read(1);
     expect(row.status_message).toBe('terminology: 0 in, 0 international only, 0 not in, 1 unknown');
     expect(JSON.stringify(row.analysed)).toContain('The terminology server is not configured correctly');
@@ -1582,6 +1676,19 @@ describe('the AI assessment step', () => {
     // a save with no key keeps the key; forgetting it goes back to the server's
     await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: '', dailyCap: '' });
     expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBe(stored.keyEnc);
+    // the key doesn't follow the account to another host, or another provider: it must be given again
+    const moved = await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: 'https://elsewhere.example.org', model: 'claude', apiKey: '' });
+    expect(moved.text).toContain('The stored API key was removed because the provider or base URL changed');
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    const again = mod.store.projectAi(mod.store.projectById(1)).keyEnc;
+    expect(again).toBeTruthy();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', baseUrl: svc.url, model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    // a trailing slash isn't another host
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url + '/', model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeTruthy();
     expect(mod.store.projectAi(mod.store.projectById(1)).dailyCap).toBeUndefined();
     await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', clearKey: '1' });
     expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
@@ -1597,5 +1704,594 @@ describe('the AI assessment step', () => {
     expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', model: 'm', apiKey: 'sk-x' })).status).toBe(400);
     const noSecret = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
     expect(noSecret.text).toContain('This server cannot keep a key for the project');
+  });
+});
+
+describe('sharing as SHL / VHL', () => {
+  let app;
+  let mod;
+  let calls;
+  const jose = require('jose');
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ shl: { server: '/shl', password: 'shl-secret', days: 7, viewer: 'https://viewer.example.org/#' } }));
+    calls = [];
+    // a fake shl module on this app
+    const entries = new Map();
+    app.use('/shl', express.json({ limit: '5mb' }));
+    app.post('/shl/create', (req, res) => {
+      calls.push({ create: req.body, host: req.get('host') });
+      if (req.body.password !== 'shl-secret') {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const uuid = `u${entries.size + 1}`;
+      entries.set(uuid, { pword: 'p' + uuid, vhl: req.body.vhl, files: [] });
+      res.status(201).json({ uuid, pword: 'p' + uuid, link: `https://${req.get('host')}/shl/access/${uuid}` });
+    });
+    app.post('/shl/upload', (req, res) => {
+      calls.push({ upload: req.body });
+      const e = entries.get(req.body.uuid);
+      if (!e || e.pword !== req.body.pword) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      e.files = req.body.files;
+      res.json({ msg: 'ok' });
+    });
+    app.post('/shl/sign', (req, res) => {
+      calls.push({ sign: req.body });
+      const label = JSON.parse(Buffer.from(req.body.url.replace(/^shlink:\/\//, ''), 'base64url').toString('utf8')).label;
+      if (label.includes('boom')) {
+        return res.status(500).json({ error: 'no certificate' });
+      }
+      res.json({ signature: 'SIGNED(' + req.body.url.length + ')' });
+    });
+    mod.shlEntries = entries;
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
+    await post(app, 'demo', ips());
+    const page = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('Share as VHL</button>');
+    expect(page.text).toContain('id="ips-share"');
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('shl');
+    expect(r.body.link).toBe('https://example.org/shl/access/u1');
+    expect(r.body.qr).toMatch(/^<svg /);
+    expect(r.body.bytes).toBeGreaterThan(1000);
+    expect(r.body.text.startsWith('https://viewer.example.org/#shlink:/')).toBe(true);
+    // the shlink payload: the manifest link, the key, the label
+    const payload = JSON.parse(Buffer.from(r.body.text.substring(r.body.text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+    expect(payload).toEqual({ url: 'https://example.org/shl/access/u1', flag: 'U', key: expect.any(String), label: 'Patient Health Document for Jane Alexandra Smith' });
+    // what the server stored decrypts with that key to the document
+    expect(calls[0]).toEqual({ create: { password: 'shl-secret', days: 7, vhl: false }, host: 'example.org' });
+    const stored = mod.shlEntries.get('u1').files;
+    expect(stored).toEqual([{ cnt: expect.any(String), type: 'application/fhir+json' }]);
+    const jwe = Buffer.from(stored[0].cnt, 'base64').toString('utf8');
+    const { plaintext, protectedHeader } = await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'));
+    expect(protectedHeader).toEqual({ alg: 'dir', enc: 'A256GCM', cty: 'application/fhir+json' });
+    expect(JSON.parse(Buffer.from(plaintext).toString('utf8'))).toEqual(mod.store.read(1).bundle);
+    expect(calls.some(c => c.sign)).toBe(false);
+    // the expiry: the configured days
+    expect(new Date(r.body.expires).getTime() - Date.now()).toBeGreaterThan(6.9 * 24 * 60 * 60 * 1000);
+    // without scripts: a page
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'shl' });
+    expect(html.status).toBe(200);
+    expect(html.text).toContain('<h3>Document 1 as an SHL</h3><div class="ips-share-code"><svg ');
+    expect(html.text).toContain('<textarea class="ips-share-text" readonly rows="3">https://viewer.example.org/#shlink:/');
+  });
+
+  test('shares a document as a VHL: the link signed by the SHL server, the QR of HC1:', async () => {
+    await post(app, 'demo', ips());
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'vhl' });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('vhl');
+    expect(calls[0].create).toEqual({ password: 'shl-secret', days: 7, vhl: true });
+    const sign = calls.find(c => c.sign).sign;
+    expect(sign.url.startsWith('shlink://')).toBe(true);
+    expect(r.body.text).toBe(`HC1:SIGNED(${sign.url.length})`);
+    expect(r.body.qr).toMatch(/^<svg /);
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'vhl' });
+    expect(html.text).toContain('<h3>Document 1 as a VHL</h3>');
+    expect(html.text).toContain('A Verifiable Health Link, signed as the GDHCN does it');
+  });
+
+  test('reports failures, and refuses cross-site posts and unknown documents', async () => {
+    await post(app, 'demo', ips());
+    mod.shl.password = 'wrong';
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ error: 'The SHL server answered HTTP 401 to /create' });
+    mod.shl.password = 'shl-secret';
+    // a signing failure
+    const d = ips({ patient: { name: [{ family: 'boom' }] } });
+    await post(app, 'demo', d);
+    const v = await request(app).post('/ips/demo/Bundle/2/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'vhl' });
+    expect(v.status).toBe(502);
+    expect(v.body.error).toBe('The SHL server answered HTTP 500 to /sign');
+    expect((await request(app).post('/ips/demo/Bundle/9/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
+    expect((await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://evil.example').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(403);
+    // not configured: no buttons, and the post is refused
+    const other = await makeApp();
+    other.mod.store.createProject('demo', 'Demo', null);
+    await post(other.app, 'demo', ips());
+    expect((await request(other.app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(other.app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
+    other.mod.shutdown();
+  });
+
+  test('the client checks its configuration', () => {
+    const { ShlClient } = require('../../ips/share');
+    expect(() => new ShlClient({ password: 'x' })).toThrow(/server is required/);
+    expect(() => new ShlClient({ server: '/shl' })).toThrow(/password is required/);
+    expect(() => new ShlClient({ server: 'ftp://x', password: 'x' })).toThrow(/http\(s\) URL or a path/);
+    expect(() => new ShlClient({ server: '/shl', password: 'x' })).toThrow(/needs the app/);
+    const c = new ShlClient({ server: 'https://x.org/shl/', password: 'x' });
+    expect(c.url).toBe('https://x.org/shl');
+    expect(c.internal).toBe(false);
+    expect(c.days).toBe(100);
+  });
+});
+
+describe('the editor', () => {
+  let app;
+  let mod;
+  const minimal = () => ({
+    patient: { family: 'Doe', given: 'Jo', gender: 'male', birthDate: '1980-01-01' }, document: { author: 'Dr A' },
+    sections: { problems: { mode: 'data', rows: [{ code: { system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension' }, clinicalStatus: 'active' }] }, allergies: { mode: 'empty', emptyReason: 'nilknown' }, medications: { mode: 'narrative', narrative: 'none' } }
+  });
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    // a terminology server that is there, and expands with a filter
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    app.post('/tx/r4/ValueSet/\\$expand', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const filter = p.parameter.find(x => x.name === 'filter')?.valueString || '';
+      const vs = p.parameter.find(x => x.name === 'valueSet')?.resource?.url;
+      res.type('application/fhir+json');
+      if (filter === 'boom') {
+        return res.status(500).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'exception', details: { text: 'kaboom' } }] }));
+      }
+      if (filter === 'zzzz') {
+        return res.send(JSON.stringify({ resourceType: 'ValueSet', url: vs, expansion: { total: 0 } }));
+      }
+      res.send(JSON.stringify({ resourceType: 'ValueSet', url: vs, expansion: { contains: [{ system: 'http://snomed.info/sct', code: '38341003', display: `Hypertension (${filter})` }, { system: 'http://snomed.info/sct', code: '1' }] } }));
+    });
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const compose = (body, accept = 'application/json') => request(app).post('/ips/demo/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', accept).send(body);
+
+  test('the page carries the schema and the script, and the project links to it', async () => {
+    const page = await request(app).get('/ips/demo/compose').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>Compose a document</h3>');
+    expect(page.text).toContain('<div id="ips-editor"></div>');
+    expect(page.text).toContain('<script src="/ips/editor.js"></script>');
+    expect(page.text).toContain('"urls":{"compose":"/ips/demo/compose","lookup":"/ips/demo/lookup","back":"/ips/demo"}');
+    expect(page.text).toContain('"key":"problems"');
+    expect(page.text).toContain('"needsToken":false');
+    expect(page.text).toContain('"model":null');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/compose">Compose a document</a>');
+    const script = await request(app).get('/ips/editor.js');
+    expect(script.status).toBe(200);
+    expect(script.text).toContain('window.IPS_EDITOR');
+    // without a terminology server: no lookups
+    const other = await makeApp();
+    other.mod.store.createProject('demo', 'Demo', null);
+    expect((await request(other.app).get('/ips/demo/compose').set('Accept', 'text/html')).text).toContain('"lookup":null');
+    expect((await request(other.app).get('/ips/demo/lookup?vs=ips-condition-code&q=hyp')).status).toBe(503);
+    other.mod.shutdown();
+  });
+
+  test('looks codes up in our value sets', async () => {
+    const r = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ matches: [{ system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension (hyper)' }, { system: 'http://snomed.info/sct', code: '1', display: '1' }] });
+    expect((await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=h')).body).toEqual({ matches: [] });
+    expect((await request(app).get('/ips/demo/lookup?vs=nonsense&q=hyper')).status).toBe(400);
+    // nothing at the path: the page says so, and lookups answer 503 with the reason
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
+    try {
+      mod2.store.createProject('demo', 'Demo', null);
+      const none = await request(app2).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+      expect(none.status).toBe(503);
+      expect(none.body.error).toBe('Nothing answers at the terminology server /nowhere/r4 on this server yet (modules.ips.txServer)');
+      // and when it arrives (the tx module loads after this one), lookups work
+      app2.get('/nowhere/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+      app2.post('/nowhere/r4/ValueSet/\\$expand', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'ValueSet', expansion: { contains: [{ system: 'http://snomed.info/sct', code: '1', display: 'One' }] } })));
+      mod2.txCheckedAt = 0;
+      const later = await request(app2).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+      expect(later.status).toBe(200);
+      expect(later.body.matches).toEqual([{ system: 'http://snomed.info/sct', code: '1', display: 'One' }]);
+    } finally {
+      mod2.shutdown();
+    }
+    expect((await request(app).get('/ips/demo/lookup?vs=../x&q=hyper')).status).toBe(400);
+    // nothing matches: an empty expansion, not a failure
+    const nothing = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=zzzz');
+    expect(nothing.status).toBe(200);
+    expect(nothing.body).toEqual({ matches: [] });
+    const boom = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=boom');
+    expect(boom.status).toBe(502);
+    expect(boom.body.error).toBe('The terminology server could not look that up (HTTP 500: kaboom)');
+  });
+
+  test('submits a composed document into the project, or hands it back', async () => {
+    const r = await compose({ action: 'submit', model: minimal() });
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: 1, url: '/ips/demo/Bundle/1' });
+    const row = mod.store.read(1);
+    expect(row.source).toBe('editor');
+    expect(row.patient_name).toBe('Jo Doe');
+    expect(row.bundle.entry[0].resource.section).toHaveLength(3);
+    expect(mod.store.statusCounts()).toEqual({ submitted: 1 });
+    // download: the document, not stored
+    const d = await compose({ action: 'download', model: minimal() }, 'application/fhir+json');
+    expect(d.status).toBe(200);
+    expect(d.headers['content-disposition']).toBe('attachment; filename="ips.json"');
+    expect(d.body.resourceType).toBe('Bundle');
+    expect(mod.store.statusCounts()).toEqual({ submitted: 1 });
+    // problems come back as a list
+    const bad = await compose({ action: 'submit', model: { patient: {}, document: {}, sections: {} } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems).toContain('The patient needs a family name');
+    expect((await compose({ action: 'submit' })).body.problems).toEqual(['The model must be an object']);
+    // the token, when the project has one
+    mod.store.setProjectToken(1, 'tok');
+    expect((await compose({ action: 'submit', model: minimal() })).status).toBe(401);
+    expect((await compose({ action: 'submit', model: minimal(), token: 'tok' })).status).toBe(201);
+    expect((await compose({ action: 'download', model: minimal() }, 'application/fhir+json')).status).toBe(200);
+    expect((await request(app).get('/ips/demo/compose').set('Accept', 'text/html')).text).toContain('"needsToken":true');
+    // cross-site: refused
+    expect((await request(app).post('/ips/demo/compose').set('Origin', 'http://evil.example').set('Host', 'example.org').send({ action: 'submit', model: minimal() })).status).toBe(403);
+  });
+
+  test('edits an existing document: the page starts from it', async () => {
+    await compose({ action: 'submit', model: minimal() });
+    const doc = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(doc.text).toContain('<a class="btn btn-default" href="/ips/demo/compose?from=1" title="Open this document in the editor; submitting makes a new document">Edit</a>');
+    const page = await request(app).get('/ips/demo/compose?from=1').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>Edit document 1</h3>');
+    expect(page.text).toContain('"model":{"patient":{"family":"Doe","given":"Jo","gender":"male","birthDate":"1980-01-01"}');
+    expect(page.text).toContain('"medications":{"mode":"narrative","narrative":"none"}');
+    expect((await request(app).get('/ips/demo/compose?from=9').set('Accept', 'text/html')).status).toBe(404);
+    expect((await request(app).get('/ips/demo/compose?from=x').set('Accept', 'text/html')).status).toBe(200);
+  });
+});
+
+describe('clinical profiles', () => {
+  let app;
+  let mod;
+  const L = 'http://loinc.org';
+  const S = 'http://snomed.info/sct';
+  const rule = `Bundle.section('${L}', '11450-4', 1, '*').entry('${S}', '38341003').exists()`;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    app.post('/tx/r4/ValueSet/\\$expand', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const vs = p.parameter.find(x => x.name === 'valueSet').resource;
+      const filter = p.parameter.find(x => x.name === 'filter').valueString;
+      res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'ValueSet', expansion: { contains: [{ system: vs.compose.include[0].system, code: '123', display: `Thing (${filter})` }] } }));
+    });
+  });
+  afterEach(() => mod.shutdown());
+
+  // the administrator, and the token the editor sends
+  const asAdmin = async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const page = await agent.get('/ips/StructureDefinition/new').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    const csrf = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]).csrf;
+    const send = (url, body) => agent.post(url).set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').send({ ...body, _csrf: csrf });
+    return { agent, send };
+  };
+
+  test('the administrator makes, edits, downloads, uploads and deletes them; everyone can read them', async () => {
+    const { agent, send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'Cardiology referral', constraints: [{ human: 'A problem list with hypertension', expression: rule }, { human: 'At least two sections', expression: 'Bundle.entry.count() >= 2' },
+      { human: 'Hypertension is active', expression: `Bundle.resources('${S}', '38341003', 'Condition').all(clinicalStatus.coding.code = 'active')` }] });
+    expect(made.status).toBe(201);
+    expect(made.body.url).toMatch(/^\/ips\/StructureDefinition\/profile-[a-f0-9]{12}$/);
+    const id = made.body.id;
+    // as FHIR, to anyone
+    const sd = (await request(app).get(`/ips/StructureDefinition/${id}`).set('Host', 'example.org')).body;
+    expect(sd).toMatchObject({ resourceType: 'StructureDefinition', id, url: `http://example.org/ips/StructureDefinition/${id}`, name: 'CardiologyReferral', title: 'Cardiology referral' });
+    expect(sd.differential.element[0].constraint.map(c => [c.key, c.severity, c.human])).toEqual([['cp-1', 'error', 'A problem list with hypertension'], ['cp-2', 'error', 'At least two sections'], ['cp-3', 'error', 'Hypertension is active']]);
+    const list = (await request(app).get('/ips/StructureDefinition')).body;
+    expect(list).toMatchObject({ resourceType: 'Bundle', type: 'searchset', total: 1 });
+    const dl = await request(app).get(`/ips/StructureDefinition/${id}?download=1`);
+    expect(dl.headers['content-disposition']).toBe('attachment; filename="CardiologyReferral.json"');
+    // the pages: the rule as words for a shaped one, the expression for the other; no editing for a visitor
+    const page = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
+    expect(page.text).toContain('Section <b>Problem List</b> <span class="ips-small">(LOINC 11450-4)</span> <span class="ips-pf-card-text">[1..*]</span>, with an entry <b>SNOMED CT 38341003</b>');
+    expect(page.text).toContain('<code>Bundle.entry.count() &gt;= 2</code>');
+    expect(page.text).toContain('<b>Condition</b> resources with the code <b>SNOMED CT 38341003</b>: <code>.all(clinicalStatus.coding.code = &#39;active&#39;)</code>');
+    // in three parts, in order
+    const parts = ['Required sections and entries', 'Rules about resources', 'Other rules'].map(t => page.text.indexOf(`<h4>${t}</h4>`));
+    expect(parts.every(i => i > 0) && parts[0] < parts[1] && parts[1] < parts[2]).toBe(true);
+    expect(page.text).not.toContain('/edit');
+    expect(page.text).not.toContain('cp-1');
+    const home = await request(app).get('/ips').set('Accept', 'text/html');
+    expect(home.text).toContain('<a href="/ips/StructureDefinition">Clinical profiles</a>');
+    const listPage = await request(app).get('/ips/StructureDefinition').set('Accept', 'text/html');
+    expect(listPage.text).toContain('Cardiology referral');
+    expect(listPage.text).not.toContain('New profile');
+    // the administrator's editor gets the shapes
+    const editor = await agent.get(`/ips/StructureDefinition/${id}/edit`).set('Accept', 'text/html');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: '*' }, entry: { system: S, code: '38341003', min: null, max: null } } });
+    expect(cfg.profile.constraints[1].shape).toBeNull();
+    expect(cfg.profile.constraints[1].rshape).toBeNull();
+    expect(cfg.profile.constraints[2].rshape).toEqual({ type: 'Condition', system: S, code: '38341003', rest: ".all(clinicalStatus.coding.code = 'active')" });
+    expect(cfg.parts.map(p => p[0])).toEqual(['section', 'resource', 'other']);
+    expect(cfg.resourceTypes).toContain('Condition');
+    expect(cfg.sections[0]).toEqual({ code: '11450-4', title: 'Problem List' });
+    expect(cfg.urls).toEqual({ save: `/ips/StructureDefinition/${id}`, lookup: '/ips/lookup', lookupVs: '/ips/lookup-vs', back: `/ips/StructureDefinition/${id}` });
+    // an edit keeps the url and the kept keys
+    const saved = await send(`/ips/StructureDefinition/${id}`, { title: 'Cardiology referral v2', constraints: [{ key: 'cp-2', human: 'At least two sections', expression: 'Bundle.entry.count() >= 2' }, { human: 'Medications', expression: `Bundle.section('${L}', '10160-0', 1, 1).exists()` }] });
+    expect(saved.status).toBe(200);
+    const after = mod.store.profile(id.substring(8));
+    expect(after.url).toBe(sd.url);
+    expect(after.name).toBe('CardiologyReferralV2');
+    expect(after.differential.element[0].constraint.map(c => c.key)).toEqual(['cp-2', 'cp-4']);
+    // problems come back, and nothing changes
+    const bad = await send(`/ips/StructureDefinition/${id}`, { title: '', constraints: [{ human: 'x', expression: 'Bundle.(' }] });
+    expect(bad.status).toBe(422);
+    expect(bad.body.problems[0]).toBe('The profile needs a title');
+    expect(mod.store.profile(id.substring(8)).title).toBe('Cardiology referral v2');
+    // an upload makes a new one, with its own id and url
+    const up = await send('/ips/StructureDefinition', { upload: dl.body });
+    expect(up.status).toBe(201);
+    expect(up.body.id).not.toBe(id);
+    const copy = (await request(app).get(`/ips/StructureDefinition/${up.body.id}`).set('Host', 'example.org')).body;
+    expect(copy.url).toBe(`http://example.org/ips/StructureDefinition/${up.body.id}`);
+    expect(copy.differential.element[0].constraint.map(c => [c.key, c.human])).toEqual([['cp-1', 'A problem list with hypertension'], ['cp-2', 'At least two sections'], ['cp-3', 'Hypertension is active']]);
+    const rejected = await send('/ips/StructureDefinition', { upload: { ...dl.body, snapshot: { element: [] } } });
+    expect(rejected.status).toBe(422);
+    expect(rejected.body.problems[0]).toMatch(/snapshot/);
+    expect((await send(`/ips/StructureDefinition/${id}`, { upload: dl.body })).status).toBe(400);
+    // a title can't become script in the delete confirmation: it is an escaped attribute
+    const trick = await send('/ips/StructureDefinition', { title: "x');alert(1);('", constraints: [] });
+    const trickPage = await agent.get(trick.body.url).set('Accept', 'text/html');
+    expect(trickPage.text).toContain('data-confirm="Delete the clinical profile x&#39;);alert(1);(&#39;?"');
+    expect(trickPage.text).not.toContain('onsubmit=');
+    // delete
+    const del = await form(agent, `/ips/StructureDefinition/${id}/delete`);
+    expect(del.status).toBe(302);
+    expect((await request(app).get(`/ips/StructureDefinition/${id}`)).status).toBe(404);
+    expect((await request(app).get('/ips/StructureDefinition/profile-nothere')).status).toBe(404);
+  });
+
+  test('profiles stored on Composition are moved onto Bundle when the module starts', async () => {
+    const dir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ips-pf-'));
+    const db = require('path').join(dir, 'ips.db');
+    const first = await makeApp({ database: db });
+    const old = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Old', constraints: [{ key: 'cp-1', human: 'Problems', expression: `Composition.section('${L}', '11450-4').exists()` }] });
+    old.type = 'Composition';
+    old.baseDefinition = 'http://hl7.org/fhir/StructureDefinition/Composition';
+    first.mod.store.saveProfile('abcdef012345', old);
+    first.mod.shutdown();
+    const second = await makeApp({ database: db });
+    try {
+      const sd = second.mod.store.profile('abcdef012345');
+      expect(sd.type).toBe('Bundle');
+      expect(sd.differential.element[0].constraint[0].expression).toBe(`Bundle.section('${L}', '11450-4').exists()`);
+    } finally {
+      second.mod.shutdown();
+      require('fs').rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the browser scripts come from memory, with an ETag', async () => {
+    for (const name of ['editor.js', 'profile-editor.js']) {
+      const r = await request(app).get(`/ips/${name}`);
+      expect(r.status).toBe(200);
+      expect(r.headers['content-type']).toMatch(/^application\/javascript/);
+      expect(r.headers['cache-control']).toBe('public, max-age=3600');
+      expect(r.text).toBe(require('fs').readFileSync(require('path').join(__dirname, '../../ips', name), 'utf8'));
+      const again = await request(app).get(`/ips/${name}`).set('If-None-Match', r.headers.etag);
+      expect(again.status).toBe(304);
+    }
+  });
+
+  test('only the administrator changes them, or looks codes up', async () => {
+    expect((await request(app).post('/ips/StructureDefinition').send({ title: 'x', constraints: [] })).status).toBe(403);
+    const visitor = request.agent(app);
+    expect((await visitor.get('/ips/StructureDefinition/new')).status).toBe(302);
+    expect((await visitor.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(401);
+    mod.store.createUser('jo', 'Jo', await require('bcrypt').hash('jo-secret', 4));
+    const { agent } = await loginAs(app, 'jo', 'jo-secret');
+    expect((await agent.get('/ips/StructureDefinition/new')).status).toBe(403);
+    expect((await agent.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(403);
+  });
+
+  test('the administrator finds value sets: ours first, then the terminology server\'s', async () => {
+    const searches = [];
+    app.get('/tx/r4/ValueSet', (req, res) => {
+      searches.push(req.query);
+      const all = [{ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', version: '1.1.0', title: 'Problems - IPS' }, { url: 'http://x.org/vs/conditions', title: 'Some conditions' }];
+      const hits = req.query.url ? all.filter(v => v.url === req.query.url) : all.filter(v => v.title.toLowerCase().includes(req.query.title));
+      res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'Bundle', type: 'searchset', entry: hits.map(v => ({ resource: { resourceType: 'ValueSet', ...v } })) }));
+    });
+    const { agent } = await asAdmin();
+    const ours = 'http://healthintersections.com.au/fhirsmith/ValueSet/ips-condition-code';
+    const found = (await agent.get('/ips/lookup-vs?q=Condition')).body.matches;
+    expect(found.find(v => v.url === ours)).toMatchObject({ own: true });
+    // ours come first
+    expect(found.findIndex(v => !v.own)).toBeGreaterThan(found.findIndex(v => v.url === ours));
+    expect(found).toContainEqual({ url: 'http://x.org/vs/conditions', version: null, title: 'Some conditions', own: false });
+    expect(searches[0]).toMatchObject({ title: 'condition', _elements: 'url,version,title,name', _count: '20' });
+    // by canonical: ours is found without asking; another is asked for by url
+    expect((await agent.get(`/ips/lookup-vs?url=${encodeURIComponent(ours)}`)).body.matches).toHaveLength(1);
+    expect(searches).toHaveLength(1);
+    const ips = (await agent.get(`/ips/lookup-vs?url=${encodeURIComponent('http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips|1.1.0')}`)).body.matches;
+    expect(ips).toEqual([{ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', version: '1.1.0', title: 'Problems - IPS', own: false }]);
+    expect(searches[1]).toMatchObject({ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips' });
+    expect((await agent.get('/ips/lookup-vs?url=http://nowhere.org/vs')).body.matches).toEqual([]);
+    expect((await agent.get('/ips/lookup-vs?q=a')).body.matches).toEqual([]);
+    expect((await request(app).get('/ips/lookup-vs?q=Condition')).status).toBe(401);
+    // a profile's value set rules, as the page shows them
+    const { send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'By value set', constraints: [
+      { human: 'Problems are coded', expression: `Bundle.section('${L}', '11450-4').entryIn('${ours}', 1, '*').exists()` },
+      { human: 'Some IPS problem', expression: "Bundle.resourcesIn('http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', 'Condition').exists()" }] });
+    expect(made.status).toBe(201);
+    const page = await request(app).get(made.body.url).set('Accept', 'text/html');
+    expect(page.text).toContain(`with entries in the value set <b>Conditions (IPS international exchange)</b> <span class="ips-small">(${ours})</span>`);
+    expect(page.text).toContain('<b>Condition</b> resources with a code in the value set <b>http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips</b>: <code>.exists()</code>');
+    const editor = await agent.get(`${made.body.url}/edit`).set('Accept', 'text/html');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
+    expect(cfg.urls.lookupVs).toBe('/ips/lookup-vs');
+    expect(cfg.profile.constraints[0].shape.entry).toEqual({ valueSet: ours, min: 1, max: '*' });
+    expect(cfg.profile.constraints[1].rshape).toEqual({ type: 'Condition', valueSet: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', rest: '.exists()' });
+  });
+
+  test('the administrator looks codes up in any code system', async () => {
+    const { agent } = await asAdmin();
+    const r = await agent.get('/ips/lookup?system=http://snomed.info/sct&q=asth');
+    expect(r.body).toEqual({ matches: [{ system: 'http://snomed.info/sct', code: '123', display: 'Thing (asth)' }] });
+    expect((await agent.get('/ips/lookup?system=not a uri&q=asth')).status).toBe(400);
+    // 'lookup' is not a project
+    expect(mod.store.projectByCode('lookup')).toBeFalsy();
+  });
+});
+
+describe('the profiles step', () => {
+  let app;
+  let mod;
+  const L = 'http://loinc.org';
+  const VS = 'http://example.org/ValueSet/allergies';
+  const add = (id, title, constraints) => {
+    const sd = profiles.build({ id, url: `http://example.org/ips/StructureDefinition/profile-${id}`, title, constraints: constraints.map((c, i) => ({ key: `cp-${i + 1}`, ...c })) });
+    mod.store.saveProfile(id, sd);
+  };
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    // membership: every coded allergy is in the allergies value set; other value sets are unknown
+    app.post('/tx/r4/ValueSet/\\$validate-code', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const url = p.parameter.find(x => x.name === 'url')?.valueUri;
+      res.type('application/fhir+json');
+      if (url !== VS) {
+        return res.status(404).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found', details: { text: `Unknown value set ${url}` } }] }));
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: true }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'profiles');
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('checks the document against each profile, and the view shows it', async () => {
+    add('aaaaaaaaaaa1', 'Allergies only', [
+      { human: 'An allergies section', expression: `Bundle.section('${L}', '48765-2', 1, 1).exists()` },
+      { human: 'Coded allergies', expression: `Bundle.section('${L}', '48765-2').entryIn('${VS}', 1, '*').exists()` }]);
+    add('aaaaaaaaaaa2', 'Full summary', [
+      { human: 'An allergies section', expression: `Bundle.section('${L}', '48765-2').exists()` },
+      { human: 'A problem list', expression: `Bundle.section('${L}', '11450-4').exists()` },
+      { human: 'At least five sections', expression: 'Bundle.section.count() >= 5' }]);
+    add('aaaaaaaaaaa3', 'Problems by value set', [
+      { human: 'Some known problem', expression: "Bundle.resourcesIn('http://example.org/ValueSet/unknown').exists()" }]);
+    add('aaaaaaaaaaa4', 'Broken', [{ human: 'Not evaluable', expression: "Bundle.resourcesIn('nope').exists()" }]);
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(1);
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('profiles: 1 conform, 1 do not, 2 could not be fully checked');
+    const r = mod.store.readResult(1, 'profiles').result;
+    const byTitle = Object.fromEntries(r.profiles.map(p => [p.title, p]));
+    expect(byTitle['Allergies only']).toMatchObject({ id: 'profile-aaaaaaaaaaa1', outcome: 'conforms', constraints: 2, failed: [] });
+    expect(byTitle['Full summary']).toMatchObject({ outcome: 'fails', failed: [{ key: 'cp-2', human: 'A problem list', reason: 'failed' }, { key: 'cp-3', human: 'At least five sections', reason: 'failed' }] });
+    expect(byTitle['Problems by value set'].outcome).toBe('unknown');
+    expect(byTitle['Problems by value set'].failed[0]).toMatchObject({ reason: 'unresolved', message: expect.stringContaining('Unknown value set http://example.org/ValueSet/unknown') });
+    expect(byTitle.Broken.failed[0]).toMatchObject({ reason: 'error', message: expect.stringMatching(/must be a canonical URL/) });
+    expect(r.unresolved).toEqual([{ valueSet: 'http://example.org/ValueSet/unknown', message: 'Unknown value set http://example.org/ValueSet/unknown' }]);
+    // the view
+    const page = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=profiles">Clinical Profiles</a></li>');
+    expect(page.text).toContain('<a href="/ips/StructureDefinition/profile-aaaaaaaaaaa1">Allergies only</a></td><td><span class="ips-badge" style="background: #1e7e34">Conforms</span></td><td><span class="ips-small">(none)</span>');
+    expect(page.text).toContain('Does not conform</span></td><td><ul style="margin: 0; padding-left: 18px"><li>A problem list</li><li>At least five sections</li></ul>');
+    expect(page.text).toContain('<li>Some known problem <span class="ips-small">(could not be checked: a value set the terminology server could not answer for)</span></li>');
+    // the reason is for managers
+    expect(page.text).not.toContain('Unknown value set');
+  });
+
+  test('a rule that can\'t be decided is never a pass, and a profile deleted meanwhile is passed over', async () => {
+    // .empty() over an unanswerable value set would be true: it is "could not be checked"
+    add('aaaaaaaaaab1', 'Nothing contraindicated', [{ human: 'No contraindicated medication', expression: "Bundle.resourcesIn('http://example.org/ValueSet/unknown').empty()" }]);
+    add('aaaaaaaaaab2', 'Gone', [{ human: 'x', expression: 'true' }]);
+    const real = mod.store.profile.bind(mod.store);
+    mod.store.profile = (id) => (id === 'aaaaaaaaaab2' ? null : real(id));
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const r = mod.store.readResult(1, 'profiles').result;
+    expect(r.profiles.map(p => [p.title, p.outcome])).toEqual([['Nothing contraindicated', 'unknown']]);
+    expect(mod.store.read(1).status).toBe('processed');
+  });
+
+  test('no profiles, and a document not yet checked', async () => {
+    await post(app, 'demo', ips());
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(waiting.text).toContain('The document has not been checked against the clinical profiles - the document is waiting in the queue.');
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('profiles: none defined');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('There were no <a href="/ips/StructureDefinition">clinical profiles</a> to check the document against when it was processed.');
+  });
+
+  test('runs after the terminology step and before the AI step', () => {
+    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'profiles', 'ai']);
+  });
+});
+
+describe('the module reads its own request bodies', () => {
+  // as server.js mounts it: no body parsers in front of /ips
+  let app;
+  let mod;
+  beforeEach(async () => {
+    app = express();
+    mod = new IpsModule(makeStats(), quietLog);
+    await mod.initialize({ database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false, processing: { enabled: false }, maxSize: 20000 }, app);
+    app.use('/ips', mod.router);
+    mod.store.createProject('open', 'Open', null);
+    mod.store.createProject('closed', 'Closed', null);
+    mod.store.setProjectToken(mod.store.projectByCode('closed').id, 'the-token');
+  });
+  afterEach(() => mod.shutdown());
+
+  test('a document arrives as fhir+json or json, no bigger than maxSize, and the token comes first', async () => {
+    const r1 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()));
+    expect(r1.status).toBe(201);
+    const r2 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/json').send(JSON.stringify(ips()));
+    expect(r2.status).toBe(201);
+    // too big: refused by the module's own limit, as an OperationOutcome
+    const big = ips({ composition: { title: 'x'.repeat(30000) } });
+    const r3 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r3.status).toBe(413);
+    expect(r3.body.resourceType).toBe('OperationOutcome');
+    expect(JSON.stringify(r3.body)).toContain("Documents can't be bigger than 20000 bytes");
+    // no token: refused before the body is read, however big it is
+    const r4 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r4.status).toBe(401);
+    const r5 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').set('Authorization', 'Bearer the-token').send(JSON.stringify(ips()));
+    expect(r5.status).toBe(201);
+    // not JSON
+    const r6 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send('{ nope');
+    expect(r6.status).toBe(400);
+    expect(r6.body.resourceType).toBe('OperationOutcome');
+  });
+
+  test('the editor\'s JSON has its own limit, and says so as JSON', async () => {
+    const r = await request(app).post('/ips/open/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Content-Type', 'application/json').set('Accept', 'application/json')
+      .send(JSON.stringify({ action: 'download', model: { pad: 'x'.repeat(3 * 1024 * 1024) } }));
+    expect(r.status).toBe(413);
+    expect(r.body.error).toMatch(/too big/);
   });
 });

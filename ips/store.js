@@ -94,6 +94,14 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS ai_calls_project ON ai_calls (project_id, at_ms);
 
+  -- clinical profiles (StructureDefinitions on Composition), across all projects
+  CREATE TABLE IF NOT EXISTS clinical_profiles (
+    id          TEXT PRIMARY KEY,   -- private: the StructureDefinition's id is 'profile-' + this
+    title       TEXT NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    json        TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS ips_index (
     doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     res      TEXT NOT NULL,     -- Bundle | Composition | Patient
@@ -177,8 +185,10 @@ class IpsStore {
       countAll: this.db.prepare('SELECT COUNT(*) AS n FROM documents'),
       nextSubmitted: this.db.prepare("SELECT id FROM documents WHERE status = 'submitted' ORDER BY id LIMIT 1"),
       claim: this.db.prepare("UPDATE documents SET status = 'processing', status_message = NULL WHERE id = ? AND status = 'submitted'"),
-      finish: this.db.prepare('UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ?'),
-      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL WHERE id = ? AND project_id = ?"),
+      // only a document being processed is finished: one requeued or deleted meanwhile isn't
+      finish: this.db.prepare("UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ? AND status = 'processing'"),
+      // a document being processed is left alone: its pipeline would finish it over the requeue
+      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL WHERE id = ? AND project_id = ? AND status <> 'processing'"),
       saveResult: this.db.prepare('INSERT OR REPLACE INTO document_results (doc_id, step, made_ms, json) VALUES (?, ?, ?, ?)'),
       readResult: this.db.prepare('SELECT made_ms, json FROM document_results WHERE doc_id = ? AND step = ?'),
       resultSteps: this.db.prepare('SELECT step, made_ms FROM document_results WHERE doc_id = ? ORDER BY step'),
@@ -221,6 +231,34 @@ class IpsStore {
       this.db.close();
       this.db = null;
     }
+  }
+
+  // ---- clinical profiles ----
+
+  /** All the clinical profiles: {id, title, updated_ms, constraints}, by title. */
+  profiles() {
+    return this.db.prepare('SELECT id, title, updated_ms, json FROM clinical_profiles ORDER BY title COLLATE NOCASE, id').all()
+      .map(r => {
+        const sd = JSON.parse(r.json);
+        const el = sd?.differential?.element?.[0];
+        return { id: r.id, title: r.title, updated_ms: r.updated_ms, constraints: Array.isArray(el?.constraint) ? el.constraint.length : 0 };
+      });
+  }
+
+  /** @returns {Object|null} the StructureDefinition */
+  profile(id) {
+    const r = this.db.prepare('SELECT json FROM clinical_profiles WHERE id = ?').get(id);
+    return r ? JSON.parse(r.json) : null;
+  }
+
+  saveProfile(id, sd, nowMs = Date.now()) {
+    this.db.prepare('INSERT INTO clinical_profiles (id, title, updated_ms, json) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_ms = excluded.updated_ms, json = excluded.json')
+      .run(id, sd.title, nowMs, JSON.stringify(sd));
+  }
+
+  deleteProfile(id) {
+    return this.db.prepare('DELETE FROM clinical_profiles WHERE id = ?').run(id).changes > 0;
   }
 
   // ---- projects ----
@@ -456,6 +494,11 @@ class IpsStore {
     return projectId === undefined ? this.stmts.countAll.get().n : this.stmts.countDocs.get(projectId).n;
   }
 
+  /** How many documents were received in (sinceMs, nowMs], over all projects */
+  countReceived(sinceMs, nowMs) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE received_ms > ? AND received_ms <= ?').get(sinceMs, nowMs).n;
+  }
+
   /**
    * Run a parsed search (see search.js) over a project's documents.
    *
@@ -529,13 +572,23 @@ class IpsStore {
     this.stmts.finish.run(ok ? 'processed' : 'error', message || null, Date.now(), id);
   }
 
-  /** Put a document back in the queue. @returns {boolean} whether there was one */
+  /**
+   * Put a document back in the queue - not while it is being processed.
+   * @returns {'queued'|'processing'|null} null when there is no such document
+   */
   requeue(id, projectId) {
-    if (!Number.isInteger(id) || this.stmts.requeue.run(id, projectId).changes === 0) {
-      return false;
+    if (!Number.isInteger(id)) {
+      return null;
+    }
+    const row = this.db.prepare('SELECT status FROM documents WHERE id = ? AND project_id = ?').get(id, projectId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'processing' || this.stmts.requeue.run(id, projectId).changes === 0) {
+      return 'processing';
     }
     this.stmts.clearResults.run(id);
-    return true;
+    return 'queued';
   }
 
   // ---- the processing steps' results ----

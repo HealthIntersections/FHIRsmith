@@ -1,0 +1,1163 @@
+{
+  "resourceType": "CodeSystem",
+  "language": "en",
+  "url": "http://hl7.org/fhir/sid/icf",
+  "identifier": [
+    {
+      "system": "urn:ietf:rfc:3986",
+      "value": "urn:oid:2.16.840.1.113883.6.254"
+    }
+  ],
+  "version": "2017a",
+  "name": "ICF2017a",
+  "title": "International Classification of Functioning, Disability and Health (ICF) 2017a",
+  "status": "active",
+  "experimental": false,
+  "date": "2017-01-01T00:00:00+10:00",
+  "publisher": "World Health Organization",
+  "contact": [
+    {
+      "name": "World Health Organization",
+      "telecom": [
+        {
+          "system": "url",
+          "value": "https://www.who.int/standards/classifications/international-classification-of-functioning-disability-and-health"
+        }
+      ]
+    }
+  ],
+  "description": "Test subset of ICF 2017a from fhir.tx.support, with the qualifier scales",
+  "caseSensitive": true,
+  "hierarchyMeaning": "classified-with",
+  "content": "complete",
+  "versionNeeded": true,
+  "property": [
+    {
+      "code": "inclusion",
+      "uri": "http://hl7.org/fhir/sid/icf#inclusion",
+      "description": "Inclusion criteria for the classification",
+      "type": "string"
+    },
+    {
+      "code": "exclusion",
+      "uri": "http://hl7.org/fhir/sid/icf#exclusion",
+      "description": "Exclusion criteria for the classification",
+      "type": "string"
+    },
+    {
+      "code": "parent",
+      "uri": "http://hl7.org/fhir/concept-properties#parent",
+      "type": "code"
+    },
+    {
+      "code": "notSelectable",
+      "uri": "http://hl7.org/fhir/concept-properties#notSelectable",
+      "type": "boolean"
+    },
+    {
+      "code": "kind",
+      "uri": "http://hl7.org/fhir/sid/icf#kind",
+      "description": "Whether the concept is a primary ICF category (primary), or a qualifier value, and if so which qualifier scale (extent, nature, localization, problem)",
+      "type": "code"
+    },
+    {
+      "code": "extent",
+      "uri": "http://hl7.org/fhir/sid/icf#extent",
+      "description": "Extent of impairment: the first qualifier on a body function (b) or body structure (s) code (a q1 code)",
+      "type": "code"
+    },
+    {
+      "code": "nature",
+      "uri": "http://hl7.org/fhir/sid/icf#nature",
+      "description": "Nature of the change in the respective body structure: the second qualifier on a body structure (s) code (a q2 code)",
+      "type": "code"
+    },
+    {
+      "code": "localization",
+      "uri": "http://hl7.org/fhir/sid/icf#localization",
+      "description": "Localization: the third qualifier on a body structure (s) code (a q3 code)",
+      "type": "code"
+    },
+    {
+      "code": "performance",
+      "uri": "http://hl7.org/fhir/sid/icf#performance",
+      "description": "Performance: the first qualifier on an activities and participation (d) code - what the person does in their current environment (a q4 code)",
+      "type": "code"
+    },
+    {
+      "code": "capacity",
+      "uri": "http://hl7.org/fhir/sid/icf#capacity",
+      "description": "Capacity (without assistance): the second qualifier on an activities and participation (d) code (a q4 code)",
+      "type": "code"
+    },
+    {
+      "code": "capacity-with-assistance",
+      "uri": "http://hl7.org/fhir/sid/icf#capacity-with-assistance",
+      "description": "Capacity with assistance: the optional third qualifier on an activities and participation (d) code (a q4 code)",
+      "type": "code"
+    },
+    {
+      "code": "performance-without-assistance",
+      "uri": "http://hl7.org/fhir/sid/icf#performance-without-assistance",
+      "description": "Performance without assistance: the optional fourth qualifier on an activities and participation (d) code (a q4 code)",
+      "type": "code"
+    }
+  ],
+  "concept": [
+    {
+      "code": "b",
+      "display": "BODY FUNCTIONS",
+      "definition": "BODY FUNCTIONS",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "b1",
+      "display": "MENTAL FUNCTIONS",
+      "definition": "This chapter is about the functions of the brain: both global mental functions, such as consciousness, energy and drive, and specific mental functions, such as memory, language and calculation mental functions.",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "b"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "b110-b139",
+      "display": "Global mental functions (b110-b139)",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "b1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "b110",
+      "display": "Consciousness functions",
+      "definition": "General mental functions of the state of awareness and alertness, including the clarity and continuity of the wakeful state.",
+      "property": [
+        {
+          "code": "inclusion",
+          "valueString": "functions of the state, continuity and quality of consciousness"
+        },
+        {
+          "code": "inclusion",
+          "valueString": "loss of consciousness"
+        },
+        {
+          "code": "inclusion",
+          "valueString": "coma, vegetative states, fugues, trance states, possession states, drug-induced altered consciousness, delirium, stupor"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "orientation functions (b114)"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "energy and drive functions (b130)"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "sleep functions (b134)"
+        },
+        {
+          "code": "parent",
+          "valueCode": "b110-b139"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "b1100",
+      "display": "State of consciousness",
+      "definition": "Mental functions that when altered produce states such as clouding of consciousness, stupor or coma.",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "b110"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "b1101",
+      "display": "Continuity of consciousness",
+      "definition": "Mental functions that produce sustained wakefulness, alertness and awareness and, when disrupted, may produce fugue, trance or other similar states.",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "b110"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "d",
+      "display": "ACTIVITIES AND PARTICIPATION",
+      "definition": "ACTIVITIES AND PARTICIPATION",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "d4",
+      "display": "MOBILITY",
+      "definition": "This chapter is about moving by changing body position or location or by transferring from one place to another, by carrying, moving or manipulating objects, by walking, running or climbing, and by using various forms of transportation.",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "d"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "d450-d469",
+      "display": "Walking and moving (d450-d469)",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "d4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "d450",
+      "display": "Walking",
+      "definition": "Moving along a surface on foot, step by step, so that one foot is always on the ground, such as when strolling, sauntering, walking forwards, backwards, or sideways.",
+      "property": [
+        {
+          "code": "inclusion",
+          "valueString": "walking short or long distances"
+        },
+        {
+          "code": "inclusion",
+          "valueString": "walking on different surfaces"
+        },
+        {
+          "code": "inclusion",
+          "valueString": "walking around obstacles"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "transferring oneself (d420)"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "moving around (d455)"
+        },
+        {
+          "code": "parent",
+          "valueCode": "d450-d469"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "e",
+      "display": "ENVIRONMENTAL FACTORS",
+      "definition": "ENVIRONMENTAL FACTORS",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "e3",
+      "display": "SUPPORT AND RELATIONSHIPS",
+      "definition": "This chapter is about people or animals that provide practical physical or emotional support, nurturing, protection, assistance and relationships to other persons, in their home, place of work, school or at play or in other aspects of their daily activities. The chapter does not encompass the attitudes of the person or people that are providing the support. The environmental factor being described is not the person or animal, but the amount of physical and emotional support the person or animal provides.",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "e"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "e310",
+      "display": "Immediate family",
+      "definition": "Individuals related by birth, marriage or other relationship recognized by the culture as immediate family, such as spouses, partners, parents, siblings, children, foster parents, adoptive parents and grandparents.",
+      "property": [
+        {
+          "code": "exclusion",
+          "valueString": "extended family (e315)"
+        },
+        {
+          "code": "exclusion",
+          "valueString": "personal care providers and personal assistants (e340)"
+        },
+        {
+          "code": "parent",
+          "valueCode": "e3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "s",
+      "display": "BODY STRUCTURES",
+      "definition": "Broad ranges of percentages are provided for those cases in which calibrated assessment instruments or other standards are available to quantify the impairment in body structure. For example, when \"no impairment\" or \"complete impairment\" in body structure is coded, this scaling may have margin of error of up to 5%. \"Moderate impairment\" is generally up to half of the scale of total impairment. The percentages are to be calibrated in different domains with reference to population standards as percentiles. For this quantification to be used in a uniform manner, assessment procedures need to be developed through research. For a further explanation of coding conventions in ICF, refer to Annex 2.",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "s7",
+      "display": "STRUCTURES RELATED TO MOVEMENT",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "s"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "s730",
+      "display": "Structure of upper extremity",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "s7"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "s7300",
+      "display": "Structure of upper arm",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "s730"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "s7301",
+      "display": "Structure of forearm",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "s730"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "primary"
+        }
+      ]
+    },
+    {
+      "code": "q1",
+      "display": "Extent of impairment (generic qualifier)",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-0",
+      "display": "NO impairment",
+      "definition": "0–4% of the time, or negligible impact",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-1",
+      "display": "MILD impairment",
+      "definition": "5–24% of the time, or slight, low impact",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-2",
+      "display": "MODERATE impairment",
+      "definition": "25–49% of the time, or distinct, medium impact",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-3",
+      "display": "SEVERE impairment",
+      "definition": "50–95% of the time, or major, high impact",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-4",
+      "display": "COMPLETE impairment",
+      "definition": "96–100% of the time, or total impact",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-8",
+      "display": "Not specified",
+      "definition": "Used when information is insufficient to grade the severity",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q1-9",
+      "display": "Not applicable",
+      "definition": "Used when it is inappropriate to apply the qualifier",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q1"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "extent"
+        }
+      ]
+    },
+    {
+      "code": "q2",
+      "display": "Nature of the change in the respective body structure",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-0",
+      "display": "no change in structure",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-1",
+      "display": "total absence",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-2",
+      "display": "partial absence",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-3",
+      "display": "additional part",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-4",
+      "display": "aberrant dimensions",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-5",
+      "display": "discontinuity",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-6",
+      "display": "deviating position",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-7",
+      "display": "qualitative changes in structure, including accumulation of fluid",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-8",
+      "display": "not specified",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q2-9",
+      "display": "not applicable",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q2"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "nature"
+        }
+      ]
+    },
+    {
+      "code": "q3",
+      "display": "Localization",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-0",
+      "display": "more than one region",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-1",
+      "display": "right",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-2",
+      "display": "left",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-3",
+      "display": "both sides",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-4",
+      "display": "front",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-5",
+      "display": "back",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-6",
+      "display": "proximal",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-7",
+      "display": "distal",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-8",
+      "display": "not specified",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q3-9",
+      "display": "not applicable",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q3"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "localization"
+        }
+      ]
+    },
+    {
+      "code": "q4",
+      "display": "Extent of problem (generic qualifier for activities and participation)",
+      "definition": "The generic qualifier as used for each of the performance and capacity qualifiers on an activities and participation (d) code",
+      "property": [
+        {
+          "code": "notSelectable",
+          "valueBoolean": true
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-0",
+      "display": "NO problem",
+      "definition": "none, absent, negligible: 0-4%",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-1",
+      "display": "MILD problem",
+      "definition": "slight, low: 5-24%",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-2",
+      "display": "MODERATE problem",
+      "definition": "medium, fair: 25-49%",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-3",
+      "display": "SEVERE problem",
+      "definition": "high, extreme: 50-95%",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-4",
+      "display": "COMPLETE problem",
+      "definition": "total: 96-100%",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-8",
+      "display": "not specified",
+      "definition": "Used when information is insufficient to grade the severity",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    },
+    {
+      "code": "q4-9",
+      "display": "not applicable",
+      "definition": "Used when it is inappropriate to apply the qualifier",
+      "property": [
+        {
+          "code": "parent",
+          "valueCode": "q4"
+        },
+        {
+          "code": "notSelectable",
+          "valueBoolean": false
+        },
+        {
+          "code": "kind",
+          "valueCode": "problem"
+        }
+      ]
+    }
+  ]
+}

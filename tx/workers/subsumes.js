@@ -177,7 +177,7 @@ class SubsumesWorker extends TerminologyWorker {
     const supplements = this.loadSupplements(codeSystem.url, codeSystem.version, txp.supplements);
 
     // Create a FhirCodeSystemProvider for this CodeSystem
-    const csProvider = new FhirCodeSystemProvider(this.opContext, codeSystem, supplements);
+    const csProvider = FhirCodeSystemProvider.create(this.opContext, codeSystem, supplements);
 
     // Get the codings
     let codingA, codingB;

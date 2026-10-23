@@ -25,6 +25,22 @@ describe('renderPage', () => {
   test('a title containing $` is inserted literally', () => {
     expect(render('c', 'a$`b')).toContain('a$`b');
   });
+
+  test('placeholders inside content are left alone: one pass over the template', () => {
+    // a narrative that names a placeholder must not get the placeholder's raw HTML spliced in
+    const content = '<p title="[%context-link%] <img src=x onerror=alert(1)>">[%about%][%ver%][%title%][%content%][%custom%]</p>';
+    const page = htmlServer.renderPage('tx', 'T', content, { totalResources: 0, totalPackages: 0, processingTime: 0,
+      contextLink: '<a href="/x" style="color: gold">X</a>', about: '<b>about</b>', templateVars: { custom: 'C' } });
+    expect(page).toContain(content);
+    expect(page).not.toContain('<a href="/x" style="color: gold">X</a> <img');
+  });
+
+  test('the template\'s own placeholders are still filled, and template variables are escaped', () => {
+    const page = htmlServer.renderPage('tx', '<T>', '<i>c</i>', { totalResources: 1234, totalPackages: 0, processingTime: 5 });
+    expect(page).toContain('&lt;T&gt;');
+    expect(page).toContain('<i>c</i>');
+    expect(page).not.toMatch(/\[%(title|content|ver|ms)%\]/);
+  });
 });
 
 describe('XhtmlNode URL attributes', () => {

@@ -42,6 +42,7 @@ sources:
   - npm:hl7.fhir.us.core=us
   - npm:us.cdc.phinvads=cdc
   - npm:hl7.fhir.uv.sdc=sdc
+  - npm:hl7.fhir.uv.ips=ips
   - internal:vsac=vsac
   - icd11:icd11-2026-01-b.db
 

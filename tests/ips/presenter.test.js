@@ -107,8 +107,18 @@ describe('the IPS presenter', () => {
     expect(out.html).toContain('<h2>Something else</h2><table class="ips-section"><thead><tr><th>Resource</th><th>Code</th><th>Status</th></tr></thead><tbody>' +
       '<tr><td>Flag/flag</td><td>Falls risk</td><td>active</td></tr><tr><td>Basic/b1</td><td>Something</td><td>--</td></tr></tbody></table>');
     // the header and each section are also given on their own, as divs
-    expect(out.header.startsWith('<div xmlns="http://www.w3.org/1999/xhtml"><h1>')).toBe(true);
+    expect(out.header.startsWith('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-patient">')).toBe(true);
     expect(out.sections[4].html).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No <b>devices</b></p></div>');
+  });
+
+  test('what a document puts where a number belongs is escaped', async () => {
+    const d = doc();
+    const ms = d.entry.find(e => e.resource.resourceType === 'MedicationStatement').resource;
+    ms.dosage[0].timing.repeat = { frequency: '<img src=x onerror=alert(1)>', frequencyMax: '<b>', period: '<i>', periodMax: '"><svg onload=x>', periodUnit: 'd' };
+    const out = await new Presenter().render(d);
+    expect(out.html).not.toMatch(/<img|<svg/);
+    expect(out.html).toContain('&lt;img src=x onerror=alert(1)&gt;-&lt;b&gt; times per &lt;i&gt;-&quot;&gt;&lt;svg onload=x&gt; d');
+    expect(require('../../library/narrative-check').checkNarrative(out.html)).toBeNull();
   });
 
   test('copes without a lookup, without a Composition, and with odd content', async () => {
@@ -123,6 +133,7 @@ describe('the IPS presenter', () => {
     // a Composition with no sections or subject
     const bare = await p.render({ resourceType: 'Bundle', entry: [{ resource: { resourceType: 'Composition', status: 'final', subject: { display: 'Someone' } } }] });
     expect(bare.html).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><h1>International Patient Summary</h1><p>Subject: Someone</p><table class="ips-facts"><tr><td><b>Status</b></td><td>final</td></tr></table></div>');
+    expect(bare.header).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p>Subject: Someone</p><table class="ips-facts"><tr><td><b>Status</b></td><td>final</td></tr></table></div>');
     expect(bare.sections).toEqual([]);
   });
 

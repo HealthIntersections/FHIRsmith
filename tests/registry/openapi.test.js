@@ -20,6 +20,15 @@ const EXCLUDED = {
   'GET /openapi.json': 'the description itself',
   'GET /openapi.yaml': 'the description itself'
 };
+// the login and account pages exist only when users are configured (registry-auth.test.js)
+const AUTH_PAGES = ['/login', '/logout', '/admin/users', '/admin/users/:id', '/admin/users/:id/password',
+  '/admin/users/:id/delete', '/admin/users/:id/tokens', '/admin/users/:id/tokens/:tid/revoke',
+  '/account', '/account/tokens', '/account/tokens/:tid/revoke', '/account/password',
+  '/docs', '/docs/new', '/docs/:name', '/docs/:name/edit', '/docs/:name/delete', '/docs/:name/history', '/docs/:name/history/:entry'];
+for (const p of AUTH_PAGES) {
+  EXCLUDED[`GET ${p}`] = 'login/account pages (HTML)';
+  EXCLUDED[`POST ${p}`] = 'login/account pages (HTML)';
+}
 
 function makeModule() {
   const module = new RegistryModule({ countRequest() {} });

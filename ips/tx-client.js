@@ -54,6 +54,11 @@ function dispatch(app, { method, url, headers = {}, body }) {
       // the body is the stream Express's body parsers read
       req.push(buf);
     }
+    // a real request is marked complete by the HTTP parser once its body is in; the body
+    // parsers (on-finished) look at that to know a later parser needn't read again
+    req.on('end', () => {
+      req.complete = true;
+    });
     req.push(null);
     const res = new http.ServerResponse(req);
     const chunks = [];

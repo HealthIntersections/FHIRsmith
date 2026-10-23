@@ -117,6 +117,90 @@ describe('server statistics', () => {
     expect(rows[0].count_total).toBe(1);
   });
 
+  function readRuns() {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      return db.prepare('SELECT * FROM server_runs ORDER BY id').all();
+    } finally {
+      db.close();
+    }
+  }
+
+  // a run that started at `started` and was last seen alive at `lastSeen`,
+  // as a previous process would have left it
+  function priorRun(started, lastSeen) {
+    const db = new Database(dbPath);
+    try {
+      db.prepare('INSERT INTO server_runs (started, last_seen) VALUES (?, ?)').run(started, lastSeen);
+    } finally {
+      db.close();
+    }
+  }
+
+  test('each run is recorded, and kept alive by the heartbeat', () => {
+    const stats = newStats();
+    stats.markStarted();
+    let runs = readRuns();
+    expect(runs.length).toBe(1);
+    expect(runs[0].started).toBe(stats.startTime);
+    expect(runs[0].last_seen).toBe(stats.startTime);
+
+    stats.touchRun();
+    runs = readRuns();
+    expect(runs[0].last_seen).toBeGreaterThanOrEqual(stats.startTime);
+
+    // the shutdown is a final heartbeat
+    stats.finishStats();
+    const finished = readRuns()[0].last_seen;
+    expect(finished).toBeGreaterThanOrEqual(runs[0].last_seen);
+    expect(readRuns().length).toBe(1);
+  });
+
+  test('overall uptime is the time known running over the time since the first run', () => {
+    const hour = 60 * 60 * 1000;
+    // two earlier runs: the first ran for 8 hours, then a gap, then 1 hour
+    newStats(); // creates the schema
+    priorRun(1000, 1000 + 8 * hour);
+    priorRun(1000 + 10 * hour, 1000 + 11 * hour);
+
+    const stats = newStats();
+    stats.markStarted();
+    stats.startTime = 1000 + 12 * hour;
+
+    const now = 1000 + 14 * hour;
+    const uptime = stats.overallUptime(now);
+    // 8 + 1 + 2 hours running, out of 14
+    expect(uptime.since).toBe(1000);
+    expect(uptime.percent).toBeCloseTo((11 / 14) * 100, 6);
+
+    // the first run ever has nothing before it, so it's 100% up
+    const fresh = newStats({ database: path.join(dir, 'fresh.db') });
+    fresh.markStarted();
+    expect(fresh.overallUptime(fresh.startTime + hour).percent).toBe(100);
+  });
+
+  test('overall uptime is not available without the database', () => {
+    const stats = newStats({ enabled: false });
+    stats.markStarted();
+    expect(stats.runId).toBeNull();
+    expect(stats.overallUptime()).toBeNull();
+    expect(stats.heartbeat).toBeNull();
+  });
+
+  test('failedTasks lists the background tasks whose last run failed', () => {
+    const stats = newStats();
+    stats.addTask('crawl', '1 hr');
+    stats.addTask('audit', '24 hr');
+    stats.addTask('cleanup', '1 hr');
+    stats.taskDone('crawl', 'ok');
+    stats.taskError('audit', 'registry unreachable');
+    expect(stats.failedTasks().map(t => t.name)).toEqual(['audit']);
+    expect(stats.failedTasks()[0].state).toBe('registry unreachable');
+    expect(stats.failedTasks()[0].date).toBeGreaterThan(0);
+    stats.taskDone('audit', 'ok');
+    expect(stats.failedTasks()).toEqual([]);
+  });
+
   test('statistics never take the server down', () => {
     // a database that cannot be opened is logged and then ignored. A plain
     // file where a directory should be is a portable way to make that happen

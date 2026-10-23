@@ -34,6 +34,14 @@ info:
 
     **Parameters are read leniently**: unknown parameters are ignored, and a repeated
     parameter takes its first value.
+
+    **Authentication.** A registry may be configured to require a token on the JSON API
+    (`modules.registry.security`; the HTML pages and this description stay open). Send it
+    as `Authorization: Bearer {token}` or `Api-Key: {token}`. Depending on the registry's
+    configuration the token is one the administrator set, one issued to a user on the
+    registry's pages, or a JWT from the enterprise's OpenID Connect provider. Without a
+    valid token the API answers `401` with a `WWW-Authenticate: Bearer` header. An open
+    registry ignores any token sent.
   license:
     name: BSD-3-Clause
     url: https://opensource.org/license/bsd-3-clause
@@ -96,6 +104,7 @@ paths:
             text/html:
               schema: { type: string }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/ServerError' }
 
   /resolve:
@@ -171,8 +180,20 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
 components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: "The token - the registry's own, or an OIDC JWT - as `Authorization: Bearer {token}`"
+    apiKey:
+      type: apiKey
+      in: header
+      name: Api-Key
+      description: "The same token as `Api-Key: {token}` (what the HL7 Java tooling sends for an `apikey` server in fhir-settings.json)"
+
   parameters:
     fhirVersionOptional:
       name: fhirVersion
@@ -193,6 +214,15 @@ components:
   responses:
     BadRequest:
       description: A parameter is malformed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: "The registry requires a token, and the request carried none or an invalid one. `WWW-Authenticate` names the scheme."
+      headers:
+        WWW-Authenticate:
+          schema: { type: string }
+          example: Bearer realm="tx-reg"
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }

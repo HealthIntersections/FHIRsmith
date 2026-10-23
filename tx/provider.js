@@ -151,7 +151,7 @@ class Provider {
     validateParameter(opContext, "opContext", OperationContext);
     validateParameter(codeSystem, "codeSystem", CodeSystem);
     validateArrayParameter(supplements, "supplements", CodeSystem);
-    return new FhirCodeSystemProvider(opContext, codeSystem, supplements);
+    return FhirCodeSystemProvider.create(opContext, codeSystem, supplements);
   }
 
 

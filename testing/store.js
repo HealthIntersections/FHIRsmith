@@ -256,6 +256,11 @@ class TestReportStore {
     return this.stmts.count.get().n;
   }
 
+  /** How many reports were received in (sinceMs, nowMs] */
+  countReceived(sinceMs, nowMs) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE received_ms > ? AND received_ms <= ?').get(sinceMs, nowMs).n;
+  }
+
   /**
    * Run a parsed search (see search.js).
    *

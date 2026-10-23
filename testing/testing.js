@@ -286,6 +286,26 @@ class TestingModule {
     this.retentionTimer.unref();
   }
 
+  /**
+   * The paragraph for the server's daily report: pages served, reports received
+   * in the period, and how many are held.
+   */
+  dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    const sentences = [];
+    if (this.stats) {
+      const counts = this.stats.countsSince(since, now);
+      sentences.push(`${plural(counts.total, 'page')} ${counts.total === 1 ? 'was' : 'were'} served.`);
+    }
+    if (this.store) {
+      const received = this.store.countReceived(since, now);
+      sentences.push(`${plural(received, 'test report')} ${received === 1 ? 'was' : 'were'} received; ${plural(this.store.count(), 'report')} ${this.store.count() === 1 ? 'is' : 'are'} held.`);
+    } else {
+      sentences.push('The report store is not open.');
+    }
+    return sentences.join(' ');
+  }
+
   async shutdown() {
     if (this.retentionTimer) {
       clearInterval(this.retentionTimer);

@@ -171,7 +171,35 @@ class FhirCodeSystemProviderFilterContext {
   }
 }
 
+// Code systems loaded as ordinary CodeSystem resources (from a package, or supplied by a
+// client) that need behaviour beyond the resource: a grammar, say. Keyed on the CodeSystem
+// url; the class extends FhirCodeSystemProvider, so the content still comes from the
+// resource. Required lazily, because the subclasses require this module.
+let specialisedProviders = null;
+
+function providerClassFor(url) {
+  if (specialisedProviders === null) {
+    specialisedProviders = new Map([
+      ['http://hl7.org/fhir/sid/icf', require('./cs-icf').IcfCodeSystemProvider]
+    ]);
+  }
+  return specialisedProviders.get(url) || FhirCodeSystemProvider;
+}
+
 class FhirCodeSystemProvider extends BaseCSServices {
+  /**
+   * The provider for a CodeSystem resource: a FhirCodeSystemProvider, or the subclass
+   * registered for its url. Always use this rather than the constructor.
+   * @param {OperationContext} opContext
+   * @param {CodeSystem} codeSystem
+   * @param {CodeSystem[]} supplements
+   * @returns {FhirCodeSystemProvider}
+   */
+  static create(opContext, codeSystem, supplements) {
+    const cls = providerClassFor(codeSystem.url);
+    return new cls(opContext, codeSystem, supplements);
+  }
+
   /**
    * @param {CodeSystem} codeSystem - The primary CodeSystem
    * @param {CodeSystem[]} supplements - Array of supplement CodeSystems
@@ -1774,7 +1802,7 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
       });
     }
 
-    return new FhirCodeSystemProvider(opContext, codeSystem, supplements);
+    return FhirCodeSystemProvider.create(opContext, codeSystem, supplements);
   }
 
   // eslint-disable-next-line no-unused-vars

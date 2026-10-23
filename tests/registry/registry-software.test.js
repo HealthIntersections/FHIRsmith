@@ -7,6 +7,8 @@ const { FhirsmithReleases, isFhirsmith, describeAge } = require('../../registry/
 const { ServerRegistries, ServerRegistry, ServerInformation, ServerVersionInformation } = require('../../registry/model');
 const RegistryModule = require('../../registry/registry');
 const RegistryCrawler = require('../../registry/crawler');
+const { UptimeHistory, formatUptime } = require('../../registry/uptime');
+const { commonBaseUrl } = require('../../registry/registry');
 
 const NOW = new Date('2026-10-06T00:00:00Z').getTime();
 
@@ -194,5 +196,171 @@ describe('software page', () => {
     // find the row by its server name cell (CodeQL flags a substring match on a host name)
     const otherRow = html.split('<tr>').find(r => r.startsWith('<td>Other</td>'));
     expect(otherRow).toContain('<td></td><td></td>');
+  });
+});
+
+describe('software page: one row per server', () => {
+  const HOUR = 60 * 60 * 1000;
+
+  function endpoint(server, fhirVersion, url, software, softwareVersion, error) {
+    const v = new ServerVersionInformation();
+    v.version = fhirVersion;
+    v.address = url;
+    v.software = software;
+    v.softwareVersion = softwareVersion;
+    v.error = error || '';
+    server.versions.push(v);
+    return v;
+  }
+
+  function build(uptime) {
+    const data = new ServerRegistries();
+    const registry = new ServerRegistry();
+    registry.name = 'Test';
+    const tx = new ServerInformation();
+    tx.code = 'tx';
+    tx.name = 'tx.example.org';
+    endpoint(tx, 'R4', 'http://tx.example.org/r4', 'FHIRsmith', '0.14.1');
+    endpoint(tx, 'R3', 'http://tx.example.org/r3', 'FHIRsmith', '0.14.1');
+    endpoint(tx, 'R5', 'http://tx.example.org/r5', 'FHIRsmith', '0.14.1', 'HTTP 503');
+    registry.servers.push(tx);
+    const mixed = new ServerInformation();
+    mixed.code = 'mixed';
+    mixed.name = 'Mixed';
+    endpoint(mixed, 'R4', 'https://mixed.example.org/r4', 'Ontoserver', '6.29.0');
+    endpoint(mixed, 'R5', 'https://mixed.example.org/r5', 'FHIRsmith', '0.14.1');
+    registry.servers.push(mixed);
+    data.registries.push(registry);
+
+    const module = new RegistryModule({});
+    module.api = { getData: () => data };
+    module.releases = releases();
+    if (uptime) {
+      module.crawler = { uptime };
+    }
+    return module.buildSoftwareContent(NOW);
+  }
+
+  function row(html, name) {
+    return html.split('<tr>').find(r => r.startsWith(`<td>${name}</td>`));
+  }
+
+  test('endpoints that run the same software collapse into one row with the base URL', () => {
+    const html = build();
+    const r = row(html, 'tx.example.org');
+    expect(r).toContain('href="http://tx.example.org"');
+    expect(r).not.toContain('tx.example.org/r4');
+    expect(r).toContain('<td>R3, R4, R5</td>');
+    expect(html.split('<tr>').filter(r => r.startsWith('<td>tx.example.org</td>')).length).toBe(1);
+  });
+
+  test('an endpoint that is down is named in its server row', () => {
+    const r = row(build(), 'tx.example.org');
+    expect(r).toContain('(R5 unreachable)');
+    expect(r).toContain('title="R5: HTTP 503"');
+  });
+
+  test('endpoints running different software stay apart', () => {
+    const html = build();
+    const rows = html.split('<tr>').filter(r => r.startsWith('<td>Mixed</td>'));
+    expect(rows.length).toBe(2);
+    expect(rows.find(r => r.includes('Ontoserver'))).toContain('<td>R4</td>');
+    expect(rows.find(r => r.includes('>FHIRsmith<'))).toContain('<td>R5</td>');
+  });
+
+  test('uptime is reported per server over all its endpoints', () => {
+    const uptime = new UptimeHistory({ windowDays: 30 });
+    for (let i = 1; i <= 10; i++) {
+      const t = NOW - i * HOUR;
+      uptime.record('http://tx.example.org/r4', true, t);
+      uptime.record('http://tx.example.org/r3', true, t);
+      uptime.record('http://tx.example.org/r5', i <= 3, t); // up for the 3 most recent scans, down for the 7 before
+      uptime.record('https://mixed.example.org/r4', true, t);
+    }
+    const html = build(uptime);
+    // 30 probes, 7 failures
+    expect(row(html, 'tx.example.org')).toContain('title="23 of 30 probes answered since 2026-10-05">76%</span>');
+    const rows = html.split('<tr>').filter(r => r.startsWith('<td>Mixed</td>'));
+    expect(rows.find(r => r.includes('Ontoserver'))).toContain('<span class="text-success" title="10 of 10 probes answered since 2026-10-05">100%</span>');
+    // the R5 endpoint has never been probed
+    expect(rows.find(r => r.includes('>FHIRsmith<'))).toMatch(/<td><\/td><\/tr>$/);
+    expect(html).toContain('over the last 30 days');
+  });
+
+  test('no uptime column content without a crawler', () => {
+    expect(build()).not.toContain('probes answered');
+  });
+});
+
+describe('UptimeHistory', () => {
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+
+  test('uptime over the window, and nothing before it', () => {
+    const h = new UptimeHistory({ windowDays: 30, retentionDays: 90 });
+    h.record('a', false, NOW - 40 * DAY);
+    h.record('a', true, NOW - 10 * DAY);
+    h.record('a', true, NOW - 5 * DAY);
+    h.record('a', false, NOW - 1 * DAY);
+    const u = h.uptime('a', NOW);
+    expect(u.probes).toBe(3);
+    expect(u.failures).toBe(1);
+    expect(u.since).toBe(NOW - 10 * DAY);
+    expect(formatUptime(u)).toBe('66%');
+    expect(h.uptime('b', NOW)).toBeNull();
+  });
+
+  test('records past retention are dropped; an endpoint a crawl missed keeps its history until it ages out', () => {
+    const h = new UptimeHistory({ windowDays: 30, retentionDays: 90 });
+    h.record('a', true, NOW - 100 * DAY);
+    h.record('a', true, NOW - 80 * DAY);
+    h.record('missed', true, NOW - DAY);
+    h.record('gone', true, NOW - 95 * DAY);
+    h.record('a', true, NOW);
+    expect(h.records.get('a').length).toBe(2);
+    // the last crawl saw only 'a' (a sub-registry failed, say): 'missed' is kept
+    h.retain(['a'], NOW);
+    expect(h.records.get('missed').length).toBe(1);
+    expect(h.records.has('gone')).toBe(false);
+    h.retain(['a'], NOW + 90 * DAY);
+    expect(h.records.has('missed')).toBe(false);
+  });
+
+  test('survives a save and load', () => {
+    const h = new UptimeHistory();
+    h.record('a', true, NOW - HOUR);
+    h.record('a', false, NOW);
+    const back = UptimeHistory.fromJSON(JSON.parse(JSON.stringify(h.toJSON())), { windowDays: 30 });
+    expect(back.uptime('a', NOW)).toEqual({ percent: 50, probes: 2, failures: 1, since: NOW - HOUR });
+    expect(UptimeHistory.fromJSON(null).records.size).toBe(0);
+    expect(UptimeHistory.fromJSON({ version: '1', endpoints: { a: 'junk', b: [['x', 1], [NOW, 1]] } }).uptime('b', NOW).probes).toBe(1);
+  });
+
+  test('formatting', () => {
+    expect(formatUptime(null)).toBe('');
+    expect(formatUptime({ percent: 100, probes: 1, failures: 0 })).toBe('100%');
+    expect(formatUptime({ percent: 99.96, probes: 2500, failures: 1 })).toBe('99.9%');
+    expect(formatUptime({ percent: 98.7, probes: 100, failures: 1 })).toBe('98%');
+  });
+
+  test('the crawler records each probe at the scan time', () => {
+    const crawler = new RegistryCrawler({});
+    crawler.scanTime = NOW;
+    crawler.uptime.record('x', true, crawler.scanTime);
+    crawler.uptime.record('x', false, crawler.scanTime);
+    expect(crawler.saveUptime()).toEqual({ version: '1', endpoints: { x: [[NOW, 1], [NOW, 0]] } });
+    crawler.loadUptime({ version: '1', endpoints: { y: [[NOW, 1]] } });
+    expect(crawler.uptime.uptime('y', NOW).probes).toBe(1);
+  });
+});
+
+describe('commonBaseUrl', () => {
+  test('the shared base of a server\'s endpoints', () => {
+    expect(commonBaseUrl(['http://tx.fhir.org/r4', 'http://tx.fhir.org/r3', 'http://tx.fhir.org/r5'])).toBe('http://tx.fhir.org');
+    expect(commonBaseUrl(['https://tx.healthall.co.kr/fhir/r4', 'https://tx.healthall.co.kr/fhir/r5'])).toBe('https://tx.healthall.co.kr/fhir');
+    expect(commonBaseUrl(['https://a.org/fhir', 'https://a.org/fhir/r5'])).toBe('https://a.org/fhir');
+    expect(commonBaseUrl(['https://a.org/fhir'])).toBe('https://a.org/fhir');
+    expect(commonBaseUrl(['https://a.org/r4', 'https://b.org/r4'])).toBe('https://a.org/r4');
+    expect(commonBaseUrl([])).toBe('');
   });
 });

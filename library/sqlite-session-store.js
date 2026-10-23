@@ -130,4 +130,32 @@ class SqliteSessionStore extends session.Store {
   }
 }
 
-module.exports = { SqliteSessionStore };
+/**
+ * The callback API this store uses (run, get), over a better-sqlite3 database - for the
+ * modules that keep their data with better-sqlite3 rather than sqlite3.
+ * @param {object} db - an open better-sqlite3 Database
+ */
+function betterSqlite(db) {
+  return {
+    run(sql, params, cb) {
+      let info;
+      try {
+        info = db.prepare(sql).run(...params);
+      } catch (e) {
+        return cb(e);
+      }
+      cb.call(info, null);
+    },
+    get(sql, params, cb) {
+      let row;
+      try {
+        row = db.prepare(sql).get(...params);
+      } catch (e) {
+        return cb(e);
+      }
+      cb(null, row);
+    }
+  };
+}
+
+module.exports = { SqliteSessionStore, betterSqlite };

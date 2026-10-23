@@ -3251,6 +3251,37 @@ async function initializeXigModule(stats, xigConfig) {
 }
 
 // Graceful shutdown
+/**
+ * The paragraph for the server's daily report: pages served, and whether the
+ * database can be read (it's downloaded afresh each day, and a failed download
+ * or an unreadable file is what this is for).
+ */
+async function dailyReport({since, now}) {
+  const {plural} = require('../library/daily-report');
+  const sentences = [];
+  if (globalStats) {
+    const counts = globalStats.countsSince(since, now);
+    sentences.push(`${plural(counts.total, 'page')} ${counts.total === 1 ? 'was' : 'were'} served.`);
+  }
+  if (!xigDb) {
+    sentences.push('The database is not open: it could not be accessed.');
+  } else {
+    try {
+      const row = await new Promise((resolve, reject) =>
+        xigDb.get('SELECT COUNT(*) AS n FROM Resources', [], (err, row) => err ? reject(err) : resolve(row)));
+      sentences.push(`The database holds ${plural(row.n, 'resource')}.`);
+    } catch (e) {
+      sentences.push(`The database could not be accessed: ${e.message}.`);
+    }
+  }
+  const last = getLastUpdateAttempt();
+  if (last && last.status === 'failed') {
+    const when = last.timestamp instanceof Date ? last.timestamp.toISOString().substring(0, 16).replace('T', ' ') : String(last.timestamp);
+    sentences.push(`The last database update (${when}) failed${last.error ? ': ' + last.error : ''}.`);
+  }
+  return sentences.join(' ');
+}
+
 function shutdown() {
   return new Promise((resolve) => {
     if (xigDb) {
@@ -3275,6 +3306,7 @@ module.exports = {
   updateXigDatabase,
   getDatabaseInfo,
   shutdown,
+  dailyReport,
   initializeXigModule,
 
   // Cache functions
