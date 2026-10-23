@@ -253,6 +253,14 @@
       // several instances can route cached requests back to the instance that holds the
       // cache. Leave unset for a single server. See nginx.md.
       // "instanceCode": "tx1",
+      // The syndication feed (Terminology Syndication Feed IG) at <endpoint>/syndication. When
+      // it is on, the packages, resource files and published binaries the library loads are
+      // recorded in <data>/terminology-cache/syndication as they load - only from the time it
+      // is turned on - and the feed is built from that record. The full CPT database is never
+      // syndicated. Every endpoint shares the one store.
+      "syndication": {
+        "enabled": false
+      },
       // $closure: closure tables are kept on the server, across sessions and restarts, so
       // the operation is off unless it is turned on here. When it is on, only one server
       // instance may use the database - route every $closure request to it (see nginx.md).

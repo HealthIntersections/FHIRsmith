@@ -148,6 +148,58 @@ The file is read from disk per request, so editing it is reflected immediately -
 this means the published file can be ahead of what the running server actually loaded, if it
 has been edited since startup.
 
+### Syndication feed
+
+`syndication.enabled` publishes the content the library loads as a
+[Terminology Syndication Feed](https://build.fhir.org/ig/FHIR/fhir-syndication-ig/en/)
+(Atom, NCTS ASF profile), so that Ontoserver, other FHIRsmith servers and people can follow
+what the server loads. It is off by default.
+
+```json
+"syndication": { "enabled": true }
+```
+
+**The store.** As the library loads its sources, each one is recorded in the syndication store,
+`<data>/terminology-cache/syndication` (`syndication.json` plus `files/`). The store is defined
+from the moment syndication is turned on: content loaded before then is not back-filled, but
+since induction happens as content loads, everything the server loads after that is recorded
+the first time the store sees it, with the time it was recorded. The store only grows -
+entries are never changed or removed, there are no retract entries, and a later update to
+the same content is a new entry (so `contentItemVersion` is not unique - a deliberate departure
+from the IG). One store serves all the endpoints.
+
+| Source | Entry | Link | Category |
+|--------|-------|------|----------|
+| `npm:` / `url:` packages, and each endpoint's core package | the package | `https://npm.fhir.org/web/{id}-{version}.tgz` (a `url:` source: its url) | `FHIR_Package` |
+| `file:` / `folder:` | each resource that has a version | a copy in the store | `FHIR_CodeSystem` / `FHIR_ValueSet` / `FHIR_ConceptMap` |
+| `snomed`, `loinc`, `rxnorm`, `ndc`, `unii`, `omop`, `icd11`, `cpt` (fragment only) | the file | `base.url` + file name | `SNOMED_CACHE`, `LOINC_DB` ... in `http://healthintersections.com.au/syndication/fhirsmith/1.0.0` |
+
+Not syndicated: `internal:` sources (including VSAC), OCL, `#current`/build packages, resources
+without a version, the full CPT database, and binaries that are not published at `base.url`
+(checked with a HEAD request - a binary that is only local is a development build). Binary
+entries carry `<rights>`. Every link carries `ncts:sha256Hash`: a package is downloaded once to
+hash it, then discarded. Only the core packages are FHIR version specific; everything else
+appears in every endpoint's feed, with that endpoint's `ncts:fhirVersion`.
+
+Induction runs in the background, one item at a time, so it never holds up startup; a failure
+is logged and tried again the next time the content loads.
+
+**The feed** uses RFC 5005 archived feeds, 30 entries a page:
+
+| URL | Content |
+|-----|---------|
+| `/{path}/syndication` | the newest entries (fewer than 30), linked to the newest archive |
+| `/{path}/syndication/archive/{n}` | archive *n* (1 = oldest), linked back to *n*-1 - never changes once it exists |
+| `/{path}/syndication/files/{name}` | a resource file copied into the store |
+
+The links in the feed are built from the server's `hostName` (top level of config.json) as
+`https://{hostName}{path}`, never from the request's Host header; only archives built that way
+are served as cacheable forever. Without a `hostName` the links follow the request, and
+archives are `no-cache`.
+
+A browser (`Accept: text/html`) gets the feed as a page; `?_format=atom` forces Atom. The IG's
+query-string filters are not supported. A **Syndication** item appears in the tx navigation bar.
+
 ## OpenAPI description
 
 Each R5 endpoint is described by an OpenAPI 3.1 spec (the R4 and R3 endpoints work the same

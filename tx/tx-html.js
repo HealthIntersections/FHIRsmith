@@ -155,6 +155,14 @@ function publishesLibrarySource() {
   return publishLibrarySource;
 }
 
+// Whether this server has a syndication feed (modules.tx.syndication.enabled): gates the nav
+// item and the feed autodiscovery link, as publishLibrarySource does for the library
+let syndicationFeed = false;
+
+function setSyndicationFeed(enabled) {
+  syndicationFeed = enabled === true;
+}
+
 /**
  * Highlight a YAML document for display.
  *
@@ -268,6 +276,11 @@ class TxHtmlRenderer {
     if (txOpenApi.describes(endpoint.fhirVersion)) {
       options.apiLink = '<a href="' + escape(endpoint.path) + '/openapi" style="color: gold">API</a>  &nbsp;|&nbsp;';
       options.apiHead = '<link rel="service-desc" type="application/json" href="' + escape(endpoint.path) + '/openapi.json"/>';
+    }
+    if (syndicationFeed) {
+      options.libraryLink += '<a href="' + escape(endpoint.path) + '/syndication" style="color: gold">Syndication</a>  &nbsp;|&nbsp;';
+      options.apiHead = (options.apiHead || '') + '<link rel="alternate" type="application/atom+xml" title="Syndication Feed" href="'
+        + escape(endpoint.path) + '/syndication?_format=atom"/>';
     }
 
     return htmlServer.renderPage('tx', title, content, options);
@@ -1902,5 +1915,6 @@ class TxHtmlRenderer {
 
 module.exports = {
   TxHtmlRenderer, loadTemplate, acceptsHtml,
-  setPublishLibrarySource, publishesLibrarySource, highlightYaml, buildLibrarySourcePage
+  setPublishLibrarySource, publishesLibrarySource, highlightYaml, buildLibrarySourcePage,
+  setSyndicationFeed
 };

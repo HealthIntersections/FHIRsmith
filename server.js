@@ -282,7 +282,7 @@ async function initializeModules() {
     try {
       serverLog.info('Initializing module: tx...');
       modules.tx = new TXModule(stats.forModule('tx'));
-      await modules.tx.initialize(config.modules.tx, app);
+      await modules.tx.initialize(config.modules.tx, app, { hostName: config.hostName });
     } catch (error) {
       serverLog.error('Failed to initialize TX module:', error);
       throw error;
