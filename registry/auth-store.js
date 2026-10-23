@@ -244,14 +244,20 @@ class AuthStore {
       return 0;
     }
     const entries = [...this.pending.entries()];
-    this.pending.clear();
     const write = this.db.transaction(() => {
       for (const [principal, p] of entries) {
         const at = new Date(p.last).toISOString();
         this.stmts.upsertUsage.run(principal, p.kind, p.count, at, at);
       }
     });
+    // a transaction: all written, or none, and then the counts are still pending for the next try
     write();
+    // what was written is taken off; counts that came in meanwhile stay
+    for (const [principal, p] of entries) {
+      if (this.pending.get(principal) === p) {
+        this.pending.delete(principal);
+      }
+    }
     return entries.length;
   }
 

@@ -77,8 +77,10 @@ const SHAPE_RE = new RegExp(`^\\s*Bundle\\s*\\.\\s*section\\s*\\(${ARGS}\\)\\s*(
 // a value set's canonical, as entryIn() and resourcesIn() take it
 const CANONICAL_RE = /^[a-z][a-z0-9+.-]*:[^\s|]{1,250}(\|[^\s|]{1,64})?$/i;
 
+// a FHIRPath string's escapes: \' \" \` \\ \/ \f \n \r \t and \uXXXX
+const ESCAPES = { n: '\n', r: '\r', t: '\t', f: '\f' };
 function unquote(s) {
-  return s.replace(/\\(.)/g, (m, c) => ({ n: '\n', r: '\r', t: '\t' }[c] || c));
+  return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (m, c) => (c.length === 5 ? String.fromCharCode(parseInt(c.substring(1), 16)) : (ESCAPES[c] || c)));
 }
 
 function quote(s) {
@@ -430,16 +432,43 @@ function describePart(p, isSection, titleOf) {
 }
 
 /**
- * An expression written for a Composition, for its document: Composition.section(...)
- * becomes Bundle.section(...) (section() on a document looks in its Composition), any
- * other Composition.x becomes Bundle.entry.resource.ofType(Composition).x, and anything
- * else is left as it is.
+ * An expression written for a Composition, for its document: each Composition.section(...)
+ * becomes Bundle.section(...) (section() on a document looks in its Composition), and any
+ * other Composition.x becomes Bundle.entry.resource.ofType(Composition).x - every one in the
+ * expression, not only a leading one, and never inside a string or a `quoted` name. A path
+ * that doesn't start with a type name (title.exists()) can't be told from the document's
+ * own, and is left as it is.
  */
 function onDocument(expression) {
-  if (/^\s*Composition\s*\.\s*section\s*\(/.test(expression)) {
-    return expression.replace(/^\s*Composition\s*\./, 'Bundle.');
+  let out = '';
+  let i = 0;
+  const n = expression.length;
+  while (i < n) {
+    const ch = expression[i];
+    if (ch === "'" || ch === '`') {
+      // a string or a delimited name, with its escapes, as it is
+      let j = i + 1;
+      while (j < n && expression[j] !== ch) {
+        j += expression[j] === '\\' ? 2 : 1;
+      }
+      out += expression.substring(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    // Composition at the start of a path: not part of a longer name, not after a dot
+    const prev = i > 0 ? expression[i - 1] : '';
+    if (expression.startsWith('Composition', i) && !/[A-Za-z0-9_.]/.test(prev) && !/[A-Za-z0-9_]/.test(expression[i + 11] || '')) {
+      const m = /^Composition\s*\.\s*(section\s*\()?/.exec(expression.substring(i));
+      if (m) {
+        out += m[1] ? 'Bundle.section(' : 'Bundle.entry.resource.ofType(Composition).';
+        i += m[0].length;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
   }
-  return expression.replace(/^\s*Composition\s*\./, 'Bundle.entry.resource.ofType(Composition).');
+  return out;
 }
 
 /**

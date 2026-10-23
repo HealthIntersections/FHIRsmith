@@ -88,16 +88,17 @@ class UptimeHistory {
   }
 
   /**
-   * Forget endpoints that are no longer registered (and anything past retention)
-   * @param {Iterable<string>} addresses the endpoints that still exist
+   * Forget what is past retention. Only age decides: an endpoint missing from one crawl (a
+   * sub-registry that failed to fetch, a crawl cut short at shutdown) keeps its history,
+   * and one that has really gone ages out with its last probes
+   * @param {Iterable<string>} [addresses] the endpoints of the last crawl (no longer used:
+   *   a crawl can miss endpoints that still exist)
    */
   retain(addresses, now = Date.now()) {
-    const keep = new Set(addresses);
     for (const address of [...this.records.keys()]) {
-      if (!keep.has(address)) {
+      this.prune(address, now);
+      if (this.records.get(address).length === 0) {
         this.records.delete(address);
-      } else {
-        this.prune(address, now);
       }
     }
   }

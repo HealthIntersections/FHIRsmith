@@ -68,40 +68,46 @@ class HtmlServer {
       ...options
     };
     
-    // Perform template replacements
-    let html = template
-      .replace(/\[%title%\]/g, () => escape(title))
-      .replace(/\[%content%\]/g, () => content) // Content is assumed to be already-safe HTML
+    // The placeholders, and what each becomes. Everything is substituted in one pass over
+    // the template, so what goes in - [%content%] above all, which holds what users wrote
+    // (document narratives, say) - is never itself searched for placeholders: a
+    // "[%context-link%]" inside content stays as it is, rather than becoming raw HTML in the
+    // middle of an attribute
+    const values = new Map([
+      ['title', () => escape(title)],
+      ['content', () => content], // Content is assumed to be already-safe HTML
       // [%ver%] is the FHIRsmith version in every template (it follows the FHIRsmith link)
-      .replace(/\[%ver%\]/g, () => escape(packageJson.version))
-      .replace(/\[%download-date%\]/g, () => escape(renderOptions.downloadDate))
+      ['ver', () => escape(packageJson.version)],
+      ['download-date', () => escape(renderOptions.downloadDate)],
       // "last updated 35 minutes ago" / "not yet updated", for the crawler-driven modules
-      .replace(/\[%crawler-status%\]/g, () => escape(renderOptions.crawlerStatus || 'not yet updated'))
-      .replace(/\[%total-resources%\]/g, () => escape(renderOptions.totalResources.toLocaleString()))
-      .replace(/\[%total-packages%\]/g, () => escape(renderOptions.totalPackages.toLocaleString()))
-      .replace(/\[%endpoint-path%\]/g, () => escape(renderOptions.endpointpath))
-      .replace(/\[%fhir-version%\]/g, () => escape(renderOptions.fhirversion))
-      .replace(/\[%ms%\]/g, () => escape(renderOptions.processingTime.toString()))
-      .replace(/\[%sponsorMessage%\]/g, () => sponsorMessage)
-      .replace(/\[%about%\]/g, () => renderOptions.about || '')
+      ['crawler-status', () => escape(renderOptions.crawlerStatus || 'not yet updated')],
+      ['total-resources', () => escape(renderOptions.totalResources.toLocaleString())],
+      ['total-packages', () => escape(renderOptions.totalPackages.toLocaleString())],
+      ['endpoint-path', () => escape(renderOptions.endpointpath)],
+      ['fhir-version', () => escape(renderOptions.fhirversion)],
+      ['ms', () => escape(renderOptions.processingTime.toString())],
+      ['sponsorMessage', () => sponsorMessage],
+      ['about', () => renderOptions.about || ''],
       // raw HTML, like [%about%]: the caller decides whether the nav item exists at all
-      .replace(/\[%library-link%\]/g, () => renderOptions.libraryLink || '')
+      ['library-link', () => renderOptions.libraryLink || ''],
       // raw HTML too: the OpenAPI description, where a template's module has one in some places only
-      .replace(/\[%api-link%\]/g, () => renderOptions.apiLink || '')
+      ['api-link', () => renderOptions.apiLink || ''],
       // raw HTML: a link to the current project (or other context) in the nav bar, where the
       // module has one
-      .replace(/\[%context-link%\]/g, () => renderOptions.contextLink || '')
-      .replace(/\[%api-head%\]/g, () => renderOptions.apiHead || '');
-    
-    // Handle any custom template variables
+      ['context-link', () => renderOptions.contextLink || ''],
+      ['api-head', () => renderOptions.apiHead || '']
+    ]);
+    // a module's own template variables, escaped when they are strings; the standard ones win
     if (options.templateVars) {
       for (const [key, value] of Object.entries(options.templateVars)) {
-        const placeholder = `[%${key}%]`;
-        const escapedValue = typeof value === 'string' ? escape(value) : String(value);
-        html = html.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), () => escapedValue);
+        if (!values.has(key)) {
+          values.set(key, () => (typeof value === 'string' ? escape(value) : String(value)));
+        }
       }
     }
-    
+    // a placeholder that isn't known is left as it is, as before
+    const html = template.replace(/\[%([^%\]\s]{1,64})%\]/g, (m, name) => (values.has(name) ? values.get(name)() : m));
+
     return html;
   }
 

@@ -7,8 +7,10 @@
 //   other documents      anyone logged in (a browser session - never an API token)
 //   editing, deleting    administrators (the configured one, or a user flagged admin)
 //
-// Markdown is rendered as the author wrote it, raw HTML included: the authors are the
-// registry's administrators, and they are trusted. Editing is a textarea.
+// Markdown is rendered without raw HTML (commonmark's safe mode: inline and block HTML is
+// left out, and links to javascript: and the like are not made), so a document can't put
+// script on a page that shares its origin with other modules; JSON is shown escaped.
+// Editing is a textarea.
 //
 // Routes (added to the registry's router by RegistryAuth, since they need its session):
 //   GET  /docs                     the list
@@ -18,6 +20,7 @@
 //   POST /docs/{name}/delete
 //   GET  /docs/{name}/history      the log; /history/{entry} shows a past version
 
+const express = require('express');
 const escape = require('escape-html');
 const commonmark = require('commonmark');
 
@@ -30,10 +33,10 @@ function str(v) {
   return typeof v === 'string' ? v : '';
 }
 
-/** Render markdown to HTML, trusting it (raw HTML passes through) */
+/** Render markdown to HTML: no raw HTML, and no links to javascript: and the like */
 function renderMarkdown(md) {
   const parsed = new commonmark.Parser().parse(md);
-  return new commonmark.HtmlRenderer({ safe: false }).render(parsed);
+  return new commonmark.HtmlRenderer({ safe: true }).render(parsed);
 }
 
 /** The JSON pretty-printed, or null if it doesn't parse */
@@ -75,15 +78,19 @@ class RegistryDocuments {
     };
     // the session is read on every page, so that a logged in user sees the private
     // documents; CSRF only matters for the forms
-    router.get('/docs', a.session, a.csrf, h((req, res) => this.sendList(req, res)));
+    router.get('/docs', a.session, a.csrfIfLoggedIn, h((req, res) => this.sendList(req, res)));
     router.get('/docs/new', a.session, a.csrf, admin, h((req, res) => this.sendForm(req, res, null)));
-    router.post('/docs', a.sameOrigin, a.session, a.form, a.csrf, admin, h((req, res) => this.save(req, res, null)));
-    router.get('/docs/:name', a.session, a.csrf, h((req, res) => this.sendDocument(req, res)));
+    // a document's form carries up to MAX_SIZE of content, URL-encoded (up to three times as
+    // long): the auth pages' 64kb form parser is too small for it. One a bit over is caught
+    // by save(), with the form's own message
+    const docForm = express.urlencoded({ extended: false, limit: 3 * MAX_SIZE + 64 * 1024 });
+    router.post('/docs', a.sameOrigin, a.session, docForm, a.csrf, admin, h((req, res) => this.save(req, res, null)));
+    router.get('/docs/:name', a.session, a.csrfIfLoggedIn, h((req, res) => this.sendDocument(req, res)));
     router.get('/docs/:name/edit', a.session, a.csrf, admin, h((req, res) => this.sendForm(req, res, this.find(req))));
-    router.post('/docs/:name', a.sameOrigin, a.session, a.form, a.csrf, admin, h((req, res) => this.save(req, res, this.find(req))));
+    router.post('/docs/:name', a.sameOrigin, a.session, docForm, a.csrf, admin, h((req, res) => this.save(req, res, this.find(req))));
     router.post('/docs/:name/delete', a.sameOrigin, a.session, a.form, a.csrf, admin, h((req, res) => this.delete(req, res)));
-    router.get('/docs/:name/history', a.session, a.csrf, h((req, res) => this.sendHistory(req, res)));
-    router.get('/docs/:name/history/:entry', a.session, a.csrf, h((req, res) => this.sendVersion(req, res)));
+    router.get('/docs/:name/history', a.session, a.csrfIfLoggedIn, h((req, res) => this.sendHistory(req, res)));
+    router.get('/docs/:name/history/:entry', a.session, a.csrfIfLoggedIn, h((req, res) => this.sendVersion(req, res)));
   }
 
   find(req) {
@@ -91,9 +98,12 @@ class RegistryDocuments {
     return NAME_RE.test(name) ? this.store.documentByName(name) : null;
   }
 
-  /** May this request read the document? Public: anyone; else a logged in user */
+  /**
+   * May this request read the document - or a past version of it (a log entry, which has
+   * its own public flag)? Public: anyone; else a logged in user
+   */
   canRead(req, doc) {
-    return doc.public || !!this.auth.currentUser(req);
+    return !!doc.public || !!this.auth.currentUser(req);
   }
 
   wantsHtml(req) {
@@ -172,7 +182,10 @@ class RegistryDocuments {
     const url = `${base}/docs/${encodeURIComponent(doc.name)}`;
     let h = `<p><a href="${url}">&laquo; ${escape(doc.name)}</a></p>`;
     h += '<table class="grid"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>Name</th><th>Type</th><th>Visibility</th><th>Size</th></tr></thead><tbody>';
-    for (const e of this.store.documentLog(doc.id)) {
+    // the versions this request may read: a version from when the document was private
+    // stays private, whatever the document is now
+    const versions = this.store.documentLog(doc.id).filter(e => this.canRead(req, e));
+    for (const e of versions) {
       h += `<tr><td><a href="${url}/history/${e.id}">${escape(e.at.substring(0, 19).replace('T', ' '))}</a></td><td>${escape(e.by)}</td>` +
         `<td>${escape(e.action)}</td><td>${escape(e.name)}</td><td>${escape(e.type)}</td><td>${e.public ? 'public' : 'logged in users'}</td><td>${e.size}</td></tr>`;
     }
@@ -191,6 +204,9 @@ class RegistryDocuments {
     const entry = this.store.documentLogEntry(doc.id, Number(req.params.entry));
     if (!entry) {
       return this.notFound(req, res);
+    }
+    if (!this.canRead(req, entry)) {
+      return this.denied(req, res);
     }
     const base = escape(req.baseUrl || '');
     let h = `<p><a href="${base}/docs/${encodeURIComponent(doc.name)}/history">&laquo; history</a></p>`;

@@ -101,8 +101,10 @@ describe('failed authentications are limited', () => {
     const limited = await bad();
     expect(limited.status).toBe(429);
     expect(limited.body.error).toBe('too-many-requests');
-    // the rest of the window is closed to the address's API requests; the pages stay open
-    expect((await good()).status).toBe(429);
+    // the rest of the window is closed to the address's bad tokens - but a good one still
+    // works (the token is checked first), and the pages stay open
+    expect((await bad()).status).toBe(429);
+    expect((await good()).status).toBe(200);
     expect((await request(app).get('/tx-reg/').set('Accept', 'text/html')).status).toBe(200);
   });
 
@@ -212,14 +214,51 @@ describe('users and their tokens', () => {
 
     r = await form(agent, '/tx-reg/account/password', { current: 'wrong', password: 'password-2' }, '/tx-reg/account');
     expect(r.status).toBe(400);
+    // a second session for the same user, from before the change
+    const { agent: other } = await loginAs(app, 'self-serve', 'password-1');
+    expect((await other.get('/tx-reg/account')).status).toBe(200);
     r = await form(agent, '/tx-reg/account/password', { current: 'password-1', password: 'password-2' }, '/tx-reg/account');
     expect(r.status).toBe(200);
+    // the session that changed it goes on; the other has ended
+    expect((await agent.get('/tx-reg/account')).status).toBe(200);
+    expect((await other.get('/tx-reg/account')).status).toBe(302);
     expect((await loginAs(app, 'self-serve', 'password-2')).res.status).toBe(302);
     expect((await loginAs(app, 'self-serve', 'password-1')).res.status).toBe(401);
 
     // a user without a password cannot log in at all
     await form(admin, '/tx-reg/admin/users', { login: 'no-password' }, '/tx-reg/admin/users');
     expect((await loginAs(app, 'no-password', '')).res.status).toBe(401);
+  });
+
+  test('the main pages know who is logged in', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    for (const path of ['/tx-reg/', '/tx-reg/software', '/tx-reg/log', '/tx-reg/resolve']) {
+      const page = await agent.get(path).set('Accept', 'text/html');
+      expect(page.text).toContain('href="/tx-reg/admin/users"');
+      expect(page.text).not.toContain('href="/tx-reg/login"');
+    }
+  });
+
+  test('reading documents gives a visitor no session', async () => {
+    mod.auth.store.createDocument({ name: 'open-doc', type: 'md', public: true, content: '# Open\n' }, 'test');
+    for (const path of ['/tx-reg/docs', '/tx-reg/docs/open-doc', '/tx-reg/docs/open-doc/history']) {
+      const r = await request(app).get(path).set('Accept', 'text/html');
+      expect(r.status).toBe(200);
+      expect(r.headers['set-cookie']).toBeUndefined();
+    }
+  });
+
+  test('a resolve page that fails to render is an error, not the JSON', async () => {
+    const real = mod.buildResolveResultContent;
+    mod.buildResolveResultContent = () => { throw new Error('boom'); };
+    try {
+      const r = await request(app).get('/tx-reg/resolve?fhirVersion=R4&url=http://loinc.org').set('Accept', 'text/html');
+      expect(r.status).toBe(500);
+      expect(r.headers['content-type']).toMatch(/text\/html/);
+      expect(r.text).not.toMatch(/"authoritative"|"candidates"/);
+    } finally {
+      mod.buildResolveResultContent = real;
+    }
   });
 
   test('bad logins are rejected at creation', async () => {
@@ -230,6 +269,30 @@ describe('users and their tokens', () => {
     }
     const r = await form(agent, '/tx-reg/admin/users', { login: 'short-pw', password: 'short' }, '/tx-reg/admin/users');
     expect(r.status).toBe(400);
+  });
+});
+
+describe('sessions are kept in the auth database', () => {
+  test('a login survives a restart', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'txreg-'));
+    const users = { ...USERS, database: path.join(dir, 'auth.db') };
+    const first = await makeApp({ users });
+    const { agent, res } = await loginAs(first.app, 'admin', 'admin-secret');
+    expect((await agent.get('/tx-reg/admin/users')).status).toBe(200);
+    const sid = res.headers['set-cookie'].map(c => c.split(';')[0]).find(c => c.startsWith('txreg.sid='));
+    expect(sid).toBeTruthy();
+    first.mod.shutdown();
+    // the same cookie, against a new module on the same database
+    const second = await makeApp({ users });
+    try {
+      expect((await request(second.app).get('/tx-reg/admin/users').set('Cookie', sid)).status).toBe(200);
+    } finally {
+      second.mod.shutdown();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -285,6 +348,10 @@ describe('OIDC', () => {
     const expired = await new jose.SignJWT({ scp: 'registry.read' }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
       .setIssuer(ISSUER).setAudience(AUDIENCE).setIssuedAt(Math.floor(Date.now() / 1000) - 7200).setExpirationTime(Math.floor(Date.now() / 1000) - 3600).sign(privateKey);
     expect((await call(expired)).status).toBe(401);
+    // a token that never expires is refused too
+    const forever = await new jose.SignJWT({ scp: 'registry.read' }).setProtectedHeader({ alg: 'RS256', kid: 'k1' })
+      .setIssuer(ISSUER).setAudience(AUDIENCE).setIssuedAt().sign(privateKey);
+    expect((await call(forever)).status).toBe(401);
   });
 
   test('an unsigned token is refused', async () => {
@@ -296,6 +363,25 @@ describe('OIDC', () => {
     expect(() => new RegistryAuth({ oidc: { issuer: 'http://insecure', audience: 'x' } }, { logger: quiet }).setupOidc()).toThrow(/https/);
     expect(() => new RegistryAuth({ oidc: { issuer: 'https://idp', audience: 'x', jwksUri: 'http://keys.example/jwks' } }, { logger: quiet }).setupOidc()).toThrow(/jwksUri/);
     expect(() => new RegistryAuth({ oidc: { issuer: 'https://idp' } }, { logger: quiet }).setupOidc()).toThrow(/audience/);
+  });
+});
+
+describe('usage counts', () => {
+  test('a failed write keeps them for the next flush', () => {
+    const store = new AuthStore(':memory:');
+    try {
+      store.countRequest('token:1', 'token');
+      store.countRequest('token:1', 'token');
+      const real = store.stmts.upsertUsage;
+      store.stmts.upsertUsage = { run() { throw new Error('disk full'); } };
+      expect(() => store.flush()).toThrow('disk full');
+      store.stmts.upsertUsage = real;
+      store.countRequest('token:1', 'token');
+      expect(store.flush()).toBe(1);
+      expect(store.usageOf('token:1').requests).toBe(3);
+    } finally {
+      store.close();
+    }
   });
 });
 

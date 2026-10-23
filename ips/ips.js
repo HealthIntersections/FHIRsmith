@@ -262,14 +262,16 @@ class IpsModule {
     // the terminology server: links to code systems, and the analysis's queries. None
     // configured, no links and no analysis
     this.tx = null;
-    // set by checkTxServer when a path on this server has nothing at it
+    // set by checkTxServer while a path on this server has nothing (good) at it
     this.txMissing = false;
     if (this.config.txServer) {
       this.tx = new TxClient(this.config.txServer, { app: this.app, log: this.log });
       if (this.tx.internal) {
         // a path on this server must be one of the tx module's endpoints. The tx module is
-        // set up after this one, so the check is made when the queue first runs (checkTxServer)
+        // set up after this one, so the check is made when the queue first runs (checkTxServer);
+        // until it has answered, the server is taken to be not there yet
         this.txChecked = false;
+        this.txMissing = true;
       }
       this.startedAt = Date.now();
     } else {
@@ -524,7 +526,17 @@ class IpsModule {
     r.get('/:code/settings', project, this.session, this.csrf, manager, h('settings', (req, res) => this.sendSettings(req, res)));
     r.post('/:code/settings', project, this.sameOrigin, this.session, this.form, this.csrf, manager, h('settings', (req, res) => this.saveSettings(req, res)));
 
-    r.post('/:code/Bundle', project, ...posting, h('create', (req, res) => this.create(req, res)));
+    // the token before the body: a submission without it is refused before anything is read,
+    // and the body is read no bigger than maxSize (the server's own parsers leave /ips alone)
+    const submitter = (req, res, next) => {
+      if (tokenConfigured(req.project.token) && !tokenMatches(req.project.token, this.suppliedToken(req))) {
+        res.set('WWW-Authenticate', 'Bearer');
+        return this.sendOutcome(res, 401, 'login', 'This project requires its submission token in the Authorization header');
+      }
+      next();
+    };
+    const documentBody = express.raw({ type: ['application/fhir+json', 'application/json'], limit: this.maxSize });
+    r.post('/:code/Bundle', project, ...posting, submitter, documentBody, h('create', (req, res) => this.create(req, res)));
     r.get('/:code/Bundle', project, ...this.web, h('search', (req, res) =>
       wantsHtml(req) ? this.htmlList(req, res) : this.search(req, res)));
     r.get('/:code/Bundle/:id', project, ...this.web, h('read', (req, res) => this.read(req, res)));
@@ -541,8 +553,12 @@ class IpsModule {
     }));
     r.post('/:code/Bundle/:id/requeue', project, this.sameOrigin, this.session, this.form, this.csrf, manager, h('requeue', (req, res) => {
       const id = docId(req.params.id);
-      if (!this.store.requeue(id, req.project.id)) {
+      const done = this.store.requeue(id, req.project.id);
+      if (!done) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
+      }
+      if (done === 'processing') {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`Document ${id} is being processed now; it can be queued again when that is done`), 409);
       }
       res.redirect(`${req.baseUrl}/${encodeURIComponent(req.project.code)}/Bundle/${id}`);
     }));
@@ -553,6 +569,18 @@ class IpsModule {
       if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
         return htmlServer.sendErrorResponse(res, TEMPLATE,
           new Error('The form has expired or did not come from this site - reload the page and try again'), 403);
+      }
+      // the body parsers': too big, or not what it claims to be - said in the route's own terms
+      if (err && (err.type === 'entity.too.large' || err.type === 'entity.parse.failed' || err.type === 'encoding.unsupported' || err.type === 'charset.unsupported')) {
+        const status = err.type === 'entity.too.large' ? 413 : (err.status || 400);
+        const message = err.type === 'entity.too.large' ? `The request is too big (the limit is ${err.limit} bytes)` : 'The body could not be read: ' + err.message;
+        if (/\/Bundle$/.test(req.path)) {
+          return this.sendOutcome(res, status, status === 413 ? 'too-costly' : 'structure', status === 413 ? `Documents can't be bigger than ${this.maxSize} bytes` : message);
+        }
+        if (!wantsHtml(req)) {
+          return res.status(status).json({ error: message, problems: [message] });
+        }
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(message), status);
       }
       next(err);
     });
@@ -650,39 +678,46 @@ class IpsModule {
     if (!this.tx || !this.tx.internal) {
       return;
     }
-    if (this.txChecked === true || (this.txCheckedAt && Date.now() - this.txCheckedAt < TX_RECHECK_MS)) {
-      return;
-    }
+    // a check in progress is shared - even inside the recheck interval
     if (this.txChecking) {
       return this.txChecking;
     }
+    if (this.txChecked === true || (this.txCheckedAt && Date.now() - this.txCheckedAt < TX_RECHECK_MS)) {
+      return;
+    }
     this.txChecking = (async () => {
       this.txCheckedAt = Date.now();
+      // anything but a CapabilityStatement is "not there yet": a 404 while the tx module
+      // hasn't mounted its endpoints, or a 5xx or no answer while it loads
+      let why = null;
       try {
         const r = await this.tx.get('/metadata');
-        if (r.status === 404) {
-          if (!this.txMissing) {
-            this.log.warn(`IPS module: nothing answers at the terminology server ${this.tx.url} on this server (yet) - ` +
+        if (r.status !== 200 || r.resource?.resourceType !== 'CapabilityStatement') {
+          why = r.status === 404 ? 'nothing answers' : `it answered ${r.status} to /metadata`;
+        }
+      } catch (e) {
+        why = `it could not be reached (${e.message})`;
+      }
+      try {
+        if (why) {
+          if (!this.txMissingWarned) {
+            this.txMissingWarned = true;
+            this.log.warn(`IPS module: the terminology server ${this.tx.url} on this server is not there (yet): ${why} - ` +
               'is the tx module enabled, and is modules.ips.txServer one of its endpoint paths (modules.tx.endpoints[].path)? ' +
-              'Looking again until it does');
+              'Looking again until it is');
           }
           this.txMissing = true;
           if (!this.txMissingLogged && Date.now() - this.startedAt >= TX_STARTUP_GRACE_MS) {
             this.txMissingLogged = true;
-            this.log.error(`IPS module: still nothing at the terminology server ${this.tx.url} on this server; documents are processed without it`);
+            this.log.error(`IPS module: still no terminology server at ${this.tx.url} on this server (${why}); documents are processed without it`);
           }
           return;
         }
-        if (this.txMissing) {
+        if (this.txMissingWarned) {
           this.log.info(`IPS module: the terminology server ${this.tx.url} is there now`);
         }
         this.txMissing = false;
         this.txChecked = true;
-        if (r.status !== 200 || r.resource?.resourceType !== 'CapabilityStatement') {
-          this.log.warn(`IPS module: the terminology server ${this.tx.url} answered ${r.status} to /metadata`);
-        }
-      } catch (e) {
-        this.log.error(`IPS module: the terminology server ${this.tx.url} could not be reached: ${e.message}`);
       } finally {
         this.txChecking = null;
       }
@@ -716,13 +751,14 @@ class IpsModule {
     if (this.processing || !this.store) {
       return 0;
     }
-    await this.checkTxServer();
-    if (!this.pipelineReady()) {
-      return 0;
-    }
+    // claimed before anything is awaited, so two timer ticks can never both get past here
     this.processing = true;
     let n = 0;
     try {
+      await this.checkTxServer();
+      if (!this.pipelineReady()) {
+        return 0;
+      }
       for (;;) {
         const row = this.store.claimNext();
         if (!row) {
@@ -1132,8 +1168,17 @@ class IpsModule {
     if (b.narrative === 'send' || b.narrative === 'strip') {
       settings.sendNarrative = b.narrative === 'send';
     }
-    if (!aiClient.PROVIDERS[settings.provider]) {
+    if (!Object.prototype.hasOwnProperty.call(aiClient.PROVIDERS, settings.provider)) {
       settings.provider = 'openai';
+    }
+    // a key is for the service it was given for: pointing the account somewhere else (another
+    // provider, another base URL) needs the key again, so a stored key can't be sent to a host
+    // its owner didn't choose
+    const sameService = settings.provider === (current.provider || 'openai') && settings.baseUrl.replace(/\/+$/, '') === String(current.baseUrl || '').replace(/\/+$/, '');
+    let keyDropped = false;
+    if (settings.keyEnc && !sameService) {
+      settings.keyEnc = null;
+      keyDropped = true;
     }
     const cap = text(b.dailyCap, 10);
     if (cap !== '') {
@@ -1166,7 +1211,9 @@ class IpsModule {
     this.store.setProjectAi(req.project.id, settings);
     this.log.info(`IPS module: AI assessment settings for '${req.project.code}' saved by ${req.user.name} (${settings.enabled ? 'on' : 'off'}, ${settings.keyEnc ? 'own account' : 'server default'})`);
     req.project = this.store.projectById(req.project.id);
-    this.sendSettings(req, res, 'The AI assessment settings have been saved');
+    this.sendSettings(req, res, keyDropped && !apiKey
+      ? 'The AI assessment settings have been saved. The stored API key was removed because the provider or base URL changed - enter it again for the new service'
+      : 'The AI assessment settings have been saved');
   }
 
   // ---- receiving documents ----

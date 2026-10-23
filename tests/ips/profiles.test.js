@@ -14,6 +14,8 @@ describe('the two shapes', () => {
     }
     // spacing doesn't matter; quotes in strings are escaped both ways
     expect(profiles.parseShape(" Bundle . section ( 'a' ,'b',0,2 ) . exists ( ) ")).toEqual({ section: { system: 'a', code: 'b', min: 0, max: 2 }, entry: null });
+    // FHIRPath's escapes, as FHIRPath reads them
+    expect(profiles.parseShape("Bundle.section('x', 'A\\u0042\\f\\`\\/').exists()").section.code).toBe('AB\f`/');
     const odd = { section: { system: "it's", code: 'a\\b', min: null, max: null }, entry: null };
     expect(profiles.parseShape(profiles.shapeExpression(odd))).toEqual(odd);
   });
@@ -173,6 +175,17 @@ describe('profiles that were on Composition', () => {
       ['cp-3', 'Bundle.entry.resource.ofType(Composition).section.count() >= 3'],
       ['cp-4', `Bundle.resources('${S}', '38341003').exists()`]]);
     expect(profiles.migrate(sd)).toBeNull();
+  });
+
+  test('every Composition in an expression is moved, and nothing in a string', () => {
+    const moved = (expression) => profiles.migrate({ ...old(), differential: { element: [{ id: 'Composition', path: 'Composition', constraint: [{ key: 'cp-1', severity: 'error', human: 'h', expression }] }] } })
+      .differential.element[0].constraint[0].expression;
+    expect(moved(`Composition.section('${L}', '11450-4').exists() and Composition.date.exists()`)).toBe(`Bundle.section('${L}', '11450-4').exists() and Bundle.entry.resource.ofType(Composition).date.exists()`);
+    expect(moved("Composition.title = 'Composition.x'")).toBe("Bundle.entry.resource.ofType(Composition).title = 'Composition.x'");
+    expect(moved(`(Composition.section('${L}', '1').exists()) or Composition . status = 'final'`)).toBe(`(Bundle.section('${L}', '1').exists()) or Bundle.entry.resource.ofType(Composition).status = 'final'`);
+    for (const same of ['entry.resource.ofType(Composition).exists()', 'MyComposition.x', 'x.Composition.y', "Bundle.resources('a', 'b').exists()"]) {
+      expect(moved(same)).toBe(same);
+    }
   });
 
   test('can still be uploaded, and are moved the same way', () => {

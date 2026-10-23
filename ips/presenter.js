@@ -565,7 +565,9 @@ class Presenter {
     }
     const parts = [];
     if (r.frequency || r.period) {
-      parts.push(`${r.frequency || 1}${r.frequencyMax ? '-' + r.frequencyMax : ''} time${(r.frequencyMax || r.frequency || 1) === 1 ? '' : 's'} per ${r.period || 1}${r.periodMax ? '-' + r.periodMax : ''} ${escape(str(r.periodUnit))}`.trim());
+      // numbers in FHIR, but this is a document as submitted: whatever is there is text
+      const n = (v) => escape(String(v));
+      parts.push(`${n(r.frequency || 1)}${r.frequencyMax ? '-' + n(r.frequencyMax) : ''} time${(r.frequencyMax || r.frequency || 1) === 1 ? '' : 's'} per ${n(r.period || 1)}${r.periodMax ? '-' + n(r.periodMax) : ''} ${escape(str(r.periodUnit))}`.trim());
     }
     if (r.duration) {
       parts.push(`for ${escape(String(r.duration))} ${escape(str(r.durationUnit))}`);

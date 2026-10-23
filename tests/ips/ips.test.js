@@ -345,6 +345,10 @@ describe('the FHIR API', () => {
     expect(paged.entry.map(e => e.resource.id)).toEqual(['1']);
     expect(paged.link.find(l => l.relation === 'next').url).toContain('_offset=1');
     expect(paged.entry[0].fullUrl).toMatch(/\/ips\/demo\/Bundle\/1$/);
+    // a number too big for SQLite is a bad request, not a server error
+    const huge = await request(app).get('/ips/demo/Bundle?_offset=99999999999999999999').set('Accept', 'application/fhir+json');
+    expect(huge.status).toBe(400);
+    expect(JSON.stringify(huge.body)).toContain('_offset must be a non-negative integer');
   });
 
   test('unknown parameters are ignored with a warning, or refused when handling is strict', async () => {
@@ -1073,7 +1077,9 @@ describe('the terminology step', () => {
     // the value set went with the request, and the coding as it is
     const c = calls.find(x => x.vs === VS + 'ips-allergy-code');
     expect(c.txResources).toEqual([]);
-    expect(c.coding).toEqual({ system: SCT, code: '91936005', display: 'Allergy to penicillin' });
+    // the code, not its display: the answer is cached by code, so a document with a wrong
+    // display can't decide it for the documents after it
+    expect(c.coding).toEqual({ system: SCT, code: '91936005' });
     // the server could not say for 'odd', against the element's value set or the fallback
     expect(calls.filter(x => x.coding?.code === 'odd').map(x => x.vs)).toEqual([VS + 'ips-observation-code', FALLBACK]);
     expect(msg(row.analysed.entry[4].resource.code)).toBe(`Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result`);
@@ -1349,6 +1355,35 @@ describe('the terminology step', () => {
     expect(row3.analysed.entry[4].resource.stage[0].type.coding[1]).toEqual({ system: SCT, code: '91936005' });
   });
 
+  test('a display lookup the server couldn\'t answer is asked again; a definite answer is kept', async () => {
+    let down = true;
+    let asked = 0;
+    app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
+      asked++;
+      res.type('application/fhir+json');
+      if (down) {
+        return res.status(503).send('busy');
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'display', valueString: 'Allergy to penicillin (looked up)' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'narrative');
+    const d = ips();
+    delete d.entry[3].resource.code.text;
+    delete d.entry[3].resource.code.coding[0].display;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(1);
+    expect(mod.store.readResult(1, 'narrative').result.html).not.toContain('(looked up)');
+    down = false;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+    expect(mod.store.readResult(2, 'narrative').result.html).toContain('Allergy to penicillin (looked up)');
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+  });
+
   test('the narrative step generates the narrative into the analysed copy, looking up displays, and the page shows it', async () => {
     app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
       calls.push({ lookup: `${req.query.system}|${req.query.code}` });
@@ -1411,6 +1446,52 @@ describe('the terminology step', () => {
     other.mod.shutdown();
   });
 
+  test('a document being processed is not requeued, and a pipeline only finishes what it is processing', async () => {
+    const { mod: mod2, app: app2 } = await makeApp({});
+    try {
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const row = mod2.store.claimNext();
+      expect(row.id).toBe(1);
+      mod2.store.saveResult(1, 'validation', { ok: true });
+      // mid-pipeline: refused, and nothing is lost
+      expect(mod2.store.requeue(1, 1)).toBe('processing');
+      expect(mod2.store.readResult(1, 'validation')).not.toBeNull();
+      mod2.store.finish(1, true, 'done');
+      expect(mod2.store.read(1).status).toBe('processed');
+      expect(mod2.store.requeue(1, 1)).toBe('queued');
+      expect(mod2.store.requeue(9, 1)).toBeNull();
+      // a pipeline that finishes after its document was requeued leaves it queued
+      mod2.store.finish(1, true, 'stale');
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
+  test('queue runs never overlap, even while the terminology server is being looked for', async () => {
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/slow/r4' });
+    try {
+      // the tx module still loading: an answer that takes a while, and then isn't one
+      let release;
+      app2.get('/slow/r4/metadata', (req, res) => { release = () => res.status(503).send('loading'); });
+      mod2.steps = [];
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const first = mod2.processQueue();
+      await new Promise(r => setTimeout(r, 20));
+      // a second tick while the first waits: nothing, and no second run
+      expect(await mod2.processQueue()).toBe(0);
+      release();
+      // a 503 is "not there yet": the document waits
+      expect(await first).toBe(0);
+      expect(mod2.txMissing).toBe(true);
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
   test('a path that nothing answers at is waited for, then reported, once, and as unknown', async () => {
     const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
     const warned = [];
@@ -1422,15 +1503,15 @@ describe('the terminology step', () => {
     await post(app2, 'demo', ips());
     // just started: the tx module may still be loading, so the documents wait
     expect(await mod2.processQueue()).toBe(0);
-    expect(warned.filter(m => /nothing answers at the terminology server \/nowhere\/r4/.test(m))).toHaveLength(1);
+    expect(warned.filter(m => /the terminology server \/nowhere\/r4 on this server is not there \(yet\): nothing answers/.test(m))).toHaveLength(1);
     // past the grace period, they are processed without it
     mod2.startedAt -= 10 * 60 * 1000;
     mod2.txCheckedAt = 0;
     expect(await mod2.processQueue()).toBe(2);
     mod2.txCheckedAt = 0;
     await mod2.processQueue();
-    expect(warned.filter(m => /nothing answers at the terminology server/.test(m))).toHaveLength(1);
-    expect(logged.filter(m => /still nothing at the terminology server \/nowhere\/r4/.test(m))).toHaveLength(1);
+    expect(warned.filter(m => /is not there \(yet\)/.test(m))).toHaveLength(1);
+    expect(logged.filter(m => /still no terminology server at \/nowhere\/r4 on this server \(nothing answers\)/.test(m))).toHaveLength(1);
     const row = mod2.store.read(1);
     expect(row.status_message).toBe('terminology: 0 in, 0 international only, 0 not in, 1 unknown');
     expect(JSON.stringify(row.analysed)).toContain('The terminology server is not configured correctly');
@@ -1595,6 +1676,19 @@ describe('the AI assessment step', () => {
     // a save with no key keeps the key; forgetting it goes back to the server's
     await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: '', dailyCap: '' });
     expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBe(stored.keyEnc);
+    // the key doesn't follow the account to another host, or another provider: it must be given again
+    const moved = await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: 'https://elsewhere.example.org', model: 'claude', apiKey: '' });
+    expect(moved.text).toContain('The stored API key was removed because the provider or base URL changed');
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    const again = mod.store.projectAi(mod.store.projectById(1)).keyEnc;
+    expect(again).toBeTruthy();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', baseUrl: svc.url, model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    // a trailing slash isn't another host
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url + '/', model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeTruthy();
     expect(mod.store.projectAi(mod.store.projectById(1)).dailyCap).toBeUndefined();
     await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', clearKey: '1' });
     expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
@@ -1962,6 +2056,11 @@ describe('clinical profiles', () => {
     expect(rejected.status).toBe(422);
     expect(rejected.body.problems[0]).toMatch(/snapshot/);
     expect((await send(`/ips/StructureDefinition/${id}`, { upload: dl.body })).status).toBe(400);
+    // a title can't become script in the delete confirmation: it is an escaped attribute
+    const trick = await send('/ips/StructureDefinition', { title: "x');alert(1);('", constraints: [] });
+    const trickPage = await agent.get(trick.body.url).set('Accept', 'text/html');
+    expect(trickPage.text).toContain('data-confirm="Delete the clinical profile x&#39;);alert(1);(&#39;?"');
+    expect(trickPage.text).not.toContain('onsubmit=');
     // delete
     const del = await form(agent, `/ips/StructureDefinition/${id}/delete`);
     expect(del.status).toBe(302);
@@ -2124,6 +2223,19 @@ describe('the profiles step', () => {
     expect(page.text).not.toContain('Unknown value set');
   });
 
+  test('a rule that can\'t be decided is never a pass, and a profile deleted meanwhile is passed over', async () => {
+    // .empty() over an unanswerable value set would be true: it is "could not be checked"
+    add('aaaaaaaaaab1', 'Nothing contraindicated', [{ human: 'No contraindicated medication', expression: "Bundle.resourcesIn('http://example.org/ValueSet/unknown').empty()" }]);
+    add('aaaaaaaaaab2', 'Gone', [{ human: 'x', expression: 'true' }]);
+    const real = mod.store.profile.bind(mod.store);
+    mod.store.profile = (id) => (id === 'aaaaaaaaaab2' ? null : real(id));
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const r = mod.store.readResult(1, 'profiles').result;
+    expect(r.profiles.map(p => [p.title, p.outcome])).toEqual([['Nothing contraindicated', 'unknown']]);
+    expect(mod.store.read(1).status).toBe('processed');
+  });
+
   test('no profiles, and a document not yet checked', async () => {
     await post(app, 'demo', ips());
     const waiting = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
@@ -2136,5 +2248,50 @@ describe('the profiles step', () => {
 
   test('runs after the terminology step and before the AI step', () => {
     expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'profiles', 'ai']);
+  });
+});
+
+describe('the module reads its own request bodies', () => {
+  // as server.js mounts it: no body parsers in front of /ips
+  let app;
+  let mod;
+  beforeEach(async () => {
+    app = express();
+    mod = new IpsModule(makeStats(), quietLog);
+    await mod.initialize({ database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false, processing: { enabled: false }, maxSize: 20000 }, app);
+    app.use('/ips', mod.router);
+    mod.store.createProject('open', 'Open', null);
+    mod.store.createProject('closed', 'Closed', null);
+    mod.store.setProjectToken(mod.store.projectByCode('closed').id, 'the-token');
+  });
+  afterEach(() => mod.shutdown());
+
+  test('a document arrives as fhir+json or json, no bigger than maxSize, and the token comes first', async () => {
+    const r1 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()));
+    expect(r1.status).toBe(201);
+    const r2 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/json').send(JSON.stringify(ips()));
+    expect(r2.status).toBe(201);
+    // too big: refused by the module's own limit, as an OperationOutcome
+    const big = ips({ composition: { title: 'x'.repeat(30000) } });
+    const r3 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r3.status).toBe(413);
+    expect(r3.body.resourceType).toBe('OperationOutcome');
+    expect(JSON.stringify(r3.body)).toContain("Documents can't be bigger than 20000 bytes");
+    // no token: refused before the body is read, however big it is
+    const r4 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r4.status).toBe(401);
+    const r5 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').set('Authorization', 'Bearer the-token').send(JSON.stringify(ips()));
+    expect(r5.status).toBe(201);
+    // not JSON
+    const r6 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send('{ nope');
+    expect(r6.status).toBe(400);
+    expect(r6.body.resourceType).toBe('OperationOutcome');
+  });
+
+  test('the editor\'s JSON has its own limit, and says so as JSON', async () => {
+    const r = await request(app).post('/ips/open/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Content-Type', 'application/json').set('Accept', 'application/json')
+      .send(JSON.stringify({ action: 'download', model: { pad: 'x'.repeat(3 * 1024 * 1024) } }));
+    expect(r.status).toBe(413);
+    expect(r.body.error).toMatch(/too big/);
   });
 });

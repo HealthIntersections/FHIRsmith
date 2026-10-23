@@ -57,7 +57,7 @@ carries no CSRF token and starts no session; the Origin check still applies.
 
 ## Limits
 
-A document is at most `maxSize` bytes. When it is indexed, at most 200 values are kept per
+A document is at most `maxSize` bytes. The module reads request bodies itself: the server's body parsers leave `/ips` alone, the submission token is checked before a document is read, and a document is read no bigger than `maxSize`. When it is indexed, at most 200 values are kept per
 search parameter; a search takes at most 5 sort keys, and a page of the FHIR search carries at
 most 32MB of documents (the `next` link follows on from where the page stopped). The
 terminology check asks the terminology server at most 2000 questions per document (the rest
@@ -164,7 +164,7 @@ document in `document_results` (one row per step - the validation outcome), or i
 adorn with extensions, so that the master document is never changed. The analysed copy is
 rebuilt from the master on every run, so a document can always be processed again.
 Anything left `processing` when the server stopped is queued again at startup. Managers can
-queue a document again from its page.
+queue a document again from its page, though not while it is being processed.
 
 ### Translation
 

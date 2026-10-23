@@ -42,7 +42,12 @@
   var CANONICAL_RE = /^[a-z][a-z0-9+.-]*:[^\s|]{1,250}(\|[^\s|]{1,64})?$/i;
   // the system chosen for an entry or resources when they are matched by value set, not code
   var VS = '#vs';
-  function unquote(s) { return s.replace(/\\(.)/g, function (m, c) { return { n: '\n', r: '\r', t: '\t' }[c] || c; }); }
+  // a FHIRPath string's escapes: \' \" \` \\ \/ \f \n \r \t and \uXXXX
+  function unquote(s) {
+    return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, function (m, c) {
+      return c.length === 5 ? String.fromCharCode(parseInt(c.substring(1), 16)) : ({ n: '\n', r: '\r', t: '\t', f: '\f' }[c] || c);
+    });
+  }
   function quote(s) { return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"; }
   function card(min, max, hasCard) { return { min: hasCard ? parseInt(min, 10) : null, max: hasCard ? (max === undefined ? '*' : parseInt(max, 10)) : null }; }
   function part(system, code, min, max, hasCard) {

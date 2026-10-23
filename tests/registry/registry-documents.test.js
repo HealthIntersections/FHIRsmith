@@ -62,7 +62,9 @@ describe('documents', () => {
     const page = await html(request(app).get('/tx-reg/docs/policy'));
     expect(page.status).toBe(200);
     expect(page.text).toContain('<h1>Policy</h1>');
-    expect(page.text).toContain('Be <b>nice</b>.'); // raw HTML is trusted
+    // raw HTML in markdown is left out: no markup a document's author writes reaches the page
+    expect(page.text).toContain('Be <!-- raw HTML omitted -->nice<!-- raw HTML omitted -->.');
+    expect(page.text).not.toContain('<b>nice</b>');
     expect(page.text).toContain('last edited');
     expect(page.text).toContain('by admin');
     expect(page.text).not.toContain('/edit"'); // not an admin
@@ -132,6 +134,37 @@ describe('documents', () => {
     const version = await html(editor.get(`/tx-reg/docs/policies/history/${first}`));
     expect(version.text).toContain('<h1>Policy</h1>');
     expect(version.text).toContain('then named <code>policy</code>');
+  });
+
+  test('a document bigger than the auth forms\' 64kb can be saved, up to the 2 MB limit', async () => {
+    const big = '# Big\n\n' + 'All work and no play. '.repeat(15000) + '\n';
+    expect(big.length).toBeGreaterThan(300000);
+    const r = await form(admin, '/tx-reg/docs', { name: 'big', type: 'md', public: '1', content: big }, '/tx-reg/docs/new');
+    expect(r.status).toBe(302);
+    expect((await request(app).get('/tx-reg/docs/big')).text).toBe(big);
+    const tooBig = await form(admin, '/tx-reg/docs', { name: 'toobig', type: 'md', content: 'x'.repeat(2 * 1024 * 1024 + 10) }, '/tx-reg/docs/new');
+    expect(tooBig.status).toBe(400);
+    expect(tooBig.text).toMatch(/too large/);
+  });
+
+  test('a version from when the document was private stays private', async () => {
+    let r = await form(admin, '/tx-reg/docs', { name: 'secret', type: 'md', content: 'the password is swordfish\n' }, '/tx-reg/docs/new');
+    expect(r.status).toBe(302);
+    r = await form(admin, '/tx-reg/docs/secret', { name: 'secret', type: 'md', public: '1', content: 'nothing to see\n' }, '/tx-reg/docs/secret/edit');
+    expect(r.status).toBe(302);
+    // public now: anyone reads it, and its public history, but not the private version
+    expect((await request(app).get('/tx-reg/docs/secret')).text).toBe('nothing to see\n');
+    const history = await html(request(app).get('/tx-reg/docs/secret/history'));
+    expect(history.status).toBe(200);
+    const ids = [...history.text.matchAll(/history\/(\d+)"/g)].map(m => m[1]);
+    expect(ids).toHaveLength(1);
+    const all = [...(await html(admin.get('/tx-reg/docs/secret/history'))).text.matchAll(/history\/(\d+)"/g)].map(m => m[1]);
+    expect(all).toHaveLength(2);
+    const hidden = all.find(id => !ids.includes(id));
+    const denied = await html(request(app).get(`/tx-reg/docs/secret/history/${hidden}`));
+    expect(denied.status).not.toBe(200);
+    expect(denied.text).not.toContain('swordfish');
+    expect((await html(admin.get(`/tx-reg/docs/secret/history/${hidden}`))).text).toContain('swordfish');
   });
 
   test('validation: names, JSON, duplicates', async () => {
@@ -219,7 +252,10 @@ describe('administrator users', () => {
 });
 
 describe('markdown', () => {
-  test('is rendered with raw HTML allowed', () => {
-    expect(renderMarkdown('*a* <span>b</span>')).toBe('<p><em>a</em> <span>b</span></p>\n');
+  test('is rendered without raw HTML, and without script links', () => {
+    expect(renderMarkdown('*a* <span>b</span>')).toBe('<p><em>a</em> <!-- raw HTML omitted -->b<!-- raw HTML omitted --></p>\n');
+    expect(renderMarkdown('<script>alert(1)</script>')).not.toContain('<script');
+    expect(renderMarkdown('[x](javascript:alert(1))')).not.toContain('javascript:');
+    expect(renderMarkdown('[x](https://example.org/)')).toContain('<a href="https://example.org/">x</a>');
   });
 });

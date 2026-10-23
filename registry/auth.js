@@ -26,6 +26,15 @@ const express = require('express');
 const session = require('express-session');
 const lusca = require('lusca');
 const rateLimit = require('express-rate-limit');
+const { SqliteSessionStore, betterSqlite } = require('../library/sqlite-session-store');
+
+// the requests already authenticated, and who they are (a promise)
+const AUTHENTICATED = new WeakMap();
+
+/** What a session keeps of the password it logged in with: enough to tell it changed, no more */
+function passwordStamp(hash) {
+  return typeof hash === 'string' && hash ? crypto.createHash('sha256').update(hash).digest('base64url').substring(0, 22) : null;
+}
 
 // failed authentications allowed per address per 15 minutes, before 429s
 const DEFAULT_FAILED_AUTH_PER_WINDOW = 60;
@@ -136,6 +145,9 @@ class RegistryAuth {
   }
 
   shutdown() {
+    if (this.sessionStore) {
+      this.sessionStore.close();
+    }
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
@@ -152,7 +164,18 @@ class RegistryAuth {
    * Who is making this request, by any of the configured methods
    * @returns {Promise<{kind: string, principal: string, name: string}|null>}
    */
-  async authenticate(req) {
+  /**
+   * Who the request's token is, or null - worked out once per request (the limiter and the
+   * guard both ask)
+   */
+  authenticate(req) {
+    if (!AUTHENTICATED.has(req)) {
+      AUTHENTICATED.set(req, this.authenticateToken(req));
+    }
+    return AUTHENTICATED.get(req);
+  }
+
+  async authenticateToken(req) {
     const presented = presentedToken(req);
     if (!presented) {
       return null;
@@ -174,9 +197,18 @@ class RegistryAuth {
   }
 
   /**
+   * The session middleware where users are configured (so a page can say who is logged
+   * in), and nothing otherwise. It makes no session for a visitor without one
+   * (saveUninitialized is false).
+   */
+  optionalSession() {
+    return (req, res, next) => (this.session ? this.session(req, res, next) : next());
+  }
+
+  /**
    * Express middleware for the JSON API, before apiGuard(): a limit on failed
-   * authentications - only the requests answered 401 count, so a busy client with a good
-   * token is never slowed - per address, `failedAuthPerWindow` (default 60) in 15 minutes;
+   * authentications - only the requests answered 401 count, and a request with a valid token
+   * is never held back, so a busy client with a good token is never slowed - per address, `failedAuthPerWindow` (default 60) in 15 minutes;
    * past it, the address gets 429 for the rest of the window. Guessing tokens, and making
    * the server check one bad JWT after another, is what it stops; general volume is the
    * proxy's business. Does nothing when no security is configured, or for the HTML pages
@@ -192,7 +224,9 @@ class RegistryAuth {
       limit,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
-      skip: (req) => !this.enabled || (req.headers.accept || '').includes('text/html'),
+      // the token first: a valid one is never limited, even from an address over the limit
+      // (a NAT with one client retrying a bad token doesn't lock out the others behind it)
+      skip: async (req) => !this.enabled || (req.headers.accept || '').includes('text/html') || (await this.authenticate(req).catch(() => null)) !== null,
       requestWasSuccessful: (req, res) => res.statusCode !== 401,
       skipSuccessfulRequests: true,
       handler: (req, res) => res.status(429).json({ error: 'too-many-requests', message: 'Too many requests with a token that is not valid for this registry; try again later' })
@@ -312,6 +346,8 @@ class RegistryAuth {
         issuer: this.oidcConfig.issuer,
         audience: this.oidcConfig.audience,
         algorithms: this.algorithms,
+        // jose checks exp only when the claim is there: a token without one would never expire
+        requiredClaims: ['exp'],
         clockTolerance: 60
       }));
     } catch (e) {
@@ -348,8 +384,12 @@ class RegistryAuth {
     if (!this.usersConfig.sessionSecret) {
       this.log.warn('Registry security: no users.sessionSecret configured - using a random one, so logins will not survive a restart');
     }
+    // sessions live in the auth database, so logins survive a restart (with a configured
+    // sessionSecret); expired ones are cleaned up daily
+    this.sessionStore = new SqliteSessionStore({ db: betterSqlite(this.store.db), table: 'sessions' });
     this.session = session({
       name: 'txreg.sid',
+      store: this.sessionStore,
       secret: this.usersConfig.sessionSecret || crypto.randomBytes(64).toString('hex'),
       resave: false,
       saveUninitialized: false,
@@ -361,6 +401,9 @@ class RegistryAuth {
       }
     });
     this.csrf = lusca.csrf({ key: '_csrf' });
+    // for the pages a visitor reads but posts nothing from: the CSRF token (and with it a
+    // session) only for a logged in user, who may have forms there
+    this.csrfIfLoggedIn = (req, res, next) => (this.currentUser(req) ? this.csrf(req, res, next) : next());
     this.form = express.urlencoded({ extended: false, limit: '64kb' });
     this.sameOrigin = requireSameOrigin((req, res) => this.sendError(req, res, 403, 'Cross-site form posts are not accepted'));
   }
@@ -468,7 +511,9 @@ class RegistryAuth {
     }
     if (s.regUserId) {
       const u = this.store.userById(s.regUserId);
-      if (u && u.enabled) {
+      // the password the session logged in with must still be the user's: a changed or
+      // removed password ends the user's other sessions
+      if (u && u.enabled && s.regPwd === passwordStamp(u.password_hash)) {
         return { id: u.id, login: u.login, name: u.name, isAdmin: u.admin };
       }
     }
@@ -523,6 +568,7 @@ class RegistryAuth {
       if (await bcrypt.compare(password, hash) && user && user.password_hash && user.enabled) {
         await regenerate();
         req.session.regUserId = user.id;
+        req.session.regPwd = passwordStamp(user.password_hash);
         ok = true;
         if (user.admin) {
           target = '/admin/users';
@@ -759,6 +805,8 @@ class RegistryAuth {
       return this.sendAccount(req, res, { text: 'A password must be at least 8 characters', level: 'danger' }, 400);
     }
     await this.store.setPassword(user.id, password);
+    // this session goes on (with the new password); the user's others end
+    req.session.regPwd = passwordStamp(this.store.userById(user.id).password_hash);
     return this.sendAccount(req, res, { text: 'Password changed' });
   }
 

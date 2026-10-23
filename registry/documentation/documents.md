@@ -44,9 +44,10 @@ file itself:
 curl https://ecosystem.example.org/tx-reg/docs/client-configuration
 ```
 
-Markdown is rendered as written: raw HTML in a document passes through, since the authors are
-the registry's administrators. Do not give the administrator flag to anyone you would not let
-write HTML on your site.
+Markdown is rendered without raw HTML: inline and block HTML in a document is left out (an
+HTML comment marks where), and links to `javascript:` and the like are not made. So a
+document can't put markup or script on a page that shares its origin with other modules.
+JSON documents are shown escaped.
 
 ## Editing
 
@@ -58,8 +59,10 @@ normalised to `\n`.
 ## History
 
 Every change - creation, edit, rename, deletion - is logged with who made it, when, and the
-complete document as it then was. `/tx-reg/docs/{name}/history` lists the log (visible to
-whoever may read the document), and each entry opens that version, rendered. Deleting a
+complete document as it then was. `/tx-reg/docs/{name}/history` lists the log, and each entry
+opens that version, rendered. Each version keeps the visibility it had then: a version from
+when the document was private is only for logged in users, even after the document has been
+made public. Deleting a
 document keeps its log, but the log is reached by the document's id, so it is no longer
 browsable once the document is gone; it remains in the database (`document_log`) for the
 administrator who needs it. A deleted name may be reused; the new document starts a new log.

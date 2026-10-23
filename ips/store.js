@@ -185,8 +185,10 @@ class IpsStore {
       countAll: this.db.prepare('SELECT COUNT(*) AS n FROM documents'),
       nextSubmitted: this.db.prepare("SELECT id FROM documents WHERE status = 'submitted' ORDER BY id LIMIT 1"),
       claim: this.db.prepare("UPDATE documents SET status = 'processing', status_message = NULL WHERE id = ? AND status = 'submitted'"),
-      finish: this.db.prepare('UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ?'),
-      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL WHERE id = ? AND project_id = ?"),
+      // only a document being processed is finished: one requeued or deleted meanwhile isn't
+      finish: this.db.prepare("UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ? AND status = 'processing'"),
+      // a document being processed is left alone: its pipeline would finish it over the requeue
+      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL WHERE id = ? AND project_id = ? AND status <> 'processing'"),
       saveResult: this.db.prepare('INSERT OR REPLACE INTO document_results (doc_id, step, made_ms, json) VALUES (?, ?, ?, ?)'),
       readResult: this.db.prepare('SELECT made_ms, json FROM document_results WHERE doc_id = ? AND step = ?'),
       resultSteps: this.db.prepare('SELECT step, made_ms FROM document_results WHERE doc_id = ? ORDER BY step'),
@@ -570,13 +572,23 @@ class IpsStore {
     this.stmts.finish.run(ok ? 'processed' : 'error', message || null, Date.now(), id);
   }
 
-  /** Put a document back in the queue. @returns {boolean} whether there was one */
+  /**
+   * Put a document back in the queue - not while it is being processed.
+   * @returns {'queued'|'processing'|null} null when there is no such document
+   */
   requeue(id, projectId) {
-    if (!Number.isInteger(id) || this.stmts.requeue.run(id, projectId).changes === 0) {
-      return false;
+    if (!Number.isInteger(id)) {
+      return null;
+    }
+    const row = this.db.prepare('SELECT status FROM documents WHERE id = ? AND project_id = ?').get(id, projectId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'processing' || this.stmts.requeue.run(id, projectId).changes === 0) {
+      return 'processing';
     }
     this.stmts.clearResults.run(id);
-    return true;
+    return 'queued';
   }
 
   // ---- the processing steps' results ----

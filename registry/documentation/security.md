@@ -36,10 +36,11 @@ Content-Type: application/json
 registry ignores any token sent to it.
 
 Failed authentications are limited per address. After `failedAuthPerWindow` requests
-answered 401 in 15 minutes (default 60), the address's API requests get
-`429 Too Many Requests` for the rest of the window. Only 401s count, so a busy client
-with a good token is never slowed. This stops anyone guessing tokens, and stops a stream of
-bad JWTs costing a signature check each. General request volume is still the proxy's
+answered 401 in 15 minutes (default 60), the address's requests with a token that isn't
+valid get `429 Too Many Requests` for the rest of the window. The token is checked first, so a
+request with a valid token always goes through, even from an address over the limit. One
+client behind a NAT retrying a bad token doesn't lock out the others. Only 401s count. This
+stops anyone guessing tokens. JWTs without an `exp` claim are refused. General request volume is still the proxy's
 business (nginx). `0` turns the limit off. It applies to the JSON API only; the pages
 aren't guarded, so they aren't limited.
 
@@ -99,7 +100,10 @@ clients you control.
 Users are kept in a SQLite database (`database`: a file in the data folder's `databases`
 directory, an absolute path, or `:memory:`). The administrator's login comes from the
 configuration, as in the other FHIRsmith modules; without `adminPassword` nobody can create
-users. `sessionSecret` keeps logins valid across restarts; `cookieSecure` (default true) marks
+users. Sessions are kept in the same database, so with a configured `sessionSecret` logins
+survive a restart. Changing or removing a user's password ends that user's other sessions.
+Pages that a visitor only reads (documents and their history) start no session for them.
+`cookieSecure` (default true) marks
 the login cookie `Secure`, which needs HTTPS and a proxy that passes `X-Forwarded-Proto`
 ([configuration.md](configuration.md#behind-a-proxy)). Logins are rate limited to
 `loginAttemptsPerWindow` per 15 minutes per address.

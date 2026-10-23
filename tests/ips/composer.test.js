@@ -106,7 +106,8 @@ describe('the composer', () => {
     expect(m.sections.vitals.rows[0]).toEqual({ code: '85354-9', value: { value: 120, unit: 'mm[Hg]' }, value2: { value: 80, unit: 'mm[Hg]' }, date: '2026-01-01' });
     expect(m.sections.results.rows[1]).toEqual({ code: { system: '', code: '', display: '', text: 'Culture' }, valueText: 'no growth', date: '2026-01-02' });
     expect(m.sections.pastProblems).toEqual({ mode: 'empty', emptyReason: 'nilknown' });
-    expect(m.sections.alerts).toEqual({ mode: 'narrative', narrative: 'Falls risk.\nHard of hearing.' });
+    // two paragraphs read back as two paragraphs
+    expect(m.sections.alerts).toEqual({ mode: 'narrative', narrative: 'Falls risk.\n\nHard of hearing.' });
     expect(m.sections.directives.rows[0]).toEqual({ category: 'DNR', status: 'active', date: '2024-01-01', description: 'Do not resuscitate' });
     // building the read-back model gives the same document again
     const again = await build(m, { now: new Date('2026-10-22T10:00:00Z') });
@@ -178,14 +179,14 @@ describe('the composer', () => {
     expect(m.document).toMatchObject({ author: 'Someone' });
     expect(m.sections.problems).toEqual({ mode: 'data', rows: [{ code: { system: SCT, code: '1', display: '', text: '' }, note: 'a\nb' }], partial: true });
     // only unheld entries: the narrative instead
-    expect(m.sections.allergies).toEqual({ mode: 'narrative', narrative: 'See notes\nmore & more' });
+    expect(m.sections.allergies).toEqual({ mode: 'narrative', narrative: 'See notes\n\nmore & more' });
     // an empty reason the form doesn't offer: the narrative
     expect(m.sections.medications).toEqual({ mode: 'narrative', narrative: 'nothing' });
     expect(m.sections.immunizations).toBeUndefined();
     expect(modelOf(null)).toEqual({ patient: {}, document: {}, sections: {} });
     expect(textOf('<div><ul><li>a</li><li>b &lt;c&gt;</li></ul></div>')).toBe('a\nb <c>');
     // from a parse, not by stripping tags: what isn't text stays out, and > in an attribute is no tag end
-    expect(textOf('<div xmlns="http://www.w3.org/1999/xhtml"><p title="a > b">one<br/>two</p><!-- note --><style>p { x: y }</style><p>three &amp; <b>four</b></p></div>')).toBe('one\ntwo\nthree & four');
+    expect(textOf('<div xmlns="http://www.w3.org/1999/xhtml"><p title="a > b">one<br/>two</p><!-- note --><style>p { x: y }</style><p>three &amp; <b>four</b></p></div>')).toBe('one\ntwo\n\nthree & four');
     expect(textOf('<div><scr<script>ipt>alert(1)</script></div>')).toBe('ipt>alert(1)');
     expect(textOf('<div><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></div>')).toBe('a b\nc');
     expect(narrativeDiv('one\ntwo\n\nthree <x>')).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p>one<br/>two</p><p>three &lt;x&gt;</p></div>');
@@ -211,6 +212,31 @@ describe('the composer', () => {
     expect(b.sections).toBe(SECTIONS);
     expect(b.header).toBe(HEADER);
     expect(b.emptyReasons.map(r => r.code)).toEqual(['nilknown', 'notasked', 'withheld', 'unavailable', 'notstarted', 'closed']);
+  });
+});
+
+describe('choices and paragraphs', () => {
+  test('two fields for one value[x] are refused, not made into two values', async () => {
+    const model = {
+      patient: { family: 'Doe', given: 'Jo', gender: 'male', birthDate: '1980-01-01' }, document: { author: 'Dr A' },
+      sections: {
+        problems: { mode: 'empty', emptyReason: 'nilknown' }, allergies: { mode: 'empty', emptyReason: 'nilknown' }, medications: { mode: 'empty', emptyReason: 'nilknown' },
+        results: { mode: 'data', rows: [{ code: { system: 'http://loinc.org', code: '2345-7' }, value: { value: '5.5', unit: 'mmol/L' }, valueText: 'high', date: '2026-01-02' }] }
+      }
+    };
+    const out = await build(model, { now: new Date('2026-10-22T10:00:00Z') });
+    expect(out.bundle).toBeNull();
+    expect(out.problems.join('; ')).toMatch(/only one of the value fields can be filled in \(valueQuantity already is\)/);
+    // one of them is fine
+    delete model.sections.results.rows[0].valueText;
+    expect((await build(model, { now: new Date('2026-10-22T10:00:00Z') })).bundle).not.toBeNull();
+  });
+
+  test('paragraphs survive a round trip', () => {
+    const div = narrativeDiv('Para one\nstill one\n\nPara two');
+    expect(div).toContain('<p>Para one<br/>still one</p><p>Para two</p>');
+    expect(textOf(div)).toBe('Para one\nstill one\n\nPara two');
+    expect(narrativeDiv(textOf(div))).toBe(div);
   });
 });
 

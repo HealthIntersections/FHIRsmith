@@ -318,13 +318,15 @@ class RegistryModule {
     };
     // failed authentications are limited (successful ones aren't counted)
     const apiLimiter = this.auth.apiLimiter();
+    // the session, where there are users, so the pages know who is logged in (it makes none)
+    const session = this.auth.optionalSession();
     this.auth.setupRoutes(this.router);
 
     // Main registry page
-    this.router.get('/', apiLimiter, apiGuard, this.handleMainPage.bind(this));
-    this.router.get('/resolve', apiLimiter, apiGuard, this.handleResolveEndpoint.bind(this));
-    this.router.get('/log', this.handleLogEndpoint.bind(this));
-    this.router.get('/software', this.handleSoftwarePage.bind(this));
+    this.router.get('/', apiLimiter, apiGuard, session, this.handleMainPage.bind(this));
+    this.router.get('/resolve', apiLimiter, apiGuard, session, this.handleResolveEndpoint.bind(this));
+    this.router.get('/log', session, this.handleLogEndpoint.bind(this));
+    this.router.get('/software', session, this.handleSoftwarePage.bind(this));
 
     // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
     // reference for browsers, the JSON otherwise)
@@ -346,7 +348,7 @@ class RegistryModule {
           htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
         }
         const html = this.renderPage('registry', 'Terminology Server Registry API',
-          registryOpenApi.renderHtml(), this.api ? this.api.getStatistics() : {});
+          registryOpenApi.renderHtml(), this.api ? this.api.getStatistics() : {}, req);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (error) {
@@ -425,7 +427,8 @@ class RegistryModule {
         {
           ...this.api.getStatistics(),
           templateVars: templateVars
-        }
+        },
+        req
       );
     } catch (error) {
       this.logger.error('Error rendering page:', error);
@@ -539,7 +542,7 @@ class RegistryModule {
           'registry',
           'FHIR Terminology Server Registry',
           content,
-          stats
+          stats, req
         );
 
         res.setHeader('Content-Type', 'text/html');
@@ -568,7 +571,7 @@ class RegistryModule {
       const content = this.buildSoftwareContent();
       const stats = this.api.getStatistics();
       stats.processingTime = Date.now() - startTime;
-      const html = this.renderPage('registry', 'Terminology Server Software', content, stats);
+      const html = this.renderPage('registry', 'Terminology Server Software', content, stats, req);
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     } catch (error) {
@@ -1423,7 +1426,7 @@ class RegistryModule {
               'registry',
               'FHIR Terminology Server Resolver',
               content,
-              stats
+              stats, req
             );
 
             res.setHeader('Content-Type', 'text/html');
@@ -1478,14 +1481,16 @@ class RegistryModule {
               'registry',
               'FHIR Terminology Server Resolution Results',
               content,
-              stats
+              stats, req
             );
 
             res.setHeader('Content-Type', 'text/html');
             return res.send(html);
           } catch (error) {
             this.logger.error('Error rendering resolve result page:', error);
-            // Fall back to JSON if template rendering fails
+            // not the JSON instead: this request was let through as a page, without a token
+            res.status(500).setHeader('Content-Type', 'text/html');
+            return res.send('<!DOCTYPE html><html><body><p>The resolution page could not be shown (see the server log).</p></body></html>');
           }
         }
         res.json(result);
@@ -1750,7 +1755,7 @@ class RegistryModule {
               'registry',
               'FHIR Terminology Server Registry - Logs',
               content,
-              stats
+              stats, req
             );
 
             res.setHeader('Content-Type', 'text/html');

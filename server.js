@@ -93,9 +93,15 @@ app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 const PORT = process.env.PORT || config.server.port || 3000;
 
 // Middleware
-app.use(express.raw({ type: 'application/fhir+json', limit: '50mb' }));
-app.use(express.raw({ type: 'application/fhir+xml', limit: '50mb' }));
-app.use(express.json({ limit: '50mb' }));
+// The body parsers, for every module but those that read their own bodies with their own
+// limits and checks (the ips module: a document is read only once its submitter's token has
+// been checked, and no bigger than the module's maxSize)
+const OWN_BODIES = ['/ips'];
+const ownsBody = (req) => OWN_BODIES.some(p => req.path === p || req.path.startsWith(p + '/'));
+const unlessOwnBody = (parser) => (req, res, next) => (ownsBody(req) ? next() : parser(req, res, next));
+app.use(unlessOwnBody(express.raw({ type: 'application/fhir+json', limit: '50mb' })));
+app.use(unlessOwnBody(express.raw({ type: 'application/fhir+xml', limit: '50mb' })));
+app.use(unlessOwnBody(express.json({ limit: '50mb' })));
 app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'];
   if (requestId) {
@@ -869,8 +875,14 @@ async function startServer() {
   }
 }
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
+// Graceful shutdown: on Ctrl-C (SIGINT), and on SIGTERM - what systemd, docker stop and
+// kill send - so the modules can save what they hold (usage counts, crawl data) either way
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
   serverLog.info('\nShutting down server...');
   if (npmAudit) {
     npmAudit.stop();
@@ -894,7 +906,9 @@ process.on('SIGINT', async () => {
   stats.finishStats();
   serverLog.info('Server shutdown complete');
   process.exit(0);
-});
+}
+process.on('SIGINT', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
 
 async function serveFhirsmithHome(req, res) {
   // Check if client wants HTML response

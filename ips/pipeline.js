@@ -33,6 +33,7 @@ const { isHl7System } = require('./ips-valuesets');
 const { Presenter } = require('./presenter');
 const ai = require('./ai-client');
 const { evaluateAsync } = require('./fhirpath-ips');
+const { checkNarrative } = require('../library/narrative-check');
 
 const IPS_BUNDLE_PROFILE = 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips';
 const VALIDATE_TIMEOUT_MS = 120000;
@@ -143,7 +144,9 @@ async function validateCodeInValueSet(tx, valueSets, valueSetUrl, coding) {
   } else {
     params.parameter.push({ name: 'url', valueUri: valueSetUrl });
   }
-  params.parameter.push({ name: 'coding', valueCoding: plainCoding(coding) });
+  // the code, not its display: the question is whether the code is suitable (the validator
+  // checks displays), and the answer is cached by system, version and code alone
+  params.parameter.push({ name: 'coding', valueCoding: codeOnly(coding) });
   return answerOf(tx, await ask(tx, '/ValueSet/$validate-code', params));
 }
 
@@ -157,10 +160,17 @@ async function validateCodeInSystem(tx, coding) {
     params.parameter.push({ name: 'version', valueString: coding.version });
   }
   params.parameter.push({ name: 'code', valueCode: coding.code });
-  if (typeof coding.display === 'string') {
-    params.parameter.push({ name: 'display', valueString: coding.display });
-  }
+  // no display, for the same reason as validateCodeInValueSet
   return answerOf(tx, await ask(tx, '/CodeSystem/$validate-code', params));
+}
+
+/** A coding's system, version and code - what a membership question is about. */
+function codeOnly(coding) {
+  const c = { system: coding.system, code: coding.code };
+  if (typeof coding.version === 'string') {
+    c.version = coding.version;
+  }
+  return c;
 }
 
 function plainCoding(coding) {
@@ -620,9 +630,10 @@ const MAX_LOOKUPS_PER_DOCUMENT = 500;
 
 /**
  * Ask the terminology server for a coding's display (CodeSystem/$lookup).
- * @returns {Promise<string|null>} null when it has none, or could not say
+ * @returns {Promise<{display: string|null, definite: boolean}>} definite: the server
+ *   answered (with a display, or saying it has none) - not an error, a timeout, or no answer
  */
-async function lookupDisplay(tx, coding) {
+async function lookupDisplayAnswer(tx, coding) {
   const q = `system=${encodeURIComponent(coding.system)}&code=${encodeURIComponent(coding.code)}` +
     (typeof coding.version === 'string' ? `&version=${encodeURIComponent(coding.version)}` : '');
   let r;
@@ -632,13 +643,22 @@ async function lookupDisplay(tx, coding) {
     if (tx.log) {
       tx.log.error(`IPS module: the terminology server could not be reached: ${e.message}`);
     }
-    return null;
+    return { display: null, definite: false };
   }
   if (r?.resource?.resourceType !== 'Parameters') {
-    return null;
+    // an unknown code or code system is an answer; anything else (5xx, nothing there yet) isn't
+    return { display: null, definite: r?.status === 404 || (r?.status >= 400 && r?.status < 500 && r?.resource?.resourceType === 'OperationOutcome') };
   }
   const display = (r.resource.parameter || []).find(p => p?.name === 'display');
-  return typeof display?.valueString === 'string' && display.valueString ? display.valueString : null;
+  return { display: typeof display?.valueString === 'string' && display.valueString ? display.valueString : null, definite: true };
+}
+
+/**
+ * Ask the terminology server for a coding's display (CodeSystem/$lookup).
+ * @returns {Promise<string|null>} null when it has none, or could not say
+ */
+async function lookupDisplay(tx, coding) {
+  return (await lookupDisplayAnswer(tx, coding)).display;
 }
 
 /**
@@ -668,15 +688,26 @@ const narrative = {
       }
       budget.left--;
       counts.lookups++;
-      const display = await lookupDisplay(module.tx, coding);
-      if (cache.size >= MAX_CACHED_ANSWERS) {
-        cache.delete(cache.keys().next().value);
+      const { display, definite } = await lookupDisplayAnswer(module.tx, coding);
+      // a server that was down or slow isn't an answer: asked again next time
+      if (definite) {
+        if (cache.size >= MAX_CACHED_ANSWERS) {
+          cache.delete(cache.keys().next().value);
+        }
+        cache.set(key, display);
       }
-      cache.set(key, display);
       return display;
     } : null;
     const presenter = new Presenter({ lookup });
     const out = await presenter.render(row.analysed);
+    // the presenter escapes what it takes from the document; checked anyway, as every
+    // narrative a document brings is, before it is written anywhere or shown
+    for (const html of [out.html, out.header, ...out.sections.map(s => s.html)]) {
+      const problem = checkNarrative(html);
+      if (problem) {
+        throw new Error(`the generated narrative failed the active content check (${problem})`);
+      }
+    }
     const composition = row.analysed.entry?.[0]?.resource;
     if (composition && composition.resourceType === 'Composition') {
       composition.text = { status: 'generated', div: out.header };
@@ -846,13 +877,15 @@ async function checkConstraint(doc, constraint, session) {
   } finally {
     clearTimeout(timer);
   }
-  // true, and only true, passes (as a FHIR invariant must evaluate to true)
-  if (Array.isArray(result) && result.length === 1 && result[0] === true) {
-    return { passed: true };
-  }
+  // a value set the server couldn't answer for makes the result meaningless either way (an
+  // unanswered question counts as "not a member", which can make .empty() true)
   const unresolved = valueSetsIn(constraint.expression).filter(url => session.problems.has(url));
   if (unresolved.length) {
     return { passed: false, reason: 'unresolved', message: unresolved.map(url => `${url}: ${session.problems.get(url)}`).join('; ') };
+  }
+  // true, and only true, passes (as a FHIR invariant must evaluate to true)
+  if (Array.isArray(result) && result.length === 1 && result[0] === true) {
+    return { passed: true };
   }
   return { passed: false, reason: 'failed' };
 }
@@ -875,8 +908,12 @@ const profilesStep = {
     const session = module.membershipSession();
     const results = [];
     for (const p of list) {
+      // read now, not with the list: one deleted meanwhile is passed over
       const sd = module.store.profile(p.id);
-      const constraints = sd?.differential?.element?.[0]?.constraint || [];
+      if (!sd) {
+        continue;
+      }
+      const constraints = sd.differential?.element?.[0]?.constraint || [];
       const failed = [];
       for (const c of constraints) {
         if (typeof c?.expression !== 'string') {

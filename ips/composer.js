@@ -136,6 +136,27 @@ function choiceName(base, field, value) {
   return base + (typeof value === 'object' ? 'CodeableConcept' : 'String');
 }
 
+/**
+ * The choice types a field reads back (the reverse of choiceName), so that fields sharing a
+ * value[x] each read only their own: a text field a valueString, not the valueCodeableConcept
+ * a code field made. A date reads any (dateTime, Period, ...); null for any.
+ */
+function choiceTypes(field) {
+  if (!field || field.type === 'date') {
+    return null;
+  }
+  if (field.type === 'quantity') {
+    return ['Quantity'];
+  }
+  if (field.type === 'code' || (field.type === 'select' && field.system)) {
+    return ['CodeableConcept'];
+  }
+  if (field.type === 'text' || field.type === 'textarea' || field.type === 'select') {
+    return ['String'];
+  }
+  return null;
+}
+
 // path parts that would reach an object's prototype rather than a property of its own
 const UNSAFE_PARTS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -195,7 +216,9 @@ function getPath(resource, path, field) {
     let name = parts[i];
     if (name.endsWith('[x]')) {
       const base = name.substring(0, name.length - 3);
-      name = Object.keys(node).find(k => k.startsWith(base) && k.length > base.length && /^[A-Z]/.test(k[base.length]));
+      const types = i === parts.length - 1 ? choiceTypes(field) : null;
+      name = Object.keys(node).find(k => k.startsWith(base) && k.length > base.length && /^[A-Z]/.test(k[base.length]) &&
+        (!types || types.includes(k.substring(base.length))));
       if (!name) {
         return undefined;
       }
@@ -497,6 +520,16 @@ function buildRow(def, row, where, patientUrl, bad) {
       target.note = [{ text: out[0] }];
       return;
     }
+    // a choice element takes one type: a second field for the same value[x] (a quantity
+    // and a text, say) would make two values, which FHIR doesn't allow
+    if (field.path.endsWith('[x]') && !field.path.includes('.')) {
+      const base = field.path.substring(0, field.path.length - 3);
+      const taken = Object.keys(target).find(k => k.startsWith(base) && k.length > base.length && /^[A-Z]/.test(k[base.length]));
+      if (taken) {
+        fail(`${label}: only one of the ${base} fields can be filled in (${taken} already is)`);
+        return;
+      }
+    }
     setPath(target, field.path, field.list ? out : out[0], field);
   };
   for (const field of def.fields) {
@@ -753,7 +786,9 @@ function textOf(div) {
         out.push('\n');
       } else if (child.tagName && !NOT_TEXT.has(child.tagName)) {
         walk(child.content || child);
-        if (BLOCKS.has(child.tagName)) {
+        if (child.tagName === 'p') {
+          out.push('\n\n');
+        } else if (BLOCKS.has(child.tagName)) {
           out.push('\n');
         } else if (child.tagName === 'td' || child.tagName === 'th') {
           out.push(' ');
@@ -762,7 +797,9 @@ function textOf(div) {
     }
   };
   walk(parse5.parseFragment(String(div)));
-  return out.join('').split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+  // lines, with a blank line where a paragraph ended (as narrativeDiv() reads them back)
+  return out.join('').split('\n').map(l => l.replace(/\s+/g, ' ').trim()).join('\n')
+    .replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
 }
 
 module.exports = { build, modelOf, fhirValue, formValue, setPath, getPath, narrativeDiv, textOf, MAX_ROWS, MAX_TEXT, MAX_NARRATIVE };

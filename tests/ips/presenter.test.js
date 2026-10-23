@@ -111,6 +111,16 @@ describe('the IPS presenter', () => {
     expect(out.sections[4].html).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No <b>devices</b></p></div>');
   });
 
+  test('what a document puts where a number belongs is escaped', async () => {
+    const d = doc();
+    const ms = d.entry.find(e => e.resource.resourceType === 'MedicationStatement').resource;
+    ms.dosage[0].timing.repeat = { frequency: '<img src=x onerror=alert(1)>', frequencyMax: '<b>', period: '<i>', periodMax: '"><svg onload=x>', periodUnit: 'd' };
+    const out = await new Presenter().render(d);
+    expect(out.html).not.toMatch(/<img|<svg/);
+    expect(out.html).toContain('&lt;img src=x onerror=alert(1)&gt;-&lt;b&gt; times per &lt;i&gt;-&quot;&gt;&lt;svg onload=x&gt; d');
+    expect(require('../../library/narrative-check').checkNarrative(out.html)).toBeNull();
+  });
+
   test('copes without a lookup, without a Composition, and with odd content', async () => {
     const p = new Presenter();
     expect(await p.codeableText({ coding: [{ system: SCT, code: '123' }] })).toBe('123');

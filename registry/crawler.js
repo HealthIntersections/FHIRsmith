@@ -344,7 +344,10 @@ class RegistryCrawler {
       this.addLogEntry('error', `Server ${version.address}: Error after ${elapsed}ms: ${error.message}`);
       version.error = error.message;
       version.lastTat = `${elapsed}ms`;
-      this.uptime.record(version.address, false, this.scanTime || startTime);
+      // a scan cut short (the server shutting down) says nothing about the endpoint
+      if (!this.abortController?.signal.aborted) {
+        this.uptime.record(version.address, false, this.scanTime || startTime);
+      }
       this.carryForwardSoftware(version);
     }
     

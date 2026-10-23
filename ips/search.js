@@ -401,7 +401,11 @@ function intParam(v, dflt) {
   if (s === undefined || s === '') {
     return dflt;
   }
-  return /^\d+$/.test(s) ? parseInt(s, 10) : NaN;
+  // a whole number SQLite can take (a bigger one is an error from it, not an answer)
+  if (!/^\d{1,15}$/.test(s)) {
+    return NaN;
+  }
+  return parseInt(s, 10);
 }
 
 // the index rows of one parameter, for a document; the arguments are (res, param)

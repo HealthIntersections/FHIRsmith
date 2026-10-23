@@ -158,7 +158,19 @@ const STYLE = `
   .ips-check-not-in { color: #c82333; }
   .ips-check-unknown { color: #6c757d; }
   .ips-inline { display: inline; }
-</style>`;
+</style>
+<script>
+  // a form with data-confirm asks first: the message is an attribute (escaped as one), never script
+  if (!window.ipsConfirm) {
+    window.ipsConfirm = true;
+    document.addEventListener('submit', function (e) {
+      var f = e.target;
+      if (f && f.getAttribute && f.getAttribute('data-confirm') !== null && !window.confirm(f.getAttribute('data-confirm'))) {
+        e.preventDefault();
+      }
+    });
+  }
+</script>`;
 
 function text(v) {
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
@@ -307,7 +319,7 @@ function renderProjects(projects, users, ctx, message) {
       `<td>${managerBoxes(p, form)}</td><td>${p.documents}</td>` +
       `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" class="ips-inline">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
-      `<form method="post" action="${action}/delete" class="ips-inline" onsubmit="return confirm('Delete project ${escape(p.code)} and its ${p.documents} documents?')">${csrfField(ctx.csrf)}` +
+      `<form method="post" action="${action}/delete" class="ips-inline" data-confirm="${escape(`Delete project ${p.code} and its ${p.documents} documents?`)}">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-default ips-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
   }
   h += `<tr><td><input form="project-new" type="text" name="code" required class="form-control" style="font-size: 85%" placeholder="code" pattern="[a-z0-9][a-z0-9-]{1,31}"/></td>` +
@@ -338,7 +350,7 @@ function renderUsers(users, ctx, message) {
       `<td>${u.projects.map(c => `<code>${escape(c)}</code>`).join(' ')}</td>` +
       `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" class="ips-inline">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
-      `<form method="post" action="${action}/delete" class="ips-inline" onsubmit="return confirm('Delete user ${escape(u.login)}?')">${csrfField(ctx.csrf)}` +
+      `<form method="post" action="${action}/delete" class="ips-inline" data-confirm="${escape(`Delete user ${u.login}?`)}">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-default ips-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
   }
   h += '<tr><td><input form="user-new" type="text" name="login" required class="form-control" style="font-size: 85%" placeholder="username" autocomplete="off"/></td>' +
@@ -469,7 +481,7 @@ function renderProject(project, query, results, search, ctx, problems) {
       `<td title="${escape(ctx.canManage ? r.status_message || '' : '')}">${badge(r.status)}</td>` +
       `<td class="ips-date" title="${escape(r.received)}">${escape(dateOnly(r.received))}</td>`;
     if (ctx.canManage) {
-      h += `<td><form method="post" action="${durl}/delete" class="ips-inline" onsubmit="return confirm('Delete document ${r.id}?')">${csrfField(ctx.csrf)}` +
+      h += `<td><form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${r.id}?`)}">${csrfField(ctx.csrf)}` +
         '<button type="submit" class="btn btn-link" style="padding: 0; font-size: 85%">delete</button></form></td>';
     }
     h += '</tr>';
@@ -974,7 +986,10 @@ function renderGenerated(row, options = {}) {
   const v = r.result;
   let h = `<p class="ips-small">Generated ${escape(r.made)}` + (typeof v.ms === 'number' ? ` in ${escape(String(v.ms))} ms` : '') +
     (v.lookups ? `, with ${escape(String(v.lookups))} display lookup${v.lookups === 1 ? '' : 's'}` : '') + '</p>';
-  // our own output, but parsed and re-serialised like any narrative, never the string itself
+  // our own output, but checked and parsed and re-serialised like any narrative, never the string itself
+  if (checkNarrative(v.html)) {
+    return h + '<p><i>The generated narrative is not shown: it failed the active content check.</i></p>';
+  }
   h += `<div class="ips-narrative ips-generated">${parse5.serialize(parse5.parseFragment(v.html))}</div>`;
   h += '<div class="ips-explain"><p class="ips-small">The narrative this server generates for the document (the IPS presenter): the Composition\'s header and the patient, ' +
     'then the sections in the IPS order, each a table of its entries with the columns that suit the resource type (the ones no entry fills are left out) and the nested parts as bullets beneath. ' +
@@ -1220,7 +1235,7 @@ function renderProfile(sd, ctx) {
   h += '<div class="ips-actions-line">' +
     `<a class="btn btn-default" href="${url}?download=1">Download JSON</a>` +
     (ctx.user?.isAdmin ? ` <a class="btn btn-primary" href="${url}/edit">Edit</a> ` +
-      `<form method="post" action="${url}/delete" class="ips-inline" onsubmit="return confirm('Delete the clinical profile ${escape(sd.title).replace(/'/g, '&#39;')}?')">${csrfField(ctx.csrf)}` +
+      `<form method="post" action="${url}/delete" class="ips-inline" data-confirm="${escape(`Delete the clinical profile ${sd.title}?`)}">${csrfField(ctx.csrf)}` +
       '<button type="submit" class="btn btn-default">Delete</button></form>' : '') + '</div>';
   const constraints = sd.differential?.element?.[0]?.constraint || [];
   if (constraints.length === 0) {
@@ -1426,7 +1441,7 @@ function renderDocument(project, row, view, ctx) {
     }
     if (ctx.canManage) {
       h += `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
-        `<form method="post" action="${durl}/delete" class="ips-inline" onsubmit="return confirm('Delete document ${row.id}?')">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
+        `<form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${row.id}?`)}">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
     }
     h += '</span>';
   }

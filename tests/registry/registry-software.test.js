@@ -310,15 +310,20 @@ describe('UptimeHistory', () => {
     expect(h.uptime('b', NOW)).toBeNull();
   });
 
-  test('records past retention are dropped, and unregistered endpoints forgotten', () => {
+  test('records past retention are dropped; an endpoint a crawl missed keeps its history until it ages out', () => {
     const h = new UptimeHistory({ windowDays: 30, retentionDays: 90 });
     h.record('a', true, NOW - 100 * DAY);
     h.record('a', true, NOW - 80 * DAY);
-    h.record('gone', true, NOW - DAY);
+    h.record('missed', true, NOW - DAY);
+    h.record('gone', true, NOW - 95 * DAY);
     h.record('a', true, NOW);
     expect(h.records.get('a').length).toBe(2);
+    // the last crawl saw only 'a' (a sub-registry failed, say): 'missed' is kept
     h.retain(['a'], NOW);
+    expect(h.records.get('missed').length).toBe(1);
     expect(h.records.has('gone')).toBe(false);
+    h.retain(['a'], NOW + 90 * DAY);
+    expect(h.records.has('missed')).toBe(false);
   });
 
   test('survives a save and load', () => {
