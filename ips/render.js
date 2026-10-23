@@ -23,8 +23,10 @@ const parse5 = require('parse5');
 const { checkNarrative } = require('../library/narrative-check');
 const { tokenConfigured } = require('../library/request-token');
 const { STATUSES } = require('./search');
+const profiles = require('./profiles');
 const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem } = require('./terminology');
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
+const { dateText } = require('./presenter');
 
 const STATUS_COLOURS = {
   submitted: '#6c757d',
@@ -82,6 +84,60 @@ const STYLE = `
   .ips-term code { font-size: 95%; }
   .ips-copy { font-size: 85%; padding: 0 6px; }
   .ips-grade { font-size: 110%; padding: 2px 10px; }
+  .ips-ed-panel { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 14px; margin-bottom: 12px; }
+  .ips-ed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 14px; }
+  .ips-ed-field label { display: block; font-size: 85%; margin: 4px 0 2px; color: #444; }
+  .ips-ed-input { font-size: 90%; padding: 3px 6px; height: auto; }
+  .ips-ed-hint { color: #6c757d; }
+  .ips-ed-quantity { display: flex; gap: 4px; } .ips-ed-qty { width: 8em; } .ips-ed-unit { width: 7em; }
+  .ips-ed-code { position: relative; }
+  .ips-ed-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 3px; }
+  .ips-ed-chip { display: inline-block; background: #e9ecef; border-radius: 12px; padding: 1px 8px; font-size: 85%; }
+  .ips-ed-chip-coded { background: #d1e7dd; }
+  .ips-ed-chip-x { margin-left: 3px; color: #666; text-decoration: none; }
+  .ips-ed-suggestions { position: absolute; z-index: 20; background: #fff; border: 1px solid #ccc; box-shadow: 0 2px 8px rgba(0,0,0,0.2); max-height: 260px; overflow: auto; width: 100%; }
+  .ips-ed-suggestion { padding: 4px 8px; cursor: pointer; font-size: 90%; }
+  .ips-ed-suggestion:hover { background: #f0f4ff; }
+  .ips-ed-suggestion small { color: #888; } .ips-ed-suggestion-text { color: #555; border-top: 1px solid #eee; }
+  .ips-pf-row { border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 10px; margin-bottom: 8px; background: #fcfcfd; }
+  .ips-pf-row .ips-pf-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .ips-pf-row .ips-pf-head input { flex: 1; }
+  .ips-pf-grid { width: 100%; font-size: 90%; }
+  .ips-pf-grid th { font-weight: normal; color: #666; font-size: 90%; padding: 0 4px; }
+  .ips-pf-grid td { vertical-align: top; padding: 2px 4px; }
+  .ips-pf-grid td.ips-pf-card { width: 7em; }
+  .ips-pf-grid .ips-ed-input { width: 100%; box-sizing: border-box; }
+  .ips-pf-pair { display: flex; gap: 4px; }
+  .ips-pf-pair select { max-width: 13em; }
+  .ips-pf-display { font-size: 85%; color: #555; margin-top: 2px; min-height: 1em; }
+  .ips-pf-expr { font-family: monospace; font-size: 85%; color: #666; margin-top: 4px; word-break: break-all; }
+  .ips-pf-bad { border-color: #c82333 !important; }
+  .ips-pf-rule { width: 100%; table-layout: fixed; }
+  .ips-pf-rule td { vertical-align: top; overflow-wrap: anywhere; }
+  .ips-pf-rule .ips-pf-card-text { white-space: nowrap; }
+  .ips-ed-section { border: 1px solid #dee2e6; border-radius: 4px; margin-bottom: 8px; }
+  .ips-ed-section-required { border-color: #b8c4e8; }
+  .ips-ed-section-head { padding: 8px 12px; cursor: pointer; background: #f1f3f5; user-select: none; }
+  .ips-ed-section-required .ips-ed-section-head { background: #e8edf8; }
+  .ips-ed-caret { display: inline-block; width: 1em; color: #666; }
+  .ips-ed-section-body { padding: 8px 12px; }
+  .ips-ed-section-body[hidden] { display: none; }
+  .ips-ed-modes { margin-bottom: 8px; font-size: 90%; } .ips-ed-mode { margin-right: 16px; font-weight: normal; }
+  .ips-ed-row { border: 1px solid #e3e6ea; border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; background: #fff; }
+  .ips-ed-row-head { display: flex; justify-content: space-between; align-items: center; }
+  .ips-ed-remove { padding: 0; font-size: 85%; }
+  .ips-ed-sub { margin: 6px 0 0 12px; padding-left: 10px; border-left: 3px solid #e3e6ea; }
+  .ips-ed-sub-head { font-size: 85%; font-weight: bold; color: #444; margin-bottom: 2px; }
+  .ips-ed-sub-row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 4px; } .ips-ed-sub-row .ips-ed-grid { flex: 1; }
+  .ips-ed-actions { margin-top: 16px; padding-top: 10px; border-top: 1px solid #dee2e6; }
+  .ips-ed-messages ul { margin-bottom: 0; }
+  .ips-share-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 1050; display: flex; align-items: center; justify-content: center; }
+  .ips-share-overlay[hidden] { display: none; }
+  .ips-share-panel { background: #fff; border-radius: 6px; padding: 18px 22px; max-width: 560px; width: 92%; max-height: 92vh; overflow: auto; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4); position: relative; }
+  .ips-share-panel .ips-share-close { position: absolute; top: 8px; right: 12px; font-size: 24px; }
+  .ips-share-code { text-align: center; margin: 10px 0; }
+  .ips-share-code svg { width: 320px; max-width: 100%; height: auto; }
+  .ips-share-text { width: 100%; font-family: monospace; font-size: 80%; }
   .ips-issues td.ips-path { max-width: 28em; overflow: hidden; }
   .ips-issues td.ips-path code { white-space: normal; word-break: keep-all; overflow-wrap: normal; }
   .ips-oo { margin-top: 10px; }
@@ -172,6 +228,7 @@ function userBar(ctx) {
   if (u.isAdmin) {
     parts.push(`<a href="${base}/admin/projects">Projects</a>`);
     parts.push(`<a href="${base}/admin/users">Users</a>`);
+    parts.push(`<a href="${base}/StructureDefinition">Clinical profiles</a>`);
   }
   parts.push(`<form method="post" action="${base}/logout" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
   return `<div style="float: right; font-size: 85%">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
@@ -202,7 +259,8 @@ function crumbs(ctx, project, extra) {
 function renderHome(projects, ctx) {
   let h = STYLE + userBar(ctx);
   h += '<p>Each project is a collection of International Patient Summary documents, with its own FHIR endpoint ' +
-    '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages.</p>';
+    '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
+    `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain.</p>`;
   if (projects.length === 0) {
     return h + '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
   }
@@ -310,7 +368,7 @@ function select(query, name, values, label, anyLabel) {
 /** The links under a project's title. */
 function projectNav(project, ctx) {
   const purl = projectUrl(ctx, project);
-  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a>`;
+  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a> <a class="btn btn-default" href="${purl}/compose">Compose a document</a>`;
   if (ctx.canManage) {
     h += ` <a class="btn btn-default" href="${purl}/settings">Settings</a>`;
   }
@@ -808,6 +866,47 @@ function noResultNote(row, step, what, options = {}) {
   return `<p><i>${what}${row.status === 'error' ? ' - processing failed' + (options.canManage && row.status_message ? `: ${escape(row.status_message)}` : '') : ''}.</i></p>`;
 }
 
+// a clinical profile's outcome on the page: [label, colour]
+const PROFILE_OUTCOMES = {
+  conforms: ['Conforms', '#1e7e34'],
+  fails: ['Does not conform', '#c82333'],
+  unknown: ['Could not be fully checked', '#d39e00']
+};
+
+/**
+ * The profiles step's result: for each clinical profile, whether the document conforms,
+ * and the descriptions of the constraints it doesn't meet.
+ */
+function renderProfileChecks(row, options = {}) {
+  const r = row.results?.profiles?.result;
+  if (!r || (r.status && r.status !== 'done') || !Array.isArray(r.profiles)) {
+    return noResultNote(row, 'profiles', 'The document has not been checked against the clinical profiles', options);
+  }
+  const base = escape(options.base || '');
+  let h = '';
+  if (!r.profiles.length) {
+    return `<p>There were no <a href="${base}/StructureDefinition">clinical profiles</a> to check the document against when it was processed.</p>`;
+  }
+  h += '<table class="table table-sm ips-table"><tr><th>Clinical profile</th><th>Outcome</th><th>Constraints not met</th></tr>';
+  for (const p of r.profiles) {
+    const [label, colour] = PROFILE_OUTCOMES[p.outcome] || [p.outcome, '#6c757d'];
+    const failed = (p.failed || []).map(f => {
+      const why = f.reason === 'unresolved' ? ' <span class="ips-small">(could not be checked: a value set the terminology server could not answer for' +
+        (options.canManage && f.message ? ` - ${escape(f.message)}` : '') + ')</span>'
+        : (f.reason === 'error' ? ` <span class="ips-small">(could not be evaluated${options.canManage && f.message ? `: ${escape(f.message)}` : ''})</span>` : '');
+      return `<li>${escape(f.human)}${why}</li>`;
+    }).join('');
+    h += `<tr><td><a href="${base}/StructureDefinition/${escape(p.id)}">${escape(p.title)}</a></td>` +
+      `<td><span class="ips-badge" style="background: ${colour}">${escape(label)}</span></td>` +
+      `<td>${failed ? `<ul style="margin: 0; padding-left: 18px">${failed}</ul>` : '<span class="ips-small">(none)</span>'}</td></tr>`;
+  }
+  h += '</table>';
+  h += `<p class="ips-small">Checked against the clinical profiles as they were when the document was processed (${r.profiles.length} profile${r.profiles.length === 1 ? '' : 's'}` +
+    (r.questions ? `, ${r.questions} value set question${r.questions === 1 ? '' : 's'} to the terminology server` : '') +
+    `, ${escape(String(r.ms))} ms); reprocess the document to check it against them as they are now.</p>`;
+  return h;
+}
+
 // what the translate step's outcomes mean on the page: [label, colour]
 const TRANSLATION_OUTCOMES = {
   translated: ['Translated', '#1e7e34'],
@@ -1007,6 +1106,241 @@ document.querySelectorAll('.ips-oo-toggle').forEach(function (b) {
   return h;
 }
 
+/** The editor page: a container the script fills, and what it needs. */
+function renderCompose(project, ctx, options) {
+  const purl = projectUrl(ctx, project);
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, options.from ? `Edit document ${options.from}` : 'Compose');
+  h += `<h3>${options.from ? `Edit document ${options.from}` : 'Compose a document'}</h3>`;
+  h += '<p>Build an International Patient Summary here: the patient, the document\'s author, and the sections. ' +
+    (options.from ? 'The form holds what it can of the original document; submitting makes a new document in the project. ' : '') +
+    (options.canLookup ? 'Coded fields look codes up on the terminology server as you type (in the value sets this server holds the element to); ' : 'This server has no terminology server to look codes up on (modules.ips.txServer), so coded fields take text only; ') +
+    'anything can also be entered as plain text. What you enter stays in this browser until you submit it' +
+    (options.aiEnabled ? '; submitted documents are sent to an external AI service for assessment' : '') + '.</p>';
+  h += '<noscript><div class="alert alert-warning">The editor needs scripts; without them, use the <a href="' + purl + '/submit">submission form</a>.</div></noscript>';
+  h += '<div id="ips-editor"></div>';
+  const cfg = {
+    project: project.code, projectName: project.name, schema: options.schema, model: options.model, needsToken: !!options.needsToken,
+    urls: { compose: `${purl}/compose`, lookup: options.canLookup ? `${purl}/lookup` : null, back: purl }
+  };
+  // JSON in a script: </script> and the like must not end the block
+  h += `<script>window.IPS_EDITOR = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
+  h += `<script src="${escape(ctx.base)}/editor.js"></script>`;
+  return h;
+}
+
+// ---- clinical profiles -----------------------------------------------------------------
+
+function profileCrumbs(ctx, extra) {
+  let h = `<p class="ips-small"><a href="${escape(ctx.base)}">IPS projects</a> &raquo; <a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a>`;
+  return h + (extra ? ` &raquo; ${escape(extra)}` : '') + '</p>';
+}
+
+/** The list of clinical profiles; the administrator can make, and upload, new ones. */
+function renderProfiles(list, ctx) {
+  const base = escape(ctx.base);
+  let h = STYLE + userBar(ctx) + `<p class="ips-small"><a href="${base}">IPS projects</a> &raquo; Clinical profiles</p>`;
+  h += '<div class="ips-banner"><b class="ips-project-name">Clinical profiles</b></div>';
+  if (ctx.user?.isAdmin) {
+    h += '<div class="ips-actions-line">' +
+      `<a class="btn btn-primary" href="${base}/StructureDefinition/new">New profile</a> ` +
+      '<label class="btn btn-default" style="margin: 0">Upload a profile (JSON)<input type="file" id="ips-pf-upload" accept=".json,application/json,application/fhir+json" hidden/></label>' +
+      '<span id="ips-pf-upload-msg" class="ips-small" style="margin-left: 8px"></span></div>';
+  }
+  h += '<p>A clinical profile says what a kind of clinical document is expected to contain: a profile on Bundle (the document), with a constraint for each expectation - ' +
+    'usually that a section is there, or that a section has entries with a code. They apply across all projects.' +
+    (ctx.user?.isAdmin ? '' : ' Only the administrator can change them.') + '</p>';
+  if (list.length === 0) {
+    h += '<p>There are no clinical profiles yet.</p>';
+  } else {
+    h += '<table class="table table-sm table-striped ips-table"><tr><th>Profile</th><th>Constraints</th><th>Updated</th><th></th></tr>';
+    for (const p of list) {
+      const url = `${base}/StructureDefinition/profile-${escape(p.id)}`;
+      h += `<tr><td><a href="${url}">${escape(p.title)}</a></td><td>${p.constraints}</td><td>${escape(dateOnly(new Date(p.updated_ms).toISOString()))}</td>` +
+        `<td><a href="${url}?download=1">Download JSON</a></td></tr>`;
+    }
+    h += '</table>';
+  }
+  h += `<p class="ips-small">As FHIR: <code>GET ${base}/StructureDefinition</code> (a searchset of the StructureDefinitions), <code>GET ${base}/StructureDefinition/{id}</code>.</p>`;
+  if (ctx.user?.isAdmin) {
+    h += `<script>(function () {
+  var input = document.getElementById('ips-pf-upload');
+  var msg = document.getElementById('ips-pf-upload-msg');
+  input.addEventListener('change', function () {
+    var f = input.files && input.files[0];
+    if (!f) { return; }
+    msg.textContent = 'Uploading ' + f.name + '...';
+    f.text().then(function (t) {
+      var sd;
+      try { sd = JSON.parse(t); } catch (e) { msg.textContent = f.name + ' is not JSON'; return; }
+      return fetch(${JSON.stringify(ctx.base + '/StructureDefinition')}, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ upload: sd, _csrf: ${JSON.stringify(ctx.csrf || '').replace(/</g, '\\u003c')} }) })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }, function () { return { ok: false, j: { problems: ['The server answered ' + r.status] } }; }); })
+        .then(function (a) { if (a.ok) { location.href = a.j.url; } else { msg.textContent = 'Not uploaded: ' + (a.j.problems || []).join('; '); } });
+    }).finally(function () { input.value = ''; });
+  });
+})();</script>`;
+  }
+  return h;
+}
+
+// the parts of a profile, as the view and the editor show them
+const PROFILE_PARTS = [['section', 'Required sections and entries'], ['resource', 'Rules about resources'], ['other', 'Other rules']];
+
+/** One rule of a profile, for reading: the shape as words, or the expression. */
+function ruleHtml(expression, titleOf) {
+  const rshape = profiles.parseResourceShape(expression);
+  if (rshape) {
+    const d = profiles.describeResource(rshape, titleOf);
+    const which = d.valueSet !== undefined
+      ? `with a code in the value set <b>${escape(d.title || d.valueSet)}</b>${d.title ? ` <span class="ips-small">(${escape(d.valueSet)})</span>` : ''}`
+      : `with the code <b>${escape(d.code)}</b>`;
+    return `${d.type ? `<b>${escape(d.type)}</b> resources` : 'Resources'} ${which}: <code>${escape(d.rest)}</code>` +
+      `<div class="ips-pf-expr">${escape(expression)}</div>`;
+  }
+  const shape = profiles.parseShape(expression);
+  if (!shape) {
+    return `<code>${escape(expression)}</code>`;
+  }
+  const part = (p, isSection) => {
+    const d = profiles.describePart(p, isSection, titleOf);
+    return `<b>${escape(d.what)}</b>${d.code ? ` <span class="ips-small">(${escape(d.code)})</span>` : ''}` +
+      (d.card ? ` <span class="ips-pf-card-text">[${escape(d.card)}]</span>` : '');
+  };
+  const entry = !shape.entry ? '' : (shape.entry.valueSet !== undefined ? ', with entries in the value set ' : ', with an entry ') + part(shape.entry, false);
+  return 'Section ' + part(shape.section, true) + entry + `<div class="ips-pf-expr">${escape(expression)}</div>`;
+}
+
+/** A clinical profile, read-only (the administrator gets edit and delete). */
+function renderProfile(sd, ctx) {
+  const base = escape(ctx.base);
+  const url = `${base}/StructureDefinition/${escape(sd.id)}`;
+  let h = STYLE + userBar(ctx) + profileCrumbs(ctx, sd.title);
+  h += `<div class="ips-banner"><b class="ips-project-name">${escape(sd.title)}</b>` +
+    `<div class="ips-facts">Clinical profile on Bundle &nbsp;&middot;&nbsp; <code>${escape(sd.url)}</code> &nbsp;&middot;&nbsp; updated ${escape(dateOnly(sd.date))}</div></div>`;
+  h += '<div class="ips-actions-line">' +
+    `<a class="btn btn-default" href="${url}?download=1">Download JSON</a>` +
+    (ctx.user?.isAdmin ? ` <a class="btn btn-primary" href="${url}/edit">Edit</a> ` +
+      `<form method="post" action="${url}/delete" class="ips-inline" onsubmit="return confirm('Delete the clinical profile ${escape(sd.title).replace(/'/g, '&#39;')}?')">${csrfField(ctx.csrf)}` +
+      '<button type="submit" class="btn btn-default">Delete</button></form>' : '') + '</div>';
+  const constraints = sd.differential?.element?.[0]?.constraint || [];
+  if (constraints.length === 0) {
+    h += '<p>This profile has no constraints yet.</p>';
+  } else {
+    for (const [kind, heading] of PROFILE_PARTS) {
+      const these = constraints.filter(c => profiles.kindOf(c.expression || '') === kind);
+      if (!these.length) {
+        continue;
+      }
+      h += `<h4>${escape(heading)}</h4><table class="table table-sm ips-table ips-pf-rule"><tr><th style="width: 35%">Expectation</th><th>Rule</th></tr>`;
+      for (const c of these) {
+        h += `<tr><td>${escape(c.human || '')}</td><td>${ruleHtml(c.expression || '', ctx.valueSetTitle)}</td></tr>`;
+      }
+      h += '</table>';
+    }
+  }
+  h += '<p class="ips-small">Each rule is checked against the document (the Bundle). <code>section(system, code, min, max)</code> finds the sections of the document\'s Composition ' +
+    '(nested ones too) with that code, when there are min..max of them; <code>entry(system, code, min, max)</code> finds a section\'s entries with that code ' +
+    '(their <code>code</code>, <code>medicationCodeableConcept</code> or <code>vaccineCode</code>), when there are min..max of them; ' +
+    '<code>resources(system, code, type)</code> finds the resources in the document with that code (of that type, when one is given); ' +
+    '<code>entryIn(valueSet, min, max)</code> and <code>resourcesIn(valueSet, type)</code> are the same with a code in a value set, asked of the terminology server.</p>';
+  return h;
+}
+
+/** The profile editor (the administrator's): the page carries the profile, the script edits it. */
+function renderProfileEditor(sd, ctx, options) {
+  const base = ctx.base;
+  let h = STYLE + userBar(ctx) + profileCrumbs(ctx, sd ? sd.title : 'New profile');
+  h += `<h3>${sd ? 'Edit clinical profile' : 'New clinical profile'}</h3>`;
+  h += '<p>The title, and the expectations: each a description, and a rule. A rule that a section is there, or that a section has entries with a code, ' +
+    'is a row of the table - the section (one of the IPS sections, or any code), how many there may be, and optionally the code of the entries and how many - ' +
+    'where a cardinality is blank for any number, or <code>min..max</code> (<code>1..1</code>, <code>1..*</code>). A rule about the resources in the document with a code ' +
+    '(<code>Bundle.resources(system, code, type)...</code>) is a row of the second table: the type (or any), the code, and the rest of the rule, as FHIRPath on those resources ' +
+    '(<code>.exists()</code>, <code>.count() = 1</code>, <code>.all(clinicalStatus.coding.code = \'active\')</code>). Entries and resources can be matched by a value set instead of a code: ' +
+    'choose <i>In a value set...</i> as the system, and search for one by title, or paste its canonical. Any other rule is a FHIRPath expression on the document (the Bundle).' +
+    (options.canLookup ? '' : ' (There is no terminology server, so codes can\'t be looked up.)') + '</p>';
+  h += '<noscript><div class="alert alert-warning">The editor needs scripts.</div></noscript>';
+  h += '<div id="ips-profile-editor"></div>';
+  const cfg = {
+    profile: options.profile, sections: options.sections, systems: options.systems, resourceTypes: options.resourceTypes, sectionSystem: options.sectionSystem, csrf: ctx.csrf || '',
+    parts: PROFILE_PARTS,
+    urls: {
+      save: sd ? `${base}/StructureDefinition/${sd.id}` : `${base}/StructureDefinition`,
+      lookup: options.canLookup ? `${base}/lookup` : null,
+      lookupVs: `${base}/lookup-vs`,
+      back: sd ? `${base}/StructureDefinition/${sd.id}` : `${base}/StructureDefinition`
+    }
+  };
+  h += `<script>window.IPS_PROFILE = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
+  h += `<script src="${escape(base)}/profile-editor.js"></script>`;
+  return h;
+}
+
+/** The QR code and its links, as the share page and the panel show them. */
+function shareHtml(out) {
+  const kind = out.kind === 'vhl' ? 'VHL' : 'SHL';
+  let h = `<div class="ips-share-code">${out.qr}</div>`;
+  h += `<p class="ips-small">${kind === 'VHL' ? 'A Verifiable Health Link, signed as the GDHCN does it: the code carries the signed link' : 'A SMART Health Link: the code opens the document in a viewer'}; ` +
+    `the document is encrypted on the SHL server until ${escape(dateText(out.expires))}. Scan it, or copy what it carries:</p>`;
+  h += `<p><textarea class="ips-share-text" readonly rows="3">${escape(out.text)}</textarea></p>`;
+  h += `<p class="ips-small">Manifest: <a href="${escape(out.link)}">${escape(out.link)}</a></p>`;
+  return h;
+}
+
+/** The page a share lands on when the browser has no scripts. */
+function renderShare(project, row, out, ctx) {
+  const durl = `${projectUrl(ctx, project)}/Bundle/${row.id}`;
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, `Document ${row.id}`);
+  h += `<h3>Document ${row.id} as ${out.kind === 'vhl' ? 'a VHL' : 'an SHL'}</h3>`;
+  h += shareHtml(out);
+  h += `<p><a href="${durl}">Back to the document</a></p>`;
+  return h;
+}
+
+/** The panel over the page that shows a share, and the script that asks for one. */
+function sharePanelScript() {
+  return '<div id="ips-share" class="ips-share-overlay" hidden><div class="ips-share-panel"><button type="button" class="close ips-share-close" aria-label="Close">&times;</button><div class="ips-share-body"></div></div></div>' +
+    `<script>
+(function () {
+  var overlay = document.getElementById('ips-share');
+  var body = overlay.querySelector('.ips-share-body');
+  var escapeHtml = function (s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  var close = function () { overlay.hidden = true; body.innerHTML = ''; };
+  overlay.querySelector('.ips-share-close').addEventListener('click', close);
+  overlay.addEventListener('click', function (e) { if (e.target === overlay) { close(); } });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !overlay.hidden) { close(); } });
+  var fmt = function (d) { var m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']; var x = new Date(d); return isNaN(x) ? d : ('0' + x.getDate()).slice(-2) + '-' + m[x.getMonth()] + ' ' + String(x.getFullYear()).slice(-2); };
+  document.querySelectorAll('.ips-share-form').forEach(function (form) {
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var kind = form.querySelector('[name=kind]').value;
+      var button = form.querySelector('button');
+      button.disabled = true;
+      body.innerHTML = '<p><i>Preparing the ' + kind.toUpperCase() + '...</i></p>';
+      overlay.hidden = false;
+      fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: 'kind=' + encodeURIComponent(kind), credentials: 'same-origin' })
+        .then(function (r) { return r.json().then(function (j) { if (!r.ok) { throw new Error(j.error || ('HTTP ' + r.status)); } return j; }); })
+        .then(function (out) {
+          var name = out.kind === 'vhl' ? 'VHL' : 'SHL';
+          body.innerHTML = '<h3>' + name + '</h3><div class="ips-share-code">' + out.qr + '</div>' +
+            '<p class="ips-small">' + (name === 'VHL' ? 'A Verifiable Health Link, signed as the GDHCN does it: the code carries the signed link' : 'A SMART Health Link: the code opens the document in a viewer') +
+            '; the document is encrypted on the SHL server until ' + escapeHtml(fmt(out.expires)) + '. Scan it, or copy what it carries:</p>' +
+            '<p><textarea class="ips-share-text" readonly rows="3">' + escapeHtml(out.text) + '</textarea> <button type="button" class="btn btn-default ips-btn ips-share-copy">Copy</button></p>' +
+            '<p class="ips-small">Manifest: <a href="' + escapeHtml(out.link) + '">' + escapeHtml(out.link) + '</a></p>';
+          var copy = body.querySelector('.ips-share-copy');
+          copy.addEventListener('click', function () {
+            var t = body.querySelector('.ips-share-text');
+            var done = function () { copy.textContent = 'Copied'; setTimeout(function () { copy.textContent = 'Copy'; }, 1200); };
+            if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t.value).then(done, function () { t.select(); }); } else { t.select(); }
+          });
+        })
+        .catch(function (err) { body.innerHTML = '<p class="text-danger">Could not share the document: ' + escapeHtml(err.message) + '</p>'; })
+        .finally(function () { button.disabled = false; });
+    });
+  });
+})();
+</script>`;
+}
+
 // the views of a document; more come later
 const VIEWS = [
   ['narrative', 'Narrative'],
@@ -1014,6 +1348,7 @@ const VIEWS = [
   ['generated', 'Generated Narrative'],
   ['validation', 'Validation'],
   ['terminology', 'Terminology'],
+  ['profiles', 'Clinical Profiles'],
   ['ai', 'AI Assessment'],
   ['json', 'JSON']
 ];
@@ -1080,13 +1415,25 @@ function renderDocument(project, row, view, ctx) {
 
   // the steps, and what can be done
   h += '<div class="ips-steps">' + stepsHtml(row, ctx);
-  if (ctx.canManage) {
-    h += '<span class="ips-actions">' +
-      `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
-      `<form method="post" action="${durl}/delete" class="ips-inline" onsubmit="return confirm('Delete document ${row.id}?')">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>` +
-      '</span>';
+  {
+    h += '<span class="ips-actions">';
+    h += `<a class="btn btn-default" href="${purl}/compose?from=${row.id}" title="Open this document in the editor; submitting makes a new document">Edit</a>`;
+    if (ctx.canShare) {
+      // sharing as a QR code: a form each (they work without scripts); with scripts, the
+      // page asks for JSON and shows the code in a panel over the page
+      h += `<form method="post" action="${durl}/share" class="ips-inline ips-share-form"><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button></form>` +
+        `<form method="post" action="${durl}/share" class="ips-inline ips-share-form"><input type="hidden" name="kind" value="vhl"/><button type="submit" class="btn btn-default" title="A Verifiable Health Link (GDHCN) to this document, as a QR code">Share as VHL</button></form>`;
+    }
+    if (ctx.canManage) {
+      h += `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
+        `<form method="post" action="${durl}/delete" class="ips-inline" onsubmit="return confirm('Delete document ${row.id}?')">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
+    }
+    h += '</span>';
   }
   h += '</div>';
+  if (ctx.canShare) {
+    h += sharePanelScript();
+  }
 
   // the views, as tabs
   h += '<ul class="nav nav-tabs ips-nav">' + VIEWS.map(([v, label]) =>
@@ -1101,6 +1448,8 @@ function renderDocument(project, row, view, ctx) {
     h += renderTranslation(row, { canManage: ctx.canManage });
   } else if (view === 'generated') {
     h += renderGenerated(row, { canManage: ctx.canManage });
+  } else if (view === 'profiles') {
+    h += renderProfileChecks(row, { base: ctx.base, canManage: ctx.canManage });
   } else if (view === 'ai') {
     h += renderAi(row, { canManage: ctx.canManage });
   } else if (view === 'validation') {
@@ -1113,5 +1462,6 @@ function renderDocument(project, row, view, ctx) {
 
 module.exports = {
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
-  assembledNarrative, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, VIEWS
+  assembledNarrative, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderShare, renderCompose, renderProfileChecks,
+  renderProfiles, renderProfile, renderProfileEditor, VIEWS
 };

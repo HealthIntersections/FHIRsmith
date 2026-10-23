@@ -232,6 +232,7 @@ class Presenter {
       const html = `<div xmlns="${XHTML}"><p><i>The document has no Composition</i></p></div>`;
       return { html, header: html, sections: [] };
     }
+    const title = `<h1>${escape(str(composition.title) || 'International Patient Summary')}</h1>`;
     const headerInner = await this.renderHeader(composition);
     const sections = [];
     const ordered = list(composition.section).filter(isObject).map((s, i) => ({ s, i, rank: sectionRank(s) }));
@@ -239,7 +240,9 @@ class Presenter {
     for (const { s } of ordered) {
       await this.renderSection(s, 2, sections);
     }
-    let html = `<div xmlns="${XHTML}">` + headerInner;
+    // the whole document carries the title; the Composition's own narrative doesn't (the
+    // page it is shown on has it)
+    let html = `<div xmlns="${XHTML}">` + title + headerInner;
     for (const sec of sections) {
       html += `<h${sec.level}>${escape(sec.title)}</h${sec.level}>` + sec.inner;
     }
@@ -249,10 +252,10 @@ class Presenter {
 
   // ---- the header ----
 
-  /** The Composition's own narrative: the title, the patient, and the document's facts (the inside of the div). */
+  /** The Composition's own narrative: the patient, and the document's facts (the inside of the div). */
   async renderHeader(composition) {
     const b = this.bundle;
-    let h = `<h1>${escape(str(composition.title) || 'International Patient Summary')}</h1>`;
+    let h = '';
     const patient = resolve(b, composition.subject);
     if (patient && patient.resourceType === 'Patient') {
       h += await this.renderPatient(patient);

@@ -14,7 +14,8 @@
  *   3. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
  *   4. terminology   check each CodeableConcept against the value sets for international exchange
  *   5. piqi          measure the quality of the document with PIQI                        (not yet)
- *   6. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
+ *   6. profiles      check the document against each clinical profile (profiles.js)
+ *   7. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
  *
  * Each step is { name, run(row, project, module) -> result }. A step keeps what it finds in
  * one of two places: as a result stored against the document (store.saveResult - the
@@ -31,6 +32,7 @@ const { terminologyOf } = require('./terminology');
 const { isHl7System } = require('./ips-valuesets');
 const { Presenter } = require('./presenter');
 const ai = require('./ai-client');
+const { evaluateAsync } = require('./fhirpath-ips');
 
 const IPS_BUNDLE_PROFILE = 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips';
 const VALIDATE_TIMEOUT_MS = 120000;
@@ -808,6 +810,95 @@ function assessmentOf(json) {
  * send, is skipped with a note (the step does not fail). The assessment, and what the
  * model answered, is the step's result, for the AI view.
  */
+// ---- clinical profiles -----------------------------------------------------------------
+
+// a constraint's evaluation that takes longer than this is reported as an error
+const CONSTRAINT_TIMEOUT_MS = 60000;
+
+/** The value sets an expression names in entryIn() or resourcesIn(). */
+function valueSetsIn(expression) {
+  const out = [];
+  const re = /\b(?:entryIn|resourcesIn)\s*\(\s*'((?:[^'\\]|\\.)*)'/g;
+  for (let m = re.exec(expression); m; m = re.exec(expression)) {
+    out.push(m[1].replace(/\\(.)/g, '$1'));
+  }
+  return out;
+}
+
+/**
+ * One constraint on the document: passed, failed, or not checked - an error in the
+ * expression, or a value set the terminology server couldn't answer for (a failure for
+ * that reason isn't the document's).
+ * @returns {Promise<{passed: boolean, reason?: 'failed'|'unresolved'|'error', message?: string}>}
+ */
+async function checkConstraint(doc, constraint, session) {
+  let result;
+  let timer;
+  try {
+    result = await Promise.race([
+      evaluateAsync(doc, constraint.expression, { membership: session.membership }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`took longer than ${CONSTRAINT_TIMEOUT_MS / 1000} seconds`)), CONSTRAINT_TIMEOUT_MS);
+      })
+    ]);
+  } catch (e) {
+    return { passed: false, reason: 'error', message: String(e.message || e).split('\n')[0].substring(0, 300) };
+  } finally {
+    clearTimeout(timer);
+  }
+  // true, and only true, passes (as a FHIR invariant must evaluate to true)
+  if (Array.isArray(result) && result.length === 1 && result[0] === true) {
+    return { passed: true };
+  }
+  const unresolved = valueSetsIn(constraint.expression).filter(url => session.problems.has(url));
+  if (unresolved.length) {
+    return { passed: false, reason: 'unresolved', message: unresolved.map(url => `${url}: ${session.problems.get(url)}`).join('; ') };
+  }
+  return { passed: false, reason: 'failed' };
+}
+
+/**
+ * Profiles: the document against each clinical profile. Every constraint is evaluated on
+ * the analysed copy (so the translations count); the profile's outcome is 'conforms' when
+ * all pass, 'fails' when any plainly fails, and 'unknown' when the only failures are ones
+ * that couldn't be checked. Value set membership is asked of the terminology server, once
+ * per question for the whole document (one membership session across the profiles). The
+ * profiles are as they are when the document is processed: the result keeps their titles
+ * and the failed constraints' descriptions.
+ */
+const profilesStep = {
+  name: 'profiles',
+  async run(row, project, module) {
+    const started = Date.now();
+    const doc = row.analysed || row.bundle;
+    const list = module.store.profiles();
+    const session = module.membershipSession();
+    const results = [];
+    for (const p of list) {
+      const sd = module.store.profile(p.id);
+      const constraints = sd?.differential?.element?.[0]?.constraint || [];
+      const failed = [];
+      for (const c of constraints) {
+        if (typeof c?.expression !== 'string') {
+          continue;
+        }
+        const r = await checkConstraint(doc, c, session);
+        if (!r.passed) {
+          failed.push({ key: c.key, human: c.human || c.key, reason: r.reason, ...(r.message ? { message: r.message } : {}) });
+        }
+      }
+      const outcome = failed.length === 0 ? 'conforms' : (failed.some(f => f.reason === 'failed') ? 'fails' : 'unknown');
+      results.push({ id: sd.id, url: sd.url, title: sd.title, constraints: constraints.length, outcome, failed });
+    }
+    module.store.saveResult(row.id, 'profiles', { ms: Date.now() - started, questions: session.questions, profiles: results, unresolved: session.unresolved() });
+    if (results.length === 0) {
+      return 'profiles: none defined';
+    }
+    const n = (o) => results.filter(r => r.outcome === o).length;
+    return `profiles: ${n('conforms')} conform, ${n('fails')} do not` + (n('unknown') ? `, ${n('unknown')} could not be fully checked` : '');
+  }
+};
+
 const aiStep = {
   name: 'ai',
   async run(row, project, module) {
@@ -875,10 +966,10 @@ const aiStep = {
 };
 
 /** The steps, in order. Only the ones that exist yet. */
-const STEPS = [translate, narrative, validation, terminology, aiStep];
+const STEPS = [translate, narrative, validation, terminology, profilesStep, aiStep];
 
 module.exports = {
-  STEPS, translate, narrative, validation, terminology, ai: aiStep, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
+  STEPS, translate, narrative, validation, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

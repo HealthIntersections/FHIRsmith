@@ -99,6 +99,12 @@ class IpsValueSets {
    * The value set an element is checked against, or null when it has none of its own.
    * @param {string} element - the path without indices, as terminology.js reports it
    */
+  /** All the value sets: [{url, version, title}], by title. */
+  all() {
+    return [...this.valueSets.values()].map(v => ({ url: v.url, version: v.version || null, title: v.title || v.name || v.url }))
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }
+
   valueSetFor(element) {
     return this.elements.get(element) || null;
   }
