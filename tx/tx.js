@@ -1471,6 +1471,7 @@ class TXModule {
       return sendFeed(req, res, page);
     });
 
+    // not rate limited here: as for the rest of the tx module, nginx does that (see nginx.md)
     router.get('/syndication/files/:name', (req, res) => {
       const file = this.syndicationStore.filePath(req.params.name);
       if (!file) {
@@ -1482,7 +1483,9 @@ class TXModule {
       res.setHeader('Content-Type', 'application/fhir+json');
       // the file is whatever the source folder held: never let a browser sniff it as a page
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      res.sendFile(file);
+      // served from the store's folder by the store's own name for it (sendFile refuses
+      // anything that would leave root)
+      res.sendFile(path.basename(file), { root: this.syndicationStore.filesFolder });
     });
   }
 

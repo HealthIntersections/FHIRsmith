@@ -148,8 +148,17 @@ class SyndicationStore {
   #index() {
     // key -> the most recent entry with that key
     this.byKey = new Map();
+    // name -> path, for each file copied into the store (the only files it serves)
+    this.files = new Map();
     for (const entry of this.doc.entries) {
-      this.byKey.set(entry.key, entry);
+      this.#indexEntry(entry);
+    }
+  }
+
+  #indexEntry(entry) {
+    this.byKey.set(entry.key, entry);
+    if (entry.link && entry.link.file) {
+      this.files.set(entry.link.file, path.join(this.filesFolder, path.basename(entry.link.file)));
     }
   }
 
@@ -209,7 +218,7 @@ class SyndicationStore {
       ...entry
     };
     this.doc.entries.push(full);
-    this.byKey.set(full.key, full);
+    this.#indexEntry(full);
     this.#save();
     this.log.info(`Syndication: inducted ${full.title} (${full.version})`);
     return full;
@@ -386,15 +395,17 @@ class SyndicationStore {
   }
 
   /**
-   * The local path of a file copied into the store, or null if there isn't one by that name
+   * The local path of a file copied into the store, or null if there isn't one by that name.
+   * The name is only ever looked up among the files the store's entries record - the path
+   * returned is the store's own, never one made from the name asked for.
    * @param {string} name
    */
   filePath(name) {
     if (typeof name !== 'string' || !/^[0-9a-f-]{36}\.json$/.test(name)) {
       return null;
     }
-    const p = path.join(this.filesFolder, name);
-    return fs.existsSync(p) ? p : null;
+    const p = this.files.get(name);
+    return p && fs.existsSync(p) ? p : null;
   }
 }
 

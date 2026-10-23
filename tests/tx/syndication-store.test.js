@@ -208,10 +208,19 @@ describe('resources from files', () => {
     expect(fs.existsSync(store.filePath(first.link.file))).toBe(true);
   });
 
-  test('file names are checked', () => {
+  test('only files the entries record are served', async () => {
     const store = makeStore(fakeFetch({}));
     expect(store.filePath('../syndication.json')).toBeNull();
-    expect(store.filePath('00000000-0000-0000-0000-000000000000.json')).toBeNull();
+    // a file of the right shape sitting in the folder is not enough
+    const stray = '00000000-0000-0000-0000-000000000000.json';
+    fs.writeFileSync(path.join(dir, 'files', stray), '{}');
+    expect(store.filePath(stray)).toBeNull();
+    const file = writeResource('cs.json', cs);
+    await store.inductResource({ filePath: file, resourceType: 'CodeSystem', url: cs.url, version: cs.version });
+    const name = store.entries[0].link.file;
+    expect(store.filePath(name)).toBe(path.join(dir, 'files', name));
+    // and after a restart
+    expect(makeStore(fakeFetch({})).filePath(name)).toBe(path.join(dir, 'files', name));
   });
 });
 
