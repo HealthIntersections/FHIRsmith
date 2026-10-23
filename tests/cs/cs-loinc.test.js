@@ -1008,6 +1008,73 @@ describe('LOINC Provider', () => {
     });
   });
 
+  describe('Exists Filters', () => {
+    // the test database has 483 codes: 322 LOINC terms (all with a CLASSTYPE), of which 24
+    // have a METHOD_TYP; the rest are Parts, AnswerLists and Answers
+    async function run(filters) {
+      const filterContext = await provider.getPrepContext(true);
+      let first = true;
+      for (const [property, operator, value] of filters) {
+        await provider.filter(filterContext, first, property, operator, value);
+        first = false;
+      }
+      const sets = await provider.executeFilters(filterContext);
+      const codes = [];
+      while (await provider.filterMore(filterContext, sets[0])) {
+        const c = await provider.filterConcept(filterContext, sets[0]);
+        let ok = true;
+        for (let i = 1; i < sets.length; i++) {
+          ok = ok && await provider.filterCheck(filterContext, sets[i], c);
+        }
+        if (ok) {
+          codes.push(c.code);
+        }
+      }
+      return { filterContext, sets, codes };
+    }
+
+    test.each([
+      ['METHOD_TYP', 'true', 24],
+      ['METHOD_TYP', 'false', 459],
+      ['CLASSTYPE', 'true', 322],
+      ['CLASSTYPE', 'false', 161]
+    ])('%s exists %s: %i codes', async (property, value, count) => {
+      const { codes } = await run([[property, 'exists', value]]);
+      expect(codes.length).toBe(count);
+    });
+
+    test('exists true and exists false partition the code system', async () => {
+      const yes = (await run([['METHOD_TYP', 'exists', 'true']])).codes;
+      const no = (await run([['METHOD_TYP', 'exists', 'false']])).codes;
+      expect(yes.filter(c => no.includes(c))).toEqual([]);
+      expect(yes.length + no.length).toBe(483);
+    });
+
+    test('LOINC terms without a method', async () => {
+      const { filterContext, sets, codes } = await run([['METHOD_TYP', 'exists', 'false'], ['CLASSTYPE', 'exists', 'true']]);
+      expect(codes.length).toBe(298);
+      expect(codes).toContain('100007-4');
+      expect(codes).not.toContain('100865-5'); // has a method
+      expect(codes).not.toContain('LP190769-2'); // a Part
+
+      // membership checks agree with the expansion
+      expect(await provider.filterLocate(filterContext, sets[0], '100007-4')).toBeTruthy();
+      expect(await provider.filterLocate(filterContext, sets[0], '100865-5')).toBeNull();
+      expect(await provider.filterLocate(filterContext, sets[1], 'LP190769-2')).toBeNull();
+    });
+
+    test('exists only takes true or false', async () => {
+      expect(await provider.doesFilter('METHOD_TYP', 'exists', 'true')).toBe(true);
+      expect(await provider.doesFilter('METHOD_TYP', 'exists', 'false')).toBe(true);
+      expect(await provider.doesFilter('CLASSTYPE', 'exists', 'false')).toBe(true);
+      expect(await provider.doesFilter('METHOD_TYP', 'exists', 'LP6286-5')).toBe(false);
+      expect(await provider.doesFilter('CLASSTYPE', 'exists', 'True')).toBe(false);
+      const filterContext = await provider.getPrepContext(true);
+      await expect(provider.filter(filterContext, true, 'METHOD_TYP', 'exists', 'False'))
+        .rejects.toThrow('not supported');
+    });
+  });
+
   describe('Error Handling', () => {
     test('should handle unsupported filters', async () => {
       const filterContext = await provider.getPrepContext(true);

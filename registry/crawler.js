@@ -12,6 +12,7 @@ const {
   ServerInformation,
   ServerVersionInformation,
 } = require('./model');
+const { UptimeHistory } = require('./uptime');
 const {Extensions} = require("../tx/library/extensions");
 const {debugLog} = require("../tx/operation-context");
 
@@ -44,11 +45,16 @@ class RegistryCrawler {
       apiKeys: config.apiKeys || {}, // Map of server URL or code to API key
       allowPrivateAddresses: config.allowPrivateAddresses || false, // SSRF opt-out for local test servers
       // the most a server's response can be, once unzipped: the servers are other people's
-      maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024
+      maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024,
+      uptimeRetentionDays: config.uptimeRetentionDays,
+      uptimeWindowDays: config.uptimeWindowDays
     };
     this.stats = stats;
 
     this.currentData = new ServerRegistries();
+    // one record per endpoint per scan: whether it answered. Reported on the software page
+    this.uptime = new UptimeHistory({ retentionDays: config.uptimeRetentionDays, windowDays: config.uptimeWindowDays });
+    this.scanTime = null; // when the scan in progress started (ms)
     this.crawlTimer = null;
     this.isCrawling = false;
     this.errors = [];
@@ -133,6 +139,7 @@ class RegistryCrawler {
 
     this.isCrawling = true;
     const startTime = new Date();
+    this.scanTime = startTime.getTime();
     this.errors = [];
     this.totalBytes = 0;
     
@@ -168,6 +175,7 @@ class RegistryCrawler {
       
       // Update the current data
       this.currentData = newData;
+      this.uptime.retain(this.endpointAddresses(newData), this.scanTime);
     } catch (error) {
       debugLog(error);
       this.addLogEntry('error', 'Exception Scanning:', error);
@@ -326,6 +334,7 @@ class RegistryCrawler {
       version.valueSets = [...new Set(version.valueSets)].sort();
       version.lastSuccess = new Date();
       version.lastTat = `${Date.now() - startTime}ms`;
+      this.uptime.record(version.address, true, this.scanTime || startTime);
 
       this.addLogEntry('info', `  Server ${version.address}: ${version.lastTat} for ${version.codeSystems.length} CodeSystems and ${version.valueSets.length} ValueSets`);
       
@@ -335,10 +344,28 @@ class RegistryCrawler {
       this.addLogEntry('error', `Server ${version.address}: Error after ${elapsed}ms: ${error.message}`);
       version.error = error.message;
       version.lastTat = `${elapsed}ms`;
+      this.uptime.record(version.address, false, this.scanTime || startTime);
       this.carryForwardSoftware(version);
     }
     
     return version;
+  }
+
+  /**
+   * Every endpoint address in a scan's data
+   */
+  endpointAddresses(data) {
+    const result = [];
+    for (const registry of (data && data.registries) || []) {
+      for (const server of registry.servers || []) {
+        for (const version of server.versions || []) {
+          if (version.address) {
+            result.push(version.address);
+          }
+        }
+      }
+    }
+    return result;
   }
 
   /**
@@ -708,6 +735,16 @@ class RegistryCrawler {
    */
   saveData() {
     return this.currentData.toJSON();
+  }
+
+  loadUptime(json) {
+    this.uptime = UptimeHistory.fromJSON(json, {
+      retentionDays: this.config.uptimeRetentionDays, windowDays: this.config.uptimeWindowDays
+    });
+  }
+
+  saveUptime() {
+    return this.uptime.toJSON();
   }
 
   /**

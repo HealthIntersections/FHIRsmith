@@ -11,6 +11,8 @@ const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const registryOpenApi = require('./openapi');
 const { FhirsmithReleases, isFhirsmith, describeAge } = require('./fhirsmith-releases');
+const { formatUptime } = require('./uptime');
+const { RegistryAuth } = require('./auth');
 
 // The query parameters of the public API. These are the contract published in openapi.yaml,
 // and tests/registry/openapi.test.js checks that the two agree - so change both together.
@@ -23,6 +25,35 @@ const RESOLVE_PARAMS = ['fhirVersion', 'url', 'version', 'valueSet', 'authoritat
 // content, so only an http(s) URL is linked, and it is escaped
 function safeHref(url) {
   return typeof url === 'string' && /^https?:\/\//i.test(url.trim()) ? escape(url) : '#';
+}
+
+/**
+ * The base URL that a server's endpoints share: http://tx.fhir.org for http://tx.fhir.org/r4
+ * and http://tx.fhir.org/r5. One endpoint is its own base
+ */
+function commonBaseUrl(urls) {
+  const list = urls.filter(u => u);
+  if (list.length === 0) {
+    return '';
+  }
+  if (list.length === 1) {
+    return list[0];
+  }
+  let prefix = list[0];
+  for (const url of list.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < url.length && prefix[i] === url[i]) {
+      i++;
+    }
+    prefix = prefix.substring(0, i);
+  }
+  // back up to a path boundary, unless the prefix already is one
+  if (!list.every(u => u === prefix || u.startsWith(prefix + '/'))) {
+    prefix = prefix.substring(0, prefix.lastIndexOf('/'));
+  }
+  prefix = prefix.replace(/\/+$/, '');
+  // less than scheme + host is not a base URL at all
+  return /^https?:\/\/[^/]+/.test(prefix) ? prefix : list[0];
 }
 
 class RegistryModule {
@@ -41,6 +72,8 @@ class RegistryModule {
     this.currentData = null;
     this.dataLock = false;
     this.stats = stats;
+    // open until initialize() reads modules.registry.security
+    this.auth = new RegistryAuth({}, { logger: this.logger, renderPage: () => {} });
   }
 
   /**
@@ -57,7 +90,9 @@ class RegistryModule {
         timeout: config.timeout || 30000,
         userAgent: config.userAgent || 'FHIRRegistryServer/1.0',
         apiKeys: config.apiKeys || {},
-        maxResponseMB: config.maxResponseMB
+        maxResponseMB: config.maxResponseMB,
+        uptimeWindowDays: config.uptimeWindowDays,
+        uptimeRetentionDays: config.uptimeRetentionDays
       };
 
       this.crawler = new RegistryCrawler(crawlerConfig, this.stats);
@@ -75,6 +110,17 @@ class RegistryModule {
 
       // Load saved data if available
       await this.loadSavedData();
+
+      // Securing the API (see auth.js). With no modules.registry.security, the API is open
+      this.auth = new RegistryAuth(config.security, {
+        logger: this.logger,
+        renderPage: (req, res, title, content, status) => {
+          res.status(status || 200);
+          res.setHeader('Content-Type', 'text/html');
+          res.send(this.renderPage('registry', title, content, this.api.getStatistics(), req));
+        }
+      });
+      await this.auth.initialize();
 
       // Set up routes
       this.setupRoutes();
@@ -113,6 +159,13 @@ class RegistryModule {
     } catch (error) {
       this.logger.info('No saved registry data found, will fetch fresh data');
     }
+    try {
+      const fs = require('fs').promises;
+      const uptimePath = folders.ensureFilePath('registry', 'registry-uptime.json');
+      this.crawler.loadUptime(JSON.parse(await fs.readFile(uptimePath, 'utf8')));
+    } catch (error) {
+      this.logger.info('No saved uptime history found');
+    }
   }
 
   /**
@@ -125,6 +178,8 @@ class RegistryModule {
 
       const data = this.crawler.saveData();
       await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+      const uptimePath = folders.ensureFilePath('registry', 'registry-uptime.json');
+      await fs.writeFile(uptimePath, JSON.stringify(this.crawler.saveUptime()));
       this.logger.debug('Saved registry data to disk');
     } catch (error) {
       this.logger.error('Failed to save registry data:', error);
@@ -255,9 +310,17 @@ class RegistryModule {
       next();
     });
 
+    // The JSON API is what security protects; the HTML pages stay open
+    const guard = this.auth.apiGuard();
+    const apiGuard = (req, res, next) => {
+      const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+      return acceptsHtml ? next() : guard(req, res, next);
+    };
+    this.auth.setupRoutes(this.router);
+
     // Main registry page
-    this.router.get('/', this.handleMainPage.bind(this));
-    this.router.get('/resolve', this.handleResolveEndpoint.bind(this));
+    this.router.get('/', apiGuard, this.handleMainPage.bind(this));
+    this.router.get('/resolve', apiGuard, this.handleResolveEndpoint.bind(this));
     this.router.get('/log', this.handleLogEndpoint.bind(this));
     this.router.get('/software', this.handleSoftwarePage.bind(this));
 
@@ -280,7 +343,7 @@ class RegistryModule {
         if (!htmlServer.hasTemplate('registry')) {
           htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
         }
-        const html = htmlServer.renderPage('registry', 'Terminology Server Registry API',
+        const html = this.renderPage('registry', 'Terminology Server Registry API',
           registryOpenApi.renderHtml(), this.api ? this.api.getStatistics() : {});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -289,6 +352,18 @@ class RegistryModule {
         res.status(500).send(`<html><body><h1>Error</h1><p>${escape(error.message)}</p></body></html>`);
       }
     });
+  }
+
+  /**
+   * The registry's pages: html-server's template, plus the login/account link in the
+   * navbar (pages rendered without a request show the login link)
+   */
+  renderPage(template, title, content, stats, req) {
+    if (template === 'registry' && !htmlServer.hasTemplate('registry')) {
+      htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
+    }
+    const html = htmlServer.renderPage(template, title, content, stats);
+    return html.replace('[%account%]', () => this.auth ? this.auth.navLinks(req || {}) : '');
   }
 
   /**
@@ -341,7 +416,7 @@ class RegistryModule {
         htmlServer.loadTemplate('registry', templatePath);
       }
 
-      return htmlServer.renderPage(
+      return this.renderPage(
         'registry',
         'FHIR Terminology Server Registry',
         this.buildHtmlContent(),
@@ -458,7 +533,7 @@ class RegistryModule {
         stats.crawlInProgress = this.crawlInProgress;
         stats.lastCrawl = this.lastCrawlTime;
 
-        const html = htmlServer.renderPage(
+        const html = this.renderPage(
           'registry',
           'FHIR Terminology Server Registry',
           content,
@@ -491,7 +566,7 @@ class RegistryModule {
       const content = this.buildSoftwareContent();
       const stats = this.api.getStatistics();
       stats.processingTime = Date.now() - startTime;
-      const html = htmlServer.renderPage('registry', 'Terminology Server Software', content, stats);
+      const html = this.renderPage('registry', 'Terminology Server Software', content, stats);
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     } catch (error) {
@@ -509,24 +584,8 @@ class RegistryModule {
         '<p>The initial crawl is in progress. Please refresh in a moment.</p></div>';
     }
 
-    const rows = [];
-    for (const registry of data.registries) {
-      for (const server of registry.servers || []) {
-        for (const version of server.versions || []) {
-          rows.push({
-            name: server.name || server.code || '',
-            url: version.address || '',
-            fhirVersion: version.version || '',
-            software: version.software && version.software !== 'unknown' ? version.software : '',
-            softwareVersion: version.softwareVersion || '',
-            softwareReleaseDate: version.softwareReleaseDate || '',
-            error: version.error,
-            lastSuccess: version.lastSuccess
-          });
-        }
-      }
-    }
-    rows.sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url));
+    const rows = this.softwareRows(data);
+    const uptime = this.crawler ? this.crawler.uptime : null;
 
     let html = '<h3>Terminology Server Software</h3>';
     const latest = this.releases ? this.releases.latest() : null;
@@ -539,27 +598,100 @@ class RegistryModule {
 
     html += '<table class="grid">';
     html += '<thead><tr><th>Server</th><th>URL</th><th>FHIR</th><th>Software</th><th>Version</th>' +
-      '<th>Released</th><th>Age</th></tr></thead><tbody>';
+      '<th>Released</th><th>Age</th><th>Uptime</th></tr></thead><tbody>';
     for (const row of rows) {
       html += '<tr>';
       html += `<td>${escape(row.name)}</td>`;
       html += `<td><a href="${safeHref(row.url)}" target="_blank" rel="noopener">${escape(row.url)}</a>`;
-      if (row.error) {
-        html += ` <span class="text-danger" title="${escape(row.error)}">(unreachable)</span>`;
-      }
+      html += this._renderUnreachable(row);
       html += '</td>';
-      html += `<td>${escape(row.fhirVersion)}</td>`;
+      html += `<td>${escape(row.fhirVersions.join(', '))}</td>`;
       html += `<td>${row.software ? escape(row.software.replace('Reference Server', 'HealthIntersections')) : '<i>unknown</i>'}</td>`;
       html += `<td>${row.softwareVersion ? escape(row.softwareVersion) : '<i>unknown</i>'}</td>`;
       html += this._renderReleaseCells(row, now);
+      html += this._renderUptimeCell(uptime ? uptime.uptime(row.endpoints.map(e => e.url), now) : null);
       html += '</tr>';
     }
     html += '</tbody></table>';
 
-    if (this.releases && this.releases.source !== 'none') {
-      html += `<p class="text-muted"><small>FHIRsmith release dates from ${escape(this.releases.source)}.</small></p>`;
+    html += '<p class="text-muted"><small>';
+    if (uptime) {
+      const days = Math.round(uptime.windowMs / (24 * 60 * 60 * 1000));
+      html += `Uptime is the share of this registry's scans over the last ${days} days that the server answered ` +
+        '(every scan probes each of its endpoints; a server with one of two endpoints down is half down for that scan). ' +
+        'Scans the registry itself missed are not counted. ';
     }
+    html += 'Endpoints of one server that run the same software are shown as one row. ';
+    if (this.releases && this.releases.source !== 'none') {
+      html += `FHIRsmith release dates from ${escape(this.releases.source)}.`;
+    }
+    html += '</small></p>';
     return html;
+  }
+
+  /**
+   * The rows of the software page: one per server, or per software a server runs, since
+   * a server's endpoints (its FHIR versions) are nearly always the same software
+   * @returns {Array<{name, url, fhirVersions, software, softwareVersion, softwareReleaseDate, endpoints}>}
+   */
+  softwareRows(data) {
+    const rows = [];
+    for (const registry of data.registries) {
+      for (const server of registry.servers || []) {
+        const groups = new Map(); // software|version -> row
+        for (const version of server.versions || []) {
+          const software = version.software && version.software !== 'unknown' ? version.software : '';
+          const softwareVersion = version.softwareVersion || '';
+          const key = `${software}|${softwareVersion}`;
+          let row = groups.get(key);
+          if (!row) {
+            row = {
+              name: server.name || server.code || '',
+              url: '',
+              fhirVersions: [],
+              software,
+              softwareVersion,
+              softwareReleaseDate: version.softwareReleaseDate || '',
+              endpoints: []
+            };
+            groups.set(key, row);
+            rows.push(row);
+          }
+          row.fhirVersions.push(version.version || '');
+          row.endpoints.push({ url: version.address || '', fhirVersion: version.version || '', error: version.error || '' });
+          if (!row.softwareReleaseDate && version.softwareReleaseDate) {
+            row.softwareReleaseDate = version.softwareReleaseDate;
+          }
+        }
+        for (const row of groups.values()) {
+          row.url = commonBaseUrl(row.endpoints.map(e => e.url));
+          row.fhirVersions.sort();
+        }
+      }
+    }
+    rows.sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url));
+    return rows;
+  }
+
+  _renderUnreachable(row) {
+    const down = row.endpoints.filter(e => e.error);
+    if (down.length === 0) {
+      return '';
+    }
+    const title = down.map(e => `${e.fhirVersion}: ${e.error}`).join('\n');
+    const what = down.length === row.endpoints.length ? 'unreachable' :
+      `${down.map(e => e.fhirVersion).join(', ')} unreachable`;
+    return ` <span class="text-danger" title="${escape(title)}">(${escape(what)})</span>`;
+  }
+
+  _renderUptimeCell(u) {
+    if (!u) {
+      return '<td></td>';
+    }
+    const cls = u.failures === 0 ? 'text-success' : u.percent >= 99 ? '' : u.percent >= 95 ? 'text-warning' : 'text-danger';
+    const since = new Date(u.since).toISOString().substring(0, 10);
+    const title = `${u.probes - u.failures} of ${u.probes} probes answered since ${since}`;
+    return `<td><span class="${cls}" title="${escape(title)}">${formatUptime(u)}</span></td>`;
   }
 
   _renderReleaseCells(row, now) {
@@ -1141,6 +1273,49 @@ class RegistryModule {
   }
 
   /**
+   * The paragraph for the server's daily report: how many client requests the
+   * API answered, how many servers are registered, and which of them (if any)
+   * answered none of the registry's scans in the period.
+   */
+  dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    const counts = this.stats.countsSince(since, now);
+    const api = counts.operations.resolve || 0;
+    const sentences = [`The API answered ${plural(api, 'client request')} (${plural(counts.total, 'request')} in all, including the web pages).`];
+    const data = this.api ? this.api.getData() : null;
+    if (!data || !data.registries) {
+      sentences.push('The registry data is not available (no crawl has completed).');
+      return sentences.join(' ');
+    }
+    let servers = 0;
+    let endpoints = 0;
+    const down = [];
+    const uptime = this.crawler ? this.crawler.uptime : null;
+    for (const registry of data.registries) {
+      for (const server of registry.servers || []) {
+        servers++;
+        const addresses = (server.versions || []).map(v => v.address || v.url).filter(Boolean);
+        endpoints += addresses.length;
+        if (uptime && addresses.length > 0) {
+          const u = uptime.uptime(addresses, now, since);
+          if (u && u.failures === u.probes) {
+            down.push(server.name || server.code || addresses[0]);
+          }
+        }
+      }
+    }
+    sentences.push(`${plural(servers, 'server')} ${servers === 1 ? 'is' : 'are'} registered, with ${plural(endpoints, 'endpoint')}.`);
+    if (!uptime) {
+      sentences.push('No scan history is kept, so availability is unknown.');
+    } else if (down.length === 0) {
+      sentences.push('Every server answered at least one scan during the period.');
+    } else {
+      sentences.push(`${down.length === 1 ? 'This server' : 'These servers'} did not answer any scan during the period: ${down.join(', ')}.`);
+    }
+    return sentences.join(' ');
+  }
+
+  /**
    * Shutdown the module
    */
   async shutdown() {
@@ -1154,6 +1329,9 @@ class RegistryModule {
 
     if (this.crawler) {
       this.crawler.shutdown();
+    }
+    if (this.auth) {
+      this.auth.shutdown();
     }
     // Save current data
     if (this.crawler && this.currentData) {
@@ -1239,7 +1417,7 @@ class RegistryModule {
             const stats = this.api.getStatistics();
             stats.processingTime = Date.now() - startTime;
 
-            const html = htmlServer.renderPage(
+            const html = this.renderPage(
               'registry',
               'FHIR Terminology Server Resolver',
               content,
@@ -1294,7 +1472,7 @@ class RegistryModule {
             const stats = this.api.getStatistics();
             stats.processingTime = Date.now() - startTime;
 
-            const html = htmlServer.renderPage(
+            const html = this.renderPage(
               'registry',
               'FHIR Terminology Server Resolution Results',
               content,
@@ -1566,7 +1744,7 @@ class RegistryModule {
             const stats = this.api.getStatistics();
             stats.processingTime = Date.now() - startTime;
 
-            const html = htmlServer.renderPage(
+            const html = this.renderPage(
               'registry',
               'FHIR Terminology Server Registry - Logs',
               content,
@@ -1650,3 +1828,4 @@ RegistryModule.DISCOVERY_PARAMS = DISCOVERY_PARAMS;
 RegistryModule.RESOLVE_PARAMS = RESOLVE_PARAMS;
 
 module.exports = RegistryModule;
+module.exports.commonBaseUrl = commonBaseUrl;

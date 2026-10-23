@@ -263,3 +263,40 @@ describe('scheduling and config', () => {
     expect(describeAgo(NOW - 72 * 3600000, NOW)).toBe('3 days ago');
   });
 });
+
+describe('daily report text', () => {
+  function audit(overrides) {
+    const a = new NpmAudit({}, null, appDir(LOCK));
+    a.installedVersion = '0.17.1';
+    Object.assign(a, overrides);
+    return a;
+  }
+
+  test('nothing to say when there are no findings and the server is current', () => {
+    expect(audit({ latestVersion: '0.17.1', checkedAt: new Date() }).reportText()).toBe('');
+    expect(audit({ latestVersion: null }).reportText()).toBe('');
+    expect(new NpmAudit({ enabled: false }, null, appDir(LOCK)).reportText()).toBe('');
+  });
+
+  test('findings are listed with the advice', () => {
+    const text = audit({
+      latestVersion: '0.18.0', checkedAt: new Date(),
+      findings: [
+        { name: 'axios', installed: ['1.0.0'], severity: 'high', range: '<1.2.0', title: 'SSRF', url: '' },
+        { name: 'qs', installed: ['6.1.0', '6.2.0'], severity: 'moderate', range: '<6.5.0', title: 'DoS', url: '' }
+      ]
+    }).reportText();
+    expect(text).toBe('npm audit found 2 known vulnerabilities (1 high, 1 moderate) in the packages this server uses: ' +
+      'axios 1.0.0 (high: <1.2.0), qs 6.1.0/6.2.0 (moderate: <6.5.0). ' +
+      'The server administrator should upgrade to FHIRsmith 0.18.0 (this server is running 0.17.1).');
+  });
+
+  test('a newer release is mentioned on its own, and so is a failed check', () => {
+    expect(audit({ latestVersion: '0.18.0', checkedAt: new Date() }).reportText())
+      .toBe('FHIRsmith 0.18.0 is available (this server is running 0.17.1).');
+    expect(audit({ lastError: 'ENOTFOUND registry.npmjs.org' }).reportText())
+      .toBe('The npm audit check could not be run: ENOTFOUND registry.npmjs.org.');
+    expect(audit({ checkedAt: new Date(), lastError: 'timeout' }).reportText())
+      .toBe('The latest npm audit check failed: timeout.');
+  });
+});
