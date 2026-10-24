@@ -4,7 +4,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 
 const DailyReport = require('../../library/daily-report');
-const { nextMidnight, localDate, formatSpan } = require('../../library/daily-report');
+const { nextMidnight, localDate, formatSpan, describeSpan } = require('../../library/daily-report');
 const Mailer = require('../../library/mailer');
 const ServerStats = require('../../stats');
 
@@ -110,9 +110,11 @@ describe('daily report', () => {
     expect(text).not.toContain('## silent');
     expect(text).toContain("## broken\n\nThe broken module's report failed: no database");
     expect(text).toContain('## System');
-    expect(text).toContain('FHIRsmith v0.17.1 on Node.js');
+    expect(text).toContain('Versions: FHIRsmith = v0.17.1. Node = v');
     expect(text).toContain('log file');
-    expect(text).toContain('99.5% of the time');
+    expect(text).toContain('Uptime: This run = ');
+    expect(text).toContain('. All runs, 99.5%');
+    expect(text).toContain('Space: ');
   });
 
   test('run sends the report and records when, and the next covers the time since', async () => {
@@ -189,6 +191,15 @@ describe('daily report', () => {
     expect(new Date(midnight).getMinutes()).toBe(0);
     expect(localDate(midnight)).toBe('2026-10-23');
     expect(localDate(midnight - 1)).toBe('2026-10-22');
+  });
+
+  test('the title names the moment and the period', async () => {
+    const now = new Date(2026, 9, 24, 0, 0).getTime();
+    const text = await newReport({}, { stats: statsWith([], 1) }).build(now - 24 * HOUR, now);
+    expect(text.split('\n')[0]).toBe('# tx.test.org daily report for 2026-10-24 00:00 covering the last 24 hours');
+    expect(describeSpan(23.6 * HOUR)).toBe('24 hours');
+    expect(describeSpan(30 * 60000)).toBe('1 hour');
+    expect(describeSpan(3 * 24 * HOUR + 2 * HOUR)).toBe('3 days');
   });
 
   test('spans are to the minute', () => {

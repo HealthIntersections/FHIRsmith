@@ -220,6 +220,53 @@ describe('$closure (enabled)', () => {
     });
   });
 
+  // not in the specification: the client tells the server it has finished with the table
+  describe('disposing', () => {
+    const dispose = { name: 'dispose', valueBoolean: true };
+
+    test('dispose = true deletes the table', async () => {
+      await post(app, params(name('dispose-table'), reset, txResource));
+      await post(app, params(name('dispose-table'), concept('code2')));
+      const res = await post(app, params(name('dispose-table'), dispose));
+      expect(res.status).toBe(200);
+      expect(res.body.resourceType).toBe('ConceptMap');
+      expect(res.body.version).toBe('0');
+      expect(res.body.group).toBeUndefined();
+      const after = await post(app, params(name('dispose-table'), concept('code2a')));
+      expect(after.status).toBe(404);
+      // gone, so it can be initialised again without reset
+      const again = await post(app, params(name('dispose-table'), txResource));
+      expect(again.status).toBe(200);
+      expect(again.body.version).toBe('0');
+    });
+
+    test('disposing of a table that does not exist is fine', async () => {
+      const res = await post(app, params(name('never-made'), dispose));
+      expect(res.status).toBe(200);
+      expect(res.body.version).toBe('0');
+    });
+
+    test('dispose can only name the table', async () => {
+      await post(app, params(name('dispose-keep'), reset, txResource));
+      for (const other of [concept('code2'), { name: 'version', valueString: '0' }, reset, txResource]) {
+        const res = await post(app, params(name('dispose-keep'), dispose, other));
+        expect(res.status).toBe(400);
+        expect(issueText(res)).toMatch(/disposes/);
+      }
+      // and the table is still there
+      const res = await post(app, params(name('dispose-keep'), concept('code2')));
+      expect(res.status).toBe(200);
+      expect(res.body.version).toBe('1');
+    });
+
+    test('dispose = false is the same as no dispose', async () => {
+      await post(app, params(name('dispose-false'), reset, txResource));
+      const res = await post(app, params(name('dispose-false'), { name: 'dispose', valueBoolean: false }, concept('code2')));
+      expect(res.status).toBe(200);
+      expect(res.body.version).toBe('1');
+    });
+  });
+
   describe('errors', () => {
     beforeAll(async () => {
       await post(app, params(name('err-table'), reset, txResource));
@@ -555,6 +602,18 @@ describe('ClosureStore', () => {
       { name: 'useSupplement', valueCanonical: 'http://s' },
       { name: 'tx-resource', resource: { resourceType: 'CodeSystem', url: 'http://a' } }
     ]);
+  });
+
+  test('dropTable deletes a table and everything in it, and says whether there was one', () => {
+    const t = store.createTable('t', [{ name: 'tx-resource', resource: { resourceType: 'CodeSystem', url: 'http://a' } }]);
+    store.recordAdd(t, [{ key: 'a', system: 'http://a', code: 'a' }, { key: 'b', system: 'http://a', code: 'b' }],
+      [{ source: 'a', target: 'b', relationship: 'source-is-narrower-than-target' }]);
+    expect(store.dropTable('t')).toBe(true);
+    expect(store.getTable('t')).toBeNull();
+    expect(store.getParams(t.id)).toEqual([]);
+    expect(store.getConcepts(t.id)).toEqual([]);
+    expect(store.entryCount(t.id)).toBe(0);
+    expect(store.dropTable('t')).toBe(false);
   });
 
   test('recreating a table drops its concepts, entries and parameters', () => {

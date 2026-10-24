@@ -332,7 +332,8 @@ const OPERATIONS = [
       p('name', 'string', '1', 'The closure table', { min: 1 }),
       p('concept', 'Coding', '*', 'A concept to add'),
       p('version', 'string', '1', 'Return the changes since this version of the table, instead of adding concepts'),
-      p('reset', 'boolean', '1', 'Start the table again')
+      p('reset', 'boolean', '1', 'Start the table again'),
+      p('dispose', 'boolean', '1', 'The client has finished with the table, and the server can delete it (not in the specification)')
     ],
     returns: 'ConceptMap',
     returnsDoc: 'The new relationships'
