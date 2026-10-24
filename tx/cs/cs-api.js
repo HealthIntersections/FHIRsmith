@@ -1036,9 +1036,11 @@ class CodeSystemFactoryProvider {
    * @param source - the source system URI
    * @param sourceVersion - the version of the source coding (may be null)
    * @param dest - the target system URI, possibly with |version
+   * @param code - the code being translated, if known (under reverse, the target concept's
+   *   code), so a provider can leave out a map that has nothing to say about it
    */
   // eslint-disable-next-line no-unused-vars
-  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest, code = null) {
     return null;
   }
 

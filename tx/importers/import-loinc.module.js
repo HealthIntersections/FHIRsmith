@@ -3,6 +3,7 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const readline = require('readline');
+const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
 
 class LoincModule extends BaseTerminologyModule {
@@ -291,7 +292,10 @@ class LoincModule extends BaseTerminologyModule {
     // Translations are a different case: a main-only import is a legitimate thing to want,
     // and their absence costs designations, not correctness
     const optionalFiles = [
-      'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv'
+      'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv',
+      // the external code mappings: their absence costs maps to other code systems, nothing else
+      'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+      'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv'
     ];
 
     const warnings = [];
@@ -428,6 +432,11 @@ class LoincModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_descriptions_type ON Descriptions(DescriptionTypeKey)',
       'CREATE INDEX IF NOT EXISTS idx_descriptions_code_type ON Descriptions(CodeKey, DescriptionTypeKey)',
 
+      // External mapping indexes
+      'CREATE INDEX IF NOT EXISTS idx_externalcodes_code ON ExternalCodes(System, Code)',
+      'CREATE INDEX IF NOT EXISTS idx_externalmappings_code ON ExternalMappings(CodeKey)',
+      'CREATE INDEX IF NOT EXISTS idx_externalmappings_target ON ExternalMappings(ExternalCodeKey)',
+
       // Closure table indexes
       'CREATE INDEX IF NOT EXISTS idx_closure_ancestor ON Closure(AncestorKey)',
       'CREATE INDEX IF NOT EXISTS idx_closure_descendent ON Closure(DescendentKey)'
@@ -506,7 +515,9 @@ class LoincDataMigratorWithProgress {
       'AccessoryFiles/AnswerFile/AnswerList.csv',
       'AccessoryFiles/PartFile/LoincPartLink_Primary.csv',
       'AccessoryFiles/AnswerFile/LoincAnswerListLink.csv',
-      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv'
+      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv',
+      'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+      'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv'
     ];
 
     // Count main files
@@ -599,6 +610,10 @@ class LoincDataMigrator {
       this.props = new Map();
       this.propValues = new Map();
       this.partNames = new Map();
+      this.extCodeKey = 0;
+      this.extCodes = new Map(); // system|version|code -> ExternalCodeKey
+      this.extMapKey = 0;
+      this.extMaps = new Set(); // codeKey|ExternalCodeKey
 
       // Create tables and initial data
       await this.createTables(db, version, options.verbose);
@@ -630,6 +645,10 @@ class LoincDataMigrator {
 
       this.updateProgress(0, 'List Links');
       await this.processListLinks(db, sourceDir, 8, options);
+
+      this.updateProgress(0, 'External Mappings');
+      await this.processPartMappings(db, sourceDir, 9, options);
+      await this.processIeeeMappings(db, sourceDir, 9, options);
 
       this.updateProgress(0, 'Hierarchy');
       await this.processHierarchy(db, sourceDir, 9, options);
@@ -718,6 +737,21 @@ class LoincDataMigrator {
                                      LanguageKey INTEGER NOT NULL,
                                      DescriptionTypeKey INTEGER NOT NULL,
                                      Value TEXT NOT NULL
+       )`,
+      // Codes in other code systems that LOINC codes map to (one row per system|version|code)
+      `CREATE TABLE ExternalCodes (
+                                     ExternalCodeKey INTEGER NOT NULL PRIMARY KEY,
+                                     System TEXT NOT NULL,
+                                     Version TEXT NULL,
+                                     Code TEXT NOT NULL,
+                                     Display TEXT NULL
+       )`,
+      // LOINC code (Codes.CodeKey) -> ExternalCodes, with a ConceptMap equivalence (R4 codes)
+      `CREATE TABLE ExternalMappings (
+                                        ExternalMappingKey INTEGER NOT NULL PRIMARY KEY,
+                                        CodeKey INTEGER NOT NULL,
+                                        ExternalCodeKey INTEGER NOT NULL,
+                                        Equivalence TEXT NOT NULL
        )`,
       `CREATE TABLE Closure (
                                 AncestorKey INTEGER NOT NULL,
@@ -843,10 +877,7 @@ class LoincDataMigrator {
       return;
     }
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     for await (const line of rl) {
@@ -872,10 +903,7 @@ class LoincDataMigrator {
     if (options.verbose) console.log('Processing Parts...');
 
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/Part.csv');
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -927,10 +955,7 @@ class LoincDataMigrator {
     if (options.verbose) console.log('Processing Main Codes...');
 
     const filePath = path.join(sourceDir, 'LoincTable/Loinc.csv');
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1007,10 +1032,7 @@ class LoincDataMigrator {
 
     if (options.verbose) console.log('Processing Consumer Names...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1045,10 +1067,7 @@ class LoincDataMigrator {
 
     if (options.verbose) console.log('Processing Answer Lists...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1058,7 +1077,7 @@ class LoincDataMigrator {
       lineCount++;
       if (lineCount === 1) continue;
 
-      const items = csvSplit(line, 11);
+      const items = csvSplit(line, 15);
       if (items.length < 11) continue;
 
       await this.processListItem(db, items, currentList);
@@ -1111,6 +1130,111 @@ class LoincDataMigrator {
 
     this.addRelationship(db, listCodeKey, answerCodeKey, this.rels.get('Answer'));
     this.addRelationship(db, answerCodeKey, listCodeKey, this.rels.get('AnswerList'));
+
+    // ExtCodeId (11), ExtCodeDisplayName (12), ExtCodeSystem (13), ExtCodeSystemVersion (14).
+    // The file carries no equivalence for these; an answer and its external code are the same thing
+    if (items[11] && items[13]) {
+      this.addExternalMapping(db, answerCodeKey, items[13], items[14], items[11], items[12], 'equivalent');
+    }
+  }
+
+  async processPartMappings(db, sourceDir, step, options) {
+    const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv');
+    if (!fs.existsSync(filePath)) {
+      if (options.verbose) console.warn(`Part mapping file not found: ${filePath}`);
+      return;
+    }
+
+    if (options.verbose) console.log('Processing Part Mappings...');
+
+    const rl = csvRecords(filePath);
+
+    // PartNumber, PartName, PartTypeName, ExtCodeId, ExtCodeDisplayName, ExtCodeSystem,
+    // Equivalence, ContentOrigin, ExtCodeSystemVersion, ExtCodeSystemCopyrightNotice
+    let lineCount = 0;
+    let processedCount = 0;
+    for await (const line of rl) {
+      lineCount++;
+      if (lineCount === 1) continue;
+
+      const items = csvSplit(line, 10);
+      const partCode = items[0];
+      const system = items[5];
+      // RadLex mappings are not simple code-to-code maps; not handled yet
+      if (!items[3] || !system || system === 'http://www.radlex.org' || !this.codes.has(partCode)) continue;
+
+      this.addExternalMapping(db, this.codes.get(partCode).key, system, items[8], items[3], items[4], items[6] || 'equivalent');
+      processedCount++;
+
+      if (processedCount % 100 === 0) {
+        this.updateProgress(100);
+      }
+    }
+
+    const remaining = processedCount % 100;
+    if (remaining > 0) {
+      this.updateProgress(remaining);
+    }
+  }
+
+  async processIeeeMappings(db, sourceDir, step, options) {
+    const filePath = path.join(sourceDir, 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv');
+    if (!fs.existsSync(filePath)) {
+      if (options.verbose) console.warn(`IEEE mapping file not found: ${filePath}`);
+      return;
+    }
+
+    if (options.verbose) console.log('Processing IEEE Mappings...');
+
+    const rl = csvRecords(filePath);
+
+    // LOINC_NUM, LOINC_LONG_COMMON_NAME, IEEE_CF_CODE10, IEEE_REFID, EQUIVALENCE
+    // The code is the CF_CODE10 (as used in FHIR, e.g. 150456); the REFID is its display.
+    let lineCount = 0;
+    let processedCount = 0;
+    for await (const line of rl) {
+      lineCount++;
+      if (lineCount === 1) continue;
+
+      const items = csvSplit(line, 5);
+      const loincCode = items[0];
+      if (!items[2] || !this.codes.has(loincCode)) continue;
+
+      this.addExternalMapping(db, this.codes.get(loincCode).key, 'urn:iso:std:iso:11073:10101', null,
+        items[2], items[3], ieeeEquivalence(items[4]));
+      processedCount++;
+
+      if (processedCount % 100 === 0) {
+        this.updateProgress(100);
+      }
+    }
+
+    const remaining = processedCount % 100;
+    if (remaining > 0) {
+      this.updateProgress(remaining);
+    }
+  }
+
+  addExternalMapping(db, codeKey, system, version, code, display, equivalence) {
+    system = normaliseExternalSystem(system);
+    version = version || null;
+    const targetId = system + '|' + (version || '') + '|' + code;
+    let extKey = this.extCodes.get(targetId);
+    if (!extKey) {
+      this.extCodeKey++;
+      extKey = this.extCodeKey;
+      this.extCodes.set(targetId, extKey);
+      db.run('INSERT INTO ExternalCodes (ExternalCodeKey, System, Version, Code, Display) VALUES (?, ?, ?, ?, ?)',
+        [extKey, system, version, code, display || null]);
+    }
+
+    // the same answer appears once per answer list it's in
+    const mapId = codeKey + '|' + extKey;
+    if (this.extMaps.has(mapId)) return;
+    this.extMaps.add(mapId);
+    this.extMapKey++;
+    db.run('INSERT INTO ExternalMappings (ExternalMappingKey, CodeKey, ExternalCodeKey, Equivalence) VALUES (?, ?, ?, ?)',
+      [this.extMapKey, codeKey, extKey, equivalence]);
   }
 
   async processPartLinks(db, sourceDir, step, options) {
@@ -1122,10 +1246,7 @@ class LoincDataMigrator {
 
     if (options.verbose) console.log('Processing Part Links...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1171,10 +1292,7 @@ class LoincDataMigrator {
 
     if (options.verbose) console.log('Processing List Links...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1227,10 +1345,7 @@ class LoincDataMigrator {
 
     if (options.verbose) console.log('Processing Hierarchy...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1258,7 +1373,7 @@ class LoincDataMigrator {
   async processHierarchyItem(db, items) {
     const pathCode = items[3];
     const parentPath = items[2];
-    const description = items[4];
+    const description = items[4].trim();
 
     if (!this.codes.has(pathCode)) {
       this.codeKey++;
@@ -1339,10 +1454,7 @@ class LoincDataMigrator {
       return;
     }
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1488,6 +1600,29 @@ function adjustPropName(s) {
   throw new Error(`Unknown Property Name: ${s}`);
 }
 
+// LOINC names some code systems with something other than their FHIR URI. The others not yet
+// known ('CMS LCDS', 'Unicode') are left as LOINC has them
+const EXTERNAL_SYSTEM_URIS = {
+  'CMS/HCPCS': 'http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets',
+  'https://www.cdc.gov/phin': 'urn:oid:2.16.840.1.113883.6.238' // CDC Race & Ethnicity
+};
+
+function normaliseExternalSystem(system) {
+  return EXTERNAL_SYSTEM_URIS[system] || system;
+}
+
+// The IEEE table states equivalence from the LOINC side ('broader' = the LOINC code is broader,
+// e.g. Glucose in Serum or Plasma -> MDC_CONC_GLU_VENOUS_PLASMA). ConceptMap equivalence is stated
+// from the target side, so broader/narrower swap to narrower/wider.
+function ieeeEquivalence(s) {
+  switch (s) {
+    case 'broader': return 'narrower';
+    case 'narrower': return 'wider';
+    case '': return 'equivalent';
+    default: return s;
+  }
+}
+
 function descClassType(s) {
   const types = {
     '1': 'Laboratory class',
@@ -1539,5 +1674,6 @@ function removeQuotes(str) {
 
 module.exports = {
   LoincModule,
-  LoincDataMigrator
+  LoincDataMigrator,
+  normaliseExternalSystem
 };
