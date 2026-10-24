@@ -12,10 +12,12 @@
  *   s  body structures            extent, nature, localization
  *   d  activities/participation   performance, capacity, then optionally capacity with
  *                                 assistance and performance without assistance
- *   e  environmental factors      not supported yet (barriers '.', facilitators '+')
+ *   e  environmental factors      one: a barrier after '.', or a facilitator after '+' (in
+ *                                 place of the '.') - e310.2, e310+3
  * Each digit must be a value of its position's scale, which the code system carries as the
- * concepts q1-n (extent of impairment), q2-n (nature), q3-n (localization) and q4-n (extent of
- * problem), under the group concepts q1..q4. A position cannot be omitted; 8 (not specified) is
+ * concepts q1-n (extent of impairment), q2-n (nature), q3-n (localization), q4-n (extent of
+ * problem), q5-n (barrier) and q6-n (facilitator, which has no 9), under the group concepts
+ * q1..q6. A position cannot be omitted; 8 (not specified) is
  * what fills it, and 8 says nothing in the display. Each position is reported by $lookup as the
  * property named in QUALIFIERS.
  *
@@ -37,32 +39,40 @@ const { Issue } = require('../library/operation-outcome');
 const { FhirCodeSystemProvider, FhirCodeSystemProviderContext, FhirCodeSystemProviderFilterContext } = require('./cs-cs');
 
 /**
- * The qualifier positions of each component: the property that reports the qualifier, the
- * scale (group concept) its values come from, and the label that introduces its value in the
- * display (none for b and s, whose qualifiers say what they are).
+ * The qualifier positions of each component, by the separator that introduces them: the
+ * property that reports the qualifier, the scale (group concept) its values come from, and the
+ * label that introduces its value in the display (none where the value says what it is).
+ * Only environmental factors take '+', which makes the qualifier a facilitator.
  */
 const QUALIFIERS = {
-  b: [
-    { property: 'extent', scale: 'q1' }
-  ],
-  s: [
-    { property: 'extent', scale: 'q1' },
-    { property: 'nature', scale: 'q2' },
-    { property: 'localization', scale: 'q3' }
-  ],
-  d: [
-    { property: 'performance', scale: 'q4', label: 'performance' },
-    { property: 'capacity', scale: 'q4', label: 'capacity' },
-    { property: 'capacity-with-assistance', scale: 'q4', label: 'capacity with assistance' },
-    { property: 'performance-without-assistance', scale: 'q4', label: 'performance without assistance' }
-  ],
-  e: null // barriers and facilitators: not supported yet
+  b: {
+    '.': [{ property: 'extent', scale: 'q1' }]
+  },
+  s: {
+    '.': [
+      { property: 'extent', scale: 'q1' },
+      { property: 'nature', scale: 'q2' },
+      { property: 'localization', scale: 'q3' }
+    ]
+  },
+  d: {
+    '.': [
+      { property: 'performance', scale: 'q4', label: 'performance' },
+      { property: 'capacity', scale: 'q4', label: 'capacity' },
+      { property: 'capacity-with-assistance', scale: 'q4', label: 'capacity with assistance' },
+      { property: 'performance-without-assistance', scale: 'q4', label: 'performance without assistance' }
+    ]
+  },
+  e: {
+    '.': [{ property: 'barrier', scale: 'q5' }],
+    '+': [{ property: 'facilitator', scale: 'q6' }]
+  }
 };
 
 const COMPONENT_NAMES = { b: 'body functions', s: 'body structures', d: 'activities and participation', e: 'environmental factors' };
-const COMPONENT_CODES = { b: 'a body functions (b) code', s: 'a body structures (s) code', d: 'an activities and participation (d) code' };
+const COMPONENT_CODES = { b: 'a body functions (b) code', s: 'a body structures (s) code', d: 'an activities and participation (d) code', e: 'an environmental factors (e) code' };
 
-const QUALIFIER_PROPERTIES = new Set(Object.values(QUALIFIERS).filter(q => q).flatMap(q => q.map(p => p.property)));
+const QUALIFIER_PROPERTIES = new Set(Object.values(QUALIFIERS).flatMap(c => Object.values(c)).flatMap(q => q.map(p => p.property)));
 
 /**
  * A category with qualifiers. code and concept are the category's, so whatever is inherited
@@ -110,21 +120,22 @@ class IcfCodeSystemProvider extends FhirCodeSystemProvider {
   // -- locating -------------------------------------------------------------------------
 
   /**
-   * A code in the code system, or a selectable category followed by '.' and one to three
-   * qualifier digits. An unknown category is a plain miss (no message); a known category
-   * with bad qualifiers says what is wrong with them.
+   * A code in the code system, or a selectable category followed by '.' (or, for an
+   * environmental factor, '+') and its qualifier digits. An unknown category is a plain miss
+   * (no message); a known category with bad qualifiers says what is wrong with them.
    */
   async locate(code) {
     const base = await super.locate(code);
     if (base.context || typeof code !== 'string') {
       return base;
     }
-    const dot = code.indexOf('.');
-    if (dot <= 0) {
+    const sep = code.search(/[.+]/);
+    if (sep <= 0) {
       return base;
     }
-    const stemCode = code.substring(0, dot);
-    const digits = code.substring(dot + 1);
+    const separator = code[sep];
+    const stemCode = code.substring(0, sep);
+    const digits = code.substring(sep + 1);
     const stem = this.codeSystem.getConceptByCode(stemCode);
     if (!stem) {
       return { context: null, message: undefined };
@@ -133,15 +144,17 @@ class IcfCodeSystemProvider extends FhirCodeSystemProvider {
       return { context: null, message: `The ICF code '${code}' is not valid: qualifiers can only follow a selectable ICF category, and '${stemCode}' is not one` };
     }
     const component = stemCode[0];
-    const positions = QUALIFIERS[component];
+    const positions = (QUALIFIERS[component] || {})[separator];
     if (!positions) {
-      return { context: null, message: `The ICF code '${code}' is not valid: qualifiers on ${COMPONENT_NAMES[component] || 'these'} codes are not supported` };
+      return { context: null, message: separator === '+'
+        ? `The ICF code '${code}' is not valid: only an environmental factor (e) can be a facilitator, written with '+'`
+        : `The ICF code '${code}' is not valid: qualifiers on ${COMPONENT_NAMES[component] || 'these'} codes are not supported` };
     }
     const names = positions.map(q => q.property).join(', ');
     if (!new RegExp(`^[0-9]{1,${positions.length}}$`).test(digits)) {
       return { context: null, message: positions.length === 1
-        ? `The ICF code '${code}' is not valid: ${COMPONENT_CODES[component]} takes one qualifier digit after the '.' (${names})`
-        : `The ICF code '${code}' is not valid: ${COMPONENT_CODES[component]} takes 1 to ${positions.length} qualifier digits after the '.' (${names})` };
+        ? `The ICF code '${code}' is not valid: ${COMPONENT_CODES[component]} takes one qualifier digit after the '${separator}' (${names})`
+        : `The ICF code '${code}' is not valid: ${COMPONENT_CODES[component]} takes 1 to ${positions.length} qualifier digits after the '${separator}' (${names})` };
     }
     const qualifiers = [];
     for (let i = 0; i < digits.length; i++) {

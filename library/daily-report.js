@@ -85,6 +85,15 @@ function formatSpan(ms) {
   return parts.join(' ');
 }
 
+/** "24 hours", "3 days" - for the report title; rounded, since it's a description of the period */
+function describeSpan(ms) {
+  const hours = Math.round(ms / 3600000);
+  if (hours < 48) {
+    return plural(Math.max(1, hours), 'hour');
+  }
+  return plural(Math.round(hours / 24), 'day');
+}
+
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
@@ -243,8 +252,7 @@ class DailyReport {
    */
   async build(since, now = Date.now()) {
     const parts = [];
-    parts.push(`# ${this.serverId} daily report`);
-    parts.push(`${localDateTime(now)}, covering the ${formatSpan(now - since)} since ${localDateTime(since)}.`);
+    parts.push(`# ${this.serverId} daily report for ${localDateTime(now)} covering the last ${describeSpan(now - since)}`);
     parts.push('## Stability');
     parts.push(this.stabilityParagraph(since, now));
     for (const [name, module] of Object.entries(this.modules)) {
@@ -347,25 +355,26 @@ class DailyReport {
    * the disk they're on.
    */
   systemParagraph(now) {
-    const sentences = [];
-    sentences.push(`${this.serverId} is running FHIRsmith v${this.version} on Node.js ${process.version} (${os.type()} ${os.release()}, ${os.arch()}).`);
+    // one line each; the two trailing spaces are markdown's line break
+    const lines = [];
+    lines.push(`Versions: FHIRsmith = v${this.version}. Node = ${process.version} (${os.type()} ${os.release()}, ${os.arch()})`);
     if (this.stats && typeof this.stats.startTime === 'number') {
-      let up = `This run has been up for ${formatSpan(now - this.stats.startTime)}, since ${localDateTime(this.stats.startTime)}`;
+      let up = `Uptime: This run = ${formatSpan(now - this.stats.startTime)}`;
       const overall = typeof this.stats.overallUptime === 'function' ? this.stats.overallUptime(now) : null;
       if (overall) {
         const pct = overall.percent >= 100 ? '100' : (Math.floor(overall.percent * 10) / 10).toFixed(1);
-        up += `; over all its recorded runs (since ${localDate(overall.since)}) the server has been up ${pct}% of the time`;
+        up += `. All runs, ${pct}%`;
       }
-      sentences.push(up + '.');
+      lines.push(up);
     }
-    sentences.push(this.logsSentence());
+    lines.push(`Space: ${this.logsText()}`);
     if (this.npmAudit && typeof this.npmAudit.reportText === 'function') {
       const audit = this.npmAudit.reportText();
       if (audit) {
-        sentences.push(audit);
+        lines.push(`Audit: ${audit}`);
       }
     }
-    return sentences.join(' ');
+    return lines.join('  \n');
   }
 
   /**
@@ -388,7 +397,7 @@ class DailyReport {
     return `${plural(failed.length, 'background task')} ${failed.length === 1 ? 'is' : 'are'} in a failed state:\n\n${lines.join('\n')}`;
   }
 
-  logsSentence() {
+  logsText() {
     const logDir = folders.logsDir();
     try {
       const files = fs.readdirSync(logDir).filter(f => f.endsWith('.log'));
@@ -402,13 +411,13 @@ class DailyReport {
         const free = fstats.bavail * fstats.bsize;
         const size = fstats.blocks * fstats.bsize;
         const freePct = size > 0 ? Math.round((free * 100) / size) : 0;
-        disk = `, on a disk with ${formatBytes(free)} free of ${formatBytes(size)} (${freePct}% free)`;
+        disk = ` on a disk with ${formatBytes(free)} free of ${formatBytes(size)} (${freePct}% free)`;
       } catch {
-        disk = ', on a disk whose free space could not be read';
+        disk = ' on a disk whose free space could not be read';
       }
-      return `The logs folder (${logDir}) holds ${plural(files.length, 'log file')} totalling ${formatBytes(total)}${disk}.`;
+      return `${plural(files.length, 'log file')} totalling ${formatBytes(total)}${disk}.`;
     } catch (e) {
-      return `The logs folder (${logDir}) could not be read: ${e.message}.`;
+      return `the logs folder (${logDir}) could not be read: ${e.message}.`;
     }
   }
 }
@@ -417,6 +426,7 @@ module.exports = DailyReport;
 module.exports.nextMidnight = nextMidnight;
 module.exports.localDate = localDate;
 module.exports.formatSpan = formatSpan;
+module.exports.describeSpan = describeSpan;
 // for modules writing their paragraph: "3 packages", "1 package"
 module.exports.plural = plural;
 module.exports.localDateTime = localDateTime;

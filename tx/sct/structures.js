@@ -1358,7 +1358,7 @@ class SnomedFileReader {
     }
 
     // Determine settings based on cache version string (matching Pascal logic)
-    if (result.cacheVersion === '17') { // SNOMED_CACHE_VERSION_CURRENT
+    if (result.cacheVersion === '17' || result.cacheVersion === '18') { // SNOMED_CACHE_VERSION_CURRENT (18 = 17 + alternate identifiers)
       result.hasLangs = true;
     } else if (result.cacheVersion === '16') { // Assuming this is UTF8 version for now
       result.isUTF16 = false;
@@ -1379,8 +1379,14 @@ class SnomedFileReader {
       result.activeRoots.push(this.readUInt64());
     }
 
-    // Read default language LAST
+    // Read default language
     result.defaultLanguage = this.readInteger();
+
+    // Alternate identifiers (version 18): [[scheme, module, code, conceptId], ...]
+    result.identifiers = [];
+    if (result.cacheVersion === '18') {
+      result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
+    }
 
     return result;
   }

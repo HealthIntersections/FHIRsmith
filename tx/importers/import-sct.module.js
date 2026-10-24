@@ -1136,6 +1136,9 @@ class SnomedImporter {
       // Step 10: Read relationships
       await this.readRelationships();
 
+      // Step 10a: Read alternate identifiers (e.g. the LOINC codes of the LOINC Extension)
+      await this.readIdentifiers();
+
       // Step 11: Link concepts
       this.linkConcepts();
 
@@ -1165,6 +1168,7 @@ class SnomedImporter {
       concepts: [],
       descriptions: [],
       relationships: [],
+      identifiers: [],
       refsetDirectories: []
     };
 
@@ -1218,6 +1222,8 @@ class SnomedImporter {
       } else if (firstLine.startsWith('id\teffectiveTime\tactive\tmoduleId\tsourceId\tdestinationId\trelationshipGroup\ttypeId\tcharacteristicTypeId\tmodifierId') &&
           !filePath.includes('StatedRelationship')) {
         files.relationships.push(filePath);
+      } else if (files.identifiers && firstLine.startsWith('alternateIdentifier\teffectiveTime\tactive\tmoduleId\tidentifierSchemeId\treferencedComponentId')) {
+        files.identifiers.push(filePath);
       }
     } catch (error) {
       console.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
@@ -1724,6 +1730,56 @@ class SnomedImporter {
   // Helper method to check if string is an integer
   isInteger(str) {
     return /^\d+$/.test(str);
+  }
+
+  /**
+   * Read the alternate identifier files (sct2_Identifier). Each active row gives a
+   * concept a code in another scheme - the LOINC Extension, for instance, gives each
+   * of its concepts its LOINC code (scheme 30051010000102 |LOINC code identifier|).
+   * Kept as [scheme, module, code, conceptId] for the concepts in this edition; where
+   * a row appears more than once (Full files, or base + extension) the latest wins.
+   */
+  async readIdentifiers() {
+    const rows = new Map(); // scheme|code|concept -> {effectiveTime, active, row}
+    for (const file of this.files.identifiers || []) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(file),
+        crlfDelay: Infinity
+      });
+      let lineCount = 0;
+      for await (const line of rl) {
+        lineCount++;
+        if (lineCount === 1 || !line) continue;
+        const parts = line.split('\t');
+        if (parts.length < 6) continue;
+        const [code, effectiveTime, active, moduleId, schemeId, conceptId] = parts.map(p => p.trim());
+        const key = schemeId + '|' + code + '|' + conceptId;
+        const prior = rows.get(key);
+        if (!prior || prior.effectiveTime <= effectiveTime) {
+          rows.set(key, { effectiveTime, active: active === '1', row: [schemeId, moduleId, code, conceptId] });
+        }
+      }
+    }
+    this.identifiers = [];
+    let missing = 0;
+    for (const r of rows.values()) {
+      if (!r.active) continue;
+      let known = false;
+      try {
+        known = this.conceptMap.has(BigInt(r.row[3]));
+      } catch {
+        known = false;
+      }
+      if (known) {
+        this.identifiers.push(r.row);
+      } else {
+        missing++;
+      }
+    }
+    this.identifiers.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
+    if (this.identifiers.length > 0 || missing > 0) {
+      console.log(`Alternate identifiers: ${this.identifiers.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
+    }
   }
 
   async readRelationships() {
@@ -2766,8 +2822,12 @@ class SnomedImporter {
 
     progressBar?.update(50);
 
+    const identifiers = this.identifiers || [];
     await writer.writeCache({
-      version: '17', // Current version
+      // 18 = 17 plus the alternate identifiers. Only used when there are some, so that
+      // caches without them stay readable by servers that only know 17
+      version: identifiers.length > 0 ? '18' : '17',
+      identifiers: identifiers,
       versionUri: this.isTesting ? this.config.uri.replace("/sct/", "/xsct/") : this.config.uri,
       versionDate: this.extractDateFromUri(this.config.uri),
 
@@ -2853,6 +2913,11 @@ class SnomedCacheWriter {
       buffers.push(this.writeUInt64(root));
     }
     buffers.push(this.writeInteger(data.defaultLanguage));
+
+    if (data.version === '18') {
+      // alternate identifiers, as JSON: [[scheme, module, code, conceptId], ...]
+      buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.identifiers || []), 'utf8')));
+    }
 
     // Write to file
     const finalBuffer = Buffer.concat(buffers);

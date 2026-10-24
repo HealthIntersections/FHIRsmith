@@ -17,6 +17,12 @@
 //                                      already exists, unless reset = true, which wipes it
 //   name + concept(s)                  add concepts; returns the entries they produce
 //   name + version                     resync; returns every entry added after version
+//   name + dispose = true              the client has finished with the table, so it is
+//                                      deleted. Not in the specification: the client is
+//                                      just telling the server it can let the table go.
+//                                      Disposing of a table that doesn't exist is fine
+//                                      (it may already have been pruned). It can't be
+//                                      combined with anything else
 //
 // The configuration is fixed when the table is initialised, and replayed on every later
 // call: tx-resource (the code systems it is built over, which the client does not send
@@ -147,6 +153,7 @@ class ClosureWorker extends TerminologyWorker {
     const config = [];
     let versionParam = null;
     let reset = false;
+    let dispose = false;
     const ignored = [];
     for (const p of list) {
       if (p.name === 'concept') {
@@ -157,6 +164,8 @@ class ClosureWorker extends TerminologyWorker {
         versionParam = p;
       } else if (p.name === 'reset') {
         reset = p.valueBoolean === true || p.valueString === 'true';
+      } else if (p.name === 'dispose') {
+        dispose = p.valueBoolean === true || p.valueString === 'true';
       } else if (p.name !== 'name') {
         // Ignored, as everywhere else in the server: a request carries parameters that
         // are not for the operation in hand. The tx-ecosystem runner, for one, adds a
@@ -166,6 +175,17 @@ class ClosureWorker extends TerminologyWorker {
     }
     if (ignored.length > 0) {
       this.log.debug(`$closure: ignored parameter(s) ${ignored.map(safeText).join(', ')}`);
+    }
+    if (dispose) {
+      if (concepts.length > 0 || versionParam || reset || config.length > 0) {
+        throw this.closureIssue('invalid', 'CLOSURE_DISPOSE_NOT_ALONE', [], 'invalid-data', 400);
+      }
+      return await this.lockTable(name, async () => {
+        if (this.store.dropTable(name)) {
+          this.log.info(`closure table '${name}' disposed`);
+        }
+        return await this.buildConceptMap(name, 0, [], fhirVersion);
+      });
     }
     if (concepts.length > 0 && versionParam) {
       throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_AND_VERSION', [], 'invalid-data', 400);

@@ -286,10 +286,13 @@ class Provider {
       }
     }
 
+    // Ask each code system version once: an implicit map can belong to one version
+    // only (a SNOMED CT edition's maps are named by its edition URI)
     let uris = new Set();
     for (let csp of this.codeSystemFactories.values()) {
-      if (!uris.has(csp.system())) {
-        uris.add(csp.system());
+      const key = csp.system() + '|' + csp.version();
+      if (!uris.has(key)) {
+        uris.add(key);
         let cm = await csp.findImplicitConceptMap(url, version);
         if (cm) {
           return cm;
@@ -343,16 +346,19 @@ class Provider {
       // version (every SNOMED edition, say) is asked, since whether a map exists and what
       // it says can depend on which version the source coding is in. The factory decides
       // from sourceVersion whether it is the one being asked about.
+      // The same goes for the target system: a map from another system into one SNOMED
+      // edition (LOINC codes to the concepts that carry them, say) belongs to that edition.
+      const targetBase = targetSystem.split('|')[0];
       let uris = new Set();
       let asked = new Set(); // a factory is registered under several keys (system, system|version...)
       for (let csp of this.codeSystemFactories.values()) {
         if (asked.has(csp)) {
           continue;
         }
-        if (csp.system() === sourceSystem || !uris.has(csp.system())) {
+        if (csp.system() === sourceSystem || csp.system() === targetBase || !uris.has(csp.system())) {
           uris.add(csp.system());
           asked.add(csp);
-          await csp.findImplicitConceptMaps(conceptMaps, sourceSystem, sourceVersion, targetSystem);
+          await csp.findImplicitConceptMaps(conceptMaps, sourceSystem, sourceVersion, targetSystem, sourceCode);
         }
       }
     }
