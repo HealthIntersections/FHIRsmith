@@ -287,6 +287,20 @@ class ClosureStore {
   }
 
   /**
+   * Delete a table, and everything in it. The caller holds the table's lock.
+   * @param {string} name
+   * @returns {boolean} whether there was a table to delete
+   */
+  dropTable(name) {
+    const existing = this.stmt.getTable.get(name);
+    if (!existing) {
+      return false;
+    }
+    this.stmt.deleteTable.run(existing.id);
+    return true;
+  }
+
+  /**
    * The parameters the table was initialised with, as Parameters.parameter entries.
    */
   getParams(tableId) {
