@@ -46,7 +46,7 @@ describe('ICF CodeSystem Provider', () => {
       expect(r.context).not.toBeInstanceOf(IcfQualifiedContext);
     });
 
-    test.each(['b1100.2', 'b110.0', 'b1100.9', 's7300.183', 's7300.8', 'd450.4', 'd450.48', 'd450.1234'])('%s is a valid qualified code', async (code) => {
+    test.each(['b1100.2', 'b110.0', 'b1100.9', 's7300.183', 's7300.8', 'd450.4', 'd450.48', 'd450.1234', 'e310.2', 'e310.9', 'e310+3', 'e310+0', 'e310+8'])('%s is a valid qualified code', async (code) => {
       const r = await provider.locate(code);
       expect(r.message).toBeNull();
       expect(r.context).toBeInstanceOf(IcfQualifiedContext);
@@ -68,8 +68,11 @@ describe('ICF CodeSystem Provider', () => {
       ['d450.12345', 'takes 1 to 4 qualifier digits'],
       ['d450.5', "'5' is not a valid value for qualifier 1 (performance)"],
       ['d450.15', "'5' is not a valid value for qualifier 2 (capacity)"],
-      ['e310.2', 'qualifiers on environmental factors codes are not supported'],
-      ['e310+2', 'zzz-unknown'],
+      ['e310+9', "'9' is not a valid value for qualifier 1 (facilitator)"],
+      ['e310.23', "takes one qualifier digit after the '.' (barrier)"],
+      ['e310+23', "takes one qualifier digit after the '+' (facilitator)"],
+      ['b1100+2', "only an environmental factor (e) can be a facilitator"],
+      ['e9999+2', 'zzz-unknown'],
       ['b1.2', "'b1' is not one"],
       ['b110-b139.2', 'is not one'],
       ['q1-2.2', 'is not one']
@@ -92,6 +95,10 @@ describe('ICF CodeSystem Provider', () => {
       expect(await provider.display('d450.12')).toBe('Walking: performance MILD problem, capacity MODERATE problem');
       expect(await provider.display('d450.8834')).toBe('Walking: capacity with assistance SEVERE problem, performance without assistance COMPLETE problem');
       expect(await provider.display('d450.9')).toBe('Walking: performance not applicable');
+      expect(await provider.display('e310.2')).toBe('Immediate family: MODERATE barrier');
+      expect(await provider.display('e310+3')).toBe('Immediate family: SUBSTANTIAL facilitator');
+      expect(await provider.display('e310.9')).toBe('Immediate family: not applicable');
+      expect(await provider.display('e310+8')).toBe('Immediate family');
     });
 
     test('8 (not specified) is silent', async () => {
@@ -126,6 +133,11 @@ describe('ICF CodeSystem Provider', () => {
       expect(value('capacity-with-assistance')).toEqual(['q4-3']);
       expect(value('performance-without-assistance')).toEqual(['q4-4']);
       expect(value('extent')).toEqual([]);
+    });
+
+    test('an e code reports its barrier or facilitator', async () => {
+      expect((await provider.properties('e310.2')).filter(p => p.code === 'barrier').map(p => p.valueCode)).toEqual(['q5-2']);
+      expect((await provider.properties('e310+3')).filter(p => p.code === 'facilitator').map(p => p.valueCode)).toEqual(['q6-3']);
     });
 
     test('extendLookup has the qualifiers and parent, but no children', async () => {
@@ -227,6 +239,12 @@ describe('ICF CodeSystem Provider', () => {
       ['d450', false], ['d450.1', false], ['d450.12', true], ['d450.18', false], ['d450.8823', false]
     ])('capacity exists true: %s -> %s', async (code, inVs) => {
       expect(await member([['concept', 'is-a', 'd'], ['capacity', 'exists', 'true']], code)).toBe(inVs);
+    });
+
+    test.each([
+      ['e310', false], ['e310.2', false], ['e310+3', true], ['e310+0', true], ['e310+8', false]
+    ])('facilitator exists true: %s -> %s', async (code, inVs) => {
+      expect(await member([['concept', 'is-a', 'e'], ['facilitator', 'exists', 'true']], code)).toBe(inVs);
     });
 
     test('extent does not apply to d codes', async () => {
