@@ -7,6 +7,7 @@ const { validateOptionalParameter, validateArrayParameter} = require("../../libr
 const {BaseCSServices} = require("./cs-base");
 const {sqlEscapeString} = require("../../xig/xig");
 const regexUtilities = require('../../library/regex-utilities');
+const {ConceptMap} = require("../library/conceptmap");
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -15,6 +16,42 @@ const LoincProviderContextKind = {
   LIST: 2,    // lpckList
   ANSWER: 3   // lpckAnswer
 };
+
+// LOINC's mappings to other code systems (the ExternalCodes / ExternalMappings tables, from
+// PartRelatedCodeMapping, the IEEE mapping table and the answer lists). Each target system
+// has an implicit ConceptMap http://loinc.org/cm/<key>, and its mappings are $lookup
+// properties named <key>. Targets in systems not listed here are not used yet
+const LOINC_MAPS = [
+  { system: 'http://loinc.org', key: 'loinc' },
+  { system: 'http://pubchem.ncbi.nlm.nih.gov', key: 'ncbi' },
+  { system: 'http://snomed.info/sct', key: 'sct' },
+  { system: 'http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets', key: 'hcpcs' },
+  { system: 'http://www.genenames.org', key: 'gene-names' },
+  { system: 'http://www.nlm.nih.gov/research/umls/rxnorm', key: 'rxnorm' },
+  { system: 'https://www.ebi.ac.uk/chebi', key: 'chebi' },
+  { system: 'https://www.ncbi.nlm.nih.gov/clinvar', key: 'ncbi-clinvar' },
+  { system: 'https://www.ncbi.nlm.nih.gov/gene', key: 'ncbi-gene' },
+  { system: 'https://www.ncbi.nlm.nih.gov/taxonomy', key: 'ncbi-taxo' },
+  { system: 'urn:iso:std:iso:11073:10101', key: 'mdc' },
+  { system: 'urn:oid:2.16.840.1.113883.6.238', key: 'race' }
+];
+const LOINC_MAP_BASE = 'http://loinc.org/cm/';
+
+// The mapping tables hold R4 equivalences, stated from the LOINC code to the external code.
+// Translations report R5 relationships, from the code being translated to the one found
+function mapRelationship(equivalence, fromLoinc) {
+  switch (equivalence) {
+    case 'equivalent':
+    case 'equal':
+      return 'equivalent';
+    case 'narrower': // the external code is narrower than the LOINC code
+      return fromLoinc ? 'source-is-broader-than-target' : 'source-is-narrower-than-target';
+    case 'wider':
+      return fromLoinc ? 'source-is-narrower-than-target' : 'source-is-broader-than-target';
+    default:
+      return 'related-to';
+  }
+}
 
 const classTypes = {
   '1': 'Laboratory class',
@@ -127,6 +164,7 @@ class LoincServices extends BaseCSServices {
     this.propertyList = sharedData.propertyList;
     this.statusKeys = sharedData.statusKeys;
     this.statusCodes = sharedData.statusCodes;
+    this.hasMappings = sharedData.hasMappings;
   }
 
   close() {
@@ -319,8 +357,112 @@ class LoincServices extends BaseCSServices {
       this.#addRelationshipProperties(ctxt, props, params),
       this.#addConceptProperties(ctxt, props,params),
       this.#addStatusProperty(ctxt, props,params),
-      this.#addRelatedNames(ctxt, props,params)
+      this.#addRelatedNames(ctxt, props,params),
+      this.#addMappingProperties(ctxt, props, params)
     ]);
+  }
+
+  /**
+   * The code's mappings to other code systems, as Coding-valued properties named for the
+   * map (sct, chebi, mdc...), each with its equivalence as a subproperty. Returned by
+   * default, and when asked for by name
+   */
+  async #addMappingProperties(ctxt, props, params) {
+    if (!this.hasMappings) {
+      return;
+    }
+    const rows = await this.#dbAll(`
+        SELECT ExternalCodes.System, ExternalCodes.Version, ExternalCodes.Code, ExternalCodes.Display, ExternalMappings.Equivalence
+        FROM ExternalMappings, ExternalCodes
+        WHERE ExternalMappings.CodeKey = ?
+          AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+        ORDER BY ExternalCodes.System, ExternalCodes.Code`, [ctxt.key]);
+    for (const row of rows) {
+      const map = LOINC_MAPS.find(m => m.system === row.System);
+      if (map && this._hasProp(props, map.key, true)) {
+        const coding = { system: row.System };
+        if (row.Version) {
+          coding.version = row.Version;
+        }
+        coding.code = row.Code;
+        if (row.Display) {
+          coding.display = row.Display;
+        }
+        params.push({
+          name: 'property',
+          part: [
+            { name: 'code', valueCode: map.key },
+            { name: 'value', valueCoding: coding },
+            { name: 'subproperty', part: [{ name: 'code', valueCode: 'equivalence' }, { name: 'value', valueCode: row.Equivalence }] }
+          ]
+        });
+      }
+    }
+  }
+
+  #dbAll(sql, args) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, args, (err, rows) => err ? reject(err) : resolve(rows));
+    });
+  }
+
+  /**
+   * Translate using one of LOINC's implicit maps (http://loinc.org/cm/<key>). The map works
+   * in both directions, decided by the system of the code being translated: a LOINC code to
+   * the codes it maps to in the map's system, or a code in that system to the LOINC codes
+   * that map to it (for the LOINC to LOINC map, always the first). The version of a non-LOINC
+   * code is not used: the mappings name one version of each external system
+   */
+  async getTranslations(map, coding, target, reverse) { // eslint-disable-line no-unused-vars
+    const lm = map && map.jsonObj.loincMap;
+    if (!lm || !this.hasMappings) {
+      return [];
+    }
+    const targetSystem = target ? target.split('|')[0] : null;
+    const result = [];
+    if (coding.system === this.system() && (!targetSystem || targetSystem === lm.system)) {
+      const ctxt = this.codes.get(coding.code);
+      if (!ctxt) {
+        return [];
+      }
+      const rows = await this.#dbAll(`
+          SELECT ExternalCodes.Version, ExternalCodes.Code, ExternalCodes.Display, ExternalMappings.Equivalence
+          FROM ExternalMappings, ExternalCodes
+          WHERE ExternalMappings.CodeKey = ?
+            AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+            AND ExternalCodes.System = ?
+          ORDER BY ExternalCodes.Code`, [ctxt.key, lm.system]);
+      for (const row of rows) {
+        const t = { map: map.vurl, system: lm.system, code: row.Code, relationship: mapRelationship(row.Equivalence, true) };
+        if (row.Version) {
+          t.version = row.Version;
+        }
+        if (row.Display) {
+          t.display = row.Display;
+        }
+        result.push(t);
+      }
+    } else if (coding.system === lm.system && (!targetSystem || targetSystem === this.system())) {
+      const rows = await this.#dbAll(`
+          SELECT Codes.Code, Codes.Description, ExternalMappings.Equivalence
+          FROM ExternalCodes, ExternalMappings, Codes
+          WHERE ExternalCodes.System = ?
+            AND ExternalCodes.Code = ?
+            AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+            AND Codes.CodeKey = ExternalMappings.CodeKey
+          ORDER BY Codes.Code`, [lm.system, coding.code]);
+      for (const row of rows) {
+        result.push({
+          map: map.vurl,
+          system: this.system(),
+          version: this.version(),
+          code: row.Code,
+          display: row.Description,
+          relationship: mapRelationship(row.Equivalence, false)
+        });
+      }
+    }
+    return result;
   }
 
   #getDesignationUse(kind) {
@@ -1178,6 +1320,9 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         propertyList: new Map(),
         statusKeys: new Map(),
         statusCodes: new Map(),
+        hasMappings: false,
+        mappedCodes: new Map(), // LOINC code -> Set of the systems it maps to
+        mappedTargets: new Set(), // system|code of every external code something maps to
         _version: '',
         root: '',
         firstCodeKey: 0
@@ -1190,11 +1335,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         this.#loadStatusCodes(db),
         this.#loadRelationshipTypes(db),
         this.#loadPropertyTypes(db),
-        this.#loadConfig(db)
+        this.#loadConfig(db),
+        this.#loadHasMappings(db)
       ]);
 
       // Load codes (largest operation)
       await this.#loadCodes(db);
+      await this.#loadMappingIndex(db);
 
       // Load dependent data in parallel
       await Promise.all([
@@ -1418,6 +1565,106 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   defaultVersion() {
     return this._sharedData?._version || 'unknown';
+  }
+
+  // the mapping tables were added with the LOINC 2.83 importer; older databases don't have them
+  async #loadHasMappings(db) {
+    return new Promise((resolve, reject) => {
+      db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ExternalMappings'", (err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          this._sharedData.hasMappings = !!row;
+          resolve();
+        }
+      });
+    });
+  }
+
+  // which codes have mappings, so that a map is only offered for a code it says something about
+  async #loadMappingIndex(db) {
+    if (!this._sharedData.hasMappings) {
+      return;
+    }
+    return new Promise((resolve, reject) => {
+      db.all(`SELECT Codes.Code as LoincCode, ExternalCodes.System, ExternalCodes.Code
+              FROM ExternalMappings, ExternalCodes, Codes
+              WHERE ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+                AND ExternalMappings.CodeKey = Codes.CodeKey`, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          for (const row of rows) {
+            let systems = this._sharedData.mappedCodes.get(row.LoincCode);
+            if (!systems) {
+              systems = new Set();
+              this._sharedData.mappedCodes.set(row.LoincCode, systems);
+            }
+            systems.add(row.System);
+            this._sharedData.mappedTargets.add(row.System + '|' + row.Code);
+          }
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
+   * LOINC's implicit maps (see LOINC_MAPS): from LOINC to a system it maps to, or from that
+   * system to LOINC. When the code being translated is known, the map is only offered if it
+   * has a mapping for it - so a translation between LOINC and SNOMED CT that the SNOMED CT
+   * edition answers (the LOINC Extension) does not also report a LOINC map that says nothing.
+   * The code may be on either side (under reverse it is the target concept)
+   */
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest, code = null) { // eslint-disable-line no-unused-vars
+    await this.#ensureLoaded();
+    if (!dest || !this._sharedData.hasMappings) {
+      return;
+    }
+    const destSystem = dest.split('|')[0];
+    let other = null;
+    if (source === this.system()) {
+      other = destSystem;
+    } else if (destSystem === this.system()) {
+      other = source;
+    }
+    const lm = LOINC_MAPS.find(m => m.system === other);
+    if (!lm || conceptMaps.some(m => m.url === LOINC_MAP_BASE + lm.key)) {
+      return;
+    }
+    if (code && !(this._sharedData.mappedCodes.get(code)?.has(lm.system)) && !this._sharedData.mappedTargets.has(lm.system + '|' + code)) {
+      return;
+    }
+    conceptMaps.push(this.#loincMap(lm));
+  }
+
+  async findImplicitConceptMap(url, version) {
+    if (!url || !url.startsWith(LOINC_MAP_BASE)) {
+      return null;
+    }
+    await this.#ensureLoaded();
+    if ((version && version !== this.version()) || !this._sharedData.hasMappings) {
+      return null;
+    }
+    const lm = LOINC_MAPS.find(m => LOINC_MAP_BASE + m.key === url);
+    return lm ? this.#loincMap(lm) : null;
+  }
+
+  #loincMap(lm) {
+    const groups = [{ source: this.system(), target: lm.system }];
+    if (lm.system !== this.system()) {
+      groups.push({ source: lm.system, target: this.system() });
+    }
+    return new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      loincMap: lm,
+      url: LOINC_MAP_BASE + lm.key,
+      name: `LOINC ${lm.key} Concept Map`,
+      description: `The mappings between LOINC ${this.version()} and ${lm.system}, as published by LOINC`,
+      status: 'active',
+      group: groups
+    });
   }
 
   async build(opContext, supplements) {
