@@ -2,6 +2,7 @@ const { BaseTerminologyModule } = require('./tx-import-base');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
+const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
 
 class LoincSubsetModule extends BaseTerminologyModule {
@@ -717,6 +718,16 @@ class LoincSubsetProcessor {
         handler: 'processHierarchy'
       },
       {
+        source: 'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+        dest: 'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+        handler: 'processFirstColumnCodes'
+      },
+      {
+        source: 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv',
+        dest: 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv',
+        handler: 'processFirstColumnCodes'
+      },
+      {
         source: 'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv',
         dest: 'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv',
         handler: 'processLanguageVariants'
@@ -787,7 +798,8 @@ class LoincSubsetProcessor {
       path.join(destDir, 'AccessoryFiles/ConsumerName'),
       path.join(destDir, 'AccessoryFiles/AnswerFile'),
       path.join(destDir, 'AccessoryFiles/ComponentHierarchyBySystem'),
-      path.join(destDir, 'AccessoryFiles/LinguisticVariants')
+      path.join(destDir, 'AccessoryFiles/LinguisticVariants'),
+      path.join(destDir, 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable')
     ];
 
     for (const dir of dirs) {
@@ -876,6 +888,16 @@ class LoincSubsetProcessor {
       }
 
       return hasCode;
+    });
+  }
+
+  // keep the rows whose first column (the LOINC code or part) is in the subset
+  async processFirstColumnCodes(sourcePath, destPath) {
+    await this.processFileWithFilter(sourcePath, destPath, (line, lineNum) => {
+      if (lineNum === 1) return true; // Keep header
+
+      const items = this.csvSplit(line, 1);
+      return this.targetCodes.has(this.removeQuotes(items[0]));
     });
   }
 
@@ -1002,13 +1024,10 @@ class LoincSubsetProcessor {
       return;
     }
 
-    const readStream = fs.createReadStream(sourcePath);
     const writeStream = fs.createWriteStream(destPath);
 
-    const rl = readline.createInterface({
-      input: readStream,
-      crlfDelay: Infinity
-    });
+    // records, not lines: a quoted field can hold a line break
+    const rl = csvRecords(sourcePath);
 
     let lineNum = 0;
     let includedLines = 0;

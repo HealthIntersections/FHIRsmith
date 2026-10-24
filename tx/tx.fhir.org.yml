@@ -20,7 +20,7 @@ sources:
   - internal:hgvs
   - ucum:tx/data/ucum-essence.xml
   - loinc:loinc-2.77-a.db
-  - loinc!:Loinc_2.82.db
+  - loinc!:Loinc_2.83.db
   - rxnorm:rxnorm_03022026.db
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
@@ -32,7 +32,7 @@ sources:
   - snomed:sct_us_20230301.cache
   - snomed:sct_us_20240301.cache
   - snomed:sct_us_20250901.cache
-  - snomed:sct_test_20250909c.cache
+  - snomed:sct_test_20250909d.cache
   - cpt:CodeSystem-cpt.db|cpt-2023-fragment-0.1.db
   - omop:omop_v20250227.db
   - npm:hl7.terminology=tho

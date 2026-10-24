@@ -11,9 +11,9 @@ sources:
   - internal:hgvs
   - internal:urls
   - ucum:tx/data/ucum-essence.xml
-  - loinc!:Loinc_2.82.db
+  - loinc!:Loinc_2.83.db
   - snomed!:sct_intl_20250201.cache
-  - snomed:sct_test_20250909c.cache
+  - snomed:sct_test_20250909d.cache
   - omop:omop_v20250227.db
   - icd11:icd11-2026-01-b.db
   - npm:hl7.terminology=tho

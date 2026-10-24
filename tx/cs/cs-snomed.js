@@ -31,6 +31,18 @@ const Logger = require("../../library/logger");
 // shared - it simply recomputes.
 const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
 
+/**
+ * Alternate identifier schemes (sct2_Identifier) that FHIRsmith knows how to present:
+ * the code system the identifiers are codes in, and the $lookup property they are
+ * returned as. An identifier in an unknown scheme is kept but not reported.
+ */
+const IDENTIFIER_SCHEMES = {
+  '30051010000102': { system: 'http://loinc.org', property: 'loinc' }   // |LOINC code identifier| (LOINC Extension)
+};
+
+/** The $expand / ECL-free filter on alternate identifiers: mapped:<scheme> exists true|false */
+const MAPPED_FILTER_PREFIX = 'mapped:';
+
 // Description language index -> language code. The index is assigned at import
 // time by SnomedImporter.mapLanguageCode(); this table is its inverse and must
 // be kept in step with it.
@@ -192,6 +204,47 @@ class SnomedServices {
     // means "could not decide", and leaves the value unchecked.
     this.expressionServices.eclConstraintMatcher = (constraint, value) => this.mrcmRangeSatisfied(constraint, value);
     this._mrcmRangeCache = new Map();
+
+    this.#loadIdentifiers(sharedData.identifiers || []);
+  }
+
+  /**
+   * Index the alternate identifiers (sct2_Identifier rows, active only, as
+   * [scheme, module, code, conceptId]) both ways: concept -> identifiers, and
+   * scheme|code -> concepts. Also which modules carry identifiers, since each such
+   * module defines an implicit map (?fhir_cm=<module>).
+   */
+  #loadIdentifiers(rows) {
+    this.identifiersByConcept = new Map();
+    this.conceptsByIdentifier = new Map();
+    this.identifierModules = new Map(); // module -> Set of schemes
+    for (const [scheme, module, code, conceptId] of rows) {
+      const entry = { scheme, module, code };
+      if (!this.identifiersByConcept.has(conceptId)) {
+        this.identifiersByConcept.set(conceptId, []);
+      }
+      this.identifiersByConcept.get(conceptId).push(entry);
+      const key = scheme + '|' + code;
+      if (!this.conceptsByIdentifier.has(key)) {
+        this.conceptsByIdentifier.set(key, []);
+      }
+      this.conceptsByIdentifier.get(key).push(conceptId);
+      if (!this.identifierModules.has(module)) {
+        this.identifierModules.set(module, new Set());
+      }
+      this.identifierModules.get(module).add(scheme);
+    }
+  }
+
+  /** The alternate identifiers of a concept (by id), optionally only those of one scheme */
+  getIdentifiers(conceptId, scheme = null) {
+    const list = this.identifiersByConcept.get(String(conceptId)) || [];
+    return scheme ? list.filter(i => i.scheme === scheme) : list;
+  }
+
+  /** The concept ids that have the given code in the given scheme */
+  getConceptsForIdentifier(scheme, code) {
+    return this.conceptsByIdentifier.get(scheme + '|' + code) || [];
   }
 
   /**
@@ -2707,34 +2760,46 @@ class SnomedProvider extends BaseCSServices {
     const ctxt = await this.#ensureContext(context);
     if (ctxt) {
       if (!(ctxt instanceof SnomedExpressionContext) || ctxt.expression?.concepts.length == 1) {
-        const time = this.sct.concepts.getConcept(ctxt.getReference()).effectiveTime;
-        // Pascal TDateTime epoch (1899-12-30) computed in UTC so the formatted
-        // date is timezone-independent. new Date(1899,11,30) is LOCAL midnight,
-        // which in zones ahead of UTC rolls the ISO date back by one day.
-        const pascalEpochUTC = Date.UTC(1899, 11, 30);
-        const date = new Date(pascalEpochUTC + time * 86400000);
-        const dateStr = date.toISOString().slice(0, 10);
-        this._addDateTimeProperty(params, 'property', 'effectiveTime', dateStr);
-
-
-        const parents = this.sct.getConceptParents(ctxt.getReference());
-        for (let parentRef of parents) {
-          const code = this.sct.getConceptId(parentRef);
-          const description = this.sct.getDisplayName(parentRef);
-          this._addCodeProperty(params, 'property', 'parent', code, null, description);
+        // Only what was asked for, if anything was (see _hasProp): effectiveTime, module,
+        // parent, child and the defining relationships are returned by default but are not
+        // important enough to return when the client named the properties it wants.
+        // The mappings (alternate identifiers such as the LOINC code) are returned by
+        // default too, and when asked for by name.
+        if (this._hasProp(props, 'effectiveTime', true)) {
+          const time = this.sct.concepts.getConcept(ctxt.getReference()).effectiveTime;
+          // Pascal TDateTime epoch (1899-12-30) computed in UTC so the formatted
+          // date is timezone-independent. new Date(1899,11,30) is LOCAL midnight,
+          // which in zones ahead of UTC rolls the ISO date back by one day.
+          const pascalEpochUTC = Date.UTC(1899, 11, 30);
+          const date = new Date(pascalEpochUTC + time * 86400000);
+          const dateStr = date.toISOString().slice(0, 10);
+          this._addDateTimeProperty(params, 'property', 'effectiveTime', dateStr);
         }
 
-        const children = this.sct.getConceptChildren(ctxt.getReference());
-        for (let childRef of children) {
-          const code = this.sct.getConceptId(childRef);
-          const description = this.sct.getDisplayName(childRef);
-          this._addCodeProperty(params, 'property', 'child', code, null, description);
+        if (this._hasProp(props, 'parent', true)) {
+          const parents = this.sct.getConceptParents(ctxt.getReference());
+          for (let parentRef of parents) {
+            const code = this.sct.getConceptId(parentRef);
+            const description = this.sct.getDisplayName(parentRef);
+            this._addCodeProperty(params, 'property', 'parent', code, null, description);
+          }
         }
 
-        const moduleId = this.sct.concepts.getModuleId(ctxt.getReference());
-        if (moduleId) {
-          const code = this.sct.getConceptId(moduleId);
-          this._addCodeProperty(params, 'property', 'module', code, null, this.sct.getDisplayName(moduleId));
+        if (this._hasProp(props, 'child', true)) {
+          const children = this.sct.getConceptChildren(ctxt.getReference());
+          for (let childRef of children) {
+            const code = this.sct.getConceptId(childRef);
+            const description = this.sct.getDisplayName(childRef);
+            this._addCodeProperty(params, 'property', 'child', code, null, description);
+          }
+        }
+
+        if (this._hasProp(props, 'module', true)) {
+          const moduleId = this.sct.concepts.getModuleId(ctxt.getReference());
+          if (moduleId) {
+            const code = this.sct.getConceptId(moduleId);
+            this._addCodeProperty(params, 'property', 'module', code, null, this.sct.getDisplayName(moduleId));
+          }
         }
 
         const relationships = this.sct.getConceptRelationships(ctxt.getReference());
@@ -2742,7 +2807,7 @@ class SnomedProvider extends BaseCSServices {
         for (let relationshipRef of relationships) {
           const relationship = this.sct.relationships.getRelationship(relationshipRef);
           const relType = this.sct.getConceptId(relationship.relType);
-          if (relType != '116680003') {
+          if (relType != '116680003' && this._hasProp(props, relType, true)) {
             const relTypeD = this.sct.getDisplayName(relationship.relType);
             const code = this.sct.getConceptId(relationship.target);
             const description = this.sct.getDisplayName(relationship.target);
@@ -2753,6 +2818,8 @@ class SnomedProvider extends BaseCSServices {
             }
           }
         }
+
+        this.#addMappingProperties(ctxt, props, params);
       }
       if (ctxt instanceof SnomedExpressionContext) {
         // ignore concepts for now, but list refinements and refinement groups
@@ -2764,6 +2831,27 @@ class SnomedProvider extends BaseCSServices {
             await this._addRefinementProperty(params, refinement);
           }
         }
+      }
+    }
+  }
+
+  /**
+   * The concept's alternate identifiers in the schemes we know (IDENTIFIER_SCHEMES), as
+   * Coding-valued properties named for the scheme - e.g. loinc = http://loinc.org#2160-0.
+   * Returned by default, and when asked for by name.
+   */
+  #addMappingProperties(ctxt, props, params) {
+    const conceptId = this.sct.getConceptId(ctxt.getReference());
+    for (const ident of this.sct.getIdentifiers(conceptId)) {
+      const scheme = IDENTIFIER_SCHEMES[ident.scheme];
+      if (scheme && this._hasProp(props, scheme.property, true)) {
+        params.push({
+          name: 'property',
+          part: [
+            { name: 'code', valueCode: scheme.property },
+            { name: 'value', valueCoding: { system: scheme.system, code: ident.code } }
+          ]
+        });
       }
     }
   }
@@ -2821,6 +2909,11 @@ class SnomedProvider extends BaseCSServices {
 
     if (prop == 'expressions' && op == '=' && ['true', 'false'].includes(value)) {
       return true;
+    }
+
+    if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
+      return op === 'exists' && ['true', 'false'].includes(value) &&
+        this.sct.stringToIdOrZero(prop.substring(MAPPED_FILTER_PREFIX.length)) !== 0n;
     }
 
     const cid = this.sct.stringToIdOrZero(prop);
@@ -2979,6 +3072,27 @@ class SnomedProvider extends BaseCSServices {
       return null;
     }
 
+    // mapped:<identifier scheme> exists true|false - concepts that do (or don't) have an
+    // alternate identifier in that scheme (e.g. mapped:30051010000102: has a LOINC code).
+    // A prefix, so as not to be confused with the attribute filters (<attribute> = <value>)
+    if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
+      const scheme = prop.substring(MAPPED_FILTER_PREFIX.length);
+      if (this.sct.stringToIdOrZero(scheme) === 0n) {
+        throw new Error(`Invalid identifier scheme: ${scheme}`);
+      }
+      if (op !== 'exists') {
+        throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
+      }
+      if (value !== 'true' && value !== 'false') {
+        throw new Error(`Invalid filter value: ${value}`);
+      }
+      const filter = new SnomedFilterContext();
+      filter.mappedScheme = scheme;
+      filter.mappedExists = value === 'true';
+      filterContext.filters.push(filter);
+      return null;
+    }
+
     const cid = this.sct.stringToIdOrZero(prop);
     if (cid != 0) {
 
@@ -3082,7 +3196,9 @@ class SnomedProvider extends BaseCSServices {
     }
     let found = false;
 
-    if (set.inactive !== undefined) {
+    if (set.mappedScheme !== undefined) {
+      found = this.#isMapped(reference, set.mappedScheme) === set.mappedExists;
+    } else if (set.inactive !== undefined) {
       let concept = this.sct.concepts.getConcept(reference);
       let active = (concept.flags & 0x0F) === 0;
       found = active !== set.inactive
@@ -3128,6 +3244,9 @@ class SnomedProvider extends BaseCSServices {
     }
 
     const reference = concept.getReference();
+    if (set.mappedScheme !== undefined) {
+      return this.#isMapped(reference, set.mappedScheme) === set.mappedExists;
+    }
     if (set.inactive !== undefined) {
       return this.sct.isActive(reference) !== set.inactive;
     }
@@ -3187,8 +3306,37 @@ class SnomedProvider extends BaseCSServices {
     return set._matchSet.has(reference);
   }
 
+  /** Whether the concept (by reference) has an alternate identifier in the scheme */
+  #isMapped(reference, scheme) {
+    return this.sct.getIdentifiers(this.sct.getConceptId(reference), scheme).length > 0;
+  }
+
   #ensurePopulated(set) {
     if (set.populationDone) {
+      return;
+    }
+    if (set.mappedScheme !== undefined) {
+      if (set.mappedExists) {
+        // straight from the identifier index, in concept order
+        const refs = new Set();
+        for (const [conceptId, idents] of this.sct.identifiersByConcept) {
+          if (idents.some(i => i.scheme === set.mappedScheme)) {
+            const r = this.sct.concepts.findConcept(BigInt(conceptId));
+            if (r.found) {
+              refs.add(r.index);
+            }
+          }
+        }
+        set.descendants = [...refs].sort((a, b) => a - b);
+      } else {
+        for (let i = 0; i < this.sct.concepts.count(); i++) {
+          const concept = this.sct.concepts.getConceptByCount(i);
+          if (!this.#isMapped(concept.index, set.mappedScheme)) {
+            set.descendants.push(concept.index);
+          }
+        }
+      }
+      set.populationDone = true;
       return;
     }
     if (set.inactive !== undefined && set.descendants.length === 0) {
@@ -3342,6 +3490,9 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async getTranslations(map, coding, target, reverse) {
+    if (map && map.jsonObj.identifierMap) {
+      return this.translateByIdentifier(map, coding, target);
+    }
     if (!map || reverse) {
       return [];
     }
@@ -3402,6 +3553,54 @@ class SnomedProvider extends BaseCSServices {
       }
     }
 
+    return result;
+  }
+
+  /**
+   * Translate using a module's alternate identifiers (the implicit map ?fhir_cm=<module>,
+   * e.g. the LOINC Extension's LOINC codes). The identifiers say the concept and the code
+   * are the same thing, so the map works the same in both directions: a SNOMED CT concept
+   * translates to its codes, and a code in the identifier's system to its concepts. Either
+   * way the relationship is equivalent.
+   */
+  async translateByIdentifier(map, coding, target) {
+    const { schemes } = map.jsonObj.identifierMap;
+    const targetSystem = target ? target.split('|')[0] : null;
+    const result = [];
+    if (coding.system === this.system()) {
+      const ctxt = await this.locate(coding.code);
+      if (!ctxt.context) {
+        return [];
+      }
+      const conceptId = this.sct.getConceptId(ctxt.context.getReference());
+      for (const ident of this.sct.getIdentifiers(conceptId)) {
+        const scheme = IDENTIFIER_SCHEMES[ident.scheme];
+        if (scheme && schemes.includes(ident.scheme) && (!targetSystem || targetSystem === scheme.system)) {
+          result.push({
+            map: map.vurl,
+            system: scheme.system,
+            code: ident.code,
+            relationship: 'equivalent'
+          });
+        }
+      }
+    } else if (!targetSystem || targetSystem === this.system()) {
+      for (const schemeId of schemes) {
+        const scheme = IDENTIFIER_SCHEMES[schemeId];
+        if (scheme && scheme.system === coding.system) {
+          for (const conceptId of this.sct.getConceptsForIdentifier(schemeId, coding.code)) {
+            result.push({
+              map: map.vurl,
+              system: this.system(),
+              version: this.version(),
+              code: conceptId,
+              display: await this.display(conceptId),
+              relationship: 'equivalent'
+            });
+          }
+        }
+      }
+    }
     return result;
   }
 
@@ -3789,6 +3988,9 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
    * edition URI plus ?fhir_cm=edition/<target edition module>
    */
   async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
+    if (dest) {
+      this.#findIdentifierMaps(conceptMaps, source, sourceVersion, dest);
+    }
     if (source !== this.system() || !sourceVersion || !dest || !this.isMyEdition(sourceVersion)) {
       return;
     }
@@ -3823,6 +4025,61 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
     });
   }
 
+  /**
+   * Maps implied by alternate identifiers, found from the systems rather than nominated:
+   * from this edition (source system|version naming it) to an identifier system (LOINC,
+   * say), or from an identifier system to this edition (the target given as
+   * system|edition URI, with or without the version)
+   */
+  #findIdentifierMaps(conceptMaps, source, sourceVersion, dest) {
+    const bar = dest.indexOf('|');
+    const destSystem = bar === -1 ? dest : dest.substring(0, bar);
+    const destVersion = bar === -1 ? null : dest.substring(bar + 1);
+    let identSystem;
+    if (source === this.system() && sourceVersion && this.isMyEdition(sourceVersion)) {
+      identSystem = destSystem;
+    } else if (destSystem === this.system() && destVersion && this.isMyEdition(destVersion)) {
+      identSystem = source;
+    } else {
+      return;
+    }
+    for (const [moduleId, schemes] of this.snomedServices.identifierModules) {
+      if ([...schemes].some(s => IDENTIFIER_SCHEMES[s] && IDENTIFIER_SCHEMES[s].system === identSystem)) {
+        const cm = this.identifierMap(moduleId);
+        if (cm && !conceptMaps.some(m => m.url === cm.url)) {
+          conceptMaps.push(cm);
+        }
+      }
+    }
+  }
+
+  /**
+   * The implicit map defined by a module's alternate identifiers, if the module has any
+   * in a scheme we know. Its url follows the edition maps: <source edition>/version/<date>?fhir_cm=<module>
+   */
+  identifierMap(moduleId) {
+    const schemes = [...(this.snomedServices.identifierModules.get(moduleId) || [])].filter(s => IDENTIFIER_SCHEMES[s]);
+    if (schemes.length === 0) {
+      return null;
+    }
+    const systems = schemes.map(s => IDENTIFIER_SCHEMES[s].system);
+    const moduleName = this.snomedServices.conceptExists(moduleId)
+      ? this.snomedServices.getDisplayName(this.snomedServices.concepts.findConcept(BigInt(moduleId)).index) : moduleId;
+    return new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      identifierMap: { module: moduleId, schemes: schemes },
+      url: `${this.version()}?fhir_cm=${moduleId}`,
+      name: `SNOMED CT ${moduleName} Concept Map`,
+      description: `The concept map implied by the alternate identifiers (${systems.join(', ')}) of the module ${moduleId} |${moduleName}| in ${this.version()}`,
+      status: 'active',
+      group: [
+        ...systems.map(s => ({ source: this.system(), target: s })),
+        ...systems.map(s => ({ source: s, target: this.system() }))
+      ]
+    });
+  }
+
   /** Whether a source version names this edition: exactly, or the edition without a version */
   isMyEdition(version) {
     const mine = this.version();
@@ -3845,6 +4102,16 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
       }
       const dep = this.snomedServices.editionDependency(`http://snomed.info/sct/${url.substring(q + '?fhir_cm=edition/'.length)}`);
       return dep ? this.editionTranslationMap(dep) : null;
+    }
+    // <edition[/version/date]>?fhir_cm=<module>: the map implied by a module's alternate
+    // identifiers (e.g. 11010000107, the LOINC Extension's LOINC codes)
+    const qm = url.indexOf('?fhir_cm=');
+    if (qm !== -1 && url.substring(0, qm) !== this.system()) {
+      if (!this.isMyEdition(url.substring(0, qm))) {
+        return null;
+      }
+      await this.#ensureLoaded();
+      return this.identifierMap(url.substring(qm + '?fhir_cm='.length));
     }
     if (!url.startsWith(this.system()+"?fhir_cm=")) {
       return null;

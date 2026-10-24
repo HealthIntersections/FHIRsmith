@@ -1,7 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
 const path = require('path');
-const { LoincDataMigrator } = require('../../tx/importers/import-loinc.module');
+const { LoincDataMigrator, normaliseExternalSystem } = require('../../tx/importers/import-loinc.module');
 const { LoincServices, LoincServicesFactory, LoincProviderContext } = require('../../tx/cs/cs-loinc');
 const { OperationContext } = require('../../tx/operation-context');
 const {validateParameter} = require("../../library/utilities");
@@ -84,7 +84,9 @@ describe('LOINC Module Import', () => {
         { name: 'PropertyValues', minRecords: 1 }, // Property value lookups
         { name: 'Properties', minRecords: 1 }, // Code properties
         { name: 'Descriptions', minRecords: 1 }, // Code descriptions
-        { name: 'Closure', minRecords: 1 } // Hierarchical relationships
+        { name: 'Closure', minRecords: 1 }, // Hierarchical relationships
+        { name: 'ExternalCodes', minRecords: 1 }, // codes in other systems that LOINC maps to
+        { name: 'ExternalMappings', minRecords: 1 }
       ];
 
       // Check each table
@@ -200,6 +202,81 @@ describe('LOINC Module Import', () => {
     }
   });
 
+  test('should read a hierarchy record whose text has a line break', async () => {
+    // tx/data/loinc's hierarchy has a CODE_TEXT with a line break in it, as LOINC 2.83 does.
+    // Read line by line, the second half looked like a second root, and the import failed
+    // on a duplicate Config key
+    const db = new sqlite3.Database(testDbPath);
+    try {
+      const parents = await new Promise((resolve, reject) => {
+        db.all(`SELECT p.Code FROM Relationships r
+                JOIN Codes c ON c.CodeKey = r.SourceKey
+                JOIN Codes p ON p.CodeKey = r.TargetKey
+                JOIN RelationshipTypes t ON t.RelationshipTypeKey = r.RelationshipTypeKey
+                WHERE c.Code = '107188-5' AND t.Description = 'parent'`, (err, rows) => err ? reject(err) : resolve(rows));
+      });
+      expect(parents.map(r => r.Code)).toEqual(['LP442038-8']);
+      expect(await getTableCountWhere(db, 'Config', 'ConfigKey = 3')).toBe(1);
+    } finally {
+      await closeDatabase(db);
+    }
+  });
+
+  test('should have external code mappings', async () => {
+    const db = new sqlite3.Database(testDbPath);
+
+    const mapsFor = (code) => new Promise((resolve, reject) => {
+      db.all(`SELECT e.System, e.Version, e.Code, e.Display, m.Equivalence
+              FROM ExternalMappings m
+              JOIN Codes c ON c.CodeKey = m.CodeKey
+              JOIN ExternalCodes e ON e.ExternalCodeKey = m.ExternalCodeKey
+              WHERE c.Code = ? ORDER BY e.System, e.Code`, [code], (err, rows) => err ? reject(err) : resolve(rows));
+    });
+
+    try {
+      // PartRelatedCodeMapping: the file's own equivalence is kept
+      const creatinine = await mapsFor('LP14355-9');
+      expect(creatinine).toContainEqual({
+        System: 'http://snomed.info/sct', Version: 'http://snomed.info/sct/900000000000207008/version/20260101',
+        Code: '15373003', Display: 'Creatinine (substance)', Equivalence: 'narrower'
+      });
+      const bacteria = await mapsFor('LP14082-9');
+      expect(bacteria).toContainEqual({
+        System: 'https://www.ncbi.nlm.nih.gov/taxonomy', Version: null, Code: '2', Display: 'Bacteria', Equivalence: 'equivalent'
+      });
+
+      // IEEE: code is the CF_CODE10, display the REFID; the IEEE 'broader' (LOINC is broader) becomes 'narrower'
+      const potassium = await mapsFor('6298-4');
+      expect(potassium).toEqual([{
+        System: 'urn:iso:std:iso:11073:10101', Version: null, Code: '160016', Display: 'MDC_CONC_K_GEN', Equivalence: 'narrower'
+      }]);
+
+      // AnswerList ExtCode*: always equivalent
+      const answer = await mapsFor('LA6576-8');
+      expect(answer).toEqual([{
+        System: 'http://snomed.info/sct', Version: 'http://snomed.info/sct/900000000000207008/version/20240701',
+        Code: '10828004', Display: expect.anything(), Equivalence: 'equivalent'
+      }]);
+
+      // LOINC's names for some systems become their FHIR URIs
+      expect(normaliseExternalSystem('CMS/HCPCS')).toBe('http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets');
+      expect(normaliseExternalSystem('https://www.cdc.gov/phin')).toBe('urn:oid:2.16.840.1.113883.6.238');
+      expect(normaliseExternalSystem('CMS LCDS')).toBe('CMS LCDS');
+      expect(normaliseExternalSystem('http://snomed.info/sct')).toBe('http://snomed.info/sct');
+
+      // the same target is stored once, however many codes map to it
+      const mdcTargets = await getTableCountWhere(db, 'ExternalCodes', `System = 'urn:iso:std:iso:11073:10101' AND Code = '160016'`);
+      expect(mdcTargets).toBe(1);
+
+      // RadLex is not imported yet; every mapping points at real rows
+      expect(await getTableCountWhere(db, 'ExternalCodes', `System = 'http://www.radlex.org'`)).toBe(0);
+      expect(await getTableCountWhere(db, 'ExternalMappings',
+        'CodeKey NOT IN (SELECT CodeKey FROM Codes) OR ExternalCodeKey NOT IN (SELECT ExternalCodeKey FROM ExternalCodes)')).toBe(0);
+    } finally {
+      await closeDatabase(db);
+    }
+  });
+
   test('should have reasonable data distribution', async () => {
     const db = new sqlite3.Database(testDbPath);
 
@@ -234,6 +311,15 @@ describe('LOINC Module Import', () => {
 function getTableCount(db, tableName) {
   return new Promise((resolve, reject) => {
     db.get(`SELECT COUNT(*) as count FROM ${tableName}`, (err, row) => {
+      if (err) reject(err);
+      else resolve(row.count);
+    });
+  });
+}
+
+function getTableCountWhere(db, tableName, where) {
+  return new Promise((resolve, reject) => {
+    db.get(`SELECT COUNT(*) as count FROM ${tableName} WHERE ${where}`, (err, row) => {
       if (err) reject(err);
       else resolve(row.count);
     });
@@ -983,6 +1069,76 @@ describe('LOINC Provider', () => {
         const value = prop.part.find(part => part.name === 'value')?.valueString;
         console.log(`  Property: ${code} = ${value}`);
       });
+    });
+  });
+
+  describe('External Mappings', () => {
+    const mappingProps = (params) => params
+      .filter(p => p.name === 'property')
+      .map(p => ({
+        code: p.part.find(x => x.name === 'code').valueCode,
+        value: p.part.find(x => x.name === 'value').valueCoding,
+        equivalence: p.part.find(x => x.name === 'subproperty')?.part.find(x => x.name === 'value').valueCode
+      }))
+      .filter(p => p.value);
+
+    test('lookup returns a part\'s mappings, named for the map, by default', async () => {
+      const params = [];
+      await provider.extendLookup('LP14355-9', [], params);
+      expect(mappingProps(params)).toEqual([
+        { code: 'ncbi', value: { system: 'http://pubchem.ncbi.nlm.nih.gov', code: '588', display: 'Creatinine' }, equivalence: 'equivalent' },
+        { code: 'sct', value: { system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20260101', code: '15373003', display: 'Creatinine (substance)' }, equivalence: 'narrower' },
+        { code: 'chebi', value: { system: 'https://www.ebi.ac.uk/chebi', code: 'CHEBI:16737', display: 'creatinine' }, equivalence: 'equivalent' }
+      ]);
+    });
+
+    test('lookup returns only the mappings asked for', async () => {
+      const params = [];
+      await provider.extendLookup('LP14355-9', ['sct'], params);
+      expect(mappingProps(params).map(p => p.code)).toEqual(['sct']);
+    });
+
+    test('lookup returns IEEE and answer list mappings', async () => {
+      let params = [];
+      await provider.extendLookup('6298-4', ['mdc'], params);
+      expect(mappingProps(params)).toEqual([
+        { code: 'mdc', value: { system: 'urn:iso:std:iso:11073:10101', code: '160016', display: 'MDC_CONC_K_GEN' }, equivalence: 'narrower' }
+      ]);
+      params = [];
+      await provider.extendLookup('LA6576-8', ['sct'], params);
+      expect(mappingProps(params).map(p => p.value.code)).toEqual(['10828004']);
+    });
+
+    test('an implicit map is offered for a code it has a mapping for', async () => {
+      let maps = [];
+      await factory.findImplicitConceptMaps(maps, 'http://loinc.org', null, 'http://snomed.info/sct', 'LP14355-9');
+      expect(maps.map(m => m.url)).toEqual(['http://loinc.org/cm/sct']);
+
+      // the other way, the code is the SNOMED CT concept
+      maps = [];
+      await factory.findImplicitConceptMaps(maps, 'http://snomed.info/sct', null, 'http://loinc.org', '15373003');
+      expect(maps.map(m => m.url)).toEqual(['http://loinc.org/cm/sct']);
+
+      // no mapping for this code, or no map for this system
+      maps = [];
+      await factory.findImplicitConceptMaps(maps, 'http://loinc.org', null, 'http://snomed.info/sct', '6298-4');
+      await factory.findImplicitConceptMaps(maps, 'http://loinc.org', null, 'http://hl7.org/fhir/sid/icd-10', 'LP14355-9');
+      expect(maps).toEqual([]);
+
+      expect((await factory.findImplicitConceptMap('http://loinc.org/cm/mdc')).url).toBe('http://loinc.org/cm/mdc');
+      expect(await factory.findImplicitConceptMap('http://loinc.org/cm/unknown')).toBeNull();
+    });
+
+    test('translations go both ways, with the relationship from the code translated', async () => {
+      const map = await factory.findImplicitConceptMap('http://loinc.org/cm/sct');
+      const forward = await provider.getTranslations(map, { system: 'http://loinc.org', code: 'LP14355-9' }, 'http://snomed.info/sct', false);
+      expect(forward.map(t => [t.system, t.code, t.relationship])).toEqual([['http://snomed.info/sct', '15373003', 'source-is-broader-than-target']]);
+
+      const back = await provider.getTranslations(map, { system: 'http://snomed.info/sct', code: '15373003' }, 'http://loinc.org', false);
+      expect(back.map(t => [t.system, t.code, t.display, t.relationship])).toEqual([['http://loinc.org', 'LP14355-9', 'Creatinine', 'source-is-narrower-than-target']]);
+
+      // a code with nothing in this map
+      expect(await provider.getTranslations(map, { system: 'http://loinc.org', code: '6298-4' }, 'http://snomed.info/sct', false)).toEqual([]);
     });
   });
 
