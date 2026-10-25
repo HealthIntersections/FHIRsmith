@@ -565,6 +565,19 @@ class Designations {
   }
 
   /**
+   * Note, in the set of supplements to report as used, the supplement a designation came from (if
+   * it came from one). Designations from a supplement carry it as .supplement (see
+   * CodeSystemProvider._listSupplementDesignations); this used to look for .source, which is never
+   * set on a designation, so a supplement that only supplied the chosen display - a global language
+   * pack, typically - was never reported as used.
+   */
+  _reportSupplement(supplements, cd) {
+    if (supplements && cd && cd.supplement && cd.supplement.vurl) {
+      supplements.add(cd.supplement.vurl);
+    }
+  }
+
+  /**
    * Find the preferred designation for given language preferences
    */
   preferredDesignation(langList = null, supplements = null) {
@@ -576,39 +589,29 @@ class Designations {
       // No language list, prefer base designations
       for (const cd of this.designations) {
         if (this._isPreferred(cd) && cd.isActive()) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this.isDisplay(cd) && cd.isActive()) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this.isDisplay(cd)) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this._isPreferred(cd)) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
-      if (supplements && this.designations[0].source) {
-        supplements.add(this.designations[0].source);
-      }
+      this._reportSupplement(supplements, this.designations[0]);
       return this.designations[0];
     }
 
@@ -628,25 +631,19 @@ class Designations {
           // because the FSN was emitted first.
           for (const cd of this.designations) {
             if (this._langMatches(lang, cd.language, matchType) && this._isPreferred(cd) && (!activeOnly || cd.isActive())) {
-              if (supplements && cd.source) {
-                supplements.add(cd.source);
-              }
+              this._reportSupplement(supplements, cd);
               return cd;
             }
           }
           for (const cd of this.designations) {
             if (this._langMatches(lang, cd.language, matchType) && this.isDisplay(cd) && (!activeOnly || cd.isActive())) {
-              if (supplements && cd.source) {
-                supplements.add(cd.source);
-              }
+              this._reportSupplement(supplements, cd);
               return cd;
             }
           }
           for (const cd of this.designations) {
             if (this._langMatches(lang, cd.language, matchType) && (!activeOnly || cd.isActive())) {
-              if (supplements && cd.source) {
-                supplements.add(cd.source);
-              }
+              this._reportSupplement(supplements, cd);
               return cd;
             }
           }
@@ -655,14 +652,10 @@ class Designations {
     }
     for (const cd of this.designations) {
       if (!cd.language && this.isDisplay(cd) && cd.isActive()) {
-        if (supplements && cd.source) {
-          supplements.add(cd.source);
-        }
+        this._reportSupplement(supplements, cd);
         return cd;
       } if (!cd.language && this.isDisplay(cd)) {
-        if (supplements && cd.source) {
-          supplements.add(cd.source);
-        }
+        this._reportSupplement(supplements, cd);
         return cd;
       }
     }

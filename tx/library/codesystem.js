@@ -649,7 +649,10 @@ class CodeSystem extends CanonicalResource {
     if (this.jsonObj.url === 'https://terminology.dhp.uz/fhir/CodeSystem/loinc-supplement-uz') {
       return true;
     }
-    return (this.jsonObj.extension || []).find(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type' && getValuePrimitive(x) == 'lang-pack');
+    // a global language pack is used whether or not it is referenced. The code was 'lang-pack'
+    // until Oct 2026; it is still accepted, so that supplements marked the old way keep working
+    return (this.jsonObj.extension || []).find(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type'
+      && ['global-lang-pack', 'lang-pack'].includes(getValuePrimitive(x)));
   }
 
   isPropUri(code, uri) {

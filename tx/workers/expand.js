@@ -439,8 +439,8 @@ class ValueSetExpander {
               if (!n.designation) {
                 n.designation = [];
               }
-              if (t.source) {
-                this.reportedSupplements.add(t.source);
+              if (t.supplement && t.supplement.vurl) {
+                this.reportedSupplements.add(t.supplement.vurl);
               }
               n.designation.push(t.asObject());
             }

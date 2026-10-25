@@ -2467,6 +2467,16 @@ class ValidateWorker extends TerminologyWorker {
 
     let vs = this.makeVsForCS(codeSystem);
 
+    // The checker isn't prepared (there is no real value set to analyse), and preparing is
+    // where the supplements asked for with useSupplement are found. So note the ones the code
+    // system has here, or every useSupplement on CodeSystem/$validate-code is reported as
+    // missing, even when the supplement was passed in tx-resource
+    for (const s of this.requiredSupplements) {
+      if (codeSystem.hasSupplement(s)) {
+        this.usedSupplements.add(s);
+      }
+    }
+
     // Create and prepare checker
     const checker = new ValueSetChecker(this, vs, params);
 
