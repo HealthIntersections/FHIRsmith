@@ -1027,11 +1027,17 @@ class FhirCodeSystemProvider extends BaseCSServices {
       return;
     }
 
-    // Add properties if requested (or by default)
-    if (this._hasProp(props, 'property', true)) {
+    // Add the concept's properties: each one if it was asked for by its code (or '*', or nothing
+    // was asked for). 'property' asks for all of them - it used to be the only thing that did, so
+    // asking for a property by its own code returned nothing. A code the server doesn't know is
+    // simply not matched
+    {
       const properties = await this.properties(ctxt);
       if (properties) {
         for (const property of properties) {
+          if (!this._hasProp(props, property.code, true) && !this._hasProp(props, 'property', true)) {
+            continue;
+          }
           let parts = [];
           parts.push({ name: 'code', valueCode: property.code });
 

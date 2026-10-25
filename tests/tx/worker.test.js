@@ -247,7 +247,7 @@ describe('TerminologyWorker', () => {
         name: 'SupplementCS',
         status: 'active',
         supplements: 'http://main.com',
-        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "lang-pack"}]
+        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "global-lang-pack"}]
       });
 
       worker.additionalResources = [mainCS, supplementCS];

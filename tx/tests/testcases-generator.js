@@ -3,6 +3,7 @@ const path = require('path');
 const { PackageManager} = require("../../library/package-manager");
 const {txTestModeSet} = require("./test-runner");
 const folders = require('../../library/folder-setup');
+const { passesModes, testVersions } = require('./test-case-gates');
 
 const OUTPUT_FILE1 = path.join(__dirname, '../..', 'tests/tx/test-cases.test.js');
 const OUTPUT_FILE2 = path.join(__dirname, 'test-cases-version.js');
@@ -47,7 +48,7 @@ module.exports = { txTestVersion };
     const emitSuites = (suffix, oneVersion = false) => {
         let s = '';
         for (const suite of testCases.suites) {
-            if (!suite.mode || modes.has(suite.mode)) {
+            if (passesModes(suite, modes) && !suite.disabled) {
                 s += `describe('${suite.name}', () => {\n`;
 
                 if (suite.description) {
@@ -61,15 +62,14 @@ module.exports = { txTestVersion };
                 const passes = (suite.sequential && !oneVersion) ? ['R5', 'R4'] : [null];
                 for (const pass of passes)
                 for (const test of suite.tests) {
-                    if ((!test.mode || modes.has(test.mode)) && (!test["full-set"])) {
+                    if (passesModes(test, modes) && (!test["full-set"])) {
                         let testDetails = {
                             suite: suite.name,
                             test: test.name
                         }
 
                         const escapedNameLiteral = JSON.stringify(test.name);
-                        const hasR5 = (!test.version || test.version.startsWith("5.0"));
-                        const hasR4 = (!test.version || test.version.startsWith("4.0"));
+                        const { hasR5, hasR4 } = testVersions(suite, test);
                         const emitR5 = () => {
                             s += `  it(${escapedNameLiteral} + 'R5${suffix}', async () => {\n`;
                             s += `    await runTest(${JSON.stringify(testDetails)}, "5.0");\n`;
