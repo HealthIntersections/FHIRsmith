@@ -91,13 +91,9 @@ describe('ECL Validator Test Suite', () => {
       expect(e.msgId).toBe('INVALID_ECL');
     });
 
-    test.each([
-      ['< 64572001 {{ + HISTORY-MIN }}', 'history supplements'],
-    ])('%s is reported as unsupported', (ecl, what) => {
-      const e = errorFor(ecl);
-      expect(e).not.toBeNull();
-      expect(e.msgId).toBe('UNSUPPORTED_ECL');
-      expect(e.message).toContain(what);
+    test('a malformed history supplement is a syntax error', () => {
+      expect(errorFor('< 64572001 {{ + FOO }}').msgId).toBe('INVALID_ECL');
+      expect(errorFor('< 64572001 {{ + HISTORY-MIN (*) }}').msgId).toBe('INVALID_ECL');
     });
   });
 
@@ -202,11 +198,11 @@ describe('ECL Validator Test Suite', () => {
       '("ICD10#A01.1")',
       '< SCTID#64572001',
       '< ICD10#A01.1 |Typhoid|',
-    ])('alternate identifier %s parses and is reported as unsupported', (ecl) => {
+    ])('alternate identifier %s with an unknown scheme is invalid', (ecl) => {
       const e = errorFor(ecl);
       expect(e).not.toBeNull();
-      expect(e.msgId).toBe('UNSUPPORTED_ECL');
-      expect(e.message).toContain('alternate identifiers');
+      expect(e.msgId).toBe('INVALID_ECL');
+      expect(e.message).toContain('scheme');
     });
 
     test.each([
@@ -338,6 +334,125 @@ describe('ECL Validator Test Suite', () => {
 
     test('an unknown description filter field is a syntax error', () => {
       expect(() => snomedServices.filterECL('< 64572001 {{ D foo = 1 }}', true, opContext)).toThrow('Unknown description filter field');
+    });
+  });
+
+  describe('ECL != and reversed (R) attributes', () => {
+    const codes = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || [])
+      .map(i => snomedServices.concepts.getConceptId(i).toString()).sort();
+    const count = (ecl) => codes(ecl).length;
+
+    test('!= matches concepts with an attribute value outside the set', () => {
+      // the medicinal products: precise active ingredient is halibut liver oil or barium sulfate
+      expect(codes('< 763158003 : 762949000 != 126081001')).toEqual(['1204474000']);
+      expect(codes('* : 762949000 != 126081001')).toEqual(['1204474000']);
+      // products with no precise active ingredient do not match
+      expect(count('< 763158003 : 127489000 != 126081001')).toBe(0);
+      // [0..0] != : every value is in the set (or there is no attribute)
+      expect(count('< 763158003 : [0..0] 762949000 != < 105590001')).toBe(count('< 763158003'));
+      expect(codes('< 763158003 : [0..0] 762949000 != 396014007')).not.toContain('329238006');
+      expect(codes('< 763158003 : [0..0] 762949000 != 396014007')).toContain('1204474000');
+    });
+
+    test('R yields the values of an attribute on the given concepts', () => {
+      expect(codes('< 105590001 : R 127489000 = 776168003')).toEqual(['126081001']);
+      expect(codes('< 105590001 : R * = 329238006')).toEqual(['126081001']);
+      expect(codes('< 105590001 : R 762949000 = *')).toEqual(['126081001', '396014007']);
+      expect(codes('< 105590001 : R 762949000 = < 763158003')).toEqual(['126081001', '396014007']);
+      expect(count('< 105590001 : [0..*] R 127489000 = 776168003')).toBe(count('< 105590001'));
+      expect(count('<< 105590001 : R 363698007 = *')).toBe(0);
+    });
+
+    test('a comma is a conjunction at the expression level', () => {
+      expect(codes('138875005 , 138875005')).toEqual(['138875005']);
+      expect(count('138875005 , 10200004')).toBe(0);
+      expect(codes('< 64572001 , < 64572001 , 64572001')).toEqual([]);
+      expect(() => snomedServices.filterECL('< 64572001 , < 10200004 OR < 39607008', true, opContext)).toThrow('cannot be mixed');
+    });
+
+    test('an attribute without a comparison is a syntax error', () => {
+      for (const ecl of ['< 64572001 : 363698007', '(< 64572001 : 363698007 = 10200004 OR 404684003)']) {
+        let e = null;
+        try { snomedServices.filterECL(ecl, true, opContext); } catch (x) { e = x; }
+        expect(e).not.toBeNull();
+        expect(e.msgId).toBe('INVALID_ECL');
+        expect(e.message).toContain('comparison operator');
+      }
+    });
+  });
+
+  describe('ECL history supplements and concrete values (test edition cache)', () => {
+    // These need the full test edition (association reference sets with targets,
+    // and a cache carrying the concrete value relationships - version 19), so they
+    // run against the server's test cache when it is present and skip otherwise.
+    const cachePath = join(__dirname, '../../data/terminology-cache/sct_test_20250909e.cache');
+    let svc = null;
+    beforeAll(async () => {
+      if (!require('fs').existsSync(cachePath)) return;
+      const factory = new SnomedServicesFactory(opContext.i18n, cachePath);
+      await factory.load();
+      svc = factory.snomedServices;
+    });
+    const codes = (ecl) => (svc.filterECL(ecl, true, opContext).descendants || [])
+      .map(i => svc.concepts.getConceptId(i).toString()).sort();
+    const have = () => svc !== null && svc.concreteValues !== null;
+
+    test('history supplements add the inactive concepts associated with the result', () => {
+      if (!have()) return;
+      expect(codes('<< 74400008 {{ + HISTORY }}')).toEqual(['307530000', '74400008']);
+      expect(codes('<< 74400008 {{ + HISTORY-MAX }}')).toEqual(['307530000', '74400008']);
+      expect(codes('<< 74400008 {{ + HISTORY-MOD }}')).toEqual(['307530000', '74400008']);
+      expect(codes('<< 74400008 {{ + HISTORY-MIN }}')).toEqual(['74400008']); // no SAME AS refset in the edition
+      expect(codes('<< 4896000 {{ + HISTORY (900000000000526001) }}')).toEqual(codes('<< 4896000').concat(['1000381000003107']).sort());
+      expect(codes('<< 4896000 {{ + HISTORY (*) }}')).toEqual(codes('<< 4896000 {{ + HISTORY }}'));
+      expect(codes('(74400008 OR 4896000) {{ + HISTORY }}')).toEqual(['1000381000003107', '307530000', '4896000', '74400008']);
+      expect(codes('< 64572001 {{ + HISTORY }}').length).toBe(codes('< 64572001').length + 2);
+    });
+
+    test('concrete values: numeric comparisons', () => {
+      if (!have()) return;
+      expect(codes('< 763158003 : 1142139005 = #1')).toEqual(['1204474000', '329238006', '776168003', '779430005']);
+      expect(codes('< 763158003 : 1142139005 = #1.0')).toEqual(codes('< 763158003 : 1142139005 = #1'));
+      expect(codes('< 763158003 : 1142135004 = #4000')).toEqual(['329238006']);
+      expect(codes('< 763158003 : 1142139005 != #1')).toEqual([]);
+      expect(codes('< 763158003 : 1142138002 < #1000')).toEqual(['1204474000']);
+      expect(codes('< 763158003 : 1142135004 <= #4000')).toEqual(['329238006']);
+      expect(codes('< 763158003 : 1142135004 > #1000')).toEqual(['329238006']);
+      expect(codes('< 763158003 : 1142138002 >= #600')).toEqual(['1204474000']);
+      expect(codes('< 763158003 : 1142139005 = #-1')).toEqual([]);
+      expect(codes('< 763158003 : [0..0] 1142139005 = #1')).toEqual(['406459008', '769034009']);
+      expect(codes('< 763158003 : { 1142135004 = #4000 }')).toEqual(['329238006']);
+      expect(codes('< 763158003 : * = #4000')).toEqual(['329238006']);
+      expect(codes('< 763158003 : 1142139005 = #1 AND 1142135004 = #4000')).toEqual(['329238006']);
+    });
+
+    test('concrete values: a value of another kind never matches', () => {
+      if (!have()) return;
+      expect(codes('< 763158003 : 1142139005 = "x"')).toEqual([]);
+      expect(codes('< 763158003 : 1142139005 != "x"')).toEqual([]);
+      expect(codes('< 763158003 : 1142139005 = true')).toEqual([]);
+    });
+
+    test('alternate identifiers resolve through the identifier scheme alias', () => {
+      if (!have()) return;
+      expect(codes('LOINC#14394-1')).toEqual(['63241010000109']);
+      expect(codes('"LOINC#14394-1"')).toEqual(['63241010000109']);
+      expect(codes('loinc#14394-1 |Urea nitrogen|')).toEqual(['63241010000109']);
+      expect(codes('>> LOINC#14394-1')).toEqual(codes('>> 63241010000109'));
+      expect(codes('(LOINC#14394-1 OR LOINC#2067-7)')).toEqual(['57371010000105', '63241010000109']);
+      let e = null;
+      try { svc.filterECL('LOINC#99999-9', true, opContext); } catch (x) { e = x; }
+      expect(e.msgId).toBe('INVALID_ECL');
+      expect(e.message).toContain('No concept has the alternate identifier');
+    });
+
+    test('an edition without concrete values reports them as unsupported', () => {
+      // the committed jest cache predates the concrete value section
+      let e = null;
+      try { snomedServices.filterECL('< 763158003 : 1142139005 = #1', true, opContext); } catch (x) { e = x; }
+      expect(e).not.toBeNull();
+      expect(e.msgId).toBe('UNSUPPORTED_ECL');
+      expect(e.message).toContain('concrete value');
     });
   });
 

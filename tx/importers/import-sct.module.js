@@ -1139,6 +1139,9 @@ class SnomedImporter {
       // Step 10a: Read alternate identifiers (e.g. the LOINC codes of the LOINC Extension)
       await this.readIdentifiers();
 
+      // Step 10b: Read concrete value relationships (sct2_RelationshipConcreteValues)
+      await this.readConcreteValues();
+
       // Step 11: Link concepts
       this.linkConcepts();
 
@@ -1169,6 +1172,7 @@ class SnomedImporter {
       descriptions: [],
       relationships: [],
       identifiers: [],
+      concreteValues: [],
       refsetDirectories: []
     };
 
@@ -1224,6 +1228,8 @@ class SnomedImporter {
         files.relationships.push(filePath);
       } else if (files.identifiers && firstLine.startsWith('alternateIdentifier\teffectiveTime\tactive\tmoduleId\tidentifierSchemeId\treferencedComponentId')) {
         files.identifiers.push(filePath);
+      } else if (files.concreteValues && firstLine.startsWith('id\teffectiveTime\tactive\tmoduleId\tsourceId\tvalue\trelationshipGroup\ttypeId\tcharacteristicTypeId\tmodifierId')) {
+        files.concreteValues.push(filePath);
       }
     } catch (error) {
       console.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
@@ -1779,6 +1785,58 @@ class SnomedImporter {
     this.identifiers.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
     if (this.identifiers.length > 0 || missing > 0) {
       console.log(`Alternate identifiers: ${this.identifiers.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
+    }
+  }
+
+  /**
+   * Read the concrete value relationship files (sct2_RelationshipConcreteValues_*):
+   * the numeric and string attribute values of concepts (strength, count of base of
+   * active ingredient, ...). Kept as rows [sourceId, typeId, group, value] - the value
+   * as written in RF2 ("#500", "#5.5", "\"text\"", "true") - for the ECL evaluator;
+   * they are not relationships to concepts, so they do not join the relationship
+   * table. Only active, inferred rows; where a row appears more than once the latest
+   * effectiveTime wins.
+   */
+  async readConcreteValues() {
+    const rows = new Map(); // id -> {effectiveTime, active, row}
+    for (const file of this.files.concreteValues || []) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(file),
+        crlfDelay: Infinity
+      });
+      let lineCount = 0;
+      for await (const line of rl) {
+        lineCount++;
+        if (lineCount === 1 || !line) continue;
+        const parts = line.split('\t');
+        if (parts.length < 10) continue;
+        const [id, effectiveTime, active, , sourceId, value, group, typeId, characteristicTypeId] = parts.map(p => p.trim());
+        if (characteristicTypeId !== '900000000000011006') continue; // inferred only
+        const prior = rows.get(id);
+        if (!prior || prior.effectiveTime <= effectiveTime) {
+          rows.set(id, { effectiveTime, active: active === '1', row: [sourceId, typeId, parseInt(group, 10) || 0, value] });
+        }
+      }
+    }
+    this.concreteValues = [];
+    let missing = 0;
+    for (const r of rows.values()) {
+      if (!r.active) continue;
+      let known = false;
+      try {
+        known = this.conceptMap.has(BigInt(r.row[0])) && this.conceptMap.has(BigInt(r.row[1]));
+      } catch {
+        known = false;
+      }
+      if (known) {
+        this.concreteValues.push(r.row);
+      } else {
+        missing++;
+      }
+    }
+    this.concreteValues.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
+    if (this.concreteValues.length > 0 || missing > 0) {
+      console.log(`Concrete values: ${this.concreteValues.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
     }
   }
 
@@ -2823,11 +2881,14 @@ class SnomedImporter {
     progressBar?.update(50);
 
     const identifiers = this.identifiers || [];
+    const concreteValues = this.concreteValues || [];
     await writer.writeCache({
-      // 18 = 17 plus the alternate identifiers. Only used when there are some, so that
-      // caches without them stay readable by servers that only know 17
-      version: identifiers.length > 0 ? '18' : '17',
+      // 17 = the base format; 18 = 17 plus the alternate identifiers; 19 = 18 plus
+      // the concrete value relationships. Each is only used when it has something
+      // to carry, so that caches without them stay readable by older servers.
+      version: concreteValues.length > 0 ? '19' : identifiers.length > 0 ? '18' : '17',
       identifiers: identifiers,
+      concreteValues: concreteValues,
       versionUri: this.isTesting ? this.config.uri.replace("/sct/", "/xsct/") : this.config.uri,
       versionDate: this.extractDateFromUri(this.config.uri),
 
@@ -2914,9 +2975,13 @@ class SnomedCacheWriter {
     }
     buffers.push(this.writeInteger(data.defaultLanguage));
 
-    if (data.version === '18') {
+    if (data.version === '18' || data.version === '19') {
       // alternate identifiers, as JSON: [[scheme, module, code, conceptId], ...]
       buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.identifiers || []), 'utf8')));
+    }
+    if (data.version === '19') {
+      // concrete value relationships, as JSON: [[sourceId, typeId, group, value], ...]
+      buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.concreteValues || []), 'utf8')));
     }
 
     // Write to file

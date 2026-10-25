@@ -362,6 +362,8 @@ class ServerRegistries {
   constructor() {
     this.address = '';
     this.doco = '';
+    this.registration = ''; // URL: how to register your own server in this ecosystem
+    this.ecosystemDoco = ''; // URL: documentation for this ecosystem
     this.lastRun = null; // Date object
     this.outcome = '';
     this.registries = []; // Array of ServerRegistry
@@ -386,6 +388,8 @@ class ServerRegistries {
     this.lastRun = source.lastRun;
     this.outcome = source.outcome;
     this.doco = source.doco;
+    this.registration = source.registration;
+    this.ecosystemDoco = source.ecosystemDoco;
     
     source.registries.forEach(sourceRegistry => {
       const existing = this.getRegistry(sourceRegistry.code);
@@ -402,6 +406,8 @@ class ServerRegistries {
       version: '1',
       address: this.address,
       doco: this.doco,
+      registration: this.registration,
+      'ecosystem-documentation': this.ecosystemDoco,
       'last-run': this.lastRun?.toISOString() || '',
       outcome: this.outcome,
       registries: this.registries.map(r => r.toJSON())
@@ -416,6 +422,8 @@ class ServerRegistries {
     const instance = new ServerRegistries();
     instance.address = json.address || '';
     instance.doco = json.doco || '';
+    instance.registration = json.registration || '';
+    instance.ecosystemDoco = json['ecosystem-documentation'] || '';
     instance.lastRun = json['last-run'] ? new Date(json['last-run']) : null;
     instance.outcome = json.outcome || '';
     instance.registries = (json.registries || []).map(r => ServerRegistry.fromJSON(r));

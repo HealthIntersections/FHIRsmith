@@ -538,8 +538,11 @@ class ECLParser {
     // this compound sequence and reject a mix (e.g. "<< A OR << B AND << C").
     let compoundOp = null;
 
-    while (this.match(ECLTokenType.AND, ECLTokenType.OR, ECLTokenType.MINUS)) {
-      const operator = this.current;
+    // "," is a conjunction in the ECL grammar (conjunction = "AND" / ","), at
+    // this level as well as in refinements; a comma that reaches here was not
+    // claimed by a refinement.
+    while (this.match(ECLTokenType.AND, ECLTokenType.OR, ECLTokenType.MINUS, ECLTokenType.COMMA)) {
+      const operator = this.match(ECLTokenType.COMMA) ? { ...this.current, type: ECLTokenType.AND } : this.current;
       if (compoundOp !== null && operator.type !== compoundOp) {
         throw new Error(
           'Ambiguous ECL expression: conjunction, disjunction and exclusion ' +
@@ -726,18 +729,30 @@ class ECLParser {
       return { type: ECLNodeType.FILTER_CONSTRAINT, kind, filters };
     }
 
-    if (kind !== 'M') {
-      // Skip to the closing }} keeping the raw text for diagnostics
-      const raw = [];
-      while (!this.match(ECLTokenType.RFILTER)) {
-        if (this.match(ECLTokenType.EOF)) {
-          this.error('Unterminated filter constraint - missing }}');
-        }
-        raw.push(this.current.value);
-        this.advance();
+    if (kind === '+') {
+      // historySupplement = "{{" "+" "HISTORY" [ "-MIN" / "-MOD" / "-MAX" / "(" (expressionConstraint / "*") ")" ] "}}"
+      if (!this.match(ECLTokenType.SCTID) || !/^HISTORY(-MIN|-MOD|-MAX)?$/i.test(this.current.value)) {
+        this.error('Expected HISTORY, HISTORY-MIN, HISTORY-MOD or HISTORY-MAX after {{ +');
       }
-      this.advance(); // }}
-      return { type: ECLNodeType.FILTER_CONSTRAINT, kind, raw: raw.join(' ') };
+      const word = this.current.value.toUpperCase();
+      this.advance();
+      const node = { type: ECLNodeType.FILTER_CONSTRAINT, kind, profile: word === 'HISTORY' ? 'MAX' : word.substring(8) };
+      if (this.match(ECLTokenType.LPAREN)) {
+        if (node.profile !== 'MAX' || word !== 'HISTORY') {
+          this.error('A history profile (HISTORY-MIN/MOD/MAX) cannot also name reference sets');
+        }
+        this.advance();
+        if (this.match(ECLTokenType.WILDCARD)) {
+          this.advance();
+          node.profile = 'MAX';
+        } else {
+          node.profile = 'EXPLICIT';
+          node.refsets = this.parseExpressionConstraint();
+        }
+        this.expect(ECLTokenType.RPAREN);
+      }
+      this.expect(ECLTokenType.RFILTER);
+      return node;
     }
 
     const filters = [this.parseMemberFilter()];
@@ -1428,6 +1443,14 @@ class ECLParser {
         operator: operatorType,
         value
       };
+    }
+
+    if (!comparison) {
+      // eclAttribute = [cardinality] [reverseFlag] eclAttributeName comparison - a
+      // bare name is a syntax error. This is what "(A : B = C OR D)" trips on:
+      // the OR binds inside the refinement, so D is an attribute name without a
+      // comparison.
+      this.error('Expected a comparison operator (=, !=, <, <=, >, >=) after the attribute name');
     }
 
     return {

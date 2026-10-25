@@ -37,7 +37,7 @@ const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
  * returned as. An identifier in an unknown scheme is kept but not reported.
  */
 const IDENTIFIER_SCHEMES = {
-  '30051010000102': { system: 'http://loinc.org', property: 'loinc' }   // |LOINC code identifier| (LOINC Extension)
+  '30051010000102': { system: 'http://loinc.org', property: 'loinc', alias: 'LOINC' }   // |LOINC code identifier| (LOINC Extension)
 };
 
 /** The $expand / ECL-free filter on alternate identifiers: mapped:<scheme> exists true|false */
@@ -206,6 +206,39 @@ class SnomedServices {
     this._mrcmRangeCache = new Map();
 
     this.#loadIdentifiers(sharedData.identifiers || []);
+    this.#loadConcreteValues(sharedData.concreteValues);
+  }
+
+  /**
+   * Index the concrete value relationships (cache version 19: rows of
+   * [sourceId, typeId, group, value], value as written in RF2 - "#500", "#5.5",
+   * a quoted string, or true/false) by source concept index, for the ECL
+   * evaluator. `concreteValues` stays null when the cache predates them, which
+   * is how a concrete-value refinement knows to report itself as unsupported
+   * rather than answering with nothing.
+   */
+  #loadConcreteValues(rows) {
+    this.concreteValues = null;
+    if (!rows) return;
+    this.concreteValues = new Map();
+    for (const [sourceId, typeId, group, raw] of rows) {
+      const src = this.concepts.findConcept(sourceId);
+      const type = this.concepts.findConcept(typeId);
+      if (!src.found || !type.found) continue;
+      let value;
+      if (/^#-?\d+(\.\d+)?$/.test(raw)) {
+        value = { kind: 'number', value: Number(raw.substring(1)), decimal: raw.includes('.') };
+      } else if (/^".*"$/.test(raw)) {
+        value = { kind: 'string', value: raw.substring(1, raw.length - 1) };
+      } else if (/^(true|false)$/i.test(raw)) {
+        value = { kind: 'boolean', value: raw.toLowerCase() === 'true' };
+      } else {
+        value = { kind: 'string', value: raw };
+      }
+      const list = this.concreteValues.get(src.index) || [];
+      list.push({ relType: type.index, group: group || 0, concrete: value });
+      this.concreteValues.set(src.index, list);
+    }
   }
 
   /**
@@ -912,14 +945,16 @@ class SnomedServices {
    *   hierarchy operators on *, ^ and bracketed sets (applied per member)
    *   AND / OR / MINUS compound expressions
    *   !!> / !!< (top / bottom of set)
-   *   refinements (= against an expression, attribute AND/OR/",", groups,
-   *   attribute and group cardinality, attribute names that are expressions),
+   *   refinements (= and != against an expression, reversed (R) attributes,
+   *   attribute AND/OR/",", groups, attribute and group cardinality,
+   *   attribute names that are expressions),
    *   dotted expressions, {{ C ... }} concept filters, {{ D ... }} description
-   *   filters, comments
+   *   filters, {{ + HISTORY... }} history supplements, concrete (numeric /
+   *   string / boolean) values in refinements (cache version 19+), comments
    *
-   * Everything else (reverse attributes, != and concrete (numeric/string/
-   * boolean) values in refinements, alternate identifiers, reference set field
-   * selection on ^, {{ + ... }} history supplements) throws an informative
+   *   alternate identifiers (LOINC#code, from the identifier scheme aliases)
+   *
+   * Everything else (reference set field selection on ^) throws an informative
    * error which is reported as UNSUPPORTED_ECL.
    */
 
@@ -1068,9 +1103,6 @@ class SnomedServices {
     // ({{ M ... }}) are handled in _evalMemberOf; concept filters ({{ C ... }})
     // and description filters ({{ D ... }}) are applied to the result below.
     if (node.filters && node.filters.length > 0) {
-      if (node.filters.some(fc => fc.kind === '+')) {
-        throw new Error('ECL history supplements ({{ + ... }}) are not supported');
-      }
       const inner = { ...node, filters: undefined };
       let ctx = this._evalSubExpression(inner, opContext);
       const conceptFilters = node.filters.filter(fc => fc.kind === 'C');
@@ -1080,12 +1112,26 @@ class SnomedServices {
       for (const fc of node.filters.filter(fc => fc.kind === 'D')) {
         ctx = this._applyDescriptionFilter(ctx, fc.filters, opContext);
       }
+      for (const fc of node.filters.filter(fc => fc.kind === '+')) {
+        ctx = this._applyHistorySupplement(ctx, fc, opContext);
+      }
       return ctx;
     }
 
-    // Alternate identifiers (ECL 2.1 "scheme#code")
+    // Alternate identifiers (ECL 2.1 "scheme#code"): the concept(s) that carry
+    // the code in that identifier scheme, then the operator applies to them as
+    // to any set. The scheme is an alias from the ECL specification (LOINC) or
+    // the identifier scheme concept's own id.
     if (focus.type === ECLNodeType.ALT_IDENTIFIER) {
-      throw new Error(`ECL alternate identifiers (${focus.scheme}#${focus.code}) are not supported - no alternate identifier reference sets are loaded`);
+      const set = this._eclAltIdentifier(focus);
+      if (!operator) {
+        const result = new SnomedFilterContext();
+        result.descendants = set;
+        return result;
+      }
+      const base = new SnomedFilterContext();
+      base.descendants = set;
+      return this._eclApplyOperatorToSet(base, operator, opContext);
     }
 
     // Top / bottom of set: the members of the focus set with no ancestor
@@ -1158,6 +1204,32 @@ class SnomedServices {
     const result = new SnomedFilterContext();
     result.descendants = [...union];
     return result;
+  };
+
+  /**
+   * Resolve an ECL alternate identifier (scheme#code) to concept indexes. The
+   * scheme is a known alias (IDENTIFIER_SCHEMES[].alias, case-insensitive) or
+   * an identifier scheme concept id. An unknown scheme, or a code nobody has,
+   * is an invalid expression - the same standing as an unknown concept.
+   */
+  _eclAltIdentifier = function (node) {
+    let schemeId = null;
+    if (/^\d{6,18}$/.test(node.scheme)) {
+      schemeId = node.scheme;
+    } else {
+      for (const [id, def] of Object.entries(IDENTIFIER_SCHEMES)) {
+        if (def.alias && def.alias.toLowerCase() === node.scheme.toLowerCase()) schemeId = id;
+      }
+    }
+    const invalid = (msg) => { const e = new Error(msg); e.eclInvalid = true; return e; };
+    if (!schemeId) {
+      throw invalid(`The alternate identifier scheme "${node.scheme}" is not known`);
+    }
+    const concepts = this.getConceptsForIdentifier(schemeId, node.code);
+    if (concepts.length === 0) {
+      throw invalid(`No concept has the alternate identifier ${node.scheme}#${node.code}`);
+    }
+    return concepts.map(id => this.concepts.findConcept(id)).filter(r => r.found).map(r => r.index);
   };
 
   /**
@@ -1317,6 +1389,9 @@ class SnomedServices {
     }
     const refsetConcepts = this._eclResolveSet(this._evalECLNode(memberOfNode.refSet, opContext), opContext);
     const memberFilters = this._eclPrepareMemberFilters(memberOfNode.memberFilters, opContext);
+    const rs = memberOfNode.refSet;
+    const explicit = rs.type === ECLNodeType.CONCEPT_REFERENCE ||
+      (rs.type === ECLNodeType.SUB_EXPRESSION_CONSTRAINT && !rs.operator && rs.focus.type === ECLNodeType.CONCEPT_REFERENCE);
 
     const members = new Set();
     for (const refsetIdx of refsetConcepts) {
@@ -1334,9 +1409,12 @@ class SnomedServices {
       }
       const memberList = this.refSetMembers.getMembers(membersRef) || [];
       // A reference set whose members are descriptions (a language reference
-      // set, say) has no concept members to return. Say so rather than
-      // answering with an empty set, which would read as "no members".
-      if (memberList.length > 0 && !memberList.some(m => m.kind === 0)) {
+      // set, say) has no concept members to return. When it was named
+      // explicitly, say so rather than answering with an empty set, which would
+      // read as "no members". When it merely falls inside a computed operand
+      // (^ *, ^ (< 900000000000455006)) it contributes nothing and the rest of
+      // the operand still counts.
+      if (explicit && memberList.length > 0 && !memberList.some(m => m.kind === 0)) {
         throw new Error(`The members of reference set ${this.concepts.getConceptId(refsetIdx)} are descriptions, not concepts, so ^ cannot be evaluated for it`);
       }
       for (const m of memberList) {
@@ -1354,6 +1432,82 @@ class SnomedServices {
     const result = new SnomedFilterContext();
     result.descendants = [...members];
     return result;
+  };
+
+  /**
+   * Apply a history supplement ({{ + HISTORY... }}): add to the result the
+   * inactive concepts that the selected historical association reference sets
+   * associate with a concept in the result (the association rows whose
+   * targetComponentId is in the result).
+   *
+   * Profiles (ECL 2.x): MIN = SAME AS; MOD = SAME AS, WAS A, REPLACED BY,
+   * PARTIALLY EQUIVALENT TO; MAX (and a bare HISTORY) = every reference set
+   * under 900000000000522004 |Historical association|; HISTORY (expr) = the
+   * reference sets the expression yields. A reference set the edition does not
+   * carry simply contributes nothing.
+   */
+  _applyHistorySupplement = function (ctx, hs, opContext) {
+    const HISTORICAL_ASSOCIATION = '900000000000522004';
+    const PROFILES = {
+      MIN: ['900000000000527005'],
+      MOD: ['900000000000527005', '900000000000528000', '900000000000526001', '1186924009']
+    };
+    let refsetIdxs;
+    if (hs.profile === 'EXPLICIT') {
+      refsetIdxs = this._eclResolveSet(this._evalECLNode(hs.refsets, opContext), opContext);
+    } else if (hs.profile === 'MAX') {
+      const root = this.concepts.findConcept(HISTORICAL_ASSOCIATION);
+      refsetIdxs = root.found ? this._eclToIndexArray(this.filterIsA(HISTORICAL_ASSOCIATION, false)) : [];
+    } else {
+      refsetIdxs = PROFILES[hs.profile].map(id => this.concepts.findConcept(id)).filter(r => r.found).map(r => r.index);
+    }
+
+    const base = this._eclResolveSet(ctx, opContext);
+    const inResult = new Set(base);
+    const added = new Set();
+    for (const refsetIdx of refsetIdxs) {
+      if (opContext) opContext.deadCheck('ecl:history');
+      const byTarget = this._historyIndex(refsetIdx);
+      if (!byTarget) continue;
+      for (const [target, sources] of byTarget) {
+        if (inResult.has(target)) {
+          for (const src of sources) {
+            if (!inResult.has(src)) added.add(src);
+          }
+        }
+      }
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = base.concat([...added]);
+    return result;
+  };
+
+  /**
+   * target concept index -> [referenced (inactive) concept indexes] for one
+   * association reference set, built once per edition. null when the concept
+   * is not a reference set with concept-valued members.
+   */
+  _historyIndex = function (refsetIdx) {
+    this._historyIndexes = this._historyIndexes || new Map();
+    if (this._historyIndexes.has(refsetIdx)) {
+      return this._historyIndexes.get(refsetIdx);
+    }
+    let index = null;
+    const refSet = this._findRefSetRecord(refsetIdx);
+    if (refSet && refSet.membersByRef && refSet.membersByRef !== 0xFFFFFFFF) {
+      for (const m of this.refSetMembers.getMembers(refSet.membersByRef) || []) {
+        if (m.kind !== 0 || !m.values) continue;
+        const values = this.refs.getReferences(m.values);
+        // targetComponentId is the first additional field, stored as (value, type) with type 1 = concept
+        if (!values || values.length < 2 || values[1] !== 1) continue;
+        index = index || new Map();
+        const list = index.get(values[0]) || [];
+        list.push(m.ref);
+        index.set(values[0], list);
+      }
+    }
+    this._historyIndexes.set(refsetIdx, index);
+    return index;
   };
 
   /**
@@ -1855,17 +2009,11 @@ class SnomedServices {
    * @returns {boolean}
    */
   _attributeMatches = function (rels, attr, groupFilter, opContext) {
-    if (attr.reverse) {
-      throw new Error('ECL reverse attributes (R) are not yet supported');
-    }
     if (!attr.comparison) {
       throw new Error('ECL attribute without a comparison is not supported');
     }
-    if (attr.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON) {
-      throw new Error('ECL concrete values (numeric, string and boolean attribute values) are not supported - concrete value relationships are not loaded');
-    }
-    if (attr.comparison.operator !== ECLTokenType.EQUALS) {
-      throw new Error('ECL != in refinements is not yet supported');
+    if (attr.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON && !this.concreteValues) {
+      throw new Error('ECL concrete values (numeric, string and boolean attribute values) cannot be evaluated - this edition was imported without its concrete value relationships');
     }
 
     const count = this._countAttributeMatches(rels, attr, groupFilter, opContext);
@@ -1895,14 +2043,29 @@ class SnomedServices {
     // fresh per request, so memoising on the node is safe within a request.
     let resolved = attr._eclResolved;
     if (!resolved) {
-      resolved = {
-        types: this._eclAttributeTypes(attr.name, opContext),
-        valueSet: new Set(this._eclResolveSet(this._evalECLNode(attr.comparison.value, opContext), opContext))
-      };
+      resolved = { types: this._eclAttributeTypes(attr.name, opContext) };
+      if (attr.comparison.type === ECLNodeType.EXPRESSION_COMPARISON) {
+        resolved.valueSet = new Set(this._eclResolveSet(this._evalECLNode(attr.comparison.value, opContext), opContext));
+      } else {
+        resolved.concrete = this._eclConcreteMatcher(attr.comparison);
+      }
       attr._eclResolved = resolved;
     }
     const types = resolved.types;
     const valueSet = resolved.valueSet;
+
+    if (resolved.concrete) {
+      // A concrete-value comparison: only the concrete rows count, each
+      // occurrence being a (group, value) pair
+      const matched = new Set();
+      for (const rel of rels) {
+        if (!rel.concrete) continue;
+        if (!types.any && !types.types.has(rel.relType)) continue;
+        if (groupFilter !== null && rel.group !== groupFilter) continue;
+        if (resolved.concrete(rel.concrete)) matched.add(rel.group + ':' + JSON.stringify(rel.concrete.value));
+      }
+      return matched.size;
+    }
 
     // ECL cardinality counts OCCURRENCES of a matching attribute, per role group
     // — not distinct values. ECL runs against the necessary normal form, where a
@@ -1912,13 +2075,26 @@ class SnomedServices {
     // form, not to de-duplicating across groups). We therefore count distinct
     // (group, target) pairs: within a group filter this is the matching values
     // in that group; ungrouped it is the total occurrences across all groups.
+    //
+    // "!=" counts the occurrences whose value is NOT in the set (so "A != X"
+    // matches a concept with at least one A whose value is something other than
+    // X, and "[0..0] A != X" one whose every A is X).
+    //
+    // A reversed attribute ("R A = X") is matched against the concept's INBOUND
+    // relationships: the concept is the value of an A attribute on some concept
+    // in X. _conceptRelRecords supplies those tagged `inbound`; the records built
+    // for a post-coordinated expression have none, so R matches nothing there.
+    const notEquals = attr.comparison.operator === ECLTokenType.NOT_EQUALS;
+    const reverse = !!attr.reverse;
     const matched = new Set();
     for (const rel of rels) {
       if (opContext) opContext.deadCheck('ecl:countAttributeMatches');
-      if (!rel.active) continue;
+      if (!rel.active || rel.concrete) continue;
+      if (!!rel.inbound !== reverse) continue;
       if (!types.any && !types.types.has(rel.relType)) continue;
       if (groupFilter !== null && rel.group !== groupFilter) continue;
-      if (valueSet.has(rel.target)) matched.add(rel.group + ':' + rel.target);
+      const value = reverse ? rel.source : rel.target;
+      if (valueSet.has(value) !== notEquals) matched.add(rel.group + ':' + value);
     }
     return matched.size;
   };
@@ -1983,11 +2159,57 @@ class SnomedServices {
   // target, group} — the shape the refinement matchers consume. Sharing this
   // shape lets the same matchers run against a post-coordinated expression's
   // relationships (see _expressionRelRecords).
+  /**
+   * A predicate over a stored concrete value for one comparison node:
+   *   numeric: = != < <= > >= against a number (integers and decimals compare as
+   *            numbers, so #5 = #5.0)
+   *   string:  = / != against typed search terms (match / wild semantics, as for
+   *            description terms), any of a set
+   *   boolean: = / != true/false
+   * A value of another kind never matches (and never "not-matches" either: a
+   * string attribute is not "!= #5").
+   */
+  _eclConcreteMatcher = function (comparison) {
+    switch (comparison.type) {
+      case ECLNodeType.NUMERIC_COMPARISON: {
+        const n = Number(comparison.value);
+        const op = { [ECLTokenType.EQUALS]: '=', [ECLTokenType.NOT_EQUALS]: '!=', [ECLTokenType.LT]: '<', [ECLTokenType.LTE]: '<=', [ECLTokenType.GT]: '>', [ECLTokenType.GTE]: '>=' }[comparison.operator] || comparison.operator;
+        return (v) => v.kind === 'number' && this._eclCompareValues(v.value, op, [n], (a, b) => a - b);
+      }
+      case ECLNodeType.STRING_COMPARISON: {
+        const matchers = comparison.values.map(t => this._eclTermMatcher(typeof t === 'string' ? { kind: 'match', value: t } : t));
+        const neg = comparison.operator === ECLTokenType.NOT_EQUALS;
+        return (v) => v.kind === 'string' && (matchers.some(m => m(v.value)) !== neg);
+      }
+      case ECLNodeType.BOOLEAN_COMPARISON: {
+        const neg = comparison.operator === ECLTokenType.NOT_EQUALS;
+        return (v) => v.kind === 'boolean' && ((v.value === comparison.value) !== neg);
+      }
+      default:
+        throw new Error(`Unsupported comparison ${comparison.type}`);
+    }
+  };
+
   _conceptRelRecords = function (conceptIdx) {
-    const relIdxs = this.getConceptRelationships(conceptIdx);
     const out = [];
-    for (const relIdx of relIdxs) {
+    for (const relIdx of this.getConceptRelationships(conceptIdx)) {
       out.push(this.relationships.getRelationship(relIdx));
+    }
+    // concrete value rows, for numeric / string / boolean comparisons
+    if (this.concreteValues) {
+      for (const cv of this.concreteValues.get(conceptIdx) || []) {
+        out.push({ active: true, relType: cv.relType, group: cv.group, target: -1, concrete: cv.concrete });
+      }
+    }
+    // inbound relationships, for reversed (R) attributes
+    const concept = this.concepts.getConcept(conceptIdx);
+    if (concept.inbounds) {
+      for (const relIdx of this.refs.getReferences(concept.inbounds) || []) {
+        const rel = this.relationships.getRelationship(relIdx);
+        if (rel.active && rel.relType !== this.isAIndex) {
+          out.push({ ...rel, inbound: true });
+        }
+      }
     }
     return out;
   };

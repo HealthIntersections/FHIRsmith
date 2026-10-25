@@ -160,6 +160,8 @@ class RegistryCrawler {
       }
       
       newData.doco = masterJson.documentation || '';
+      newData.registration = masterJson.registration || '';
+      newData.ecosystemDoco = masterJson['ecosystem-documentation'] || '';
       
       // Process each registry
       const registries = masterJson.registries || [];

@@ -5,6 +5,41 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] - 2026-10-dd
+
+### Security
+
+-
+
+### Added
+
+- SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`).
+- SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
+- SNOMED CT ECL: `AND` and `OR` between refinements - between attributes (`: A = x AND B = y`, `: A = x OR B = y`, with brackets for nesting), within an attribute group (`{ A = x OR B = y }`) and between groups (`{ ... } OR { ... }`). Mixing AND and OR without brackets is rejected, as for compound expressions. Previously only `,` (conjunction) was accepted
+- SNOMED CT ECL: description filters (`{{ D ... }}`) - `term` (match and `wild:` search terms, single or a set), `language`, `typeId` and `type` (syn/fsn/def), `dialectId` and `dialect` (en-us, en-gb and the other aliases in the ECL specification) with acceptability sets, `moduleId`, `effectiveTime`, `active` and `id`. The filters in one block apply to the same description; only active descriptions are considered unless `active` is given
+- SNOMED CT ECL: history supplements (`{{ + HISTORY }}`, `HISTORY-MIN` / `-MOD` / `-MAX`, `HISTORY (*)`, `HISTORY (refset expression)`) - the inactive concepts that the selected historical association reference sets associate with the result are added to it
+- SNOMED CT ECL: concrete values in refinements (`= #500`, `>= #1.5`, `!= #-1`, `= "text"`, `= true`). The importer now reads `sct2_RelationshipConcreteValues_*` into a new cache section (cache version 19, after 18's alternate identifiers); editions imported before this report a concrete-value refinement as unsupported. The test edition cache is `sct_test_20250909e.cache`
+- SNOMED CT ECL: `!=` in refinements (`: A != X` - at least one A whose value is not in X; `[0..0] A != X` - every A is in X), reversed attributes (`: R A = X` - the concepts that are the value of A on a concept in X), and `,` as a conjunction between expressions as well as between refinements
+- SNOMED CT ECL: comments (`/* ... */`), top and bottom of set (`!!> (...)`, `!!< (...)`), and attribute names that are expressions rather than a single concept (`: << 762705008 = ...`, `: (A OR B) = ...`, `: ^ refset = ...`, `: * = ...`, and the same after `.` in dotted expressions)
+- SNOMED CT ECL: reference set field selection on member-of (`^ [targetComponentId] refset`) is parsed and reported as `UNSUPPORTED_ECL` (the selected fields, and many referenced components, are descriptions) rather than as a syntax error
+- SNOMED CT ECL: alternate identifiers (`LOINC#14394-1`, `"LOINC#14394-1"`): the scheme alias names an identifier scheme (LOINC = 30051010000102 |LOINC code ID|, as imported from the LOINC Extension) and the code resolves to the concept(s) carrying it, which then take hierarchy operators like any set. An unknown scheme or a code nobody carries is `INVALID_ECL`, as an unknown concept is
+
+### Changed
+
+- Move the hard-coded link about adding to the terminology server ecosystem to the registry control file
+
+### Fixed
+
+- SNOMED CT ECL: a hierarchy operator on a bracketed expression was silently dropped - `< (A OR B)` returned A and B themselves rather than their descendants. It now applies to every member of the set, as do operators on `*` and on `^ refset`, which were previously rejected as unsupported
+- SNOMED CT ECL: `^` on a reference set whose members are descriptions (a language reference set) returned an empty expansion; it is now reported as `UNSUPPORTED_ECL` when the reference set is named, and skipped when it merely falls inside a computed operand such as `^ *`
+- SNOMED CT ECL: an attribute name with no comparison (`: 363698007` with nothing after it) was accepted by the parser and failed later as unsupported; it is a syntax error
+- SNOMED CT ECL: an evaluation error is now `UNSUPPORTED_ECL` unless it is about a concept that does not exist (`INVALID_ECL`); it was classified by matching the error text, which filed `= true` as a syntax error. A concept id that is not 6-18 digits is rejected by the parser
+
+### Tx Conformance Statement
+
+(paste)
+
+
 ## [0.18.1] - 2026-10-25
 
 
@@ -79,12 +114,6 @@ Note: We are heading towards a 1.0.0 release.
 - `$lookup`: a warning when the `displayLanguage` asked for has no display for the code, and the display is in the default language (`LOOKUP_DISPLAY_LANGUAGE_FALLBACK`)
 - ICD-11: the `classificationCode` extension (provisional url `http://id.who.int/icd/schema/extension/classificationCode`) on a Coding carries the short code for an entity id, saving a lookup. When present it is checked in `$validate-code` (CodeSystem and ValueSet): a wrong value, or the extension on a code with no short code, on a short code, or on a system other than MMS, is an error
 - ICD-11 `$lookup`: postcoordination is reported as one `postcoordination` property per axis (subproperties `axis` and `value` Codings, a `/` member's value with its own nested postcoordination), replacing the WHO `postcoordinationScale` shape. With the new parameter `post-coordination-metadata=true` every declared axis is listed with `required`, `allowMultipleValues` and its value set; otherwise only the valued axes. `source` (the Foundation entity) is a Coding, and asking for `source.details` adds what a `$lookup` on it would return, designations included. A single-valued axis with several values gets a message in `$validate-code`
-- SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`). Description filters (`{{ D }}`), concept filters (`{{ C }}`) and history supplements (`{{ + }}`) are now parsed and rejected as `UNSUPPORTED_ECL` rather than failing as a lexer error
-- SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
-- SNOMED CT ECL: `AND` and `OR` between refinements - between attributes (`: A = x AND B = y`, `: A = x OR B = y`, with brackets for nesting), within an attribute group (`{ A = x OR B = y }`) and between groups (`{ ... } OR { ... }`). Mixing AND and OR without brackets is rejected, as for compound expressions. Previously only `,` (conjunction) was accepted
-- SNOMED CT ECL: description filters (`{{ D ... }}`) - `term` (match and `wild:` search terms, single or a set), `language`, `typeId` and `type` (syn/fsn/def), `dialectId` and `dialect` (en-us, en-gb and the other aliases in the ECL specification) with acceptability sets, `moduleId`, `effectiveTime`, `active` and `id`. The filters in one block apply to the same description; only active descriptions are considered unless `active` is given
-- SNOMED CT ECL: comments (`/* ... */`), top and bottom of set (`!!> (...)`, `!!< (...)`), and attribute names that are expressions rather than a single concept (`: << 762705008 = ...`, `: (A OR B) = ...`, `: ^ refset = ...`, `: * = ...`, and the same after `.` in dotted expressions)
-- SNOMED CT ECL: concrete values in refinements (`= #5`, `!= "x"`, `= match:"x"`, `= true`, ...) and alternate identifiers (`"ICD10#A01.1"`, `SCTID#123`) and reference set field selection on member-of (`^ [targetComponentId] refset`) are now parsed, so they are reported as `UNSUPPORTED_ECL` with a message saying what is missing (concrete value relationships / alternate identifier reference sets are not loaded) rather than as a syntax error
 - SNOMED CT: `tx/sct/documentation.md` - what the server supports for SNOMED CT: editions, ECL, expressions and the MRCM, implicit concept maps and translation
 - `utilities/make-sct-test-extension.js`: builds the extension concepts (module TEST1000003) in the SNOMED CT test edition used by the tx tests - one of each shape (fully defined ungrouped, fully defined role-grouped, equivalent to an International concept, primitive), plus inactive ones with and without historical associations
 - README: each module's status - in production; in production but still under development; under development / prototyping; or on the back-burner
@@ -106,9 +135,6 @@ Note: We are heading towards a 1.0.0 release.
 - ValueSet `$validate-code`: an include with more than one filter only checked the first. The other filters' checks return a message when the code fails them, and a message was taken as a pass
 - LOINC: the `exists` filter ignored its value. On a relationship property (`METHOD_TYP`, `COMPONENT`, `document-kind`, ...) the value was looked up as a code or display, so `exists true` and `exists false` both returned every code with the relationship (because a code displayed as "True" and one as "False" exist), and on a property (`CLASSTYPE`, `ORDER_OBS`, ...) `exists false` meant `exists true`. `true` now returns the codes that have the property, `false` every other code in the code system - Parts, AnswerLists and Answers included, so add `CLASSTYPE exists true` to restrict to LOINC terms (e.g. LOINC terms with no method: `METHOD_TYP exists false` + `CLASSTYPE exists true`). Any other value is not supported
 - Packages: a package download or page request was counted twice in the statistics (once by the validation step, once by the handler), and tarball downloads were not told from requests for a version's JSON document; downloads are now counted as `download`, version documents as `version`, each once
-- SNOMED CT ECL: a hierarchy operator on a bracketed expression was silently dropped - `< (A OR B)` returned A and B themselves rather than their descendants. It now applies to every member of the set, as do operators on `*` and on `^ refset`, which were previously rejected as unsupported
-- SNOMED CT ECL: `^` on a reference set whose members are descriptions (a language reference set) returned an empty expansion; it is now reported as `UNSUPPORTED_ECL`
-- SNOMED CT ECL: an evaluation error is now `UNSUPPORTED_ECL` unless it is about a concept that does not exist (`INVALID_ECL`); it was classified by matching the error text, which filed `= true` as a syntax error. A concept id that is not 6-18 digits is rejected by the parser
 - SNOMED CT expressions: the MRCM content type taken as "postcoordinated" was 723594008, which is *all precoordinated content* (postcoordinated is 723595009). So the body-structure part-of attributes (|Regional part of| etc., precoordinated only) were allowed in expressions, |Has ingredient| (postcoordinated only) was not checked, and for the attributes with a precoordinated-specific range that range was used in place of the general one
 
 - SHL: every access to a live link (`/shl/access/{uuid}`) hung without a response - the access-logging callback was a plain `function`, so `this.db` was undefined in it and the request was never answered (since 0.3.0). A `GET` on a link is now the U flag (direct file) access the SMART Health Links spec defines: a link with one file returns it as a JWE (`application/jose`), and `recipient` is read from the query and logged (it was always `anonymous`); a link with more than one file, or a VHL, still gets the manifest / VHL bundle. The manifest now has `status` (`finalized`), file `location`s are always https (they followed `req.secure`, so http behind a proxy without trust proxy), and `embedded` is the JWE itself (it was the base64 of it, as stored)
