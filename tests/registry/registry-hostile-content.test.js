@@ -43,7 +43,7 @@ describe('registry: hostile registry and server content', () => {
       const u = new URL(req.url, 'http://x');
       let body;
       if (u.pathname === '/master.json') {
-        body = { formatVersion: '1', documentation: BAD, registries: [{ code: 'evil', name: 'Evil' + BAD, url: `${base}/registry.json`, authority: BAD }] };
+        body = { formatVersion: '1', documentation: BAD, registration: EVIL_URL, 'ecosystem-documentation': 'https://evil.org/' + EVIL_ATTR, registries: [{ code: 'evil', name: 'Evil' + BAD, url: `${base}/registry.json`, authority: BAD }] };
       } else if (u.pathname === '/registry.json') {
         body = {
           formatVersion: '1',

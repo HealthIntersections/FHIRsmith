@@ -807,8 +807,15 @@ class RegistryModule {
       const lastRunDate = new Date(stats.lastRun);
       lastUpdatedText = `Last Updated: ${lastRunDate.toLocaleString()}`;
     }
-    html += `<p>${lastUpdatedText}. <a href="https://github.com/FHIR/ig-registry/blob/master/tx-registry-doco.md">Register your own server</a>`+
-      ` - see <a href="https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/ecosystem.html">Documentation</a></p>`;
+    // what goes here depends on the ecosystem, so it comes from the master registration file
+    html += `<p>${lastUpdatedText}.`;
+    if (data.registration) {
+      html += ` <a href="${safeHref(data.registration)}">Register your own server</a>`;
+    }
+    if (data.ecosystemDoco) {
+      html += `${data.registration ? ' -' : ''} see <a href="${safeHref(data.ecosystemDoco)}">Documentation</a>`;
+    }
+    html += '</p>';
 
     html += '<table class="grid">';
     html += '<thead><tr>';

@@ -774,7 +774,7 @@ class RegistryAPI {
       }
       html += '</td>\n';
 
-      html += `<td>${row.security}/td>\n`;
+      html += `<td>${escape(row.security)}</td>\n`;
 
       html += '</tr>\n';
     }

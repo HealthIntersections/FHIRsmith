@@ -27,8 +27,9 @@ it, [api.md](api.md) says so.
 
 **The registration files.** The ecosystem is declared by a *master registration file* that
 lists *registries*, each of which lists *servers*, each of which lists its endpoints (one per
-FHIR version) and its claims. The format is documented in the ig-registry repository's
-[tx-registry-doco.md](https://github.com/FHIR/ig-registry/blob/master/tx-registry-doco.md).
+FHIR version) and its claims. The format is documented on the IG's ecosystem page; HL7's own
+ecosystem (its locations, and how to register a server in it) is documented in the ig-registry
+repository's [tx-registry-doco.md](https://github.com/FHIR/ig-registry/blob/master/tx-registry-doco.md).
 HL7's master file is https://fhir.github.io/ig-registry/tx-servers.json, and its registries
 are the per-affiliate `*-tx-servers.json` files in the same repository (HL7 International,
 HL7 Australia, HL7 Europe, and so on). A server's registration carries:

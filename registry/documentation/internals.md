@@ -28,7 +28,10 @@ How the module works, for anyone changing it. The user-facing behaviour is in
 `RegistryCrawler.crawl()` runs every `crawlInterval` minutes (first 5 seconds after start),
 and never concurrently with itself. A scan builds a fresh `ServerRegistries` from scratch:
 
-1. fetch the master registration file (`formatVersion` must be `"1"`);
+1. fetch the master registration file (`formatVersion` must be `"1"`); its optional
+   `registration` and `ecosystem-documentation` URLs are the "Register your own server" and
+   "Documentation" links on the home page (each is omitted if the file doesn't give it), since
+   they depend on the ecosystem;
 2. for each registry it lists, fetch the registry file and build a `ServerRegistry`;
 3. for each server, a `ServerInformation` with its claims (`authoritative`,
    `authoritative-valuesets`, `languages`, `usage`, `exclusions`), and for each of its
