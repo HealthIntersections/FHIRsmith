@@ -35,14 +35,20 @@ that the server does not use. `filterECL` is the one that matters.
   reference set's own fields (concept, integer and string typed from the RF2
   file name). Since inactive member rows are dropped at import, `active = false`
   never matches.
-- `AND` / `OR` / `MINUS` (and `,`), with the ECL 6.4 rule that conjunction and
+- Refinements: `=` and `!=` against an expression value (`!=` counts the
+  occurrences whose value is outside the set, so `A != X` needs at least one
+  A that is not X, and `[0..0] A != X` means every A is X); reversed
+  attributes (`R A = X`: the concept is the value of an A on something in X,
+  evaluated over the concept's inbound relationships); attribute names that
+  are a concept, `*`, or any sub expression (`<< 762705008 = ...`); attribute
+  sets joined by `AND`, `OR` or `,`, with brackets; attribute groups,
+  including `AND`/`OR` inside and between groups; attribute and group
+  cardinality, including `[0..0]`. Cardinality counts occurrences per role
+  group, per the SNOMED Computable Languages Group ruling (see
+  `_countAttributeMatches`).
+- `AND` / `OR` / `MINUS`, and `,` as a conjunction at the expression level as
+  well as in refinements, with the ECL 6.4 rule that conjunction and
   disjunction cannot be mixed without brackets.
-- Refinements: `=` against an expression value; attribute names that are a
-  concept, `*`, or any sub expression (`<< 762705008 = ...`); attribute sets
-  joined by `AND`, `OR` or `,`, with brackets; attribute groups, including
-  `AND`/`OR` inside and between groups; attribute and group cardinality,
-  including `[0..0]`. Cardinality counts occurrences per role group, per the
-  SNOMED Computable Languages Group ruling (see `_countAttributeMatches`).
 - Dotted expressions (`< X . 363698007`, `. << 363698007`, `. (A OR B)`).
 - `{{ C ... }}` concept filters on `active`, `definitionStatus`,
   `definitionStatusId`, `moduleId` and `effectiveTime`.
@@ -56,26 +62,37 @@ that the server does not use. `filterECL` is the one that matters.
   must be satisfied by a single description; separate blocks may be satisfied
   by different descriptions. Only active descriptions are considered unless
   the block has an `active` filter.
+- Concrete values in refinements - numeric (`= #5`, `>= #1.5`, `!= #-1`),
+  string (`= "x"`, `= match:"x"`, a set) and boolean (`= true`) - against the
+  concrete value relationships, which the importer reads from
+  `sct2_RelationshipConcreteValues_*` into cache version 19. Numbers compare
+  as numbers (`#5` matches `#5.0`); strings use the same match / wild
+  semantics as description terms; a value of another kind never matches.
+  An edition imported before version 19 has no concrete values and reports
+  such a refinement as unsupported rather than answering with nothing.
+- History supplements: `{{ + HISTORY }}` (= MAX), `HISTORY-MIN` (SAME AS),
+  `HISTORY-MOD` (SAME AS, WAS A, REPLACED BY, PARTIALLY EQUIVALENT TO),
+  `HISTORY-MAX` (every reference set under 900000000000522004 |Historical
+  association|), `HISTORY (*)` and `HISTORY (expression)`: the inactive
+  concepts that the selected association reference sets associate with a
+  concept in the result are added to it. A reference set the edition does not
+  carry contributes nothing. Whether a bare `HISTORY` means MAX is taken from
+  Snow Owl's reading of the specification - to be confirmed.
+- Alternate identifiers (`LOINC#14394-1`, `"LOINC#14394-1"`): the scheme
+  alias names an identifier scheme (`IDENTIFIER_SCHEMES` in `cs-snomed.js`:
+  LOINC = 30051010000102, from the LOINC Extension's `sct2_Identifier` file,
+  cache version 18+), the code resolves to the concept(s) carrying it, and
+  hierarchy operators apply to them as to any set. An unknown scheme or a
+  code nobody carries is `INVALID_ECL`.
 - Comments (`/* ... */`), terms (`|...|`, not checked against descriptions).
 
 ### Parsed but reported as unsupported
 
-- Reverse attributes (`R 363698007 = ...`).
-- `!=` against an expression value in a refinement.
-- Concrete values in refinements - numeric (`= #5`, `>= #1.5`), string
-  (`= "x"`, `= match:"x"`), boolean (`= true`). The importer does not read
-  `sct2_RelationshipConcreteValues_*`, so no concrete values are in the cache
-  to compare against. Supporting them means extending the importer and the
-  relationship record, and rebuilding every cache.
-- Alternate identifiers (`"ICD10#A01.1"`, `SCTID#123`). No alternate
-  identifier reference sets are loaded.
 - Reference set field selection on member-of (`^ [targetComponentId] refset`,
   `^ [referencedComponentId, targetComponentId] refset`). Deliberate: the
   selected fields, and the referenced components of many reference sets,
   are descriptions or other non-concept components, which an expansion has
   no way to represent.
-- History supplements (`{{ + HISTORY-MIN / MOD / MAX }}`). The association
-  reference sets they draw on are loaded, so this is implementable.
 
 ### Not parsed
 
@@ -99,7 +116,13 @@ that the server does not use. `filterECL` is the one that matters.
 - `^` on a concept that is not a reference set yields an empty result rather
   than an error (Snowstorm's behaviour; agreed in the tx-ecosystem suite).
   `^` on a reference set whose members are descriptions (a language reference
-  set) is reported as unsupported - there are no concepts to return.
+  set) is reported as unsupported when that reference set is named explicitly
+  - there are no concepts to return. Inside a computed operand (`^ *`,
+  `^ (< 900000000000455006)`) such a reference set contributes nothing and
+  the rest of the operand still counts.
+- An attribute name without a comparison (`< X : 363698007`, or `(< X : A = v
+  OR B)` where the OR binds inside the refinement) is a syntax error, as the
+  grammar requires.
 - The ECL result for a value set filter is cached per (value set, code system
   version), so the first expansion of a large constraint is slow and later ones
   are not.
@@ -181,8 +204,9 @@ role group pairing.
 
 - Stated relationships and the OWL axiom reference sets. Everything is driven
   by the distributed inferred relationships; there is no classification.
-- Concrete value relationships (see ECL above).
-- Alternate identifier reference sets.
+- Concrete value relationships are read into cache version 19 (October 2026);
+  caches built before that have none, and a concrete-value ECL refinement on
+  them is reported as unsupported.
 - Inactive reference set member rows (only active rows are stored).
 - Module ids and definition status on concepts are recorded by the current
   importer; caches built before mid-2026 have neither (every concept looks

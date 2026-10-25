@@ -1358,7 +1358,7 @@ class SnomedFileReader {
     }
 
     // Determine settings based on cache version string (matching Pascal logic)
-    if (result.cacheVersion === '17' || result.cacheVersion === '18') { // SNOMED_CACHE_VERSION_CURRENT (18 = 17 + alternate identifiers)
+    if (result.cacheVersion === '17' || result.cacheVersion === '18' || result.cacheVersion === '19') { // 18 = 17 + alternate identifiers; 19 = 18 + concrete values
       result.hasLangs = true;
     } else if (result.cacheVersion === '16') { // Assuming this is UTF8 version for now
       result.isUTF16 = false;
@@ -1384,8 +1384,15 @@ class SnomedFileReader {
 
     // Alternate identifiers (version 18): [[scheme, module, code, conceptId], ...]
     result.identifiers = [];
-    if (result.cacheVersion === '18') {
+    if (result.cacheVersion === '18' || result.cacheVersion === '19') {
       result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
+    }
+    // Concrete value relationships (version 19): [[sourceId, typeId, group, value], ...].
+    // null (not []) when the cache predates them, so the server can tell "none" from
+    // "not loaded".
+    result.concreteValues = null;
+    if (result.cacheVersion === '19') {
+      result.concreteValues = JSON.parse(this.readBytes().toString('utf8'));
     }
 
     return result;

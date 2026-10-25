@@ -13,7 +13,7 @@ sources:
   - ucum:tx/data/ucum-essence.xml
   - loinc!:Loinc_2.83.db
   - snomed!:sct_intl_20250201.cache
-  - snomed:sct_test_20250909d.cache
+  - snomed:sct_test_20250909e.cache
   - omop:omop_v20250227.db
   - icd11:icd11-2026-01-b.db
   - npm:hl7.terminology=tho
