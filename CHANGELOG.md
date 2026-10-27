@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Registry: `GET /tx-reg/choose-server` - given the code systems a request involves and the client's default server, which one server to send it to, and a log of why. The same choice the Java tooling makes, for clients that aren't Java
 - SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`).
 - SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
 - SNOMED CT ECL: `AND` and `OR` between refinements - between attributes (`: A = x AND B = y`, `: A = x OR B = y`, with brackets for nesting), within an attribute group (`{ A = x OR B = y }`) and between groups (`{ ... } OR { ... }`). Mixing AND and OR without brackets is rejected, as for compound expressions. Previously only `,` (conjunction) was accepted

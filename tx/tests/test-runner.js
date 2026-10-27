@@ -264,6 +264,9 @@ async function loadValidator() {
         // content is our own fixtures, so there is nothing untrusted that could redirect the validator
         // anywhere. Protection has to be off for these tests to connect at all.
         ssrfProtection: false,
+        // runTxTest() needs the validator's terminology test endpoints, which are off unless asked
+        // for from validator 7.0.4 (fhir-validator-wrapper passes -txTests; older wrappers ignore this)
+        txTests: true,
         // see ensureValidatorJar: no GitHub API call in CI; and a local jar is never replaced
         autoDownload: !localJar,
         skipUpdateCheck: inCI || !!localJar

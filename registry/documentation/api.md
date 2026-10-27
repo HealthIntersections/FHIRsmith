@@ -15,12 +15,13 @@ contract:
 Every response carries `Link: </tx-reg/openapi.json>; rel="service-desc"` (RFC 8631), and the
 HTML pages the matching `<link>` element.
 
-There are two operations, both `GET`:
+There are two operations from the ecosystem IG, and one extension, all `GET`:
 
 | Endpoint | |
 |---|---|
 | `/tx-reg/` | **Discovery** - the server endpoints in the ecosystem |
 | `/tx-reg/resolve` | **Resolution** - which endpoints to use for a code system or value set |
+| `/tx-reg/choose-server` | **Server choice** - which one server to use for a request involving several code systems (JSON only; [below](#server-choice-get-tx-regchoose-server)) |
 
 Both answer JSON, or an HTML page when the request's `Accept` header contains `text/html`.
 `/tx-reg/resolve` in a browser without parameters is a form for trying it. Parameters are read
@@ -143,7 +144,72 @@ when empty, so an empty object means nobody hosts it.
 * Resolve takes `version` as an alternative to `url|version`.
 * Resolve omits `authoritative` and `candidates` when they are empty.
 
-## Operational pages
+## Server choice: `GET /tx-reg/choose-server`
+
+Not in the ecosystem IG. A request often involves several code systems - a value set that
+includes LOINC and a national code system, a CodeableConcept with codings from three - and
+resolution answers for one at a time. The HL7 Java tooling combines the answers into a choice
+of one server (`TerminologyClientManager.chooseServer` in org.hl7.fhir.core); this makes the
+same choice here for clients that aren't Java. It doesn't replace the Java code, which still
+does its own choosing.
+
+| Parameter | |
+|---|---|
+| `fhirVersion` | Required, as for resolve |
+| `system` | A code system the request involves, `url` or `url\|version`. Repeat it for each (`system=a&system=b`) - the one parameter that isn't first-value-only |
+| `default` | Required. The client's default terminology server: the fallback, and the server for the code systems tx.fhir.org handles specially |
+| `valueSet` | The value set the request is about, `url` or `url\|version`, if there is one |
+| `language` | As for resolve, but only for language sensitive requests (an expansion where the display language matters, a validation that checks a display, a lookup that returns designations) |
+| `usage` | As for resolve |
+
+```json
+{
+  "server": "https://tx.ontoserver.csiro.au/fhir",
+  "log": [
+    "https://healthterminologies.gov.au/fhir/CodeSystem/x: authoritative [https://tx.ontoserver.csiro.au/fhir], candidates []",
+    "http://terminology.hl7.org/CodeSystem/v2-0203: authoritative [http://tx.fhir.org/r4], candidates [https://tx.ontoserver.csiro.au/fhir]",
+    "Found partially authoritative server https://tx.ontoserver.csiro.au/fhir"
+  ]
+}
+```
+
+`log` is for people: what resolution says about each code system, then the rule that decided.
+
+### What the client does first
+
+What the Java tooling works out before it chooses, a client must too:
+
+* The code systems: from the codings, and from the value set's includes and excludes,
+  following imported value sets. The imports are often only in the client's own context (the
+  IG being built), so the registry can't follow them. If the client can't follow one, it
+  should use its default server without asking.
+* Versions: those fixed by the expansion parameters (`system-version`,
+  `force-system-version`) applied to the systems.
+* Language: for an expansion, the `displayLanguage` of the expansion parameters if no other.
+
+### How the choice is made
+
+In order:
+
+1. A server authoritative for all the code systems.
+2. A server authoritative for one, and authoritative or a candidate for each of the others.
+3. Several code systems including SNOMED CT: the choice for SNOMED CT alone. Otherwise, if a
+   code system is one tx.fhir.org handles specially (LOINC, UCUM, RxNorm, CVX, NDC, CPT,
+   BCP-13/47, ISO 3166/4217 ...): the default.
+4. A server that is a candidate for all of them, and has a usable copy of each - its
+   TerminologyCapabilities says `complete` or `fragment`, or gives no content mode. Not
+   checked for a code system tx.fhir.org is also a candidate for.
+5. The server authoritative for the most of them (the first, on a tie).
+6. The server the value set comes from (by resolving `valueSet`), else the default.
+
+In 2 and 4, a code system that no server hosts doesn't count against a server.
+
+Where this differs from the Java tooling: step 4 uses the content mode the registry scanned
+instead of searching the server, and trusts a server that didn't say; the special handling in
+step 3 sends to `default` rather than to whichever of tx.fhir.org / tx-dev the client has used;
+ties go to the first rather than to hash order. Step 3 is tx.fhir.org specific, and applies to
+any ecosystem for now.
+
 
 These are HTML, not part of the API, and never secured:
 
