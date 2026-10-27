@@ -68,6 +68,11 @@ describe('registry OpenAPI description', () => {
       expect(parametersOf(spec, 'resolve', 'query').map(p => p.name).sort())
         .toEqual([...RegistryModule.RESOLVE_PARAMS].sort());
     });
+
+    test('choose-server parameters are the ones the handler reads', () => {
+      expect(parametersOf(spec, 'chooseServer', 'query').map(p => p.name).sort())
+        .toEqual([...RegistryModule.CHOOSE_SERVER_PARAMS].sort());
+    });
   });
 
   describe('serving and discovery links', () => {

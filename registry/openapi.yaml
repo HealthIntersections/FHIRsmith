@@ -25,6 +25,9 @@ info:
     * **Resolution** (`GET /resolve`): which server should be used for this code system
       or value set?
 
+    It also offers **server choice** (`GET /choose-server`): given all the code systems a
+    request involves, and the client's default server, which one server should it go to?
+
     Servers can claim to be **authoritative** for code systems and value sets (by URL
     mask) in their registration. A server that hosts the content but makes no claim is a
     **candidate**. A server is only ever returned for content it actually hosts.
@@ -182,6 +185,77 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /choose-server:
+    get:
+      tags: [resolution]
+      operationId: chooseServer
+      summary: Choose one server for a request involving several code systems
+      description: |
+        For clients that aren't the HL7 Java tooling: the same choice the Java tooling makes
+        (TerminologyClientManager.chooseServer), made from the registry's own data. Returns
+        the server to send the request to, and a log of how it was chosen.
+
+        The client works out the code systems the request involves - from the codings, and
+        the value set's includes and excludes, following imported value sets - and applies
+        any versions fixed by expansion parameters. If it can't follow an import, it should
+        use its default server without asking.
+
+        In order, the choice is:
+
+        1. a server authoritative for all the code systems
+        2. a server authoritative for one, and authoritative or a candidate for the others
+        3. for several code systems including SNOMED CT, the choice for SNOMED CT alone; for
+           a code system tx.fhir.org handles specially (LOINC, UCUM, RxNorm ...), the default
+        4. a server that is a candidate for all of them, and reports a usable (complete or
+           fragment) copy of each, or no content mode at all
+        5. the server authoritative for the most of them
+        6. the server the value set comes from (resolved by `valueSet`), else the default
+
+        In 2 and 4, a code system that no server hosts doesn't count against a server.
+      parameters:
+        - name: fhirVersion
+          in: query
+          required: true
+          description: The FHIR version, as a release code (`R4`, `R4B`, `R5` ...) or a version (`4.0.1`, `4.0`).
+          schema: { type: string }
+          example: R4
+        - name: system
+          in: query
+          description: |
+            A code system the request involves, `url` or `url|version`. Repeat for each one
+            (`system=a&system=b`). With none, the answer is the default server.
+          schema: { type: array, items: { type: string } }
+          style: form
+          explode: true
+          example: [http://loinc.org, http://snomed.info/sct|http://snomed.info/sct/32506021000036107]
+        - name: default
+          in: query
+          required: true
+          description: The client's default terminology server (the one it would use without the ecosystem).
+          schema: { type: string, format: uri }
+          example: http://tx.fhir.org/r4
+        - name: valueSet
+          in: query
+          description: The value set the request is about, `url` or `url|version`, if there is one. Used for the log, and in step 6.
+          schema: { type: string }
+        - $ref: '#/components/parameters/language'
+        - name: usage
+          in: query
+          description: What the client is doing, for servers that restrict their use (as for `/resolve`).
+          schema: { type: string }
+      responses:
+        '200':
+          description: The chosen server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChooseServerResult' }
+        '400':
+          description: A required parameter is missing, or a URL is malformed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearer:
@@ -310,6 +384,16 @@ components:
         candidates:
           type: array
           items: { $ref: '#/components/schemas/ResolvedServer' }
+
+    ChooseServerResult:
+      type: object
+      required: [server, log]
+      properties:
+        server: { type: string, format: uri, description: The FHIR endpoint to send the request to }
+        log:
+          type: array
+          items: { type: string }
+          description: How the server was chosen - what the registry says about each code system, then the rule that decided. For people, not for parsing
 
     ResolvedServer:
       allOf:

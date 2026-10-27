@@ -20,6 +20,7 @@ const { RegistryAuth } = require('./auth');
 // parameters are ignored) because existing ecosystem clients rely on that.
 const DISCOVERY_PARAMS = ['registry', 'server', 'fhirVersion', 'url', 'authoritativeOnly', 'language'];
 const RESOLVE_PARAMS = ['fhirVersion', 'url', 'version', 'valueSet', 'authoritativeOnly', 'language', 'usage'];
+const CHOOSE_SERVER_PARAMS = ['fhirVersion', 'system', 'default', 'valueSet', 'usage', 'language'];
 
 // A link to a URL from a registry list or a crawled server: those are other people's
 // content, so only an http(s) URL is linked, and it is escaped
@@ -325,6 +326,8 @@ class RegistryModule {
     // Main registry page
     this.router.get('/', apiLimiter, apiGuard, session, this.handleMainPage.bind(this));
     this.router.get('/resolve', apiLimiter, apiGuard, session, this.handleResolveEndpoint.bind(this));
+    // JSON only - there's no page for a browser, so it's always guarded
+    this.router.get('/choose-server', apiLimiter, guard, this.handleChooseServerEndpoint.bind(this));
     this.router.get('/log', session, this.handleLogEndpoint.bind(this));
     this.router.get('/software', session, this.handleSoftwarePage.bind(this));
 
@@ -1510,6 +1513,46 @@ class RegistryModule {
     }
   }
 
+  /**
+   * GET /choose-server: which one server to use for a request involving a set of code
+   * systems (see RegistryAPI.chooseServer). system repeats; the other parameters take their
+   * first value
+   */
+  handleChooseServerEndpoint(req, res) {
+    const start = Date.now();
+    try {
+      const params = this._normalizeQueryParams(req.query);
+      const {fhirVersion, valueSet, usage, language} = params;
+      const defaultServer = params.default;
+      const raw = req.query.system;
+      const systems = (raw == null ? [] : Array.isArray(raw) ? raw : [raw]).map(String).filter(s => s);
+
+      if (!fhirVersion) {
+        return res.status(400).json({error: 'A FHIR version is required'});
+      }
+      if (!defaultServer || !this._isValidUrl(defaultServer, ['http:', 'https:'])) {
+        return res.status(400).json({error: 'A default server (an http or https URL) is required'});
+      }
+      for (const system of systems) {
+        if (!this._isValidUrl(system.split('|')[0])) {
+          return res.status(400).json({error: 'Invalid code system URL format'});
+        }
+      }
+      if (valueSet && !this._isValidUrl(valueSet.split('|')[0])) {
+        return res.status(400).json({error: 'Invalid value set URL format'});
+      }
+
+      const result = this.api.chooseServer(fhirVersion, systems, defaultServer, valueSet, usage, language);
+      this.logger.info(`Chose ${result.server} for ${systems.join(', ') || '(no systems)'} (FHIR ${fhirVersion}, usage=${usage}, language=${language || 'none'})`);
+      res.json(result);
+    } catch (error) {
+      this.logger.error('Error in choose-server endpoint:', error);
+      res.status(400).json({error: error.message});
+    } finally {
+      this.stats.countRequest('choose-server', Date.now() - start);
+    }
+  }
+
   buildResolveResultContent(result, fhirVersion, resourceUrl, usage, language) {
     let html = '';
 
@@ -1840,6 +1883,7 @@ class RegistryModule {
 
 RegistryModule.DISCOVERY_PARAMS = DISCOVERY_PARAMS;
 RegistryModule.RESOLVE_PARAMS = RESOLVE_PARAMS;
+RegistryModule.CHOOSE_SERVER_PARAMS = CHOOSE_SERVER_PARAMS;
 
 module.exports = RegistryModule;
 module.exports.commonBaseUrl = commonBaseUrl;

@@ -27,6 +27,20 @@ function securityFlags(security) {
   }
 }
 
+// Code systems that tx.fhir.org handles specially. When the registry doesn't settle where
+// a request involving one of these goes, it goes to the primary server (see chooseServer)
+const SNOMED_CT = 'http://snomed.info/sct';
+const PRIMARY_SERVER_SYSTEMS = ['http://unitsofmeasure.org', 'http://loinc.org', SNOMED_CT,
+  'http://www.nlm.nih.gov/research/umls/rxnorm', 'http://hl7.org/fhir/sid/cvx', 'urn:ietf:bcp:13', 'urn:ietf:bcp:47',
+  'urn:ietf:rfc:3986', 'http://www.ama-assn.org/go/cpt', 'urn:oid:1.2.36.1.2001.1005.17', 'urn:iso:std:iso:3166',
+  'http://varnomen.hgvs.org', 'http://unstats.un.org/unsd/methods/m49/m49.htm', 'urn:iso:std:iso:4217',
+  'http://hl7.org/fhir/sid/ndc', 'http://fhir.ohdsi.org/CodeSystem/concepts', 'http://fdasis.nlm.nih.gov', 'https://www.usps.com/'];
+
+function isTxFhirOrg(server) {
+  const s = server.replace('http://', 'https://');
+  return s.startsWith('https://tx.fhir.org/') || s.startsWith('https://tx-dev.fhir.org/');
+}
+
 class RegistryAPI {
   constructor(crawler) {
     this.crawler = crawler;
@@ -590,6 +604,170 @@ class RegistryAPI {
       result: this._cleanEmptyArrays(result),
       matches: matchedServers.length > 0 ? matchedServers.join(',') : '--'
     };
+  }
+
+  /**
+   * Choose one server for a request that involves a set of code systems.
+   *
+   * This is a server side copy of the routing logic in the HL7 Java tooling
+   * (TerminologyClientManager.chooseServer in org.hl7.fhir.core), for clients that aren't
+   * Java. It doesn't replace that code. The Java client does the work that needs its own
+   * context before routing, and so must the caller here:
+   *
+   * - systems: the code systems involved, as url or url|version, from the codings and the
+   *   value set's includes and excludes, following imported value sets. Versions fixed by
+   *   expansion parameters (system-version, force-system-version) should already be applied.
+   *   If the caller couldn't follow an import, it should just use its default server.
+   * - language: only for language sensitive requests (see resolveCodeSystem).
+   *
+   * Differences from the Java code:
+   * - 'Does a candidate really have the code system' is answered from the content mode the
+   *   server reported in its TerminologyCapabilities, not by searching the server. If it
+   *   didn't report one, the candidate is assumed to be usable.
+   * - The 'primary server' for the systems tx.fhir.org handles specially is the default.
+   * - The value set's source server is found by resolving the value set here.
+   * - Ties are broken by order (the first system, then registration order), not hash order.
+   *
+   * @returns {{server: string, log: string[]}} the server to use, and why
+   */
+  chooseServer(fhirVersion, systems, defaultServer, valueSet = '', usage = '', language = '') {
+    if (!fhirVersion) {
+      throw new Error('A FHIR version is required');
+    }
+    if (!defaultServer) {
+      throw new Error('A default server is required');
+    }
+    const log = [];
+    const list = [...new Set((systems || []).filter(s => s))];
+    if (valueSet) {
+      log.push(`Value set: ${valueSet}`);
+    }
+    if (list.length === 0) {
+      log.push('No code systems: using the default server');
+      return { server: defaultServer, log };
+    }
+    const server = this._chooseServer(fhirVersion, list, defaultServer, valueSet, usage, language, log);
+    return { server, log };
+  }
+
+  _chooseServer(fhirVersion, systems, defaultServer, valueSet, usage, language, log) {
+    // what the registry says about each system on its own
+    const choices = systems.map(system => {
+      const r = this.resolveCodeSystem(fhirVersion, system, false, usage, language).result;
+      const choice = { system, authoritative: [], candidates: [], content: {} };
+      for (const e of r.authoritative || []) {
+        if (!choice.authoritative.includes(e.url)) choice.authoritative.push(e.url);
+      }
+      for (const e of r.candidates || []) {
+        if (!choice.candidates.includes(e.url)) {
+          choice.candidates.push(e.url);
+          choice.content[e.url] = e.content;
+        }
+      }
+      log.push(`${system}: authoritative [${choice.authoritative.join(', ')}], candidates [${choice.candidates.join(', ')}]`);
+      return choice;
+    });
+    // the registry knows no server at all for the system
+    const unresolved = c => c.authoritative.length === 0 && c.candidates.length === 0;
+
+    // 1. a server that's authoritative for all of them
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        if (choices.every(t => t.authoritative.includes(s))) {
+          log.push(`Found authoritative server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 2. a server that's authoritative for one of them, and a candidate for the others. A
+    // system that no server is known for doesn't constrain the choice
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        if (choices.every(t => unresolved(t) || t.authoritative.includes(s) || t.candidates.includes(s))) {
+          log.push(`Found partially authoritative server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 3. code systems with special handling on tx.fhir.org, that might not be resolved above.
+    // We don't want them going to secondary servers by accident
+    const bases = systems.map(s => s.includes('|') ? s.substring(0, s.indexOf('|')) : s);
+    if (systems.length > 1 && bases.includes(SNOMED_CT)) {
+      log.push(`Several code systems including SNOMED CT: choosing for SNOMED CT alone`);
+      return this._chooseServer(fhirVersion, [SNOMED_CT], defaultServer, valueSet, usage, language, log);
+    }
+    const special = bases.find(b => PRIMARY_SERVER_SYSTEMS.includes(b));
+    if (special) {
+      log.push(`Use primary server (the default) for ${special}`);
+      return defaultServer;
+    }
+
+    // 4. a server that's a candidate for all of them (again, systems no server is known for
+    // don't constrain the choice), and that has a usable copy of the code systems
+    for (const c of choices) {
+      for (const s of c.candidates) {
+        if (choices.every(t => unresolved(t) || t.candidates.includes(s)) &&
+          this._supportsAll(s, choices, unresolved, log)) {
+          log.push(`Found candidate server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 5. no agreement - take the one that is most authoritative
+    const counts = new Map();
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        counts.set(s, (counts.get(s) || 0) + 1);
+      }
+    }
+    let max = null;
+    for (const [s, n] of counts) {
+      if (max === null || n > counts.get(max)) max = s;
+    }
+    if (max !== null) {
+      log.push(`Found most authoritative server ${max}`);
+      return max;
+    }
+
+    // 6. nothing. Use the server the value set comes from, if it comes from one, else the default
+    const why = systems.length === 1 ? 'Not handled by any servers' : 'Handled by multiple servers';
+    if (valueSet) {
+      const r = this.resolveValueSet(fhirVersion, valueSet, false, usage).result;
+      let source = (r.authoritative || []).concat(r.candidates || []).map(e => e.url)[0];
+      if (source === 'https://vsac.nlm.nih.gov') {
+        source = defaultServer;
+      }
+      if (source) {
+        log.push(`${why}. Using source @ '${source}'`);
+        return source;
+      }
+    }
+    log.push(`${why}. Using the default server`);
+    return defaultServer;
+  }
+
+  /**
+   * Whether a candidate server has a usable copy (complete or fragment) of each code system
+   * it's a candidate for. Systems for which tx.fhir.org is a candidate aren't checked
+   */
+  _supportsAll(server, choices, unresolved, log) {
+    if (isTxFhirOrg(server)) {
+      return true;
+    }
+    for (const t of choices) {
+      if (unresolved(t) || !t.candidates.includes(server) || t.candidates.some(isTxFhirOrg)) {
+        continue;
+      }
+      const content = t.content[server];
+      if (content && content !== 'complete' && content !== 'fragment') {
+        log.push(`Candidate server ${server} dropped for ${t.system}: its copy of the code system is '${content}'`);
+        return false;
+      }
+    }
+    return true;
   }
 
   /**
