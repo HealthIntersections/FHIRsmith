@@ -1,7 +1,7 @@
 {
   "name": "fhirsmith",
-  "version": "0.18.1",
-  "txVersion": "1.10.0",
+  "version": "0.18.2",
+  "txVersion": "1.10.1",
   "description": "A Node.js server that provides a collection of tools to serve the FHIR ecosystem",
   "main": "server.js",
   "engines": {
