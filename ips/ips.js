@@ -39,10 +39,12 @@
  * @module ips/ips
  */
 
+const http = require('http');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const scripts = require('./scripts');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
 const session = require('express-session');
@@ -79,7 +81,69 @@ const TX_STARTUP_GRACE_MS = 5 * 60 * 1000;
 const FHIR_JSON = 'application/fhir+json; charset=utf-8';
 const CODE_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 // paths at the root that can't be project codes
-const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup']);
+const { jurisdiction: jurisdictionOf } = require('./jurisdictions');
+const LOAD_IG_TIMEOUT_MS = 300000;
+const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles']);
+
+/**
+ * Ask the validator service to load a package (id#version) - POST /loadIG with {"ig": ...} as
+ * the validator's LoadIGHTTPHandler takes it. fhir-validator-wrapper's own loadIG() (to 1.6.0
+ * at least) sends the package id and version as query parameters with no body, which the
+ * service refuses ("Error parsing JSON source: ... Eof at Line 1"), so it is only used for a
+ * validator with no address of its own (as the tests' are).
+ * @returns {Promise<Object>} the OperationOutcome the service answers with
+ */
+function loadIG(validator, packageId, version) {
+  if (!validator.baseUrl) {
+    return validator.loadIG(packageId, version);
+  }
+  const body = JSON.stringify({ ig: `${packageId}#${version}` });
+  const url = new URL(`${validator.baseUrl}/loadIG`);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: url.hostname, port: url.port, path: url.pathname, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/fhir+json', 'Content-Length': Buffer.byteLength(body) }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        try {
+          resolve(JSON.parse(text));
+        } catch (e) {
+          reject(new Error(`The validator answered HTTP ${res.statusCode} with a response that is not JSON (${text.length} bytes)`));
+        }
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    // loading a package can mean downloading it, and its dependencies
+    req.setTimeout(LOAD_IG_TIMEOUT_MS, () => req.destroy(new Error('The validator took too long to load the package')));
+    req.end(body);
+  });
+}
+
+/**
+ * What's wrong with a national profile's details, or null: a jurisdiction (a country's ISO 3166
+ * two-letter code, or a region's UN M49 three-digit code - see jurisdictions.js), a FHIR package id (lower case, at
+ * least two parts separated by dots), a version (as package versions are written), and the
+ * canonical URL (http or https) of the IG's profile on Bundle.
+ */
+function nationalProfileProblem(jurisdiction, packageId, version, url) {
+  if (!jurisdictionOf(jurisdiction)) {
+    return 'The jurisdiction must be a country, by its ISO 3166 two-letter code (e.g. AU), or a region, by its UN M49 three-digit code (e.g. 150 for Europe)';
+  }
+  if (packageId.length > 128 || !/^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$/.test(packageId)) {
+    return 'The package id must be a FHIR package id: lower case letters, digits, - and _, in two or more parts separated by dots (e.g. hl7.fhir.au.ips)';
+  }
+  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(version)) {
+    return 'The version must be a package version (e.g. 1.0.0, or 1.1.0-ballot)';
+  }
+  if (url.length > 1024 || !/^https?:\/\/[^\s/?#]+(?:[/?#]\S*)?$/.test(url)) {
+    return 'The profile must be the canonical URL (http or https) of the IG\'s profile on Bundle';
+  }
+  return null;
+}
 
 /**
  * What's wrong with a submitted document, if anything.
@@ -163,25 +227,6 @@ function preferValue(req, name) {
     }
   }
   return null;
-}
-
-// the browser scripts: the module's own files, read once and served from memory (so no
-// request reaches the file system), with an ETag so a browser can keep its copy
-const SCRIPTS = new Map();
-function script(name) {
-  if (!SCRIPTS.has(name)) {
-    const body = fs.readFileSync(path.join(__dirname, name), 'utf8');
-    SCRIPTS.set(name, { body, etag: `"${crypto.createHash('sha256').update(body).digest('base64url').substring(0, 27)}"` });
-  }
-  const s = SCRIPTS.get(name);
-  return (req, res) => {
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.setHeader('ETag', s.etag);
-    if (req.get('If-None-Match') === s.etag) {
-      return res.status(304).end();
-    }
-    res.type('application/javascript').send(s.body);
-  };
 }
 
 function wantsHtml(req) {
@@ -308,6 +353,7 @@ class IpsModule {
     this.setupSession();
     this.setupRootRoutes();
     this.setupProfileRoutes();
+    this.setupNationalProfileRoutes();
     this.setupProjectRoutes();
     this.setupValidator();
     this.setupValueSets();
@@ -451,7 +497,7 @@ class IpsModule {
       next();
     };
 
-    r.get('/profile-editor.js', script('profile-editor.js'));
+    r.get('/profile-editor.js', scripts.handler('profile-editor.js'));
     r.get('/lookup', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.systemLookup(req, res)));
     r.get('/lookup-vs', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.valueSetLookup(req, res)));
     r.get('/StructureDefinition', ...this.web, h('profiles', (req, res) => this.profileList(req, res)));
@@ -460,9 +506,34 @@ class IpsModule {
     r.get('/StructureDefinition/:id', profile, ...this.web, h('profile', (req, res) => this.profileRead(req, res)));
     r.get('/StructureDefinition/:id/edit', profile, this.session, this.csrf, admin, h('profile', (req, res) => this.profileEditor(req, res, req.profile)));
     r.post('/StructureDefinition/:id', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.profileSave(req, res, req.profile)));
+    // one constraint at a time, from the profile's page: add, edit (keeping its key), delete
+    r.post('/StructureDefinition/:id/constraint', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.constraintSave(req, res, null)));
+    r.post('/StructureDefinition/:id/constraint/:key', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.constraintSave(req, res, req.params.key)));
+    r.post('/StructureDefinition/:id/constraint/:key/delete', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.constraintDelete(req, res)));
     r.post('/StructureDefinition/:id/delete', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => {
       this.store.deleteProfile(req.profileId);
       res.redirect(req.baseUrl + '/StructureDefinition');
+    }));
+  }
+
+  /**
+   * The national profiles, across all projects: everyone can see them, only the administrator
+   * adds, edits and deletes them. Before the project routes, so /national-profiles isn't taken
+   * for a project code.
+   */
+  setupNationalProfileRoutes() {
+    const r = this.router;
+    const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+    const admin = this.adminOnly;
+    r.get('/national-profiles', ...this.web, h('national-profiles', (req, res) => this.sendNationalProfiles(req, res)));
+    r.post('/national-profiles', this.sameOrigin, this.session, this.form, this.csrf, admin, h('national-profiles', (req, res) => this.saveNationalProfile(req, res, null)));
+    r.post('/national-profiles/:id', this.sameOrigin, this.session, this.form, this.csrf, admin, h('national-profiles', (req, res) => this.saveNationalProfile(req, res, req.params.id)));
+    r.post('/national-profiles/:id/delete', this.sameOrigin, this.session, this.form, this.csrf, admin, h('national-profiles', (req, res) => {
+      const np = /^\d{1,15}$/.test(req.params.id) ? this.store.nationalProfile(parseInt(req.params.id, 10)) : null;
+      if (np && this.store.deleteNationalProfile(np.id)) {
+        this.log.info(`IPS module: national profile ${np.packageId}#${np.version} deleted`);
+      }
+      res.redirect(req.baseUrl + '/national-profiles');
     }));
   }
 
@@ -509,7 +580,7 @@ class IpsModule {
       next();
     };
 
-    r.get('/editor.js', script('editor.js'));
+    r.get('/editor.js', scripts.handler('editor.js'));
     r.get('/:code', project, ...this.web, h('list', (req, res) => this.htmlList(req, res)));
     r.get('/:code/metadata', project, h('metadata', (req, res) => this.metadata(req, res)));
     // The submission form has no CSRF token and starts no session: submitting is open to
@@ -595,15 +666,22 @@ class IpsModule {
    * wait in the queue.
    */
   setupValidator() {
+    // the national profiles' packages, as they are loaded into the validator: id#version -> Promise
+    this.nationalPackages = new Map();
     const cfg = this.config.validator;
     if (!cfg || cfg.enabled === false) {
       this.log.warn('IPS module: no validator configured (modules.ips.validator) - documents will not be validated');
       return;
     }
     const FhirValidator = require('fhir-validator-wrapper');
-    const jar = folders.filePath('bin', 'validator_cli.jar');
+    // a jar of its own (a validator built locally, say): used as it is, never downloaded or
+    // updated; otherwise the released one in the data folder's bin directory, kept up to date
+    const localJar = typeof cfg.jar === 'string' && cfg.jar.trim() ? (path.isAbsolute(cfg.jar) ? cfg.jar : folders.filePath(cfg.jar)) : null;
+    const jar = localJar || folders.filePath('bin', 'validator_cli.jar');
     this.validator = new FhirValidator(jar, this.log);
     const settings = {
+      autoDownload: !localJar,
+      skipUpdateCheck: !!localJar,
       version: cfg.version || '4.0.1',
       txServer: cfg.txServer || 'http://tx.fhir.org/r4',
       txLog: cfg.txLog || folders.filePath('logs', 'ips-validator-tx.log'),
@@ -611,7 +689,7 @@ class IpsModule {
       igs: Array.isArray(cfg.packages) ? cfg.packages : ['hl7.fhir.uv.ips#1.1.0'],
       timeout: cfg.timeout || 120000
     };
-    this.log.info(`IPS module: starting the FHIR validator on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
+    this.log.info(`IPS module: starting the FHIR validator${localJar ? ` (${localJar})` : ''} on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
     this.validatorStarting = this.validator.start(settings).then(() => {
       this.log.info('IPS module: the FHIR validator is running');
     }).catch(e => {
@@ -620,6 +698,31 @@ class IpsModule {
     }).finally(() => {
       this.validatorStarting = null;
     });
+  }
+
+  /**
+   * Load a national profile's package into the validator - once: a package that loaded, or
+   * failed to (with why), is remembered until the national profiles are changed, so each
+   * document doesn't ask again. The validator's packages (modules.ips.validator.packages) are
+   * loaded when it starts; these are added to them.
+   * @returns {Promise<void>} rejects with the reason the package could not be loaded
+   */
+  loadNationalPackage(packageId, version) {
+    const key = `${packageId}#${version}`;
+    let p = this.nationalPackages.get(key);
+    if (!p) {
+      p = loadIG(this.validator, packageId, version).then(outcome => {
+        const bad = (Array.isArray(outcome?.issue) ? outcome.issue : []).filter(i => i && (i.severity === 'error' || i.severity === 'fatal'));
+        if (bad.length > 0 || outcome?.resourceType !== 'OperationOutcome') {
+          const why = bad.map(i => i.details?.text || i.diagnostics || i.code).filter(Boolean).join('; ') || 'the validator did not return an OperationOutcome';
+          throw new Error(`The validator could not load ${key}: ${why}`);
+        }
+        this.log.info(`IPS module: national profile package ${key} loaded into the validator`);
+      });
+      p.catch(e => this.log.warn(`IPS module: ${e.message}`));
+      this.nationalPackages.set(key, p);
+    }
+    return p;
   }
 
   /** Read the value sets the terminology check holds documents to: the module's own, in ips/valuesets/. */
@@ -1295,6 +1398,52 @@ class IpsModule {
       render.renderSubmit(req.project, this.ctx(req, res), { needsToken: tokenConfigured(req.project.token), aiEnabled: this.store.projectAi(req.project).enabled === true, ...options }), Date.now(), req);
   }
 
+  // ---- national profiles ----
+
+  /** The national profiles: a page (with the administrator's forms), or JSON. */
+  sendNationalProfiles(req, res, message, status = 200) {
+    const list = this.store.nationalProfiles();
+    res.status(status);
+    if (!wantsHtml(req) && !message) {
+      return res.json(list.map(np => ({ jurisdiction: np.jurisdiction, packageId: np.packageId, version: np.version, url: np.url })));
+    }
+    this.sendHtml(res, 'National Profiles', render.renderNationalProfiles(list, this.ctx(req, res), message), Date.now(), req);
+  }
+
+  /** Add (id null) or change a national profile, from the form: packageId, version, url. */
+  saveNationalProfile(req, res, id) {
+    const field = (name) => (typeof req.body[name] === 'string' ? req.body[name].trim() : '');
+    const packageId = field('packageId');
+    const version = field('version');
+    const url = field('url');
+    // a country code is upper case; a region's is digits
+    const jurisdiction = field('jurisdiction').toUpperCase();
+    const problem = nationalProfileProblem(jurisdiction, packageId, version, url);
+    if (problem) {
+      return this.sendNationalProfiles(req, res, problem, 400);
+    }
+    const existing = this.store.nationalProfileByPackage(packageId, version);
+    if (id === null) {
+      if (existing) {
+        return this.sendNationalProfiles(req, res, `There is already a national profile for ${packageId}#${version}`, 409);
+      }
+      this.store.createNationalProfile(packageId, version, url, jurisdiction);
+      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}) added (${url})`);
+    } else {
+      const n = /^\d{1,15}$/.test(id) ? parseInt(id, 10) : -1;
+      if (existing && existing.id !== n) {
+        return this.sendNationalProfiles(req, res, `There is already a national profile for ${packageId}#${version}`, 409);
+      }
+      if (!this.store.updateNationalProfile(n, packageId, version, url, jurisdiction)) {
+        return this.sendNationalProfiles(req, res, 'That national profile no longer exists', 404);
+      }
+      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}) saved (${url})`);
+    }
+    // a package that failed to load is tried again
+    this.nationalPackages = new Map();
+    res.redirect(req.baseUrl + '/national-profiles');
+  }
+
   // ---- clinical profiles ----
 
   /** The clinical profiles: a page, or a FHIR searchset of the StructureDefinitions. */
@@ -1321,7 +1470,31 @@ class IpsModule {
       res.type('application/fhir+json');
       return res.send(JSON.stringify(sd));
     }
-    this.sendHtml(res, `Clinical Profile: ${sd.title}`, render.renderProfile(sd, { ...this.ctx(req, res), valueSetTitle: (url) => this.valueSetTitle(url) }), Date.now(), req);
+    const ctx = { ...this.ctx(req, res), valueSetTitle: (url) => this.valueSetTitle(url), profileTitle: (url) => this.profileTitle(url) };
+    // the administrator edits the rows in place, a row at a time
+    const editor = ctx.user?.isAdmin ? {
+      constraints: this.editorConstraints(sd),
+      sections: profiles.IPS_SECTIONS, systems: profiles.SYSTEMS, resourceTypes: profiles.RESOURCE_TYPES, sectionSystem: editorSchema.LOINC, canLookup: !!this.tx
+    } : null;
+    this.sendHtml(res, `Clinical Profile: ${sd.title}`, render.renderProfile(sd, ctx, editor), Date.now(), req);
+  }
+
+  /**
+   * What to call a profile a rule says resources conform to: one of the clinical profiles (by
+   * its title), or one of the national profiles (by its jurisdiction and package), or null.
+   */
+  profileTitle(url) {
+    if (typeof url !== 'string') {
+      return null;
+    }
+    const plain = url.split('|')[0];
+    const m = /\/StructureDefinition\/profile-([a-f0-9]{12})$/.exec(plain);
+    const sd = m ? this.store.profile(m[1]) : null;
+    if (sd && sd.url === plain) {
+      return sd.title;
+    }
+    const np = this.store.nationalProfiles().find(p => p.url === plain);
+    return np ? `${np.jurisdiction ? `${np.jurisdiction} ` : ''}national profile (${np.packageId}#${np.version})` : null;
   }
 
   /** The title of one of this module's own value sets, or null. */
@@ -1331,8 +1504,12 @@ class IpsModule {
   }
 
   /** The editor, for a new profile or an existing one. */
+  editorConstraints(sd) {
+    return profiles.constraintsOf(sd).map(c => ({ ...c, shape: profiles.parseShape(c.expression), rshape: profiles.parseResourceShape(c.expression) }));
+  }
+
   profileEditor(req, res, sd) {
-    const constraints = profiles.constraintsOf(sd).map(c => ({ ...c, shape: profiles.parseShape(c.expression), rshape: profiles.parseResourceShape(c.expression) }));
+    const constraints = this.editorConstraints(sd);
     this.sendHtml(res, sd ? `Edit Clinical Profile: ${sd.title}` : 'New Clinical Profile',
       render.renderProfileEditor(sd, this.ctx(req, res), {
         profile: { id: sd ? sd.id : null, title: sd ? sd.title : '', constraints },
@@ -1367,6 +1544,53 @@ class IpsModule {
     this.store.saveProfile(id, sd);
     this.log.info(`IPS module: clinical profile ${sd.id} (${sd.title}) ${previous ? 'saved' : (body.upload !== undefined ? 'uploaded' : 'created')}, ${checked.constraints.length} constraints`);
     res.status(previous ? 200 : 201).json({ id: sd.id, url: `${req.baseUrl}/StructureDefinition/${sd.id}` });
+  }
+
+  /**
+   * Add a constraint to a profile ({human, expression}), or replace one (by its key, which it
+   * keeps). 201/200 with {key}, 404 when there is no constraint with that key, 422 with {problems}.
+   */
+  constraintSave(req, res, key) {
+    const previous = req.profile;
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const row = { key, human: body.human, expression: body.expression };
+    const constraints = profiles.constraintsOf(previous);
+    const at = key === null ? constraints.length : constraints.findIndex(c => c.key === key);
+    if (at < 0) {
+      return res.status(404).json({ problems: [`The profile has no constraint '${key}'`] });
+    }
+    // the row by itself first, so what is wrong is said of it, not of a number in the list
+    const alone = profiles.checkInput({ title: previous.title, constraints: [{ human: row.human, expression: row.expression }] }, null);
+    if (alone.problems.length) {
+      return res.status(422).json({ problems: alone.problems.map(p => p.replace(/^Constraint 1/, 'The rule')) });
+    }
+    constraints.splice(at, key === null ? 0 : 1, row);
+    const checked = profiles.checkInput({ title: previous.title, constraints }, previous);
+    if (checked.problems.length) {
+      return res.status(422).json({ problems: checked.problems });
+    }
+    this.saveConstraints(previous, checked.constraints);
+    this.log.info(`IPS module: clinical profile ${previous.id}: constraint ${checked.constraints[at].key} ${key === null ? 'added' : 'saved'}`);
+    res.status(key === null ? 201 : 200).json({ key: checked.constraints[at].key });
+  }
+
+  /** Delete one of a profile's constraints, back to the profile's page. */
+  constraintDelete(req, res) {
+    const previous = req.profile;
+    const constraints = profiles.constraintsOf(previous);
+    const at = constraints.findIndex(c => c.key === req.params.key);
+    if (at < 0) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`The profile has no constraint '${req.params.key}'`), 404);
+    }
+    constraints.splice(at, 1);
+    this.saveConstraints(previous, constraints);
+    this.log.info(`IPS module: clinical profile ${previous.id}: constraint ${req.params.key} deleted`);
+    res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}`);
+  }
+
+  saveConstraints(previous, constraints) {
+    const id = previous.id.substring('profile-'.length);
+    this.store.saveProfile(id, profiles.build({ id, url: previous.url, title: previous.title, constraints }));
   }
 
   // ---- the editor ----
@@ -1597,6 +1821,7 @@ class IpsModule {
         ...this.ctx(req, res),
         steps: this.steps.map(st => st.name),
         level: typeof req.query.level === 'string' ? req.query.level : undefined,
+        np: typeof req.query.np === 'string' ? req.query.np : undefined,
         problemsOnly: req.query.problems === '1'
       };
       return this.sendHtml(res, `${req.project.name}: Document ${row.id}`, render.renderDocument(req.project, row, view, ctx), start, req);

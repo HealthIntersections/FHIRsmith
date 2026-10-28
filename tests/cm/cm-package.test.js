@@ -294,7 +294,7 @@ describe('PackageConceptMapProvider', () => {
     });
   });
 
-  describe('excludeUrls', () => {
+  describe('keepPinnedOnly', () => {
     let reduced;
     let gone;
 
@@ -303,15 +303,30 @@ describe('PackageConceptMapProvider', () => {
       await reduced.initialize();
       reduced.assignIds('core');
       gone = [...reduced.conceptMapMap.values()][0];
-      reduced.excludeUrls(new Set([gone.url]));
+      reduced.keepPinnedOnly(new Map([[gone.url, new Set(['999.0.0'])]]));
     });
 
-    test('an excluded concept map is not fetched, by url or by id', async () => {
+    test('a restricted concept map is still fetched by its own version, where THO does not have that version', async () => {
+      expect(gone.version).toBeTruthy();
+      expect(await reduced.fetchConceptMap(gone.url, gone.version)).toBe(gone);
+    });
+
+    test('a restricted concept map is not fetched by a version that THO has', async () => {
+      const thoToo = new PackageConceptMapProvider(reduced.packageLoader);
+      await thoToo.initialize();
+      thoToo.assignIds('core');
+      const cm = [...thoToo.conceptMapMap.values()].find(r => r.url === gone.url);
+      thoToo.keepPinnedOnly(new Map([[cm.url, new Set([cm.version])]]));
+      expect(await thoToo.fetchConceptMap(cm.url, cm.version)).toBeNull();
+      expect(await thoToo.fetchConceptMap(cm.url, null)).toBeNull();
+    });
+
+    test('a restricted concept map is not fetched without a version, or by id', async () => {
       expect(await reduced.fetchConceptMap(gone.url, null)).toBeNull();
       expect(await reduced.fetchConceptMapById(gone.id)).toBeNull();
     });
 
-    test('an excluded concept map is not found by search', async () => {
+    test('a restricted concept map is not found by search', async () => {
       for (const elements of [null, ['id', 'url']]) {
         const results = await reduced.searchConceptMaps([], elements);
         expect(results.some(r => r.id === gone.id)).toBe(false);

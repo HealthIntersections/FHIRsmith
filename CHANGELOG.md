@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IPS: `modules.ips.validator.jar` - a validator jar of the module's own (a local build of org.hl7.fhir.core, say), used as it is, never downloaded or updated
+- IPS: national profiles - the profile on Bundle that a national IG defines for an IPS document (its jurisdiction - an ISO 3166 country code, or a UN M49 region - the IG's package id and version, and the profile's url). Shared across all projects at `/ips/national-profiles`; only the administrator adds, edits and deletes them. A new processing step, after validation, validates each document against each national profile (loading the IG's package into the validator), and keeps the outcome and whether it passed (no errors); the document's new National Profiles view lists them, and shows each one's validation as the Validation view does
 - Registry: `GET /tx-reg/choose-server` - given the code systems a request involves and the client's default server, which one server to send it to, and a log of why. The same choice the Java tooling makes, for clients that aren't Java
 - SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`).
 - SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
@@ -27,10 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- IPS: a clinical profile's page is the same for everyone. The required sections and entries are a table of Expectation, Section and Entry (`Code is system|code`, or `Code is in` a value set, with `[m..n]` when the cardinality isn't 1..1), and the rules about resources a table of Expectation, Resource Set (`Conditions where Code is ...`) and Rule (in words for `.exists()`, `.x.exists()`, `.x.y.exists()`, `.all(sameSubject())`, `.conformsTo(url)` and `.category.hasCoding(system, code)`). The administrator adds, edits and deletes the rules on that page one at a time, in a dialog, each saved by itself; the full editor is now Edit all
 - Move the hard-coded link about adding to the terminology server ecosystem to the registry control file
+- Code systems, value sets and concept maps that both hl7.terminology and an endpoint's FHIR core package provide: THO's is still always the default for the url, but the core versions are no longer dropped - a reference that names a core version (`url|5.0.0`) gets it, where THO doesn't have that version. Previously they weren't available at all, so a reference to one failed, including THO's own value sets that pin a core version (`ValueSet/concept-property-type` 6.0.1 includes `concept-property-type` 5.0.0); and `valueSetVersion=5.0.0` found nothing
 
 ### Fixed
 
+- VSAC: the cache folder `terminology-cache/vsac` is created if it doesn't exist. Only its parent was being created (the folder name was passed as if it were a file name), so on a fresh install the VSAC database could not be created (`SQLITE_CANTOPEN`) and every VSAC value set failed
+- CodeSystem resources: the `notSelectable` property is recognised as the tx-ecosystem requirements say - by the `concept-properties#notSelectable` uri whatever local code the code system gives it, and by the code `notSelectable` only where the code system doesn't declare that code with a different uri. A code system that used `notSelectable` for a property of its own had its concepts marked `abstract` in expansions and treated as not selectable (`notSelectable-unprop-all`, `notSelectable-unprop-true`); a filter on that code is still a filter on the code system's own property
+- LOINC: `$lookup` returns `CLASS` as a string, the class name (e.g. `CHEM`), with the Part code for the class as `partCode`; it returned the Part code as a code
+- IPS: the pages link the module's browser scripts with their version (`?v=`), so a browser picks up a changed script as soon as the server is restarted with it, instead of using its cached copy for up to an hour
 - SNOMED CT ECL: a hierarchy operator on a bracketed expression was silently dropped - `< (A OR B)` returned A and B themselves rather than their descendants. It now applies to every member of the set, as do operators on `*` and on `^ refset`, which were previously rejected as unsupported
 - SNOMED CT ECL: `^` on a reference set whose members are descriptions (a language reference set) returned an empty expansion; it is now reported as `UNSUPPORTED_ECL` when the reference set is named, and skipped when it merely falls inside a computed operand such as `^ *`
 - SNOMED CT ECL: an attribute name with no comparison (`: 363698007` with nothing after it) was accepted by the parser and failed later as unsupported; it is a syntax error

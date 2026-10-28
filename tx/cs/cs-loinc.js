@@ -492,7 +492,14 @@ class LoincServices extends BaseCSServices {
         } else {
           for (const row of rows) {
             if (this._hasProp(props, row.Relationship, true)) {
-              this._addCodeProperty(params, 'property', row.Relationship, row.Code);
+              if (row.Relationship === 'CLASS') {
+                // CLASS is a string property - the class name (e.g. PULM). The Part code for the
+                // class is also returned, as partCode (an informal extension to the property)
+                this._addStringProperty(params, 'property', row.Relationship, row.Value || row.Code)
+                  .part.push({name: 'partCode', valueCode: row.Code});
+              } else {
+                this._addCodeProperty(params, 'property', row.Relationship, row.Code);
+              }
             }
           }
           resolve();

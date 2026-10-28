@@ -12,10 +12,11 @@
  *   1. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
  *   2. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
  *   3. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
- *   4. terminology   check each CodeableConcept against the value sets for international exchange
- *   5. piqi          measure the quality of the document with PIQI                        (not yet)
- *   6. profiles      check the document against each clinical profile (profiles.js)
- *   7. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
+ *   4. national      validate it against each national profile (the national IGs' profiles on Bundle)
+ *   5. terminology   check each CodeableConcept against the value sets for international exchange
+ *   6. piqi          measure the quality of the document with PIQI                        (not yet)
+ *   7. profiles      check the document against each clinical profile (profiles.js)
+ *   8. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
  *
  * Each step is { name, run(row, project, module) -> result }. A step keeps what it finds in
  * one of two places: as a result stored against the document (store.saveResult - the
@@ -119,6 +120,66 @@ const validation = {
       outcome
     });
     return `validation: ${issueSummary(counts)}`;
+  }
+};
+
+/**
+ * National profiles: the document is validated against each national profile - the
+ * national IG's package is loaded into the validator first (once), then the document is
+ * validated against the IG's profile on Bundle, as the validation step validates it. For
+ * each profile, the result keeps the OperationOutcome and whether the document passed: no
+ * errors (or fatal issues). A profile whose package can't be loaded, or that the validator
+ * can't validate against, is kept with the reason (pass is then null), and doesn't stop the
+ * pipeline.
+ */
+const national = {
+  name: 'national',
+  async run(row, project, module) {
+    const list = module.store.nationalProfiles();
+    const started = Date.now();
+    if (list.length === 0) {
+      module.store.saveResult(row.id, 'national', { ms: 0, profiles: [] });
+      return 'national profiles: none';
+    }
+    const v = module.validator;
+    if (!v) {
+      throw new Error('The validator is not configured (modules.ips.validator)');
+    }
+    if (!v.isRunning()) {
+      throw new Error('The validator is not running');
+    }
+    const cfg = module.config.validator || {};
+    const checkIpsCodes = cfg.checkIpsCodes !== false;
+    const doc = JSON.stringify(row.analysed || row.bundle);
+    const profiles = [];
+    for (const np of list) {
+      const entry = { id: np.id, jurisdiction: np.jurisdiction, packageId: np.packageId, version: np.version, url: np.url };
+      const t0 = Date.now();
+      try {
+        await module.loadNationalPackage(np.packageId, np.version);
+        const outcome = await v.validate(doc, { profiles: [np.url], checkIpsCodes, timeout: VALIDATE_TIMEOUT_MS });
+        if (!outcome || outcome.resourceType !== 'OperationOutcome') {
+          throw new Error('The validator did not return an OperationOutcome');
+        }
+        entry.counts = issueCounts(outcome);
+        entry.pass = !entry.counts.error && !entry.counts.fatal;
+        entry.outcome = outcome;
+      } catch (e) {
+        entry.pass = null;
+        entry.error = e.message;
+      }
+      entry.ms = Date.now() - t0;
+      profiles.push(entry);
+    }
+    module.store.saveResult(row.id, 'national', {
+      ms: Date.now() - started,
+      validatorVersion: typeof v.jarVersion === 'function' ? v.jarVersion() : null,
+      profiles
+    });
+    const passed = profiles.filter(p => p.pass === true).length;
+    const failed = profiles.filter(p => p.pass === false).length;
+    const unchecked = profiles.length - passed - failed;
+    return `national profiles: ${passed} passed, ${failed} failed` + (unchecked ? `, ${unchecked} not checked` : '');
   }
 };
 
@@ -1003,10 +1064,10 @@ const aiStep = {
 };
 
 /** The steps, in order. Only the ones that exist yet. */
-const STEPS = [translate, narrative, validation, terminology, profilesStep, aiStep];
+const STEPS = [translate, narrative, validation, national, terminology, profilesStep, aiStep];
 
 module.exports = {
-  STEPS, translate, narrative, validation, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
+  STEPS, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

@@ -26,7 +26,10 @@ const { STATUSES } = require('./search');
 const profiles = require('./profiles');
 const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem } = require('./terminology');
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
+const { jurisdiction } = require('./jurisdictions');
 const { dateText } = require('./presenter');
+const scripts = require('./scripts');
+const { LOINC } = require('./editor-schema');
 
 const STATUS_COLOURS = {
   submitted: '#6c757d',
@@ -114,6 +117,27 @@ const STYLE = `
   .ips-pf-bad { border-color: #c82333 !important; }
   .ips-pf-rule { width: 100%; table-layout: fixed; }
   .ips-pf-rule td { vertical-align: top; overflow-wrap: anywhere; }
+  .ips-pf-rule .ips-pf-actions { width: 7em; white-space: nowrap; text-align: right; }
+  .ips-pf-rule td.ips-pf-actions { padding-top: 1px; padding-bottom: 1px; }
+  .ips-pf-part-head { display: flex; align-items: baseline; gap: 12px; margin-top: 18px; }
+  .ips-pf-part-head h4 { margin: 0 0 6px; }
+  .ips-pf-part-head .ips-pf-add { font-size: 80%; padding: 0 8px; line-height: 1.6; }
+  .ips-pf-rule .ips-pf-actions .btn { font-size: 75%; padding: 0 5px; line-height: 1.5; border-radius: 3px; vertical-align: baseline; }
+  .ips-pf-how { align-items: center; gap: 8px; margin-top: 6px; } .ips-pf-how input { width: 7em; flex: none; } .ips-pf-how .ips-pf-hint { margin: 0; }
+  .ips-pf-dialog { width: min(760px, 95vw); max-height: 90vh; padding: 0; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.3); }
+  .ips-pf-dialog::backdrop { background: rgba(0,0,0,0.35); }
+  .ips-pf-dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid #dee2e6; background: #f8f9fa; }
+  .ips-pf-dialog-head h4 { margin: 0; }
+  .ips-pf-dialog-x { border: none; background: none; font-size: 22px; line-height: 1; cursor: pointer; color: #666; }
+  .ips-pf-dialog-body { padding: 12px 16px; overflow: visible; }
+  .ips-pf-dialog-foot { padding: 10px 16px; border-top: 1px solid #dee2e6; text-align: right; }
+  .ips-pf-field { margin-bottom: 14px; }
+  .ips-pf-field > .ips-pf-label { display: block; font-weight: bold; margin-bottom: 4px; }
+  .ips-pf-field .ips-ed-input, .ips-pf-field textarea { width: 100%; box-sizing: border-box; }
+  .ips-pf-field > * + * { margin-top: 4px; }
+  .ips-pf-field .ips-pf-pair .ips-ed-input { width: auto; flex: 1; }
+  .ips-pf-field .ips-pf-how .ips-ed-input { width: 7em; flex: none; }
+  .ips-pf-hint { font-size: 85%; color: #6c757d; }
   .ips-pf-rule .ips-pf-card-text { white-space: nowrap; }
   .ips-ed-section { border: 1px solid #dee2e6; border-radius: 4px; margin-bottom: 8px; }
   .ips-ed-section-required { border-color: #b8c4e8; }
@@ -241,6 +265,7 @@ function userBar(ctx) {
     parts.push(`<a href="${base}/admin/projects">Projects</a>`);
     parts.push(`<a href="${base}/admin/users">Users</a>`);
     parts.push(`<a href="${base}/StructureDefinition">Clinical profiles</a>`);
+    parts.push(`<a href="${base}/national-profiles">National profiles</a>`);
   }
   parts.push(`<form method="post" action="${base}/logout" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
   return `<div style="float: right; font-size: 85%">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
@@ -272,7 +297,8 @@ function renderHome(projects, ctx) {
   let h = STYLE + userBar(ctx);
   h += '<p>Each project is a collection of International Patient Summary documents, with its own FHIR endpoint ' +
     '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
-    `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain.</p>`;
+    `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain, and ` +
+    `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define.</p>`;
   if (projects.length === 0) {
     return h + '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
   }
@@ -1074,9 +1100,21 @@ function renderValidation(row, options = {}) {
   if (!r || (r.result.status && r.result.status !== 'done')) {
     return noResultNote(row, 'validation', 'There is no validation result for this document', options);
   }
-  const v = r.result;
+  return validationOutcome(r.made, r.result, { ...options, hidden: { view: 'validation' } });
+}
+
+/**
+ * What the validator made of the document, once: when, with what, the issue counts, the
+ * issues (as filtered by options.level) and the OperationOutcome. The validation view and
+ * each national profile's page show it.
+ * @param {string} made - when the validation was done
+ * @param {{counts?: Object, outcome?: Object, profiles?: string[], validatorVersion?: string, ms?: number}} v
+ * @param {{level?: string, docUrl?: string, hidden?: Object}} options - hidden: the fields the
+ *   level form keeps (the view, and which national profile)
+ */
+function validationOutcome(made, v, options = {}) {
   const counts = v.counts || {};
-  let h = `<p class="ips-small">Validated ${escape(r.made)}` +
+  let h = `<p class="ips-small">Validated ${escape(made)}` +
     (v.validatorVersion ? ` with validator ${escape(String(v.validatorVersion))}` : '') +
     (Array.isArray(v.profiles) && v.profiles.length ? ` against ${v.profiles.map(p => `<code>${escape(p)}</code>`).join(', ')}` : '') +
     (typeof v.ms === 'number' ? ` in ${escape(String(v.ms))} ms` : '') + '</p>';
@@ -1089,7 +1127,8 @@ function renderValidation(row, options = {}) {
   const min = SEVERITY_RANK[level];
   const issues = all.filter(i => (SEVERITY_RANK[text(i.severity)] ?? 3) >= min);
   // the minimum level: a form that submits itself on change (and has a button without script)
-  h += `<form method="get" action="${escape(options.docUrl || '')}" class="ips-filter mb-2"><input type="hidden" name="view" value="validation"/>` +
+  const hidden = Object.entries(options.hidden || { view: 'validation' }).map(([k, val]) => `<input type="hidden" name="${escape(k)}" value="${escape(String(val))}"/>`).join('');
+  h += `<form method="get" action="${escape(options.docUrl || '')}" class="ips-filter mb-2">${hidden}` +
     '<label for="f-level">Show</label> <select id="f-level" name="level" onchange="this.form.submit()">' +
     LEVELS.map(([l, label]) => `<option value="${l}"${l === level ? ' selected' : ''}>${escape(label)}</option>`).join('') +
     '</select><noscript><button type="submit" class="btn btn-default ips-btn">Apply</button></noscript>';
@@ -1121,6 +1160,58 @@ document.querySelectorAll('.ips-oo-toggle').forEach(function (b) {
   return h;
 }
 
+// a national profile's outcome on the page: [label, colour]
+const NATIONAL_OUTCOMES = {
+  pass: ['Passed', '#1e7e34'],
+  fail: ['Failed', '#c82333'],
+  unknown: ['Not checked', '#d39e00']
+};
+
+/**
+ * The national profiles step's result: the list of national profiles, and whether the
+ * document passed each (no errors); with options.np (an index into the list), that
+ * profile's validation, shown as the validation view shows the base validation.
+ * @param {Object} row - from store.read(), with .results.national or not
+ * @param {{np?: string, level?: string, docUrl?: string, base?: string, canManage?: boolean}} [options]
+ */
+function renderNational(row, options = {}) {
+  const r = row.results?.national;
+  if (!r || (r.result.status && r.result.status !== 'done') || !Array.isArray(r.result.profiles)) {
+    return noResultNote(row, 'national', 'The document has not been validated against the national profiles', options);
+  }
+  const v = r.result;
+  const base = escape(options.base || '');
+  const docUrl = escape(options.docUrl || '');
+  if (v.profiles.length === 0) {
+    return `<p>There were no <a href="${base}/national-profiles">national profiles</a> to validate the document against when it was processed.</p>`;
+  }
+  const outcome = (p) => NATIONAL_OUTCOMES[p.pass === true ? 'pass' : p.pass === false ? 'fail' : 'unknown'];
+  const index = typeof options.np === 'string' && /^\d{1,4}$/.test(options.np) ? parseInt(options.np, 10) : -1;
+  const p = index >= 0 ? v.profiles[index] : null;
+  if (p) {
+    const [label, colour] = outcome(p);
+    let h = `<p class="ips-small"><a href="${docUrl}?view=national">National profiles</a> &raquo; ${escape(`${p.packageId}#${p.version}`)}</p>`;
+    h += `<p>${jurisdictionHtml(p.jurisdiction)}: <code>${escape(p.url)}</code> (${escape(`${p.packageId}#${p.version}`)}): <span class="ips-badge" style="background: ${colour}">${escape(label)}</span></p>`;
+    if (p.pass === null || p.pass === undefined) {
+      return h + `<p><i>The document could not be validated against this profile${options.canManage && p.error ? `: ${escape(p.error)}` : ' (the reason is shown to the project\'s managers)'}.</i></p>`;
+    }
+    return h + validationOutcome(r.made, { counts: p.counts, outcome: p.outcome, profiles: [p.url], validatorVersion: v.validatorVersion, ms: p.ms },
+      { ...options, hidden: { view: 'national', np: String(index) } });
+  }
+  let h = '<table class="table table-sm ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Outcome</th><th>Issues</th></tr>';
+  v.profiles.forEach((np, i) => {
+    const [label, colour] = outcome(np);
+    const issues = np.pass === null || np.pass === undefined ? '<span class="ips-small">(not validated)</span>' : escape(issueSummary(np.counts || {}));
+    h += `<tr><td>${jurisdictionHtml(np.jurisdiction)}</td><td><a href="${docUrl}?view=national&amp;np=${i}"><code>${escape(`${np.packageId}#${np.version}`)}</code></a></td>` +
+      `<td><span class="ips-badge" style="background: ${colour}">${escape(label)}</span></td><td>${issues}</td></tr>`;
+  });
+  h += '</table>';
+  h += `<p class="ips-small">Validated ${escape(r.made)} against the <a href="${base}/national-profiles">national profiles</a> as they were when the document was processed ` +
+    `(${v.profiles.length} profile${v.profiles.length === 1 ? '' : 's'}, ${escape(String(v.ms))} ms); a document passes a profile when the validator reports no errors. ` +
+    'Reprocess the document to validate it against them as they are now.</p>';
+  return h;
+}
+
 /** The editor page: a container the script fills, and what it needs. */
 function renderCompose(project, ctx, options) {
   const purl = projectUrl(ctx, project);
@@ -1139,8 +1230,68 @@ function renderCompose(project, ctx, options) {
   };
   // JSON in a script: </script> and the like must not end the block
   h += `<script>window.IPS_EDITOR = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
-  h += `<script src="${escape(ctx.base)}/editor.js"></script>`;
+  h += `<script src="${escape(scripts.src(ctx.base, 'editor.js'))}"></script>`;
   return h;
+}
+
+// ---- national profiles -----------------------------------------------------------------
+
+/** A national profile's jurisdiction, for the page: its code, and the country's or region's name. */
+function jurisdictionHtml(code) {
+  if (!code) {
+    return '<span class="ips-small">(not given)</span>';
+  }
+  const j = jurisdiction(code);
+  return `<code>${escape(code)}</code>` + (j ? ` ${escape(j.display)}` : '');
+}
+
+/**
+ * The national profiles: for each, the national IG's package (id and version) and the url of
+ * its profile on Bundle. Everyone sees the list; the administrator adds, edits and deletes.
+ * @param {Array} list - from store.nationalProfiles()
+ */
+function renderNationalProfiles(list, ctx, message) {
+  const base = escape(ctx.base);
+  const isAdmin = !!ctx.user?.isAdmin;
+  let h = STYLE + userBar(ctx) + `<p class="ips-small"><a href="${base}">IPS projects</a> &raquo; National profiles</p>` + alert(message);
+  h += '<div class="ips-banner"><b class="ips-project-name">National profiles</b></div>';
+  h += '<p>A national profile is the profile a national implementation guide defines for an IPS document: the country or region it is for, the IG\'s package (its id and version), ' +
+    'and the canonical URL of its profile on Bundle. They apply across all projects.' + (isAdmin ? '' : ' Only the administrator can change them.') + '</p>';
+  if (list.length === 0) {
+    h += '<p>There are no national profiles yet.</p>';
+  }
+  if (!isAdmin) {
+    if (list.length === 0) {
+      return h;
+    }
+    h += '<table class="table table-sm table-striped ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th>Profile on Bundle</th></tr>';
+    for (const np of list) {
+      h += `<tr><td>${jurisdictionHtml(np.jurisdiction)}</td><td><code>${escape(np.packageId)}</code></td><td>${escape(np.version)}</td><td><code>${escape(np.url)}</code></td></tr>`;
+    }
+    return h + '</table>';
+  }
+  const fields = (form, np) =>
+    `<td><input form="${form}" type="text" name="jurisdiction" required class="form-control" style="font-size: 85%; width: 6em" placeholder="AU, or 150" ` +
+    `title="A country's ISO 3166 two-letter code, or a region's UN M49 three-digit code" value="${escape(np ? (np.jurisdiction || '') : '')}"/>` +
+    (np && np.jurisdiction && jurisdiction(np.jurisdiction) ? `<span class="ips-small">${escape(jurisdiction(np.jurisdiction).display)}</span>` : '') + '</td>' +
+    `<td><input form="${form}" type="text" name="packageId" required class="form-control" style="font-size: 85%; width: 15em" placeholder="e.g. hl7.fhir.au.ips" value="${escape(np ? np.packageId : '')}"/></td>` +
+    `<td><input form="${form}" type="text" name="version" required class="form-control" style="font-size: 85%; width: 8em" placeholder="version" value="${escape(np ? np.version : '')}"/></td>` +
+    `<td><input form="${form}" type="url" name="url" required class="form-control" style="font-size: 85%; width: 100%; min-width: 30em" placeholder="url of the profile on Bundle" value="${escape(np ? np.url : '')}"/></td>`;
+  // the package id and version are short; the url takes the rest of the row
+  h += '<table class="table table-sm ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th style="width: 100%">Profile on Bundle</th><th></th></tr>';
+  for (const np of list) {
+    const form = `np-${np.id}`;
+    const action = `${base}/national-profiles/${np.id}`;
+    h += '<tr>' + fields(form, np) +
+      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" class="ips-inline">${csrfField(ctx.csrf)}` +
+      '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
+      `<form method="post" action="${action}/delete" class="ips-inline" data-confirm="${escape(`Delete the national profile for ${np.packageId}#${np.version}?`)}">${csrfField(ctx.csrf)}` +
+      '<button type="submit" class="btn btn-default ips-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
+  }
+  h += '<tr>' + fields('np-new', null) +
+    `<td><form id="np-new" method="post" action="${base}/national-profiles">${csrfField(ctx.csrf)}` +
+    '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Add</button></form></td></tr>';
+  return h + '</table>';
 }
 
 // ---- clinical profiles -----------------------------------------------------------------
@@ -1201,63 +1352,180 @@ function renderProfiles(list, ctx) {
 // the parts of a profile, as the view and the editor show them
 const PROFILE_PARTS = [['section', 'Required sections and entries'], ['resource', 'Rules about resources'], ['other', 'Other rules']];
 
-/** One rule of a profile, for reading: the shape as words, or the expression. */
-function ruleHtml(expression, titleOf) {
-  const rshape = profiles.parseResourceShape(expression);
-  if (rshape) {
-    const d = profiles.describeResource(rshape, titleOf);
-    const which = d.valueSet !== undefined
-      ? `with a code in the value set <b>${escape(d.title || d.valueSet)}</b>${d.title ? ` <span class="ips-small">(${escape(d.valueSet)})</span>` : ''}`
-      : `with the code <b>${escape(d.code)}</b>`;
-    return `${d.type ? `<b>${escape(d.type)}</b> resources` : 'Resources'} ${which}: <code>${escape(d.rest)}</code>` +
-      `<div class="ips-pf-expr">${escape(expression)}</div>`;
-  }
-  const shape = profiles.parseShape(expression);
-  if (!shape) {
-    return `<code>${escape(expression)}</code>`;
-  }
-  const part = (p, isSection) => {
-    const d = profiles.describePart(p, isSection, titleOf);
-    return `<b>${escape(d.what)}</b>${d.code ? ` <span class="ips-small">(${escape(d.code)})</span>` : ''}` +
-      (d.card ? ` <span class="ips-pf-card-text">[${escape(d.card)}]</span>` : '');
-  };
-  const entry = !shape.entry ? '' : (shape.entry.valueSet !== undefined ? ', with entries in the value set ' : ', with an entry ') + part(shape.entry, false);
-  return 'Section ' + part(shape.section, true) + entry + `<div class="ips-pf-expr">${escape(expression)}</div>`;
+// the code systems for the categories of the resources in an IPS, for a rule's category
+const CATEGORY_SYSTEMS = [
+  { url: 'http://terminology.hl7.org/CodeSystem/condition-category', name: 'Condition category' },
+  { url: 'http://terminology.hl7.org/CodeSystem/observation-category', name: 'Observation category' },
+  { url: 'http://terminology.hl7.org/CodeSystem/medicationrequest-category', name: 'MedicationRequest category' }
+];
+
+/** A cardinality, for the profile's page: " [m..n]", unless it is unstated or 1..1. */
+function cardSuffix(p) {
+  return p.min === null || p.min === undefined || (p.min === 1 && p.max === 1) ? '' : ` [${p.min}..${p.max}]`;
 }
 
-/** A clinical profile, read-only (the administrator gets edit and delete). */
-function renderProfile(sd, ctx) {
+/** The name of a code system, when it has one we know, or its URL. */
+function profileSystemName(url) {
+  const sys = profiles.SYSTEMS.find(s => s.url === url);
+  return sys ? sys.name : (systemName(url) || url);
+}
+
+/** The Section and Entry columns of a required section/entry row. */
+function sectionColumns(shape, titleOf) {
+  const s = shape.section;
+  const named = s.system === LOINC ? profiles.IPS_SECTIONS.find(x => x.code === s.code) : null;
+  const section = (named
+    ? `${escape(named.title)} <span class="ips-small">(${escape(`${profileSystemName(s.system)}|${s.code}`)})</span>`
+    : escape(`${profileSystemName(s.system)}|${s.code}`)) + escape(cardSuffix(s));
+  const e = shape.entry;
+  let entry = '';
+  if (e && e.valueSet !== undefined) {
+    const title = typeof titleOf === 'function' ? titleOf(e.valueSet) : null;
+    entry = `Code is in <b>${escape(title || e.valueSet)}</b>` + (title ? ` <span class="ips-small">(${escape(e.valueSet)})</span>` : '') + escape(cardSuffix(e));
+  } else if (e) {
+    entry = `Code is <b>${escape(`${profileSystemName(e.system)}|${e.code}`)}</b>` + escape(cardSuffix(e));
+  }
+  return [section, entry];
+}
+
+/** The resources a rule is about, as a plural: MedicationAdministrations, or Any resource. */
+function resourceTypePlural(type) {
+  if (!type) {
+    return 'Any resource';
+  }
+  return /[^aeiou]y$/.test(type) ? `${type.slice(0, -1)}ies` : `${type}s`;
+}
+
+// the tails of a rule about resources that are said in words: each of the patterns, as it
+// is, or (where a resource at a time is what is meant) inside .all(...)
+const STR_ARG = "\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*";
+const NAME = '[A-Za-z][A-Za-z0-9_]*';
+const allOf = (body) => new RegExp(`^\\.\\s*(?:${body}|all\\s*\\(\\s*${body}\\s*\\))$`);
+const TAILS = [
+  [/^\.\s*exists\s*\(\s*\)$/, () => 'Must be present somewhere'],
+  [/^\.\s*all\s*\(\s*sameSubject\s*\(\s*\)\s*\)$/, () => 'Patient must match the Document'],
+  [allOf(`conformsTo\\s*\\(${STR_ARG}\\)`), (m, ctx) => {
+    const url = unescapeArg(m[1] !== undefined ? m[1] : m[2]);
+    const title = typeof ctx.profileTitle === 'function' ? ctx.profileTitle(url) : null;
+    return `Conform to <b>${escape(title || url)}</b>` + (title ? ` <span class="ips-small">(${escape(url)})</span>` : '');
+  }],
+  [allOf(`category\\s*\\.\\s*hasCoding\\s*\\(${STR_ARG},${STR_ARG}(?:,${STR_ARG})?\\)`), (m) => {
+    const [system, code, version] = (m[1] !== undefined ? [m[1], m[2], m[3]] : [m[4], m[5], m[6]]).map(x => x === undefined ? undefined : unescapeArg(x));
+    return `Has category <b>${escape(`${profileSystemName(system)}|${code}`)}</b>` + (version !== undefined ? ` <span class="ips-small">(version ${escape(version)})</span>` : '');
+  }],
+  // an element, or an element's element (no deeper): Must have an x, Must have an x.y
+  [new RegExp(`^\\.\\s*(${NAME})\\s*(?:\\.\\s*(${NAME})\\s*)?\\.\\s*exists\\s*\\(\\s*\\)$`), (m) => {
+    const path = m[2] ? `${m[1]}.${m[2]}` : m[1];
+    return `Must have ${/^[aeiou]/i.test(path) ? 'an' : 'a'} <code>${escape(path)}</code>`;
+  }]
+];
+
+/** A FHIRPath string's content, unescaped. */
+function unescapeArg(s) {
+  return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (x, c) => c.length === 5 ? String.fromCharCode(parseInt(c.substring(1), 16)) : ({ n: '\n', r: '\r', t: '\t', f: '\f' }[c] || c));
+}
+
+/** The Resource Set and Rule columns of a rule about resources. */
+function resourceColumns(rshape, ctx) {
+  const titleOf = ctx.valueSetTitle;
+  let which;
+  if (rshape.valueSet !== undefined) {
+    const title = typeof titleOf === 'function' ? titleOf(rshape.valueSet) : null;
+    which = `Code is in <b>${escape(title || rshape.valueSet)}</b>` + (title ? ` <span class="ips-small">(${escape(rshape.valueSet)})</span>` : '');
+  } else {
+    which = `Code is <b>${escape(`${profileSystemName(rshape.system)}|${rshape.code}`)}</b>`;
+  }
+  const set = `${escape(resourceTypePlural(rshape.type))} where ${which}`;
+  const rest = rshape.rest.trim();
+  for (const [re, words] of TAILS) {
+    const m = re.exec(rest);
+    if (m) {
+      return [set, words(m, ctx)];
+    }
+  }
+  return [set, `<code>${escape(rest)}</code>`];
+}
+
+/**
+ * A clinical profile: the same page for everyone. The administrator also gets add, edit and
+ * delete on each row (a row at a time, the script edits it in place), and the full editor.
+ */
+function renderProfile(sd, ctx, editor = null) {
   const base = escape(ctx.base);
   const url = `${base}/StructureDefinition/${escape(sd.id)}`;
+  const admin = !!(editor && ctx.user?.isAdmin);
   let h = STYLE + userBar(ctx) + profileCrumbs(ctx, sd.title);
   h += `<div class="ips-banner"><b class="ips-project-name">${escape(sd.title)}</b>` +
     `<div class="ips-facts">Clinical profile on Bundle &nbsp;&middot;&nbsp; <code>${escape(sd.url)}</code> &nbsp;&middot;&nbsp; updated ${escape(dateOnly(sd.date))}</div></div>`;
   h += '<div class="ips-actions-line">' +
     `<a class="btn btn-default" href="${url}?download=1">Download JSON</a>` +
-    (ctx.user?.isAdmin ? ` <a class="btn btn-primary" href="${url}/edit">Edit</a> ` +
+    (admin ? ` <a class="btn btn-default" href="${url}/edit">Edit all</a> ` +
       `<form method="post" action="${url}/delete" class="ips-inline" data-confirm="${escape(`Delete the clinical profile ${sd.title}?`)}">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-default">Delete</button></form>' : '') + '</div>';
-  const constraints = sd.differential?.element?.[0]?.constraint || [];
-  if (constraints.length === 0) {
-    h += '<p>This profile has no constraints yet.</p>';
-  } else {
-    for (const [kind, heading] of PROFILE_PARTS) {
-      const these = constraints.filter(c => profiles.kindOf(c.expression || '') === kind);
-      if (!these.length) {
-        continue;
-      }
-      h += `<h4>${escape(heading)}</h4><table class="table table-sm ips-table ips-pf-rule"><tr><th style="width: 35%">Expectation</th><th>Rule</th></tr>`;
-      for (const c of these) {
-        h += `<tr><td>${escape(c.human || '')}</td><td>${ruleHtml(c.expression || '', ctx.valueSetTitle)}</td></tr>`;
-      }
-      h += '</table>';
+      '<button type="submit" class="btn btn-default">Delete profile</button></form>' : '') + '</div>';
+  const constraints = (sd.differential?.element?.[0]?.constraint || []).filter(c => c && typeof c === 'object');
+  // the actions on a row, for the administrator
+  const actions = (c) => !admin ? '' : '<td class="ips-pf-actions">' +
+    '<button type="button" class="btn btn-default ips-btn ips-pf-edit">Edit</button> ' +
+    `<form method="post" action="${url}/constraint/${escape(c.key || '')}/delete" class="ips-inline" data-confirm="${escape(`Delete the rule '${c.human || c.key}'?`)}">${csrfField(ctx.csrf)}` +
+    '<button type="submit" class="btn btn-default ips-btn">Delete</button></form></td>';
+  const rowAttrs = (c) => (admin ? ` data-key="${escape(c.key || '')}"` : '') + ` title="${escape(c.expression || '')}"`;
+  const actionsHead = admin ? '<th class="ips-pf-actions"></th>' : '';
+  const ADD = { section: 'Add a required section/entry', resource: 'Add a rule about resources', other: 'Add another rule' };
+  for (const [kind, heading] of PROFILE_PARTS) {
+    const these = constraints.filter(c => profiles.kindOf(c.expression || '') === kind);
+    if (!these.length && !admin) {
+      continue;
     }
+    // the heading, and for the administrator the part's Add button, to its right
+    h += `<div class="ips-pf-part-head"><h4>${escape(heading)}</h4>` +
+      (admin ? `<button type="button" class="btn btn-default ips-pf-add" data-part="${kind}">${escape(ADD[kind])}</button>` : '') + '</div>';
+    if (kind === 'section') {
+      h += `<table class="table table-sm ips-table ips-pf-rule" data-part="${kind}"><tr><th style="width: 40%">Expectation</th><th>Section</th><th>Entry</th>${actionsHead}</tr>`;
+      for (const c of these) {
+        const [section, entry] = sectionColumns(profiles.parseShape(c.expression || ''), ctx.valueSetTitle);
+        h += `<tr${rowAttrs(c)}><td>${escape(c.human || '')}</td><td>${section}</td><td>${entry}</td>${actions(c)}</tr>`;
+      }
+    } else if (kind === 'resource') {
+      h += `<table class="table table-sm ips-table ips-pf-rule" data-part="${kind}"><tr><th style="width: 40%">Expectation</th><th>Resource Set</th><th>Rule</th>${actionsHead}</tr>`;
+      for (const c of these) {
+        const [set, rule] = resourceColumns(profiles.parseResourceShape(c.expression || ''), ctx);
+        h += `<tr${rowAttrs(c)}><td>${escape(c.human || '')}</td><td>${set}</td><td>${rule}</td>${actions(c)}</tr>`;
+      }
+    } else {
+      h += `<table class="table table-sm ips-table ips-pf-rule" data-part="${kind}"><tr><th style="width: 35%">Expectation</th><th>Rule</th>${actionsHead}</tr>`;
+      for (const c of these) {
+        h += `<tr${rowAttrs(c)}><td>${escape(c.human || '')}</td><td><code>${escape(c.expression || '')}</code></td>${actions(c)}</tr>`;
+      }
+    }
+    h += '</table>';
+  }
+  if (constraints.length === 0 && !admin) {
+    h += '<p>This profile has no constraints yet.</p>';
   }
   h += '<p class="ips-small">Each rule is checked against the document (the Bundle). <code>section(system, code, min, max)</code> finds the sections of the document\'s Composition ' +
     '(nested ones too) with that code, when there are min..max of them; <code>entry(system, code, min, max)</code> finds a section\'s entries with that code ' +
     '(their <code>code</code>, <code>medicationCodeableConcept</code> or <code>vaccineCode</code>), when there are min..max of them; ' +
     '<code>resources(system, code, type)</code> finds the resources in the document with that code (of that type, when one is given); ' +
-    '<code>entryIn(valueSet, min, max)</code> and <code>resourcesIn(valueSet, type)</code> are the same with a code in a value set, asked of the terminology server.</p>';
+    '<code>entryIn(valueSet, min, max)</code> and <code>resourcesIn(valueSet, type)</code> are the same with a code in a value set, asked of the terminology server. ' +
+    'A cardinality <code>[m..n]</code> after a section or an entry is how many there may be; with none, there must be at least one.</p>';
+  if (admin) {
+    const cfg = {
+      mode: 'rows', profile: { id: sd.id, title: sd.title, constraints: editor.constraints },
+      sections: editor.sections, systems: editor.systems, resourceTypes: editor.resourceTypes, sectionSystem: editor.sectionSystem, csrf: ctx.csrf || '',
+      parts: PROFILE_PARTS,
+      urls: {
+        constraint: `${ctx.base}/StructureDefinition/${sd.id}/constraint`,
+        lookup: editor.canLookup ? `${ctx.base}/lookup` : null,
+        lookupVs: `${ctx.base}/lookup-vs`
+      },
+      // the code systems offered for a resource's category, first the default
+      categorySystem: CATEGORY_SYSTEMS[0].url,
+      categorySystems: CATEGORY_SYSTEMS
+    };
+    h += '<div id="ips-profile-editor"></div>';
+    h += `<script>window.IPS_PROFILE = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
+    h += `<script src="${escape(scripts.src(ctx.base, 'profile-editor.js'))}"></script>`;
+  }
   return h;
 }
 
@@ -1286,7 +1554,7 @@ function renderProfileEditor(sd, ctx, options) {
     }
   };
   h += `<script>window.IPS_PROFILE = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
-  h += `<script src="${escape(base)}/profile-editor.js"></script>`;
+  h += `<script src="${escape(scripts.src(base, 'profile-editor.js'))}"></script>`;
   return h;
 }
 
@@ -1362,6 +1630,7 @@ const VIEWS = [
   ['translation', 'Translation'],
   ['generated', 'Generated Narrative'],
   ['validation', 'Validation'],
+  ['national', 'National Profiles'],
   ['terminology', 'Terminology'],
   ['profiles', 'Clinical Profiles'],
   ['ai', 'AI Assessment'],
@@ -1469,6 +1738,8 @@ function renderDocument(project, row, view, ctx) {
     h += renderAi(row, { canManage: ctx.canManage });
   } else if (view === 'validation') {
     h += renderValidation(row, { level: ctx.level, docUrl: durl, canManage: ctx.canManage });
+  } else if (view === 'national') {
+    h += renderNational(row, { np: ctx.np, level: ctx.level, docUrl: durl, base: ctx.base, canManage: ctx.canManage });
   } else {
     h += assembledNarrative(row.bundle);
   }
@@ -1477,6 +1748,6 @@ function renderDocument(project, row, view, ctx) {
 
 module.exports = {
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
-  assembledNarrative, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderShare, renderCompose, renderProfileChecks,
-  renderProfiles, renderProfile, renderProfileEditor, VIEWS
+  assembledNarrative, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
+  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, VIEWS
 };

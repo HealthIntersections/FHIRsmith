@@ -8,6 +8,7 @@ const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
+const { keepForPinnedReference } = require('../library/tho-precedence');
 
 /**
  * Package-based ConceptMap provider using shared database layer
@@ -169,7 +170,7 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
         // Only process each ConceptMap once (use URL to deduplicate)
         const vsUrl = json.url;
-        if (seen.has(vsUrl)) {
+        if (seen.has(vsUrl) || this.#pinnedOnly.has(vs)) {
           continue;
         }
 
@@ -330,34 +331,38 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     return this.packageLoader.id();
   }
 
-  // the concept maps left out by excludeUrls, by their own (unprefixed) id
+  // the concept maps that keepPinnedOnly restricted, by their own (unprefixed) id, and themselves
   #excludedIds = new Set();
+  #pinnedOnly = new Set();
 
   /**
-   * Leave out the concept maps with any of these urls: they can't be fetched, they aren't
-   * found by search, and they aren't used for translation. The FHIR core package's concept
-   * maps are left out where hl7.terminology provides the same url (see
-   * Provider.applyTHOPrecedence). Must be called once the provider is initialized - the
-   * database is shared, so it isn't changed.
+   * The concept maps with these urls are hl7.terminology's to provide (see
+   * Provider.applyTHOPrecedence): from this (core) package they are only available to a
+   * reference that names their version, where THO doesn't provide that version itself. They
+   * aren't the default for their url, can't be read by id, aren't found by search, and aren't
+   * used for translation unless asked for. Must be called once the provider is initialized -
+   * the database is shared, so it isn't changed.
    *
-   * @param {Set<string>} urls
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
    */
-  excludeUrls(urls) {
-    const excluded = new Set();
+  keepPinnedOnly(thoVersions) {
+    const affected = new Set();
     for (const cm of this.conceptMapMap.values()) {
-      if (cm && urls.has(cm.url)) {
-        excluded.add(cm);
+      if (cm && thoVersions.has(cm.url)) {
+        affected.add(cm);
       }
     }
     for (const [key, cm] of [...this.conceptMapMap]) {
-      if (excluded.has(cm)) {
+      if (affected.has(cm) && !keepForPinnedReference(key, cm, thoVersions.get(cm.url))) {
         this.conceptMapMap.delete(key);
       }
     }
-    for (const cm of excluded) {
+    for (const cm of affected) {
+      this.#pinnedOnly.add(cm);
       this.#excludedIds.add(stripIdPrefix(cm.id, this.spaceId) ?? cm.id);
     }
   }
+
 
   prefixIds() {
     this.#applyIdPrefix();
@@ -371,7 +376,8 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
   async findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceScope, targetScope, targetSystem) {
     for (let cm of this.conceptMapMap.values()) {
-      if (cm.providesTranslation(sourceSystem, sourceScope, targetScope, targetSystem)) {
+      // a concept map that THO also provides is only used when it's asked for by version
+      if (!this.#pinnedOnly.has(cm) && cm.providesTranslation(sourceSystem, sourceScope, targetScope, targetSystem)) {
         conceptMaps.push(cm);
       }
     }

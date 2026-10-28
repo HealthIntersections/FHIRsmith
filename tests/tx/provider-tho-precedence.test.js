@@ -6,11 +6,10 @@ const { Provider } = require('../../tx/provider');
  * terminology.hl7.org (THO/UTG), the resource versions went backwards (e.g.
  * http://terminology.hl7.org/CodeSystem/coverage-selfpay is 4.0.1 in
  * hl7.fhir.r4.core (2019) but 1.0.1 in hl7.terminology (2024)), and THO's copy
- * has had a lot of QA work since. So a THO resource replaces every same-URL
- * resource from a core package, whatever its version - except the R4 v2 tables
- * 0006/0360/0391, which R4 core has in two versions each with the version in the
- * url (urlHadVersion). THO doesn't publish those versions, so they stay
- * addressable by url|version, and THO's copy is the default.
+ * has had a lot of QA work since. So a THO resource is always the default for its
+ * url - what a reference with no version gets - whatever versions the core packages
+ * have. The core versions stay addressable by url|version (unless THO provides that
+ * same version), because a reference that names one of them can't mean anything else.
  */
 
 const SELFPAY = 'http://terminology.hl7.org/CodeSystem/coverage-selfpay';
@@ -43,18 +42,61 @@ describe('Provider.addCodeSystem — THO vs core package precedence', () => {
     // the unversioned default must be the THO copy despite its lower version
     expect(p.codeSystems.get(SELFPAY).sourcePackage).toBe('hl7.terminology.r4#6.0.2');
     expect(p.codeSystems.get(SELFPAY).version).toBe('1.0.1');
-    // and the core copy is gone - it isn't available by version either
-    expect(p.codeSystems.has(SELFPAY + '|4.0.1')).toBe(false);
+    // the core copy is still there for a reference that names its version
+    expect(p.codeSystems.get(SELFPAY + '|4.0.1').sourcePackage).toBe('hl7.fhir.r4.core#4.0.1');
     expect(p.codeSystems.get(SELFPAY + '|1.0.1').sourcePackage).toBe('hl7.terminology.r4#6.0.2');
   });
 
-  test('a core resource is not added when THO already has the url (reverse load order)', () => {
+  test('a core resource never becomes the default when THO already has the url (reverse load order)', () => {
     const p = newProvider(
       cs(SELFPAY, '1.0.1', 'hl7.terminology.r4#6.0.2'),
       cs(SELFPAY, '4.0.1', 'hl7.fhir.r4.core#4.0.1')
     );
     expect(p.codeSystems.get(SELFPAY).sourcePackage).toBe('hl7.terminology.r4#6.0.2');
-    expect(p.codeSystems.has(SELFPAY + '|4.0.1')).toBe(false);
+    expect(p.codeSystems.get(SELFPAY + '|4.0.1').sourcePackage).toBe('hl7.fhir.r4.core#4.0.1');
+  });
+
+  test('where THO provides the same version, that version is THO\'s, in either load order', () => {
+    const CPT = 'http://hl7.org/fhir/concept-property-type';
+    for (const order of ['core first', 'THO first']) {
+      const core = cs(CPT, '5.0.0', 'hl7.fhir.r5.core#5.0.0');
+      const tho = cs(CPT, '5.0.0', 'hl7.terminology#7.5.0');
+      const p = order === 'core first' ? newProvider(core, tho) : newProvider(tho, core);
+      expect(p.codeSystems.get(CPT)).toBe(tho);
+      expect(p.codeSystems.get(CPT + '|5.0.0')).toBe(tho);
+    }
+  });
+
+  test('THO 6.0.1 is the default, and a pin to core 5.0.0 still resolves (concept-property-type)', () => {
+    const CPT = 'http://hl7.org/fhir/concept-property-type';
+    for (const order of ['core first', 'THO first']) {
+      const core = cs(CPT, '5.0.0', 'hl7.fhir.r5.core#5.0.0');
+      const tho = cs(CPT, '6.0.1', 'hl7.terminology#7.5.0');
+      const p = order === 'core first' ? newProvider(core, tho) : newProvider(tho, core);
+      expect(p.codeSystems.get(CPT)).toBe(tho);
+      expect(p.codeSystems.get(CPT + '|6.0.1')).toBe(tho);
+      expect(p.codeSystems.get(CPT + '|5.0.0')).toBe(core);
+    }
+  });
+
+  test('deleting THO\'s default promotes another THO version, never a core one', () => {
+    const tho1 = cs(SELFPAY, '1.0.1', 'hl7.terminology.r4#6.0.2');
+    const tho0 = cs(SELFPAY, '1.0.0', 'hl7.terminology.r4#6.0.1');
+    const core = cs(SELFPAY, '4.0.1', 'hl7.fhir.r4.core#4.0.1');
+    const p = newProvider(core, tho0, tho1);
+    expect(p.codeSystems.get(SELFPAY)).toBe(tho1);
+    p.deleteCodeSystem(tho1);
+    // core 4.0.1 looks more recent, but THO 1.0.0 is still there
+    expect(p.codeSystems.get(SELFPAY)).toBe(tho0);
+    expect(p.codeSystems.get(SELFPAY + '|4.0.1')).toBe(core);
+  });
+
+  test('once no THO version is left, the core one can be the default again', () => {
+    const tho = cs(SELFPAY, '1.0.1', 'hl7.terminology.r4#6.0.2');
+    const core = cs(SELFPAY, '4.0.1', 'hl7.fhir.r4.core#4.0.1');
+    const p = newProvider(core, tho);
+    p.deleteCodeSystem(tho);
+    expect(p.codeSystems.get(SELFPAY)).toBe(core);
   });
 
   test('a core resource that had its version in its url stays available by version, in either load order', () => {
