@@ -955,6 +955,138 @@ describe('the validation step', () => {
   });
 });
 
+describe('the national profiles step', () => {
+  let app;
+  let mod;
+  const AU = 'http://hl7.org.au/fhir/ips/StructureDefinition/au-ips-bundle';
+  const NZ = 'http://hl7.org.nz/fhir/ips/StructureDefinition/nz-ips-bundle';
+  const XX = 'http://example.org/fhir/StructureDefinition/xx-bundle';
+  const failing = { resourceType: 'OperationOutcome', issue: [
+    { severity: 'error', code: 'structure', details: { text: 'Bundle.identifier: minimum required = 1' }, expression: ['Bundle'] },
+    { severity: 'information', code: 'informational', details: { text: 'Just a note' } }] };
+  const passing = { resourceType: 'OperationOutcome', issue: [{ severity: 'warning', code: 'business-rule', details: { text: 'A warning only' } }] };
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.steps = STEPS.filter(s => s.name === 'national');
+  });
+  afterEach(() => mod.shutdown());
+
+  const fakeValidator = () => ({
+    calls: [],
+    loads: [],
+    isRunning: () => true,
+    jarVersion: () => '6.5.0',
+    async loadIG(packageId, version) {
+      this.loads.push(`${packageId}#${version}`);
+      return packageId === 'hl7.fhir.xx.ips'
+        ? { resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found', details: { text: 'Package not found' } }] }
+        : { resourceType: 'OperationOutcome', issue: [{ severity: 'information', code: 'informational', details: { text: 'Loaded' } }] };
+    },
+    async validate(resource, options) {
+      this.calls.push(options);
+      return options.profiles[0] === AU ? failing : passing;
+    },
+    async stop() {}
+  });
+
+  test('with no national profiles, there is nothing to do', async () => {
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: none' });
+    expect(mod.store.readResult(1, 'national').result).toMatchObject({ profiles: [] });
+    const page = await request(app).get('/ips/demo/Bundle/1?view=national').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=national">National Profiles</a></li>');
+    expect(page.text).toContain('There were no <a href="/ips/national-profiles">national profiles</a> to validate the document against');
+  });
+
+  test('the document is validated against each, and passes when there are no errors', async () => {
+    mod.validator = fakeValidator();
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    mod.store.createNationalProfile('hl7.fhir.nz.ips', '2.0.0', NZ, 'NZ');
+    mod.store.createNationalProfile('hl7.fhir.xx.ips', '0.1.0', XX, '150');
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(2);
+    // each package is loaded once; the one that won't load isn't validated against
+    expect(mod.validator.loads).toEqual(['hl7.fhir.au.ips#1.0.0', 'hl7.fhir.nz.ips#2.0.0', 'hl7.fhir.xx.ips#0.1.0']);
+    expect(mod.validator.calls).toEqual([
+      { profiles: [AU], checkIpsCodes: true, timeout: 120000 }, { profiles: [NZ], checkIpsCodes: true, timeout: 120000 },
+      { profiles: [AU], checkIpsCodes: true, timeout: 120000 }, { profiles: [NZ], checkIpsCodes: true, timeout: 120000 }]);
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: 1 passed, 1 failed, 1 not checked' });
+    const r = mod.store.readResult(1, 'national').result;
+    expect(r.validatorVersion).toBe('6.5.0');
+    expect(r.profiles.map(p => [p.packageId, p.pass])).toEqual([['hl7.fhir.au.ips', false], ['hl7.fhir.nz.ips', true], ['hl7.fhir.xx.ips', null]]);
+    expect(r.profiles[0]).toMatchObject({ version: '1.0.0', url: AU, counts: { error: 1, warning: 0, information: 1, fatal: 0 }, outcome: failing });
+    expect(r.profiles[2].error).toBe('The validator could not load hl7.fhir.xx.ips#0.1.0: Package not found');
+
+    // the list
+    const page = await request(app).get('/ips/demo/Bundle/1?view=national').set('Accept', 'text/html');
+    expect(page.text).toContain('<td><code>AU</code> Australia</td><td><a href="/ips/demo/Bundle/1?view=national&amp;np=0"><code>hl7.fhir.au.ips#1.0.0</code></a>');
+    expect(page.text).toContain('<td><code>150</code> Europe</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #c82333">Failed</span></td><td>1 error, 1 note</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #1e7e34">Passed</span></td><td>1 warning</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #d39e00">Not checked</span></td><td><span class="ips-small">(not validated)</span>');
+
+    // one profile's validation, as the validation view shows it
+    const au = await request(app).get('/ips/demo/Bundle/1?view=national&np=0').set('Accept', 'text/html');
+    expect(au.text).toContain('<a href="/ips/demo/Bundle/1?view=national">National profiles</a> &raquo; hl7.fhir.au.ips#1.0.0');
+    expect(au.text).toContain(`against <code>${AU}</code>`);
+    expect(au.text).toContain('<b>1 error, 1 note</b>');
+    expect(au.text).toContain('Bundle.identifier: minimum required = 1');
+    expect(au.text).toContain('<input type="hidden" name="view" value="national"/><input type="hidden" name="np" value="0"/>');
+    expect(au.text).toContain('Show the OperationOutcome');
+    const filtered = await request(app).get('/ips/demo/Bundle/1?view=national&np=0&level=error').set('Accept', 'text/html');
+    expect(filtered.text).toContain('Showing 1 of 2 issues (errors and above)');
+    // the one that wasn't validated: why, for managers
+    const xx = await request(app).get('/ips/demo/Bundle/1?view=national&np=2').set('Accept', 'text/html');
+    expect(xx.text).toContain("could not be validated against this profile (the reason is shown to the project's managers)");
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo/Bundle/1?view=national&np=2').set('Accept', 'text/html')).text).toContain('Package not found');
+    // a profile that isn't there: the list
+    expect((await request(app).get('/ips/demo/Bundle/1?view=national&np=7').set('Accept', 'text/html')).text).toContain('np=1"><code>hl7.fhir.nz.ips#2.0.0</code>');
+
+    // changing the national profiles: a package that failed to load is tried again
+    expect((await form(agent, '/ips/national-profiles', { jurisdiction: 'GB', packageId: 'hl7.fhir.yy.ips', version: '1.0.0', url: XX })).status).toBe(302);
+    mod.store.requeue(1, 1);
+    await mod.processQueue();
+    expect(mod.validator.loads.filter(l => l === 'hl7.fhir.xx.ips#0.1.0')).toHaveLength(2);
+  });
+
+  test('a package is loaded by posting {ig: id#version} to the validator service\'s /loadIG', async () => {
+    // the validator service: what it was asked, and what it answers
+    const http = require('http');
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, type: req.headers['content-type'], body });
+        res.setHeader('Content-Type', 'application/fhir+json');
+        res.end(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'information', code: 'informational', details: { text: 'IG loaded successfully' } }] }));
+      });
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    try {
+      mod.validator = { baseUrl: `http://127.0.0.1:${server.address().port}`, loadIG: () => { throw new Error('not this one'); } };
+      await mod.loadNationalPackage('hl7.fhir.au.ps', 'current');
+      expect(seen).toEqual([{ method: 'POST', url: '/loadIG', type: 'application/json', body: '{"ig":"hl7.fhir.au.ps#current"}' }]);
+      // once
+      await mod.loadNationalPackage('hl7.fhir.au.ps', 'current');
+      expect(seen).toHaveLength(1);
+    } finally {
+      await new Promise(r => server.close(r));
+    }
+  });
+
+  test('without a validator, documents fail processing (when there are national profiles)', async () => {
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'error', status_message: 'national: The validator is not configured (modules.ips.validator)' });
+  });
+});
+
 describe('the terminology step', () => {
   let app;
   let mod;
@@ -1258,7 +1390,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -1873,7 +2005,8 @@ describe('the editor', () => {
     expect(page.status).toBe(200);
     expect(page.text).toContain('<h3>Compose a document</h3>');
     expect(page.text).toContain('<div id="ips-editor"></div>');
-    expect(page.text).toContain('<script src="/ips/editor.js"></script>');
+    // with its version, so a changed script isn't taken from a browser's cache
+    expect(page.text).toMatch(/<script src="\/ips\/editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
     expect(page.text).toContain('"urls":{"compose":"/ips/demo/compose","lookup":"/ips/demo/lookup","back":"/ips/demo"}');
     expect(page.text).toContain('"key":"problems"');
     expect(page.text).toContain('"needsToken":false');
@@ -1967,6 +2100,88 @@ describe('the editor', () => {
   });
 });
 
+describe('national profiles', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+  });
+  afterEach(() => mod.shutdown());
+
+  const AU = { jurisdiction: 'AU', packageId: 'hl7.fhir.au.ips', version: '1.0.0', url: 'http://hl7.org.au/fhir/ips/StructureDefinition/au-ips-bundle' };
+
+  test('the administrator adds, edits and deletes them', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('There are no national profiles yet');
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(302);
+    const [np] = mod.store.nationalProfiles();
+    expect(np).toMatchObject(AU);
+
+    // the same package and version again
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(409);
+    // what's wrong with the details
+    expect((await form(agent, '/ips/national-profiles', { ...AU, packageId: 'Not A Package' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, packageId: 'nodots' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, version: '' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, version: '1.0 beta' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, url: 'not a url' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, url: 'ftp://example.org/x' })).status).toBe(400);
+    // the jurisdiction: an ISO 3166 country code, or a UN M49 region - not a user-assigned code, nor a country's numeric code
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: '' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'XX' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'AUS' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: '036' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'Australia' })).status).toBe(400);
+
+    const page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain(`action="/ips/national-profiles/${np.id}"`);
+    expect(page.text).toContain('value="hl7.fhir.au.ips"');
+    expect(page.text).toContain('name="jurisdiction"');
+    expect(page.text).toContain('value="AU"/><span class="ips-small">Australia</span>');
+    expect((await agent.get('/ips').set('Accept', 'text/html')).text).toContain('<a href="/ips/national-profiles">National profiles</a>');
+
+    // edit: a new version, for a region (Australia and New Zealand); a country code is taken in lower case too
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, version: '1.1.0', jurisdiction: '053' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id)).toMatchObject({ ...AU, version: '1.1.0', jurisdiction: '053' });
+    expect((await agent.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('<span class="ips-small">Australia and New Zealand</span>');
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, version: '1.1.0', jurisdiction: 'nz' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).jurisdiction).toBe('NZ');
+    // an edit that would make a duplicate
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(302);
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, AU)).status).toBe(409);
+    expect((await form(agent, '/ips/national-profiles/99999', { ...AU, version: '2.0.0' })).status).toBe(404);
+
+    expect((await form(agent, `/ips/national-profiles/${np.id}/delete`)).status).toBe(302);
+    expect(mod.store.nationalProfiles().map(x => x.version)).toEqual(['1.0.0']);
+  });
+
+  test('everyone can see them, only the administrator can change them', async () => {
+    mod.store.createNationalProfile(AU.packageId, AU.version, AU.url, AU.jurisdiction);
+    const page = await request(app).get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<td><code>AU</code> Australia</td><td><code>hl7.fhir.au.ips</code>');
+    expect(page.text).not.toContain('<form');
+    expect((await request(app).get('/ips/national-profiles').set('Accept', 'application/json')).body).toEqual([AU]);
+
+    // not logged in: off to the login page; a manager: refused
+    const anon = request.agent(app);
+    expect((await form(anon, '/ips/national-profiles', { ...AU, version: '2.0.0' })).status).toBe(302);
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    await form(agent, '/ips/admin/users', { login: 'mgr', name: 'Manager', password: 'password1' });
+    const mgr = (await loginAs(app, 'mgr', 'password1')).agent;
+    expect((await mgr.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('Only the administrator can change them');
+    expect((await form(mgr, '/ips/national-profiles', { ...AU, version: '2.0.0' })).status).toBe(403);
+    const id = mod.store.nationalProfiles()[0].id;
+    expect((await form(mgr, `/ips/national-profiles/${id}/delete`)).status).toBe(403);
+    expect(mod.store.nationalProfiles()).toHaveLength(1);
+  });
+
+  test('national-profiles is not a project code', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await form(agent, '/ips/admin/projects', { code: 'national-profiles', name: 'X' })).status).toBe(400);
+  });
+});
+
 describe('clinical profiles', () => {
   let app;
   let mod;
@@ -2012,9 +2227,11 @@ describe('clinical profiles', () => {
     expect(dl.headers['content-disposition']).toBe('attachment; filename="CardiologyReferral.json"');
     // the pages: the rule as words for a shaped one, the expression for the other; no editing for a visitor
     const page = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
-    expect(page.text).toContain('Section <b>Problem List</b> <span class="ips-small">(LOINC 11450-4)</span> <span class="ips-pf-card-text">[1..*]</span>, with an entry <b>SNOMED CT 38341003</b>');
+    expect(page.text).toContain('<td>A problem list with hypertension</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> [1..*]</td><td>Code is <b>SNOMED CT|38341003</b></td></tr>');
+    expect(page.text).toContain('<th style="width: 40%">Expectation</th><th>Section</th><th>Entry</th></tr>');
     expect(page.text).toContain('<code>Bundle.entry.count() &gt;= 2</code>');
-    expect(page.text).toContain('<b>Condition</b> resources with the code <b>SNOMED CT 38341003</b>: <code>.all(clinicalStatus.coding.code = &#39;active&#39;)</code>');
+    expect(page.text).toContain('<td>Hypertension is active</td><td>Conditions where Code is <b>SNOMED CT|38341003</b></td><td><code>.all(clinicalStatus.coding.code = &#39;active&#39;)</code></td></tr>');
+    expect(page.text).toContain('<th style="width: 40%">Expectation</th><th>Resource Set</th><th>Rule</th></tr>');
     // in three parts, in order
     const parts = ['Required sections and entries', 'Rules about resources', 'Other rules'].map(t => page.text.indexOf(`<h4>${t}</h4>`));
     expect(parts.every(i => i > 0) && parts[0] < parts[1] && parts[1] < parts[2]).toBe(true);
@@ -2069,6 +2286,102 @@ describe('clinical profiles', () => {
     expect(del.status).toBe(302);
     expect((await request(app).get(`/ips/StructureDefinition/${id}`)).status).toBe(404);
     expect((await request(app).get('/ips/StructureDefinition/profile-nothere')).status).toBe(404);
+  });
+
+  test('the administrator adds, edits and deletes a rule at a time, on the profile\'s page', async () => {
+    const { agent, send } = await asAdmin();
+    const vs = 'http://example.org/ValueSet/heart';
+    const made = await send('/ips/StructureDefinition', { title: 'Rows', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4', 1, 1).exists()` }, { human: 'Two entries', expression: 'Bundle.entry.count() >= 2' }] });
+    const id = made.body.id;
+    const at = `/ips/StructureDefinition/${id}`;
+    // the same page as a visitor's, with the rows' actions and the script
+    const page = await agent.get(at).set('Accept', 'text/html');
+    expect(page.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td><td class="ips-pf-actions">');
+    expect(page.text).toContain(`action="${at}/constraint/cp-1/delete"`);
+    expect(page.text).toContain('<button type="button" class="btn btn-default ips-pf-add" data-part="resource">');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]);
+    expect(cfg.mode).toBe('rows');
+    expect(page.text).toMatch(/<script src="\/ips\/profile-editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
+    expect(cfg.urls.constraint).toBe(`${at}/constraint`);
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: 1 }, entry: null } });
+    const visitor = await request(app).get(at).set('Accept', 'text/html');
+    expect(visitor.text).not.toContain('IPS_PROFILE');
+    expect(visitor.text).not.toContain('class="ips-pf-actions"');
+    expect(visitor.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td></tr>');
+    // add: a new key, at the end
+    const added = await send(`${at}/constraint`, { human: 'Heart things', expression: `Bundle.section('http://example.org/cs', 'x1', 0, 2).entryIn('${vs}', 1, '*').exists()` });
+    expect(added.status).toBe(201);
+    expect(added.body.key).toBe('cp-3');
+    const shown = await request(app).get(at).set('Accept', 'text/html');
+    expect(shown.text).toContain(`<td>Heart things</td><td>http://example.org/cs|x1 [0..2]</td><td>Code is in <b>${vs}</b> [1..*]</td></tr>`);
+    // edit: the key stays, the others are as they were
+    const edited = await send(`${at}/constraint/cp-1`, { human: 'Problems, with a SNOMED one', expression: `Bundle.section('${L}', '11450-4').entry('${S}', '38341003', 1, 1).exists()` });
+    expect(edited.status).toBe(200);
+    expect(edited.body.key).toBe('cp-1');
+    let cs = mod.store.profile(id.substring(8)).differential.element[0].constraint;
+    expect(cs.map(c => [c.key, c.human])).toEqual([['cp-1', 'Problems, with a SNOMED one'], ['cp-2', 'Two entries'], ['cp-3', 'Heart things']]);
+    expect(mod.store.profile(id.substring(8)).title).toBe('Rows');
+    // what is wrong is said of the rule, and nothing changes
+    const bad = await send(`${at}/constraint/cp-2`, { human: '', expression: 'Bundle.(' });
+    expect(bad.status).toBe(422);
+    expect(bad.body.problems[0]).toBe('The rule has no description');
+    expect((await send(`${at}/constraint/cp-9`, { human: 'x', expression: 'true' })).status).toBe(404);
+    // delete one
+    const del = await form(agent, `${at}/constraint/cp-2/delete`);
+    expect(del.status).toBe(302);
+    expect(del.headers.location).toBe(at);
+    cs = mod.store.profile(id.substring(8)).differential.element[0].constraint;
+    expect(cs.map(c => c.key)).toEqual(['cp-1', 'cp-3']);
+    // a new one after a delete doesn't take a key that was used
+    expect((await send(`${at}/constraint`, { human: 'Any', expression: 'true' })).body.key).toBe('cp-4');
+    // only the administrator
+    expect((await request(app).post(`${at}/constraint`).send({ human: 'x', expression: 'true' })).status).toBe(403);
+    mod.store.createUser('jo', 'Jo', await require('bcrypt').hash('jo-secret', 4));
+    const jo = (await loginAs(app, 'jo', 'jo-secret')).agent;
+    const joPage = await jo.get(at).set('Accept', 'text/html');
+    expect(joPage.text).not.toContain('class="ips-pf-actions"');
+    expect((await form(jo, `${at}/constraint/cp-1/delete`)).status).toBe(403);
+  });
+
+  test('a rule about resources is shown as its resource set and, for the known tails, the rule in words', async () => {
+    const AU = 'http://hl7.org.au/fhir/ips/StructureDefinition/Bundle-au-ips';
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    const other = profiles.build({ id: '0123456789ab', url: 'http://example.org/ips/StructureDefinition/profile-0123456789ab', title: 'Medication safety', constraints: [] });
+    mod.store.saveProfile('0123456789ab', other);
+    const rule = (key, human, expression) => ({ key, human, expression });
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://example.org/ips/StructureDefinition/profile-abcdef012345', title: 'Tails', constraints: [
+      rule('cp-1', 'Given', `Bundle.resources('${S}', '387517004', 'MedicationAdministration').exists()`),
+      rule('cp-2', 'Same patient', `Bundle.resources('${S}', '38341003').all(sameSubject())`),
+      rule('cp-3', 'Same subject', "Bundle.resourcesIn('http://example.org/ValueSet/x', 'FamilyMemberHistory').all( sameSubject() )"),
+      rule('cp-4', 'Australian', `Bundle.resources('${S}', '38341003', 'Condition').conformsTo('${AU}')`),
+      rule('cp-5', 'Ours', `Bundle.resources('${S}', '38341003', 'Condition').all(conformsTo('${other.url}'))`),
+      rule('cp-6', 'Unknown', `Bundle.resources('${S}', '38341003', 'Condition').conformsTo('http://nowhere.org/sd')`),
+      rule('cp-7', 'A problem', `Bundle.resources('${S}', '38341003', 'Condition').category.hasCoding('http://terminology.hl7.org/CodeSystem/condition-category', 'problem-list-item')`),
+      rule('cp-8', 'Counted', `Bundle.resources('${L}', '8480-6', 'Observation').count() = 1`),
+      rule('cp-9', 'Each a problem', `Bundle.resources('${S}', '38341003', 'Condition').all(category.hasCoding('http://terminology.hl7.org/CodeSystem/condition-category', 'problem-list-item', '4.0.1'))`),
+      rule('cp-10', 'Onset', `Bundle.resources('${S}', '38341003', 'Condition').onset.exists()`),
+      rule('cp-11', 'Coded', `Bundle.resources('${S}', '38341003', 'Condition').code.text.exists()`),
+      rule('cp-12', 'Too deep', `Bundle.resources('${S}', '38341003', 'Condition').code.coding.code.exists()`),
+      rule('cp-13', 'Old name', `Bundle.resources('${S}', '38341003').samePatient()`),
+      rule('cp-14', 'One at a time', `Bundle.resources('${S}', '38341003').sameSubject()`)] });
+    mod.store.saveProfile('abcdef012345', sd);
+    const page = await request(app).get('/ips/StructureDefinition/profile-abcdef012345').set('Accept', 'text/html');
+    const row = (human, set, rule) => `<td>${human}</td><td>${set}</td><td>${rule}</td></tr>`;
+    expect(page.text).toContain(row('Given', 'MedicationAdministrations where Code is <b>SNOMED CT|387517004</b>', 'Must be present somewhere'));
+    expect(page.text).toContain(row('Same patient', 'Any resource where Code is <b>SNOMED CT|38341003</b>', 'Patient must match the Document'));
+    expect(page.text).toContain(row('Same subject', 'FamilyMemberHistories where Code is in <b>http://example.org/ValueSet/x</b>', 'Patient must match the Document'));
+    expect(page.text).toContain(row('Australian', 'Conditions where Code is <b>SNOMED CT|38341003</b>', `Conform to <b>AU national profile (hl7.fhir.au.ips#1.0.0)</b> <span class="ips-small">(${AU})</span>`));
+    expect(page.text).toContain(row('Ours', 'Conditions where Code is <b>SNOMED CT|38341003</b>', `Conform to <b>Medication safety</b> <span class="ips-small">(${other.url})</span>`));
+    expect(page.text).toContain(row('Unknown', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Conform to <b>http://nowhere.org/sd</b>'));
+    expect(page.text).toContain(row('A problem', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Has category <b>condition-category|problem-list-item</b>'));
+    expect(page.text).toContain(row('Counted', 'Observations where Code is <b>LOINC|8480-6</b>', '<code>.count() = 1</code>'));
+    expect(page.text).toContain(row('Each a problem', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Has category <b>condition-category|problem-list-item</b> <span class="ips-small">(version 4.0.1)</span>'));
+    expect(page.text).toContain(row('Onset', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Must have an <code>onset</code>'));
+    expect(page.text).toContain(row('Coded', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Must have a <code>code.text</code>'));
+    // no deeper than one dot, and the subject only as .all(sameSubject())
+    expect(page.text).toContain(row('Too deep', 'Conditions where Code is <b>SNOMED CT|38341003</b>', '<code>.code.coding.code.exists()</code>'));
+    expect(page.text).toContain(row('Old name', 'Any resource where Code is <b>SNOMED CT|38341003</b>', '<code>.samePatient()</code>'));
+    expect(page.text).toContain(row('One at a time', 'Any resource where Code is <b>SNOMED CT|38341003</b>', '<code>.sameSubject()</code>'));
   });
 
   test('profiles stored on Composition are moved onto Bundle when the module starts', async () => {
@@ -2146,8 +2459,8 @@ describe('clinical profiles', () => {
       { human: 'Some IPS problem', expression: "Bundle.resourcesIn('http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', 'Condition').exists()" }] });
     expect(made.status).toBe(201);
     const page = await request(app).get(made.body.url).set('Accept', 'text/html');
-    expect(page.text).toContain(`with entries in the value set <b>Conditions (IPS international exchange)</b> <span class="ips-small">(${ours})</span>`);
-    expect(page.text).toContain('<b>Condition</b> resources with a code in the value set <b>http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips</b>: <code>.exists()</code>');
+    expect(page.text).toContain(`<td>Code is in <b>Conditions (IPS international exchange)</b> <span class="ips-small">(${ours})</span> [1..*]</td>`);
+    expect(page.text).toContain('<td>Conditions where Code is in <b>http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips</b></td><td>Must be present somewhere</td></tr>');
     const editor = await agent.get(`${made.body.url}/edit`).set('Accept', 'text/html');
     const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
     expect(cfg.urls.lookupVs).toBe('/ips/lookup-vs');
@@ -2250,7 +2563,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
   });
 });
 

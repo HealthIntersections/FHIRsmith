@@ -8,6 +8,7 @@ const { checkContained } = require('../library/canonical-resource');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
+const { keepForPinnedReference } = require('../library/tho-precedence');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -267,7 +268,7 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
 
         // Only process each ValueSet once (use URL to deduplicate)
         const vsUrl = json.url;
-        if (seen.has(vsUrl)) {
+        if (seen.has(vsUrl) || this.#excludedUrls.has(vsUrl)) {
           continue;
         }
 
@@ -460,35 +461,38 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     return this.#excludedUrls.size === 0 ? urls : urls.filter(url => !this.#excludedUrls.has(url));
   }
 
-  // the value sets left out by excludeUrls - by url, and by their own (unprefixed) id
+  // the value sets left out by keepPinnedOnly - by url, and by their own (unprefixed) id
   #excludedUrls = new Set();
   #excludedIds = new Set();
 
   /**
-   * Leave out the value sets with any of these urls: they can't be fetched, and they aren't
-   * found by search. The FHIR core package's value sets are left out where hl7.terminology
-   * provides the same url (see Provider.applyTHOPrecedence). Must be called once the
-   * provider is initialized - the database is shared, so it isn't changed.
+   * The value sets with these urls are hl7.terminology's to provide (see
+   * Provider.applyTHOPrecedence): from this (core) package they are only available to a
+   * reference that names their version, where THO doesn't provide that version itself. They
+   * aren't the default for their url, can't be read by id, aren't found by search or listed.
+   * Must be called once the provider is initialized - the database is shared, so it isn't
+   * changed.
    *
-   * @param {Set<string>} urls
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
    */
-  excludeUrls(urls) {
-    const excluded = new Set();
+  keepPinnedOnly(thoVersions) {
+    const affected = new Set();
     for (const vs of this.valueSetMap.values()) {
-      if (vs && urls.has(vs.url)) {
-        excluded.add(vs);
+      if (vs && thoVersions.has(vs.url)) {
+        affected.add(vs);
       }
     }
     for (const [key, vs] of [...this.valueSetMap]) {
-      if (excluded.has(vs)) {
+      if (affected.has(vs) && !keepForPinnedReference(key, vs, thoVersions.get(vs.url))) {
         this.valueSetMap.delete(key);
       }
     }
-    for (const vs of excluded) {
+    for (const vs of affected) {
       this.#excludedUrls.add(vs.url);
       this.#excludedIds.add(stripIdPrefix(vs.id, this.spaceId) ?? vs.id);
     }
   }
+
 }
 
 module.exports = {

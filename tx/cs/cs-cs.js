@@ -19,6 +19,9 @@ const regexUtilities = require("../../library/regex-utilities");
 // filter results do not depend on forIteration, so one form is stored per version.
 const FILTER_ANALYSIS = Symbol('filterAnalysis');
 
+// The standard concept properties (http://hl7.org/fhir/concept-properties)
+const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
+
 // The texts of each concept as a text filter compares them, by concept. Folding is
 // the costly part of a search over a large code system, so it is done once per
 // concept, and dropped with the code system.
@@ -316,6 +319,46 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
+   * The codes this code system uses for one of the standard concept properties
+   * (http://hl7.org/fhir/concept-properties#<name>). A property declared with the
+   * standard uri counts whatever local code it was given. A code that the code
+   * system declares with a different uri is a different property, and does not
+   * count. A code the code system doesn't declare (or declares with no uri) is
+   * recognised by the code alone - the standard code, and any legacy aliases
+   *
+   * @param {string} name - the standard property code (e.g. notSelectable)
+   * @param {string[]} aliases - legacy codes also recognised when not declared otherwise
+   * @returns {Set<string>} the local codes for the property
+   */
+  standardPropertyCodes(name, aliases = []) {
+    const uri = CONCEPT_PROPERTIES + name;
+    const defs = this.propertyDefinitions() || [];
+    const codes = new Set();
+    for (const d of defs) {
+      if (d.uri === uri) {
+        codes.add(d.code);
+      }
+    }
+    for (const c of [name, ...aliases]) {
+      if (!defs.some(d => d.code === c && d.uri && d.uri !== uri)) {
+        codes.add(c);
+      }
+    }
+    return codes;
+  }
+
+  /**
+   * Whether the code system declares the code of a standard concept property for a
+   * property of its own (with a different uri), so that the code is not the standard one
+   * @param {string} name - the standard property code
+   * @returns {boolean}
+   */
+  redefinesStandardProperty(name) {
+    const uri = CONCEPT_PROPERTIES + name;
+    return (this.propertyDefinitions() || []).some(d => d.code === name && d.uri && d.uri !== uri);
+  }
+
+  /**
    * @param {Languages} languages - Language specification
    * @returns {boolean} Whether any displays are available for the languages
    */
@@ -524,14 +567,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
       return false;
     }
 
-    // Check for abstract property
+    // Check for the notSelectable property, by whatever code this code system gives it
     if (ctxt.concept.property && Array.isArray(ctxt.concept.property)) {
-      const abstractProp = ctxt.concept.property.find(p =>
-        p.code === 'abstract' ||
-        p.code === 'not-selectable' ||
-        p.code === 'notSelectable' ||
-        p.uri === 'http://hl7.org/fhir/concept-properties#notSelectable'
-      );
+      const codes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
+      const abstractProp = ctxt.concept.property.find(p => codes.has(p.code));
       if (abstractProp && abstractProp.valueBoolean) {
         return true;
       }
@@ -1399,9 +1438,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
         }
       }
 
-      // Handle known special properties
+      // Handle known special properties - unless the code system uses the code for a
+      // property of its own, in which case the property filter above applies
       const knownProperties = ['notSelectable', 'status', 'inactive', 'deprecated'];
-      if (knownProperties.includes(prop)) {
+      if (knownProperties.includes(prop) && !this.redefinesStandardProperty(prop)) {
         results = await this._handleKnownPropertyFilter(filterContext, prop, op, value);
       }
 
@@ -1705,13 +1745,14 @@ class FhirCodeSystemProvider extends BaseCSServices {
   async _handleKnownPropertyFilter(filterContext, prop, op, value) {
     const results = new FhirCodeSystemProviderFilterContext();
     const allConcepts = this.codeSystem.getAllConcepts();
+    const nsCodes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:knownPropertyFilter');
       let matches = false;
 
       if (prop === 'notSelectable') {
-        const abstractProp = (concept.property || []).find(p => p.code === 'abstract' || p.code === 'notSelectable' || p.uri === 'http://hl7.org/fhir/concept-properties#notSelectable');
+        const abstractProp = (concept.property || []).find(p => nsCodes.has(p.code));
         let vv = abstractProp ? String(getValuePrimitive(abstractProp)) : null;
         if (op === '=') {
           matches = (vv === value);

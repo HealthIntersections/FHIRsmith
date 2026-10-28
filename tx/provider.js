@@ -632,27 +632,20 @@ class Provider {
    * moved from the FHIR core packages to terminology.hl7.org has been QA'd there since, and
    * its versions went backwards (coverage-selfpay is 4.0.1 in hl7.fhir.r4.core but 1.0.1 in
    * hl7.terminology), so version precedence can't decide between them. Instead, a code system
-   * from an hl7.terminology package replaces every code system with the same url from a FHIR
-   * core package - none of the core versions stay available.
+   * from an hl7.terminology package is always the default for its url - what a reference with
+   * no version gets - whatever versions the FHIR core packages have.
    *
-   * Except: hl7.fhir.r4.core has the v2 tables 0006, 0360 and 0391 in two versions each,
-   * with the version in the url (http://terminology.hl7.org/CodeSystem/v2-0006|2.1 - see
-   * urlHadVersion in loadNpm). hl7.terminology doesn't publish those versions, so they stay
-   * available by url|version; THO's code system is the default for the url.
+   * The core versions stay available by url|version, where THO doesn't provide that version
+   * itself: a reference that names its version (url|5.0.0) means the core one, and there's
+   * nothing else it can mean. They are never the default while THO provides the url (see also
+   * deleteCodeSystem).
    */
   addCodeSystem(cs) {
     if (Provider.#isTHOPackage(cs.sourcePackage)) {
-      for (const [key, t] of [...this.codeSystems]) {
-        if (t.url === cs.url && VersionUtilities.isCorePackage(t.sourcePackage)
-          && (key === t.url || !t.urlHadVersion)) {
-          this.codeSystems.delete(key);
-        }
-      }
-    } else if (VersionUtilities.isCorePackage(cs.sourcePackage) && !cs.urlHadVersion) {
-      // THO's code system is always the default for its url
+      // THO's code system takes over the default from a core one; the core versions stay
       const t = this.codeSystems.get(cs.url);
-      if (t && Provider.#isTHOPackage(t.sourcePackage)) {
-        return;
+      if (t && t.url === cs.url && VersionUtilities.isCorePackage(t.sourcePackage)) {
+        this.codeSystems.delete(cs.url);
       }
     }
     const existing = this.codeSystems.get(cs.url);
@@ -677,34 +670,48 @@ class Provider {
    * THO precedence for value sets and concept maps, as for code systems (see addCodeSystem):
    * once the library's providers have been added after this endpoint's core package, the core
    * package's value sets and concept maps whose urls an hl7.terminology package also provides
-   * are left out. (No core value set or concept map has the version in its url.)
+   * are only available to a reference that names their version (and THO doesn't provide that
+   * version itself). They are never what a reference with no version gets, and they aren't
+   * read by id, found by search, or used for translation unless asked for.
    */
   applyTHOPrecedence() {
-    const thoValueSets = new Set();
+    const thoValueSets = new Map();
     for (const vp of this.valueSetProviders) {
       if (vp instanceof PackageValueSetProvider && Provider.#isTHOPackage(vp.sourcePackage())) {
         for (const vs of vp.valueSetMap.values()) {
-          thoValueSets.add(vs.url);
+          Provider.#addVersion(thoValueSets, vs);
         }
       }
     }
-    const thoConceptMaps = new Set();
+    const thoConceptMaps = new Map();
     for (const cmp of this.conceptMapProviders) {
       if (cmp instanceof PackageConceptMapProvider && Provider.#isTHOPackage(cmp.sourcePackage())) {
         for (const cm of cmp.conceptMapMap.values()) {
-          thoConceptMaps.add(cm.url);
+          Provider.#addVersion(thoConceptMaps, cm);
         }
       }
     }
     for (const vp of this.valueSetProviders) {
       if (vp instanceof PackageValueSetProvider && VersionUtilities.isCorePackage(vp.sourcePackage())) {
-        vp.excludeUrls(thoValueSets);
+        vp.keepPinnedOnly(thoValueSets);
       }
     }
     for (const cmp of this.conceptMapProviders) {
       if (cmp instanceof PackageConceptMapProvider && VersionUtilities.isCorePackage(cmp.sourcePackage())) {
-        cmp.excludeUrls(thoConceptMaps);
+        cmp.keepPinnedOnly(thoConceptMaps);
       }
+    }
+  }
+
+  static #addVersion(map, resource) {
+    if (!resource || !resource.url) {
+      return;
+    }
+    if (!map.has(resource.url)) {
+      map.set(resource.url, new Set());
+    }
+    if (resource.version) {
+      map.get(resource.url).add(resource.version);
     }
   }
 
@@ -713,9 +720,13 @@ class Provider {
     this.codeSystems.delete(cs.url);
     // If other versions of the SAME url survive, re-point the unversioned [url]
     // entry at the most-recent surviving version. Otherwise leave it deleted.
+    // THO precedence (see addCodeSystem): while a THO version survives, a core one
+    // can't become the default, however recent its (reset) version looks
+    const survivors = [...new Set(this.codeSystems.values())].filter(t => t.url === cs.url);
+    const tho = survivors.filter(t => Provider.#isTHOPackage(t.sourcePackage));
     let existing = null;
-    for (let t of this.codeSystems.values()) {
-      if (t.url === cs.url && (!existing || t.isMoreRecent(existing))) {
+    for (let t of (tho.length > 0 ? tho : survivors)) {
+      if (!existing || t.isMoreRecent(existing)) {
         existing = t;
       }
     }

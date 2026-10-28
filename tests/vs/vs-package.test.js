@@ -351,7 +351,7 @@ describe('PackageValueSetProvider', () => {
     });
   });
 
-  describe('excludeUrls', () => {
+  describe('keepPinnedOnly', () => {
     let reduced;
     let gone;
 
@@ -360,15 +360,30 @@ describe('PackageValueSetProvider', () => {
       await reduced.initialize();
       reduced.assignIds('core');
       gone = [...reduced.valueSetMap.values()][0];
-      reduced.excludeUrls(new Set([gone.url]));
+      reduced.keepPinnedOnly(new Map([[gone.url, new Set(['999.0.0'])]]));
     });
 
-    test('an excluded value set is not fetched, by url or by id', async () => {
+    test('a restricted value set is still fetched by its own version, where THO does not have that version', async () => {
+      expect(gone.version).toBeTruthy();
+      expect(await reduced.fetchValueSet(gone.url, gone.version)).toBe(gone);
+    });
+
+    test('a restricted value set is not fetched by a version that THO has', async () => {
+      const thoToo = new PackageValueSetProvider(reduced.packageLoader);
+      await thoToo.initialize();
+      thoToo.assignIds('core');
+      const r = [...thoToo.valueSetMap.values()].find(x => x.url === gone.url);
+      thoToo.keepPinnedOnly(new Map([[r.url, new Set([r.version])]]));
+      expect(await thoToo.fetchValueSet(r.url, r.version)).toBeNull();
+      expect(await thoToo.fetchValueSet(r.url, null)).toBeNull();
+    });
+
+    test('a restricted value set is not fetched without a version, or by id', async () => {
       expect(await reduced.fetchValueSet(gone.url, null)).toBeNull();
       expect(await reduced.fetchValueSetById(gone.id)).toBeNull();
     });
 
-    test('an excluded value set is not found by search, or listed', async () => {
+    test('a restricted value set is not found by search, or listed', async () => {
       for (const elements of [null, ['id', 'url']]) {
         const results = await reduced.searchValueSets([], elements);
         expect(results.length).toBeGreaterThan(0);

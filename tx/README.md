@@ -312,6 +312,10 @@ THO's v3-ActCode code system is `CodeSystem/tho-v3-ActCode`. No resource is serv
 - `core` is the FHIR core package each endpoint loads for its FHIR version (`CodeSystem/core-administrative-gender`), and `x` is the code systems the server implements natively (`CodeSystem/x-...`); neither can be given as a prefix
 - Sources that only provide code systems natively (`internal`, `snomed`, `loinc` etc.) don't serve resources by id, so a prefix does nothing for them
 
+#### hl7.terminology and the FHIR core packages
+
+Much of the content of the FHIR core packages has moved to terminology.hl7.org (`hl7.terminology`), and its versions were reset when it moved (`coverage-selfpay` is 4.0.1 in `hl7.fhir.r4.core`, and 1.0.1 in `hl7.terminology`), so version order can't decide between the two. Where `hl7.terminology` provides a code system, value set or concept map with the same url as the endpoint's core package, THO's is always the one a reference with no version gets. The core package's versions are still available to a reference that names them (`http://hl7.org/fhir/concept-property-type|5.0.0`), unless THO provides that same version itself. Core value sets and concept maps that THO also provides are not read by id, found by search, or used for `$translate` unless asked for by version.
+
 ### Source Types
 
 #### `internal` - Built-in Code Systems
