@@ -674,9 +674,14 @@ class IpsModule {
       return;
     }
     const FhirValidator = require('fhir-validator-wrapper');
-    const jar = folders.filePath('bin', 'validator_cli.jar');
+    // a jar of its own (a validator built locally, say): used as it is, never downloaded or
+    // updated; otherwise the released one in the data folder's bin directory, kept up to date
+    const localJar = typeof cfg.jar === 'string' && cfg.jar.trim() ? (path.isAbsolute(cfg.jar) ? cfg.jar : folders.filePath(cfg.jar)) : null;
+    const jar = localJar || folders.filePath('bin', 'validator_cli.jar');
     this.validator = new FhirValidator(jar, this.log);
     const settings = {
+      autoDownload: !localJar,
+      skipUpdateCheck: !!localJar,
       version: cfg.version || '4.0.1',
       txServer: cfg.txServer || 'http://tx.fhir.org/r4',
       txLog: cfg.txLog || folders.filePath('logs', 'ips-validator-tx.log'),
@@ -684,7 +689,7 @@ class IpsModule {
       igs: Array.isArray(cfg.packages) ? cfg.packages : ['hl7.fhir.uv.ips#1.1.0'],
       timeout: cfg.timeout || 120000
     };
-    this.log.info(`IPS module: starting the FHIR validator on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
+    this.log.info(`IPS module: starting the FHIR validator${localJar ? ` (${localJar})` : ''} on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
     this.validatorStarting = this.validator.start(settings).then(() => {
       this.log.info('IPS module: the FHIR validator is running');
     }).catch(e => {

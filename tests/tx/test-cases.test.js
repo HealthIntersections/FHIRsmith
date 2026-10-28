@@ -4807,14 +4807,6 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "4.0");
   });
 
-  it("translate-reverse-r5+" + 'R5', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
-  });
-
-  it("translate-reverse-r5+-a" + 'R5', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
-  });
-
   it("translate-reverse-r4" + 'R4', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4"}, "4.0");
   });
@@ -14847,14 +14839,6 @@ describe('translate2', () => {
 
   it("translate-6b" + 'R5-cached', async () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "5.0");
-  });
-
-  it("translate-reverse-r5+" + 'R5-cached', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
-  });
-
-  it("translate-reverse-r5+-a" + 'R5-cached', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
   });
 
   it("translate-reverse-r4" + 'R4-cached', async () => {

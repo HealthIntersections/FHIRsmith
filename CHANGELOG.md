@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IPS: `modules.ips.validator.jar` - a validator jar of the module's own (a local build of org.hl7.fhir.core, say), used as it is, never downloaded or updated
 - IPS: national profiles - the profile on Bundle that a national IG defines for an IPS document (its jurisdiction - an ISO 3166 country code, or a UN M49 region - the IG's package id and version, and the profile's url). Shared across all projects at `/ips/national-profiles`; only the administrator adds, edits and deletes them. A new processing step, after validation, validates each document against each national profile (loading the IG's package into the validator), and keeps the outcome and whether it passed (no errors); the document's new National Profiles view lists them, and shows each one's validation as the Validation view does
 - Registry: `GET /tx-reg/choose-server` - given the code systems a request involves and the client's default server, which one server to send it to, and a log of why. The same choice the Java tooling makes, for clients that aren't Java
 - SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`).

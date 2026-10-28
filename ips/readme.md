@@ -238,7 +238,12 @@ view shows it.
 `modules.ips.validator` configures a FHIR validator service, exactly as the SHL module's
 does (`fhir-validator-wrapper`: the validator CLI jar in the data folder's `bin` directory,
 run as a service on its own `port`, with `txServer` - tx.fhir.org, by default - and the IPS
-package loaded). It starts in the background when the module does, and the queue waits for
+package loaded). `jar` names a validator jar of its own instead - a validator built locally from
+org.hl7.fhir.core, say: absolute, or relative to the data folder (`bin/local/validator_cli.jar`) - which
+is used as it is, never downloaded or updated. Keep such a jar out of `bin/validator_cli.jar`: the
+wrapper takes that jar's version from the `.version` file it wrote when it downloaded the release
+there, so a different jar in its place is started as if it were that release (and is replaced by
+the next one). It starts in the background when the module does, and the queue waits for
 it. Each document - its analysed copy, so the translations are seen (the validator will
 remark on the translation extension until it is given its definition) - is validated against the IPS Bundle profile
 (`http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips`; set `profiles` to validate
