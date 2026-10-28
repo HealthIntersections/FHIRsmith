@@ -4807,6 +4807,14 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "4.0");
   });
 
+  it("translate-reverse-r5+" + 'R5', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
+  });
+
+  it("translate-reverse-r5+-a" + 'R5', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
+  });
+
   it("translate-reverse-r4" + 'R4', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4"}, "4.0");
   });
@@ -5332,468 +5340,12 @@ describe('tx.fhir.org', () => {
     await runTest({"suite":"tx.fhir.org","test":"snomed-validation-1"}, "4.0");
   });
 
-  it("loinc-lookup-code" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-code"}, "5.0");
-  });
-
-  it("loinc-lookup-code" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-code"}, "4.0");
-  });
-
-  it("loinc-lookup-part" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part"}, "5.0");
-  });
-
-  it("loinc-lookup-part" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part"}, "4.0");
-  });
-
-  it("loinc-lookup-list" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-list"}, "5.0");
-  });
-
-  it("loinc-lookup-list" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-list"}, "4.0");
-  });
-
-  it("loinc-lookup-answer" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer"}, "5.0");
-  });
-
-  it("loinc-lookup-answer" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer"}, "4.0");
-  });
-
-  it("loinc-lookup-part-mappings" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part-mappings"}, "5.0");
-  });
-
-  it("loinc-lookup-part-mappings" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part-mappings"}, "4.0");
-  });
-
-  it("loinc-lookup-answer-race" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer-race"}, "5.0");
-  });
-
-  it("loinc-lookup-answer-race" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer-race"}, "4.0");
-  });
-
-  it("loinc-validate-code" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code"}, "5.0");
-  });
-
-  it("loinc-validate-code" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code"}, "4.0");
-  });
-
-  it("loinc-validate-code-uz" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-uz"}, "5.0");
-  });
-
-  it("loinc-validate-code-uz" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-uz"}, "4.0");
-  });
-
-  it("loinc-validate-discouraged-code" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-discouraged-code"}, "5.0");
-  });
-
-  it("loinc-validate-discouraged-code" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-discouraged-code"}, "4.0");
-  });
-
-  it("loinc-validate-code-supp1" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp1"}, "5.0");
-  });
-
-  it("loinc-validate-code-supp1" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp1"}, "4.0");
-  });
-
-  it("loinc-validate-code-supp2" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp2"}, "5.0");
-  });
-
-  it("loinc-validate-code-supp2" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp2"}, "4.0");
-  });
-
-  it("loinc-validate-part" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-part"}, "5.0");
-  });
-
-  it("loinc-validate-part" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-part"}, "4.0");
-  });
-
-  it("loinc-validate-list" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list"}, "5.0");
-  });
-
-  it("loinc-validate-list" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list"}, "4.0");
-  });
-
-  it("loinc-validate-answer" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-answer"}, "5.0");
-  });
-
-  it("loinc-validate-answer" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-answer"}, "4.0");
-  });
-
-  it("loinc-validate-invalid" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-invalid"}, "5.0");
-  });
-
-  it("loinc-validate-invalid" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-invalid"}, "4.0");
-  });
-
-  it("loinc-expand-enum" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum"}, "5.0");
-  });
-
-  it("loinc-expand-enum" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum"}, "4.0");
-  });
-
-  it("loinc-expand-all" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all"}, "5.0");
-  });
-
-  it("loinc-expand-all" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all"}, "4.0");
-  });
-
   it("hgvs-expand-all" + 'R5', async () => {
     await runTest({"suite":"tx.fhir.org","test":"hgvs-expand-all"}, "5.0");
   });
 
   it("hgvs-expand-all" + 'R4', async () => {
     await runTest({"suite":"tx.fhir.org","test":"hgvs-expand-all"}, "4.0");
-  });
-
-  it("loinc-expand-all-limited" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all-limited"}, "5.0");
-  });
-
-  it("loinc-expand-all-limited" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all-limited"}, "4.0");
-  });
-
-  it("loinc-expand-enum-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum-bad"}, "5.0");
-  });
-
-  it("loinc-expand-enum-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum-bad"}, "4.0");
-  });
-
-  it("loinc-expand-status" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-status"}, "5.0");
-  });
-
-  it("loinc-expand-status" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-status"}, "4.0");
-  });
-
-  it("loinc-expand-parent" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-parent"}, "5.0");
-  });
-
-  it("loinc-expand-parent" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-parent"}, "4.0");
-  });
-
-  it("loinc-expand-class-regex" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-class-regex"}, "5.0");
-  });
-
-  it("loinc-expand-class-regex" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-class-regex"}, "4.0");
-  });
-
-  it("loinc-expand-prop-component" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component"}, "5.0");
-  });
-
-  it("loinc-expand-prop-component" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component"}, "4.0");
-  });
-
-  it("loinc-expand-prop-method" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-method"}, "5.0");
-  });
-
-  it("loinc-expand-prop-method" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-method"}, "4.0");
-  });
-
-  it("loinc-expand-prop-component-str" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component-str"}, "5.0");
-  });
-
-  it("loinc-expand-prop-component-str" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component-str"}, "4.0");
-  });
-
-  it("loinc-expand-prop-order-obs" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-order-obs"}, "5.0");
-  });
-
-  it("loinc-expand-prop-order-obs" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-order-obs"}, "4.0");
-  });
-
-  it("loinc-expand-concept-is-a" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-concept-is-a"}, "5.0");
-  });
-
-  it("loinc-expand-concept-is-a" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-concept-is-a"}, "4.0");
-  });
-
-  it("loinc-expand-copyright" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-copyright"}, "5.0");
-  });
-
-  it("loinc-expand-copyright" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-copyright"}, "4.0");
-  });
-
-  it("loinc-expand-scale-type" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-scale-type"}, "5.0");
-  });
-
-  it("loinc-expand-scale-type" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-scale-type"}, "4.0");
-  });
-
-  it("loinc-validate-enum-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-good"}, "5.0");
-  });
-
-  it("loinc-validate-enum-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-good"}, "4.0");
-  });
-
-  it("loinc-validate-enum-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-bad"}, "5.0");
-  });
-
-  it("loinc-validate-enum-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-prop-component-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-prop-component-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-prop-component-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-prop-component-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-status-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-status-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-status-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-status-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-class-regex-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-class-regex-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-class-regex-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-class-regex-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-scale-type-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-scale-type-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-scale-type-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-scale-type-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-bad"}, "4.0");
-  });
-
-  it("loinc-expand-list-request-parameters" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-list-request-parameters"}, "5.0");
-  });
-
-  it("loinc-expand-list-request-parameters" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-list-request-parameters"}, "4.0");
-  });
-
-  it("loinc-validate-list-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-good"}, "5.0");
-  });
-
-  it("loinc-validate-list-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-good"}, "4.0");
-  });
-
-  it("loinc-validate-list-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-bad"}, "5.0");
-  });
-
-  it("loinc-validate-list-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-bad"}, "4.0");
-  });
-
-  it("loinc-expand-filter-list-request-parameters" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-list-request-parameters"}, "5.0");
-  });
-
-  it("loinc-expand-filter-list-request-parameters" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-list-request-parameters"}, "4.0");
-  });
-
-  it("loinc-validate-filter-list-type-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-list-type-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-type-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-list-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-list-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-bad"}, "4.0");
-  });
-
-  it("loinc-expand-filter-dockind-request-parameters" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-dockind-request-parameters"}, "5.0");
-  });
-
-  it("loinc-expand-filter-dockind-request-parameters" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-dockind-request-parameters"}, "4.0");
-  });
-
-  it("loinc-validate-filter-dockind-type-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-dockind-type-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-type-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-dockind-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-dockind-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-bad"}, "4.0");
-  });
-
-  it("loinc-expand-filter-no-method" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-no-method"}, "5.0");
-  });
-
-  it("loinc-expand-filter-no-method" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-no-method"}, "4.0");
-  });
-
-  it("loinc-validate-filter-no-method-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-no-method-method-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-method-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-method-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-method-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-no-method-part-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-part-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-part-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-part-bad"}, "4.0");
-  });
-
-  it("loinc-validate-filter-classtype-good" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-classtype-good" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-good"}, "4.0");
-  });
-
-  it("loinc-validate-filter-classtype-bad" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-classtype-bad" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-bad"}, "4.0");
-  });
-
-  it("loinc-expand-filter-answers-for1" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for1"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answers-for1" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for1"}, "4.0");
-  });
-
-  it("loinc-expand-filter-answers-for2" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for2"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answers-for2" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for2"}, "4.0");
-  });
-
-  it("loinc-expand-filter-answer-list" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answer-list"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answer-list" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answer-list"}, "4.0");
   });
 
   it("snomed-expand-active" + 'R5', async () => {
@@ -5940,76 +5492,537 @@ describe('tx.fhir.org', () => {
     await runTest({"suite":"tx.fhir.org","test":"snomed-translate"}, "4.0");
   });
 
+});
+
+describe('loinc', () => {
+  // LOINC tests. These depend on the LOINC release (2.83) and the accessory files the server has loaded, and every request names version 2.83
+
+  it("loinc-lookup-code" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-code"}, "5.0");
+  });
+
+  it("loinc-lookup-code" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-code"}, "4.0");
+  });
+
+  it("loinc-lookup-part" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part"}, "5.0");
+  });
+
+  it("loinc-lookup-part" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part"}, "4.0");
+  });
+
+  it("loinc-lookup-list" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-list"}, "5.0");
+  });
+
+  it("loinc-lookup-list" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-list"}, "4.0");
+  });
+
+  it("loinc-lookup-answer" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer"}, "5.0");
+  });
+
+  it("loinc-lookup-answer" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer"}, "4.0");
+  });
+
+  it("loinc-lookup-part-mappings" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part-mappings"}, "5.0");
+  });
+
+  it("loinc-lookup-part-mappings" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part-mappings"}, "4.0");
+  });
+
+  it("loinc-lookup-answer-race" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer-race"}, "5.0");
+  });
+
+  it("loinc-lookup-answer-race" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer-race"}, "4.0");
+  });
+
+  it("loinc-validate-code" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code"}, "5.0");
+  });
+
+  it("loinc-validate-code" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code"}, "4.0");
+  });
+
+  it("loinc-validate-code-uz" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-uz"}, "5.0");
+  });
+
+  it("loinc-validate-code-uz" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-uz"}, "4.0");
+  });
+
+  it("loinc-validate-discouraged-code" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-discouraged-code"}, "5.0");
+  });
+
+  it("loinc-validate-discouraged-code" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-discouraged-code"}, "4.0");
+  });
+
+  it("loinc-validate-code-supp1" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp1"}, "5.0");
+  });
+
+  it("loinc-validate-code-supp1" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp1"}, "4.0");
+  });
+
+  it("loinc-validate-code-supp2" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp2"}, "5.0");
+  });
+
+  it("loinc-validate-code-supp2" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp2"}, "4.0");
+  });
+
+  it("loinc-validate-part" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-part"}, "5.0");
+  });
+
+  it("loinc-validate-part" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-part"}, "4.0");
+  });
+
+  it("loinc-validate-list" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list"}, "5.0");
+  });
+
+  it("loinc-validate-list" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list"}, "4.0");
+  });
+
+  it("loinc-validate-answer" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-answer"}, "5.0");
+  });
+
+  it("loinc-validate-answer" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-answer"}, "4.0");
+  });
+
+  it("loinc-validate-invalid" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-invalid"}, "5.0");
+  });
+
+  it("loinc-validate-invalid" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-invalid"}, "4.0");
+  });
+
+  it("loinc-expand-enum" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum"}, "5.0");
+  });
+
+  it("loinc-expand-enum" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum"}, "4.0");
+  });
+
+  it("loinc-expand-all" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all"}, "5.0");
+  });
+
+  it("loinc-expand-all" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all"}, "4.0");
+  });
+
+  it("loinc-expand-all-limited" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all-limited"}, "5.0");
+  });
+
+  it("loinc-expand-all-limited" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all-limited"}, "4.0");
+  });
+
+  it("loinc-expand-enum-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-bad"}, "5.0");
+  });
+
+  it("loinc-expand-enum-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-bad"}, "4.0");
+  });
+
+  it("loinc-expand-status" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-status"}, "5.0");
+  });
+
+  it("loinc-expand-status" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-status"}, "4.0");
+  });
+
+  it("loinc-expand-parent" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-parent"}, "5.0");
+  });
+
+  it("loinc-expand-parent" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-parent"}, "4.0");
+  });
+
+  it("loinc-expand-class-regex" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-class-regex"}, "5.0");
+  });
+
+  it("loinc-expand-class-regex" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-class-regex"}, "4.0");
+  });
+
+  it("loinc-expand-prop-component" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component"}, "5.0");
+  });
+
+  it("loinc-expand-prop-component" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component"}, "4.0");
+  });
+
+  it("loinc-expand-prop-method" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-method"}, "5.0");
+  });
+
+  it("loinc-expand-prop-method" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-method"}, "4.0");
+  });
+
+  it("loinc-expand-prop-component-str" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component-str"}, "5.0");
+  });
+
+  it("loinc-expand-prop-component-str" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component-str"}, "4.0");
+  });
+
+  it("loinc-expand-prop-order-obs" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-order-obs"}, "5.0");
+  });
+
+  it("loinc-expand-prop-order-obs" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-order-obs"}, "4.0");
+  });
+
+  it("loinc-expand-concept-is-a" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-concept-is-a"}, "5.0");
+  });
+
+  it("loinc-expand-concept-is-a" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-concept-is-a"}, "4.0");
+  });
+
+  it("loinc-expand-copyright" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-copyright"}, "5.0");
+  });
+
+  it("loinc-expand-copyright" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-copyright"}, "4.0");
+  });
+
+  it("loinc-expand-scale-type" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-scale-type"}, "5.0");
+  });
+
+  it("loinc-expand-scale-type" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-scale-type"}, "4.0");
+  });
+
+  it("loinc-validate-enum-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-good"}, "5.0");
+  });
+
+  it("loinc-validate-enum-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-good"}, "4.0");
+  });
+
+  it("loinc-validate-enum-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-bad"}, "5.0");
+  });
+
+  it("loinc-validate-enum-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-prop-component-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-prop-component-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-prop-component-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-prop-component-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-status-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-status-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-status-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-status-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-class-regex-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-class-regex-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-class-regex-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-class-regex-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-scale-type-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-scale-type-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-scale-type-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-scale-type-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-bad"}, "4.0");
+  });
+
+  it("loinc-expand-list-request-parameters" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-list-request-parameters"}, "5.0");
+  });
+
+  it("loinc-expand-list-request-parameters" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-list-request-parameters"}, "4.0");
+  });
+
+  it("loinc-validate-list-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-good"}, "5.0");
+  });
+
+  it("loinc-validate-list-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-good"}, "4.0");
+  });
+
+  it("loinc-validate-list-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-bad"}, "5.0");
+  });
+
+  it("loinc-validate-list-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-bad"}, "4.0");
+  });
+
+  it("loinc-expand-filter-list-request-parameters" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-list-request-parameters"}, "5.0");
+  });
+
+  it("loinc-expand-filter-list-request-parameters" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-list-request-parameters"}, "4.0");
+  });
+
+  it("loinc-validate-filter-list-type-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-list-type-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-type-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-list-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-list-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-bad"}, "4.0");
+  });
+
+  it("loinc-expand-filter-dockind-request-parameters" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-dockind-request-parameters"}, "5.0");
+  });
+
+  it("loinc-expand-filter-dockind-request-parameters" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-dockind-request-parameters"}, "4.0");
+  });
+
+  it("loinc-validate-filter-dockind-type-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-dockind-type-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-type-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-dockind-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-dockind-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-bad"}, "4.0");
+  });
+
+  it("loinc-expand-filter-no-method" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-no-method"}, "5.0");
+  });
+
+  it("loinc-expand-filter-no-method" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-no-method"}, "4.0");
+  });
+
+  it("loinc-validate-filter-no-method-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-no-method-method-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-method-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-method-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-method-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-no-method-part-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-part-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-part-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-part-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-classtype-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-classtype-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-classtype-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-classtype-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-bad"}, "4.0");
+  });
+
+  it("loinc-expand-filter-answers-for1" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for1"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answers-for1" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for1"}, "4.0");
+  });
+
+  it("loinc-expand-filter-answers-for2" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for2"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answers-for2" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for2"}, "4.0");
+  });
+
+  it("loinc-expand-filter-answer-list" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answer-list" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "4.0");
+  });
+
   it("loinc-subsumes-equivalent" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-equivalent"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-equivalent"}, "5.0");
   });
 
   it("loinc-subsumes-equivalent" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-equivalent"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-equivalent"}, "4.0");
   });
 
   it("loinc-subsumes-parent" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-parent"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-parent"}, "5.0");
   });
 
   it("loinc-subsumes-parent" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-parent"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-parent"}, "4.0");
   });
 
   it("loinc-subsumes-child" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-child"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-child"}, "5.0");
   });
 
   it("loinc-subsumes-child" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-child"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-child"}, "4.0");
   });
 
   it("loinc-subsumes-unrelated" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unrelated"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unrelated"}, "5.0");
   });
 
   it("loinc-subsumes-unrelated" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unrelated"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unrelated"}, "4.0");
   });
 
   it("loinc-subsumes-unknown-code" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unknown-code"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unknown-code"}, "5.0");
   });
 
   it("loinc-subsumes-unknown-code" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unknown-code"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unknown-code"}, "4.0");
   });
 
   it("loinc-translate-part-sct" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct"}, "5.0");
   });
 
   it("loinc-translate-part-sct" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct"}, "4.0");
   });
 
   it("loinc-translate-sct-part" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-sct-part"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-part"}, "5.0");
   });
 
   it("loinc-translate-sct-part" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-sct-part"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-part"}, "4.0");
   });
 
   it("loinc-translate-part-sct-url" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct-url"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct-url"}, "5.0");
   });
 
   it("loinc-translate-part-sct-url" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct-url"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct-url"}, "4.0");
   });
 
   it("loinc-translate-code-mdc" + 'R5', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-code-mdc"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "5.0");
   });
 
   it("loinc-translate-code-mdc" + 'R4', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-code-mdc"}, "4.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "4.0");
   });
 
 });
@@ -7740,6 +7753,614 @@ describe('sct-ecl', () => {
 
   it("snomed-expand-ecl-memberOf-field-selection" + 'R4', async () => {
     await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-field-selection"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-nested" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-nested"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-nested" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-nested"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-operator-on-memberOf-descendants" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-operator-on-memberOf-descendants"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-operator-on-memberOf-descendants" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-operator-on-memberOf-descendants"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-descendant-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-descendant-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-child-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-child-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-descendant-or-self-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-descendant-or-self-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-or-self-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-child-or-self-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-child-or-self-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-or-self-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-ancestor-or-self-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ancestor-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ancestor-or-self-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ancestor-or-self-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-top-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-top-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-top-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-top-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-bottom-of-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-bottom-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-bottom-of-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-bottom-of-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-self-and-self" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-self-and-self"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-self-and-self" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-self-and-self"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-comma-conjunction" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-comma-conjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-comma-conjunction" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-comma-conjunction"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-and-chain" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-and-chain"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-and-chain" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-and-chain"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-or-chain" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-chain"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-or-chain" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-chain"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-precedence-and-or" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-precedence-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-precedence-and-or" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-precedence-and-or"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-or-in-refinement" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-or-in-refinement"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-or-in-refinement" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-or-in-refinement"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-or-with-refined-operand" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-with-refined-operand"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-or-with-refined-operand" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-with-refined-operand"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-attribute-and-value-sets" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-attribute-and-value-sets"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-attribute-and-value-sets" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-attribute-and-value-sets"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-attribute" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-attribute"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-attribute" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-attribute"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-value" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-value"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-value" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-value"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-cardinality" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-cardinality"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-cardinality" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-cardinality"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-many" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-many"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-many" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-many"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-at-least-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-at-least-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-at-least-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-at-least-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals-single" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals-single"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals-single" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals-single"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-one-to-two" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-one-to-two"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-one-to-two" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-one-to-two"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-nested-and-or" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-nested-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-nested-and-or" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-nested-and-or"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-and-or" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-and-or" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-and-or"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-or-and" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-or-and"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-or-and" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-or-and"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-dotted-single-concept" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-single-concept"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-dotted-single-concept" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-single-concept"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-dotted-complex-left-side" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-complex-left-side"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-dotted-complex-left-side" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-complex-left-side"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-two" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-two"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-two" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-two"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-many" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-many"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-many" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-many"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-conjunction" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-conjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-conjunction" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-conjunction"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-disjunction" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-disjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-disjunction" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-disjunction"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-nested-and-or" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-nested-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-nested-and-or" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-nested-and-or"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-to-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-to-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-to-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-group-mixed-attribute-cardinalities" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-mixed-attribute-cardinalities"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-mixed-attribute-cardinalities" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-mixed-attribute-cardinalities"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals-large" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals-large"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals-large" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals-large"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than-or-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than-or-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than-or-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than-or-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than-or-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than-or-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than-or-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than-or-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-negative" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-negative"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-negative" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-negative"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-concept-filter-active-not-equals" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concept-filter-active-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concept-filter-active-not-equals" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concept-filter-active-not-equals"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-term-match-and-wild" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-term-match-and-wild"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-term-match-and-wild" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-term-match-and-wild"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-case-insensitive" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-case-insensitive"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-case-insensitive" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-case-insensitive"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-any" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-any" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-any"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-and" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-and"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-and" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-and"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-or" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-or" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-or"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-minus" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-minus"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-minus" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-minus"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-default" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-default"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-default" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-default"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-max" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-max"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-max" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-max"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-mod" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-mod"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-mod" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-mod"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-min" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-min"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-min" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-min"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-explicit-refset" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-explicit-refset"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-explicit-refset" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-explicit-refset"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-history-all-refsets" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-all-refsets"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-all-refsets" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-all-refsets"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-quoted-operator" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-quoted-operator"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-quoted-operator" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-quoted-operator"}, "4.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-unknown" + 'R5', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-unknown"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-unknown" + 'R4', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-unknown"}, "4.0");
   });
 
   it("snomed-expand-ecl-term-match" + 'R5', async () => {
@@ -14228,6 +14849,14 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "5.0");
   });
 
+  it("translate-reverse-r5+" + 'R5-cached', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
+  });
+
+  it("translate-reverse-r5+-a" + 'R5-cached', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
+  });
+
   it("translate-reverse-r4" + 'R4-cached', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4"}, "4.0");
   });
@@ -14509,236 +15138,8 @@ describe('tx.fhir.org', () => {
     await runTest({"suite":"tx.fhir.org","test":"snomed-validation-1"}, "5.0");
   });
 
-  it("loinc-lookup-code" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-code"}, "5.0");
-  });
-
-  it("loinc-lookup-part" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part"}, "5.0");
-  });
-
-  it("loinc-lookup-list" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-list"}, "5.0");
-  });
-
-  it("loinc-lookup-answer" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer"}, "5.0");
-  });
-
-  it("loinc-lookup-part-mappings" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-part-mappings"}, "5.0");
-  });
-
-  it("loinc-lookup-answer-race" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-lookup-answer-race"}, "5.0");
-  });
-
-  it("loinc-validate-code" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code"}, "5.0");
-  });
-
-  it("loinc-validate-code-uz" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-uz"}, "5.0");
-  });
-
-  it("loinc-validate-discouraged-code" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-discouraged-code"}, "5.0");
-  });
-
-  it("loinc-validate-code-supp1" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp1"}, "5.0");
-  });
-
-  it("loinc-validate-code-supp2" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-code-supp2"}, "5.0");
-  });
-
-  it("loinc-validate-part" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-part"}, "5.0");
-  });
-
-  it("loinc-validate-list" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list"}, "5.0");
-  });
-
-  it("loinc-validate-answer" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-answer"}, "5.0");
-  });
-
-  it("loinc-validate-invalid" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-invalid"}, "5.0");
-  });
-
-  it("loinc-expand-enum" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum"}, "5.0");
-  });
-
-  it("loinc-expand-all" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all"}, "5.0");
-  });
-
   it("hgvs-expand-all" + 'R5-cached', async () => {
     await runTest({"suite":"tx.fhir.org","test":"hgvs-expand-all"}, "5.0");
-  });
-
-  it("loinc-expand-all-limited" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-all-limited"}, "5.0");
-  });
-
-  it("loinc-expand-enum-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-enum-bad"}, "5.0");
-  });
-
-  it("loinc-expand-status" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-status"}, "5.0");
-  });
-
-  it("loinc-expand-parent" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-parent"}, "5.0");
-  });
-
-  it("loinc-expand-class-regex" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-class-regex"}, "5.0");
-  });
-
-  it("loinc-expand-prop-component" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component"}, "5.0");
-  });
-
-  it("loinc-expand-prop-method" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-method"}, "5.0");
-  });
-
-  it("loinc-expand-prop-component-str" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-component-str"}, "5.0");
-  });
-
-  it("loinc-expand-prop-order-obs" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-prop-order-obs"}, "5.0");
-  });
-
-  it("loinc-expand-concept-is-a" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-concept-is-a"}, "5.0");
-  });
-
-  it("loinc-expand-copyright" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-copyright"}, "5.0");
-  });
-
-  it("loinc-expand-scale-type" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-scale-type"}, "5.0");
-  });
-
-  it("loinc-validate-enum-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-good"}, "5.0");
-  });
-
-  it("loinc-validate-enum-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-enum-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-prop-component-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-prop-component-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-prop-component-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-status-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-status-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-status-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-class-regex-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-class-regex-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-class-regex-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-scale-type-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-scale-type-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-scale-type-bad"}, "5.0");
-  });
-
-  it("loinc-expand-list-request-parameters" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-list-request-parameters"}, "5.0");
-  });
-
-  it("loinc-validate-list-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-good"}, "5.0");
-  });
-
-  it("loinc-validate-list-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-list-bad"}, "5.0");
-  });
-
-  it("loinc-expand-filter-list-request-parameters" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-list-request-parameters"}, "5.0");
-  });
-
-  it("loinc-validate-filter-list-type-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-list-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-list-bad"}, "5.0");
-  });
-
-  it("loinc-expand-filter-dockind-request-parameters" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-dockind-request-parameters"}, "5.0");
-  });
-
-  it("loinc-validate-filter-dockind-type-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-type-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-dockind-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-dockind-bad"}, "5.0");
-  });
-
-  it("loinc-expand-filter-no-method" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-no-method"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-method-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-method-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-no-method-part-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-no-method-part-bad"}, "5.0");
-  });
-
-  it("loinc-validate-filter-classtype-good" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-good"}, "5.0");
-  });
-
-  it("loinc-validate-filter-classtype-bad" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-validate-filter-classtype-bad"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answers-for1" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for1"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answers-for2" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answers-for2"}, "5.0");
-  });
-
-  it("loinc-expand-filter-answer-list" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-expand-filter-answer-list"}, "5.0");
   });
 
   it("snomed-expand-active" + 'R5-cached', async () => {
@@ -14813,40 +15214,273 @@ describe('tx.fhir.org', () => {
     await runTest({"suite":"tx.fhir.org","test":"snomed-translate"}, "5.0");
   });
 
+});
+
+describe('loinc', () => {
+  // LOINC tests. These depend on the LOINC release (2.83) and the accessory files the server has loaded, and every request names version 2.83
+
+  it("loinc-lookup-code" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-code"}, "5.0");
+  });
+
+  it("loinc-lookup-part" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part"}, "5.0");
+  });
+
+  it("loinc-lookup-list" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-list"}, "5.0");
+  });
+
+  it("loinc-lookup-answer" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer"}, "5.0");
+  });
+
+  it("loinc-lookup-part-mappings" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-part-mappings"}, "5.0");
+  });
+
+  it("loinc-lookup-answer-race" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-answer-race"}, "5.0");
+  });
+
+  it("loinc-validate-code" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code"}, "5.0");
+  });
+
+  it("loinc-validate-code-uz" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-uz"}, "5.0");
+  });
+
+  it("loinc-validate-discouraged-code" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-discouraged-code"}, "5.0");
+  });
+
+  it("loinc-validate-code-supp1" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp1"}, "5.0");
+  });
+
+  it("loinc-validate-code-supp2" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-code-supp2"}, "5.0");
+  });
+
+  it("loinc-validate-part" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-part"}, "5.0");
+  });
+
+  it("loinc-validate-list" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list"}, "5.0");
+  });
+
+  it("loinc-validate-answer" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-answer"}, "5.0");
+  });
+
+  it("loinc-validate-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-invalid"}, "5.0");
+  });
+
+  it("loinc-expand-enum" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum"}, "5.0");
+  });
+
+  it("loinc-expand-all" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all"}, "5.0");
+  });
+
+  it("loinc-expand-all-limited" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-all-limited"}, "5.0");
+  });
+
+  it("loinc-expand-enum-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-bad"}, "5.0");
+  });
+
+  it("loinc-expand-status" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-status"}, "5.0");
+  });
+
+  it("loinc-expand-parent" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-parent"}, "5.0");
+  });
+
+  it("loinc-expand-class-regex" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-class-regex"}, "5.0");
+  });
+
+  it("loinc-expand-prop-component" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component"}, "5.0");
+  });
+
+  it("loinc-expand-prop-method" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-method"}, "5.0");
+  });
+
+  it("loinc-expand-prop-component-str" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-component-str"}, "5.0");
+  });
+
+  it("loinc-expand-prop-order-obs" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-prop-order-obs"}, "5.0");
+  });
+
+  it("loinc-expand-concept-is-a" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-concept-is-a"}, "5.0");
+  });
+
+  it("loinc-expand-copyright" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-copyright"}, "5.0");
+  });
+
+  it("loinc-expand-scale-type" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-scale-type"}, "5.0");
+  });
+
+  it("loinc-validate-enum-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-good"}, "5.0");
+  });
+
+  it("loinc-validate-enum-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-prop-component-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-prop-component-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-prop-component-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-status-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-status-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-status-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-class-regex-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-class-regex-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-class-regex-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-scale-type-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-scale-type-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-scale-type-bad"}, "5.0");
+  });
+
+  it("loinc-expand-list-request-parameters" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-list-request-parameters"}, "5.0");
+  });
+
+  it("loinc-validate-list-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-good"}, "5.0");
+  });
+
+  it("loinc-validate-list-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-list-bad"}, "5.0");
+  });
+
+  it("loinc-expand-filter-list-request-parameters" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-list-request-parameters"}, "5.0");
+  });
+
+  it("loinc-validate-filter-list-type-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-list-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-list-bad"}, "5.0");
+  });
+
+  it("loinc-expand-filter-dockind-request-parameters" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-dockind-request-parameters"}, "5.0");
+  });
+
+  it("loinc-validate-filter-dockind-type-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-type-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-dockind-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-dockind-bad"}, "5.0");
+  });
+
+  it("loinc-expand-filter-no-method" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-no-method"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-method-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-method-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-no-method-part-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-no-method-part-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-classtype-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-classtype-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-classtype-bad"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answers-for1" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for1"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answers-for2" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for2"}, "5.0");
+  });
+
+  it("loinc-expand-filter-answer-list" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "5.0");
+  });
+
   it("loinc-subsumes-equivalent" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-equivalent"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-equivalent"}, "5.0");
   });
 
   it("loinc-subsumes-parent" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-parent"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-parent"}, "5.0");
   });
 
   it("loinc-subsumes-child" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-child"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-child"}, "5.0");
   });
 
   it("loinc-subsumes-unrelated" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unrelated"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unrelated"}, "5.0");
   });
 
   it("loinc-subsumes-unknown-code" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-subsumes-unknown-code"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-subsumes-unknown-code"}, "5.0");
   });
 
   it("loinc-translate-part-sct" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct"}, "5.0");
   });
 
   it("loinc-translate-sct-part" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-sct-part"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-part"}, "5.0");
   });
 
   it("loinc-translate-part-sct-url" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-part-sct-url"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-part-sct-url"}, "5.0");
   });
 
   it("loinc-translate-code-mdc" + 'R5-cached', async () => {
-    await runTest({"suite":"tx.fhir.org","test":"loinc-translate-code-mdc"}, "5.0");
+    await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "5.0");
   });
 
 });
@@ -15717,6 +16351,310 @@ describe('sct-ecl', () => {
 
   it("snomed-expand-ecl-memberOf-field-selection" + 'R5-cached', async () => {
     await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-field-selection"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-memberOf-nested" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-memberOf-nested"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-operator-on-memberOf-descendants" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-operator-on-memberOf-descendants"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-descendant-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-child-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-descendant-or-self-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-descendant-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-child-or-self-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-child-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ancestor-or-self-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ancestor-or-self-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-top-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-top-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-bottom-of-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-bottom-of-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-self-and-self" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-self-and-self"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-comma-conjunction" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-comma-conjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-and-chain" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-and-chain"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-or-chain" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-chain"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-precedence-and-or" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-precedence-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-ambiguous-or-in-refinement" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-ambiguous-or-in-refinement"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-or-with-refined-operand" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-or-with-refined-operand"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-attribute-and-value-sets" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-attribute-and-value-sets"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-not-equals-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-not-equals-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-attribute" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-attribute"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-any-value" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-any-value"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-reverse-cardinality" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-reverse-cardinality"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-many" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-many"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-at-least-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-at-least-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-not-equals-single" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-not-equals-single"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-zero-to-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-cardinality-one-to-two" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-cardinality-one-to-two"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-nested-and-or" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-nested-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-and-or" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-refinement-ambiguous-or-and" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-refinement-ambiguous-or-and"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-dotted-single-concept" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-single-concept"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-dotted-complex-left-side" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-dotted-complex-left-side"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-two" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-two"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-many" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-many"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-conjunction" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-conjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-with-disjunction" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-with-disjunction"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-nested-and-or" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-nested-and-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-attribute-cardinality-zero-to-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-attribute-cardinality-zero-to-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-cardinality-zero-to-one-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-cardinality-zero-to-one-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-zero"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-zero-zero-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-and-attribute-cardinality-zero-one-zero-one"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-group-mixed-attribute-cardinalities" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-group-mixed-attribute-cardinalities"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-equals-large" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-equals-large"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-less-than-or-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-less-than-or-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-greater-than-or-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-greater-than-or-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concrete-integer-negative" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concrete-integer-negative"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-concept-filter-active-not-equals" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-concept-filter-active-not-equals"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-term-match-and-wild" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-term-match-and-wild"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-case-insensitive" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-case-insensitive"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-description-filter-wild-any" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-description-filter-wild-any"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-and" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-and"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-or" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-or"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-filters-across-minus" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-filters-across-minus"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-default" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-default"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-max" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-max"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-mod" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-mod"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-min" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-min"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-explicit-refset" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-explicit-refset"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-history-all-refsets" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-history-all-refsets"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-quoted-operator" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-quoted-operator"}, "5.0");
+  });
+
+  it("snomed-expand-ecl-alt-identifier-unknown" + 'R5-cached', async () => {
+    await runTest({"suite":"sct-ecl","test":"snomed-expand-ecl-alt-identifier-unknown"}, "5.0");
   });
 
   it("snomed-expand-ecl-term-match" + 'R5-cached', async () => {
