@@ -102,6 +102,17 @@ const SCHEMA = `
     json        TEXT NOT NULL
   );
 
+  -- national profiles: the profile a national IG defines for an IPS document (the Bundle), across all projects
+  CREATE TABLE IF NOT EXISTS national_profiles (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id  TEXT NOT NULL,      -- the IG's package id
+    version     TEXT NOT NULL,      -- the package version
+    url         TEXT NOT NULL,      -- the canonical URL of the IG's profile on Bundle
+    jurisdiction TEXT,              -- the country (ISO 3166 two-letter code) or region (UN M49 three digits)
+    updated_ms  INTEGER NOT NULL,
+    UNIQUE (package_id, version)
+  );
+
   CREATE TABLE IF NOT EXISTS ips_index (
     doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     res      TEXT NOT NULL,     -- Bundle | Composition | Patient
@@ -158,6 +169,11 @@ function summaryOf(bundle) {
   };
 }
 
+/** A national_profiles row, as the store gives it. */
+function nationalProfileOf(r) {
+  return { id: r.id, jurisdiction: r.jurisdiction || null, packageId: r.package_id, version: r.version, url: r.url, updated_ms: r.updated_ms };
+}
+
 class IpsStore {
   /**
    * @param {string} dbPath - file name, or ':memory:'
@@ -202,6 +218,9 @@ class IpsStore {
     const has = (table, col) => this.db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
     if (!has('documents', 'analysed_json')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN analysed_json TEXT');
+    }
+    if (!has('national_profiles', 'jurisdiction')) {
+      this.db.exec('ALTER TABLE national_profiles ADD COLUMN jurisdiction TEXT');
     }
     if (!has('projects', 'ai_json')) {
       // the project's AI assessment settings (JSON; the API key encrypted)
@@ -259,6 +278,42 @@ class IpsStore {
 
   deleteProfile(id) {
     return this.db.prepare('DELETE FROM clinical_profiles WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- national profiles ----
+
+  /** All the national profiles: {id, jurisdiction, packageId, version, url, updated_ms}, by package id and version. */
+  nationalProfiles() {
+    return this.db.prepare('SELECT id, package_id, version, url, jurisdiction, updated_ms FROM national_profiles ORDER BY package_id, version, id').all()
+      .map(nationalProfileOf);
+  }
+
+  /** @returns {Object|null} {id, jurisdiction, packageId, version, url, updated_ms} */
+  nationalProfile(id) {
+    const r = this.db.prepare('SELECT id, package_id, version, url, jurisdiction, updated_ms FROM national_profiles WHERE id = ?').get(id);
+    return r ? nationalProfileOf(r) : null;
+  }
+
+  /** The national profile for a package id and version, or null. */
+  nationalProfileByPackage(packageId, version) {
+    const r = this.db.prepare('SELECT id FROM national_profiles WHERE package_id = ? AND version = ?').get(packageId, version);
+    return r ? this.nationalProfile(r.id) : null;
+  }
+
+  /** @returns {number} the new national profile's id */
+  createNationalProfile(packageId, version, url, jurisdiction, nowMs = Date.now()) {
+    return Number(this.db.prepare('INSERT INTO national_profiles (package_id, version, url, jurisdiction, updated_ms) VALUES (?, ?, ?, ?, ?)')
+      .run(packageId, version, url, jurisdiction || null, nowMs).lastInsertRowid);
+  }
+
+  /** @returns {boolean} whether there was such a national profile */
+  updateNationalProfile(id, packageId, version, url, jurisdiction, nowMs = Date.now()) {
+    return this.db.prepare('UPDATE national_profiles SET package_id = ?, version = ?, url = ?, jurisdiction = ?, updated_ms = ? WHERE id = ?')
+      .run(packageId, version, url, jurisdiction || null, nowMs, id).changes > 0;
+  }
+
+  deleteNationalProfile(id) {
+    return this.db.prepare('DELETE FROM national_profiles WHERE id = ?').run(id).changes > 0;
   }
 
   // ---- projects ----

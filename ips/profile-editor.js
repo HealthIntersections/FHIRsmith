@@ -14,6 +14,8 @@
  * the rest: a row of the second - type, system, code or value set, the rest), and
  * other rules (FHIRPath). A row's expression is made from it. Saving posts the title and the
  * constraints (key, description, expression); the server checks them, and keeps the keys.
+ * With cfg.mode 'rows' it is the profile's own page instead: the rows are the page's tables,
+ * and one at a time is added or edited, in a dialog, and saved by itself.
  */
 (function () {
   'use strict';
@@ -22,6 +24,8 @@
   var LOINC = cfg.sectionSystem;
   var dirty = false;
   var saving = false;
+  // what to draw again when a row's fields change shape: the whole editor, or the row being edited
+  var redraw = function () { draw(); };
 
   function el(tag, attrs, children) {
     var e = document.createElement(tag);
@@ -359,11 +363,13 @@
     url.hidden = select.value !== '*';
     url.addEventListener('input', function () { r.entSystem = url.value.trim(); changed(); onChange(); });
     select.addEventListener('change', function () {
-      var wasVs = r.entSystem === VS;
+      var was = r.entSystem;
+      var wasVs = was === VS;
       r.entSystem = select.value === '*' ? url.value.trim() : select.value;
       if (!select.value) { r.entCode = ''; r.entCard = ''; r.entVs = ''; }
       changed();
-      if (wasVs !== (r.entSystem === VS) || !select.value || select.value === '*') { draw(); } else { onChange(); }
+      // the code (or value set) input comes and goes with the choice
+      if (!was || wasVs !== (r.entSystem === VS) || !select.value || select.value === '*') { redraw(); } else { onChange(); }
     });
     cell.appendChild(el('div', { class: 'ips-pf-pair' }, [select, url]));
     if (r.entSystem === VS) {
@@ -414,7 +420,7 @@
       r.resSystem = select.value === '*' ? url.value.trim() : select.value;
       changed();
       // the code column becomes a value set's, or a code's
-      if (wasVs !== (r.resSystem === VS)) { draw(); } else { onChange(); }
+      if (wasVs !== (r.resSystem === VS)) { redraw(); } else { onChange(); }
     });
     cell.appendChild(select);
     cell.appendChild(url);
@@ -573,6 +579,279 @@
       .catch(function (e) { saving = false; show(['The profile was not saved: ' + e.message]); });
   }
 
+  // ---- the profile's page: a rule at a time, added or edited in a dialog ----
+
+  // what must be true of the resources a rule is about: the rest of the rule, by kind
+  var NAME_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)?$/;
+  var RULE_KINDS = [
+    ['present', 'Must be present somewhere'],
+    ['subject', 'Patient must match the Document'],
+    ['element', 'Must have an element'],
+    ['conforms', 'Conform to a profile'],
+    ['category', 'Has a category'],
+    ['other', 'Something else (FHIRPath)']
+  ];
+  function allOf(body) { return new RegExp('^\\.\\s*(?:' + body + '|all\\s*\\(\\s*' + body + '\\s*\\))$'); }
+  var CONFORMS_RE = allOf('conformsTo\\s*\\(\\s*' + STR + '\\s*\\)');
+  var CATEGORY_RE = allOf('category\\s*\\.\\s*hasCoding\\s*\\(\\s*' + STR + '\\s*,\\s*' + STR + '\\s*(?:,\\s*' + STR + '\\s*)?\\)');
+
+  /** the rule's kind, and its fields, from the rest of a rule about resources */
+  function ruleFields(r) {
+    var rest = (r.resRest || '').trim();
+    var m;
+    r.ruleKind = 'other';
+    r.ruleOther = rest;
+    r.ruleUrl = ''; r.ruleSystem = cfg.categorySystem || ''; r.ruleCode = ''; r.ruleVersion = ''; r.rulePath = ''; r.ruleDisplay = '';
+    r.ruleAll = true;
+    if (/^\.\s*exists\s*\(\s*\)$/.test(rest)) {
+      r.ruleKind = 'present';
+    } else if (/^\.\s*all\s*\(\s*sameSubject\s*\(\s*\)\s*\)$/.test(rest)) {
+      r.ruleKind = 'subject';
+    } else if ((m = CONFORMS_RE.exec(rest))) {
+      r.ruleKind = 'conforms';
+      r.ruleAll = m[1] === undefined;
+      r.ruleUrl = unquote(m[1] !== undefined ? m[1] : m[2]);
+    } else if ((m = CATEGORY_RE.exec(rest))) {
+      r.ruleKind = 'category';
+      r.ruleAll = m[1] === undefined;
+      var g = m[1] !== undefined ? [m[1], m[2], m[3]] : [m[4], m[5], m[6]];
+      r.ruleSystem = unquote(g[0]); r.ruleCode = unquote(g[1]); r.ruleVersion = g[2] !== undefined ? unquote(g[2]) : '';
+    } else if ((m = /^\.\s*([A-Za-z][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z][A-Za-z0-9_]*)?)\s*\.\s*exists\s*\(\s*\)$/.exec(rest))) {
+      r.ruleKind = 'element';
+      r.rulePath = m[1].replace(/\s+/g, '');
+    }
+  }
+  /** the rest of a rule about resources, from its kind and fields, or null with what is wrong */
+  function ruleRest(r) {
+    var each = function (body) { return r.ruleAll ? '.all(' + body + ')' : '.' + body; };
+    switch (r.ruleKind) {
+      case 'present': return { rest: '.exists()', problems: [] };
+      case 'subject': return { rest: '.all(sameSubject())', problems: [] };
+      case 'element': return NAME_RE.test(r.rulePath.trim()) ? { rest: '.' + r.rulePath.trim() + '.exists()', problems: [] } : { rest: null, problems: ['rulePath'] };
+      case 'conforms': return CANONICAL_RE.test(r.ruleUrl.trim()) ? { rest: each('conformsTo(' + quote(r.ruleUrl.trim()) + ')'), problems: [] } : { rest: null, problems: ['ruleUrl'] };
+      case 'category': {
+        var problems = [];
+        if (!r.ruleSystem.trim()) { problems.push('ruleSystem'); }
+        if (!r.ruleCode.trim()) { problems.push('ruleCode'); }
+        if (problems.length) { return { rest: null, problems: problems }; }
+        return { rest: each('category.hasCoding(' + quote(r.ruleSystem.trim()) + ', ' + quote(r.ruleCode.trim()) + (r.ruleVersion.trim() ? ', ' + quote(r.ruleVersion.trim()) : '') + ')'), problems: [] };
+      }
+      default: {
+        var rest = (r.ruleOther || '').trim();
+        return rest && rest !== '.' ? { rest: rest.charAt(0) === '.' ? rest : '.' + rest, problems: [] } : { rest: null, problems: ['ruleOther'] };
+      }
+    }
+  }
+  /** the expression of a row in the dialog, or null with what is wrong */
+  function dialogExpression(r) {
+    if (r.mode !== 'resource') { return rowExpression(r); }
+    var t = ruleRest(r);
+    r.resRest = t.rest || '';
+    var e = resourceExpression(r);
+    return { expression: t.rest ? e.expression : null, problems: t.problems.concat(e.problems.filter(function (p) { return p !== 'resRest'; })) };
+  }
+
+  function rowsMode() {
+    var MODE = { section: 'section', resource: 'resource', other: 'text' };
+    var TITLES = { section: 'a required section or entry', resource: 'a rule about resources', text: 'a rule' };
+    var byKey = {};
+    (cfg.profile.constraints || []).forEach(function (c) { byKey[c.key] = c; });
+    var dialog = el('dialog', { class: 'ips-pf-dialog', 'aria-labelledby': 'ips-pf-dialog-title' });
+    document.body.appendChild(dialog);
+    var editing = null;
+
+    function showIn(box, problems, kind) {
+      box.innerHTML = '';
+      if (!problems.length) { return; }
+      var alert = el('div', { class: 'alert alert-' + (kind || 'danger'), style: 'margin: 0' });
+      if (problems.length === 1) { alert.textContent = problems[0]; } else {
+        alert.appendChild(el('ul', { style: 'margin: 0' }, problems.map(function (p) { return el('li', { text: p }); })));
+      }
+      box.appendChild(alert);
+    }
+    // a labelled part of the dialog: a label, what goes in it, and a hint
+    function field(label, controls, hint) {
+      return el('div', { class: 'ips-pf-field' }, [el('label', { class: 'ips-pf-label', text: label })].concat(controls).concat(hint ? [el('div', { class: 'ips-pf-hint', text: hint })] : []));
+    }
+    function howMany(r, fieldName, update, fields) {
+      var input = cardInput(r, fieldName, update);
+      fields[fieldName] = input;
+      return el('div', { class: 'ips-pf-pair ips-pf-how' }, [el('span', { text: 'How many' }), input,
+        el('span', { class: 'ips-pf-hint', text: 'blank: at least one; or min..max - 1..1, 0..1, 1..*' })]);
+    }
+    // a code system for the category: one of the named ones, or another by URL
+    function categorySystem(r, update) {
+      var cell = el('div', { class: 'ips-pf-pair' });
+      var select = el('select', { class: 'form-control ips-ed-input' });
+      cfg.systems.forEach(function (s) { select.appendChild(el('option', { value: s.url, text: s.name })); });
+      (cfg.categorySystems || []).forEach(function (s) { select.appendChild(el('option', { value: s.url, text: s.name })); });
+      select.appendChild(el('option', { value: '*', text: 'Another system...' }));
+      var known = Array.prototype.some.call(select.options, function (o) { return o.value === r.ruleSystem; });
+      select.value = known ? r.ruleSystem : '*';
+      var url = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'code system URL' });
+      url.value = known ? '' : r.ruleSystem;
+      url.hidden = known;
+      url.addEventListener('input', function () { r.ruleSystem = url.value.trim(); changed(); update(); });
+      select.addEventListener('change', function () {
+        url.hidden = select.value !== '*';
+        r.ruleSystem = select.value === '*' ? url.value.trim() : select.value;
+        changed();
+        update();
+      });
+      cell.appendChild(select);
+      cell.appendChild(url);
+      cell.url = url;
+      return cell;
+    }
+
+    /** the dialog's contents, (re)drawn for the row being edited */
+    function drawDialog() {
+      var e = editing;
+      var r = e.r;
+      dialog.innerHTML = '';
+      var fields = {};
+      var exprLine = el('div', { class: 'ips-pf-expr' });
+      var update = function () {
+        var t = dialogExpression(r);
+        exprLine.textContent = r.mode === 'text' ? '' : (t.expression || '(incomplete - the fields in red)');
+        Object.keys(fields).forEach(function (k) { fields[k].classList.toggle('ips-pf-bad', t.problems.indexOf(k) >= 0); });
+      };
+      var body = el('div', { class: 'ips-pf-dialog-body' });
+      var human = el('textarea', { class: 'form-control', rows: 2, placeholder: 'e.g. A problem list, with the patient\'s hypertension' });
+      human.value = r.human;
+      human.addEventListener('input', function () { r.human = human.value; changed(); });
+      body.appendChild(field('Expectation', [human], 'What is expected, as people will read it.'));
+
+      if (r.mode === 'section') {
+        body.appendChild(field('Section', [sectionCell(r, update), howMany(r, 'secCard', update, fields)]));
+        var ent = entryCell(r, update);
+        if (ent.code) { fields.entCode = ent.code.input; }
+        if (ent.vs) { fields.entVs = ent.vs.input; }
+        body.appendChild(field('Entries', [ent].concat(r.entSystem ? [howMany(r, 'entCard', update, fields)] : []),
+          'Optionally, entries the section must have: with a code in a code system, or a code in a value set.'));
+      } else if (r.mode === 'resource') {
+        var type = typeCell(r, update);
+        var system = systemCell(r, update);
+        var byVs = r.resSystem === VS;
+        var code = byVs ? vsInput(r, 'resVs', 'resVsTitle', update) : codeInput(r, 'resCode', 'resDisplay', function () { return r.resSystem; }, update);
+        fields.resType = type.other;
+        fields.resSystem = system.url;
+        fields[byVs ? 'resVs' : 'resCode'] = code.input;
+        body.appendChild(field('Resources', [type], 'The type of resource, or any.'));
+        body.appendChild(field('With a code', [system, code], 'Anywhere in the document, whatever section they are in.'));
+        var kind = el('select', { class: 'form-control ips-ed-input' });
+        RULE_KINDS.forEach(function (k) { kind.appendChild(el('option', { value: k[0], text: k[1] })); });
+        kind.value = r.ruleKind;
+        kind.addEventListener('change', function () { r.ruleKind = kind.value; changed(); drawDialog(); });
+        var more = [];
+        if (r.ruleKind === 'element') {
+          var path = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'e.g. onset, or code.text' });
+          path.value = r.rulePath;
+          path.addEventListener('input', function () { r.rulePath = path.value; changed(); update(); });
+          fields.rulePath = path;
+          more.push(field('Element', [path], 'An element of the resources, or an element of one of their elements (one dot, no deeper).'));
+        } else if (r.ruleKind === 'conforms') {
+          var url = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'the profile\'s canonical URL' });
+          url.value = r.ruleUrl;
+          url.addEventListener('input', function () { r.ruleUrl = url.value; changed(); update(); });
+          fields.ruleUrl = url;
+          more.push(field('Profile', [url], 'Each of the resources must conform to it. It can be one of the clinical profiles, or a profile the validator has loaded.'));
+        } else if (r.ruleKind === 'category') {
+          var csys = categorySystem(r, update);
+          var ccode = codeInput(r, 'ruleCode', 'ruleDisplay', function () { return r.ruleSystem; }, update);
+          var version = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'version (optional)' });
+          version.value = r.ruleVersion;
+          version.addEventListener('input', function () { r.ruleVersion = version.value; changed(); update(); });
+          fields.ruleSystem = csys.url;
+          fields.ruleCode = ccode.input;
+          more.push(field('Category', [csys, ccode, version], 'Each of the resources must have a category with this code.'));
+        } else if (r.ruleKind === 'other') {
+          var other = el('textarea', { class: 'form-control ips-ed-input', rows: 3, placeholder: '.count() = 1', style: 'font-family: monospace' });
+          other.value = r.ruleOther;
+          other.addEventListener('input', function () { r.ruleOther = other.value; changed(); update(); });
+          fields.ruleOther = other;
+          more.push(field('FHIRPath', [other], 'FHIRPath on the resources found, starting with a dot.'));
+        }
+        body.appendChild(field('What must be true', [kind].concat(more)));
+      } else {
+        var text = el('textarea', { class: 'form-control ips-ed-input', rows: 5, placeholder: 'A FHIRPath expression on the document (the Bundle), true when it meets the expectation', style: 'font-family: monospace' });
+        text.value = r.expression;
+        text.addEventListener('input', function () { r.expression = text.value; changed(); });
+        body.appendChild(field('FHIRPath', [text], 'Evaluated on the document (the Bundle): the rule is met when it is true.'));
+      }
+      if (r.mode !== 'text') { body.appendChild(field('As FHIRPath', [exprLine])); }
+      body.appendChild(e.msg);
+
+      var save = el('button', { type: 'button', class: 'btn btn-primary', text: 'Save', onclick: function () { saveRow(); } });
+      var cancel = el('button', { type: 'button', class: 'btn btn-default', text: 'Cancel', onclick: function () { stop(false); } });
+      e.save = save;
+      dialog.appendChild(el('div', { class: 'ips-pf-dialog-head' }, [
+        el('h4', { id: 'ips-pf-dialog-title', text: (r.key ? 'Edit ' : 'Add ') + TITLES[r.mode] }),
+        el('button', { type: 'button', class: 'ips-pf-dialog-x', 'aria-label': 'Close', text: '×', onclick: function () { stop(false); } })
+      ]));
+      dialog.appendChild(body);
+      dialog.appendChild(el('div', { class: 'ips-pf-dialog-foot' }, [cancel, ' ', save]));
+      update();
+      if (!e.focused) { e.focused = true; human.focus(); }
+    }
+
+    function start(r) {
+      if (editing) { return; }
+      if (r.mode === 'resource') { ruleFields(r); }
+      editing = { r: r, msg: el('div', { class: 'ips-pf-messages' }) };
+      dirty = false;
+      drawDialog();
+      dialog.showModal();
+    }
+    // close the dialog: when there are changes, only if the user says so (unless saved)
+    function stop(saved) {
+      if (!editing) { return; }
+      if (!saved && dirty && !window.confirm('Discard your changes to this rule?')) { return; }
+      editing = null;
+      dirty = false;
+      dialog.close();
+    }
+    dialog.addEventListener('cancel', function (ev) { ev.preventDefault(); stop(false); });
+
+    function saveRow() {
+      var e = editing;
+      if (!e || saving) { return; }
+      var t = dialogExpression(e.r);
+      if (!t.expression && e.r.mode !== 'text') { showIn(e.msg, ['The rule is incomplete (the fields in red)']); return; }
+      saving = true;
+      e.save.disabled = true;
+      showIn(e.msg, ['Saving...'], 'info');
+      var url = cfg.urls.constraint + (e.r.key ? '/' + encodeURIComponent(e.r.key) : '');
+      fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ human: e.r.human, expression: t.expression || '', _csrf: cfg.csrf }) })
+        .then(function (res) {
+          return res.json().then(function (j) { return { ok: res.ok, j: j }; }, function () { return { ok: false, j: { problems: ['The server answered ' + res.status + (res.status === 403 ? ' (has your session expired? reload the page)' : '')] } }; });
+        })
+        .then(function (a) {
+          saving = false;
+          if (a.ok) { stop(true); location.reload(); return; }
+          e.save.disabled = false;
+          showIn(e.msg, a.j.problems || ['The rule was not saved']);
+        })
+        .catch(function (x) { saving = false; e.save.disabled = false; showIn(e.msg, ['The rule was not saved: ' + x.message]); });
+    }
+
+    redraw = drawDialog;
+    Array.prototype.forEach.call(document.querySelectorAll('.ips-pf-edit'), function (b) {
+      b.addEventListener('click', function () {
+        var c = byKey[b.closest('tr').getAttribute('data-key')];
+        if (c) { start(rowFrom(c)); }
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.ips-pf-add'), function (b) {
+      b.addEventListener('click', function () {
+        var r = rowFrom({});
+        r.mode = MODE[b.getAttribute('data-part')];
+        start(r);
+      });
+    });
+  }
+
   window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
-  draw();
+  if (cfg.mode === 'rows') { rowsMode(); } else { draw(); }
 })();

@@ -37,7 +37,9 @@ network. Without it there are no links and no analysis.
 
 `/ips` lists the projects. The administrator logs in at `/ips/login` and, at
 `/ips/admin/projects` and `/ips/admin/users`, creates and deletes projects and users, and
-says which users manage which projects. A project has a code - 2-32 lower case letters,
+says which users manage which projects. The administrator also looks after the
+[clinical profiles](#clinical-profiles) and the [national profiles](#national-profiles),
+which apply across all projects. A project has a code - 2-32 lower case letters,
 digits and hyphens, fixed once it exists - and lives at `/ips/{code}`. Deleting a project
 deletes its documents.
 
@@ -156,9 +158,9 @@ it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `erro
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
 document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: **translate** CodeableConcepts
-to the international terminologies; generate the **narrative**; **validate** the document;
-measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
-validation, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
+to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
+**national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
+validation, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
 document in `document_results` (one row per step - the validation outcome), or in the
 **analysed copy** - a second copy of the document (`documents.analysed_json`) that the steps
 adorn with extensions, so that the master document is never changed. The analysed copy is
@@ -245,6 +247,23 @@ OperationOutcome is stored with the document and shown on
 its `validation` view: the counts, each issue's severity, code, location and message, and
 the raw OperationOutcome. Without a configured, running validator the step fails, and the
 document's status is `error`.
+
+### National profile validation
+
+The national step runs after validation. It validates the document (the analysed copy, as validation does) against each
+[national profile](#national-profiles) in turn: the national IG's package is loaded into the validator (once - a package
+that has loaded, or has failed to, is remembered until the national profiles are changed), then the document is
+validated against the IG's profile on Bundle, with the same `checkIpsCodes` setting. For each profile the result keeps
+the OperationOutcome, its counts, and whether the document passed - it passes when the validator reports no errors (or
+fatal issues). A profile whose package can't be loaded, or that the validator can't validate against, is kept with the
+reason and counts as not checked; it doesn't stop the pipeline. With no national profiles there is nothing to do, and no
+validator is needed; with some, the step fails, as validation does, without a configured, running validator.
+
+The document's **National Profiles** view lists the profiles as they were when the document was processed, with the
+outcome (passed, failed, or not checked) and the issue counts for each; a profile's page shows its validation as the
+validation view shows the base validation (`?view=national&np={n}`). The packages loaded for national profiles stay
+loaded in the validator alongside its own (`packages`), so two national IGs that define the same things differently can
+affect each other.
 
 ### Terminology check
 
@@ -403,11 +422,30 @@ The editor (`/ips/StructureDefinition/new`, or Edit on a profile) is in three pa
 - **Rules about resources:** the third shape, each a row of a table with four columns (the type, which is optional, the system, the code, and the rest of the rule as FHIRPath starting with a dot).
 - **Other rules:** any other FHIRPath.
 
+The page that shows a profile is the same for everyone. Its first part is a table of three columns: the **Expectation** (the description), the **Section** (an IPS section by its title, or `system|code`) and the **Entry** (`Code is system|code`, or `Code is in` a value set, by its title, or its URL when the title isn't known). A code system is shown by name when it is a known one. A cardinality, `[m..n]`, follows a section or an entry unless it is `1..1` or not given (none means at least one). The second part is also a table of three columns: the **Expectation**, the **Resource Set** (the type, as `MedicationAdministrations where` or `Any resource where`, then the code as in the Entry column) and the **Rule**, which is the rest of the expression in words where it is one of these: `.exists()` is "Must be present somewhere"; `.all(sameSubject())` is "Patient must match the Document"; `.x.exists()` and `.x.y.exists()` are "Must have an x" and "Must have an x.y" (no deeper); `.conformsTo(url)` (or `.all(conformsTo(url))`) is "Conform to" the profile, named by its title when it is one of the clinical profiles or by its jurisdiction and package when it is a national profile; and `.category.hasCoding(system, code [, version])` (or inside `.all()`) is "Has category system|code". Any other rest is shown as FHIRPath, and so are the other rules. On the same page the administrator edits the rules one at a time: each row has Edit and Delete, and each part has an Add button. Add and Edit open a dialog for the one rule - the expectation, then the parts of the rule, each with what it means (for a rule about resources, what must be true of them is a choice: present somewhere, the patient matches the document's, an element, conformance to a profile, a category, or other FHIRPath), and the FHIRPath it makes - and Save stores that one rule by itself (`POST /ips/StructureDefinition/{id}/constraint` to add, `.../constraint/{key}` to change, `.../constraint/{key}/delete` to delete). An edited rule keeps its key. The full editor is still there (Edit all), for the title, or for many changes at once.
+
 A rule moves between the parts when it is switched between table and FHIRPath, and it lands in the part whose shape it fits. A section is one of the IPS sections, or any code in any system. An entry or resource code is a code in a named code system (SNOMED CT, LOINC, ICD-10...) or in any other given by URL, and it is looked up on the terminology server (`GET /ips/lookup?system=&q=`, for the administrator only). Choosing "In a value set..." as the system matches entries or resources by value set instead. The code box becomes a value set search (`GET /ips/lookup-vs?q=`, for the administrator only): this module's own value sets that match the title come first, then the terminology server's (a `ValueSet?title=` search). A suggestion shows its title, with its URL underneath. A canonical can also be typed or pasted in, with `|version` to pin a version. When the editor opens, it looks up the title of each value set by URL (`?url=`). If the terminology server doesn't know a value set, it says so as a warning, not an error: the value set has to be known when documents are checked, not when the profile is saved. A cardinality is blank (no bounds) or `min..max`, where max may be `*`. Before a profile is saved, every expression is parsed and run once against an empty document. That catches unknown functions and wrong numbers of arguments as well as syntax errors.
 
 A profile can be downloaded as JSON (`?download=1`), and a downloaded profile can be uploaded again as a new profile, with a new id, url and keys. An upload must be no more than a profile like this: a profile on Bundle with no snapshot, and one differential element (the root) carrying constraints that have only a key, an `error` severity, a description, an expression and a source. Anything more is rejected, with the reasons. A profile downloaded when clinical profiles were on Composition is accepted and moved onto Bundle, as profiles already stored are when the server starts: `Composition.section(...)` becomes `Bundle.section(...)`, and any other `Composition.x` becomes `Bundle.entry.resource.ofType(Composition).x`.
 
 As FHIR: `GET /ips/StructureDefinition` is a searchset of them all, and `GET /ips/StructureDefinition/{id}` is one of them.
+
+## National profiles
+
+A national profile is the profile a national implementation guide defines for an IPS document. Each has four parts:
+the jurisdiction it is for, the IG's package id (e.g. `hl7.fhir.au.ips`), the package version, and the canonical URL
+of the IG's profile on Bundle. National profiles are shared across all projects (`/ips/national-profiles`). Everyone can see them; only the
+administrator adds, edits and deletes them. There is at most one for a package id and version. Every document is
+validated against each of them by the [national profiles step](#national-profile-validation).
+
+The jurisdiction is a code from `http://hl7.org/fhir/ValueSet/jurisdiction`: a country, by its ISO 3166 two-letter
+code (`AU`; lower case is accepted, and stored in upper case), or a region, by its UN M49 three-digit code (`150` for
+Europe, `053` for Australia and New Zealand). The pages show the country's or region's name with it, from the code
+lists the terminology module holds (`tx/cs/cs-country.js`, `tx/cs/cs-areacode.js`); ISO's user-assigned and 'unknown' codes
+(`XK`, `XX`, `ZZ`...) and countries' M49 numeric codes aren't accepted. National profiles made before the jurisdiction was asked
+for show it as not given, until they are saved with one. The package id must be a FHIR package id (lower case letters, digits, `-` and `_`, in two or more parts separated by
+dots), the version a package version (`1.0.0`, `1.1.0-ballot`), and the profile an http or https URL. `GET
+/ips/national-profiles` with `Accept: application/json` returns them as `[{jurisdiction, packageId, version, url}]`.
 
 ## FHIRPath functions
 
