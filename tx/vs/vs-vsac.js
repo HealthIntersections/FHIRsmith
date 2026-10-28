@@ -42,7 +42,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     this.apiKey = config.apiKey;
     // Optional operator password for the on-demand resync form (see info()).
     this.resyncPassword = config.resyncPassword || null;
-    this.cacheFolder = folders.ensureFilePath("terminology-cache/vsac");
+    this.cacheFolder = folders.ensureFolder("terminology-cache", "vsac");
     // https: every request carries the API key. (VSAC redirects http to https, but only after
     // the key has been sent in the clear)
     this.baseUrl = (config.baseUrl || 'https://cts.nlm.nih.gov/fhir').replace(/\/+$/, '');
