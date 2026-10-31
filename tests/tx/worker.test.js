@@ -247,7 +247,10 @@ describe('TerminologyWorker', () => {
         name: 'SupplementCS',
         status: 'active',
         supplements: 'http://main.com',
-        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "global-lang-pack"}]
+        extension : [
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: 'lang-pack'},
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-global', valueBoolean: true}
+        ]
       });
 
       worker.additionalResources = [mainCS, supplementCS];
@@ -264,13 +267,71 @@ describe('TerminologyWorker', () => {
         name: 'SupplementCS',
         status: 'active',
         supplements: 'http://main.com|1.0.0',
-        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: "lang-pack"}]
+        extension : [
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: 'lang-pack'},
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-global', valueBoolean: true}
+        ]
       });
 
       worker.additionalResources = [supplementCS];
 
       const supplements = worker.loadSupplements('http://main.com');
       expect(supplements).toEqual([supplementCS]);
+    });
+
+    test('should only use a lang-pack that is not global when it is referenced', () => {
+      const supplementCS = new CodeSystem({
+        resourceType: 'CodeSystem',
+        url: 'http://supplement.com',
+        version: '1.0.0',
+        name: 'SupplementCS',
+        status: 'active',
+        supplements: 'http://main.com',
+        extension : [{url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: 'lang-pack'}]
+      });
+
+      worker.additionalResources = [supplementCS];
+
+      expect(worker.loadSupplements('http://main.com')).toEqual([]);
+      expect(worker.loadSupplements('http://main.com', '', new Set(['http://supplement.com']))).toEqual([supplementCS]);
+    });
+
+    test('should not treat codesystem-supplement-global as global on a properties supplement', () => {
+      const supplementCS = new CodeSystem({
+        resourceType: 'CodeSystem',
+        url: 'http://supplement.com',
+        version: '1.0.0',
+        name: 'SupplementCS',
+        status: 'active',
+        supplements: 'http://main.com',
+        extension : [
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: 'properties'},
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-global', valueBoolean: true}
+        ]
+      });
+
+      worker.additionalResources = [supplementCS];
+
+      expect(worker.loadSupplements('http://main.com')).toEqual([]);
+    });
+
+    test('should use a global extension-codes supplement without it being referenced', () => {
+      const supplementCS = new CodeSystem({
+        resourceType: 'CodeSystem',
+        url: 'http://supplement.com',
+        version: '1.0.0',
+        name: 'SupplementCS',
+        status: 'active',
+        supplements: 'http://main.com',
+        extension : [
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type', valueCode: 'extension-codes'},
+          {url: 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-global', valueBoolean: true}
+        ]
+      });
+
+      worker.additionalResources = [supplementCS];
+
+      expect(worker.loadSupplements('http://main.com')).toEqual([supplementCS]);
     });
 
     test('should ignore non-CodeSystem resources', () => {

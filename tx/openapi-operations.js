@@ -183,13 +183,15 @@ const OPERATIONS = [
     methods: ['post'],
     summary: 'Validate many codes against code systems',
     description: 'A batch of CodeSystem $validate-code requests: each `validation` is a ' +
-      'Parameters resource with the parameters of one. system, codeSystem, tx-resource and ' +
-      'lenient-display-validation at the top level apply to every validation that doesn\'t ' +
-      'have its own.',
+      'Parameters resource with the parameters of one. url (the code system), version, system, ' +
+      'codeSystem, tx-resource and lenient-display-validation at the top level apply to every ' +
+      'validation that doesn\'t have its own. Every validation is against a code system.',
     postBody: ['Parameters'],
     in: [
       p('validation', 'Parameters', '*', 'The parameters of one $validate-code', { min: 1 }),
-      p('system', 'uri', '1', 'The code system, for every validation'),
+      p('url', 'uri', '1', 'The code system, for every validation'),
+      p('version', 'string', '1', 'The code system version, for every validation'),
+      p('system', 'uri', '1', 'The code system, if url isn\'t given, for every validation'),
       p('codeSystem', 'CodeSystem', '1', 'The code system, for every validation'),
       p('lenient-display-validation', 'boolean', '1', 'For every validation'),
       p('tx-resource', 'Resource', '*', 'Resources for every validation')

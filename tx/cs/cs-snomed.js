@@ -2691,6 +2691,10 @@ class SnomedProvider extends BaseCSServices {
     if (disp) return disp;
 
     if (ctxt.isComplex()) {
+      // an extension-codes supplement in scope can give a post-coordinated expression a display;
+      // otherwise it is generated from the expression
+      const ext = this.#extensionCodeDisplay(ctxt);
+      if (ext) return ext;
       return this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.FillMissing);
     } else {
       return this.sct.getDisplayName(ctxt.getReference(), this.sct.defaultLanguage);
@@ -2739,8 +2743,11 @@ class SnomedProvider extends BaseCSServices {
 
 
       if (ctxt.isComplex()) {
-        // For complex expressions, just add the display
-        const display = await this.display(context);
+        // For complex expressions: the display an extension-codes supplement in scope gives it (first,
+        // so it is the preferred display), and the display generated from the expression, which stays
+        // a valid display
+        this._listSupplementDesignations(this.#extensionCodeKey(ctxt), displays, true);
+        const display = this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.FillMissing);
         if (display) {
           displays.addDesignation(true, 'active', 'en-US', DesignationUse.PREFERRED, display);
         }
@@ -2855,6 +2862,30 @@ class SnomedProvider extends BaseCSServices {
         this._listSupplementDesignations(ctxt.getCode(), displays);
       }
     }
+  }
+
+  /**
+   * The code an extension-codes supplement gives a post-coordinated expression under: the expression
+   * as it was written, or, if no supplement in scope has that, the expression in its minimal rendering
+   * (so that a supplement written without spaces or terms matches an expression written with them).
+   *
+   * @param {SnomedExpressionContext} ctxt - a complex expression
+   * @returns {string} the code to look for in the supplements
+   */
+  #extensionCodeKey(ctxt) {
+    const source = ctxt.getCode();
+    if (source && this._extensionCodeDisplay(source)) {
+      return source;
+    }
+    return this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.Minimal);
+  }
+
+  /**
+   * @param {SnomedExpressionContext} ctxt - a complex expression
+   * @returns {string|null} the display an extension-codes supplement in scope gives it, if one does
+   */
+  #extensionCodeDisplay(ctxt) {
+    return this._extensionCodeDisplay(this.#extensionCodeKey(ctxt));
   }
 
   getLanguageCode(langIndex) {

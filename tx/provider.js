@@ -117,7 +117,7 @@ class Provider {
     }
     for (let cs of this.codeSystems.values()) {
       if (cs.isSupplementFor(url, version)) {
-        if (cs.isLangPack() || this.isStatedSupplement(cs, statedSupplements)) {
+        if (cs.isGlobalSupplement() || this.isStatedSupplement(cs, statedSupplements)) {
           supplements.set(cs.vurl, cs);
         }
       }
