@@ -78,4 +78,21 @@ describe('memory-guard', () => {
     setRss(9.5 * GB);
     expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
   });
+
+  (process.platform === 'linux' ? test : test.skip)('with mapped files, file-backed pages are not counted', () => {
+    const fs = require('fs');
+    const realRead = fs.readFileSync;
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) =>
+      file === '/proc/self/status' ? `VmRSS:\t1 kB\nRssFile:\t${4 * 1024 * 1024} kB\n` : realRead(file, ...rest));
+    try {
+      setRss(9 * GB); // 4 GB of it file-backed
+      expect(memoryGuard.shouldReject()).toBe(true);
+      memoryGuard.measureExcludingFileBacked();
+      expect(memoryGuard.shouldReject()).toBe(false);
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+    } finally {
+      memoryGuard._state.excludeFileBacked = false;
+      readSpy.mockRestore();
+    }
+  });
 });

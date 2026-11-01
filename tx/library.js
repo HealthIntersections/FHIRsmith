@@ -34,6 +34,7 @@ const {ListCodeSystemProvider} = require("./cs/cs-provider-list");
 const { Provider } = require("./provider");
 const {I18nSupport} = require("../library/i18nsupport");
 const folders = require('../library/folder-setup');
+const memoryGuard = require('../library/memory-guard');
 const {VSACValueSetProvider} = require("./vs/vs-vsac");
 const { OCLCodeSystemProvider, OCLSourceCodeSystemFactory } = require('./ocl/cs-ocl');
 const { OCLValueSetProvider } = require('./ocl/vs-ocl');
@@ -186,6 +187,10 @@ class Library {
     const config = yaml.parse(yamlContent);
     this.baseUrl = config.base.url;
     this.snomedLoad = config.snomedLoad === 'mmap' ? 'mmap' : 'read';
+    if (this.snomedLoad === 'mmap') {
+      memoryGuard.measureExcludingFileBacked();
+      this.log.info(`SNOMED CT cache files will be memory-mapped. ${memoryGuard.describe()}`);
+    }
     this.oclConfig = config.ocl && typeof config.ocl === 'object' ? config.ocl : {};
     this.ignored = new Set(Array.isArray(config.ignored) ? config.ignored : []);
 
