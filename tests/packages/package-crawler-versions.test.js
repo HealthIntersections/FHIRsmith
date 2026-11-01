@@ -94,6 +94,25 @@ describe('crawler: one copy of each id#version', () => {
     expect(pkg.CurrentVersion).toBe(before.PackageVersionKey);
   });
 
+  test('replacing a mirror file swaps it whole: a reader of the old file still sees all of it', async () => {
+    const old = tarball('ex.r', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.r#1.0.0', simplifier('ex.r', '1.0.0'), old);
+    const file = path.join(env.tmp, 'mirror', 'ex.r-1.0.0.tgz');
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = tarball('ex.r', '1.0.0', 'direct');
+      await feedItem(env.crawler, 'ex.r#1.0.0', direct('ex.r', '1.0.0'), buf);
+      // written in place, the open file would now be truncated or hold the new bytes
+      const seen = Buffer.alloc(old.length + 1);
+      expect(fs.readSync(fd, seen, 0, seen.length, 0)).toBe(old.length);
+      expect(seen.subarray(0, old.length)).toEqual(old);
+      expect(mirror('ex.r', '1.0.0')).toEqual(buf);
+      expect(fs.readdirSync(path.join(env.tmp, 'mirror')).filter(f => f.includes('.tmp-'))).toEqual([]);
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+
   test('a second direct copy from another GUID is an error, and ignored', async () => {
     const buf = tarball('ex.c', '1.0.0', 'first');
     await feedItem(env.crawler, 'ex.c#1.0.0', direct('ex.c', '1.0.0'), buf);

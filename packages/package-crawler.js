@@ -915,7 +915,16 @@ class PackageCrawler {
         if (path.dirname(path.resolve(filepath)) !== path.resolve(this.config.mirrorPath)) {
           throw new Error(`Package ${id}#${version} rejected: its mirror file name is not a plain file name`);
         }
-        fs.writeFileSync(filepath, packageBuffer);
+        // Write beside the target and rename over it, so nginx (and a CDN in front of it)
+        // only ever serves the old file or the complete new one, never a partly written one
+        const tmpPath = `${filepath}.tmp-${process.pid}`;
+        try {
+          fs.writeFileSync(tmpPath, packageBuffer);
+          fs.renameSync(tmpPath, filepath);
+        } catch (e) {
+          fs.rmSync(tmpPath, { force: true });
+          throw e;
+        }
       }
 
       return check.action === 'replace' ? 'replaced' : 'stored';
