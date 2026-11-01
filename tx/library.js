@@ -185,6 +185,7 @@ class Library {
     const yamlContent = await fs.readFile(yamlPath, 'utf8');
     const config = yaml.parse(yamlContent);
     this.baseUrl = config.base.url;
+    this.snomedLoad = config.snomedLoad === 'mmap' ? 'mmap' : 'read';
     this.oclConfig = config.ocl && typeof config.ocl === 'object' ? config.ocl : {};
     this.ignored = new Set(Array.isArray(config.ignored) ? config.ignored : []);
 
@@ -654,7 +655,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const sct = new SnomedServicesFactory(this.i18n, sctFN);
+    const sct = new SnomedServicesFactory(this.i18n, sctFN, this.snomedLoad);
     await sct.load();
     this.registerProvider(sctFN, sct, isDefault);
     this.#syndicateBinary('snomed', sctFN, sct);

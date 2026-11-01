@@ -3994,9 +3994,10 @@ class SnomedProvider extends BaseCSServices {
  * Factory for creating SNOMED services and providers
  */
 class SnomedServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, filePath) {
+  constructor(i18n, filePath, loadMode = 'read') {
     super(i18n);
     this.filePath = filePath;
+    this.loadMode = loadMode; // 'read' or 'mmap' - see SnomedFileReader
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -4176,7 +4177,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
   }
 
   async load() {
-    const reader = new SnomedFileReader(this.filePath);
+    const reader = new SnomedFileReader(this.filePath, this.loadMode);
     this._sharedData = await reader.loadSnomedData();
     this.snomedServices = new SnomedServices(this._sharedData);
     this._loaded = true;

@@ -1,9 +1,9 @@
 const fs = require('fs');
+const { mapFile } = require('./mmap');
 
 // The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
-// one in place rather than copying it: nothing writes to a loaded structure, and the reader's
-// sections (kept in the factory's shared data) would hold the whole file anyway. Any other
-// buffer is copied, so the structure owns its bytes.
+// one in place (nothing writes to a loaded structure, and the file stays loaded for the life
+// of the process); any other buffer is copied, so the structure owns its bytes.
 const fileBuffers = new WeakSet();
 
 function adopt(buffer) {
@@ -1243,15 +1243,21 @@ class SnomedReferenceSetIndex {
 
 
 class SnomedFileReader {
-  constructor(filePath) {
+  /**
+   * @param {string} filePath
+   * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
+   *   read-only, so its pages are file-backed and shared with the page cache; falls back to
+   *   'read' where mapping is not available (see mmap.js)
+   */
+  constructor(filePath, loadMode = 'read') {
     this.filePath = filePath;
+    this.loadMode = loadMode;
     this.buffer = null;
     this.offset = 0;
   }
 
   async load() {
-    // Read entire file into buffer
-    this.buffer = await fs.promises.readFile(this.filePath);
+    this.buffer = (this.loadMode === 'mmap' && mapFile(this.filePath)) || await fs.promises.readFile(this.filePath);
     fileBuffers.add(this.buffer.buffer);
     this.offset = 0;
   }
