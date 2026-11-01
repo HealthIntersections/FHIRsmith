@@ -1528,14 +1528,15 @@ class SnomedImporter {
     const month = parseInt(dateStr.substring(4, 6));
     const day = parseInt(dateStr.substring(6, 8));
 
-    // Create target date
-    const targetDate = new Date(year, month - 1, day);
-
-    // Pascal TDateTime epoch: December 30, 1899
-    const pascalEpoch = new Date(1899, 11, 30); // Month is 0-based in JS
+    // Days since the Pascal TDateTime epoch (December 30, 1899), counted in UTC. Local dates are
+    // not whole days apart: 1899 local time is the zone's historical mean time (e.g. +9:39:52 in
+    // Melbourne) and today's has daylight saving, so the difference came out a day short in zones
+    // ahead of UTC, and every effectiveTime in a cache built there was a day early
+    const targetDate = Date.UTC(year, month - 1, day);
+    const pascalEpoch = Date.UTC(1899, 11, 30); // Month is 0-based in JS
 
     // Calculate days difference
-    const daysDiff = Math.floor((targetDate - pascalEpoch) / (1000 * 60 * 60 * 24));
+    const daysDiff = Math.round((targetDate - pascalEpoch) / (1000 * 60 * 60 * 24));
 
     // Ensure it fits in 16 bits (0-65535) and is positive
     if (daysDiff < 0 || daysDiff > 65535) {

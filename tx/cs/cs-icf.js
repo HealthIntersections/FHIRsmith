@@ -195,9 +195,23 @@ class IcfCodeSystemProvider extends FhirCodeSystemProvider {
     return ctxt instanceof IcfQualifiedContext ? ctxt.qualifiedCode : super.code(ctxt);
   }
 
-  /** The category's display, then the qualifiers' displays, leaving out any 8 (not specified). */
+  /**
+   * A qualified code's display is the one an extension-codes supplement in scope gives it, if one
+   * does. Otherwise it is generated: the category's display, then the qualifiers' displays, leaving
+   * out any 8 (not specified).
+   */
   async display(context) {
     const ctxt = await this.#resolve(context);
+    if (ctxt instanceof IcfQualifiedContext) {
+      const ext = this._extensionCodeDisplay(ctxt.qualifiedCode);
+      if (ext) {
+        return ext;
+      }
+    }
+    return this.#generatedDisplay(ctxt);
+  }
+
+  async #generatedDisplay(ctxt) {
     const display = await super.display(ctxt);
     if (!(ctxt instanceof IcfQualifiedContext)) {
       return display;
@@ -207,14 +221,19 @@ class IcfCodeSystemProvider extends FhirCodeSystemProvider {
     return parts.length > 0 ? display + ': ' + parts.join(', ') : display;
   }
 
-  /** A qualified code has one designation: its display. The category's translations do not describe it. */
+  /**
+   * A qualified code's designations: the display an extension-codes supplement in scope gives it
+   * (first, so it is the preferred display), and its generated display, which stays a valid one. The
+   * category's translations do not describe it.
+   */
   async designations(context, displays) {
     const ctxt = await this.#resolve(context);
     if (!(ctxt instanceof IcfQualifiedContext)) {
       return super.designations(ctxt, displays);
     }
+    this._listSupplementDesignations(ctxt.qualifiedCode, displays, true);
     const lang = this.defaultLanguage ? this.defaultLanguage.toString() : null;
-    displays.addDesignation(true, 'active', lang, CodeSystem.makeUseForDisplay(), await this.display(ctxt));
+    displays.addDesignation(true, 'active', lang, CodeSystem.makeUseForDisplay(), await this.#generatedDisplay(ctxt));
   }
 
   /**

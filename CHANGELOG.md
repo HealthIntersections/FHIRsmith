@@ -5,6 +5,24 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.3] - 2026-11-dd
+
+### Added
+
+- Extension-codes supplements: a code in a code space the code system reserves for users (`codesystem-reservedCodeSpace`, a regular expression) is a valid code, whether or not anything defines it; with nothing defining it, its display is the code space's `default-display`, or 'User-assigned', and (as a placeholder) another display only gets an information issue. An `extension-codes` supplement in scope defines such codes, with their displays: a global one as if the code system defined them (a different display is an error, or a warning with lenient display validation), one that is referenced as a display that isn't the only correct one (a different display is a warning). Codes from supplements are only in an expansion when the value set lists them. ISO 3166's user-assigned codes work the same way: an extension-codes supplement's display replaces the 'User-assigned' placeholder. So do ICF's qualified (post-coordinated) codes and SNOMED CT post-coordinated expressions (matched as written, or in their minimal rendering): an extension-codes supplement's display is the code's display, and the generated one stays valid
+- IPS: a Structure view (after Narrative) showing a document's logical structure as an expandable tree: what the Composition refers to, then its sections, each with its entries and what else it refers to, and each resource referred to expanding into its own references. A reference that doesn't resolve in the document is `not-in-document`; a resource already shown isn't expanded again
+
+### Changed
+
+- IPS: on a document's page the actions (Edit, Share, Process again, Delete) are on their own line below the processing pipeline, and Edit is a button like the others
+
+- Global supplements: a code system supplement is used without being referenced when it is a `lang-pack` or `extension-codes` supplement (`codesystem-supplement-type`) marked with `codesystem-supplement-global` = `true`. The `global-lang-pack` code (0.18.1) is gone, and a `lang-pack` supplement that isn't marked global is only used when it is referenced, like any other supplement
+
+### Fixed
+
+- SNOMED CT importer: effectiveTimes were stored a day early when a cache was built in a time zone ahead of UTC (the day count to the 1899 epoch used local dates), so `$lookup` reported e.g. 2002-01-30 for 20020131. Caches built in such a zone need rebuilding
+- `CodeSystem/$batch-validate-code`: a top-level `url` (and `version`) is the code system for every entry, as for `CodeSystem/$validate-code`, and every entry is validated against a code system - an entry with its own `url` was validated as a value set
+
 ## [0.18.2] - 2026-10-29
 
 ### Added

@@ -62,6 +62,9 @@ const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, p
 const render = require('./render');
 const { TxClient } = require('./tx-client');
 const { STEPS, stripChecks } = require('./pipeline');
+
+// the extension definitions remembered from the validator (the analysis step)
+const MAX_CACHED_EXTENSIONS = 5000;
 const { IpsValueSets } = require('./ips-valuesets');
 const aiClient = require('./ai-client');
 const { ShlClient } = require('./share');
@@ -755,6 +758,42 @@ class IpsModule {
       return { account: { provider: cfg.provider || 'openai', baseUrl: cfg.baseUrl || '', model: cfg.model, apiKey: cfg.apiKey }, source: 'server' };
     }
     return null;
+  }
+
+  /**
+   * The definition of an extension, for the analysis step: {url, title, name, description},
+   * or null when it can't be found. It is asked of the validator (the wrapper's
+   * lookupCanonical(), the service's /canonical, which looks in the validator's context).
+   * Answers are remembered (a bounded cache); a validator that isn't there, or that fails, or
+   * that predates /canonical, isn't an answer, and is asked again next time.
+   * @param {string} url
+   * @returns {Promise<Object|null>}
+   */
+  async lookupExtension(url) {
+    const v = this.validator;
+    if (!v || typeof v.lookupCanonical !== 'function' || typeof v.isRunning !== 'function' || !v.isRunning()) {
+      return null;
+    }
+    const cache = this.extensionCache || (this.extensionCache = new Map());
+    if (cache.has(url)) {
+      return cache.get(url);
+    }
+    let answer = null;
+    try {
+      const r = await v.lookupCanonical(url);
+      if (r) {
+        const str = (x) => (typeof x === 'string' ? x : '');
+        answer = { url: str(r.url), title: str(r.title), name: str(r.name), description: str(r.description).substring(0, 1000) };
+      }
+    } catch (e) {
+      this.log.warn(`IPS module: looking up extension ${url} failed: ${e.message}`);
+      return null;
+    }
+    if (cache.size >= MAX_CACHED_EXTENSIONS) {
+      cache.delete(cache.keys().next().value);
+    }
+    cache.set(url, answer);
+    return answer;
   }
 
   /**
@@ -1812,7 +1851,7 @@ class IpsModule {
       if (!row) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
       }
-      const view = render.VIEWS.some(([v]) => v === req.query.view) ? req.query.view : render.VIEWS[0][0];
+      const { view, narrative } = render.viewOf(req.query);
       row.results = {};
       for (const step of this.steps) {
         row.results[step.name] = this.store.readResult(row.id, step.name);
@@ -1822,7 +1861,8 @@ class IpsModule {
         steps: this.steps.map(st => st.name),
         level: typeof req.query.level === 'string' ? req.query.level : undefined,
         np: typeof req.query.np === 'string' ? req.query.np : undefined,
-        problemsOnly: req.query.problems === '1'
+        problemsOnly: req.query.problems === '1',
+        narrative
       };
       return this.sendHtml(res, `${req.project.name}: Document ${row.id}`, render.renderDocument(req.project, row, view, ctx), start, req);
     }

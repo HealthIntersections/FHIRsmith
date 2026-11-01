@@ -83,9 +83,16 @@ function wordsRatio(words, text) {
  * Context class for FHIR CodeSystem provider concepts
  */
 class FhirCodeSystemProviderContext {
-  constructor(code, concept) {
+  /**
+   * @param {string} code - the code
+   * @param {Object} concept - its definition in the code system
+   * @param {boolean} reserved - true if the code system doesn't define the code, but it is in its
+   *   reserved code space (so the concept is just the code, and supplements may define it)
+   */
+  constructor(code, concept, reserved = false) {
     this.code = code;
     this.concept = concept;
+    this.reserved = reserved;
   }
 }
 
@@ -464,6 +471,16 @@ class FhirCodeSystemProvider extends BaseCSServices {
       };
     }
 
+    // a code the code system doesn't define, in a code space it reserves for users to define their own
+    // codes, is a valid code. An extension-codes supplement in scope may define it (display etc); if
+    // none does, it has no display
+    if (this.codeSystem.isInReservedCodeSpace(code)) {
+      return {
+        context: new FhirCodeSystemProviderContext(code, { code: code }, true),
+        message: null
+      };
+    }
+
     return {
       context: null,
       message: undefined
@@ -510,6 +527,11 @@ class FhirCodeSystemProvider extends BaseCSServices {
     const supplementDisplay = this._displayFromSupplements(ctxt.code);
     if (supplementDisplay) {
       return supplementDisplay;
+    }
+    // a code in the reserved code space has the display an extension-codes supplement gives it,
+    // whatever languages were asked for - or, if none does, the code space's default display
+    if (ctxt.reserved) {
+      return this._extensionCodeDisplay(ctxt.code) || this.codeSystem.reservedCodeSpaceFor(ctxt.code).defaultDisplay;
     }
 
     // Use language-aware display logic
@@ -774,8 +796,17 @@ class FhirCodeSystemProvider extends BaseCSServices {
       }
     }
 
+    // a code in the reserved code space that no extension-codes supplement in scope gives a display has
+    // its code space's default display ('User-assigned'). It is a placeholder, so (as for ISO 3166's
+    // user-assigned codes) another display is not wrong - see validate.js checkDisplays
+    if (ctxt.reserved && !this._extensionCodeDisplay(ctxt.code)) {
+      displays.userDefined = true;
+      const displayLang = this.defaultLanguage ? this.defaultLanguage.toString() : null;
+      displays.addDesignation(true, 'active', displayLang, CodeSystem.makeUseForDisplay(), this.codeSystem.reservedCodeSpaceFor(ctxt.code).defaultDisplay);
+    }
+
     // Add supplement designations
-    this._listSupplementDesignations(ctxt.code, displays);
+    this._listSupplementDesignations(ctxt.code, displays, ctxt.reserved);
   }
 
   /**

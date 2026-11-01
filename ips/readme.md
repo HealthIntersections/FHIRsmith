@@ -100,14 +100,40 @@ documentation section with the endpoint's URL, the CapabilityStatement link and 
 the requests it answers - and `/ips/{code}/Bundle/{id}` shows the document.
 The document page's header names the patient, the document's date, when and how it was
 received and its size, with links to the FHIR JSON and to download it (`?download=1`, sent
-as an attachment named `ips-{code}-{id}.json`). Below it, each processing step is shown
-with where it is (tick: done, cross: failed, gear: running, moon: waiting - the step's note,
-or for managers the reason it failed, on hover), and managers get "Process again" and
-"Delete" buttons. The views of a document are tabs, chosen with `?view=`: `narrative` (the
-default - the Composition's narrative followed by each section's, with the section titles),
-`translation` (what the translate step did with each concept, below), `generated` (the
-narrative this server generates, below), `validation` (below), `terminology`, `ai` (the AI assessment, below) and `json`
-(pretty-printed, monospaced).
+as an attachment named `ips-{code}-{id}.json`). Below it, the processing pipeline is shown
+as one connected line: Received, then each step in the order it runs, coloured by where it
+is (tick: done, cross: failed, gear: running, moon: waiting - the step's note, or for
+managers the reason it failed, on hover); each step links to the view that shows its work.
+Managers get "Process again" and "Delete" buttons. The views of a document are tabs, chosen
+with `?view=`: `narrative` (the default; a switch, `&narrative=generated`, chooses between
+the narrative as provided - the Composition's narrative followed by each section's, with
+the section titles - and the narrative this server generates, below), `structure` (the
+document's logical structure, below), `analysis` (what the analysis step found, below), `translation` (what
+the translate step did with each concept, below), `terminology`, `validation` (below),
+`national` (below), `profiles` (the clinical profile checks), `ai` (the AI assessment,
+below) and `source` (the JSON, pretty-printed, monospaced). The old view names `generated`
+and `json` still work. The actions (Edit, the Share buttons, and for managers Process again
+and Delete) are on a line of their own below the pipeline.
+`structure` shows the document as a tree table, in the style of the FHIR specification's
+structure tables: columns Path, Type, Id and Details, with the tree drawn in the Path column
+(each node expands and collapses; Expand all and Collapse all buttons; without scripts
+every row shows). It starts at the Composition: first what the Composition refers to other
+than its sections (subject, author, custodian, attesters, ...), then the sections, nested,
+each with what it refers to (its entries, author, focus). Each reference's path is where it
+is (`entry[0]`, `attester[0].party`), and the reference as given is on hover over the Id;
+each resource expands into the references it makes, and so on (sections start open,
+resources closed). A reference resolves as in a Bundle - by fullUrl, absolute or relative
+to the referring entry's - and `#id` is a resource contained in the referring resource (or
+in the resource that contains it). One that doesn't resolve is shown as external (not in
+document), and a resource already shown above is shown again, greyed, but doesn't expand a
+second time. Details says what the resource is - a name (a person's, an organization's),
+else its code (`code`, the medication - following `medicationReference` -, `vaccineCode`,
+`type`...), with an Observation's value - and when: the first of the clinical dates (onset,
+occurrence, performed, effective, ...), falling back to the record's own (`recorded`,
+`issued`, `date`, `meta.lastUpdated`). Icons, from `static/assets/images`: the document,
+sections, people (Patient, Practitioner, PractitionerRole, RelatedPerson), organizations,
+medications (Medication and the Medication* resources), other clinical resources, Provenance
+and AuditEvent, references outside the document, and anything else.
 `terminology` lists every CodeableConcept in the document (`ips/terminology.js`): the
 Composition's own, then each section's entries in the IPS section order (Patient Story,
 Problems, Allergies, Medications, ... Results; sections not in that list after, in document
@@ -157,10 +183,10 @@ takes submitted documents in turn, marks each `processing`, runs the pipeline's 
 it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `error` with the
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
-document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: **translate** CodeableConcepts
+document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
 **national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
-validation, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
+validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
 document in `document_results` (one row per step - the validation outcome), or in the
 **analysed copy** - a second copy of the document (`documents.analysed_json`) that the steps
 adorn with extensions, so that the master document is never changed. The analysed copy is
@@ -168,9 +194,42 @@ rebuilt from the master on every run, so a document can always be processed agai
 Anything left `processing` when the server stopped is queued again at startup. Managers can
 queue a document again from its page, though not while it is being processed.
 
+### Analysis
+
+The first step (`ips/analysis.js`), over the document as submitted. It walks the same tree
+as the structure view (`ips/structure.js`) and, for each resource there (once, where it is
+first met; contained resources too) and for the Composition section by section (the
+Composition itself without its sections), keeps a list of findings, by the node's key
+(`e{n}` for entry n, `e{n}#id` for a contained resource, `s:{path}` for a section):
+
+- every extension, at any depth (a primitive's extensions are at the primitive's path; an
+  extension's own parts are not listed), with its definition when the module can find one
+  - the validator is asked (fhir-validator-wrapper's `lookupCanonical()`, the service's
+  `/canonical`, which answers from the validator's context), and the answers are cached - or a
+  note that it couldn't be found;
+  modifier extensions likewise, in maroon; `textLink` extensions are left out;
+- `implicitRules`, in maroon;
+- in navy: `active` = false; a status of `entered-in-error` (and a Condition's or
+  AllergyIntolerance's `verificationStatus` of entered-in-error); a status of `unknown`; or no
+  status where the resource requires one (`lifecycleStatus` for a Goal);
+- in dark green: a `subject` (or `patient`) that isn't the document's - not the same
+  resource in the document, nor the same reference, nor the same identifier - and any `focus`;
+- dates in the future (except in an Appointment or AppointmentResponse): a date with no time
+  zone is in the future only if it is everywhere;
+- a Patient's `link`s; a Composition whose status isn't `final`;
+- for a section: its `emptyReason`, and an author other than that of what contains it (the
+  Composition, or the containing section - which may have inherited its own);
+- whether there is narrative.
+
+With nothing but the narrative to say, a resource is "All OK". The `analysis` view shows the
+structure as a flat table - each node's row as in the structure view but with its full path
+(`Composition.section[0].entry[0].resolve().subject`) - with a row under each that lists the
+findings; a resource already shown is "Analysed above", and a reference to a resource not
+in the document has no rows at all.
+
 ### Translation
 
-The first step. Every CodeableConcept the terminology view lists is checked as the
+The second step. Every CodeableConcept the terminology view lists is checked as the
 terminology check (below) checks it; one that fails - no coding in the element's value set,
 or, for an element with no value set of its own, no international coding - is sent to the
 terminology server to translate: `ConceptMap/$translate` with `sourceCodeableConcept` (the

@@ -1225,7 +1225,7 @@ class ValueSetChecker {
             if (!pdisp) {
               pdisp = list.preferredDisplay(null);
             }
-            let severity = this.dispWarning();
+            let severity = list.extensionCodeDisplay === 'referenced' ? 'warning' : this.dispWarning();
             if (c.display && list.designations.length > 0 && !list.hasDisplay(this.params.workingLanguages(), defLang.value, c.display, false, DisplayCheckingStyle.CASE_INSENSITIVE).found) {
               let baseMsg;
               if (list.hasDisplay(this.params.workingLanguages(), defLang.value, c.display, false, DisplayCheckingStyle.CASE_INSENSITIVE).difference === DisplayDifference.Normalized) {
@@ -1471,8 +1471,11 @@ class ValueSetChecker {
     let hd = list.hasDisplay(this.params.workingLanguages(), null, c.display, false, DisplayCheckingStyle.CASE_INSENSITIVE)
     if (!hd.found) {
       let baseMsg;
-      let severity = this.dispWarning();
-      if (list.userDefined) {
+      // a display an extension-codes supplement that is not global gives a user-defined code is not
+      // the only correct one, so another display is a warning. One from a global supplement is as if
+      // the code system defined it
+      let severity = list.extensionCodeDisplay === 'referenced' ? 'warning' : this.dispWarning();
+      if (list.userDefined && !list.extensionCodeDisplay) {
         baseMsg = 'Display_Name_Not_Fixed_use_Supplement';
         severity = 'information';
       } else if (hd.difference === DisplayDifference.Normalized) {

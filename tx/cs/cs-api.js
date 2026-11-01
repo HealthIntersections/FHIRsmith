@@ -326,11 +326,12 @@ class CodeSystemProvider {
   }
 
   /**
-   * @param {boolean} langPacks - whether to include language packs
+   * @param {boolean} globals - whether to include global supplements (which $expand only reports
+   *   when they contribute something)
    * @returns {string[]} all supplements in scope
    */
-  listSupplements(langPacks) {
-    return this.supplements ? this.supplements.filter(s => langPacks || !s.isLangPack()).map(s => s.vurl) : [];
+  listSupplements(globals) {
+    return this.supplements ? this.supplements.filter(s => globals || !s.isGlobalSupplement()).map(s => s.vurl) : [];
   }
 
   /**
@@ -377,6 +378,22 @@ class CodeSystemProvider {
    * @param {String} code
    * @returns {string} the best display given the languages in the operation context
    */
+  /**
+   * @param {string} code - a code users define (one in the code system's reserved code space)
+   * @returns {string|null} the display an extension-codes supplement gives it, if one does
+   */
+  _extensionCodeDisplay(code) {
+    for (const supplement of this.supplements || []) {
+      if (supplement.isExtensionCodes()) {
+        const concept = supplement.getConceptByCode(code);
+        if (concept && concept.display) {
+          return concept.display;
+        }
+      }
+    }
+    return null;
+  }
+
   _displayFromSupplements(code) {
     assert(typeof code === 'string', 'code must be string');
     if (this.supplements) {
@@ -499,13 +516,24 @@ class CodeSystemProvider {
    */
   async designations(code, displays, significantOnly = false) { return null; }
 
-  _listSupplementDesignations(code, displays) {
+  /**
+   * @param {string} code - the code
+   * @param {ConceptDesignations} displays - the designations being built for the code
+   * @param {boolean} extensionCode - true if the code is one users define (it is in the code system's
+   *   reserved code space), so that an extension-codes supplement's display is the code's display. The
+   *   designations record where it came from (displays.extensionCodeDisplay): 'global' if a global
+   *   supplement gave it - as if the code system defined it - otherwise 'referenced'
+   */
+  _listSupplementDesignations(code, displays, extensionCode = false) {
     assert(typeof code === 'string', 'code must be string');
 
     if (this.supplements) {
       for (const supplement of this.supplements) {
         const concept= supplement.getConceptByCode(code);
         if (concept) {
+          if (extensionCode && concept.display && supplement.isExtensionCodes()) {
+            displays.extensionCodeDisplay = supplement.isGlobalSupplement() || displays.extensionCodeDisplay === 'global' ? 'global' : 'referenced';
+          }
           if (concept.display) {
             // sometimes the display is just repeated from the base code system
             if (!displays.hasAnyDisplay(concept.display)) {

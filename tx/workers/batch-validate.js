@@ -11,6 +11,11 @@
 // system/codeSystem entry validates against a code system), so both batch routes
 // share one implementation and even a mixed batch is handled correctly.
 //
+// The exception is `url`, which names a value set to ValueSet/$validate-code but a
+// code system to CodeSystem/$validate-code. So on the CodeSystem route `url` is a
+// shared global (the code system), and every entry is a CodeSystem validation;
+// only the ValueSet route dispatches by shape.
+//
 
 const { TerminologyWorker } = require('./worker');
 const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
@@ -33,14 +38,15 @@ class BatchValidateWorker extends TerminologyWorker {
     super(opContext, log, provider, languages, i18n);
     // "Global" parameters may be supplied once at the top level and are applied to
     // every entry that doesn't override them. tx-resource is always shared. The
-    // primary differs by operation: a ValueSet batch shares url/valueSet, a
-    // CodeSystem batch shares system/codeSystem.
+    // primary differs by operation: a ValueSet batch shares url/valueSet (the value
+    // set), a CodeSystem batch shares url/version/codeSystem (the code system), as
+    // CodeSystem/$validate-code names them - and system, which it also accepts.
     this.valueSetGlobalNames = new Set([
       "tx-resource", "url", "valueSet", "lenient-display-validation",
       "__Accept-Language", "__Content-Language"
     ]);
     this.codeSystemGlobalNames = new Set([
-      "tx-resource", "system", "codeSystem", "lenient-display-validation",
+      "tx-resource", "url", "version", "system", "codeSystem", "lenient-display-validation",
       "__Accept-Language", "__Content-Language"
     ]);
     // Back-compat: `globalNames` was the (ValueSet) set before CodeSystem batches.
@@ -57,12 +63,12 @@ class BatchValidateWorker extends TerminologyWorker {
 
   /** ValueSet/$batch-validate-code: shared globals are url/valueSet. */
   async handleValueSet(req, res) {
-    return this.processBatch(req, res, this.valueSetGlobalNames);
+    return this.processBatch(req, res, this.valueSetGlobalNames, false);
   }
 
-  /** CodeSystem/$batch-validate-code: shared globals are system/codeSystem. */
+  /** CodeSystem/$batch-validate-code: shared globals are url/version/system/codeSystem. */
   async handleCodeSystem(req, res) {
-    return this.processBatch(req, res, this.codeSystemGlobalNames);
+    return this.processBatch(req, res, this.codeSystemGlobalNames, true);
   }
 
   /**
@@ -74,8 +80,11 @@ class BatchValidateWorker extends TerminologyWorker {
    * @param {express.Request} req
    * @param {express.Response} res
    * @param {Set<string>} globalNames - which top-level params are shared globals
+   * @param {boolean} codeSystemRoute - true for CodeSystem/$batch-validate-code: every
+   *   entry is a CodeSystem validation (`url` there is the code system). On the
+   *   ValueSet route, an entry with no url/valueSet is a CodeSystem validation
    */
-  async processBatch(req, res, globalNames) {
+  async processBatch(req, res, globalNames, codeSystemRoute = false) {
     try {
       let params = req.body;
       this.addHttpParams(req, params);
@@ -123,7 +132,7 @@ class BatchValidateWorker extends TerminologyWorker {
           let worker = new ValidateWorker(this.opContext.copy(), this.log, this.provider, this.languages, this.i18n);
           try {
             let p;
-            if (this.hasValueSet(op.jsonObj.parameter)) {
+            if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
               p = await worker.handleValueSetInner(op.jsonObj);
             } else {
               p = await worker.handleCodeSystemInner(op.jsonObj);

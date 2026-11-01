@@ -304,8 +304,8 @@ class TerminologyWorker {
           continue;
         }
 
-        // we consider either language packs or specified supplements
-        if (!(cs.isLangPack() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
+        // we consider either global supplements or specified supplements
+        if (!(cs.isGlobalSupplement() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
           continue;
         }
         if (this.hasSupplement(cs, supplements)) {

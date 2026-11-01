@@ -73,6 +73,14 @@ class CountryCodeServices extends CodeSystemProvider {
     if (!ctxt) {
       return null;
     }
+    // a user-assigned code's display is a placeholder ('User-assigned'): an extension-codes
+    // supplement's display for it comes first
+    if (ctxt.userDefined) {
+      const ext = this._extensionCodeDisplay(ctxt.code);
+      if (ext) {
+        return ext;
+      }
+    }
     if (ctxt.display && this.opContext.langs.isEnglishOrNothing()) {
       return ctxt.display;
     }
@@ -116,11 +124,15 @@ class CountryCodeServices extends CodeSystemProvider {
     const ctxt = await this.#ensureContext(code);
     if (ctxt != null) {
       displays.userDefined = ctxt.userDefined;
-      displays.addDesignation( true, 'active', 'en', CodeSystem.makeUseForDisplay(), ctxt.display);
+      // when an extension-codes supplement gives a user-assigned code a display, the placeholder
+      // ('User-assigned') isn't one of its displays
+      if (!(ctxt.userDefined && this._extensionCodeDisplay(ctxt.code))) {
+        displays.addDesignation( true, 'active', 'en', CodeSystem.makeUseForDisplay(), ctxt.display);
+      }
       if (ctxt.french) {
         displays.addDesignation(true, 'active', 'fr', CodeSystem.makeUseForDisplay(), ctxt.french);
       }
-      this._listSupplementDesignations(ctxt.code, displays);
+      this._listSupplementDesignations(ctxt.code, displays, ctxt.userDefined);
     }
   }
 
