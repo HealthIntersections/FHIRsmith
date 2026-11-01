@@ -200,6 +200,17 @@ describe('cache-id protocol (integration)', () => {
       expect(isUnknownCacheError(res)).toBe(true);
     });
 
+    test('CodeSystem/$validate-code with an unknown cache-id is answered (it used to never respond)', async () => {
+      const res = await request(app).post('/tx/r5/CodeSystem/$validate-code').timeout(10000)
+        .set('Content-Type', 'application/json')
+        .send({ resourceType: 'Parameters', parameter: [
+          { name: 'cache-id', valueId: 'never-issued-this-cache' },
+          { name: 'coding', valueCoding: { system: 'http://hl7.org/fhir/administrative-gender', code: 'male' } }
+        ] });
+      expect(res.status).toBe(404);
+      expect(isUnknownCacheError(res)).toBe(true);
+    });
+
     test('by url with no cache-id and a VS not in the library fails (not a silent pass)', async () => {
       const r = await post(app, VALIDATE, [
         { name: 'url', valueString: colorsVS.url },

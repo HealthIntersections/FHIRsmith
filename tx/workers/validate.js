@@ -2115,13 +2115,12 @@ class ValidateWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       if (error instanceof Issue) {
-        if (error.isHandleAsOO()) {
-          let oo = new OperationOutcome();
-          oo.addIssue(error);
-          return res.status(error.statusCode || 500).json(oo.jsonObj);
-        } else {
-          // this is actually handled in the inner method
-        }
+        // Issues raised inside the validation are turned into a result by the inner method;
+        // one that reaches here (e.g. cache-id-unknown from setupAdditionalResources, before
+        // the inner try) must still be answered, or the request never completes.
+        let oo = new OperationOutcome();
+        oo.addIssue(error);
+        return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
         return res.status(error.statusCode || 500).json(outcomeFromError(error));
       }
