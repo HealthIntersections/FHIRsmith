@@ -1,9 +1,20 @@
 const fs = require('fs');
 
+// The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
+// one in place rather than copying it: nothing writes to a loaded structure, and the reader's
+// sections (kept in the factory's shared data) would hold the whole file anyway. Any other
+// buffer is copied, so the structure owns its bytes.
+const fileBuffers = new WeakSet();
+
+function adopt(buffer) {
+  if (!buffer) return Buffer.alloc(0);
+  return fileBuffers.has(buffer.buffer) ? buffer : Buffer.from(buffer);
+}
+
 
 class SnomedStrings {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.decoder = new TextDecoder('utf-8');
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
@@ -86,7 +97,7 @@ class SnomedStrings {
 
 class SnomedWords {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
   }
 
@@ -150,7 +161,7 @@ class SnomedWords {
 
 class SnomedStems {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
   }
 
@@ -214,7 +225,7 @@ class SnomedStems {
 
 class SnomedReferences {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
     this.MAGIC_NO_CHILDREN = 0xFFFFFFFF; // Assuming this constant - adjust as needed
@@ -342,7 +353,7 @@ class SnomedDescriptions {
   static FLAG_PendingMove = 11;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -452,7 +463,7 @@ class SnomedDescriptions {
 
 class SnomedDescriptionIndex {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
   }
 
@@ -537,7 +548,7 @@ class SnomedConceptList {
   static MAGIC_NO_CHILDREN = 0xFFFFFFFF;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -846,7 +857,7 @@ class SnomedRelationshipList {
   static REFSET_SIZE_LANG = 32;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -937,7 +948,7 @@ class SnomedReferenceSetMembers {
   static MAGIC_NO_CHILDREN = 0xFFFFFFFF;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -1115,7 +1126,7 @@ class SnomedReferenceSetIndex {
   static REFSET_SIZE_NOLANG = 28;
 
   constructor(buffer = null, hasLangs = true) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
     this.builder = null;
     this.hasLangs = hasLangs;
     this.recordSize = hasLangs ? SnomedReferenceSetIndex.REFSET_SIZE_LANG : SnomedReferenceSetIndex.REFSET_SIZE_NOLANG;
@@ -1241,6 +1252,7 @@ class SnomedFileReader {
   async load() {
     // Read entire file into buffer
     this.buffer = await fs.promises.readFile(this.filePath);
+    fileBuffers.add(this.buffer.buffer);
     this.offset = 0;
   }
 
