@@ -17,6 +17,7 @@ const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
+const memoryGuard = require('./library/memory-guard');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
@@ -43,12 +44,8 @@ serverLog.info(`========================================`);
 serverLog.info(`FHIRsmith v${packageJson.version} starting (PID ${process.pid})`);
 serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os.arch()})`);
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
-{
-  const cg = readCgroupMemoryLimit();
-  serverLog.info(cg.limit > 0
-    ? `Memory limit: ${(cg.limit / 1024 / 1024 / 1024).toFixed(1)} GB (from ${cg.source})`
-    : 'Memory limit: none found in cgroup - RSS guard disabled');
-}
+memoryGuard.configure(config.server.memory || {});
+serverLog.info(memoryGuard.describe());
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -93,6 +90,9 @@ app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 const PORT = process.env.PORT || config.server.port || 3000;
 
 // Middleware
+// Refuse new requests (503) while memory is near the limit - first, so a refused request
+// doesn't even have its body parsed. /dashboard stays reachable so the state can be seen.
+app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'] }));
 // The body parsers, for every module but those that read their own bodies with their own
 // limits and checks (the ips module: a document is read only once its submitter's token has
 // been checked, and no bigger than the module's maxSize)

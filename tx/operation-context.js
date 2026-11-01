@@ -4,7 +4,7 @@ const crypto = require("crypto");
 const {Languages} = require("../library/languages");
 const {Issue} = require("./library/operation-outcome");
 const Logger = require("../library/logger");
-const { readCgroupMemoryLimit } = require('../library/cgroup-memory');
+const memoryGuard = require('../library/memory-guard');
 
 /**
  * Check if running under a debugger
@@ -816,17 +816,6 @@ class ExpansionCache {
 }
 
 
-/**
- * Read the cgroup memory limit once at startup.
- * Returns the byte limit, or 0 if unavailable (disables the check).
- */
-function readMemoryLimit() {
-  return readCgroupMemoryLimit().limit;
-}
-
-const MEMORY_LIMIT = readMemoryLimit();
-const MEMORY_FRACTION = 0.98;
-const MEMORY_THRESHOLD = MEMORY_LIMIT > 0 ? MEMORY_LIMIT * MEMORY_FRACTION : 0; // MEMORY_FRACTION of cgroup limit
 const CHECK_FREQUENCY = 100;
 // How long an operation may compute without yielding the event loop (ms).
 // Node runs all JS on one thread: while a long operation executes, no other
@@ -960,18 +949,17 @@ class OperationContext {
       throw error;
     }
 
-    // Memory check (piggyback on same sample)
-    if (MEMORY_THRESHOLD > 0) {
-      const rss = process.memoryUsage.rss();
-      if (rss > MEMORY_THRESHOLD) {
-        const usedGB = (rss / 1024 / 1024 / 1024).toFixed(1);
-        const limitGB = (MEMORY_LIMIT / 1024 / 1024 / 1024).toFixed(1);
-        this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
-        const error = new Issue("error", "too-costly", null, null,
-            `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${MEMORY_FRACTION * 100}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
-        error.diagnostics = this.diagnostics();
-        throw error;
-      }
+    // Memory check (piggyback on same sample). Threshold and limit: library/memory-guard.js
+    const rss = memoryGuard.overAbortThreshold(place);
+    if (rss) {
+      const usedGB = memoryGuard.gb(rss);
+      const limitGB = memoryGuard.gb(memoryGuard._state.limit);
+      const pct = Math.round(memoryGuard._state.abortFraction * 100);
+      this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
+      const error = new Issue("error", "too-costly", null, null,
+          `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${pct}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
+      error.diagnostics = this.diagnostics();
+      throw error;
     }
 
     return false;

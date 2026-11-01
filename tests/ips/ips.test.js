@@ -448,7 +448,7 @@ describe('the web pages', () => {
     expect(page.text).toContain('Allergies and Intolerances');
     expect(page.text).toContain('<td>Penicillin</td>');
     expect(page.text).toContain('No known medications');
-    expect(page.text).toContain('<span class="ips-step ips-step-waiting" title="validation - waiting">');
+    expect(page.text).toContain('<a class="ips-step ips-step-waiting" title="validation - waiting" href="/ips/demo/Bundle/1?view=validation"><span class="ips-step-icon">&#9790;</span> Validation</a>');
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
     expect(page.text).toContain('<a href="/ips/demo/Bundle/1?download=1">Download</a>');
     expect(page.text).not.toContain('Process again');
@@ -459,8 +459,22 @@ describe('the web pages', () => {
     expect(term.text).toContain('>Allergies and Intolerances</th>');
     expect(term.text).toContain('<a href="https://browser.ihtsdotools.org/" title="http://snomed.info/sct">SNOMED CT</a>');
     expect(term.text).not.toContain('CodeSystem?url=');
-    const json = await html('/ips/demo/Bundle/1?view=json');
+    const json = await html('/ips/demo/Bundle/1?view=source');
+    expect(json.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=source">Source</a></li>');
     expect(json.text).toContain('<pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;Bundle&quot;');
+    // the old name still works
+    expect((await html('/ips/demo/Bundle/1?view=json')).text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=source">Source</a></li>');
+    const structure = await html('/ips/demo/Bundle/1?view=structure');
+    expect(structure.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=structure">Structure</a></li>');
+    expect(structure.text).toMatch(/<img src="\/assets\/images\/icon_person.png" alt="" width="16" height="16"\/> subject<\/td><td>Patient<\/td><td title="Reference: urn:uuid:pat-1">pat-1<\/td>/);
+    expect(structure.text).toContain('<td><b>Allergies and Intolerances</b></td>');
+    // the allergy's patient is the subject, already shown
+    expect(structure.text).toMatch(/<tr [^>]*class="ips-tt-seen"[^>]*><td [^>]*><img src="\/assets\/images\/icon_person.png" alt="" width="16" height="16"\/> patient<\/td><td>Patient<\/td>/);
+    expect(structure.text).toContain('<td><b>Medication Summary</b> <i>(empty)</i></td>');
+    // the tabs, in order
+    expect([...page.text.matchAll(/<li(?: class="active")?><a href="\/ips\/demo\/Bundle\/1\?view=[a-z]+">([^<]+)<\/a><\/li>/g)].map(m => m[1]))
+      .toEqual(['Narrative', 'Structure', 'Analysis', 'Translation', 'Terminology', 'Validation', 'National Profiles', 'Clinical Profiles', 'AI Assessment', 'Source']);
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=narrative" class="active" title="The narrative in the document as it was submitted">Provided</a>');
     expect((await html('/ips/demo/Bundle/9')).status).toBe(404);
     const dl = await request(app).get('/ips/demo/Bundle/1?download=1').set('Accept', 'text/html');
     expect(dl.headers['content-type']).toMatch(/fhir\+json/);
@@ -881,7 +895,7 @@ describe('the validation step', () => {
     // the page
     const page = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=validation">Validation</a></li>');
-    expect(page.text).toContain('<span class="ips-step ips-step-done" title="validation - done: validation: 1 error, 1 warning, 1 note">');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="validation - done: validation: 1 error, 1 warning, 1 note" href="');
     expect(page.text).toContain('with validator 6.5.0');
     expect(page.text).toContain('<b>1 error, 1 warning, 1 note</b>');
     expect(page.text).toContain('Constraint failed: dom-6');
@@ -945,8 +959,8 @@ describe('the validation step', () => {
     const { agent } = await loginAs(app, 'admin', 'admin-secret');
     const mine = await agent.get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
     expect(mine.text).toContain('The validation step failed: The validator is not configured (modules.ips.validator).');
-    expect(mine.text).toContain('<span class="ips-step ips-step-failed" title="validation - failed: The validator is not configured (modules.ips.validator)">');
-    expect(page.text).toContain('<span class="ips-step ips-step-failed" title="validation - failed">');
+    expect(mine.text).toContain('<a class="ips-step ips-step-failed" title="validation - failed: The validator is not configured (modules.ips.validator)" href="');
+    expect(page.text).toContain('<a class="ips-step ips-step-failed" title="validation - failed" href="');
     expect(mine.text).toContain('>Process again</button>');
     mod.validator = fakeValidator(false);
     mod.store.requeue(1, 1);
@@ -1390,7 +1404,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -1551,8 +1565,12 @@ describe('the terminology step', () => {
     expect(row.analysed.entry[0].resource.section[0].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table></div>');
     expect(row.analysed.entry[0].resource.section[1].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p></div>');
     // the page
-    const page = await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html');
-    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=generated">Generated Narrative</a></li>');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=narrative&narrative=generated').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=narrative&amp;narrative=generated" class="active" title="The narrative this server generates for the document">Generated</a>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="narrative - done: narrative: 2 sections (1 display lookup)" href="/ips/demo/Bundle/1?view=narrative&amp;narrative=generated">');
+    // the old view name still lands on it
+    expect((await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html')).text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated">');
     expect(page.text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated"><div xmlns="http://www.w3.org/1999/xhtml"><h1>Patient Summary as of 1 March 2026</h1>');
     // the Narrative tab is still the submitted narrative
     expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).toContain('Summary for <b>Jane Smith</b>');
@@ -2089,7 +2107,7 @@ describe('the editor', () => {
   test('edits an existing document: the page starts from it', async () => {
     await compose({ action: 'submit', model: minimal() });
     const doc = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
-    expect(doc.text).toContain('<a class="btn btn-default" href="/ips/demo/compose?from=1" title="Open this document in the editor; submitting makes a new document">Edit</a>');
+    expect(doc.text).toContain('<form method="get" action="/ips/demo/compose" class="ips-inline"><input type="hidden" name="from" value="1"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>');
     const page = await request(app).get('/ips/demo/compose?from=1').set('Accept', 'text/html');
     expect(page.status).toBe(200);
     expect(page.text).toContain('<h3>Edit document 1</h3>');
@@ -2563,7 +2581,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
   });
 });
 
@@ -2609,5 +2627,201 @@ describe('the module reads its own request bodies', () => {
       .send(JSON.stringify({ action: 'download', model: { pad: 'x'.repeat(3 * 1024 * 1024) } }));
     expect(r.status).toBe(413);
     expect(r.body.error).toMatch(/too big/);
+  });
+});
+
+describe('the structure view', () => {
+  const doc = (comp, ...rest) => ({ resourceType: 'Bundle', type: 'document', entry: [
+    { fullUrl: 'http://example.org/fhir/Composition/c', resource: { resourceType: 'Composition', id: 'c', title: 'IPS', ...comp } }, ...rest] });
+  // the rows whose path is path: [row, ...]
+  const rows = (h, path) => h.split('<tr ').filter(r => r.includes(`/> ${path}</td>`));
+  const row = (h, path) => {
+    const found = rows(h, path);
+    expect(found.length).toBe(1);
+    return found[0];
+  };
+  const cells = (r) => [...r.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map(m => m[1]);
+
+  test('a document with no Composition', () => {
+    expect(render.renderStructure({ resourceType: 'Bundle', entry: [] })).toContain('The document has no Composition.');
+  });
+
+  test('a tree table: path, type, id, details, with the Composition at the root', () => {
+    const h = render.renderStructure(doc({ date: '2026-03-01T09:30:00+10:00' }));
+    expect(h).toContain('<thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead>');
+    const r = row(h, 'Composition');
+    expect(r).toContain('<img src="/assets/images/icon_document.png"');
+    expect(cells(r).slice(1)).toEqual(['Composition', 'c', 'IPS <span class="ips-tt-when">01-Mar 26 09:30 (+10:00)</span>']);
+  });
+
+  test('relative references resolve against the referring entry, and what does not resolve is external', () => {
+    const h = render.renderStructure(doc({ subject: { reference: 'Patient/p' }, custodian: { reference: 'Organization/o' } },
+      { fullUrl: 'http://example.org/fhir/Patient/p', resource: { resourceType: 'Patient', id: 'p', name: [{ family: 'Smith', given: ['Jane'] }], birthDate: '1970-05-06',
+        managingOrganization: { reference: 'Organization/o' } } }));
+    const subject = row(h, 'subject');
+    expect(subject).toContain('icon_person.png');
+    expect(cells(subject).slice(1)).toEqual(['Patient', 'p', 'Jane Smith <span class="ips-tt-when">06-May 70</span>']);
+    expect(subject).toContain('<td title="Reference: Patient/p">p</td>');
+    for (const path of ['managingOrganization', 'custodian']) {
+      const r = row(h, path);
+      expect(r).toContain('class="ips-tt-missing"');
+      expect(r).toContain('icon_external.png');
+      expect(cells(r).slice(1)).toEqual(['Organization', 'o', '<i>(not in document)</i>']);
+    }
+  });
+
+  test('#id is a contained resource of the referring resource, or of the one that contains it', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'Meds', entry: [{ reference: 'urn:uuid:m' }] }] },
+      { fullUrl: 'urn:uuid:m', resource: { resourceType: 'MedicationStatement', id: 'm', medicationReference: { reference: '#med' }, effectivePeriod: { start: '2025-01-02' },
+        contained: [{ resourceType: 'Medication', id: 'med', code: { text: 'Aspirin' }, manufacturer: { reference: '#org' } }, { resourceType: 'Organization', id: 'org', name: 'Acme' }] } }));
+    // what a statement is comes from the Medication it refers to
+    expect(cells(row(h, 'entry[0]')).slice(1)).toEqual(['MedicationStatement', 'm', 'Aspirin <span class="ips-tt-when">02-Jan 25</span>']);
+    const med = row(h, 'medicationReference');
+    expect(med).toContain('icon_medication.png');
+    expect(cells(med).slice(1)).toEqual(['Medication', 'med', 'Aspirin <i>(contained)</i>']);
+    const org = row(h, 'manufacturer');
+    expect(org).toContain('icon_organization.png');
+    expect(cells(org).slice(1)).toEqual(['Organization', 'org', 'Acme <i>(contained)</i>']);
+  });
+
+  test('sections nest, and say what they refer to besides their entries', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'Outer', section: [{ title: 'Inner', author: [{ reference: 'urn:uuid:x' }] }] }, { title: 'Nothing' }] }));
+    const outer = row(h, 'section[0]');
+    const inner = row(h, 'section[0].section[0]');
+    expect(outer).toContain('icon_section.png');
+    expect(cells(outer).slice(1)).toEqual(['Section', '', '<b>Outer</b>']);
+    const id = (r) => /data-tt-id="(\d+)"/.exec(r)[1];
+    expect(inner).toContain(`data-tt-parent="${id(outer)}"`);
+    expect(row(h, 'author[0]')).toContain(`data-tt-parent="${id(inner)}"`);
+    expect(row(h, 'author[0]')).toContain('class="ips-tt-missing"');
+    expect(cells(row(h, 'section[1]'))[3]).toBe('<b>Nothing</b> <i>(empty)</i>');
+  });
+
+  test('a resource is expanded once, where it is first shown; resources start closed, sections open', () => {
+    const h = render.renderStructure(doc({ subject: { reference: 'urn:uuid:p' }, section: [{ title: 'S', entry: [{ reference: 'urn:uuid:p' }] }] },
+      { fullUrl: 'urn:uuid:p', resource: { resourceType: 'Patient', id: 'p', generalPractitioner: [{ reference: 'urn:uuid:q' }] } },
+      { fullUrl: 'urn:uuid:q', resource: { resourceType: 'Practitioner', id: 'q', name: [{ text: 'Dr Who' }] } }));
+    expect(rows(h, 'generalPractitioner[0]').length).toBe(1);
+    const subject = row(h, 'subject');
+    expect(subject).toContain('class="ips-tt-parent ips-tt-closed"');
+    expect(subject).toContain('<button type="button" class="ips-tt-toggle"');
+    expect(row(h, 'generalPractitioner[0]')).toContain(' hidden>');
+    expect(row(h, 'section[0]')).toContain('class="ips-tt-parent"');
+    expect(row(h, 'section[0]')).not.toContain(' hidden>');
+    const seen = row(h, 'entry[0]');
+    expect(seen).toContain('class="ips-tt-seen"');
+    expect(seen).not.toContain(' hidden>');
+    expect(cells(seen)[3]).toBe('<i>(shown above)</i>');
+  });
+
+  test('the tree lines: a continuing ancestor line, and the last child\'s line stops at its joint', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'A', author: [{ reference: 'urn:uuid:x' }] }, { title: 'B' }] }));
+    // section[0] is not the last child: its line runs the full height; section[1] is: it stops
+    expect(row(h, 'section[0]')).toContain('background-position: 10px 0px, 10px 12px; background-size: 1px 100%, 12px 1px;');
+    expect(row(h, 'section[1]')).toContain('background-position: 10px 0px, 10px 12px; background-size: 1px 12px, 12px 1px;');
+    // author[0] is under section[0], which has a sibling after it: that line carries on through
+    expect(row(h, 'author[0]')).toContain('background-position: 10px 0px, 30px 0px, 30px 12px; background-size: 1px 100%, 1px 12px, 12px 1px;');
+  });
+
+  test('what and when, by resource', () => {
+    const r = (resource) => ({ fullUrl: `urn:uuid:${resource.id}`, resource });
+    const h = render.renderStructure(doc({ section: [{ title: 'S', entry: ['a', 'b', 'c', 'd', 'e', 'f'].map(x => ({ reference: `urn:uuid:${x}` })) }] },
+      r({ resourceType: 'Condition', id: 'a', code: { coding: [{ system: 'http://snomed.info/sct', code: '195967001', display: 'Asthma' }] }, onsetDateTime: '2020-04', recordedDate: '2021-01-01' }),
+      r({ resourceType: 'Observation', id: 'b', code: { text: 'Weight' }, valueQuantity: { value: 72, unit: 'kg' }, effectiveDateTime: '2026-02-03', issued: '2026-02-04T00:00:00Z' }),
+      r({ resourceType: 'MedicationStatement', id: 'c', medicationCodeableConcept: { text: 'Paracetamol' }, dateAsserted: '2026-01-01' }),
+      r({ resourceType: 'Immunization', id: 'd', vaccineCode: { coding: [{ code: 'X' }] }, occurrenceDateTime: '2019-06-07' }),
+      r({ resourceType: 'Provenance', id: 'e', recorded: '2026-03-01T00:00:00Z' }),
+      r({ resourceType: 'Basic', id: 'f', meta: { lastUpdated: '2026-03-02T01:02:03Z' } })));
+    const details = (x) => cells(rows(h, 'entry[' + x + ']')[0])[3];
+    expect(details(0)).toBe('Asthma <span class="ips-tt-when">Apr 20</span>');
+    expect(details(1)).toBe('Weight: 72 kg <span class="ips-tt-when">03-Feb 26</span>');
+    expect(details(2)).toBe('Paracetamol <span class="ips-tt-when">01-Jan 26</span>');
+    expect(details(3)).toBe('X <span class="ips-tt-when">07-Jun 19</span>');
+    expect(rows(h, 'entry[4]')[0]).toContain('icon_audit.png');
+    expect(rows(h, 'entry[5]')[0]).toContain('icon_other.png');
+    expect(details(5)).toBe('<span class="ips-tt-when">02-Mar 26 01:02 (UTC)</span>');
+    expect(rows(h, 'entry[0]')[0]).toContain('icon_clinical.png');
+  });
+
+  test('values from the document are escaped', () => {
+    const h = render.renderStructure(doc({ subject: { reference: '<b>x</b>' }, section: [{ title: '<i>t</i>' }] }));
+    expect(h).not.toContain('<b>x</b>');
+    expect(h).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(h).toContain('<b>&lt;i&gt;t&lt;/i&gt;</b>');
+  });
+});
+
+describe('the analysis step', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+
+  test('the step analyses the document as submitted, and the page shows it with the structure', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'analysis');
+    const d = ips({ patient: { extension: [{ url: 'http://example.org/x' }], modifierExtension: [{ url: 'http://example.org/m' }] } });
+    await post(app, 'demo', d);
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(waiting.text).toContain('There is no analysis of this document - the document is waiting in the queue');
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('analysis: 1 of 6 resources and sections with something to note, 2 extensions');
+    const r = mod.store.readResult(1, 'analysis').result;
+    expect(r.items.e1.map(f => f.kind)).toEqual(['extension', 'modifier', 'narrative']);
+    // the allergy has no narrative, but nothing else to say
+    expect(r.items.e3).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'No narrative' }]);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=analysis">Analysis</a></li>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="analysis - done: analysis: 1 of 6 resources and sections with something to note, 2 extensions" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toContain('<td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td><td>Patient</td>');
+    expect(page.text).toContain('<li class="ips-an-extension">Extension <code>http://example.org/x</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
+    expect(page.text).toContain('<li class="ips-an-modifier">Modifier extension <code>http://example.org/m</code> on <code>Patient</code>');
+    // the allergy's patient is the subject, met again
+    expect(page.text).toContain(' Composition.section[0].entry[0].resolve().patient</td>');
+    expect(page.text).toContain('<td colspan="4"><i>Analysed above</i></td>');
+    // a reference to something not in the document has no rows
+    expect(page.text).not.toContain('not in document');
+    expect(page.text).toContain('<li class="ips-an-ok">All OK</li><li class="ips-an-narrative">No narrative</li>');
+  });
+
+  test('extension definitions come from the validator (lookupCanonical), and are remembered', async () => {
+    const asked = [];
+    mod.validator = {
+      isRunning: () => true,
+      async lookupCanonical(url) {
+        asked.push(url);
+        if (url === 'http://example.org/x') {
+          return { resourceType: 'StructureDefinition', url, name: 'X', title: 'Example <ext>', description: 'An example' };
+        }
+        if (url === 'http://example.org/broken') {
+          throw new Error('Canonical lookup failed: HTTP 500');
+        }
+        return null;
+      }
+    };
+    mod.steps = STEPS.filter(s => s.name === 'analysis');
+    const patient = { extension: [{ url: 'http://example.org/x' }, { url: 'http://example.org/unknown' }, { url: 'http://example.org/broken' },
+      { url: 'http://hl7.org/fhir/StructureDefinition/textLink' }] };
+    await post(app, 'demo', ips({ patient }));
+    await mod.processQueue();
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<code>http://example.org/x</code> on <code>Patient</code>: Example &lt;ext&gt;: An example</li>');
+    expect(page.text).toContain('<code>http://example.org/unknown</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
+    expect(page.text).toContain('<code>http://example.org/broken</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
+    // textLink is not mentioned
+    expect(page.text).not.toContain('<code>http://hl7.org/fhir/StructureDefinition/textLink</code>');
+    expect(asked).toEqual(['http://example.org/x', 'http://example.org/unknown', 'http://example.org/broken']);
+    // again: the answers are remembered, but a failure is asked again
+    await post(app, 'demo', ips({ patient }));
+    await mod.processQueue();
+    expect(asked.slice(3)).toEqual(['http://example.org/broken']);
+    // a validator that isn't running, or a wrapper without lookupCanonical: no definitions, and no error
+    mod.validator = { isRunning: () => false, lookupCanonical: async () => { throw new Error('not this'); } };
+    expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
+    mod.validator = { isRunning: () => true };
+    expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
   });
 });
