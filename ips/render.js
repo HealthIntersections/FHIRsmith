@@ -28,6 +28,7 @@ const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, 
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
 const { jurisdiction } = require('./jurisdictions');
 const { dateText } = require('./presenter');
+const { structureTree, flatten } = require('./structure');
 const scripts = require('./scripts');
 const { LOINC } = require('./editor-schema');
 
@@ -55,13 +56,27 @@ const STYLE = `
   .ips-banner .ips-facts { font-size: 90%; color: #444; margin-top: 4px; }
   .ips-banner .ips-facts a { margin-left: 4px; }
   .ips-steps { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 10px; font-size: 90%; }
-  .ips-step { display: inline-block; padding: 2px 10px; border-radius: 12px; color: white; white-space: nowrap; cursor: default; }
+  .ips-pipeline { display: flex; flex-wrap: wrap; row-gap: 4px; align-items: stretch; }
+  .ips-step { display: inline-flex; align-items: center; gap: 5px; padding: 3px 14px 3px 20px; margin-right: -8px; color: white; white-space: nowrap; cursor: default;
+    clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%); }
+  .ips-step:first-child { padding-left: 12px; border-radius: 3px 0 0 3px; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+  a.ips-step { cursor: pointer; color: white; text-decoration: none; }
+  a.ips-step:hover, a.ips-step:focus { color: white; text-decoration: none; filter: brightness(1.15); }
+  .ips-step-received { background: #5e35b1; }
   .ips-step-done { background: #1e7e34; }
   .ips-step-failed { background: #c82333; }
   .ips-step-running { background: #0d6efd; }
   .ips-step-waiting { background: #6c757d; }
-  .ips-steps .ips-actions { margin-left: auto; display: flex; gap: 6px; }
-  .ips-steps .ips-actions .btn { font-size: 90%; padding: 2px 10px; }
+  .ips-step-running .ips-step-icon { display: inline-block; animation: ips-spin 2s linear infinite; }
+  @keyframes ips-spin { to { transform: rotate(360deg); } }
+  .ips-switch { display: inline-flex; margin-bottom: 10px; font-size: 90%; }
+  .ips-switch a { padding: 3px 12px; border: 1px solid #ced4da; color: #444; text-decoration: none; }
+  .ips-switch a + a { border-left: none; }
+  .ips-switch a:first-child { border-radius: 3px 0 0 3px; }
+  .ips-switch a:last-child { border-radius: 0 3px 3px 0; }
+  .ips-switch a.active { background: #5e35b1; border-color: #5e35b1; color: white; }
+  .ips-doc-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .ips-doc-actions .btn { font-size: 90%; padding: 2px 10px; }
   .ips-nav.nav-tabs { margin-bottom: 14px; }
   .ips-nav.nav-tabs > li > a { padding: 6px 14px; }
   .ips-explain { margin-top: 18px; padding-top: 8px; border-top: 1px solid #dee2e6; }
@@ -182,6 +197,33 @@ const STYLE = `
   .ips-check-not-in { color: #c82333; }
   .ips-check-unknown { color: #6c757d; }
   .ips-inline { display: inline; }
+  .ips-tree-tools { margin-bottom: 8px; font-size: 90%; }
+  .ips-an { font-size: 90%; }
+  .ips-an > tbody > tr.ips-an-node > td { border-top: 2px solid #dee2e6; background: #f8f9fa; }
+  .ips-an > tbody > tr.ips-an-findings > td { border-top: none; padding: 2px 8px 8px 30px; }
+  .ips-an td.ips-an-path { word-break: break-all; }
+  .ips-an td.ips-an-path img { vertical-align: -3px; }
+  .ips-an tr.ips-tt-seen > td { color: #868e96; }
+  .ips-an ul { margin: 0; padding-left: 18px; }
+  .ips-an-modifier { color: #800000; font-weight: bold; }
+  .ips-an-status { color: #000080; font-weight: bold; }
+  .ips-an-subject { color: #006400; font-weight: bold; }
+  .ips-an-attention { color: #b34700; font-weight: bold; }
+  .ips-an-ok { color: #1e7e34; }
+  .ips-an-narrative { color: #6c757d; }
+  .ips-tree-tools .btn { font-size: 90%; padding: 2px 10px; }
+  .ips-tt { font-size: 90%; width: auto; min-width: 60%; }
+  .ips-tt > thead > tr > th { background: #f0f0f0; font-weight: bold; white-space: nowrap; }
+  .ips-tt > tbody > tr > td { border-top: none; padding: 0 10px 0 4px; line-height: 24px; vertical-align: top; }
+  .ips-tt > tbody > tr > td.ips-tt-path { position: relative; white-space: nowrap; padding-right: 16px; }
+  .ips-tt td.ips-tt-path img { vertical-align: -3px; position: relative; z-index: 1; background: white; }
+  .ips-tt tr.ips-tt-parent:not(.ips-tt-closed) > td.ips-tt-path::after { content: ''; position: absolute; left: var(--ips-tt-down, 8px); top: 18px; bottom: 0; border-left: 1px solid #adb5bd; }
+  .ips-tt-toggle { position: absolute; top: 7px; width: 11px; height: 11px; padding: 0; z-index: 2; border: 1px solid #868e96; background: white; font-size: 9px; line-height: 9px; color: #495057; cursor: pointer; }
+  .ips-tt-toggle::before { content: '\\2212'; }
+  .ips-tt tr.ips-tt-closed .ips-tt-toggle::before { content: '+'; }
+  .ips-tt tr.ips-tt-seen > td { color: #868e96; }
+  .ips-tt tr.ips-tt-missing > td:last-child { color: #c82333; }
+  .ips-tt .ips-tt-when { color: #6c757d; margin-left: 6px; }
 </style>
 <script>
   // a form with data-confirm asks first: the message is an attribute (escaped as one), never script
@@ -687,6 +729,160 @@ function assembledNarrative(bundle) {
   h += narrativeOf(comp) || '';
   h += sectionsHtml(comp.section, 3);
   return h + '</div>';
+}
+
+// ---- the structure view ----
+
+/** A node's details: what it is, when, and a note (contained, shown above...). */
+function nodeDetails(node) {
+  return [node.what, node.when ? `<span class="ips-tt-when">${node.when}</span>` : '', node.note ? `<i>(${escape(node.note)})</i>` : '']
+    .filter(Boolean).join(' ');
+}
+
+/**
+ * The logical structure of a document (structure.js), as a tree table like the FHIR
+ * specification's. Columns: the path (where the reference is), the type, the id, and what
+ * the resource is and when. A reference that doesn't resolve in the document is shown as
+ * external; a resource already shown above is shown again, greyed, and doesn't expand.
+ */
+function renderStructure(bundle) {
+  const top = structureTree(bundle);
+  if (!top) {
+    return '<p><i>The document has no Composition.</i></p>';
+  }
+
+  // the rows: the lines are drawn as the cell's background, so they carry on through rows
+  // that wrap; each level is UNIT px in, and the line to a node's children runs down from
+  // the middle of its icon
+  const UNIT = 20;
+  const LINE = '#adb5bd';
+  let rows = '';
+  let next = 0;
+  function walk(node, depth, parentId, lines, last, hidden) {
+    const id = next++;
+    const bg = [];
+    lines.forEach((on, k) => {
+      if (on) {
+        bg.push([UNIT * k + 10, 0, '1px', '100%']);
+      }
+    });
+    if (depth > 0) {
+      const x = UNIT * (depth - 1) + 10;
+      bg.push([x, 0, '1px', last ? '12px' : '100%']);
+      bg.push([x, 12, `${UNIT - 8}px`, '1px']);
+    }
+    const lineStyle = bg.length === 0 ? '' :
+      `background-image: ${bg.map(() => `linear-gradient(${LINE}, ${LINE})`).join(', ')}; ` +
+      `background-position: ${bg.map(b => `${b[0]}px ${b[1]}px`).join(', ')}; ` +
+      `background-size: ${bg.map(b => `${b[2]} ${b[3]}`).join(', ')}; background-repeat: no-repeat; `;
+    const style = ` style="${lineStyle}padding-left: ${UNIT * depth + 2}px; --ips-tt-down: ${UNIT * depth + 10}px"`;
+    const kids = node.children.length > 0;
+    const closed = kids && !node.open;
+    const cls = [node.kind === 'missing' ? 'ips-tt-missing' : node.kind === 'seen' ? 'ips-tt-seen' : '', kids ? 'ips-tt-parent' : '', closed ? 'ips-tt-closed' : ''].filter(Boolean).join(' ');
+    const toggle = kids && depth > 0 ?
+      `<button type="button" class="ips-tt-toggle" style="left: ${UNIT * (depth - 1) + 5}px" aria-label="Show or hide what ${escape(node.path)} refers to"></button>` : '';
+    const idCell = node.id ? escape(node.id) : (node.kind === 'missing' ? `<code>${escape(node.ref)}</code>` : '');
+    const idTitle = node.ref ? ` title="${escape(`Reference: ${node.ref}`)}"` : '';
+    const details = nodeDetails(node);
+    rows += `<tr data-tt-id="${id}"` + (parentId === null ? '' : ` data-tt-parent="${parentId}"`) + (cls ? ` class="${cls}"` : '') + (hidden ? ' hidden' : '') + '>' +
+      `<td class="ips-tt-path"${style}>${toggle}<img src="/assets/images/icon_${node.icon}.png" alt="" width="16" height="16"/> ${escape(node.path)}</td>` +
+      `<td>${escape(node.type)}</td><td${idTitle}>${idCell}</td><td>${details}</td></tr>`;
+    node.children.forEach((c, i) => {
+      const lastChild = i === node.children.length - 1;
+      walk(c, depth + 1, id, depth === 0 ? [] : [...lines, !last], lastChild, hidden || closed);
+    });
+  }
+  walk(top, 0, null, [], true, false);
+
+  let h = '<div class="ips-tree-tools"><button type="button" class="btn btn-default ips-tt-all" data-open="1">Expand all</button> ' +
+    '<button type="button" class="btn btn-default ips-tt-all" data-open="">Collapse all</button></div>';
+  h += '<noscript><style>.ips-tt tr[hidden] { display: table-row; } .ips-tt-toggle, .ips-tree-tools { display: none; }</style></noscript>';
+  h += '<table class="table table-condensed ips-tt"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  h += `<script>
+(function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.ips-tt tbody tr'));
+  var byId = {};
+  rows.forEach(function (r) { byId[r.getAttribute('data-tt-id')] = r; });
+  // a row shows when its parent shows and is open (rows come parents first)
+  function refresh() {
+    rows.forEach(function (r) {
+      var p = byId[r.getAttribute('data-tt-parent')];
+      r.hidden = !!p && (p.hidden || p.classList.contains('ips-tt-closed'));
+    });
+  }
+  document.querySelectorAll('.ips-tt-toggle').forEach(function (b) {
+    b.addEventListener('click', function () { b.closest('tr').classList.toggle('ips-tt-closed'); refresh(); });
+  });
+  document.querySelectorAll('.ips-tt-all').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var open = !!b.getAttribute('data-open');
+      rows.forEach(function (r) { if (r.getAttribute('data-tt-parent') !== null && r.classList.contains('ips-tt-parent')) { r.classList.toggle('ips-tt-closed', !open); } });
+      refresh();
+    });
+  });
+})();
+</script>`;
+  return h;
+}
+
+// ---- the analysis view ----
+
+/** One finding, as a list item. */
+function findingHtml(f) {
+  if (f.url) {
+    const what = f.kind === 'modifier' ? 'Modifier extension' : 'Extension';
+    const def = f.found ? [f.title ? escape(f.title) : '', f.description ? escape(f.description) : ''].filter(Boolean).join(': ') || '<i>(found, but it says nothing)</i>' :
+      '<i>(its definition could not be found)</i>';
+    return `<li class="ips-an-${escape(f.kind)}">${what} <code>${escape(f.url)}</code> on <code>${escape(f.path)}</code>: ${def}</li>`;
+  }
+  return `<li class="ips-an-${escape(f.kind)}">${escape(f.text)}</li>`;
+}
+
+/**
+ * The analysis view: the document's structure (structure.js) as a flat table - each node's
+ * row as in the structure view, with its full path - and under each resource and section a
+ * row with what the analysis step found (analysis.js).
+ */
+function renderAnalysis(row, options = {}) {
+  const r = row.results?.analysis;
+  if (!r || (r.result.status && r.result.status !== 'done') || !isObject(r.result.items)) {
+    return noResultNote(row, 'analysis', 'There is no analysis of this document', options);
+  }
+  const top = structureTree(row.bundle);
+  if (!top) {
+    return '<p><i>The document has no Composition.</i></p>';
+  }
+  const items = r.result.items;
+  let rows = '';
+  for (const [node] of flatten(top)) {
+    // a reference to something not in the document has no rows: there's nothing to analyse
+    if (node.kind === 'missing') {
+      continue;
+    }
+    const cls = node.kind === 'seen' ? ' ips-tt-seen' : '';
+    const idCell = node.id ? escape(node.id) : '';
+    const idTitle = node.ref ? ` title="${escape(`Reference: ${node.ref}`)}"` : '';
+    rows += `<tr class="ips-an-node${cls}"><td class="ips-an-path"><img src="/assets/images/icon_${node.icon}.png" alt="" width="16" height="16"/> ${escape(node.fullPath)}</td>` +
+      `<td>${escape(node.type)}</td><td${idTitle}>${idCell}</td><td>${nodeDetails(node)}</td></tr>`;
+    let body;
+    if (node.kind === 'seen') {
+      body = '<i>Analysed above</i>';
+    } else if (Array.isArray(items[node.key])) {
+      body = `<ul>${items[node.key].map(findingHtml).join('')}</ul>`;
+    } else {
+      body = '<i>Not analysed</i>';
+    }
+    rows += `<tr class="ips-an-findings${cls}"><td colspan="4">${body}</td></tr>`;
+  }
+  let h = `<p class="ips-small">Analysed ${escape(r.made)}` + (typeof r.result.ms === 'number' ? ` in ${escape(String(r.result.ms))} ms` : '') + '</p>';
+  h += '<table class="table table-condensed ips-an"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  h += '<div class="ips-explain"><p class="ips-small">What the analysis step found in each resource of the document as submitted, in the order of the structure view, and in the Composition section by section: ' +
+    'extensions (with their definitions, from the validator, where it knows them; textLink is left out), <span class="ips-an-modifier">modifier extensions and implicitRules</span>, ' +
+    '<span class="ips-an-status">records that are inactive, entered in error, of unknown status, or missing a status they should have</span>, ' +
+    '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
+    '<span class="ips-an-attention">dates in the future (except in Appointments), a Patient\'s links, and a Composition that is not final</span>, ' +
+    'a section\'s emptyReason or an author other than its container\'s, and whether there is narrative. A resource with nothing else to say is All OK. References to resources that are not in the document are left out.</p></div>';
+  return h;
 }
 
 // ---- the terminology view ----
@@ -1624,18 +1820,39 @@ function sharePanelScript() {
 </script>`;
 }
 
-// the views of a document; more come later
+// the views of a document, as tabs
 const VIEWS = [
   ['narrative', 'Narrative'],
+  ['structure', 'Structure'],
+  ['analysis', 'Analysis'],
   ['translation', 'Translation'],
-  ['generated', 'Generated Narrative'],
+  ['terminology', 'Terminology'],
   ['validation', 'Validation'],
   ['national', 'National Profiles'],
-  ['terminology', 'Terminology'],
   ['profiles', 'Clinical Profiles'],
   ['ai', 'AI Assessment'],
-  ['json', 'JSON']
+  ['source', 'Source']
 ];
+
+// views that were tabs once, so old links still land: generated is now the narrative
+// tab's switch, json is now source
+const VIEW_ALIASES = {
+  generated: { view: 'narrative', narrative: 'generated' },
+  json: { view: 'source' }
+};
+
+/**
+ * The view a request asks for (?view=, and ?narrative= for the narrative tab's switch):
+ * the default when it names none we know.
+ * @returns {{view: string, narrative: string}} narrative is 'provided' or 'generated'
+ */
+function viewOf(query = {}) {
+  const v = typeof query.view === 'string' ? query.view : '';
+  const alias = VIEW_ALIASES[v];
+  const view = alias ? alias.view : VIEWS.some(([k]) => k === v) ? v : VIEWS[0][0];
+  const narrative = alias?.narrative || (query.narrative === 'generated' ? 'generated' : 'provided');
+  return { view, narrative };
+}
 
 /**
  * A document.
@@ -1669,16 +1886,35 @@ function stepState(row, step) {
   return { state: 'waiting', message: null };
 }
 
-function stepsHtml(row, ctx) {
-  let h = '';
+// each step as the pipeline shows it, and the view that shows its work (as a query)
+const STEP_LABELS = {
+  analysis: ['Analysis', 'view=analysis'],
+  translate: ['Translate', 'view=translation'],
+  narrative: ['Narrative', 'view=narrative&narrative=generated'],
+  validation: ['Validation', 'view=validation'],
+  national: ['National Profiles', 'view=national'],
+  terminology: ['Terminology', 'view=terminology'],
+  profiles: ['Clinical Profiles', 'view=profiles'],
+  ai: ['AI Assessment', 'view=ai']
+};
+
+/**
+ * The processing pipeline as one connected line: the document's receipt, then each step
+ * in the order they run, each coloured by where it is and linked to the view of its work.
+ */
+function stepsHtml(row, ctx, durl) {
+  let h = `<span class="ips-step ips-step-received" title="${escape(`received ${row.received} (${row.source})`)}">Received</span>`;
   for (const step of ctx.steps || []) {
     const { state, message } = stepState(row, step);
     const [, symbol, word] = STEP_STATES[state];
     // a failure's reason can name the inside of the server: for managers
     const detail = message && (state !== 'failed' || ctx.canManage) ? `: ${message}` : '';
-    h += `<span class="ips-step ips-step-${state}" title="${escape(`${step} - ${word}${detail}`)}">${symbol} ${escape(step)}</span>`;
+    const [label, query] = STEP_LABELS[step] || [step, null];
+    const attrs = `class="ips-step ips-step-${state}" title="${escape(`${step} - ${word}${detail}`)}"`;
+    const inner = `<span class="ips-step-icon">${symbol}</span> ${escape(label)}`;
+    h += query && durl ? `<a ${attrs} href="${escape(`${durl}?${query}`)}">${inner}</a>` : `<span ${attrs}>${inner}</span>`;
   }
-  return h;
+  return `<div class="ips-pipeline">${h}</div>`;
 }
 
 function renderDocument(project, row, view, ctx) {
@@ -1697,11 +1933,12 @@ function renderDocument(project, row, view, ctx) {
     ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a> &nbsp;|&nbsp; <a href="${durl}?download=1">Download</a></div>`;
   h += '</div>';
 
-  // the steps, and what can be done
-  h += '<div class="ips-steps">' + stepsHtml(row, ctx);
+  // the steps, then (on a line of their own) what can be done
+  h += '<div class="ips-steps">' + stepsHtml(row, ctx, durl) + '</div>';
   {
-    h += '<span class="ips-actions">';
-    h += `<a class="btn btn-default" href="${purl}/compose?from=${row.id}" title="Open this document in the editor; submitting makes a new document">Edit</a>`;
+    h += '<div class="ips-doc-actions">';
+    // a form like the others, so it looks like them
+    h += `<form method="get" action="${purl}/compose" class="ips-inline"><input type="hidden" name="from" value="${row.id}"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>`;
     if (ctx.canShare) {
       // sharing as a QR code: a form each (they work without scripts); with scripts, the
       // page asks for JSON and shows the code in a panel over the page
@@ -1712,9 +1949,8 @@ function renderDocument(project, row, view, ctx) {
       h += `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
         `<form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${row.id}?`)}">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
     }
-    h += '</span>';
+    h += '</div>';
   }
-  h += '</div>';
   if (ctx.canShare) {
     h += sharePanelScript();
   }
@@ -1723,15 +1959,17 @@ function renderDocument(project, row, view, ctx) {
   h += '<ul class="nav nav-tabs ips-nav">' + VIEWS.map(([v, label]) =>
     `<li${v === view ? ' class="active"' : ''}><a href="${durl}?view=${v}">${label}</a></li>`).join('') + '</ul>';
 
-  if (view === 'json') {
+  if (view === 'structure') {
+    h += renderStructure(row.bundle);
+  } else if (view === 'analysis') {
+    h += renderAnalysis(row, { canManage: ctx.canManage });
+  } else if (view === 'source') {
     h += `<pre class="ips-json">${escape(JSON.stringify(row.bundle, null, 2))}</pre>`;
   } else if (view === 'terminology') {
     // the analysed copy carries the checks; the concepts are the same
     h += renderTerminology(row.analysed || row.bundle, { ...ctx, analysed: !!row.analysed, docUrl: durl });
   } else if (view === 'translation') {
     h += renderTranslation(row, { canManage: ctx.canManage });
-  } else if (view === 'generated') {
-    h += renderGenerated(row, { canManage: ctx.canManage });
   } else if (view === 'profiles') {
     h += renderProfileChecks(row, { base: ctx.base, canManage: ctx.canManage });
   } else if (view === 'ai') {
@@ -1741,13 +1979,18 @@ function renderDocument(project, row, view, ctx) {
   } else if (view === 'national') {
     h += renderNational(row, { np: ctx.np, level: ctx.level, docUrl: durl, base: ctx.base, canManage: ctx.canManage });
   } else {
-    h += assembledNarrative(row.bundle);
+    // the narrative: as provided in the document, or as this server generates it
+    const generated = ctx.narrative === 'generated';
+    h += '<div class="ips-switch">' +
+      `<a href="${durl}?view=narrative"${generated ? '' : ' class="active"'} title="The narrative in the document as it was submitted">Provided</a>` +
+      `<a href="${durl}?view=narrative&amp;narrative=generated"${generated ? ' class="active"' : ''} title="The narrative this server generates for the document">Generated</a></div>`;
+    h += generated ? renderGenerated(row, { canManage: ctx.canManage }) : assembledNarrative(row.bundle);
   }
   return h;
 }
 
 module.exports = {
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
-  assembledNarrative, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
-  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, VIEWS
+  assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
+  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, VIEWS, viewOf
 };

@@ -9,14 +9,15 @@
  * One process works through the queue (ips.js: processQueue), and runs these steps over
  * each document, in this order:
  *
- *   1. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
- *   2. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
- *   3. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
- *   4. national      validate it against each national profile (the national IGs' profiles on Bundle)
- *   5. terminology   check each CodeableConcept against the value sets for international exchange
- *   6. piqi          measure the quality of the document with PIQI                        (not yet)
- *   7. profiles      check the document against each clinical profile (profiles.js)
- *   8. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
+ *   1. analysis      look at each resource and section for what a reader should know (analysis.js)
+ *   2. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
+ *   3. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
+ *   4. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
+ *   5. national      validate it against each national profile (the national IGs' profiles on Bundle)
+ *   6. terminology   check each CodeableConcept against the value sets for international exchange
+ *   7. piqi          measure the quality of the document with PIQI                        (not yet)
+ *   8. profiles      check the document against each clinical profile (profiles.js)
+ *   9. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
  *
  * Each step is { name, run(row, project, module) -> result }. A step keeps what it finds in
  * one of two places: as a result stored against the document (store.saveResult - the
@@ -35,6 +36,7 @@ const { Presenter } = require('./presenter');
 const ai = require('./ai-client');
 const { evaluateAsync } = require('./fhirpath-ips');
 const { checkNarrative } = require('../library/narrative-check');
+const { analysisStep } = require('./analysis');
 
 const IPS_BUNDLE_PROFILE = 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips';
 const VALIDATE_TIMEOUT_MS = 120000;
@@ -1064,10 +1066,10 @@ const aiStep = {
 };
 
 /** The steps, in order. Only the ones that exist yet. */
-const STEPS = [translate, narrative, validation, national, terminology, profilesStep, aiStep];
+const STEPS = [analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep];
 
 module.exports = {
-  STEPS, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
+  STEPS, analysis: analysisStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

@@ -969,6 +969,6 @@ const GENERIC = {
 };
 
 module.exports = {
-  Presenter, COLUMNS, GENERIC, describeResource, NONE,
+  Presenter, COLUMNS, GENERIC, describeResource, codeText, NONE,
   dateText, periodText, quantityText, rangeText, humanNameText, addressText, identifierText, contactPointText, annotationText
 };
