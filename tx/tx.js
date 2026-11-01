@@ -471,7 +471,8 @@ class TXModule {
             res.setHeader('Content-Type', jsonFmt);
             this.checkProperJson(jsonStr);
             responseSize = Buffer.byteLength(jsonStr, 'utf8');
-            result = originalJson(data);
+            // send the string built above: res.json(data) would serialise the resource again
+            result = res.send(jsonStr);
           }
 
           // Log the request with request ID
