@@ -6,7 +6,7 @@
 const { PackageManager, PackageContentLoader } = require('../../library/package-manager');
 const fs = require('fs').promises;
 const path = require('path');
-const rimraf = require('rimraf').sync;
+const rimraf = (dir) => require('fs').rmSync(dir, { recursive: true, force: true });
 
 /**
  * PackageManager and PackageContentLoader Test Suite
