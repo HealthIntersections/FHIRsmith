@@ -4,6 +4,7 @@ const axios = require('axios');
 const { AbstractValueSetProvider } = require('./vs-api');
 const { ValueSetDatabase } = require('./vs-database');
 const { VersionUtilities } = require('../../library/version-utilities');
+const ValueSet = require('../library/valueset');
 const folders = require('../../library/folder-setup');
 const {debugLog} = require("../operation-context");
 const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
@@ -53,7 +54,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
     this.database = new ValueSetDatabase(this.dbPath);
-    this.valueSetMap = new Map();
+    // The value sets aren't held in memory: each one is read from the database when it is
+    // asked for (see fetchValueSet). This is the count of urls as of the last recount
+    this.urlCount = 0;
     this.initialized = false;
     this.refreshTimer = null;
     this.isRefreshing = false;
@@ -95,10 +98,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       await this.database.create();
     } else {
       // Schema migrations are applied lazily by the database layer on first
-      // connection. Just load existing data.
-      await this._reloadMap();
+      // connection. Just count the existing data.
+      await this._recount();
     }
-    if (this.SYNC_AT_START_UP || this.valueSetMap.size == 0) {
+    if (this.SYNC_AT_START_UP || this.database.vsCount == 0) {
       await this.refreshValueSets();
     }
     // Start periodic refresh
@@ -158,6 +161,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
       // This lists all the currently valid value sets by URL, but not the older versions
       let url = '/ValueSet?_offset=0&_count=1000&_elements=id,url,version,status';
+      const known = await this.database.listVersionKeys();
 
       let total = undefined;
       let count = 0;
@@ -177,7 +181,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           if (vs) {
             count++;
             // if we've seen this value set before, then we've got nothing new here.
-            if (!this.valueSetMap.has(vs.url+"|"+vs.version)) {
+            if (!known.has(vs.url+"|"+vs.version)) {
               this.queue.push(vs.url);
               ncount++;
             }
@@ -235,8 +239,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         tracking.count++;
       }
 
-      // Reload map with fresh data
-      await this._reloadMap();
+      // Recount, with the fresh data
+      await this._recount();
 
       // Commit the _lastUpdated watermark only now that phase 2 has durably
       // written everything. Hold it back if any URL was permanently dropped, so
@@ -295,25 +299,23 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     // Process sequentially to avoid database locking
     for (const valueSet of valueSets) {
-      const key = valueSet.url+"|"+valueSet.version;
-      const existing = this.valueSetMap.get(key);
+      const existing = valueSet.version ? await this.database.getVersion(valueSet.url, valueSet.version) : undefined;
       const newHash = this._hashValueSet(valueSet);
 
       if (existing) {
         // We've seen this url|version before. Decide whether the content
         // has actually changed by comparing hashes.
         //
-        // Note: _reloadMap() mutates the in-memory jsonObj (strips inc.version
-        // from compose.include/exclude), so we cannot reliably recompute a
-        // hash from existing.jsonObj — it would not match the hash of the
-        // original unmutated JSON we stored. For rows predating this feature
+        // Note: the value sets served are altered after they are read (_prepare
+        // strips inc.version from compose.include/exclude), so the hash is
+        // the one stored with the original unmutated JSON. For rows predating this feature
         // (content_hash NULL), we defer update detection until the next cycle:
         // the upsert below runs only when hashes differ, so on the *next*
         // sync after migration we'll have a proper baseline.
-        if (existing.contentHash && existing.contentHash === newHash) {
+        if (existing.content_hash && existing.content_hash === newHash) {
           // No change - just touch last_seen
           await this.database.seeValueSet(valueSet);
-        } else if (!existing.contentHash) {
+        } else if (!existing.content_hash) {
           // Legacy row without a stored hash - backfill the hash silently
           // without emitting a spurious 'updated' event. We do a lightweight
           // touch + hash update rather than a full upsert+event.
@@ -423,31 +425,45 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Reload the in-memory map from database (thread-safe)
+   * Refresh the counts from the database (the value sets themselves are read on demand)
    * @returns {Promise<void>}
    * @private
    */
-  async _reloadMap() {
-    const newMap = await this.database.loadAllValueSets(this.sourcePackage());
-    for (const vs of newMap.values()) {
-      if (vs.jsonObj.compose) {
-        for (const inc of vs.jsonObj.compose.include || []) {
-          if (inc.version) {
-            delete inc.version;
-          }
-        }for (const inc of vs.jsonObj.compose.exclude || []) {
-          if (inc.version) {
-            delete inc.version;
-          }
+  async _recount() {
+    const counts = await this.database.countValueSets();
+    this.urlCount = counts.urls;
+  }
+
+  /**
+   * Read a value set from the database and make it ready to serve: the compose doesn't pin
+   * code system versions, and the id is in this provider's id space
+   * @param {string} id - the value set's own id
+   * @returns {Promise<ValueSet|null>}
+   * @private
+   */
+  async _loadValueSet(id) {
+    const vs = await this.database.loadValueSet(id, this.sourcePackage());
+    if (vs) {
+      this._prepare(vs);
+    }
+    return vs;
+  }
+
+  _prepare(vs) {
+    if (vs.jsonObj.compose) {
+      for (const inc of vs.jsonObj.compose.include || []) {
+        if (inc.version) {
+          delete inc.version;
+        }
+      }
+      for (const inc of vs.jsonObj.compose.exclude || []) {
+        if (inc.version) {
+          delete inc.version;
         }
       }
     }
     // the value sets are served in this provider's id space
-    for (const vs of new Set(newMap.values())) {
-      applyIdPrefix(vs, this.spaceId);
-    }
-    // Atomic replacement of the map
-    this.valueSetMap = newMap;
+    applyIdPrefix(vs, this.spaceId);
   }
 
   /**
@@ -460,10 +476,33 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     await this.initialize();
     this._validateFetchParams(url, version);
 
+    // which row the url (and version) refers to is worked out the way it always was, from a
+    // map keyed like the one loadAllValueSets builds - but of just this url's ids and versions
+    let rows = await this.database.listVersions(url);
+    while (rows.length > 0) {
+      const versions = new Map();
+      for (const row of rows) {
+        this.database.addToMap(versions, row.id, row.url, row.version, row);
+      }
+      const row = this._findVersion(versions, url, version);
+      if (!row) {
+        return null;
+      }
+      const vs = await this._loadValueSet(row.id);
+      if (vs) {
+        return await this.checkFullVS(vs);
+      }
+      // it was rejected (and logged): as when it couldn't be loaded into the map, it's as if it isn't there
+      rows = rows.filter(r => r !== row);
+    }
+    return null;
+  }
+
+  _findVersion(versions, url, version) {
     // Try exact match first: url|version
     let key = `${url}|${version}`;
-    if (this.valueSetMap.has(key)) {
-      return await this.checkFullVS(this.valueSetMap.get(key));
+    if (versions.has(key)) {
+      return versions.get(key);
     }
 
     // If version is semver, try url|major.minor
@@ -472,8 +511,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         const majorMinor = VersionUtilities.getMajMin(version);
         if (majorMinor) {
           key = `${url}|${majorMinor}`;
-          if (this.valueSetMap.has(key)) {
-            return await this.checkFullVS(this.valueSetMap.get(key));
+          if (versions.has(key)) {
+            return versions.get(key);
           }
         }
       }
@@ -482,17 +521,16 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
 
     // Finally try just the URL
-    if (this.valueSetMap.has(url)) {
-      return await this.checkFullVS(this.valueSetMap.get(url));
+    if (versions.has(url)) {
+      return versions.get(url);
     }
 
     return null;
   }
 
   async fetchValueSetById(id) {
-    // the map is keyed by the value set's own id (and its url); the value set itself
-    // carries the prefixed id, which is how a url key that happens to match is excluded
-    const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
+    const ownId = stripIdPrefix(id, this.spaceId);
+    const vs = ownId ? await this._loadValueSet(ownId) : null;
     return vs && vs.id === id ? await this.checkFullVS(vs) : null;
   }
   /**
@@ -508,7 +546,13 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       return [];
     }
 
-    return await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+    const results = await this.database.search(this.spaceId, null, searchParams, elements, this.sourcePackage());
+    for (const vs of results) {
+      if (vs instanceof ValueSet) {
+        this._prepare(vs);
+      }
+    }
+    return results;
   }
 
   /**
@@ -534,17 +578,11 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Get the number of value sets loaded into memory
-   * @returns {number} Number of unique value sets in map
+   * Get the number of value sets available (as of the last refresh)
+   * @returns {number} Number of unique value set urls
    */
   getMapSize() {
-    const uniqueUrls = new Set();
-    for (const [key, valueSet] of this.valueSetMap.entries()) {
-      if (!key.includes('|')) { // Only count base URL keys
-        uniqueUrls.add(valueSet.url);
-      }
-    }
-    return uniqueUrls.size;
+    return this.urlCount;
   }
 
   /**
@@ -584,15 +622,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   prefixIds() {
-    this.#applyIdPrefix();
-  }
-
-  // the map is replaced every time it's reloaded from the database (see _reloadMap), and that
-  // can happen before or after the spaceId is assigned - so both prefix whatever is there
-  #applyIdPrefix() {
-    for (const vs of new Set(this.valueSetMap.values())) {
-      applyIdPrefix(vs, this.spaceId);
-    }
+    // nothing is held in memory: each value set gets its prefix as it is read (see _prepare)
   }
 
   // when we get a valueset from vsac via search, the compose is not
@@ -609,7 +639,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // console.log('get a full copy for the ValueSet '+vs.url+'|'+vs.version);
     // let vsNew = await this._fetchValueSet(vs.id);
     // await this.database.upsertValueSet(vsNew);
-    // this.database.addToMap(this.valueSetMap, vsNew.id, vsNew.url, vsNew.version, vsNew);
     // return new ValueSet(vsNew);
     return vs;
   }
@@ -724,14 +753,14 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
   /**
    * Immediately resync a single ValueSet URL (all versions): fetch from VSAC,
-   * upsert, and reload the in-memory map.
+   * upsert, and recount.
    * @param {string} url - the ValueSet canonical url
    * @returns {Promise<number>} number of versions fetched
    */
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
-    await this._reloadMap();
+    await this._recount();
     return tracking.totalFetched;
   }
 
