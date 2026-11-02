@@ -108,7 +108,12 @@ class Library {
     this.codeSystemFactories.set(factory.system()+"|"+ver, factory);
     const verMin = factory.getPartialVersion();
     if (verMin) {
-      this.codeSystemFactories.set(factory.system()+"|"+verMin, factory);
+      // a partial version (major.minor, or a SNOMED CT edition URI without its date) names the
+      // latest version loaded for it, whatever the order the library lists them in
+      const prev = this.codeSystemFactories.get(factory.system()+"|"+verMin);
+      if (!prev || VersionUtilities.compareVersionsGeneral(ver, prev.version() ?? "") > 0) {
+        this.codeSystemFactories.set(factory.system()+"|"+verMin, factory);
+      }
     }
   }
 
