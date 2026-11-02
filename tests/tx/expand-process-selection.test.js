@@ -221,6 +221,14 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     expect(vs.expansion.total).toBe(1000000);
   });
 
+  test('a deep page is not refused: only the page counts against the limit', async () => {
+    behaviour = 'large';
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }),
+      [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 4 }, { name: 'count', valueInteger: 3 }]);
+    expect(codesOf(vs)).toEqual(codes.slice(4, 7));
+    expect(vs.expansion.total).toBe(1000000);
+  });
+
   test.each([
     ['a text filter', { include: [wholeSystem] }, [{ name: 'filter', valueString: 'c03' }]],
     ['an enumerated concept list', { include: [{ system: CS_URL, concept: [{ code: 'c03' }, { code: 'c04' }] }] }, []],

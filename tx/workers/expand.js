@@ -790,11 +790,13 @@ class ValueSetExpander {
     this.worker.opContext.log('compose handled by the code system provider');
     // checkSource's up-front refusal of a whole-system include is skipped for a compose handed to
     // the provider (it is told the paging). Apply it here, now that the selection's total is known,
-    // with the same condition and message: it names the versioned url, where includeCode's refusal
-    // would name the plain url
+    // with the same message: it names the versioned url, where includeCode's refusal would name the
+    // plain url. Only the page counts against the limit: the provider pages itself, so a deep page
+    // costs no more than the first one (on the usual path offset + count must fit, because the
+    // codes before the page are built too)
     const wholeSystemInclude = includes.some(cset => !(cset.filter || []).length);
     if (wholeSystemInclude && this.count !== 0 && this.limitCount > 0 && selection.total > this.limitCount
-        && !(this.count > 0 && this.count + Math.max(this.offset, 0) <= this.limitCount)) {
+        && !(this.count > 0 && this.count <= this.limitCount)) {
       throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [vsSrc.vurl || vsSrc.url, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     }
 
