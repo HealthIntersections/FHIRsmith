@@ -70,7 +70,7 @@ function configure(opts = {}) {
 
 /**
  * Measure RSS less its file-backed pages (Linux only). With SNOMED CT cache files memory-mapped
- * (snomedLoad: mmap) RSS includes every mapped page that has been read, which the kernel drops
+ * ("snomed": {"load": "mmap"} in config.json) RSS includes every mapped page that has been read, which the kernel drops
  * and re-reads as it needs to - counting them would refuse requests on a server that is fine.
  */
 function measureExcludingFileBacked() {

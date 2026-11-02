@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Read-only memory mapping of SNOMED CT cache files (snomedLoad: mmap).
+ * Read-only memory mapping of SNOMED CT cache files ("snomed": {"load": "mmap"} in config.json).
  *
  * Node has no mmap of its own, so this calls the C library's mmap() through koffi (an FFI
  * module that ships prebuilt binaries for Linux glibc and musl, macOS and the BSDs, so
@@ -58,4 +58,30 @@ function mapFile(filePath) {
   }
 }
 
-module.exports = { mapFile };
+/**
+ * Read a file through once, in the background, so its pages are in the page cache before
+ * requests need them (madvise(MADV_WILLNEED) is only a hint, and on Linux it read almost
+ * nothing of a mapped file). The reads go through one small buffer, so this costs no process
+ * memory; the pages land in the page cache that every mapping of the file shares.
+ *
+ * @param {string} filePath
+ * @returns {Promise<number>} milliseconds taken
+ */
+async function prewarmFile(filePath) {
+  const start = Date.now();
+  const buf = Buffer.allocUnsafe(4 * 1024 * 1024);
+  const fh = await fs.promises.open(filePath, 'r');
+  try {
+    let pos = 0;
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      if (bytesRead === 0) break;
+      pos += bytesRead;
+    }
+  } finally {
+    await fh.close();
+  }
+  return Date.now() - start;
+}
+
+module.exports = { mapFile, prewarmFile };

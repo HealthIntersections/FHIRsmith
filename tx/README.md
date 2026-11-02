@@ -258,6 +258,51 @@ actually returns (metadata, read and search, `$expand`, `$validate-code`, `$look
 `$subsumes`, `$batch-validate-code`, `$versions`, `$cache-control`, an error) against the
 schemas, using ajv. So a new parameter needs adding to openapi-operations.js.
 
+## Loading SNOMED CT
+
+By default each SNOMED CT cache file is read into the server process, at about its file size
+(0.6–1.2 GB an edition). A file can instead be memory-mapped read-only:
+
+- the edition loads in milliseconds;
+- only the pages that requests touch become resident, as page cache that the kernel can drop
+  and read again;
+- every server process on the machine that maps the same file shares those pages.
+
+The first request to touch a part of a mapped edition waits for the disk, unless that edition
+is *prewarmed*: mapped, with the kernel asked to read the whole file into the page cache at
+startup, in the background.
+
+This is set per server, in the tx module's `snomed` block in `config.json`:
+
+```json
+"tx": {
+  "snomed": {
+    "load": "mmap",
+    "prewarm": ["http://snomed.info/sct/900000000000207008/version/20250201",
+                "sct_us_20250901b.cache"],
+    "read": []
+  }
+}
+```
+
+- **`load`** is `"read"` (the default) or `"mmap"`, for every edition not named below.
+- **`prewarm`** lists editions to map and read into the page cache at startup, even when
+  `load` is `"read"`.
+- **`read`** lists editions to read into the process even when `load` is `"mmap"`.
+- An entry is any of:
+  - a cache file name (`sct_us_20250901b.cache`)
+  - an edition version URI (`http://snomed.info/sct/731000124108/version/20250901`)
+  - an edition URI (`http://snomed.info/sct/731000124108`), which covers every loaded version
+    of that edition
+- `read` wins over `prewarm`.
+- Entries that match no loaded edition are warned about at startup.
+- With no `snomed` block, everything is read, as before.
+
+Mapping uses the optional `koffi` dependency. Where it is not available (Windows, 32-bit
+platforms, or koffi not installed), a mapped edition is read instead, with a warning. When any
+edition is mapped, the memory guard leaves file-backed pages out of the memory it measures
+(Linux).
+
 ## Library Configuration
 
 The library - the source to load - is configured using a YAML file.
@@ -407,6 +452,9 @@ Common edition identifiers:
 - `ips` - IPS (International Patient Summary) Free Set
 
 The file is built by importing SNOMED CT (see [documentation](importers/readme.md))
+
+How the cache files are loaded is a deployment choice, so it is set in `config.json` (the
+tx module's `snomed` block), not here - see [Loading SNOMED CT](#loading-snomed-ct).
 
 
 #### `cpt` - CPT (Current Procedural Terminology)

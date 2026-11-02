@@ -1,5 +1,5 @@
 const fs = require('fs');
-const { mapFile } = require('./mmap');
+const { mapFile, prewarmFile } = require('./mmap');
 
 // The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
 // one in place (nothing writes to a loaded structure, and the file stays loaded for the life
@@ -1246,8 +1246,9 @@ class SnomedFileReader {
   /**
    * @param {string} filePath
    * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
-   *   read-only, so its pages are file-backed and shared with the page cache; falls back to
-   *   'read' where mapping is not available (see mmap.js)
+   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': map
+   *   it, and have the kernel read it into the page cache straight away. Where mapping is not
+   *   available (see mmap.js) the file is read.
    */
   constructor(filePath, loadMode = 'read') {
     this.filePath = filePath;
@@ -1256,9 +1257,38 @@ class SnomedFileReader {
     this.offset = 0;
   }
 
+  /**
+   * The edition version URI in a cache file's header, without loading the file.
+   * @param {string} filePath
+   * @returns {string|null}
+   */
+  static versionUri(filePath) {
+    const head = Buffer.alloc(1024);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      reader.readString(); // cache version
+      return reader.readString();
+    } catch {
+      return null;
+    }
+  }
+
   async load() {
-    this.buffer = (this.loadMode === 'mmap' && mapFile(this.filePath)) || await fs.promises.readFile(this.filePath);
+    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath) : null;
+    this.buffer = mapped || await fs.promises.readFile(this.filePath);
     fileBuffers.add(this.buffer.buffer);
+    if (mapped && this.loadMode === 'prewarm') {
+      // not awaited: the server starts while the file is read into the page cache
+      this.prewarmed = prewarmFile(this.filePath).catch(() => null);
+    }
     this.offset = 0;
   }
 

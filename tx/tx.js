@@ -243,7 +243,7 @@ class TXModule {
 
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
-    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats);
+    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
 
     // The syndication feed: content is recorded in the store as the library loads it, from
     // the time the administrator turns it on (see tx/syndication). One store serves every

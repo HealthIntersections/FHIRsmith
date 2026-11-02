@@ -3997,7 +3997,7 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
   constructor(i18n, filePath, loadMode = 'read') {
     super(i18n);
     this.filePath = filePath;
-    this.loadMode = loadMode; // 'read' or 'mmap' - see SnomedFileReader
+    this.loadMode = loadMode; // 'read', 'mmap' or 'prewarm' - see SnomedFileReader
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;

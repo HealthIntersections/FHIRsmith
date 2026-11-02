@@ -22,6 +22,8 @@ const {RxNormServicesFactory} = require("./cs/cs-rxnorm");
 const {NdcServicesFactory} = require("./cs/cs-ndc");
 const {UniiServicesFactory} = require("./cs/cs-unii");
 const {SnomedServicesFactory} = require("./cs/cs-snomed");
+const {SnomedFileReader} = require("./sct/structures");
+const {SnomedLoadConfig} = require("./sct/load-config");
 const {CPTServicesFactory} = require("./cs/cs-cpt");
 const {OMOPServicesFactory} = require("./cs/cs-omop");
 const {ICD11ServicesFactory} = require("./cs/cs-icd11");
@@ -113,11 +115,20 @@ class Library {
     }
   }
 
-  constructor(configFile, vsacCfg, log, stats) {
+  /**
+   * @param {string} configFile - the library yml
+   * @param {object} vsacCfg
+   * @param {object} log
+   * @param {object} stats
+   * @param {object} [snomedCfg] - the tx module's "snomed" block: how SNOMED CT cache files are
+   *   loaded (see tx/sct/load-config.js)
+   */
+  constructor(configFile, vsacCfg, log, stats, snomedCfg = undefined) {
     this.configFile = configFile;
     this.vsacCfg = vsacCfg;
     this.log = log;
     this.stats = stats;
+    this.snomedLoad = new SnomedLoadConfig(snomedCfg, (msg) => (this.log ? this.log.warn(msg) : console.warn(msg)));
 
     // Only synchronous initialization here
     this.codeSystemFactories = new Map();
@@ -186,11 +197,6 @@ class Library {
     const yamlContent = await fs.readFile(yamlPath, 'utf8');
     const config = yaml.parse(yamlContent);
     this.baseUrl = config.base.url;
-    this.snomedLoad = config.snomedLoad === 'mmap' ? 'mmap' : 'read';
-    if (this.snomedLoad === 'mmap') {
-      memoryGuard.measureExcludingFileBacked();
-      this.log.info(`SNOMED CT cache files will be memory-mapped. ${memoryGuard.describe()}`);
-    }
     this.oclConfig = config.ocl && typeof config.ocl === 'object' ? config.ocl : {};
     this.ignored = new Set(Array.isArray(config.ignored) ? config.ignored : []);
 
@@ -221,6 +227,7 @@ class Library {
         throw error;
       }
     }
+    this.snomedLoad.checkUnused();
     this.log.info('Loading Packages');
     this.#logPackagesHeader();
 
@@ -660,7 +667,12 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const sct = new SnomedServicesFactory(this.i18n, sctFN, this.snomedLoad);
+    const loadMode = this.snomedLoad.modeFor(sctFN, SnomedFileReader.versionUri(sctFN));
+    if (loadMode !== 'read' && !memoryGuard._state.excludeFileBacked) {
+      memoryGuard.measureExcludingFileBacked();
+      this.log.info(`SNOMED CT cache files are memory-mapped. ${memoryGuard.describe()}`);
+    }
+    const sct = new SnomedServicesFactory(this.i18n, sctFN, loadMode);
     await sct.load();
     this.registerProvider(sctFN, sct, isDefault);
     this.#syndicateBinary('snomed', sctFN, sct);
