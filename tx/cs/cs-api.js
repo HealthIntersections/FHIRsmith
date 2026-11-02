@@ -825,6 +825,18 @@ class CodeSystemProvider {
    * @param {boolean} excludeInactive: whether the value set leaves out inactive codes (compose.inactive = false)
    * @param {int} offset the index of the first code to return, -1 when the request gave no offset (start at 0)
    * @param {int} count the most codes to return, -1 when the request gave no count (all of them); 0 asks for the total only
+   * @param {Object} [context] what the selection is for. `context.valueSet` is `{ url, version }` of the
+   *   value set whose compose this is (either may be undefined for a value set given inline without
+   *   them). A provider may ignore it.
+   *
+   * A provider that won't produce a selection because it would cost too much may throw the standard
+   * too-costly Issue, in the form expand.js uses when it refuses a value set (Issue from
+   * tx/library/operation-outcome.js; vurl is url|version, or url when there is no version):
+   *
+   *     throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+   *       this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + limit]),
+   *       null, 422).withDiagnostics(this.opContext.diagnostics());
+   *
    * @returns {Promise<{sets: FilterConceptSet[], total: number, notClosed?: boolean}|null>} null to decline.
    *   Otherwise `sets` (in general one; iterated with filterMore/filterConcept) hold the page,
    *   `total` is the number of codes in the whole selection before paging, or -1 when the
@@ -832,7 +844,7 @@ class CodeSystemProvider {
    *   when the selection is open-ended (a grammar-based code system), so the expansion is
    *   marked unclosed
    */
-  processSelection(params, includes, excludes, excludeInactive, offset, count) {
+  processSelection(params, includes, excludes, excludeInactive, offset, count, context = {}) {
     // well, you only need to override if handlesSelecting=true, but that's the only time this will be called
     throw new Error("Must override");
   }

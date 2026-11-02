@@ -782,7 +782,8 @@ class ValueSetExpander {
       }
     }
 
-    const selection = await cs.processSelection(this.params, includes, excludes, excludeInactive, this.offset, this.count);
+    const selection = await cs.processSelection(this.params, includes, excludes, excludeInactive, this.offset, this.count,
+      { valueSet: { url: vsSrc.url, version: vsSrc.version } });
     if (selection == null) {
       return false;
     }
