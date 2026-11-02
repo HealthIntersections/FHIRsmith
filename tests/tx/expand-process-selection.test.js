@@ -64,7 +64,7 @@ function select(includes, excludes) {
 describe('$expand: handing a whole compose to the provider (processSelection)', () => {
   let app;
   let calls;
-  let behaviour; // 'handle' | 'decline' | 'no-total'
+  let behaviour; // 'handle' | 'decline' | 'no-total' | 'large' | 'off'
   const spies = [];
 
   beforeAll(async () => {
@@ -85,7 +85,8 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
       for (const code of page) {
         set.add(this.codeSystem.getConceptByCode(code));
       }
-      return { sets: [set], total: behaviour === 'no-total' ? -1 : all.length };
+      const total = behaviour === 'no-total' ? -1 : behaviour === 'large' ? 1000000 : all.length;
+      return { sets: [set], total };
     }));
   }, 60000);
 
@@ -158,6 +159,36 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     const usual = await expand(app, valueSet(compose));
     expect(codesOf(handled)).toEqual(codesOf(usual));
     expect(handled.expansion.total).toEqual(usual.expansion.total);
+  });
+
+  test('a whole-system selection over the limit is refused as on the usual path, naming url|version', async () => {
+    const refuse = async (vs) => {
+      const res = await request(app).post('/tx/r5/ValueSet/$expand')
+        .set('Content-Type', 'application/json')
+        .send({ resourceType: 'Parameters', parameter: [
+          { name: 'tx-resource', resource: CS }, { name: 'valueSet', resource: vs }, { name: 'limit', valueInteger: 5 }
+        ] });
+      expect(res.status).toBe(422);
+      expect(res.body.issue[0].code).toBe('too-costly');
+      return res.body.issue[0];
+    };
+    const vs = valueSet({ include: [wholeSystem] });
+    behaviour = 'large'; // the provider reports a total far over the limit
+    const handled = await refuse(vs);
+    expect(calls).toHaveLength(1);
+    behaviour = 'off';
+    const usual = await refuse(vs);
+    expect(handled.details.text).toEqual(usual.details.text);
+    expect(handled.details.text).toContain(vs.url + '|1.0.0');
+    expect(handled.details.text).toContain('>5');
+  });
+
+  test('a page that fits inside the limit is not refused', async () => {
+    behaviour = 'large';
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }),
+      [{ name: 'limit', valueInteger: 5 }, { name: 'count', valueInteger: 3 }]);
+    expect(codesOf(vs)).toEqual(codes.slice(0, 3));
+    expect(vs.expansion.total).toBe(1000000);
   });
 
   test.each([
