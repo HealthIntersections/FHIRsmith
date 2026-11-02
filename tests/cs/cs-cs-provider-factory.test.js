@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const {CodeSystem} = require('../../tx/library/codesystem');
-const {FhirCodeSystemProvider} = require('../../tx/cs/cs-cs');
+const {FhirCodeSystemProvider, providerClassFor} = require('../../tx/cs/cs-cs');
 const {IcfCodeSystemProvider} = require('../../tx/cs/cs-icf');
 const {OperationContext} = require('../../tx/operation-context');
 const {TestUtilities} = require('../test-utilities');
@@ -32,6 +32,11 @@ describe('FhirCodeSystemProvider.create and CodeSystem.providerFactory', () => {
   beforeAll(async () => {
     const i18n = await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions());
     opContext = new OperationContext('en-US', i18n);
+  });
+
+  test('providerClassFor is exported: ICF has its own class, other urls the plain one', () => {
+    expect(providerClassFor('http://hl7.org/fhir/sid/icf')).toBe(IcfCodeSystemProvider);
+    expect(providerClassFor('http://example.org/cs')).toBe(FhirCodeSystemProvider);
   });
 
   test('no providerFactory: the url registry decides, as before', () => {

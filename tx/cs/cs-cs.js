@@ -185,7 +185,8 @@ class FhirCodeSystemProviderFilterContext {
 // Code systems loaded as ordinary CodeSystem resources (from a package, or supplied by a
 // client) that need behaviour beyond the resource: a grammar, say. Keyed on the CodeSystem
 // url; the class extends FhirCodeSystemProvider, so the content still comes from the
-// resource. Required lazily, because the subclasses require this module.
+// resource. Required lazily, because the subclasses require this module. Exported, so code that
+// stores CodeSystems when the server loads can tell which ones need their own class.
 let specialisedProviders = null;
 
 function providerClassFor(url) {
@@ -2029,6 +2030,7 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
 }
 
 module.exports = {
+  providerClassFor,
   FhirCodeSystemFactory,
   FhirCodeSystemProvider,
   FhirCodeSystemProviderContext,
