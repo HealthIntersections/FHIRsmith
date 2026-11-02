@@ -29,6 +29,10 @@ const SAMPLE_MS = 250;
 // allocation activity that would otherwise trigger one, so without this RSS might never
 // fall back below the threshold and the server would stay shut.
 const GC_INTERVAL_MS = 5000;
+// A forced GC that leaves the server still over the threshold doubles the wait before the
+// next, up to this: when most of RSS is outside the JS heap (the SNOMED and LOINC cache
+// buffers), collecting frees little, and every full GC stops the process
+const GC_MAX_INTERVAL_MS = 60000;
 
 const state = {
   limit: 0,
@@ -88,8 +92,10 @@ function shouldReject() {
 let gcFn;
 
 /**
- * global.gc if node was started with --expose-gc; otherwise expose it at runtime (the flag can
- * be set late, and a fresh context then has gc). null if neither works.
+ * global.gc if node was started with --expose-gc, which is how it should be started (the
+ * Dockerfile and npm start do; add it to the node command of a systemd unit). Otherwise
+ * expose it at runtime: the flag can be set late, and a fresh context then has gc - this
+ * works, but Node does not promise it will keep working. null if neither works.
  */
 function getGc() {
   if (gcFn !== undefined) {
@@ -159,15 +165,21 @@ function describe() {
 /**
  * Express middleware: 503 + Retry-After while RSS is over the reject threshold. Install it
  * before the body parsers so a refused request costs nothing. While refusing, it forces a full
- * GC every gcInterval ms and re-measures, and it logs when refusing starts (then once a
- * minute, with how long and how many) and when it stops.
- * @param {object} [opts] - { log, exempt: [path prefixes never refused], retryAfter (seconds), gcInterval (ms) }
+ * GC now and then and re-measures - every gcInterval ms, backing off to gcMaxInterval while
+ * the GCs don't bring it back under, and not at all while the JS heap is too small for one to
+ * help. It logs when refusing starts (then once a minute, with how long and how many) and
+ * when it stops.
+ * @param {object} [opts] - { log, exempt: [path prefixes never refused], retryAfter (seconds),
+ *   gcInterval (ms), gcMaxInterval (ms), heapUsed (function returning bytes, for tests) }
  */
 function middleware(opts = {}) {
   const exempt = opts.exempt || [];
   const retryAfter = String(opts.retryAfter || 30);
   const log = opts.log;
   const gcInterval = opts.gcInterval || GC_INTERVAL_MS;
+  const gcMaxInterval = Math.max(opts.gcMaxInterval || GC_MAX_INTERVAL_MS, gcInterval);
+  const heapUsed = opts.heapUsed || (() => process.memoryUsage().heapUsed);
+  let gcWait = gcInterval; // the current wait between forced GCs (backs off, see below)
   let refusingSince = 0; // when the current spell of refusing began (0 = not refusing)
   let refused = 0;       // refused in the current spell
   let lastLog = 0;
@@ -183,12 +195,21 @@ function middleware(opts = {}) {
     const now = Date.now();
 
     // Refusing starves the GC of the allocation that would normally trigger it, so while
-    // refusing, force a full collection every gcInterval and re-measure
-    if (over && now - lastGc >= gcInterval) {
+    // refusing, force a full collection now and then and re-measure. Only when it could help:
+    // a GC frees heap and nothing else, so if the whole JS heap is smaller than the amount
+    // over the threshold, collecting can't get the server back under it. And a GC that
+    // leaves the server still over doubles the wait before the next one
+    if (over && now - lastGc >= gcWait) {
       lastGc = now;
+      const before = state.sampleRss;
+      const heap = heapUsed();
       const gc = getGc();
-      if (gc) {
-        const before = state.sampleRss;
+      if (heap < before - state.rejectAt) {
+        gcWait = Math.min(gcWait * 2, gcMaxInterval);
+        if (log) {
+          log.info(`Memory: no forced GC - the JS heap (${gb(heap)} GB) is less than the ${gb(before - state.rejectAt)} GB over the threshold; next look in ${secs(gcWait)}s`);
+        }
+      } else if (gc) {
         try {
           gc();
         } catch {
@@ -196,13 +217,16 @@ function middleware(opts = {}) {
         }
         const after = rss(true);
         over = after > state.rejectAt;
+        gcWait = over ? Math.min(gcWait * 2, gcMaxInterval) : gcInterval;
         if (log) {
-          log.info(`Memory: forced GC while refusing - ${gb(before)} GB -> ${gb(after)} GB`);
+          log.info(`Memory: forced GC while refusing - ${gb(before)} GB -> ${gb(after)} GB` +
+            (over ? `; next in ${secs(gcWait)}s` : ''));
         }
       }
     }
 
     if (!over) {
+      gcWait = gcInterval;
       if (refusingSince) {
         if (log) {
           log.warn(`Memory recovered: ${gb(state.sampleRss)} GB of ${gb(state.limit)} GB - accepting requests again after ${secs(now - refusingSince)}s (${refused} refused)`);

@@ -8,8 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --expose-gc server.js",
+    "dev": "node --expose-gc --watch server.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",

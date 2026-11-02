@@ -14,6 +14,7 @@
  */
 
 const fs = require('fs');
+const sqlite3 = require('sqlite3');
 const path = require('path');
 const { RxNormImporter } = require('../../tx/importers/import-rxnorm.module');
 const { RxNormServicesFactory, RxNormConcept } = require('../../tx/cs/cs-rxnorm');
@@ -155,6 +156,23 @@ describe('RxNorm filters, totals, status and lookup', () => {
       const union = await codes(['has_ingredient', 'in', 'CUI:161,CUI:8163']);
       expect(union.length).toBe(1784);
       expect(new Set(union)).toEqual(new Set([...acetaminophen, ...phenylephrine]));
+    });
+
+    test('an AUI: value follows atom-level rows, from any source', async () => {
+      // Atom-level RXNREL rows leave RXCUI1 and RXCUI2 empty, and most come from sources other
+      // than RxNorm. The test data has none, so add one: MMSL's diazepam ingredient atom (101186,
+      // concept 3322) is the ingredient of its diazepam 10 MG oral tablet atom (8241449, 197589)
+      await new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(dbPath);
+        db.run(`INSERT INTO RXNREL (RXCUI1, RXAUI1, REL, RXCUI2, RXAUI2, RELA, SAB)
+                VALUES ('', '101186', 'RO', '', '8241449', 'has_ingredient', 'MMSL')`,
+          err => db.close(() => err ? reject(err) : resolve()));
+      });
+      expect(await codes(['has_ingredient', '=', 'AUI:101186'])).toEqual(['197589']);
+      // and with CUI: values, which only use RxNorm's own concept-level rows
+      const both = await codes(['has_ingredient', 'in', 'AUI:101186,CUI:161']);
+      expect(both).toContain('197589');
+      expect(both.length).toBe(963);
     });
 
     test('a relationship value must be CUI: or AUI:', async () => {

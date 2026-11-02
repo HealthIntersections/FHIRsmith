@@ -43,6 +43,7 @@ const RXNORM_LOAD_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)',
   'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
   'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
+  'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
   'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)'
 ];
 
@@ -482,20 +483,22 @@ class RxNormServices extends BaseCSServices {
         sql = `AND rxnconso.${cf} IN (${list('code', values)})`;
       } else if ((this.rels.includes(prop) || this.reltypes.includes(prop)) && values.every(v => RxNormServices.#isRelValue(v))) {
         // RXNREL rows read 'RXCUI2 <RELA> RXCUI1': has_ingredient = CUI:161 is the concepts
-        // that have acetaminophen as an ingredient
+        // that have acetaminophen as an ingredient. Concept-level rows: RxNorm's own (SAB=RXNORM)
         const field = this.rels.includes(prop) ? 'REL' : 'RELA';
         params[`${pfx}rel`] = prop;
-        params[`${pfx}rsab`] = RELATIONSHIP_SAB;
         const cuis = values.filter(v => v.startsWith('CUI:')).map(v => v.substring(4));
         const auis = values.filter(v => v.startsWith('AUI:')).map(v => v.substring(4));
         const targets = [];
         if (cuis.length > 0) {
-          targets.push(`RXCUI1 IN (${list('cui', cuis)})`);
+          params[`${pfx}rsab`] = RELATIONSHIP_SAB;
+          targets.push(`rxnconso.${cf} IN (SELECT RXCUI2 FROM rxnrel WHERE ${field} = $${pfx}rel AND SAB = $${pfx}rsab AND RXCUI1 IN (${list('cui', cuis)}))`);
         }
         if (auis.length > 0) {
-          targets.push(`RXAUI1 IN (${list('aui', auis)})`);
+          // Atom-level rows leave RXCUI2 empty, and most come from other sources (MMSL, MTHSPL...):
+          // the target atom's concept comes from rxnconso, and every source's rows count
+          targets.push(`rxnconso.${cf} IN (SELECT ${cf} FROM rxnconso WHERE RXAUI IN (SELECT RXAUI2 FROM rxnrel WHERE ${field} = $${pfx}rel AND RXAUI1 IN (${list('aui', auis)})))`);
         }
-        sql = `AND rxnconso.${cf} IN (SELECT RXCUI2 FROM rxnrel WHERE ${field} = $${pfx}rel AND SAB = $${pfx}rsab AND (${targets.join(' OR ')}))`;
+        sql = `AND (${targets.join(' OR ')})`;
       }
     }
 

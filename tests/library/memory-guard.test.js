@@ -92,8 +92,50 @@ describe('memory-guard', () => {
     memoryGuard._state.sampleRss = 8.5 * GB;
     memoryGuard._state.sampleTime = Date.now(); // the cached sample says "over"
     const next = jest.fn();
-    memoryGuard.middleware({ gcInterval: 1000 })({ path: '/r4/x' }, fakeRes(), next);
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 2 * GB })({ path: '/r4/x' }, fakeRes(), next);
     expect(next).toHaveBeenCalled();
+  });
+
+  test('no forced GC when the JS heap is smaller than the amount over the threshold', () => {
+    // 8.5 GB of RSS against an 8 GB threshold, but only 0.2 GB of it is JS heap: collecting
+    // can't get under the threshold, so don't stop the process to try
+    const log = { info: jest.fn(), warn: jest.fn() };
+    setRss(8.5 * GB);
+    const res = fakeRes();
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB })({ path: '/r4/x' }, res, () => {});
+    expect(res.statusCode).toBe(503);
+    expect(log.info.mock.calls.some(c => /no forced GC - the JS heap/.test(c[0]))).toBe(true);
+    expect(log.info.mock.calls.some(c => /forced GC while refusing/.test(c[0]))).toBe(false);
+  });
+
+  test('a forced GC that leaves memory over the threshold backs off, up to the maximum', () => {
+    const log = { info: jest.fn(), warn: jest.fn() };
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      setRss(8.5 * GB); // and it stays there: the GCs free nothing
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 4000, heapUsed: () => 2 * GB });
+      const gcs = () => log.info.mock.calls.filter(c => /forced GC while refusing/.test(c[0])).length;
+      const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
+      at(0);      // GC, still over: next in 2s
+      expect(gcs()).toBe(1);
+      at(1500);   // too soon
+      expect(gcs()).toBe(1);
+      at(2000);   // GC: next in 4s
+      at(5000);   // too soon
+      expect(gcs()).toBe(2);
+      at(6000);   // GC: next in 4s, the maximum
+      at(10000);  // GC
+      expect(gcs()).toBe(4);
+      // recovering resets the wait: the next spell of refusing starts at gcInterval again
+      setRss(7 * GB);
+      at(10500);
+      setRss(8.5 * GB);
+      at(11000);  // 1s after the last GC: allowed again
+      expect(gcs()).toBe(5);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   test('logs when refusing starts and when it stops', () => {

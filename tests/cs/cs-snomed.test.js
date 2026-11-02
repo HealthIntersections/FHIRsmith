@@ -1936,7 +1936,9 @@ describe('SNOMED CT $lookup properties', () => {
     expect(all.semanticTag).toEqual(['procedure']);
     expect(all.normalForm).toBeUndefined();
     expect(all.normalFormTerse).toBeUndefined();
-    const { sufficientlyDefined, semanticTag, ...rest } = all;
+    const rest = { ...all };
+    delete rest.sufficientlyDefined;
+    delete rest.semanticTag;
     expect(rest).toEqual(def);
     expect(def.sufficientlyDefined).toBeUndefined();
   });
