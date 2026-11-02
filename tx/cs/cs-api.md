@@ -191,9 +191,24 @@ For large code systems where a value set selects codes from only that system, th
 hand the entire include/exclude list to the provider in one call rather than using the filter
 workflow above.
 
-Override `handlesSelecting()` to return `true` and then implement `processSelection()`.
-The method receives the full lists of includes and excludes, along with pagination parameters
-if applicable, and returns `FilterConceptSet[]`.
+Override `handlesSelecting()` to return `true` and then implement
+`processSelection(params, includes, excludes, excludeInactive, offset, count)`.
+
+- **When it is called.** `$expand` hands over a compose that selects from this code system
+  alone (one system|version), imports no value sets, has no text filter and lists no concepts.
+  Value sets that list concepts take the usual path (see `prefetchCodes` under Lookup).
+- **Declining.** Return `null` for anything the provider doesn't support (an unknown filter,
+  say). The compose then goes through the filter workflow above, as for any other provider.
+- **Paging.** The provider applies `offset` (-1: none given, start at 0) and `count`
+  (-1: none given, return all; 0: the total only). The sets it returns hold just that page,
+  in expansion order.
+- **Result.** `{ sets, total, notClosed }`: `sets` is a `FilterConceptSet[]` (in general one),
+  iterated with `filterMore`/`filterConcept`; `total` is the size of the whole selection
+  before paging, or -1 if the provider hasn't counted it (the expansion then has no total);
+  `notClosed` marks an open-ended selection (a grammar-based code system).
+
+The default `handlesSelecting()` returns `false`, so a provider that doesn't override it is
+never asked.
 
 ---
 

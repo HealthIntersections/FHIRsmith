@@ -803,15 +803,34 @@ class CodeSystemProvider {
   }
 
   /**
-   * Process a set of includes and excludes for the code system
+   * Select the codes of a whole compose in one call (only called when handlesSelecting() is true).
    *
-   * @param {TxParameters} params: information from the request that the user made, to help optimise loading
-   * @param {Object[]} includes - a list of includes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {Object[]} excludes - a list of excludes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {boolean} excludeInactive: whether the server will use inactive codes or not
-   * @param {int} offset if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable offset. -1 if not applicable
-   * @param {int} count if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable count. -1 if not applicable
-   * @returns {FilterConceptSet[]} filter sets. In general, it wouldn't make sense to return more than one, but providers can do if they want to. See futher comments on executeFilters
+   * expand.js hands over a compose that selects from this code system alone (one system|version),
+   * imports no value sets, has no text filter, and lists no concepts (an enumerated concept
+   * carries displays and extensions from the value set, so those go through the usual path,
+   * where prefetchCodes() applies). Anything else this provider doesn't support - an
+   * unknown filter, say - it declines by returning null, and the compose goes through the
+   * usual include/exclude path (getPrepContext/filter/executeFilters, locate) instead. A compose
+   * with a filter on a property that a supplement in use defines is never handed over: the usual
+   * path evaluates that filter from the supplement (tx/workers/supplement-filters.js).
+   *
+   * The provider applies offset and count: the sets it returns hold just the requested page of
+   * the selection, in expansion order. The worker adds every code in them to the expansion
+   * (with displays, properties etc. from this provider, as for a filter set), and takes the
+   * total from the result.
+   *
+   * @param {TxParameters} params: information from the request that the user made, to help optimise loading (activeOnly, properties, designations...)
+   * @param {Object[]} includes - the compose's includes. Each names this system (and version), with or without filters
+   * @param {Object[]} excludes - the compose's excludes, in the same form
+   * @param {boolean} excludeInactive: whether the value set leaves out inactive codes (compose.inactive = false)
+   * @param {int} offset the index of the first code to return, -1 when the request gave no offset (start at 0)
+   * @param {int} count the most codes to return, -1 when the request gave no count (all of them); 0 asks for the total only
+   * @returns {Promise<{sets: FilterConceptSet[], total: number, notClosed?: boolean}|null>} null to decline.
+   *   Otherwise `sets` (in general one; iterated with filterMore/filterConcept) hold the page,
+   *   `total` is the number of codes in the whole selection before paging, or -1 when the
+   *   provider hasn't counted it (the expansion then has no total), and `notClosed` is true
+   *   when the selection is open-ended (a grammar-based code system), so the expansion is
+   *   marked unclosed
    */
   processSelection(params, includes, excludes, excludeInactive, offset, count) {
     // well, you only need to override if handlesSelecting=true, but that's the only time this will be called
