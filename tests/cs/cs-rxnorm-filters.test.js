@@ -55,7 +55,7 @@ describe('RxNorm filters, totals, status and lookup', () => {
     factory = new RxNormServicesFactory(opContext.i18n, dbPath);
     provider = await factory.build(opContext, []);
     step(`provider ready, rss ${Math.round(process.memoryUsage.rss() / 1e6)} MB`);
-  });
+  }, 600000); // tests/setup.js sets 30s for everything; this import takes far longer in CI
 
   afterAll(() => {
     if (provider) {
