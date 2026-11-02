@@ -11,7 +11,7 @@ sources:
   - internal:hgvs
   - internal:urls
   - ucum:tx/data/ucum-essence.xml
-  - loinc!:Loinc_2.83.db
+  - loinc!:Loinc_2.83b.db
   - snomed!:Snomed_Intl_20260701.cache
   - snomed:sct_test_20250909e.cache
   - omop:omop_v20250227.db

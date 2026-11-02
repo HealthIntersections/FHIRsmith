@@ -28,6 +28,7 @@ const {SnomedImporter} = require("../../tx/importers/import-sct.module");
 const { OperationContext } = require('../../tx/operation-context');
 const {Designations} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
+const { Languages } = require('../../library/languages');
 const folders = require('../../library/folder-setup');
 
 // Shared cache file paths and utilities.
@@ -1243,3 +1244,728 @@ if (foundFiles === 0) {
   console.log('\n✅ All prerequisites met');
   //process.exit(0);
 }
+// Inactive relationship rows are imported but ignored altogether (agreed with the SNOMED
+// leads, Nov 2026). The test edition's TEST1000003 relationship file carries two inactive
+// rows on 50325005 |Alcoholic fatty liver|: a finding site of 64033007 |Kidney structure|
+// (group 1) and an is-a to 51292008 |Hepatorenal syndrome|. Neither may be visible.
+describe('SNOMED CT inactive relationships are ignored', () => {
+  const FATTY_LIVER = '50325005';
+  const KIDNEY = '64033007';
+  const HEPATORENAL = '51292008';
+  const FINDING_SITE = '363698007';
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  const ref = (code) => {
+    const r = provider.sct.concepts.findConcept(BigInt(code));
+    expect(r.found).toBe(true);
+    return r.index;
+  };
+
+  async function filterCodes(prop, op, value) {
+    const fc = await provider.getPrepContext(true);
+    await provider.filter(fc, true, prop, op, value);
+    const [set] = await provider.executeFilters(fc);
+    const codes = [];
+    while (await provider.filterMore(fc, set)) {
+      codes.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return codes;
+  }
+
+  async function filterHas(prop, op, value, code) {
+    const fc = await provider.getPrepContext(false);
+    await provider.filter(fc, false, prop, op, value);
+    const [set] = await provider.executeFilters(fc);
+    const located = await provider.filterLocate(fc, set, code);
+    const { context } = await provider.locate(code);
+    const checked = await provider.filterCheck(fc, set, context);
+    return { located: located !== null && typeof located !== 'string', checked };
+  }
+
+  async function lookupProps(code, props) {
+    const params = [];
+    await provider.extendLookup(code, props, params);
+    return params.filter(p => p.name === 'property').map(p => p.part.find(x => x.name === 'code').valueCode + '=' + p.part.find(x => x.name === 'value').valueCode);
+  }
+
+  test('the test edition carries the inactive rows (otherwise rebuild the cache from tx/data/snomed)', () => {
+    const sct = provider.sct;
+    // the raw outbound list: getConceptRelationships() leaves inactive rows out
+    const outbounds = sct.concepts.getConcept(ref(FATTY_LIVER)).outbounds;
+    const rels = sct.refs.getReferences(outbounds).map(i => sct.relationships.getRelationship(i));
+    const inactive = rels.filter(r => !r.active).map(r => sct.getConceptId(r.relType) + '=' + sct.getConceptId(r.target)).sort();
+    expect(inactive).toEqual([FINDING_SITE + '=' + KIDNEY, '116680003=' + HEPATORENAL].sort());
+    expect(sct.getConceptRelationships(ref(FATTY_LIVER)).every(i => sct.relationships.isActive(i))).toBe(true);
+  });
+
+  test('a property filter does not match an inactive relationship (expand)', async () => {
+    const codes = await filterCodes(FINDING_SITE, '=', KIDNEY);
+    expect(codes).not.toContain(FATTY_LIVER);
+    expect(codes).toHaveLength(9);
+  });
+
+  test('a property filter does not match an inactive relationship (validate)', async () => {
+    expect(await filterHas(FINDING_SITE, '=', KIDNEY, FATTY_LIVER)).toEqual({ located: false, checked: false });
+    expect(await filterHas(FINDING_SITE, '=', '10200004', FATTY_LIVER)).toEqual({ located: true, checked: true });
+  });
+
+  test('$lookup lists neither the inactive finding site nor the inactive parent', async () => {
+    const props = await lookupProps(FATTY_LIVER, [FINDING_SITE, 'parent']);
+    expect(props.sort()).toEqual([FINDING_SITE + '=10200004', 'parent=197321007', 'parent=41309000']);
+  });
+
+  test('$lookup does not list a child through an inactive is-a', async () => {
+    const props = await lookupProps(HEPATORENAL, ['child']);
+    expect(props).not.toContain('child=' + FATTY_LIVER);
+    expect(props).toHaveLength(4);
+  });
+
+  test('is-a, ECL and subsumption ignore an inactive is-a', async () => {
+    expect(await filterCodes('concept', 'is-a', HEPATORENAL)).not.toContain(FATTY_LIVER);
+    expect(await filterCodes('constraint', '=', '<< ' + HEPATORENAL)).not.toContain(FATTY_LIVER);
+    expect(await provider.subsumesTest(HEPATORENAL, FATTY_LIVER)).toBe('not-subsumed');
+    expect((await provider.locateIsA(FATTY_LIVER, HEPATORENAL)).context).toBeFalsy();
+  });
+
+  test('an ECL refinement does not match an inactive relationship', async () => {
+    const codes = await filterCodes('constraint', '=', '< 404684003 : ' + FINDING_SITE + ' = ' + KIDNEY);
+    expect(codes).not.toContain(FATTY_LIVER);
+    expect(codes).toHaveLength(9);
+  });
+});
+
+// concept in A,B,C means any of the listed concepts (S3). Plain concepts were pushed into
+// set.members as bare concept indexes while everything reading set.members expects member
+// records ({ref}), so each came out as 4294967295 and $validate-code never matched.
+// "code" is accepted as the same property as "concept": value sets in production use it.
+describe.each(['concept', 'code'])('SNOMED CT %s in filter', (prop) => {
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  async function inCodes(value) {
+    const fc = await provider.getPrepContext(true);
+    expect(await provider.doesFilter(prop, 'in', value)).toBe(true);
+    await provider.filter(fc, true, prop, 'in', value);
+    const [set] = await provider.executeFilters(fc);
+    const codes = [];
+    while (await provider.filterMore(fc, set)) {
+      codes.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return codes;
+  }
+
+  async function inHas(value, code) {
+    const fc = await provider.getPrepContext(false);
+    await provider.filter(fc, false, prop, 'in', value);
+    const [set] = await provider.executeFilters(fc);
+    const located = await provider.filterLocate(fc, set, code);
+    const { context } = await provider.locate(code);
+    return { located: located !== null && typeof located !== 'string', checked: await provider.filterCheck(fc, set, context) };
+  }
+
+  test('expands to every listed concept', async () => {
+    expect(await inCodes('10200004,50325005,51292008')).toEqual(['10200004', '50325005', '51292008']);
+  });
+
+  test('ignores spaces, and lists a concept named twice once', async () => {
+    expect(await inCodes('50325005, 51292008,50325005')).toEqual(['50325005', '51292008']);
+  });
+
+  test('a listed concept is in the set, an unlisted one is not', async () => {
+    expect(await inHas('10200004,50325005,51292008', '51292008')).toEqual({ located: true, checked: true });
+    expect(await inHas('10200004,50325005,51292008', '64033007')).toEqual({ located: false, checked: false });
+  });
+
+  test('a listed reference set stands for its members, alongside plain concepts', async () => {
+    const refset = await inCodes('723264001'); // Lateralizable body structure reference set
+    expect(refset.length).toBeGreaterThan(0);
+    expect(refset).toContain('64033007');
+    const mixed = await inCodes('723264001,51292008');
+    expect(mixed).toEqual([...refset, '51292008']);
+    expect(await inHas('723264001,51292008', '64033007')).toEqual({ located: true, checked: true });
+  });
+});
+
+// "code" is the same filter property as "concept" for the other concept operations too
+describe('SNOMED CT code filter property', () => {
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  async function codes(prop, op, value) {
+    const fc = await provider.getPrepContext(true);
+    await provider.filter(fc, true, prop, op, value);
+    const [set] = await provider.executeFilters(fc);
+    const out = [];
+    while (await provider.filterMore(fc, set)) {
+      out.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return out.sort();
+  }
+
+  test.each(['=', 'is-a', 'descendent-of', 'child-of', 'generalizes'])('code %s gives the same result as concept %s', async (op) => {
+    expect(await provider.doesFilter('code', op, '51292008')).toBe(true);
+    const viaCode = await codes('code', op, '51292008');
+    expect(viaCode.length).toBeGreaterThan(0);
+    expect(viaCode).toEqual(await codes('concept', op, '51292008'));
+  });
+});
+
+// The R5 hierarchy filters descendent-leaf (S4) and is-not-a (S5); both used to fail with
+// "Unsupported filter operation". 16763008 |Hemorrhage of liver| has 12 descendants, 8 of
+// them leaves; 78171005 |Traumatic hemorrhage of liver| is one of them, with 3 descendants.
+describe('SNOMED CT descendent-leaf and is-not-a filters', () => {
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  // the codes passing every filter: the first is iterated, the rest checked
+  async function codes(...filters) {
+    const fc = await provider.getPrepContext(true);
+    for (const [op, value] of filters) {
+      expect(await provider.doesFilter('concept', op, value)).toBe(true);
+      await provider.filter(fc, true, 'concept', op, value);
+    }
+    const [first, ...rest] = await provider.executeFilters(fc);
+    const out = [];
+    while (await provider.filterMore(fc, first)) {
+      const c = await provider.filterConcept(fc, first);
+      let ok = true;
+      for (const r of rest) {
+        ok = ok && await provider.filterCheck(fc, r, c);
+      }
+      if (ok) {
+        out.push(await provider.code(c));
+      }
+    }
+    return out.sort();
+  }
+
+  async function located(op, value, code) {
+    const fc = await provider.getPrepContext(false);
+    await provider.filter(fc, false, 'concept', op, value);
+    const [set] = await provider.executeFilters(fc);
+    const r = await provider.filterLocate(fc, set, code);
+    return r !== null && typeof r !== 'string';
+  }
+
+  test('descendent-leaf takes only the descendants with no children', async () => {
+    expect(await codes(['descendent-leaf', '16763008'])).toEqual(['111371005', '197342009', '197364000', '206242003',
+      '21580006', '262798009', '405559000', '735677007']);
+    expect(await located('descendent-leaf', '16763008', '206242003')).toBe(true);
+    expect(await located('descendent-leaf', '16763008', '78171005')).toBe(false); // has children
+    expect(await located('descendent-leaf', '16763008', '16763008')).toBe(false); // the concept itself
+  });
+
+  test('descendent-leaf of a leaf is empty', async () => {
+    expect(await codes(['descendent-leaf', '206242003'])).toEqual([]);
+  });
+
+  test('is-not-a takes out the concept and its descendants', async () => {
+    expect(await codes(['is-a', '16763008'], ['is-not-a', '78171005'])).toEqual(['111371005', '16763008', '197342009',
+      '197364000', '262796008', '262797004', '262798009', '405559000', '735677007']);
+    expect(await located('is-not-a', '78171005', '78171005')).toBe(false);
+    expect(await located('is-not-a', '78171005', '206242003')).toBe(false);
+    expect(await located('is-not-a', '78171005', '16763008')).toBe(true);
+  });
+
+  test('is-not-a is the complement of is-a', async () => {
+    const isA = await codes(['is-a', '78171005']);
+    const notA = await codes(['is-not-a', '78171005']);
+    expect(isA.length + notA.length).toBe(provider.sct.concepts.count());
+    expect(notA.filter(c => isA.includes(c))).toEqual([]);
+  });
+});
+
+// display regex (S6): a concept matches when it has an active description (FSN or synonym,
+// not a text definition), in one language, whose whole term matches the pattern,
+// case-sensitively. The language is the first one the request named that the edition has,
+// else the edition's default. The test edition is English, plus Dutch descriptions for a few
+// hematoma concepts in its TEST1000003 extension (with a Dutch language reference set). Iterating it scans the description table (yielding as it goes), and a cached value
+// set's filter keeps the result, as for ECL.
+describe('SNOMED CT display regex filter', () => {
+  const HEMATOMA = ['206242003', '21580006', '262796008', '262797004', '262798009', '35566002', '405559000', '431674004'];
+  let factory;
+  let provider;
+  let langDefs;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    langDefs = await TestUtilities.loadLanguageDefinitions();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(langDefs));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  const langs = (code) => code ? Languages.fromAcceptLanguage(code, langDefs, true) : null;
+
+  async function regexCodes(pattern, { lang = null, fc = null, prop = 'display', op = 'regex' } = {}) {
+    const prep = await provider.getPrepContext(true, langs(lang));
+    await provider.filter(prep, true, prop, op, pattern, fc);
+    const [set] = await provider.executeFilters(prep);
+    const out = [];
+    while (await provider.filterMore(prep, set)) {
+      out.push(await provider.code(await provider.filterConcept(prep, set)));
+    }
+    return { codes: out.sort(), set };
+  }
+
+  async function regexHas(pattern, code) {
+    const prep = await provider.getPrepContext(false, null);
+    await provider.filter(prep, false, 'display', 'regex', pattern);
+    const [set] = await provider.executeFilters(prep);
+    const located = await provider.filterLocate(prep, set, code);
+    const { context } = await provider.locate(code);
+    return { located: located !== null && typeof located !== 'string', checked: await provider.filterCheck(prep, set, context) };
+  }
+
+  test('is supported, but not for a pattern that does not compile', async () => {
+    expect(await provider.doesFilter('display', 'regex', '.*[Hh]ematoma.*')).toBe(true);
+    expect(await provider.doesFilter('display', 'regex', '(unclosed')).toBe(false);
+  });
+
+  test('matches every concept with a matching active description', async () => {
+    expect((await regexCodes('.*[Hh]ematoma.*')).codes).toEqual(HEMATOMA);
+  });
+
+  test('matches the whole term, case-sensitively', async () => {
+    // only 35566002 has a description that ends in "Hematoma" with a capital H
+    expect((await regexCodes('.*Hematoma')).codes).toEqual(['35566002']);
+    expect((await regexCodes('Hematoma')).codes).toEqual(['35566002']);
+    expect((await regexCodes('hematoma')).codes).toEqual([]);
+    expect((await regexCodes('(?i)hematoma')).codes).toEqual(['35566002']);
+  });
+
+  test('matches synonyms, not only the preferred term', async () => {
+    // "Haematoma" is a synonym of 35566002 (GB spelling); its preferred term is "Hematoma"
+    const sct = provider.sct;
+    const r = sct.concepts.findConcept(35566002n);
+    expect(sct.getDisplayName(r.index)).toBe('Hematoma');
+    expect((await regexCodes('Haematoma')).codes).toEqual(['35566002']);
+  });
+
+  test('ignores inactive descriptions', async () => {
+    // 35566002 has the inactive synonyms "Hematoma, NOS" and "Haematoma, NOS"
+    expect((await regexCodes('H(a)?ematoma, NOS')).codes).toEqual([]);
+  });
+
+  test('validates one concept by its own descriptions', async () => {
+    expect(await regexHas('.*[Hh]ematoma.*', '262798009')).toEqual({ located: true, checked: true });
+    expect(await regexHas('.*[Hh]ematoma.*', '16763008')).toEqual({ located: false, checked: false });
+  });
+
+  test('a language the edition does not have falls back to the default', async () => {
+    expect((await regexCodes('.*[Hh]ematoma.*', { lang: 'de' })).codes).toEqual(HEMATOMA);
+    expect((await regexCodes('.*[Hh]ematoma.*', { lang: 'en-US' })).codes).toEqual(HEMATOMA);
+  });
+
+  test('a language the edition has: only its descriptions are searched', async () => {
+    const DUTCH = ['262796008', '262797004', '262798009', '35566002'];
+    expect((await regexCodes('.*hematoom.*', { lang: 'nl' })).codes).toEqual(DUTCH);
+    expect((await regexCodes('.*hematoom.*', { lang: 'nl-BE' })).codes).toEqual(DUTCH);
+    expect((await regexCodes('.*[Hh]ematoma.*', { lang: 'nl' })).codes).toEqual([]);
+    expect((await regexCodes('.*hematoom.*')).codes).toEqual([]); // English by default
+    // an acceptable (not preferred) Dutch synonym counts too
+    expect((await regexCodes('bloeduitstorting', { lang: 'nl' })).codes).toEqual(['35566002']);
+    // the first requested language the edition has wins
+    expect((await regexCodes('.*hematoom.*', { lang: 'de, nl;q=0.8, en;q=0.5' })).codes).toEqual(DUTCH);
+    const ecl = await regexCodes('* {{ D term = wild:"*hematoom*", language = nl }}', { prop: 'constraint', op: '=' });
+    expect(ecl.codes).toEqual(DUTCH);
+  });
+
+  test('a text definition is not a display', async () => {
+    // 35566002 |Hematoma| has no definition in the test edition; use one that does
+    const sct = provider.sct;
+    const definitionKind = sct.concepts.findConcept(900000000000550004n).index;
+    let defined = null;
+    for (let i = 0; i < sct.concepts.count() && !defined; i++) {
+      const ref = sct.concepts.getConceptByCount(i).index;
+      const c = sct.concepts.getConcept(ref);
+      for (const di of (c.descriptions ? sct.refs.getReferences(c.descriptions) : [])) {
+        const d = sct.descriptions.getDescription(di);
+        if (d.active && d.kind === definitionKind) {
+          defined = { code: String(sct.getConceptId(ref)), term: sct.strings.getEntry(d.iDesc) };
+          break;
+        }
+      }
+    }
+    expect(defined).not.toBeNull();
+    const escaped = defined.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expect((await regexCodes(escaped)).codes).not.toContain(defined.code);
+  });
+
+  test('a cached value set filter keeps the scan result', async () => {
+    const fc = {};
+    const first = await regexCodes('.*[Hh]ematoma.*', { fc });
+    expect(first.codes).toEqual(HEMATOMA);
+    const prep = await provider.getPrepContext(true, null);
+    await provider.filter(prep, true, 'display', 'regex', '.*[Hh]ematoma.*', fc);
+    const [set] = await provider.executeFilters(prep);
+    expect(set.populationDone).toBe(true); // no scan needed
+    expect((await regexCodes('.*[Hh]ematoma.*', { fc })).codes).toEqual(HEMATOMA);
+  });
+
+  test('gives the same concepts as the equivalent ECL description filter', async () => {
+    const ecl = await regexCodes('* {{ D term = wild:"*hematoma*", language = en }}', { prop: 'constraint', op: '=' });
+    expect(ecl.codes).toEqual(HEMATOMA);
+  });
+});
+
+// Concrete values (S8). The test edition's International subset has integer-valued drug
+// strengths and counts; its TEST1000003 extension adds three test data attributes with
+// string, boolean and decimal values on 329238006, 776168003 and 1204474000.
+describe('SNOMED CT concrete values', () => {
+  const NICKNAME = '1000701000003104';
+  const FISH = '1000711000003102';
+  const POTENCY = '1000721000003107';
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  async function ecl(expression) {
+    const fc = await provider.getPrepContext(true);
+    await provider.filter(fc, true, 'constraint', '=', expression);
+    const [set] = await provider.executeFilters(fc);
+    const out = [];
+    while (await provider.filterMore(fc, set)) {
+      out.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return out.sort();
+  }
+
+  async function lookupValues(code, props) {
+    const params = [];
+    await provider.extendLookup(code, props, params);
+    const out = {};
+    for (const p of params.filter(p => p.name === 'property')) {
+      const value = p.part.find(x => x.name === 'value');
+      const key = Object.keys(value).find(k => k !== 'name');
+      out[p.part.find(x => x.name === 'code').valueCode] = { [key]: value[key] };
+    }
+    return out;
+  }
+
+  test('$lookup returns concrete values, typed by the MRCM range or else by how they are written', async () => {
+    expect(await lookupValues('329238006', ['1142135004', '1142136003', '1142139005', NICKNAME, FISH, POTENCY])).toEqual({
+      '1142135004': { valueDecimal: 4000 },  // dec() in the MRCM, though written #4000
+      '1142136003': { valueDecimal: 1 },
+      '1142139005': { valueInteger: 1 },     // int() in the MRCM
+      [NICKNAME]: { valueString: 'Sunshine in a capsule' },
+      [FISH]: { valueBoolean: true },
+      [POTENCY]: { valueDecimal: 2.5 }       // no MRCM rule: #2.5 is written as a decimal
+    });
+    expect(await lookupValues('1204474000', [FISH, POTENCY])).toEqual({ [FISH]: { valueBoolean: false }, [POTENCY]: { valueDecimal: 0.75 } });
+  });
+
+  test('$lookup only returns the concrete values asked for, when properties are named', async () => {
+    expect(Object.keys(await lookupValues('329238006', [FISH]))).toEqual([FISH]);
+  });
+
+  test('ECL compares decimals by value, and decimal literals against integer values', async () => {
+    expect(await ecl(`< 763158003 : ${POTENCY} >= #0.75`)).toEqual(['1204474000', '329238006']);
+    expect(await ecl(`< 763158003 : ${POTENCY} = #2.50`)).toEqual(['329238006']);
+    expect(await ecl(`< 763158003 : ${POTENCY} < #1.0`)).toEqual(['1204474000']);
+    expect(await ecl('< 763158003 : 1142138002 > #599.5')).toEqual(['1204474000']);
+  });
+
+  test('ECL string concrete values: =, !=, a set, wild and match', async () => {
+    expect(await ecl(`< 763158003 : ${NICKNAME} = "Barium milkshake"`)).toEqual(['1204474000']);
+    expect(await ecl(`< 763158003 : ${NICKNAME} != "Barium milkshake"`)).toEqual(['329238006']);
+    expect(await ecl(`< 763158003 : ${NICKNAME} = ("Barium milkshake" "Sunshine in a capsule")`)).toEqual(['1204474000', '329238006']);
+    expect(await ecl(`< 763158003 : ${NICKNAME} = wild:"*capsule"`)).toEqual(['329238006']);
+    expect(await ecl(`< 763158003 : ${NICKNAME} = match:"barium"`)).toEqual(['1204474000']);
+  });
+
+  test('ECL boolean concrete values', async () => {
+    expect(await ecl(`< 763158003 : ${FISH} = true`)).toEqual(['329238006', '776168003']);
+    expect(await ecl(`< 763158003 : ${FISH} = false`)).toEqual(['1204474000']);
+    expect(await ecl(`< 763158003 : ${FISH} != true`)).toEqual(['1204474000']);
+  });
+
+  test('a value of the wrong type never matches', async () => {
+    expect(await ecl('< 763158003 : 1142135004 = "4000"')).toEqual([]);
+    expect(await ecl(`< 763158003 : ${FISH} = #1`)).toEqual([]);
+    expect(await ecl(`< 763158003 : ${NICKNAME} = true`)).toEqual([]);
+  });
+
+  test('concrete values in the same group', async () => {
+    expect(await ecl('< 763158003 : { 1142135004 = #4000, 1142136003 = #1 }')).toEqual(['329238006']);
+    expect(await ecl('< 763158003 : { 1142135004 = #4000, 1142136003 = #2 }')).toEqual([]);
+  });
+});
+
+// Map reference sets have members (S9). The importer used to skip any reference set file
+// whose header mentioned "map" (every map refset: mapTarget, mapGroup, ...), so ECL ^ and
+// ?fhir_vs=refset/ found nothing in them. The test edition's TEST1000003 extension has a
+// simple map (1000891000003103, two members) and an extended map (1000901000003102: three
+// active rows for two concepts, plus an inactive row for 405559000).
+describe('SNOMED CT map reference sets', () => {
+  const SIMPLE = '1000891000003103';
+  const EXTENDED = '1000901000003102';
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  async function codes(prop, op, value) {
+    const fc = await provider.getPrepContext(true);
+    await provider.filter(fc, true, prop, op, value);
+    const [set] = await provider.executeFilters(fc);
+    const out = [];
+    while (await provider.filterMore(fc, set)) {
+      out.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return out.sort();
+  }
+
+  async function located(prop, op, value, code) {
+    const fc = await provider.getPrepContext(false);
+    await provider.filter(fc, false, prop, op, value);
+    const [set] = await provider.executeFilters(fc);
+    const r = await provider.filterLocate(fc, set, code);
+    return r !== null && typeof r !== 'string';
+  }
+
+  test('a simple map reference set has its members', async () => {
+    expect(await codes('constraint', '=', `^ ${SIMPLE}`)).toEqual(['16763008', '262796008']);
+    expect(await codes('concept', 'in', SIMPLE)).toEqual(['16763008', '262796008']);
+  });
+
+  test('an extended map: each member concept once, inactive rows left out', async () => {
+    expect(await codes('constraint', '=', `^ ${EXTENDED}`)).toEqual(['262797004', '262798009']);
+    expect(await codes('concept', 'in', EXTENDED)).toEqual(['262797004', '262798009']);
+    expect(await located('constraint', '=', `^ ${EXTENDED}`, '262797004')).toBe(true);
+    expect(await located('constraint', '=', `^ ${EXTENDED}`, '405559000')).toBe(false); // inactive row
+    expect(await located('concept', 'in', EXTENDED, '262798009')).toBe(true);
+  });
+
+  test('member filters can select on the map fields', async () => {
+    expect(await codes('constraint', '=', `^ ${EXTENDED} {{ M mapTarget = "Y92.9" }}`)).toEqual(['262797004']);
+    expect(await codes('constraint', '=', `^ ${SIMPLE} {{ M mapTarget = "K76.89" }}`)).toEqual(['16763008']);
+  });
+});
+
+// Implicit value set urls (S10): the ecl/ form, and the edition and version forms, which
+// used to compare against an undefined edition and so never matched.
+describe('SNOMED CT implicit value set urls', () => {
+  let factory;
+  let provider;
+  const HEMORRHAGE = ['111371005', '16763008', '197342009', '197364000', '206242003', '21580006', '262796008',
+    '262797004', '262798009', '405559000', '431674004', '735677007', '78171005'];
+  const VERSION = 'http://snomed.info/xsct/31000003106/version/20250909';
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  // the concepts the value set's (single) include selects
+  async function members(vs) {
+    const include = vs.compose.include[0];
+    const fc = await provider.getPrepContext(true);
+    for (const f of include.filter) {
+      await provider.filter(fc, true, f.property, f.op, f.value);
+    }
+    const [set] = await provider.executeFilters(fc);
+    const out = [];
+    while (await provider.filterMore(fc, set)) {
+      out.push(await provider.code(await provider.filterConcept(fc, set)));
+    }
+    return out.sort();
+  }
+
+  test('the three forms are told apart, for the sct and xsct bases', () => {
+    expect(factory.implicitValueSetForm('http://snomed.info/sct?fhir_vs=isa/16763008').form).toBe('generic');
+    expect(factory.implicitValueSetForm('http://snomed.info/sct/31000003106?fhir_vs=isa/16763008').form).toBe('edition');
+    expect(factory.implicitValueSetForm('http://snomed.info/xsct/31000003106?fhir_vs').form).toBe('edition');
+    expect(factory.implicitValueSetForm('http://snomed.info/sct/31000003106/version/20250909?fhir_vs').form).toBe('version');
+    expect(factory.implicitValueSetForm(`${VERSION}?fhir_vs=refset/723264001`).form).toBe('version');
+    expect(factory.implicitValueSetForm('http://snomed.info/sct/731000124108?fhir_vs')).toBeNull();
+    expect(factory.implicitValueSetForm('http://snomed.info/sct/31000003106/version/20240101?fhir_vs')).toBeNull();
+    expect(factory.implicitValueSetForm('http://snomed.info/sct?fhir_vsx')).toBeNull();
+  });
+
+  test('ecl/ takes a URL-encoded expression, or one already decoded', async () => {
+    for (const url of ['http://snomed.info/sct?fhir_vs=ecl/%3C%3C%2016763008', 'http://snomed.info/sct?fhir_vs=ecl/<< 16763008']) {
+      const vs = await factory.buildKnownValueSet(url, null);
+      expect(vs.url).toBe(url);
+      expect(vs.compose.include[0].filter).toEqual([{ property: 'constraint', op: '=', value: '<< 16763008' }]);
+      expect(await members(vs)).toEqual(HEMORRHAGE);
+    }
+    expect(await factory.buildKnownValueSet('http://snomed.info/sct?fhir_vs=ecl/', null)).toBeNull();
+  });
+
+  test('the edition and version forms pin the include to this version; the generic form does not', async () => {
+    const generic = await factory.buildKnownValueSet('http://snomed.info/sct?fhir_vs=isa/16763008', null);
+    expect(generic.compose.include[0].version).toBeUndefined();
+    for (const url of ['http://snomed.info/sct/31000003106?fhir_vs=isa/16763008', 'http://snomed.info/sct/31000003106/version/20250909?fhir_vs=isa/16763008']) {
+      const vs = await factory.buildKnownValueSet(url, null);
+      expect(vs.compose.include[0].version).toBe(VERSION);
+      expect(await members(vs)).toEqual(HEMORRHAGE);
+    }
+    // an implicit value set's edition and version are in its url; it has no version of its own
+    expect(generic.version).toBeUndefined();
+  });
+});
+
+// $lookup property=* (S12): every property the SNOMED CT on FHIR page defines - including
+// moduleId (as the page names it), sufficientlyDefined and semanticTag - except the normal
+// forms, which are computed and have to be asked for by name.
+describe('SNOMED CT $lookup properties', () => {
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  async function props(code, asked) {
+    const params = [];
+    const { context } = await provider.locate(code);
+    await provider.extendLookup(context, asked, params);
+    const out = {};
+    for (const p of params.filter(p => p.name === 'property')) {
+      const value = p.part.find(x => x.name === 'value');
+      (out[p.part.find(x => x.name === 'code').valueCode] = out[p.part.find(x => x.name === 'code').valueCode] || [])
+        .push(value[Object.keys(value).find(k => k !== 'name')]);
+    }
+    return out;
+  }
+
+  test('* adds sufficientlyDefined and semanticTag to the default properties, but not the normal forms', async () => {
+    const all = await props('367430006', ['*']);
+    const def = await props('367430006', null);
+    expect(all.sufficientlyDefined).toEqual([true]);
+    expect(all.semanticTag).toEqual(['procedure']);
+    expect(all.normalForm).toBeUndefined();
+    expect(all.normalFormTerse).toBeUndefined();
+    const { sufficientlyDefined, semanticTag, ...rest } = all;
+    expect(rest).toEqual(def);
+    expect(def.sufficientlyDefined).toBeUndefined();
+  });
+
+  test('the module is moduleId, and asking for "module" still works', async () => {
+    expect((await props('367430006', null)).moduleId).toEqual(['900000000000207008']);
+    expect(await props('367430006', ['module'])).toEqual({ moduleId: ['900000000000207008'] });
+    expect((await props('367430006', null)).module).toBeUndefined();
+  });
+
+  test('sufficientlyDefined is false for a primitive concept', async () => {
+    const sct = provider.sct;
+    let primitive = null;
+    for (let i = 0; i < sct.concepts.count() && !primitive; i++) {
+      const ref = sct.concepts.getConceptByCount(i).index;
+      if (sct.isActive(ref) && sct.isPrimitive(ref)) {
+        primitive = String(sct.getConceptId(ref));
+      }
+    }
+    expect((await props(primitive, ['sufficientlyDefined'])).sufficientlyDefined).toEqual([false]);
+  });
+
+  test('the normal forms, when asked for by name, for a concept and an expression', async () => {
+    expect(await props('367430006', ['normalFormTerse'])).toEqual({
+      normalFormTerse: ['387713003:{260686004=257903006,405813007=(118632007:{272741003=182353008})}']
+    });
+    expect((await props('367430006', ['normalForm'])).normalForm).toEqual([
+      '387713003|Surgical procedure|:{260686004|Method|=257903006|Repair - action|,405813007|Procedure site - Direct|=(118632007|Structure of tendon within hand|:{272741003|Laterality|=182353008|Side|})}']);
+    const expr = await props('367430006:{405813007=(85562004:272741003=24028007)}', ['normalFormTerse']);
+    expect(expr.normalFormTerse).toEqual(['387713003:{260686004=257903006,405813007=(118632007:{272741003=182353008})},{405813007=(85562004:{272741003=24028007})}']);
+  });
+});

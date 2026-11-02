@@ -596,6 +596,9 @@ class LoincDataMigrator {
       // Initialize tracking variables
       this.codeKey = 0;
       this.relKey = 0;
+      this.relSeen = new Set();
+      this.axisParts = new Map(); // term key -> { COMPONENT: part key, ... } (see processLanguage)
+      this.partNamesSeen = new Set();
       this.descKey = 0;
       this.propKey = 0;
       this.propValueKey = 0;
@@ -826,7 +829,8 @@ class LoincDataMigrator {
     // Description types
     const descriptionTypes = [
       [1, 'LONG_COMMON_NAME'], [2, 'SHORTNAME'], [3, 'ConsumerName'],
-      [4, 'RELATEDNAMES2'], [5, 'DisplayName'], [6, 'LinguisticVariantDisplayName']
+      [4, 'RELATEDNAMES2'], [5, 'DisplayName'], [6, 'LinguisticVariantDisplayName'],
+      [7, 'PartName']
     ];
     descriptionTypes.forEach(([key, desc]) => {
       db.run('INSERT INTO DescriptionTypes (DescriptionTypeKey, Description) VALUES (?, ?)', [key, desc]);
@@ -1002,6 +1006,7 @@ class LoincDataMigrator {
     const clsCode = this.partNames.get('CLASS.' + items[7]);
     if (clsCode && this.codes.has(clsCode)) {
       this.addRelationship(db, codeKey, this.codes.get(clsCode).key, this.rels.get('CLASS'));
+      this.#noteAxisPart(codeKey, 'CLASS', this.codes.get(clsCode).key);
     }
 
     // Add properties
@@ -1269,6 +1274,9 @@ class LoincDataMigrator {
           this.rels.get(relType),
           this.statii.get(status) || 0
         );
+        if (LINGUISTIC_VARIANT_AXES.includes(relType)) {
+          this.#noteAxisPart(this.codes.get(sourceCode).key, relType, this.codes.get(targetCode).key);
+        }
       }
       processedCount++;
 
@@ -1472,6 +1480,24 @@ class LoincDataMigrator {
       this.addDescription(db, codeKey, langKey, this.dTypes.get('SHORTNAME'), items[8]);
       this.addDescription(db, codeKey, langKey, this.dTypes.get('LinguisticVariantDisplayName'), items[11]);
 
+      // The axis columns (COMPONENT ... CLASS) translate the term's Parts. Each becomes a
+      // PartName designation on the Part the term links to for that axis - for some languages
+      // (ko-KR, most of fr-CA) these are the only translations LOINC has. Each distinct name once
+      const axes = this.axisParts.get(codeKey);
+      if (axes) {
+        LINGUISTIC_VARIANT_AXES.forEach((axis, i) => {
+          const value = items[i + 1] ? items[i + 1].trim() : '';
+          const partKey = axes[axis];
+          if (value && partKey) {
+            const id = partKey + '|' + langKey + '|' + value;
+            if (!this.partNamesSeen.has(id)) {
+              this.partNamesSeen.add(id);
+              this.addDescription(db, partKey, langKey, this.dTypes.get('PartName'), value);
+            }
+          }
+        });
+      }
+
       processedCount++;
 
       if (processedCount % 100 === 0) {
@@ -1483,6 +1509,15 @@ class LoincDataMigrator {
     if (remaining > 0) {
       this.updateProgress(remaining);
     }
+  }
+
+  #noteAxisPart(termKey, axis, partKey) {
+    let axes = this.axisParts.get(termKey);
+    if (!axes) {
+      axes = {};
+      this.axisParts.set(termKey, axes);
+    }
+    axes[axis] = partKey;
   }
 
   addDescription(db, codeKey, languageKey, descriptionType, value) {
@@ -1508,6 +1543,14 @@ class LoincDataMigrator {
 
   addRelationship(db, sourceKey, targetKey, relationshipType, statusKey = 0) {
     if (!relationshipType) return;
+    // each relationship once: the source files repeat some (a part under the same parent on
+    // two paths in ComponentHierarchyBySystem, the same answer list linked more than once)
+    if (!this.relSeen) {
+      this.relSeen = new Set();
+    }
+    const id = relationshipType + '|' + sourceKey + '|' + targetKey;
+    if (this.relSeen.has(id)) return;
+    this.relSeen.add(id);
 
     this.relKey++;
     db.run('INSERT INTO Relationships (RelationshipKey, RelationshipTypeKey, SourceKey, TargetKey, StatusKey) VALUES (?, ?, ?, ?, ?)',
@@ -1537,6 +1580,10 @@ class LoincDataMigrator {
 }
 
 // Property name mappings from Pascal code
+// The axis columns of a LinguisticVariant file, in file order (columns 1 to 7), named as the
+// term's relationships to its Parts are
+const LINGUISTIC_VARIANT_AXES = ['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP', 'CLASS'];
+
 const KNOWN_PROPERTY_NAMES = [
   'AskAtOrderEntry', 'AssociatedObservations', 'CHANGE_REASON_PUBLIC', 'CHNG_TYPE', 'CLASS', 'CLASSTYPE', 'COMMON_ORDER_RANK', 'COMMON_TEST_RANK', 'COMPONENT', 'CONSUMER_NAME',
   'DefinitionDescription', 'DisplayName', 'EXAMPLE_UCUM_UNITS', 'EXAMPLE_UNITS', 'EXMPL_ANSWERS', 'EXTERNAL_COPYRIGHT_LINK', 'EXTERNAL_COPYRIGHT_NOTICE', 'FORMULA',

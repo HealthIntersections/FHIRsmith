@@ -96,11 +96,50 @@ describe('the analysis', () => {
       entry({ resourceType: 'Condition', id: 'a', subject: { reference: 'urn:uuid:p' }, onsetDateTime: '2027-01', recordedDate: '2026-10-31', note: [{ text: '2030-01-01' }] }),
       entry({ resourceType: 'Appointment', id: 'b', start: '2027-02-01T10:00:00Z' }),
       entry({ resourceType: 'Immunization', id: 'c', status: 'completed', patient: { reference: 'urn:uuid:p' }, occurrenceDateTime: '2026-11-01T09:00:00+10:00', protocolApplied: [{ doseNumberString: '2028' }] })), { now: NOW });
-    expect(texts(out.items.e3)).toEqual(['A date in the future: Condition.onsetDateTime = 2027-01', 'A date in the future: Condition.note[0].text = 2030-01-01', 'No narrative']);
+    // a note's text is not a date, whatever it looks like
+    expect(texts(out.items.e3)).toEqual(['A date in the future: Condition.onsetDateTime = 2027-01', 'No narrative']);
     expect(kinds(out.items.e3)[0]).toBe('attention');
     expect(kinds(out.items.e4)).toEqual(['ok', 'narrative']);
     // 9am in Brisbane is 23:00 UTC the day before: not the future; a dose number of 2028 is not a date
     expect(kinds(out.items.e5)).toEqual(['ok', 'narrative']);
+  });
+
+  test('dates about the future by their nature: period ends, expiry and due dates, schedules; and only real dates', async () => {
+    const d = doc(section(['a', 'b', 'c']),
+      entry({ resourceType: 'Immunization', id: 'a', status: 'completed', patient: { reference: 'urn:uuid:p' }, occurrenceDateTime: '2026-10-01',
+        expirationDate: '2027-06-30', identifier: [{ value: '2030-05', period: { start: '2026-01-01', end: '2031-01-01' } }],
+        extension: [{ url: 'http://x.org/next', valueDateTime: '2027-01-01' }] }),
+      entry({ resourceType: 'MedicationStatement', id: 'b', status: 'active', subject: { reference: 'urn:uuid:p' },
+        effectivePeriod: { start: '2026-01-01', end: '2027-12-31' }, dosage: [{ timing: { event: ['2027-01-01'], repeat: { boundsPeriod: { start: '2027-01-01' } } } }] }),
+      entry({ resourceType: 'Goal', id: 'c', lifecycleStatus: 'completed', subject: { reference: 'urn:uuid:p' }, startDate: '2027-02-01', target: [{ dueDate: '2027-03-01' }] }));
+    d.entry[1].resource.name = [{ family: 'X', period: { end: '2030-01-01' } }];
+    const out = await analyseDocument(d, { now: NOW });
+    expect(kinds(out.items.e1)[0]).toBe('ok');
+    expect(kinds(out.items.e3)).toEqual(['extension', 'narrative']);
+    expect(kinds(out.items.e4)).toEqual(['ok', 'narrative']);
+    // a completed goal that starts in the future; its due date is a due date
+    expect(texts(out.items.e5)).toEqual(['A date in the future: Goal.startDate = 2027-02-01', 'No narrative']);
+  });
+
+  test('requests, plans and events still to come may be in the future; once over, they may not', async () => {
+    const out = await analyseDocument(doc(section(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']),
+      entry({ resourceType: 'ServiceRequest', id: 'a', status: 'active', subject: { reference: 'urn:uuid:p' }, occurrenceDateTime: '2027-01-01' }),
+      entry({ resourceType: 'ServiceRequest', id: 'b', status: 'completed', subject: { reference: 'urn:uuid:p' }, occurrenceDateTime: '2027-01-01' }),
+      entry({ resourceType: 'Procedure', id: 'c', status: 'preparation', subject: { reference: 'urn:uuid:p' }, performedDateTime: '2027-01-01' }),
+      entry({ resourceType: 'Procedure', id: 'd', status: 'completed', subject: { reference: 'urn:uuid:p' }, performedDateTime: '2027-01-01' }),
+      entry({ resourceType: 'CarePlan', id: 'e', status: 'active', subject: { reference: 'urn:uuid:p' }, period: { start: '2027-01-01' } }),
+      entry({ resourceType: 'Goal', id: 'f', lifecycleStatus: 'active', subject: { reference: 'urn:uuid:p' }, startDate: '2027-01-01' }),
+      entry({ resourceType: 'ImmunizationRecommendation', id: 'g', patient: { reference: 'urn:uuid:p' }, date: '2027-01-01' }),
+      entry({ resourceType: 'Encounter', id: 'h', status: 'planned', subject: { reference: 'urn:uuid:p' }, period: { start: '2027-01-01' } }),
+      entry({ resourceType: 'MedicationStatement', id: 'i', status: 'intended', subject: { reference: 'urn:uuid:p' }, effectiveDateTime: '2027-01-01' })), { now: NOW });
+    const future = (k) => out.items[k].filter(f => f.kind === 'attention').map(f => f.text);
+    expect(future('e3')).toEqual([]);
+    expect(future('e4')).toEqual(['A date in the future: ServiceRequest.occurrenceDateTime = 2027-01-01']);
+    expect(future('e5')).toEqual([]);
+    expect(future('e6')).toEqual(['A date in the future: Procedure.performedDateTime = 2027-01-01']);
+    for (const k of ['e7', 'e8', 'e9', 'e10', 'e11']) {
+      expect(future(k)).toEqual([]);
+    }
   });
 
   test('a date with no time zone is in the future only if it is everywhere', () => {

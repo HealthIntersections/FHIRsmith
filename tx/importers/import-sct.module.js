@@ -2392,13 +2392,10 @@ class SnomedImporter {
         lineNumber++;
 
         if (lineNumber === 1) {
-          // Parse headers
+          // Parse headers. Map reference sets (simple, complex, extended) are loaded like
+          // any other: ECL ^ and ?fhir_vs=refset/ can name any reference set, and the
+          // ICD-10 maps are among the most used.
           headers = line.split('\t').map(h => h.trim());
-
-          // Skip if this looks like a mapping reference set
-          if (line.toLowerCase().includes('map')) {
-            return;
-          }
           continue;
         }
 

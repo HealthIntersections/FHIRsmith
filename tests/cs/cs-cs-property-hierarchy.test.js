@@ -248,6 +248,11 @@ describe('subsumption over a property-stated hierarchy', () => {
       expect(await filterCodes(withUri(), 'is-not-a', 'leaf')).toEqual(['mid', 'other', 'root', 'shared']);
     });
 
+    test('descendent-leaf takes the descendants that have no children', async () => {
+      expect(await filterCodes(withUri(), 'descendent-leaf', 'root')).toEqual(['leaf', 'shared']);
+      expect(await filterCodes(withUri(), 'descendent-leaf', 'leaf')).toEqual([]);
+    });
+
     test('child-of takes only the direct children', async () => {
       expect(await filterCodes(withUri(), 'child-of', 'root')).toEqual(['mid', 'shared']);
     });
