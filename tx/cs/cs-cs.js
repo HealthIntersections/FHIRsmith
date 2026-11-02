@@ -211,6 +211,14 @@ class FhirCodeSystemProvider extends BaseCSServices {
   /**
    * The provider for a CodeSystem resource: a FhirCodeSystemProvider, or the subclass
    * registered for its url. Always use this rather than the constructor.
+   *
+   * A CodeSystem object may choose its own provider: when it has a providerFactory method, that is
+   * asked first - providerFactory(opContext, supplements, cls), where cls is the class the url
+   * registry would use - and the provider it returns is used. If it returns null, or the object
+   * has no such method (as for every CodeSystem main loads), the registry decides, as before. A
+   * CodeSystem whose content lives in a database, say, can supply a provider that reads it there;
+   * a factory that only handles plain CodeSystems returns null when cls is a registered subclass.
+   *
    * @param {OperationContext} opContext
    * @param {CodeSystem} codeSystem
    * @param {CodeSystem[]} supplements
@@ -218,6 +226,12 @@ class FhirCodeSystemProvider extends BaseCSServices {
    */
   static create(opContext, codeSystem, supplements) {
     const cls = providerClassFor(codeSystem.url);
+    if (typeof codeSystem.providerFactory === 'function') {
+      const provider = codeSystem.providerFactory(opContext, supplements, cls);
+      if (provider) {
+        return provider;
+      }
+    }
     return new cls(opContext, codeSystem, supplements);
   }
 
