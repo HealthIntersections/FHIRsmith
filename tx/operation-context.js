@@ -948,7 +948,7 @@ const CHECK_FREQUENCY = 100;
 // I/O. checkAndYield() awaits a real setImmediate every YIELD_INTERVAL ms of
 // compute, so pending I/O (new connections, /metadata, timers) runs between
 // slices and one heavy $expand can no longer time out every other client.
-const YIELD_INTERVAL = 25;
+const YIELD_INTERVAL = 10;
 const { setImmediate: yieldToEventLoop } = require('timers/promises');
 
 class OperationContext {
