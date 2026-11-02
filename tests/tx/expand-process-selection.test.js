@@ -11,6 +11,7 @@
 const request = require('supertest');
 const { getTestApp, shutdownTestApp } = require('./setup');
 const { FhirCodeSystemProvider, FhirCodeSystemProviderFilterContext } = require('../../tx/cs/cs-cs');
+const { Issue } = require('../../tx/library/operation-outcome');
 
 const CS_URL = 'http://example.org/fhir/CodeSystem/process-selection-cs';
 const N = 12;
@@ -64,7 +65,7 @@ function select(includes, excludes) {
 describe('$expand: handing a whole compose to the provider (processSelection)', () => {
   let app;
   let calls;
-  let behaviour; // 'handle' | 'decline' | 'no-total' | 'large' | 'off'
+  let behaviour; // 'handle' | 'decline' | 'no-total' | 'large' | 'refuse' | 'off'
   const spies = [];
 
   beforeAll(async () => {
@@ -73,10 +74,18 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     spies.push(jest.spyOn(FhirCodeSystemProvider.prototype, 'handlesSelecting').mockImplementation(function () {
       return this.system() === CS_URL && behaviour !== 'off' ? true : origHandles.call(this);
     }));
-    spies.push(jest.spyOn(FhirCodeSystemProvider.prototype, 'processSelection').mockImplementation(async function (params, includes, excludes, excludeInactive, offset, count) {
-      calls.push({ includes, excludes, excludeInactive, offset, count });
+    spies.push(jest.spyOn(FhirCodeSystemProvider.prototype, 'processSelection').mockImplementation(async function (params, includes, excludes, excludeInactive, offset, count, context) {
+      calls.push({ includes, excludes, excludeInactive, offset, count, context });
       if (behaviour === 'decline') {
         return null;
+      }
+      if (behaviour === 'refuse') {
+        // the form cs-api.js documents for a provider that won't produce the selection
+        const vs = context.valueSet;
+        const vurl = vs.version ? vs.url + '|' + vs.version : vs.url;
+        throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+          this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + 7]),
+          null, 422).withDiagnostics(this.opContext.diagnostics());
       }
       const all = select(includes, excludes);
       const start = Math.max(offset, 0);
@@ -181,6 +190,27 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     expect(handled.details.text).toEqual(usual.details.text);
     expect(handled.details.text).toContain(vs.url + '|1.0.0');
     expect(handled.details.text).toContain('>5');
+  });
+
+  test('the provider is told which value set the compose belongs to', async () => {
+    const vs = valueSet({ include: [wholeSystem] });
+    await expand(app, vs, [{ name: 'count', valueInteger: 2 }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].context).toEqual({ valueSet: { url: vs.url, version: '1.0.0' } });
+  });
+
+  test('a provider may refuse as too costly with the standard Issue', async () => {
+    behaviour = 'refuse';
+    const vs = valueSet({ include: [wholeSystem] });
+    const res = await request(app).post('/tx/r5/ValueSet/$expand')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [
+        { name: 'tx-resource', resource: CS }, { name: 'valueSet', resource: vs }
+      ] });
+    expect(res.status).toBe(422);
+    expect(res.body.issue[0].code).toBe('too-costly');
+    expect(res.body.issue[0].details.text).toBe(
+      "The value set '" + vs.url + "|1.0.0' expansion has too many codes to produce (>7)");
   });
 
   test('a page that fits inside the limit is not refused', async () => {

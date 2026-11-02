@@ -192,7 +192,7 @@ hand the entire include/exclude list to the provider in one call rather than usi
 workflow above.
 
 Override `handlesSelecting()` to return `true` and then implement
-`processSelection(params, includes, excludes, excludeInactive, offset, count)`.
+`processSelection(params, includes, excludes, excludeInactive, offset, count, context)`.
 
 - **When it is called.** `$expand` hands over a compose that selects from this code system
   alone (one system|version), imports no value sets, has no text filter and lists no concepts.
@@ -206,6 +206,25 @@ Override `handlesSelecting()` to return `true` and then implement
   iterated with `filterMore`/`filterConcept`; `total` is the size of the whole selection
   before paging, or -1 if the provider hasn't counted it (the expansion then has no total);
   `notClosed` marks an open-ended selection (a grammar-based code system).
+
+- **Context.** The optional last argument, `context`, says what the selection is for:
+  `context.valueSet` is `{ url, version }` of the value set whose compose this is (either may be
+  undefined for a value set given inline without them). A provider may ignore it.
+- **Too costly.** A provider that won't produce a selection because it would cost too much may
+  throw the standard too-costly `Issue` (tx/library/operation-outcome.js), in the form `$expand`
+  uses when it refuses a value set. Here `vurl` is `url|version`, or `url` when there is no
+  version:
+
+  ```js
+  throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+    this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + limit]),
+    null, 422).withDiagnostics(this.opContext.diagnostics());
+  ```
+
+  The response is a 422 with a `too-costly` issue, as for a value set `$expand` refuses itself.
+- **Over the limit.** When an include takes the whole system and the reported `total` is over the
+  request's limit, `$expand` refuses as it does on the usual path, unless the requested page
+  fits inside the limit.
 
 The default `handlesSelecting()` returns `false`, so a provider that doesn't override it is
 never asked.
