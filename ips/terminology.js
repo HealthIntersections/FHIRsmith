@@ -391,5 +391,5 @@ function terminologyOf(bundle) {
 
 module.exports = {
   terminologyOf, conceptsOf, systemName, describeVersion, sctEdition, linkForSystem, linkForCode, isExternalSystem, isIgnored,
-  sectionRank, SECTION_ORDER, IGNORED, SYSTEM_NAMES
+  sectionRank, SECTION_ORDER, IGNORED, SYSTEM_NAMES, typeOf
 };
