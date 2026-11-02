@@ -37,4 +37,13 @@ function keepForPinnedReference(key, resource, thoVersions) {
   return false;
 }
 
-module.exports = { keepForPinnedReference };
+/**
+ * Whether a package is one of the hl7.terminology (THO) packages
+ * @param {string} pid - the package id (with or without #version)
+ * @returns {boolean}
+ */
+function isTHOPackage(pid) {
+  return pid != null && pid.startsWith("hl7.terminology");
+}
+
+module.exports = { keepForPinnedReference, isTHOPackage };

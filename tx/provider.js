@@ -9,6 +9,7 @@ const {validateParameter, validateOptionalParameter, validateArrayParameter} = r
 const path = require("path");
 const {PackageContentLoader} = require("../library/package-manager");
 const {PackageValueSetProvider} = require("./vs/vs-package");
+const { isTHOPackage } = require("./library/tho-precedence");
 const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
@@ -816,7 +817,7 @@ class Provider {
    * terminology.hl7.org (THO/UTG) package.
    */
   static #isTHOPackage(pid) {
-    return pid != null && pid.startsWith("hl7.terminology");
+    return isTHOPackage(pid);
   }
 
   /**
@@ -869,13 +870,10 @@ class Provider {
    * read by id, found by search, or used for translation unless asked for.
    */
   applyTHOPrecedence() {
+    // each value set provider is asked (it may hold no map: a database-backed provider)
     const thoValueSets = new Map();
     for (const vp of this.valueSetProviders) {
-      if (vp instanceof PackageValueSetProvider && Provider.#isTHOPackage(vp.sourcePackage())) {
-        for (const vs of vp.valueSetMap.values()) {
-          Provider.#addVersion(thoValueSets, vs);
-        }
-      }
+      vp.thoVersions(thoValueSets);
     }
     const thoConceptMaps = new Map();
     for (const cmp of this.conceptMapProviders) {
@@ -886,9 +884,7 @@ class Provider {
       }
     }
     for (const vp of this.valueSetProviders) {
-      if (vp instanceof PackageValueSetProvider && VersionUtilities.isCorePackage(vp.sourcePackage())) {
-        vp.keepPinnedOnly(thoValueSets);
-      }
+      vp.yieldToTHO(thoValueSets);
     }
     for (const cmp of this.conceptMapProviders) {
       if (cmp instanceof PackageConceptMapProvider && VersionUtilities.isCorePackage(cmp.sourcePackage())) {

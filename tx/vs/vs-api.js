@@ -120,6 +120,27 @@ class AbstractValueSetProvider {
     return [];
   }
 
+  /**
+   * THO precedence (Provider.applyTHOPrecedence), step 1: if this provider provides value sets
+   * from an hl7.terminology package, add each one's url and version to the map. The default adds
+   * nothing (PackageValueSetProvider adds the value sets of a THO package).
+   *
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides; added to
+   */
+  // eslint-disable-next-line no-unused-vars
+  thoVersions(thoVersions) { }
+
+  /**
+   * THO precedence (Provider.applyTHOPrecedence), step 2: if this provider provides the FHIR core
+   * package's value sets, those with urls THO also provides are only available to a reference
+   * that names their version. The default does nothing (PackageValueSetProvider does this for a
+   * core package: keepPinnedOnly).
+   *
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
+   */
+  // eslint-disable-next-line no-unused-vars
+  yieldToTHO(thoVersions) { }
+
   async close() {
 
   }
