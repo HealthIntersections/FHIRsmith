@@ -50,6 +50,17 @@ describe('$cache-control routing (scaffolding)', () => {
     expect(p.valueId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
+  test('mode=start echoes the issued cache-id in the X-Cache-Id response header', async () => {
+    const res = await request(app)
+      .post(BASE)
+      .query({ mode: 'start' })
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send(emptyBody);
+    const p = (res.body.parameter || []).find(x => x.name === 'cache-id');
+    expect(res.headers['x-cache-id']).toBe(p.valueId);
+  });
+
   test('GET mode=start resolves (browsable, like the other operations)', async () => {
     const res = await request(app)
       .get(BASE)
