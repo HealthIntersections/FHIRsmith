@@ -78,4 +78,32 @@ describe('memory-guard', () => {
     setRss(9.5 * GB);
     expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
   });
+
+  test('a gc function is available even without --expose-gc', () => {
+    expect(typeof memoryGuard.getGc()).toBe('function');
+  });
+
+  test('while refusing, a forced GC that brings memory down lets the request through', () => {
+    setRss(8.5 * GB);
+    const gc = memoryGuard.getGc();
+    expect(gc).toBeTruthy();
+    // first request: over threshold, GC runs at once; pretend it freed enough
+    rssSpy.mockImplementation(() => 7 * GB);
+    memoryGuard._state.sampleRss = 8.5 * GB;
+    memoryGuard._state.sampleTime = Date.now(); // the cached sample says "over"
+    const next = jest.fn();
+    memoryGuard.middleware({ gcInterval: 1000 })({ path: '/r4/x' }, fakeRes(), next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  test('logs when refusing starts and when it stops', () => {
+    const log = { info: jest.fn(), warn: jest.fn() };
+    const mw = memoryGuard.middleware({ log, gcInterval: 60000 });
+    setRss(8.5 * GB);
+    mw({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(log.warn.mock.calls.some(c => /refusing new requests/.test(c[0]))).toBe(true);
+    setRss(7 * GB);
+    mw({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(log.warn.mock.calls.some(c => /accepting requests again after \d+s \(1 refused\)/.test(c[0]))).toBe(true);
+  });
 });
