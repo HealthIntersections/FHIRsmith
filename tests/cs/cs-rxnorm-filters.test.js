@@ -30,14 +30,31 @@ describe('RxNorm filters, totals, status and lookup', () => {
   let provider;
 
   beforeAll(async () => {
+    // Progress to stderr (SUPPRESS_LOGS silences console in CI): if setup is slow or stalls in
+    // the pipeline, the log shows which step and how far it got
+    const t0 = Date.now();
+    let lastOp = null;
+    const step = (msg) => process.stderr.write(`[cs-rxnorm-filters] ${((Date.now() - t0) / 1000).toFixed(1)}s ${msg}\n`);
+    step(`start: ${dbPath}, rss ${Math.round(process.memoryUsage.rss() / 1e6)} MB`);
     if (fs.existsSync(dbPath)) {
       fs.unlinkSync(dbPath);
     }
-    const importer = new RxNormImporter(sourceDir, dbPath, 'TEST-2025-08-24', { verbose: false, createStems: false, progressCallback: null });
+    const importer = new RxNormImporter(sourceDir, dbPath, 'TEST-2025-08-24', {
+      verbose: false, createStems: false,
+      progressCallback: (n, op) => {
+        if (op && op !== lastOp) {
+          lastOp = op;
+          step(`${op} (${n} rows so far)`);
+        }
+      }
+    });
     await importer.import();
+    step('imported');
     const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    step('translations loaded');
     factory = new RxNormServicesFactory(opContext.i18n, dbPath);
     provider = await factory.build(opContext, []);
+    step(`provider ready, rss ${Math.round(process.memoryUsage.rss() / 1e6)} MB`);
   });
 
   afterAll(() => {
