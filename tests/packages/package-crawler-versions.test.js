@@ -94,6 +94,69 @@ describe('crawler: one copy of each id#version', () => {
     expect(pkg.CurrentVersion).toBe(before.PackageVersionKey);
   });
 
+  test('replacing a mirror file swaps it whole: a reader of the old file still sees all of it', async () => {
+    const old = tarball('ex.r', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.r#1.0.0', simplifier('ex.r', '1.0.0'), old);
+    const file = path.join(env.tmp, 'mirror', 'ex.r-1.0.0.tgz');
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = tarball('ex.r', '1.0.0', 'direct');
+      await feedItem(env.crawler, 'ex.r#1.0.0', direct('ex.r', '1.0.0'), buf);
+      // written in place, the open file would now be truncated or hold the new bytes
+      const seen = Buffer.alloc(old.length + 1);
+      expect(fs.readSync(fd, seen, 0, seen.length, 0)).toBe(old.length);
+      expect(seen.subarray(0, old.length)).toEqual(old);
+      expect(mirror('ex.r', '1.0.0')).toEqual(buf);
+      expect(fs.readdirSync(path.join(env.tmp, 'mirror')).filter(f => f.includes('.tmp-'))).toEqual([]);
+    } finally {
+      fs.closeSync(fd);
+    }
+  });
+
+  // What the mirror holds at the moment the registry commits (and so starts advertising) a package
+  const atCommit = () => {
+    const seen = {};
+    const commit = env.crawler.commit.bind(env.crawler);
+    env.crawler.commit = jest.fn(async (buf, npm, date, guid, id, version, ...rest) => {
+      const file = path.join(env.tmp, 'mirror', `${id}-${version}.tgz`);
+      seen.file = fs.existsSync(file) ? fs.readFileSync(file) : null;
+      seen.tmp = fs.readdirSync(path.join(env.tmp, 'mirror')).filter(f => f.includes('.tmp-'));
+      return commit(buf, npm, date, guid, id, version, ...rest);
+    });
+    return seen;
+  };
+
+  test('a new package\'s mirror file is complete before the registry commits it', async () => {
+    const seen = atCommit();
+    const buf = tarball('ex.n', '1.0.0');
+    expect((await feedItem(env.crawler, 'ex.n#1.0.0', direct('ex.n', '1.0.0'), buf)).status).toBe('Fetched');
+    expect(seen.file).toEqual(buf);
+    expect(seen.tmp).toEqual([]);
+  });
+
+  test('a replacement keeps serving the old file until it commits, then swaps it', async () => {
+    const old = tarball('ex.s', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.s#1.0.0', simplifier('ex.s', '1.0.0'), old);
+    const seen = atCommit();
+    const buf = tarball('ex.s', '1.0.0', 'direct');
+    expect((await feedItem(env.crawler, 'ex.s#1.0.0', direct('ex.s', '1.0.0'), buf)).status).toBe('Replaced Simplifier copy');
+    expect(seen.file).toEqual(old);
+    expect(mirror('ex.s', '1.0.0')).toEqual(buf);
+    expect(fs.readdirSync(path.join(env.tmp, 'mirror')).filter(f => f.includes('.tmp-'))).toEqual([]);
+  });
+
+  test('if the commit fails, a replacement leaves the served file alone and a new package leaves no file', async () => {
+    const old = tarball('ex.f', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.f#1.0.0', simplifier('ex.f', '1.0.0'), old);
+    env.crawler.commit = jest.fn(async () => { throw new Error('commit failed'); });
+    await feedItem(env.crawler, 'ex.f#1.0.0', direct('ex.f', '1.0.0'), tarball('ex.f', '1.0.0', 'direct'));
+    expect(mirror('ex.f', '1.0.0')).toEqual(old);
+    await feedItem(env.crawler, 'ex.g#1.0.0', direct('ex.g', '1.0.0'), tarball('ex.g', '1.0.0'));
+    const files = fs.readdirSync(path.join(env.tmp, 'mirror'));
+    expect(files).not.toContain('ex.g-1.0.0.tgz');
+    expect(files.filter(f => f.includes('.tmp-'))).toEqual([]);
+  });
+
   test('a second direct copy from another GUID is an error, and ignored', async () => {
     const buf = tarball('ex.c', '1.0.0', 'first');
     await feedItem(env.crawler, 'ex.c#1.0.0', direct('ex.c', '1.0.0'), buf);

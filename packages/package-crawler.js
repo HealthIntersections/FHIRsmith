@@ -902,20 +902,43 @@ class PackageCrawler {
       // Extract URLs from package
       const urls = this.processPackageUrls(npmPackage);
 
-      // Commit to database
-      await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
-
-      // Only now write the mirror copy: a package that failed validation or didn't commit
-      // must not replace the file that is served for the copy we hold
+      // The mirror file has to be complete before the registry advertises the package (the
+      // download redirect points at it), and a replacement must not touch the file served for
+      // the copy we hold unless it commits. So: write the new file beside its target first;
+      // a new package's file is put in place before the commit, a replacement's after it.
+      // Rename within a directory is atomic, so readers see the old file or the whole new one.
+      let filepath = null;
+      let tmpPath = null;
       if (this.config.mirrorPath) {
         let fid = this.fixPrefix(id);
-        const filename = `${fid}-${version}.tgz`;
-        const filepath = path.join(this.config.mirrorPath, filename);
+        filepath = path.join(this.config.mirrorPath, `${fid}-${version}.tgz`);
         // id and version are validated, but the file must land in the mirror whatever they say
         if (path.dirname(path.resolve(filepath)) !== path.resolve(this.config.mirrorPath)) {
           throw new Error(`Package ${id}#${version} rejected: its mirror file name is not a plain file name`);
         }
-        fs.writeFileSync(filepath, packageBuffer);
+        tmpPath = `${filepath}.tmp-${process.pid}`;
+        fs.writeFileSync(tmpPath, packageBuffer);
+      }
+      const replacing = check.action === 'replace';
+      let placed = false;
+      try {
+        if (tmpPath && !replacing) {
+          fs.renameSync(tmpPath, filepath);
+          placed = true;
+        }
+        await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
+        if (tmpPath && replacing) {
+          fs.renameSync(tmpPath, filepath);
+        }
+      } catch (e) {
+        if (tmpPath) {
+          fs.rmSync(tmpPath, { force: true });
+        }
+        if (placed) {
+          // a new package that didn't commit isn't advertised, so its file goes too
+          fs.rmSync(filepath, { force: true });
+        }
+        throw e;
       }
 
       return check.action === 'replace' ? 'replaced' : 'stored';
