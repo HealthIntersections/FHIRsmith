@@ -769,21 +769,11 @@ class ValueSetDatabase {
           const valueSetMap = new Map();
 
           for (const row of rows) {
-            let valueSet;
-            try {
-              valueSet = new ValueSet(JSON.parse(row.content));
-            } catch (e) {
-              // one unacceptable value set (e.g. one containing a CodeSystem, which the
-              // server doesn't support) must not take the whole package's value sets with it
-              require('../../library/logger').getInstance().child({ module: 'tx' })
-                .warn(`${source || 'ValueSet database'}: skipping ValueSet ${row.url || row.id}${row.version ? '|' + row.version : ''}: ${e.message}`);
+            const valueSet = this._rowToValueSet(row, source);
+            if (!valueSet) {
               this.vsCount--;
               continue;
             }
-            valueSet.sourcePackage = source;
-            // Attach the stored content hash so callers can detect changes
-            // without recomputing over the full JSON.
-            valueSet.contentHash = row.content_hash || null;
             // Store by URL and id alone
             this.addToMap(valueSetMap, row.id, row.url, row.version, valueSet);
           }
@@ -794,6 +784,108 @@ class ValueSetDatabase {
         }
       });
     });
+  }
+
+  /**
+   * Build the ValueSet for a row (id, url, version, content, content_hash) - or null if the
+   * content isn't an acceptable value set, which is logged and then treated as absent
+   * @param {Object} row
+   * @param {string} source
+   * @returns {ValueSet|null}
+   * @private
+   */
+  _rowToValueSet(row, source) {
+    let valueSet;
+    try {
+      valueSet = new ValueSet(JSON.parse(row.content));
+    } catch (e) {
+      // one unacceptable value set (e.g. one containing a CodeSystem, which the
+      // server doesn't support) must not take the whole package's value sets with it
+      require('../../library/logger').getInstance().child({ module: 'tx' })
+        .warn(`${source || 'ValueSet database'}: skipping ValueSet ${row.url || row.id}${row.version ? '|' + row.version : ''}: ${e.message}`);
+      return null;
+    }
+    valueSet.sourcePackage = source;
+    // Attach the stored content hash so callers can detect changes
+    // without recomputing over the full JSON.
+    valueSet.contentHash = row.content_hash || null;
+    return valueSet;
+  }
+
+  /**
+   * Read one ValueSet by id, for providers that read value sets on demand instead of
+   * holding them all in memory (see loadAllValueSets)
+   * @param {string} id
+   * @param {string} source
+   * @returns {Promise<ValueSet|null>} null if there's no such row, or it was rejected
+   */
+  async loadValueSet(id, source) {
+    const db = await this._getReadConnection();
+    const row = await new Promise((resolve, reject) => {
+      db.get('SELECT id, url, version, content, content_hash FROM valuesets WHERE id = ?', [id],
+        (err, row) => err ? reject(new Error(`Failed to load value set ${id}: ${err.message}`)) : resolve(row));
+    });
+    return row ? this._rowToValueSet(row, source) : null;
+  }
+
+  /**
+   * The id and version of every row for a url, in the order loadAllValueSets sees them -
+   * enough to work out which one a url (and version) refers to (see addToMap) without
+   * reading any content
+   * @param {string} url
+   * @returns {Promise<Array<{id: string, url: string, version: string}>>}
+   */
+  async listVersions(url) {
+    const db = await this._getReadConnection();
+    return new Promise((resolve, reject) => {
+      db.all('SELECT id, url, version FROM valuesets WHERE url = ? ORDER BY rowid', [url],
+        (err, rows) => err ? reject(new Error(`Failed to list versions of ${url}: ${err.message}`)) : resolve(rows));
+    });
+  }
+
+  /**
+   * The stored content hash for url|version, or undefined if there's no such row
+   * @param {string} url
+   * @param {string} version
+   * @returns {Promise<{id: string, content_hash: string}|undefined>}
+   */
+  async getVersion(url, version) {
+    const db = await this._getReadConnection();
+    return new Promise((resolve, reject) => {
+      db.get('SELECT id, content_hash FROM valuesets WHERE url = ? AND version = ?', [url, version],
+        (err, row) => err ? reject(new Error(`Failed to read ${url}|${version}: ${err.message}`)) : resolve(row));
+    });
+  }
+
+  /**
+   * Every url|version in the database (as a Set of 'url|version' strings)
+   * @returns {Promise<Set<string>>}
+   */
+  async listVersionKeys() {
+    const db = await this._getReadConnection();
+    return new Promise((resolve, reject) => {
+      db.all('SELECT url, version FROM valuesets WHERE version IS NOT NULL', [], (err, rows) => {
+        if (err) {
+          reject(new Error(`Failed to list value set versions: ${err.message}`));
+        } else {
+          resolve(new Set(rows.map(row => `${row.url}|${row.version}`)));
+        }
+      });
+    });
+  }
+
+  /**
+   * Count the value sets (sets vsCount), and the distinct urls among them
+   * @returns {Promise<{total: number, urls: number}>}
+   */
+  async countValueSets() {
+    const db = await this._getReadConnection();
+    const row = await new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) AS total, COUNT(DISTINCT url) AS urls FROM valuesets', [],
+        (err, row) => err ? reject(new Error(`Failed to count value sets: ${err.message}`)) : resolve(row));
+    });
+    this.vsCount = row.total;
+    return row;
   }
 
   addToMap(valueSetMap, id, url, version, valueSet) {
@@ -831,11 +923,16 @@ class ValueSetDatabase {
 
   /**
    * Search for ValueSets based on criteria
+   * @param {string} spaceId - the id space the results are served in
+   * @param {Map|null} map - the provider's loaded value sets, keyed by id; null for a provider
+   *   that reads value sets on demand: the matching rows are then read and parsed here
+   *   (returned without the provider's id prefix, which the provider applies)
    * @param {Array<{name: string, value: string}>} searchParams - Search criteria
    * @param {Array<string>|null} elements - Optional list of elements to return (for optimization)
+   * @param {string} [source] - source package to attach to value sets read on demand
    * @returns {Promise<Array<Object>>} List of matching ValueSets
    */
-  async search(spaceId, map, searchParams, elements = null) {
+  async search(spaceId, map, searchParams, elements = null, source = null) {
     // Check if we can optimize by selecting only indexed columns
     const canOptimize = elements && elements.length > 0 &&
         elements.every(e => INDEXED_COLUMNS.includes(e));
@@ -850,7 +947,7 @@ class ValueSetDatabase {
     return new Promise((resolve, reject) => {
       const { query, params } = this._buildSearchQuery(searchParams, columnsToSelect);
 
-      db.all(query, params, (err, rows) => {
+      db.all(query, params, async (err, rows) => {
         if (err) {
           reject(new Error(`Search query failed: ${err.message}`));
           return;
@@ -876,8 +973,13 @@ class ValueSetDatabase {
           } else {
             // Fall back to parsing JSON
             // a value set the map doesn't have was rejected when the map was loaded
-            // (see loadAllValueSets), so it isn't a result
-            results = rows.map(row => map.get(row.id)).filter(vs => vs);
+            // (see loadAllValueSets) - or is rejected now, when read on demand - so it isn't a result
+            if (map) {
+              results = rows.map(row => map.get(row.id)).filter(vs => vs);
+            } else {
+              const content = await this._readRows(db, rows.map(row => row.id));
+              results = rows.filter(row => content.has(row.id)).map(row => this._rowToValueSet(content.get(row.id), source)).filter(vs => vs);
+            }
           }
 
           resolve(results);
@@ -885,6 +987,26 @@ class ValueSetDatabase {
           reject(new Error(`Failed to parse search results: ${error.message}`));
         }
       });
+    });
+  }
+
+  /**
+   * Read the rows for a list of ids
+   * @param {sqlite3.Database} db
+   * @param {string[]} ids
+   * @returns {Promise<Map<string, Object>>} id -> row (id, url, version, content, content_hash)
+   * @private
+   */
+  _readRows(db, ids) {
+    return new Promise((resolve, reject) => {
+      db.all('SELECT id, url, version, content, content_hash FROM valuesets WHERE id IN (SELECT value FROM json_each(?))',
+        [JSON.stringify(ids)], (err, rows) => {
+          if (err) {
+            reject(new Error(`Failed to read value sets: ${err.message}`));
+          } else {
+            resolve(new Map(rows.map(row => [row.id, row])));
+          }
+        });
     });
   }
 
