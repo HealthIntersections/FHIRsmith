@@ -17,8 +17,8 @@
  *   read    - the file is read into this process (private memory, as before)
  *   mmap    - the file is mapped read-only; pages are read from disk when first touched, and
  *             shared with every other process that maps the same file
- *   prewarm - mapped, and madvise(MADV_WILLNEED) asks the kernel to read the whole file
- *             into the page cache in the background, so the first requests don't wait
+ *   prewarm - mapped, and read through once in the background at startup so its pages are
+ *             already in the shared page cache when the first requests arrive
  */
 
 const path = require('path');
