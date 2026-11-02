@@ -41,6 +41,9 @@ function isNewerVersion(candidate, current) {
 class ValueSetDatabase {
   vsCount;
 
+  // search() can build results with these elements from the table's columns
+  static INDEXED_COLUMNS = INDEXED_COLUMNS;
+
   /**
    * @param {string} dbPath - Path to the SQLite database file
    */
@@ -941,16 +944,11 @@ class ValueSetDatabase {
 
   /**
    * Search for ValueSets based on criteria
-   * @param {string} spaceId - the id space the results are served in
-   * @param {Map|null} map - the provider's loaded value sets, keyed by id; null for a provider
-   *   that reads value sets on demand: the matching rows are then read and parsed here
-   *   (returned without the provider's id prefix, which the provider applies)
    * @param {Array<{name: string, value: string}>} searchParams - Search criteria
    * @param {Array<string>|null} elements - Optional list of elements to return (for optimization)
-   * @param {string} [source] - source package to attach to value sets read on demand
    * @returns {Promise<Array<Object>>} List of matching ValueSets
    */
-  async search(spaceId, map, searchParams, elements = null, source = null) {
+  async search(spaceId, map, searchParams, elements = null) {
     // Check if we can optimize by selecting only indexed columns
     const canOptimize = elements && elements.length > 0 &&
         elements.every(e => INDEXED_COLUMNS.includes(e));
@@ -965,7 +963,7 @@ class ValueSetDatabase {
     return new Promise((resolve, reject) => {
       const { query, params } = this._buildSearchQuery(searchParams, columnsToSelect);
 
-      db.all(query, params, async (err, rows) => {
+      db.all(query, params, (err, rows) => {
         if (err) {
           reject(new Error(`Search query failed: ${err.message}`));
           return;
@@ -991,13 +989,8 @@ class ValueSetDatabase {
           } else {
             // Fall back to parsing JSON
             // a value set the map doesn't have was rejected when the map was loaded
-            // (see loadAllValueSets) - or is rejected now, when read on demand - so it isn't a result
-            if (map) {
-              results = rows.map(row => map.get(row.id)).filter(vs => vs);
-            } else {
-              const content = await this._readRows(db, rows.map(row => row.id));
-              results = rows.filter(row => content.has(row.id)).map(row => this._rowToValueSet(content.get(row.id), source)).filter(vs => vs);
-            }
+            // (see loadAllValueSets), so it isn't a result
+            results = rows.map(row => map.get(row.id)).filter(vs => vs);
           }
 
           resolve(results);
@@ -1005,6 +998,21 @@ class ValueSetDatabase {
           reject(new Error(`Failed to parse search results: ${error.message}`));
         }
       });
+    });
+  }
+
+  /**
+   * The rows that match a search, in the order search() finds them, with only the indexed
+   * columns a search is sorted by - for a provider that reads the matching value sets on demand,
+   * and only reads the ones it has to return
+   * @param {Array<{name: string, value: string}>} searchParams
+   * @returns {Promise<Array<{id: string, url: string, version: string, date: string, name: string}>>}
+   */
+  async searchRows(searchParams) {
+    const db = await this._getReadConnection();
+    const { query, params } = this._buildSearchQuery(searchParams, ['id', 'url', 'version', 'date', 'name']);
+    return new Promise((resolve, reject) => {
+      db.all(query, params, (err, rows) => err ? reject(new Error(`Search query failed: ${err.message}`)) : resolve(rows));
     });
   }
 

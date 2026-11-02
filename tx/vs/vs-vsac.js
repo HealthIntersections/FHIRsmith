@@ -4,7 +4,6 @@ const axios = require('axios');
 const { AbstractValueSetProvider } = require('./vs-api');
 const { ValueSetDatabase } = require('./vs-database');
 const { VersionUtilities } = require('../../library/version-utilities');
-const ValueSet = require('../library/valueset');
 const folders = require('../../library/folder-setup');
 const {debugLog} = require("../operation-context");
 const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
@@ -546,13 +545,30 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       return [];
     }
 
-    const results = await this.database.search(this.spaceId, null, searchParams, elements, this.sourcePackage());
-    for (const vs of results) {
-      if (vs instanceof ValueSet) {
-        this._prepare(vs);
+    if (elements && elements.length > 0 && elements.every(e => ValueSetDatabase.INDEXED_COLUMNS.includes(e))) {
+      // built from the indexed columns, without reading the value sets
+      return await this.database.search(this.spaceId, null, searchParams, elements);
+    }
+    // The matches carry what a search is sorted by; each value set is only read if it is on the
+    // page that is returned (see SearchWorker.loadPage)
+    return (await this.database.searchRows(searchParams)).map(row => this._searchMatch(row));
+  }
+
+  _searchMatch(row) {
+    const match = { resourceType: 'ValueSet', id: this.spaceId ? `${this.spaceId}-${row.id}` : row.id };
+    for (const name of ['url', 'version', 'date', 'name']) {
+      if (row[name] != null) {
+        match[name] = row[name];
       }
     }
-    return results;
+    // the value set as search would have returned it; null if it is rejected when it is read
+    Object.defineProperty(match, 'load', {
+      value: async () => {
+        const vs = await this._loadValueSet(row.id);
+        return vs ? vs.jsonObj : null;
+      }
+    });
+    return match;
   }
 
   /**

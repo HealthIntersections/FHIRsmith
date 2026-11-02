@@ -104,17 +104,23 @@ describe('VSAC value sets read on demand', () => {
     expect((await provider.fetchValueSet(URL1)).version).toBe('20240101');
     expect((await provider.fetchValueSet(URL1, '20250601')).version).toBe('20240101');
     expect(await provider.fetchValueSetById('vsac-2.16.840.1.113883.3.1-20250601')).toBeNull();
+    // search finds both rows; the rejected one reads as null, so the search worker drops it
     const found = await provider.searchValueSets([{ name: 'url', value: URL1 }]);
-    expect(found.map(v => v.version)).toEqual(['20240101']);
+    const loaded = await Promise.all(found.map(m => m.load()));
+    expect(loaded.filter(v => v).map(v => v.version)).toEqual(['20240101']);
   });
 
-  test('search reads the matching value sets, prepared as fetchValueSet prepares them', async () => {
+  test('search returns matches with the sort fields, and a load() that reads the value set as fetchValueSet prepares it', async () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL2, '20200101')]);
     const byUrl = await provider.searchValueSets([{ name: 'url', value: URL1 }]);
     expect(byUrl.map(v => v.id).sort()).toEqual(['vsac-2.16.840.1.113883.3.1-20240101', 'vsac-2.16.840.1.113883.3.1-20250601']);
-    for (const v of byUrl) {
-      expect(v.jsonObj.compose.include[0].version).toBeUndefined();
-      expect(v.sourcePackage).toBe('vsac');
+    for (const m of byUrl) {
+      expect(Object.keys(m).sort()).toEqual(['date', 'id', 'name', 'resourceType', 'url', 'version'].filter(k => k !== 'date'));
+      expect(JSON.stringify(m)).not.toContain('compose'); // nothing read yet, and load() isn't serialised
+      const json = await m.load();
+      expect(json.id).toBe(m.id);
+      expect(json.version).toBe(m.version);
+      expect(json.compose.include[0].version).toBeUndefined();
     }
     const byVersion = await provider.searchValueSets([{ name: 'url', value: URL1 }, { name: 'version', value: '20240101' }]);
     expect(byVersion.map(v => v.id)).toEqual(['vsac-2.16.840.1.113883.3.1-20240101']);
