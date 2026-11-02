@@ -1617,6 +1617,15 @@ class ValueSetChecker {
     return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
   }
 
+  /**
+   * True when the code has a second spelling at all (a classification code), so that an
+   * enumerated concept could be the same concept written differently.
+   */
+  async hasOtherForm(cs, code) {
+    const a = await cs.locate(code);
+    return !!a.context && !!(await cs.classificationCode(a.context));
+  }
+
   async noteClassificationCode(cs, context, code, normalForm) {
     // the code system decides whether this spelling of the code earns a classificationCode
     // (ICD-11: when it was written with entity ids, in any order - not when it was written
@@ -1734,7 +1743,9 @@ class ValueSetChecker {
 
     // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
     let altMatch = null;
-    if (cset.concept && !cset.concept.some(cc => cc.code === code)) {
+    // whether the code has another form does not depend on the listed concept: ask it once
+    // here, not once per listed concept (a locate per listed code on every miss)
+    if (cset.concept && !cset.concept.some(cc => cc.code === code) && (await this.hasOtherForm(cs, code))) {
       for (const cc of cset.concept) {
         if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
           altMatch = cc;
