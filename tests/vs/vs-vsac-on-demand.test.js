@@ -132,6 +132,29 @@ describe('VSAC value sets read on demand', () => {
     expect(await provider.listAllValueSets()).toEqual([URL1, URL1, URL2]);
   });
 
+  test('a scan of all value sets visits the latest version of each url once per stored version, as listAllValueSets + fetchValueSet did', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL1, '20230101', { status: 'bogus' }), vs(URL2, '20200101')]);
+    const viaFetch = [];
+    for (const url of await provider.listAllValueSets()) {
+      const v = await provider.fetchValueSet(url);
+      viaFetch.push(v.id);
+    }
+    const viaScan = [];
+    await provider.scanAllValueSets(async (v) => {
+      expect(v.jsonObj.compose.include[0].version).toBeUndefined();
+      viaScan.push(v.id);
+    });
+    expect(viaScan.sort()).toEqual(viaFetch.sort());
+    expect(viaScan).toEqual(['vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.2-20200101']);
+  });
+
+  test('a scan falls back to the version before a rejected latest one', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601', { status: 'bogus' })]);
+    const seen = [];
+    await provider.scanAllValueSets(async (v) => { seen.push(v.version); });
+    expect(seen).toEqual(['20240101', '20240101']);
+  });
+
   test('a sync compares against the stored hashes: unchanged is only touched, changed is updated, unknown is new', async () => {
     const v1 = vs(URL1, '20240101');
     provider = await makeProvider([v1]);

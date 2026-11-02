@@ -617,6 +617,37 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     return await this.database.listAllValueSets();
   }
 
+  async scanAllValueSets(fn) {
+    // listAllValueSets has a url for each version, and each refers to the latest version: so
+    // read the latest version of each url once (in batches), and visit it once per version
+    const versions = new Map();
+    for (const row of await this.database.listVersions(null)) {
+      let v = versions.get(row.url);
+      if (!v) {
+        v = { map: new Map(), count: 0 };
+        versions.set(row.url, v);
+      }
+      this.database.addToMap(v.map, row.id, row.url, row.version, row);
+      v.count++;
+    }
+    const urls = [...versions.keys()].sort();
+    for (let i = 0; i < urls.length; i += 500) {
+      const batch = urls.slice(i, i + 500).map(url => ({ url, count: versions.get(url).count, row: this._findVersion(versions.get(url).map, url) }));
+      const valueSets = await this.database.loadValueSets(batch.map(b => b.row.id), this.sourcePackage());
+      for (const b of batch) {
+        let vs = valueSets.get(b.row.id);
+        if (vs) {
+          this._prepare(vs);
+        } else {
+          vs = await this.fetchValueSet(b.url); // the latest was rejected
+        }
+        for (let n = 0; vs && n < b.count; n++) {
+          await fn(vs);
+        }
+      }
+    }
+  }
+
   async close() {
     await this.database.close();
   }

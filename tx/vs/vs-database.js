@@ -829,7 +829,7 @@ class ValueSetDatabase {
   }
 
   /**
-   * The id and version of every row for a url, in the order loadAllValueSets sees them -
+   * The id and version of every row for a url (or every row, for null), in the order loadAllValueSets sees them -
    * enough to work out which one a url (and version) refers to (see addToMap) without
    * reading any content
    * @param {string} url
@@ -838,9 +838,27 @@ class ValueSetDatabase {
   async listVersions(url) {
     const db = await this._getReadConnection();
     return new Promise((resolve, reject) => {
-      db.all('SELECT id, url, version FROM valuesets WHERE url = ? ORDER BY rowid', [url],
+      db.all(url == null ? 'SELECT id, url, version FROM valuesets ORDER BY rowid' : 'SELECT id, url, version FROM valuesets WHERE url = ? ORDER BY rowid', url == null ? [] : [url],
         (err, rows) => err ? reject(new Error(`Failed to list versions of ${url}: ${err.message}`)) : resolve(rows));
     });
+  }
+
+  /**
+   * Read several ValueSets by id
+   * @param {string[]} ids
+   * @param {string} source
+   * @returns {Promise<Map<string, ValueSet>>} id -> ValueSet, for the ids there are acceptable rows for
+   */
+  async loadValueSets(ids, source) {
+    const db = await this._getReadConnection();
+    const result = new Map();
+    for (const row of (await this._readRows(db, ids)).values()) {
+      const vs = this._rowToValueSet(row, source);
+      if (vs) {
+        result.set(row.id, vs);
+      }
+    }
+    return result;
   }
 
   /**
