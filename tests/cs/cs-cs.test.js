@@ -1633,10 +1633,18 @@ describe('FHIR CodeSystem Provider', () => {
           expect(results.findConceptByCode('code1')).toBeNull();
         });
 
+        test('regex with alternation matches whole codes only', async () => {
+          // '^' + 'code1|code3' + '$' would be "starts with code1 or ends with code3"
+          const results = await simpleProvider.filter(filterContext, true, 'code', 'regex', 'code1|code3');
+          expect(results.findConceptByCode('code1')).toBeDefined();
+          expect(results.findConceptByCode('code3')).toBeDefined();
+          expect(results.size()).toBe(2);
+        });
+
         test('should handle invalid regex gracefully', async () => {
           await expect(
             simpleProvider.filter(filterContext, true, 'code', 'regex', '[invalid')
-          ).rejects.toThrow('The regex \'[invalid\' is not valid: error parsing regexp: missing closing ]: `[invalid$`');
+          ).rejects.toThrow('The regex \'[invalid\' is not valid: error parsing regexp: missing closing ]: `[invalid)$`');
         });
       });
 

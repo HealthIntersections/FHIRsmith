@@ -1588,7 +1588,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     else if (op === 'regex') {
       // Regular expression match
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$');
         const allCodes = this.codeSystem.getAllCodes();
         for (const code of allCodes) {
           this.opContext.deadCheck('cs:conceptFilter:regex');
@@ -1736,7 +1736,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     else if (op === 'regex') {
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$');
         return properties.some(p => regex.test(this._getPropertyValue(p)));
       } catch (error) {
         return false;

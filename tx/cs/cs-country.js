@@ -212,7 +212,7 @@ class CountryCodeServices extends CodeSystemProvider {
 
       try {
         // Create regex with anchors to match the Pascal implementation (^value$)
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$');
 
         for (const concept of this.codes) {
           if (regex.test(concept.code)) {

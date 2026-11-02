@@ -261,6 +261,23 @@ describe('CountryCodeServices', () => {
       expect(results[0].code).toBe('US');
     });
 
+    test('a pattern with alternation matches whole codes only', async () => {
+      // '^' + 'US|CA' + '$' would be "starts with US or ends with CA", taking in USA
+      const ctxt = await provider.getPrepContext(false);
+      await provider.filter(ctxt, true, 'code', 'regex', 'US|CA');
+      const filters = await provider.executeFilters(ctxt);
+      const filter = filters[0];
+
+      const results = [];
+      filter.cursor = -1;
+      while (await provider.filterMore(ctxt, filter)) {
+        const concept = await provider.filterConcept(ctxt, filter);
+        results.push(concept.code);
+      }
+
+      expect(results.sort()).toEqual(['CA', 'US']);
+    });
+
     test('should filter all 2-letter codes', async () => {
       const ctxt = await provider.getPrepContext(false);
       await provider.filter(ctxt, true, 'code', 'regex', '[A-Z]{2}');
