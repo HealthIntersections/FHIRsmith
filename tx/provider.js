@@ -23,6 +23,64 @@ const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
  * - a list of concept map providers that can provide concept map instances
  *
  */
+/**
+ * The provider's CodeSystem map, with an index of the supplements it holds by the canonical URL
+ * they supplement. The index is maintained on every set/delete, so loadSupplements() looks at the
+ * few candidates instead of scanning every loaded CodeSystem on every code-system lookup (that scan
+ * was about a fifth of the event loop's busy time under IG-build traffic).
+ */
+class CodeSystemMap extends Map {
+  constructor(entries) {
+    super();
+    this.supplementIndex = new Map();
+    if (entries) {
+      for (const [k, v] of entries) this.set(k, v);
+    }
+  }
+
+  static supplementedUrl(cs) {
+    const u = cs && cs.jsonObj && cs.jsonObj.content === 'supplement' ? cs.jsonObj.supplements : null;
+    return u ? String(u).split('|')[0] : null;
+  }
+
+  set(k, v) {
+    if (super.has(k)) this.#unindex(k, super.get(k));
+    super.set(k, v);
+    const u = CodeSystemMap.supplementedUrl(v);
+    if (u) {
+      let m = this.supplementIndex.get(u);
+      if (!m) this.supplementIndex.set(u, m = new Map());
+      m.set(k, v);
+    }
+    return this;
+  }
+
+  delete(k) {
+    if (super.has(k)) this.#unindex(k, super.get(k));
+    return super.delete(k);
+  }
+
+  clear() {
+    this.supplementIndex.clear();
+    super.clear();
+  }
+
+  #unindex(k, v) {
+    const u = CodeSystemMap.supplementedUrl(v);
+    const m = u && this.supplementIndex.get(u);
+    if (m) {
+      m.delete(k);
+      if (!m.size) this.supplementIndex.delete(u);
+    }
+  }
+
+  /** the CodeSystems held here that supplement url (any version) */
+  supplementsOf(url) {
+    const m = this.supplementIndex.get(url);
+    return m ? m.values() : [];
+  }
+}
+
 class Provider {
   i18n;
   fhirVersion;
@@ -115,7 +173,8 @@ class Provider {
     for (let csp of this.codeSystemFactories.values()) {
       csp.listSupplements(supplements, url, version, statedSupplements);
     }
-    for (let cs of this.codeSystems.values()) {
+    const candidates = this.codeSystems instanceof CodeSystemMap ? this.codeSystems.supplementsOf(url) : this.codeSystems.values();
+    for (let cs of candidates) {
       if (cs.isSupplementFor(url, version)) {
         if (cs.isGlobalSupplement() || this.isStatedSupplement(cs, statedSupplements)) {
           supplements.set(cs.vurl, cs);
@@ -737,4 +796,4 @@ class Provider {
 
 }
 
-module.exports = { Provider };
+module.exports = { CodeSystemMap, Provider };

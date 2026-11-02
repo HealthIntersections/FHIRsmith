@@ -293,7 +293,14 @@ class TerminologyWorker {
       return supplements;
     }
 
-    for (const resource of this.additionalResources) {
+    // only the request's supplement CodeSystems matter here; derive them once per request (again
+    // if the list changes) instead of walking every request resource on every lookup
+    if (this._supplementSource !== this.additionalResources || this._supplementSourceLength !== this.additionalResources.length) {
+      this._supplementResources = this.additionalResources.filter((r) => r.resourceType === 'CodeSystem' && r instanceof CodeSystem && r.jsonObj.supplements);
+      this._supplementSource = this.additionalResources;
+      this._supplementSourceLength = this.additionalResources.length;
+    }
+    for (const resource of this._supplementResources) {
       this.deadCheck('loadSupplements');
       if (resource.resourceType === 'CodeSystem' && resource instanceof CodeSystem) {
         const cs = resource;
