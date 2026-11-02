@@ -22,7 +22,6 @@ const { OperationContext } = require('../../tx/operation-context');
 const { TestUtilities } = require('../test-utilities');
 const folders = require('../../library/folder-setup');
 
-jest.setTimeout(300000);
 
 describe('RxNorm filters, totals, status and lookup', () => {
   const sourceDir = path.resolve(__dirname, '../../tx/data/rxnorm');
@@ -34,7 +33,7 @@ describe('RxNorm filters, totals, status and lookup', () => {
     if (fs.existsSync(dbPath)) {
       fs.unlinkSync(dbPath);
     }
-    const importer = new RxNormImporter(sourceDir, dbPath, 'TEST-2025-08-24', { verbose: false, createStems: true, progressCallback: null });
+    const importer = new RxNormImporter(sourceDir, dbPath, 'TEST-2025-08-24', { verbose: false, createStems: false, progressCallback: null });
     await importer.import();
     const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
     factory = new RxNormServicesFactory(opContext.i18n, dbPath);
