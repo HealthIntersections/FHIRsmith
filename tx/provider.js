@@ -14,6 +14,15 @@ const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
 
 /**
+ * The code system providers resolveCode() has built, per operation: opContext ->
+ * Map(factory -> Promise of the provider). A page asks resolveCode about every code it
+ * shows, and for a database-backed code system each build opens a connection that stays
+ * open until the request ends, so one is built per code system and version, and reused.
+ * Keyed weakly, so the entry goes when the operation does.
+ */
+const resolveCodeProviders = new WeakMap();
+
+/**
  * This class holds what information is in context
  *
  * It is prepared for each operation, and carries 4 sets of information:
@@ -477,21 +486,21 @@ class Provider {
       factory = this.codeSystemFactories.get(vurlMM);
     }
     if (factory != null) {
-      const csp = await factory.build(opContext, []);
-      opContext.registerProvider(csp);
-      const c = csp ? csp.locate(code) : null;
+      const csp = await this.resolveCodeProvider(opContext, factory);
+      const located = csp ? await csp.locate(code) : null;
+      const c = located ? located.context : null;
       if (c) {
         if (factory.iteratable()) {
           return {
             link: this.path + "/CodeSystem/x-" + factory.id(),
-            description: csp.display(c)
+            description: await csp.display(c)
           }
         } else {
            const link = factory.codeLink(c);
            if (link) {
              return {
                link: link,
-               description: csp.display(c)
+               description: await csp.display(c)
              }
            }
         }
@@ -511,6 +520,35 @@ class Provider {
       }
     }
     return null;
+  }
+
+  /**
+   * The provider resolveCode() uses for a code system factory in this operation: built
+   * the first time it is asked for, registered for closing when the operation ends, and
+   * reused after that. The promise is kept, so calls that overlap share one build.
+   *
+   * @param {OperationContext} opContext
+   * @param {CodeSystemFactoryProvider} factory
+   * @returns {Promise<CodeSystemProvider|null>}
+   */
+  resolveCodeProvider(opContext, factory) {
+    let built = resolveCodeProviders.get(opContext);
+    if (!built) {
+      built = new Map();
+      resolveCodeProviders.set(opContext, built);
+    }
+    let csp = built.get(factory);
+    if (!csp) {
+      csp = (async () => {
+        const p = await factory.build(opContext, []);
+        opContext.registerProvider(p);
+        return p;
+      })();
+      // A failed build is not kept, so the next call tries again.
+      csp.catch(() => built.delete(factory));
+      built.set(factory, csp);
+    }
+    return csp;
   }
 
   /**
