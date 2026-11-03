@@ -26,9 +26,12 @@ provider.database.getGeneration = async () => {
   generationReads++;
   return getGeneration();
 };
+// what the provider does when the generation has moved: reload its value set list (or,
+// where the value sets are read from the database per request, recount them)
 let reloads = 0;
-const reload = provider._reloadMap.bind(provider);
-provider._reloadMap = async () => {
+const reloadName = typeof provider._reloadMap === 'function' ? '_reloadMap' : '_recount';
+const reload = provider[reloadName].bind(provider);
+provider[reloadName] = async () => {
   reloads++;
   return reload();
 };

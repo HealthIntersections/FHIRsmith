@@ -89,6 +89,8 @@ describe('VSAC value sets across processes', () => {
     }
     expect(seen).toBe('20250101');
     expect(Date.now() - t0).toBeLessThan(2500);
+    // B is at the new generation, having reloaded once
+    expect(await b.call('catchUpNow')).toBe(2);
     const after = await b.call('counts');
     expect(after.loaded).toBe(2);
     expect(after.reloads - before.reloads).toBe(1);
