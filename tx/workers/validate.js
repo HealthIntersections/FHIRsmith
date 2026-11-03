@@ -1618,6 +1618,29 @@ class ValueSetChecker {
     return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
   }
 
+  /**
+   * The listed concept that is the code written in its other form (ICD-11's short code and
+   * entity id), or null. sameConceptDifferentForm asks two things of each listed concept: does
+   * the code have another form at all (locate the code, ask for its classification code), and
+   * is this listed concept that form. The first depends only on the code, so it is asked once
+   * here, and the listed concepts are compared only when the answer is yes.
+   */
+  async otherFormMatch(cs, code, concepts) {
+    if (!concepts || concepts.length === 0 || concepts.some(cc => cc.code === code)) {
+      return null;
+    }
+    const a = await cs.locate(code);
+    if (!a.context || !(await cs.classificationCode(a.context))) {
+      return null;
+    }
+    for (const cc of concepts) {
+      if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
+        return cc;
+      }
+    }
+    return null;
+  }
+
   async noteClassificationCode(cs, context, code, normalForm) {
     // the code system decides whether this spelling of the code earns a classificationCode
     // (ICD-11: when it was written with entity ids, in any order - not when it was written
@@ -1726,15 +1749,7 @@ class ValueSetChecker {
     }
 
     // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
-    let altMatch = null;
-    if (cset.concept && !cset.concept.some(cc => cc.code === code)) {
-      for (const cc of cset.concept) {
-        if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
-          altMatch = cc;
-          break;
-        }
-      }
-    }
+    const altMatch = await this.otherFormMatch(cs, code, cset.concept);
     for (let cc of cset.concept || []) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
