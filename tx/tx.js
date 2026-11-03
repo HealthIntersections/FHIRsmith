@@ -1415,16 +1415,24 @@ class TXModule {
    */
   resourceCacheSettings() {
     const rc = (this.config && this.config.resourceCache) || {};
-    const store = rc.store || 'memory';
+    let store = rc.store || 'memory';
     if (store !== 'memory' && store !== 'sqlite') {
       throw new Error(`tx resourceCache.store '${store}' is not valid: use "memory" or "sqlite"`);
+    }
+    // In cluster mode (cluster.js sets FHIRSMITH_CLUSTER_SIZE for its workers) the memory
+    // store can't work - a cache-id would only be known to the worker that issued it - so
+    // the shared store is used whatever the setting says
+    let switched = false;
+    if (store === 'memory' && Number(process.env.FHIRSMITH_CLUSTER_SIZE) > 1) {
+      store = 'sqlite';
+      switched = true;
     }
     const maxBytes = Number(rc.maxBytes) > 0 ? Number(rc.maxBytes) : 0;
     const touchIntervalMs = rc.touchIntervalSeconds !== undefined ? Number(rc.touchIntervalSeconds) * 1000 : 30 * 1000;
     const file = store === 'sqlite'
       ? (rc.path ? path.resolve(folders.dataDir(), rc.path) : folders.filePath('resource-cache.db'))
       : null;
-    return { store, path: file, maxBytes, touchIntervalMs };
+    return { store, path: file, maxBytes, touchIntervalMs, switched };
   }
 
   /**
@@ -1434,6 +1442,11 @@ class TXModule {
    */
   createResourceCache(endpointPath) {
     const settings = this.resourceCacheSettings();
+    if (settings.switched && !this.resourceCacheSwitchLogged) {
+      this.resourceCacheSwitchLogged = true;
+      this.log.info(`Resource cache: resourceCache.store is "memory", which only works in one process; ` +
+        `in cluster mode the workers share the SQLite store (${settings.path}) instead`);
+    }
     if (settings.store === 'sqlite') {
       this.log.info(`Resource cache for ${endpointPath}: shared SQLite file ${settings.path}` +
         (settings.maxBytes ? `, capped at ${settings.maxBytes} bytes` : ''));

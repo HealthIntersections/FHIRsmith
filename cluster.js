@@ -10,15 +10,20 @@
 // Node's cluster module accepts connections on the port and hands them to the
 // workers in turn, so any worker may receive any request.
 //
-// What has to be shared is shared on disk:
-//  - the tx client resource cache ($cache-control): modules.tx.resourceCache.store
-//    must be "sqlite" - with the memory store, a request that reaches a different
-//    worker from the one that started its cache would fail with cache-id-unknown.
-//    cluster.js refuses to start a configuration like that, or one with any other
-//    part that only works in one process (see singleProcessOnly).
+// What has to be shared is shared on disk, in the data directory (see cluster.md):
+//  - the tx client resource cache ($cache-control) is the SQLite store; a configuration
+//    that asks for the memory store gets the SQLite one in cluster mode (tx.js).
+//  - logins, session-signing secrets, rate-limit counts and cross-process locks are in
+//    cluster-state.db (library/cluster-state.js).
 //  - background jobs (VSAC refresh, package crawler, XIG download, ...) run in one
-//    worker at a time, chosen by a lock file - see library/background-jobs.js.
+//    worker at a time, chosen by a lock file - see library/background-jobs.js; the
+//    other workers notice what it has written when they next use it.
 // Statistics and the dashboard stay per worker.
+//
+// Memory is watched for the group, not per worker (library/memory-guard.js,
+// library/cluster-memory.js): the primary measures the whole service and tells the
+// workers; when the service stays over the limit, it drains and restarts the largest
+// worker.
 //
 // Workers start one after another: each waits until the previous one is listening.
 // The first start of a server on a data directory builds index databases next to
@@ -57,7 +62,7 @@ function readConfig() {
 }
 
 /**
- * How many workers, and whether the configuration is safe to run that way.
+ * How many workers.
  * @returns {number}
  */
 function settings(config) {
@@ -70,44 +75,12 @@ function settings(config) {
     process.exit(1);
   }
   if (configured > 1) {
-    const problems = singleProcessOnly(config);
-    if (problems.length > 0) {
-      console.error(`cluster: this configuration can't run in more than one worker:\n  - ${problems.join('\n  - ')}\n` +
-        'Run those parts in a separate single-process server, or use one worker. See cluster.md.');
-      process.exit(1);
+    const tx = config.modules && config.modules.tx;
+    if (tx && tx.enabled && !(tx.resourceCache && tx.resourceCache.store === 'sqlite')) {
+      log('modules.tx.resourceCache.store is not "sqlite": in cluster mode the workers use the shared SQLite store');
     }
   }
   return configured;
-}
-
-/**
- * The parts of a configuration that only work in one process: each keeps state in
- * memory that a request reaching a different worker would not find.
- * @returns {string[]} what is wrong, one line each (empty: fine)
- */
-function singleProcessOnly(config) {
-  const problems = [];
-  const mods = config.modules || {};
-  const tx = mods.tx;
-  if (tx && tx.enabled) {
-    const store = tx.resourceCache && tx.resourceCache.store;
-    if (store !== 'sqlite') {
-      problems.push('modules.tx.resourceCache.store must be "sqlite": with the memory store each worker has its ' +
-        'own client caches, so a request that reaches a different worker from the one that started its cache ' +
-        'fails with cache-id-unknown');
-    }
-    if (tx.closure && tx.closure.enabled) {
-      problems.push('modules.tx.closure: $closure keeps a per-table lock in memory around each read-compute-write, ' +
-        'so two workers could interleave updates to the same closure table');
-    }
-  }
-  for (const name of ['publisher', 'ips', 'testing']) {
-    if (mods[name] && mods[name].enabled) {
-      problems.push(`modules.${name}: logins are kept in each process's memory, so a user logged in on one worker ` +
-        'is logged out on the next request that reaches another');
-    }
-  }
-  return problems;
 }
 
 function runPrimary() {
