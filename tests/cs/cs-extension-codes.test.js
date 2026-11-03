@@ -126,6 +126,12 @@ describe('Extension-codes supplements', () => {
       expect(designations.designations.map(d => d.value).sort()).toEqual(['Another A1', 'Code A1']);
     });
 
+    test('a code system with reserved code spaces is not closed: an expansion of all of it can not list their codes', () => {
+      expect(factory.build(opContext, [], baseCS()).openCodeSpaceReason()).toMatch(/reserves code spaces/);
+      const plain = new CodeSystem({resourceType: 'CodeSystem', url: BASE, status: 'active', content: 'complete', concept: [{code: 'A1'}]});
+      expect(factory.build(opContext, [], plain).openCodeSpaceReason()).toBeNull();
+    });
+
     test('codes from supplements are not iterated with the code system', async () => {
       const supp = supplement('http://example.org/global', true, [{code: 'XG1', display: 'Global Code One'}]);
       const provider = factory.build(opContext, [supp], baseCS());

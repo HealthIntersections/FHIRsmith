@@ -72,6 +72,11 @@ function isLoopbackAddress(ip) {
   }
 }
 
+// A mirror file is written as <file>.tgz.tmp-<pid> and then renamed into place
+const MIRROR_TMP_MARKER = '.tmp-';
+// A temporary mirror file older than this was left by a crawler that stopped mid-write
+const MIRROR_TMP_MAX_AGE_MS = 60 * 60 * 1000;
+
 class PackageCrawler {
   log;
   packages = new Set();
@@ -122,6 +127,11 @@ class PackageCrawler {
     };
 
     this.log.info('Running web crawler for packages using master URL: '+ this.config.masterUrl);
+    try {
+      this.cleanMirrorTempFiles();
+    } catch (e) {
+      this.log.warn(`Could not clean the package mirror: ${e.message}`);
+    }
     this.stats.task('Package Crawler', 'Running');
 
     try {
@@ -786,6 +796,55 @@ class PackageCrawler {
     });
   }
 
+  // Runs fn inside a database transaction: all of its writes commit, or none do. The crawler
+  // stores one package at a time, so its transactions never nest. The connection is shared
+  // with the web side, so a write it makes meanwhile (a download count) joins the transaction.
+  async transaction(fn) {
+    await this.run('BEGIN IMMEDIATE');
+    try {
+      const result = await fn();
+      await this.run('COMMIT');
+      return result;
+    } catch (e) {
+      try {
+        await this.run('ROLLBACK');
+      } catch (rollbackError) {
+        this.log?.error?.(`Rollback failed: ${rollbackError.message}`);
+      }
+      throw e;
+    }
+  }
+
+  // Removes mirror files that a crawler stopped before renaming into place. Only files old
+  // enough that nothing can still be writing them: the mirror may be shared, and in a
+  // container the pid in the name is no guide.
+  cleanMirrorTempFiles(maxAgeMs = MIRROR_TMP_MAX_AGE_MS) {
+    if (!this.config.mirrorPath || !fs.existsSync(this.config.mirrorPath)) {
+      return 0;
+    }
+    const cutoff = Date.now() - maxAgeMs;
+    let removed = 0;
+    for (const name of fs.readdirSync(this.config.mirrorPath)) {
+      if (!name.includes(MIRROR_TMP_MARKER)) {
+        continue;
+      }
+      const file = path.join(this.config.mirrorPath, name);
+      try {
+        const stat = fs.statSync(file);
+        if (stat.isFile() && stat.mtimeMs < cutoff) {
+          fs.rmSync(file, { force: true });
+          removed++;
+        }
+      } catch (e) {
+        this.log?.warn?.(`Could not remove stale mirror file ${name}: ${e.message}`);
+      }
+    }
+    if (removed > 0) {
+      this.log?.info?.(`Removed ${removed} stale temporary file(s) from the package mirror`);
+    }
+    return removed;
+  }
+
   // Point Packages.CurrentVersion at the most recent version of id
   async refreshCurrentVersion(id) {
     const latest = await new Promise((resolve, reject) => {
@@ -905,7 +964,8 @@ class PackageCrawler {
       // The mirror file has to be complete before the registry advertises the package (the
       // download redirect points at it), and a replacement must not touch the file served for
       // the copy we hold unless it commits. So: write the new file beside its target first;
-      // a new package's file is put in place before the commit, a replacement's after it.
+      // a new package's file is put in place before the transaction, a replacement's at the
+      // end of it, just before COMMIT, so a failed rename rolls the replacement back.
       // Rename within a directory is atomic, so readers see the old file or the whole new one.
       let filepath = null;
       let tmpPath = null;
@@ -916,20 +976,24 @@ class PackageCrawler {
         if (path.dirname(path.resolve(filepath)) !== path.resolve(this.config.mirrorPath)) {
           throw new Error(`Package ${id}#${version} rejected: its mirror file name is not a plain file name`);
         }
-        tmpPath = `${filepath}.tmp-${process.pid}`;
-        fs.writeFileSync(tmpPath, packageBuffer);
+        tmpPath = `${filepath}${MIRROR_TMP_MARKER}${process.pid}`;
       }
       const replacing = check.action === 'replace';
       let placed = false;
       try {
-        if (tmpPath && !replacing) {
-          fs.renameSync(tmpPath, filepath);
-          placed = true;
+        if (tmpPath) {
+          fs.writeFileSync(tmpPath, packageBuffer);
+          if (!replacing) {
+            fs.renameSync(tmpPath, filepath);
+            placed = true;
+          }
         }
-        await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
-        if (tmpPath && replacing) {
-          fs.renameSync(tmpPath, filepath);
-        }
+        await this.transaction(async () => {
+          await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
+          if (tmpPath && replacing) {
+            fs.renameSync(tmpPath, filepath);
+          }
+        });
       } catch (e) {
         if (tmpPath) {
           fs.rmSync(tmpPath, { force: true });

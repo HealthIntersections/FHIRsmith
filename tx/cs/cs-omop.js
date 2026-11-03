@@ -259,6 +259,22 @@ class OMOPServices extends BaseCSServices {
     });
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    // a concept from a filter is partial (domain_id is the domain's concept id, no concept class
+    // or vocabulary): the properties are those of the concept itself
+    if (names && names.length > 0 && context instanceof OMOPConcept && context.conceptClass === '') {
+      const located = await this.locate(String(context.code));
+      if (located.context) {
+        context = located.context;
+      }
+    }
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
@@ -605,7 +621,7 @@ class OMOPServices extends BaseCSServices {
     set.cursor++;
 
     return new OMOPConcept(
-      row.concept_id,
+      String(row.concept_id), // a code is a string (the expansion's code was a JSON number)
       row.concept_name,
       row.domain_id,
       '', // concept_class not in basic filter query

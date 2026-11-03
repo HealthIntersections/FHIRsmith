@@ -2,7 +2,7 @@ const sqlite3 = require('sqlite3').verbose();
 const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
 const { Language, Languages} = require('../../library/languages');
-const { CodeSystemFactoryProvider} = require('./cs-api');
+const { CodeSystemFactoryProvider, CodeSystemProvider } = require('./cs-api');
 const { validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
 const {sqlEscapeString} = require("../../xig/xig");
@@ -124,6 +124,9 @@ class LoincFilterHolder {
   }
 
   hasKey(key) {
+    if (this.keySet) {
+      return this.keySet.has(key);
+    }
     // Binary search since keys should be sorted
     let l = 0;
     let r = this.keys.length - 1;
@@ -142,8 +145,9 @@ class LoincFilterHolder {
 }
 
 class LoincPrep {
-  constructor() {
+  constructor(languages = null) {
     this.filters = [];
+    this.languages = languages; // what the request asked for (a text filter searches one language)
   }
 }
 
@@ -336,6 +340,14 @@ class LoincServices extends BaseCSServices {
 
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
@@ -478,8 +490,11 @@ class LoincServices extends BaseCSServices {
 
   async #addRelationshipProperties(ctxt, props, params) {
     return new Promise((resolve, reject) => {
+      // DISTINCT: databases imported before the importer de-duplicated relationships have the
+      // same row more than once - a part listed twice under the same parent in
+      // ComponentHierarchyBySystem (on two paths) has two parent rows
       const sql = `
-          SELECT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
+          SELECT DISTINCT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
           FROM Relationships, RelationshipTypes, Codes
           WHERE Relationships.SourceKey = ?
             AND Relationships.RelationshipTypeKey = RelationshipTypes.RelationshipTypeKey
@@ -802,6 +817,13 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
+    // LOINC's own hierarchy filter: ancestor = part (or in parts), the codes the part subsumes
+    // in the multi-axial hierarchy. LOINC's implicit value sets (http://loinc.org/vs/[partcode])
+    // are defined with it
+    if (prop === 'ancestor' && ['=', 'in'].includes(op)) {
+      return true;
+    }
+
     // code filters (VSAC workaround)
     if (prop === 'code' && ['is-a', 'descendent-of', '='].includes(op)) {
       return true;
@@ -815,8 +837,8 @@ class LoincServices extends BaseCSServices {
     return false;
   }
 
-  async getPrepContext(iterate) {
-    return new LoincPrep(iterate);
+  async getPrepContext(iterate, languages = null) {
+    return new LoincPrep(languages);
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
@@ -825,10 +847,49 @@ class LoincServices extends BaseCSServices {
     filterContext.filters.push(filter);
   }
 
+  /**
+   * A text filter matches the codes with a name in the search language (see searchLanguage:
+   * the request's language if LOINC has it, else English) that contains the text, and the
+   * codes that a supplement in use gives a matching designation in that language. In English
+   * the name is the display (scanning every English description - short names, consumer
+   * names - takes 2+ seconds, against 0.2 for the displays); in another language it is any
+   * description in it but RELATEDNAMES2, which is a list of keywords (a property), not a name.
+   * LOINC does not rate its matches, so sorted or not they come in display order
+   */
   async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
-    // LOINC does not rate its matches, so sorted or not they come in description order
-    await this.#executeFilterQuery('$text', '<', filterText.filter, filter);
+    const lang = this.searchLanguage(filterContext.languages);
+    const english = CodeSystemProvider.inSearchLanguage(null, lang);
+    const langKeys = [];
+    for (const [code, key] of this.langs) {
+      if (!english && CodeSystemProvider.inSearchLanguage(code, lang)) {
+        langKeys.push(key);
+      }
+    }
+    const text = sqlEscapeString(filterText.filter || '');
+    const conds = [];
+    if (english) {
+      conds.push(`Codes.Description like '%${text}%'`); // the display, which is English
+    }
+    if (langKeys.length > 0) {
+      conds.push(`Codes.CodeKey IN (SELECT CodeKey FROM Descriptions WHERE LanguageKey IN (${langKeys.join(',')})
+                   AND DescriptionTypeKey != 4 AND Value like '%${text}%')`);
+    }
+    if (conds.length > 0) {
+      await this.#executeSQL(`SELECT Codes.CodeKey as Key FROM Codes WHERE ${conds.join(' OR ')} ORDER BY Codes.Description ASC`, filter);
+    } else {
+      filter.keys = [];
+    }
+    const have = new Set(filter.keys);
+    for (const code of this._supplementSearchCodes(filterText, lang)) {
+      const ctxt = this.codes.get(code);
+      if (ctxt && !have.has(ctxt.key)) {
+        filter.keys.push(ctxt.key);
+        have.add(ctxt.key);
+      }
+    }
+    filter.lsql = 'text'; // checked by key (filterLocate needs it set)
+    filter.keySet = new Set(filter.keys); // in display order, not key order, so hasKey can't binary search
     filterContext.filters.push(filter);
   }
 
@@ -1033,6 +1094,14 @@ class LoincServices extends BaseCSServices {
     else if (prop === 'concept' && ['is-a', 'descendent-of'].includes(op)) {
       ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
     }
+    // ancestor = X is LOINC's name for descendent-of X: "Ancestor includes parents transitively",
+    // and the part itself is not its own ancestor. in is the union over the parts
+    else if (prop === 'ancestor' && op === '=') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', value));
+    }
+    else if (prop === 'ancestor' && op === 'in') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', null, this.#commaListOfCodes(value)));
+    }
     // Concept equal filter (workaround for VSAC misuse)
     else if (prop === 'concept' && op === '=') {
       sql = `SELECT CodeKey as Key FROM Codes
@@ -1109,14 +1178,15 @@ class LoincServices extends BaseCSServices {
    * the file as a graph would, for example, put Glucose in Serum or Plasma under Urinalysis,
    * because Protein appears under both.
    */
-  #hierarchyFilterSql(op, value) {
-    const code = this.#sqlWrapString(value);
-    const descendants = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${code}')`;
+  #hierarchyFilterSql(op, value, codeList = null) {
+    // one code, or (codeList) an already quoted, comma separated list of them
+    const codes = codeList || `'${this.#sqlWrapString(value)}'`;
+    const descendants = `SELECT DISTINCT DescendentKey as Key FROM Closure
+             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))`;
     const set = op === 'is-a'
       ? `${descendants}
              UNION
-             SELECT CodeKey as Key FROM Codes WHERE Code = '${code}'`
+             SELECT CodeKey as Key FROM Codes WHERE Code IN (${codes})`
       : descendants;
     return {
       sql: `${set}
@@ -1128,7 +1198,8 @@ class LoincServices extends BaseCSServices {
 // Helper method for regex matching
   async #findRegexMatches(sql, pattern, valueColumn, keyColumn = 'Key') {
     return new Promise((resolve, reject) => {
-      const regex = regexUtilities.compile(pattern);
+      // the whole value, as for every regex filter: a|b is ^(?:a|b)$
+      const regex = regexUtilities.compile('^(?:' + pattern + ')$');
       const matchingKeys = [];
 
       this.db.all(sql, (err, rows) => {
@@ -1173,8 +1244,19 @@ class LoincServices extends BaseCSServices {
   }
 
   async executeFilters(filterContext) {
-
-    return filterContext.filters;
+    const filters = filterContext.filters;
+    if (filters.length <= 1) {
+      return filters;
+    }
+    // Every filter is already a list of keys in memory, so the include is their intersection,
+    // as one set: its size is the include's size (count=0 needs no walk, and so no limit), and
+    // the expander walks only the codes that are in it. In the first filter's order
+    const others = filters.slice(1).map(f => new Set(f.keys));
+    const set = new LoincFilterHolder();
+    set.keys = filters[0].keys.filter(k => others.every(o => o.has(k)));
+    set.keySet = new Set(set.keys);
+    set.lsql = filters.map(f => f.lsql).find(l => l) || 'intersection';
+    return [set];
   }
 
   async filterSize(filterContext, set) {
@@ -1528,8 +1610,9 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     }
 
     return new Promise((resolve, reject) => {
+      // DISTINCT, for databases imported with duplicate rows (see #addRelationshipProperties)
       const sql = `
-          SELECT SourceKey, TargetKey FROM Relationships
+          SELECT DISTINCT SourceKey, TargetKey FROM Relationships
           WHERE RelationshipTypeKey = ${childRelKey}
       `;
 

@@ -228,6 +228,15 @@ class CPTServices extends BaseCSServices {
   isNotClosed() {
     return true;
   }
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup). Not the
+   * copyright, which extendLookup always adds: it is about the code system, not the concept
+   */
+  async properties(context, names) {
+    return (await this._propertiesFromLookup(context, names)).filter(p => p.code !== 'copyright');
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);

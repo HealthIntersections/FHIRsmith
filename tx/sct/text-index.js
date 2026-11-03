@@ -89,9 +89,10 @@ class SnomedTextIndex {
    * Build the index for a loaded edition. Yields to the event loop every
    * BUILD_SLICE ms of work.
    * @param {object} sct - SnomedServices
+   * @param {number|null} lang - only descriptions in this language (byte), or null for all
    * @returns {Promise<SnomedTextIndex>}
    */
-  static async build(sct) {
+  static async build(sct, lang = null) {
     const concepts = sct.concepts;
     const conceptSize = concepts.constructor.CONCEPT_SIZE;
     const conceptCount = concepts.count();
@@ -116,6 +117,9 @@ class SnomedTextIndex {
       for (const descIndex of sct.refs.getReferences(descriptionsRef)) {
         if (descMaster.readUInt8(descIndex + 4) === 0) {
           continue; // inactive description
+        }
+        if (lang !== null && descMaster.readUInt8(descIndex + 31) !== lang) {
+          continue; // another language
         }
         const term = sct.strings.getEntry(descMaster.readUInt32LE(descIndex));
         for (const word of tokenize(term)) {

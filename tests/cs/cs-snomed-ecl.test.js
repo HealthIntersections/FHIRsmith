@@ -335,6 +335,21 @@ describe('ECL Validator Test Suite', () => {
     test('an unknown description filter field is a syntax error', () => {
       expect(() => snomedServices.filterECL('< 64572001 {{ D foo = 1 }}', true, opContext)).toThrow('Unknown description filter field');
     });
+
+    // ECL 2.2 makes the D optional: {{ term = ... }} is a description filter (S7)
+    test('the D is optional', () => {
+      for (const body of ['term = "lobe liv"', 'term = wild:"*lobe*"', 'typeId = 900000000000003001 |Fully specified name|, term = "body structure"',
+        'language = en', 'term = ("caudate" "quadrate")', 'active = true']) {
+        const withD = codes(`<< 10200004 {{ D ${body} }}`);
+        expect(withD.length).toBeGreaterThan(0);
+        expect(codes(`<< 10200004 {{ ${body} }}`)).toEqual(withD);
+        expect(codes(`<< 10200004 {{ d ${body} }}`)).toEqual(withD);
+      }
+      expect(codes('<< 10200004 {{ term = "liver" }} {{ term = "lobe" }}')).toEqual(codes('<< 10200004 {{ D term = "liver" }} {{ D term = "lobe" }}'));
+      // an unknown field is still an error, and so is anything that is not a field name
+      expect(() => snomedServices.filterECL('< 64572001 {{ foo = 1 }}', true, opContext)).toThrow('Unknown description filter field');
+      expect(() => snomedServices.filterECL('< 64572001 {{ 123 }}', true, opContext)).toThrow('Expected M, D, C, + or a description filter after {{');
+    });
   });
 
   describe('ECL != and reversed (R) attributes', () => {

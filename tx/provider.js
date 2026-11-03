@@ -1,3 +1,4 @@
+const { chooseImplicitValueSetFactory } = require('./library/implicit-valuesets');
 const { CodeSystem } = require("./library/codesystem");
 const { assertNoActiveContent } = require('../library/narrative-check');
 const {VersionUtilities} = require("../library/version-utilities");
@@ -313,7 +314,7 @@ class Provider {
     return null;
   }
 
-  async findValueSet(opContext, url, version) {
+  async findValueSet(opContext, url, version, systemVersionFor = null) {
     for (const vp of this.valueSetProviders) {
       if (opContext) opContext.deadCheck('findValueSet');
       let vs = await vp.fetchValueSet(url, version);
@@ -321,7 +322,7 @@ class Provider {
         return vs;
       }
     }
-    let vs1 = await this.findKnownValueSet(url, version);
+    let vs1 = await this.findKnownValueSet(url, version, systemVersionFor);
     return vs1;
   }
 
@@ -384,7 +385,18 @@ class Provider {
     return result;
   }
 
-  async findKnownValueSet(url, version) {
+  async findKnownValueSet(url, version, systemVersionFor = null) {
+    // A code system with several versions loaded (SNOMED CT editions) says which form of
+    // implicit value set url is: the generic form comes from the version the request asks
+    // for (systemVersionFor, from system-version and the like) or else the default version
+    // (the one registered under the bare system), the edition form from the latest version
+    // of that edition, and the version form from that version alone - not from whichever
+    // version happens to be asked first.
+    const chosen = chooseImplicitValueSetFactory(this.codeSystemFactories.values(), system => this.codeSystemFactories.get(system), url, systemVersionFor);
+    if (chosen) {
+      const vs = await chosen.buildKnownValueSet(url, version);
+      return vs != null ? new ValueSet(vs) : null;
+    }
     for (let csp of this.codeSystemFactories.values()) {
       let vs = await csp.buildKnownValueSet(url, version);
       if (vs != null) {

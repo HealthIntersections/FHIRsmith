@@ -1,8 +1,8 @@
 const sqlite3 = require('sqlite3').verbose();
 const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
-const { CodeSystemProvider, CodeSystemFactoryProvider } = require('./cs-api');
-const {Designations} = require("../library/designations");
+const { CodeSystemFactoryProvider } = require('./cs-api');
+const { BaseCSServices } = require('./cs-base');
 const {validateArrayParameter, formatDateMMDDYYYY} = require("../../library/utilities");
 
 // Context for RxNorm concepts
@@ -12,8 +12,40 @@ class RxNormConcept {
     this.display = display;
     this.others = []; // Array of alternative displays (SY terms, etc.)
     this.archived = false;
+    this.suppress = null; // SUPPRESS of the display atom, when known: N, E, O (obsolete) or Y
+  }
+
+  get obsolete() {
+    return this.suppress === 'O';
   }
 }
+
+// Which RXNORM atom gives a concept its display: the atom with its main term type (IN, SCD,
+// BN...), or failing that a prescribable name, an entry term, or a tall man synonym. SY atoms
+// are never the display. As an SQL expression that is lowest for the best atom
+const DISPLAY_RANK_SQL = `CASE TTY WHEN 'PSN' THEN 1 WHEN 'ET' THEN 2 WHEN 'TMSY' THEN 3 WHEN 'SY' THEN 4 ELSE 0 END`;
+function displayRank(tty) {
+  switch (tty) {
+    case 'PSN': return 1;
+    case 'ET': return 2;
+    case 'TMSY': return 3;
+    case 'SY': return 4;
+    default: return 0;
+  }
+}
+
+// RxNorm's own relationships are the only ones used, for now (filters and $lookup). RXNREL
+// holds every source's (MTHSPL, VANDF...), and they are all imported
+const RELATIONSHIP_SAB = 'RXNORM';
+
+// indexes the provider needs beyond what older imports made (see also import-rxnorm.module.js)
+const RXNORM_LOAD_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)',
+  'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
+  'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
+  'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
+  'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)'
+];
 
 // Filter holder for query building and iteration
 class RxNormFilterHolder {
@@ -68,7 +100,7 @@ class RxNormIteratorContext {
   }
 }
 
-class RxNormServices extends CodeSystemProvider {
+class RxNormServices extends BaseCSServices {
   constructor(opContext, supplements, db, sharedData, isNCI = false) {
     super(opContext, supplements);
     this.db = db;
@@ -162,19 +194,7 @@ class RxNormServices extends CodeSystemProvider {
     if (ctxt && ctxt.archived) {
       return 'archived';
     }
-
-    // Check suppress flag
-    return new Promise((resolve, reject) => {
-      const sql = `SELECT suppress FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ? AND TTY <> 'SY'`;
-
-      this.db.get(sql, [ctxt.code, this.getSAB()], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row ? row.suppress === '1' ? 'suppressed' : null : null);
-        }
-      });
-    });
+    return (await this.#isObsolete(ctxt)) ? 'obsolete' : null;
   }
 
   async isInactive(context) {
@@ -184,19 +204,24 @@ class RxNormServices extends CodeSystemProvider {
     if (ctxt && ctxt.archived) {
       return true;
     }
+    return this.#isObsolete(ctxt);
+  }
 
-    // Check suppress flag
-    return new Promise((resolve, reject) => {
-      const sql = `SELECT suppress FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ? AND TTY <> 'SY'`;
-
-      this.db.get(sql, [ctxt.code, this.getSAB()], (err, row) => {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(row ? row.suppress === '1' : false);
-        }
-      });
-    });
+  /**
+   * A concept is obsolete (inactive) when its display atom is: SUPPRESS = O
+   * @private
+   */
+  async #isObsolete(ctxt) {
+    if (!ctxt) {
+      return false;
+    }
+    if (ctxt.suppress == null) {
+      const row = await this.#dbGet(
+        `SELECT SUPPRESS, MIN(${DISPLAY_RANK_SQL}) AS rnk FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ? AND TTY <> 'SY'`,
+        [ctxt.code, this.getSAB()]);
+      ctxt.suppress = row && row.SUPPRESS ? row.SUPPRESS : 'N';
+    }
+    return ctxt.obsolete;
   }
 
   async isDeprecated(context) {
@@ -248,7 +273,7 @@ class RxNormServices extends CodeSystemProvider {
     if (!code) return { context: null, message: 'Empty code' };
 
     return new Promise((resolve, reject) => {
-      let sql = `SELECT STR, TTY FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ?`;
+      let sql = `SELECT STR, TTY, SUPPRESS FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ?`;
 
       this.db.all(sql, [code, this.getSAB()], (err, rows) => {
         if (err) {
@@ -285,15 +310,59 @@ class RxNormServices extends CodeSystemProvider {
     const concept = new RxNormConcept(code);
     concept.archived = archived;
 
+    // the display is the best ranked atom (see DISPLAY_RANK_SQL), the rest are other names
+    let best = null;
     for (const row of rows) {
-      if (row.TTY === 'SY' || concept.display && concept.display) {
-        concept.others.push(row.STR.trim());
-      } else {
-        concept.display = row.STR.trim();
+      if (row.TTY !== 'SY' && (!best || displayRank(row.TTY) < displayRank(best.TTY))) {
+        best = row;
+      }
+    }
+    if (best) {
+      concept.display = best.STR.trim();
+      if (!archived) {
+        concept.suppress = best.SUPPRESS || 'N';
+      }
+    }
+    for (const row of rows) {
+      const str = row.STR.trim();
+      if (row !== best && str !== concept.display && !concept.others.includes(str)) {
+        concept.others.push(str);
       }
     }
 
     return concept;
+  }
+
+  /**
+   * The query for a set of concepts: one row per concept, with its display, whatever atoms
+   * the conditions matched on. Every condition is about the concept (its code), not the atom
+   * @param {string} conditions - SQL 'AND ...' conditions on rxnconso.<code field>
+   * @param {string} [from] - more tables to join (the text search stems)
+   * @returns {string}
+   * @private
+   */
+  #conceptQuery(conditions, from = '') {
+    const cf = this.getCodeField();
+    return `SELECT rxnconso.${cf} AS ${cf}, STR, SUPPRESS, MIN(${DISPLAY_RANK_SQL}) AS rnk FROM rxnconso${from} ` +
+      `WHERE SAB = $sab AND TTY <> 'SY' ${conditions} GROUP BY rxnconso.${cf}`;
+  }
+
+  #conceptFromRow(row) {
+    const concept = new RxNormConcept(row[this.getCodeField()], row.STR);
+    concept.suppress = row.SUPPRESS || 'N';
+    return concept;
+  }
+
+  #dbGet(sql, params) {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
+    });
+  }
+
+  #dbAll(sql, params) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
+    });
   }
 
   // Iterator methods
@@ -302,7 +371,7 @@ class RxNormServices extends CodeSystemProvider {
 
     if (!context) {
       // Iterate all codes
-      const query = `SELECT ${this.getCodeField()}, STR FROM rxnconso WHERE SAB = ? AND TTY <> 'SY' ORDER BY ${this.getCodeField()}`;
+      const query = this.#conceptQuery('') + ` ORDER BY rxnconso.${this.getCodeField()}`;
       return new RxNormIteratorContext(query, { sab: this.getSAB() }, this.totalCodeCount);
     } else {
       // No hierarchical iteration for specific contexts in this implementation. The expander
@@ -326,8 +395,7 @@ class RxNormServices extends CodeSystemProvider {
     const row = iteratorContext.results[iteratorContext.cursor];
     iteratorContext.next();
 
-    const concept = new RxNormConcept(row[this.getCodeField()], row.STR);
-    return concept;
+    return this.#conceptFromRow(row);
   }
 
   async #executeIterator(iteratorContext) {
@@ -345,36 +413,42 @@ class RxNormServices extends CodeSystemProvider {
   }
 
   // Filter support
+  //
+  // Every filter is a condition on the concept (rxnconso.<code field> IN ...), not on the atom,
+  // so a concept with several atoms (SCD + PSN + TMSY...) is one result, whichever atoms matched.
+  // Filters in one include are ANDed. TTY, STY, SAB, concept (or code), and the relationships
+  // (REL or RELA, with CUI: or AUI: values) all take = or in; in is the union
+
+  /**
+   * @returns {string[]} the values of an = or in filter
+   * @private
+   */
+  static #filterValues(op, value) {
+    if (op === 'in') {
+      return (value || '').split(',').map(v => v.trim()).filter(v => v);
+    }
+    return value ? [value.trim()] : [];
+  }
+
+  static #isRelValue(v) {
+    return v.startsWith('CUI:') || v.startsWith('AUI:');
+  }
+
   async doesFilter(prop, op, value) {
-    
-
-    let propUC = prop.toUpperCase();
-
-    // TTY filters
-    if (propUC === 'TTY' && ['=', 'in'].includes(op)) {
+    if (!['=', 'in'].includes(op)) {
+      return false;
+    }
+    const values = RxNormServices.#filterValues(op, value);
+    if (values.length === 0) {
+      return false;
+    }
+    const propUC = prop.toUpperCase();
+    if (['TTY', 'STY', 'SAB'].includes(propUC) || prop === 'concept' || prop === 'code') {
       return true;
     }
-
-    // STY filter
-    if (propUC === 'STY' && op === '=') {
-      return true;
+    if (this.rels.includes(prop) || this.reltypes.includes(prop)) {
+      return values.every(v => RxNormServices.#isRelValue(v));
     }
-
-    // SAB filter
-    if (propUC === 'SAB' && op === '=') {
-      return true;
-    }
-
-    // Relationship filters (REL values like 'SY', 'RN', etc.)
-    if (this.rels.includes(prop) && op === '=' && (value.startsWith('CUI:') || value.startsWith('AUI:'))) {
-      return true;
-    }
-
-    // Relationship type filters (RELA values)
-    if (this.reltypes.includes(prop) && op === '=' && (value.startsWith('CUI:') || value.startsWith('AUI:'))) {
-      return true;
-    }
-
     return false;
   }
 
@@ -384,55 +458,47 @@ class RxNormServices extends CodeSystemProvider {
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
-    
-
     const filter = new RxNormFilterHolder();
-    let propUC = prop.toUpperCase();
+    const propUC = prop.toUpperCase();
+    const cf = this.getCodeField();
+    const values = ['=', 'in'].includes(op) ? RxNormServices.#filterValues(op, value) : [];
+    // each filter gets its own parameter names, so two filters of the same kind in one
+    // include don't overwrite each other's values (or the SAB the whole query is about)
+    const pfx = `f${filterContext.filters.length}_`;
+    const params = {};
+    const list = (name, vals) => vals.map((v, i) => {
+      params[`${pfx}${name}${i}`] = v;
+      return `$${pfx}${name}${i}`;
+    }).join(', ');
 
     let sql = '';
-    let params = {};
-
-    if (op === 'in' && propUC === 'TTY') {
-      const values = value.split(',').map(v => v.trim()).filter(v => v);
-      const placeholders = values.map((_, i) => `$tty${i}`).join(',');
-      sql = `AND TTY IN (${placeholders})`;
-      values.forEach((val, i) => {
-        params[`tty${i}`] = this.#sqlWrapString(val);
-      });
-    } else if (op === '=') {
-      if (propUC === 'STY') {
-        sql = `AND ${this.getCodeField()} IN (SELECT RXCUI FROM rxnsty WHERE TUI = $sty)`;
-        params.sty = this.#sqlWrapString(value);
+    if (values.length > 0) {
+      if (propUC === 'TTY') {
+        sql = `AND rxnconso.${cf} IN (SELECT ${cf} FROM rxnconso WHERE SAB = $sab AND TTY IN (${list('tty', values)}))`;
+      } else if (propUC === 'STY') {
+        sql = `AND rxnconso.${cf} IN (SELECT RXCUI FROM rxnsty WHERE TUI IN (${list('sty', values)}))`;
       } else if (propUC === 'SAB') {
-        sql = `AND ${this.getCodeField()} IN (SELECT ${this.getCodeField()} FROM rxnconso WHERE SAB = $sab)`;
-        params.sab = this.#sqlWrapString(value);
-      } else if (propUC === 'TTY') {
-        sql = `AND TTY = $tty`;
-        params.tty = this.#sqlWrapString(value);
-      } else if (this.rels.includes(prop)) {
-        if (value.startsWith('CUI:')) {
-          const cui = value.substring(4);
-          sql = `AND (${this.getCodeField()} IN (SELECT ${this.getCodeField()} FROM rxnconso WHERE RXCUI IN (SELECT RXCUI2 FROM rxnrel WHERE REL = $rel AND RXCUI1 = $cui2)))`;
-          params.rel = this.#sqlWrapString(prop);
-          params.cui2 = this.#sqlWrapString(cui);
-        } else if (value.startsWith('AUI:')) {
-          const aui = value.substring(4);
-          sql = `AND (${this.getCodeField()} IN (SELECT ${this.getCodeField()} FROM rxnconso WHERE RXAUI IN (SELECT RXAUI2 FROM rxnrel WHERE REL = $rel AND RXAUI1 = $aui2)))`;
-          params.rel = this.#sqlWrapString(prop);
-          params.aui2 = this.#sqlWrapString(aui);
+        sql = `AND rxnconso.${cf} IN (SELECT ${cf} FROM rxnconso WHERE SAB IN (${list('sab', values)}))`;
+      } else if (prop === 'concept' || prop === 'code') {
+        sql = `AND rxnconso.${cf} IN (${list('code', values)})`;
+      } else if ((this.rels.includes(prop) || this.reltypes.includes(prop)) && values.every(v => RxNormServices.#isRelValue(v))) {
+        // RXNREL rows read 'RXCUI2 <RELA> RXCUI1': has_ingredient = CUI:161 is the concepts
+        // that have acetaminophen as an ingredient. Concept-level rows: RxNorm's own (SAB=RXNORM)
+        const field = this.rels.includes(prop) ? 'REL' : 'RELA';
+        params[`${pfx}rel`] = prop;
+        const cuis = values.filter(v => v.startsWith('CUI:')).map(v => v.substring(4));
+        const auis = values.filter(v => v.startsWith('AUI:')).map(v => v.substring(4));
+        const targets = [];
+        if (cuis.length > 0) {
+          params[`${pfx}rsab`] = RELATIONSHIP_SAB;
+          targets.push(`rxnconso.${cf} IN (SELECT RXCUI2 FROM rxnrel WHERE ${field} = $${pfx}rel AND SAB = $${pfx}rsab AND RXCUI1 IN (${list('cui', cuis)}))`);
         }
-      } else if (this.reltypes.includes(prop)) {
-        if (value.startsWith('CUI:')) {
-          const cui = value.substring(4);
-          sql = `AND (${this.getCodeField()} IN (SELECT ${this.getCodeField()} FROM rxnconso WHERE RXCUI IN (SELECT RXCUI2 FROM rxnrel WHERE RELA = $rela AND RXCUI1 = $cui2)))`;
-          params.rela = this.#sqlWrapString(prop);
-          params.cui2 = this.#sqlWrapString(cui);
-        } else if (value.startsWith('AUI:')) {
-          const aui = value.substring(4);
-          sql = `AND (${this.getCodeField()} IN (SELECT ${this.getCodeField()} FROM rxnconso WHERE RXAUI IN (SELECT RXAUI2 FROM rxnrel WHERE RELA = $rela AND RXAUI1 = $aui2)))`;
-          params.rela = this.#sqlWrapString(prop);
-          params.aui2 = this.#sqlWrapString(aui);
+        if (auis.length > 0) {
+          // Atom-level rows leave RXCUI2 empty, and most come from other sources (MMSL, MTHSPL...):
+          // the target atom's concept comes from rxnconso, and every source's rows count
+          targets.push(`rxnconso.${cf} IN (SELECT ${cf} FROM rxnconso WHERE RXAUI IN (SELECT RXAUI2 FROM rxnrel WHERE ${field} = $${pfx}rel AND RXAUI1 IN (${list('aui', auis)})))`);
         }
+        sql = `AND (${targets.join(' OR ')})`;
       }
     }
 
@@ -475,9 +541,11 @@ class RxNormServices extends CodeSystemProvider {
       } else {
         // Not in the stem table, so match the token against the text itself. Left as a
         // plain (non-text) filter so that executeFilters does not join RXNSTEMS for it.
-        // Unindexed, but it only ever narrows rows the other tokens have already found,
-        // and the tokens are alphanumeric, so there are no LIKE wildcards to escape.
-        rxnormFilter.sql = ` AND STR LIKE $text${i}`;
+        // Unindexed, but it only ever narrows concepts the other tokens have already found,
+        // and the tokens are alphanumeric, so there are no LIKE wildcards to escape. Any of
+        // the concept's RxNorm names can match, as for the stems
+        const cf = this.getCodeField();
+        rxnormFilter.sql = ` AND EXISTS (SELECT 1 FROM rxnconso t WHERE t.${cf} = rxnconso.${cf} AND t.SAB = $sab AND t.STR LIKE $text${i})`;
         rxnormFilter.params[`text${i}`] = '%' + ((filter.words && filter.words[i]) || stem) + '%';
       }
 
@@ -530,12 +598,13 @@ class RxNormServices extends CodeSystemProvider {
       }
     }
 
-    const fullQuery = `SELECT ${this.getCodeField()}, STR ${sql2} WHERE SAB = $sab AND TTY <> 'SY' ${sql1}`;
     allParams.sab = this.getSAB();
 
     // Create a single filter holder with the combined query
     const combinedFilter = new RxNormFilterHolder();
-    combinedFilter.sql = fullQuery;
+    combinedFilter.conditions = sql1;
+    combinedFilter.from = sql2.substring('FROM rxnconso'.length);
+    combinedFilter.sql = this.#conceptQuery(sql1, combinedFilter.from);
     combinedFilter.params = allParams;
 
     return [combinedFilter];
@@ -550,8 +619,6 @@ class RxNormServices extends CodeSystemProvider {
   }
 
   async filterMore(filterContext, set) {
-    
-
     if (!set.executed) {
       await this.#executeFilter(set);
     }
@@ -560,8 +627,6 @@ class RxNormServices extends CodeSystemProvider {
   }
 
   async filterConcept(filterContext, set) {
-    
-
     if (!set.executed) {
       await this.#executeFilter(set);
     }
@@ -572,36 +637,18 @@ class RxNormServices extends CodeSystemProvider {
 
     const row = set.results[set.cursor];
     set.cursor++;
-
-    const concept = new RxNormConcept(row[this.getCodeField()], row.STR);
-    return concept;
+    return this.#conceptFromRow(row);
   }
 
   async filterLocate(filterContext, set, code) {
-    
-
-    return new Promise((resolve, reject) => {
-      // Build query to check if code exists in filter
-      const checkQuery = `SELECT ${this.getCodeField()}, STR FROM rxnconso WHERE SAB = $sab AND TTY <> 'SY' AND ${this.getCodeField()} = $code ${set.sql.replace(/SELECT.*?FROM rxnconso/, '').replace(/WHERE SAB = \$sab AND TTY <> 'SY'/, '')}`;
-
-      const params = { ...set.params, code };
-
-      this.db.get(checkQuery, this.#buildParamArray(checkQuery, params), (err, row) => {
-        if (err) {
-          reject(err);
-        } else if (!row) {
-          resolve(null);
-        } else {
-          const concept = new RxNormConcept(row[this.getCodeField()], row.STR);
-          resolve(concept);
-        }
-      });
-    });
+    const cf = this.getCodeField();
+    const sql = this.#conceptQuery((set.conditions || '') + ` AND rxnconso.${cf} = $code`, set.from || '');
+    const params = { ...set.params, code };
+    const row = await this.#dbGet(sql, this.#buildParamArray(sql, params));
+    return row ? this.#conceptFromRow(row) : null;
   }
 
   async filterCheck(filterContext, set, concept) {
-    
-
     if (!(concept instanceof RxNormConcept)) {
       return false;
     }
@@ -609,8 +656,10 @@ class RxNormServices extends CodeSystemProvider {
     if (!set.executed) {
       await this.#executeFilter(set);
     }
-
-    return set.results.some(row => row[this.getCodeField()] === concept.code);
+    if (!set.codes) {
+      set.codes = new Set(set.results.map(row => row[this.getCodeField()]));
+    }
+    return set.codes.has(concept.code);
   }
 
   async #executeFilter(filter) {
@@ -653,10 +702,6 @@ class RxNormServices extends CodeSystemProvider {
     return paramArray;
   }
 
-  #sqlWrapString(str) {
-    return str.replace(/'/g, "''");
-  }
-
   // Subsumption testing
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
@@ -664,11 +709,22 @@ class RxNormServices extends CodeSystemProvider {
     return 'not-subsumed'; // Not implemented yet
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   // Extension for lookup operation
+  //
+  // TTY, STY and SAB are returned unless other properties are asked for; the relationships
+  // (one property per REL/RELA, valued with the bare RXCUI of the other concept, RxNorm's
+  // own relationships only) only when asked for, by name or with *
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
-
 
     if (typeof ctxt === 'string') {
       const located = await this.locate(ctxt);
@@ -681,36 +737,43 @@ class RxNormServices extends CodeSystemProvider {
     if (!(ctxt instanceof RxNormConcept)) {
       throw new Error('Invalid context for RxNorm lookup');
     }
-
-    // Set abstract status
-    params.abstract = false;
-
-    // Add designations
-    const designations =  new Designations(this.opContext.i18n.languageDefinitions);
-    await this.designations(ctxt, designations);
-    for (const designation of designations) {
-      this.#addProperty(params, 'designation', 'display', designation.value, designation.language);
-    }
-  }
-
-  #addProperty(params, type, name, value, language = null) {
-    if (!params.parameter) {
-      params.parameter = [];
+    if (ctxt.archived) {
+      return;
     }
 
-    const property = {
-      name: type,
-      part: [
-        { name: 'code', valueCode: name },
-        { name: 'value', valueString: value }
-      ]
-    };
-
-    if (language) {
-      property.part.push({ name: 'language', valueCode: language });
+    const cf = this.getCodeField();
+    if (this._hasProp(props, 'TTY', true)) {
+      const rows = await this.#dbAll(`SELECT DISTINCT TTY FROM rxnconso WHERE ${cf} = ? AND SAB = ? ORDER BY TTY`, [ctxt.code, this.getSAB()]);
+      for (const row of rows) {
+        this._addCodeProperty(params, 'property', 'TTY', row.TTY);
+      }
     }
-
-    params.parameter.push(property);
+    if (this._hasProp(props, 'STY', true)) {
+      const rows = await this.#dbAll('SELECT DISTINCT TUI FROM rxnsty WHERE RXCUI = ? ORDER BY TUI', [ctxt.code]);
+      for (const row of rows) {
+        this._addCodeProperty(params, 'property', 'STY', row.TUI);
+      }
+    }
+    if (this._hasProp(props, 'SAB', true)) {
+      const rows = await this.#dbAll(`SELECT DISTINCT SAB FROM rxnconso WHERE ${cf} = ? ORDER BY SAB`, [ctxt.code]);
+      for (const row of rows) {
+        this._addCodeProperty(params, 'property', 'SAB', row.SAB);
+      }
+    }
+    if (props && props.length > 0) {
+      const rows = await this.#dbAll(
+        'SELECT DISTINCT REL, RELA, RXCUI1 FROM rxnrel WHERE RXCUI2 = ? AND SAB = ? ORDER BY RELA, REL, RXCUI1',
+        [ctxt.code, RELATIONSHIP_SAB]);
+      const seen = new Set();
+      for (const row of rows) {
+        const name = row.RELA || row.REL;
+        const key = name + '|' + row.RXCUI1;
+        if (name && row.RXCUI1 && !seen.has(key) && this._hasProp(props, name, false)) {
+          seen.add(key);
+          this._addCodeProperty(params, 'property', name, row.RXCUI1);
+        }
+      }
+    }
   }
 
   versionAlgorithm() {
@@ -750,10 +813,13 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
     const db = new sqlite3.Database(this.dbPath);
 
     try {
-      await new Promise((resolve, reject) => {
-        db.run(`CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)`,
-          err => err ? reject(err) : resolve());
-      });
+      // indexes the importer makes now, for databases imported before it did. A one-off cost
+      // the first time an older database is loaded
+      for (const sql of RXNORM_LOAD_INDEXES) {
+        await new Promise((resolve, reject) => {
+          db.run(sql, err => err ? reject(err) : resolve());
+        });
+      }
 
       this._sharedData = {
         version: '',
@@ -773,7 +839,8 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
 
       // Get total count
       const sab = this.isNCI ? 'NCI' : 'RXNORM';
-      this._sharedData.totalCodeCount = await this.#getCount(db, `SELECT COUNT(RXCUI) FROM rxnconso WHERE SAB = ? AND TTY <> 'SY'`, [sab]);
+      // concepts, not atoms
+      this._sharedData.totalCodeCount = await this.#getCount(db, `SELECT COUNT(DISTINCT RXCUI) FROM rxnconso WHERE SAB = ? AND TTY <> 'SY'`, [sab]);
 
     } finally {
       db.close();

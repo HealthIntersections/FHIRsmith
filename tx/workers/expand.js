@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const ValueSet = require("../library/valueset");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
+const { splitFilters } = require('./supplement-filters');
 
 // Expansion limits (from Pascal constants)
 const EXTERNAL_DEFAULT_LIMIT = 1000;
@@ -201,6 +202,7 @@ class ValueSetExpander {
   params;
   doingVersion = true;
   excludedSystems = new Set();
+  excludedProviders = []; // {system, cs} - see checkForExclusionVersionSpecialCase
   excluded = new Set();
   hasExclusions = false;
   requiredSupplements = new Set();
@@ -271,11 +273,21 @@ class ValueSetExpander {
       return true;
     }
     for (const s of this.params.designations) {
-      const [l, r] = s.split('|');
-      if (cd.use != null && cd.use.system === l && cd.use.code === r) {
+      // a token: system|code, or a bare code (or |code), which matches a language or a use
+      // code from any system. designation=nl-NL is the same as urn:ietf:bcp:47|nl-NL
+      const bar = s.indexOf('|');
+      const system = bar < 0 ? '' : s.substring(0, bar);
+      const code = bar < 0 ? s : s.substring(bar + 1);
+      if (!system) {
+        if ((cd.language != null && cd.language.code === code) || (cd.use != null && cd.use.code === code)) {
+          return true;
+        }
+        continue;
+      }
+      if (cd.use != null && cd.use.system === system && cd.use.code === code) {
         return true;
       }
-      if (cd.language != null && l === 'urn:ietf:bcp:47' && r === cd.language.code) {
+      if (cd.language != null && system === 'urn:ietf:bcp:47' && code === cd.language.code) {
         return true;
       }
     }
@@ -300,7 +312,7 @@ class ValueSetExpander {
     }
   }
 
-  includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL) {
+  async includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL) {
     let result = null;
     this.worker.deadCheck('processCode');
 
@@ -310,7 +322,7 @@ class ValueSetExpander {
     if (isInactive && excludeInactive) {
       return null;
     }
-    if (this.isExcluded(system, version, code)) {
+    if (await this.isExcluded(system, version, code)) {
       return null;
     }
 
@@ -612,7 +624,7 @@ class ValueSetExpander {
     let count = 0;
     await this.worker.checkAndYield('importValueSetItem');
     const s = this.keyC(c);
-    if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !this.isExcluded(c.system, c.version, c.code)) {
+    if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
       count++;
       if (imported) {
         imported.push(c);
@@ -815,6 +827,14 @@ class ValueSetExpander {
                 Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members");
               }
               notClosed.value = true;
+            } else if (cs.openCodeSpaceReason()) {
+              // all the codes the code system defines are listed, but not the ones users define in its
+              // reserved code spaces: $validate-code accepts those as members, so the expansion isn't closed
+              if (!Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed")) {
+                Extensions.addBoolean(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
+                Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", cs.openCodeSpaceReason());
+              }
+              notClosed.value = true;
             }
 
             if (this.count === 0 && filters.length === 0 && valueSets.length === 0) {
@@ -848,7 +868,7 @@ class ValueSetExpander {
             if (cs.isNotClosed(filter)) {
               notClosed.value = true;
             }
-            const prep = await cs.getPrepContext(true);
+            const prep = await cs.getPrepContext(true, this.params.requestedLanguages()); // the text filter's language
             const ctxt = await cs.searchFilter(prep, filter, true);
             let set = await cs.executeFilters(prep);
             if (this.count === 0 && valueSets.length === 0) {
@@ -872,7 +892,7 @@ class ValueSetExpander {
                 } else {
                   await this.listDisplaysFromProvider(cds, cs, c);
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), await cs.isDeprecated(c), await cs.getStatus(c),
-                      cds, await cs.definition(c), await cs.itemWeight(c), expansion, valueSets, await cs.extensions(c), null, await cs.properties(c), null, excludeInactive, vsSrc.url);
+                      cds, await cs.definition(c), await cs.itemWeight(c), expansion, valueSets, await cs.extensions(c), null, await this.#conceptProperties(cs, c), null, excludeInactive, vsSrc.url);
                 }
                 if (added) {
                   this.addToTotal();
@@ -895,6 +915,8 @@ class ValueSetExpander {
         if (cset.concept) {
           this.worker.opContext.log('iterate concepts');
           const cds = new Designations(this.worker.i18n.languageDefinitions);
+          // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
+          const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
           for (const cc of cset.concept) {
             await this.worker.checkAndYield('processCodes#3');
@@ -910,13 +932,13 @@ class ValueSetExpander {
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
                 this.listDisplaysFromIncludeConcept(cds, cc, vsSrc);
-                if (filter.passesDesignations(cds) || filter.passes(cc.code)) {
+                if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
                   let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
                   if (!ov) {
                     ov = await cs.itemWeight(cctxt.context);
                   }
                   added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), await cs.isDeprecated(cctxt.context), await cs.getStatus(cctxt.context), cds,
-                      await cs.definition(cctxt.context), ov, expansion, valueSets, await cs.extensions(cctxt.context), cc.extension, await cs.properties(cctxt.context), null, excludeInactive, vsSrc.url);
+                      await cs.definition(cctxt.context), ov, expansion, valueSets, await cs.extensions(cctxt.context), cc.extension, await this.#conceptProperties(cs, cctxt.context), null, excludeInactive, vsSrc.url);
                 }
                 if (added) {
                   this.addToTotal();
@@ -930,7 +952,7 @@ class ValueSetExpander {
         if (cset.filter && cset.filter.length > 0) {
           this.worker.opContext.log('prepare filters');
           const fcl = cset.filter;
-          const prep = await cs.getPrepContext(true);
+          const prep = await cs.getPrepContext(true, this.params.requestedLanguages());
 
           if (!filter.isNull) {
             await cs.searchFilter(prep, filter, true);
@@ -943,17 +965,23 @@ class ValueSetExpander {
           }
 
           for (let i = 0; i < fcl.length; i++) {
-            await this.worker.checkAndYield('processCodes#4a');
             const fc = fcl[i];
             if (!fc.value) {
               throw new Issue('error', 'invalid', path + ".filter[" + i + "]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.httpLanguages, [cs.system(), fc.property, fc.op]), 'vs-invalid', 400);
             }
             Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', 'filter', vsSrc.vurl);
+          }
+          // filters on properties that supplements in use define are evaluated from the
+          // supplements; the code system does the rest
+          const { base: baseFilters, supplement: suppFilters } = await splitFilters(cs, fcl);
+          for (let i = 0; i < baseFilters.length; i++) {
+            await this.worker.checkAndYield('processCodes#4a');
+            const fc = baseFilters[i];
             await cs.filter(prep, i == 0, fc.property, fc.op, fc.value, vsSrc.isCached ? fc : null);
           }
 
-          const fset = await cs.executeFilters(prep);
-          const filtersOpen = await cs.filtersNotClosed(prep);
+          const fset = baseFilters.length > 0 ? await cs.executeFilters(prep) : [];
+          const filtersOpen = baseFilters.length > 0 && await cs.filtersNotClosed(prep);
           if (filtersOpen) {
             notClosed.value = true;
           }
@@ -963,7 +991,7 @@ class ValueSetExpander {
           // total is the set's size, and walking it would only end in VALUESET_TOO_COSTLY once
           // the set is bigger than the limit. Anything less certain is counted by walking, as
           // before: an earlier version added filterSize *and* walked, and double counted (#91, #93).
-          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && filter.isNull
+          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && suppFilters.length === 0 && filter.isNull
             && !excludeInactive && !this.params.activeOnly && !this.hasExclusions
             && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length)
             && (compose.include || []).length === 1 && (compose.exclude || []).length === 0;
@@ -975,11 +1003,8 @@ class ValueSetExpander {
           this.worker.opContext.log('iterate filters');
           this.addToTotal(0);
           const cds = new Designations(this.worker.i18n.languageDefinitions);
-          while (!countOnly && await cs.filterMore(prep, fset[0])) {
-            await this.worker.checkAndYield('processCodes#5');
-            const c = await cs.filterConcept(prep, fset[0]);
-            const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1));
-            if (ok) {
+          const addFound = async (c) => {
+            {
               cds.clear();
               // count++;
               if (this.passesImports(valueSets, cs.system(), await cs.code(c), 0)) {
@@ -999,11 +1024,30 @@ class ValueSetExpander {
                   }
                   added = await this.includeCode(cs, parent, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
                       await cs.isDeprecated(c), await cs.getStatus(c), cds, await cs.definition(c), await cs.itemWeight(c),
-                      expansion, null, await cs.extensions(c), null, await cs.properties(c), null, excludeInactive, vsSrc.url);
+                      expansion, null, await cs.extensions(c), null, await this.#conceptProperties(cs, c), null, excludeInactive, vsSrc.url);
                 }
                 if (added) {
                   this.addToTotal();
                 }
+              }
+            }
+          };
+          if (baseFilters.length > 0) {
+            while (!countOnly && await cs.filterMore(prep, fset[0])) {
+              await this.worker.checkAndYield('processCodes#5');
+              const c = await cs.filterConcept(prep, fset[0]);
+              const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1))
+                && (await this.#passesSupplementFilters(cs, c, suppFilters));
+              if (ok) {
+                await addFound(c);
+              }
+            }
+          } else {
+            // only filters on supplement properties: the codes are those the supplements list
+            for (const c of await this.#supplementFilterConcepts(cs, suppFilters, path)) {
+              await this.worker.checkAndYield('processCodes#5');
+              if ((!this.params.activeOnly || !await cs.isInactive(c)) && (filter.isNull || filter.passes(await cs.code(c)) || filter.passes(await cs.display(c)))) {
+                await addFound(c);
               }
             }
           }
@@ -1011,6 +1055,41 @@ class ValueSetExpander {
         }
       }
     }
+  }
+
+  async #passesSupplementFilters(cs, c, suppFilters) {
+    if (suppFilters.length === 0) {
+      return true;
+    }
+    const code = await cs.code(c);
+    return suppFilters.every(sf => sf.matches(code));
+  }
+
+  /**
+   * The concepts selected by filters that are all on supplement properties: the codes a
+   * supplement lists that pass them all, and that the code system has (a supplement can list
+   * a code the code system doesn't)
+   */
+  async #supplementFilterConcepts(cs, suppFilters, path) {
+    const driver = suppFilters.find(sf => sf.enumerable);
+    if (!driver) {
+      // not-in / exists = false select codes by what the supplement doesn't say, which needs the
+      // rest of the code system to select from
+      const sf = suppFilters[0];
+      throw new Issue('error', 'not-supported', path + '.filter', 'FILTER_NOT_UNDERSTOOD',
+        this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', this.params.HTTPLanguages, [sf.property, sf.op, sf.value]), 'vs-invalid', 422);
+    }
+    const result = [];
+    for (const code of driver.codes()) {
+      await this.worker.checkAndYield('supplementFilterConcepts');
+      if (suppFilters.every(sf => sf === driver || sf.matches(code))) {
+        const loc = await cs.locate(code);
+        if (loc && loc.context) {
+          result.push(loc.context);
+        }
+      }
+    }
+    return result;
   }
 
   async passesFilters(cs, c, prep, filters, offset) {
@@ -1086,15 +1165,11 @@ class ValueSetExpander {
               // excluding a whole system - we don't list the codes in this case
               this.excludedSystems.add(cset.system + (this.doingVersion && cset.version ? '|' + cset.version : ''));
             } else {
-              const iter = await cs.iteratorAll();
-              if (iter) {
-                let c = await cs.nextContext(iter);
-                while (c) {
-                  await this.worker.checkAndYield('processCodes#3aa');
-                  this.excludeCode(cs, cs.system(), cs.version(), await cs.code(c), expansion, valueSets, vsSrc.url);
-                  c = await cs.nextContext(iter);
-                }
-              }
+              // include one version, exclude another whole version: a code is
+              // excluded if it exists in the excluded version. We don't list
+              // the excluded version's codes (most providers can't - e.g.
+              // SNOMED CT, LOINC); we ask it about each included code instead
+              this.excludedProviders.push({ system: cs.system(), cs });
             }
           } else {
             if (cs.isNotClosed(filter)) {
@@ -1110,15 +1185,15 @@ class ValueSetExpander {
               }
             }
 
-            const iter = await cs.iteratorAll();
-            if (iter) {
-              let c = await cs.nextContext(iter);
-              while (c) {
-                await this.worker.checkAndYield('processCodes#3a');
-                if (await this.passesFilters(cs, c, prep, filters, 0)) {
-                  this.excludeCode(cs, cs.system(), cs.version(), await cs.code(c), expansion, valueSets, vsSrc.url);
-                }
-                c = await cs.nextContext(iter);
+            // the codes of this system that are in all the value sets. Walk the
+            // first value set's codes, not the code system (most providers
+            // can't list theirs - e.g. SNOMED CT, LOINC); excludeCode checks
+            // the other value sets
+            const system = cs.system();
+            for (const entry of valueSets[0].codeMap.values()) {
+              await this.worker.checkAndYield('processCodes#3a');
+              if (entry.system === system && await this.#knownTo(cs, entry.code)) {
+                this.excludeCode(cs, system, cs.version(), entry.code, expansion, valueSets, vsSrc.url);
               }
             }
           }
@@ -1127,13 +1202,15 @@ class ValueSetExpander {
         if (cset.concept) {
           this.worker.opContext.log('iterate concepts');
           const cds = new Designations(this.worker.i18n.languageDefinitions);
+          // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
+          const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
           for (const cc of cset.concept) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', 'set concept reference', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, this.allAltCodes);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
-              if (filter.passesDesignations(cds) || filter.passes(cc.code)) {
+              if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
                 let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
                 if (!ov) {
                   ov = await cs.itemWeight(cctxt.context);
@@ -1146,7 +1223,7 @@ class ValueSetExpander {
 
         if (cset.filter) {
           this.worker.opContext.log('prep filters');
-          const prep = await cs.getPrepContext(true);
+          const prep = await cs.getPrepContext(true, this.params.requestedLanguages());
           if (!filter.isNull) {
             await cs.searchFilter(prep, filter, true);
           }
@@ -1157,29 +1234,41 @@ class ValueSetExpander {
             Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members. This extension is based on " + cs.specialEnumeration());
           }
 
-          let first = true;
           for (let fc of cset.filter) {
-            await this.worker.checkAndYield('processCodes#4a');
             Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', 'filter', vsSrc.vurl);
+          }
+          // as for an include: filters on properties that supplements define are evaluated from them
+          const { base: baseFilters, supplement: suppFilters } = await splitFilters(cs, cset.filter);
+          let first = true;
+          for (let fc of baseFilters) {
+            await this.worker.checkAndYield('processCodes#4a');
             await cs.filter(prep, first, fc.property, fc.op, fc.value, vsSrc.isCached ? fc : null);
             first = false;
           }
 
           this.worker.opContext.log('iterate filters');
-          const fset = await cs.executeFilters(prep);
-          if (await cs.filtersNotClosed(prep)) {
-            notClosed.value = true;
-          }
-          //let count = 0;
-          while (await cs.filterMore(prep, fset[0])) {
-            await this.worker.checkAndYield('processCodes#5');
-            const c = await cs.filterConcept(prep, fset[0]);
-            const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1));
-            if (ok) {
-              //count++;
-              if (this.passesImports(valueSets, await cs.system(), await cs.code(c), 0)) {
-                this.excludeCode(cs, await cs.system(), await cs.version(), await cs.code(c), expansion, null, vsSrc.url);
+          const excludeFound = async (c) => {
+            if (this.passesImports(valueSets, await cs.system(), await cs.code(c), 0)) {
+              this.excludeCode(cs, await cs.system(), await cs.version(), await cs.code(c), expansion, null, vsSrc.url);
+            }
+          };
+          if (baseFilters.length > 0) {
+            const fset = await cs.executeFilters(prep);
+            if (await cs.filtersNotClosed(prep)) {
+              notClosed.value = true;
+            }
+            while (await cs.filterMore(prep, fset[0])) {
+              await this.worker.checkAndYield('processCodes#5');
+              const c = await cs.filterConcept(prep, fset[0]);
+              const ok = (!this.params.activeOnly || !await cs.isInactive(c)) && (await this.passesFilters(cs, c, prep, fset, 1))
+                && (await this.#passesSupplementFilters(cs, c, suppFilters));
+              if (ok) {
+                await excludeFound(c);
               }
+            }
+          } else {
+            for (const c of await this.#supplementFilterConcepts(cs, suppFilters, 'ValueSet.compose.exclude')) {
+              await excludeFound(c);
             }
           }
           this.worker.opContext.log('iterate filters finished');
@@ -1233,7 +1322,7 @@ class ValueSetExpander {
       } else {
         await this.listDisplaysFromProvider(cds, cs, context);
         t = await this.includeCode(cs, parent, await cs.system(), await cs.version(), code, await cs.isAbstract(context), await cs.isInactive(context), await cs.isDeprecated(context), await cs.getStatus(context), cds, await cs.definition(context),
-            await cs.itemWeight(context), expansion, imports, await cs.extensions(context), null, await cs.properties(context), null, excludeInactive, srcUrl);
+            await cs.itemWeight(context), expansion, imports, await cs.extensions(context), null, await this.#conceptProperties(cs, context), null, excludeInactive, srcUrl);
       }
       if (t != null) {
         result++;
@@ -1591,6 +1680,10 @@ class ValueSetExpander {
       }
     }
 
+    // declare only the properties the returned codes use: codes outside the page (or a count=0
+    // expansion) declared theirs as they were added, and a declaration nothing uses is noise
+    this.#pruneUnusedPropertyDeclarations(exp);
+
     if (result.expansion.contains && result.expansion.contains.length > 0) {
       let hasChildren = false;
       for (let c of result.expansion.contains) {
@@ -1729,11 +1822,31 @@ class ValueSetExpander {
   }
 
 
+  #pruneUnusedPropertyDeclarations(exp) {
+    if (!exp.property || exp.property.length === 0) {
+      return;
+    }
+    const used = new Set();
+    const walk = (list) => {
+      for (const c of list || []) {
+        for (const p of c.property || []) {
+          used.add(p.code);
+        }
+        walk(c.contains);
+      }
+    };
+    walk(exp.contains);
+    exp.property = exp.property.filter(pd => used.has(pd.code));
+    if (exp.property.length === 0) {
+      delete exp.property;
+    }
+  }
+
   hasParam(exp, name, value) {
     return (exp.parameter || []).find((ex => ex.name == name && getValuePrimitive(ex) == value));
   }
 
-  isExcluded(system, version, code) {
+  async isExcluded(system, version, code) {
     if (this.excludedSystems.has(system)) {
       return true;
     }
@@ -1742,7 +1855,27 @@ class ValueSetExpander {
       return true;
     }
     key = (this.doingVersion && !this.params.versionsMatch ? system+'|'+version : system)+'#'+code;
-    return this.excluded.has(key);
+    if (this.excluded.has(key)) {
+      return true;
+    }
+    for (const ep of this.excludedProviders) {
+      if (ep.system === system && await this.#knownTo(ep.cs, code)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * @returns {Promise<boolean>} whether the code exists in that provider's code system (version)
+   */
+  async #knownTo(cs, code) {
+    try {
+      const loc = await cs.locate(code);
+      return !!(loc && loc.context);
+    } catch (e) {
+      return false;
+    }
   }
 
   keyS(system, version, code) {
@@ -1877,11 +2010,28 @@ class ValueSetExpander {
     this.totalStatus = 'off';
   }
 
+  /**
+   * The properties of a concept that this expansion might report: providers that compute their
+   * properties (from a database, from a lookup) are told which ones are wanted - the requested
+   * names, and those the code system always reports - so that an expansion that asks for none
+   * does not compute any
+   */
+  async #conceptProperties(cs, context) {
+    const names = [...this.params.properties];
+    for (const pn of cs.mandatoryExpansionProperties()) {
+      if (!names.includes(pn)) {
+        names.push(pn);
+      }
+    }
+    return await cs.properties(context, names);
+  }
+
   getPropUrl(cs, pn, cp) {
     if (cp.definition?.uri) {
       return cp.definition.uri;
     }
-    for (let p of cs.propertyDefinitions()) {
+    // a provider need not declare its properties (propertyDefinitions() is null by default)
+    for (let p of cs.propertyDefinitions() || []) {
       if (pn == p.code) {
         return p.uri;
       }
@@ -2110,6 +2260,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // If no valueSet yet, try to find by url
     if (!valueSet) {
@@ -2174,6 +2327,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // Perform the expansion
     return await this.doExpand(valueSet, txp, logExtraOutput);
@@ -2222,6 +2378,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // Perform the expansion
     const result = await this.doExpand(valueSet, txp, logExtraOutput);
