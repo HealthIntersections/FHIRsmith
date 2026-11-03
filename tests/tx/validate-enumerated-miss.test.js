@@ -83,6 +83,7 @@ describe('otherFormMatch gives what the old loop gave', () => {
     code: async (ctxt) => ctxt.id
   });
   const checker = Object.create(ValueSetChecker.prototype);
+  checker.worker = { deadCheck: () => {} };
 
   async function oldLoop(cs, code, list) {
     if (list && !list.some(cc => cc.code === code)) {

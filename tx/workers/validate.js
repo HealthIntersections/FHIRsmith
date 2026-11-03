@@ -1634,6 +1634,7 @@ class ValueSetChecker {
       return null;
     }
     for (const cc of concepts) {
+      this.worker.deadCheck('checkConceptSet#3');
       if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
         return cc;
       }
