@@ -43,6 +43,15 @@ async function getTestApp() {
     ]
   };
 
+  // FHIRSMITH_TEST_RESOURCE_CACHE=sqlite runs the same tests against the shared
+  // SQLite resource cache (cluster mode's store) instead of the memory one
+  if (process.env.FHIRSMITH_TEST_RESOURCE_CACHE === 'sqlite') {
+    const os = require('os');
+    const fs = require('fs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-resource-cache-'));
+    config.resourceCache = { store: 'sqlite', path: path.join(dir, 'resource-cache.db') };
+  }
+
   await txModule.initialize(config, app);
   initialized = true;
 
