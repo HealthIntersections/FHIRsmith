@@ -92,6 +92,7 @@ function openDatabase(file, busyTimeoutMs) {
         bytes         INTEGER NOT NULL,
         concepts      INTEGER NOT NULL DEFAULT 0,
         supplements   TEXT,
+        global_supplement INTEGER,
         UNIQUE (scope, cache_id, key)
       );
       CREATE TABLE IF NOT EXISTS tombstones (
@@ -162,7 +163,7 @@ function contentHash(json) {
 // looking through the cache for the one they want (see TerminologyWorker
 // findInAdditionalResources, listVersions, loadSupplements; ExpansionCache.computeKey)
 const INDEX_PROPERTIES = new Set(['url', 'version', 'vurl', 'versionedUrl', 'resourceType', 'fhirType',
-  'supplementsUrl', 'cacheContentHash', 'isCached']);
+  'supplementsUrl', 'cacheContentHash', 'isCached', 'isGlobalSupplement']);
 
 /**
  * A stand-in for a cached CodeSystem / ValueSet / ConceptMap that is only built
@@ -174,7 +175,7 @@ const INDEX_PROPERTIES = new Set(['url', 'version', 'vurl', 'versionedUrl', 'res
  * built eagerly, and one that isn't costs nothing.
  *
  * @param {Function} Cls - the wrapper class
- * @param {Object} row - index row: key, resource_type, url, version, supplements, hash
+ * @param {Object} row - index row: key, resource_type, url, version, supplements, global_supplement, hash
  * @param {Function} load - () => the real wrapper (reads the JSON)
  */
 function lazyResource(Cls, row, load) {
@@ -192,7 +193,10 @@ function lazyResource(Cls, row, load) {
     fhirType: row.resource_type,
     supplementsUrl: row.supplements === null ? undefined : row.supplements,
     cacheContentHash: row.hash,
-    isCached: true
+    isCached: true,
+    // CodeSystem.isGlobalSupplement(), worked out when it was stored (null: not known)
+    isGlobalSupplement: row.global_supplement === null || row.global_supplement === undefined
+      ? undefined : () => row.global_supplement === 1
   };
   const materialise = () => {
     if (!real) {
@@ -205,8 +209,11 @@ function lazyResource(Cls, row, load) {
       if (prop === 'cacheContentHash') {
         return row.hash;
       }
-      if (!real && INDEX_PROPERTIES.has(prop)) {
+      if (!real && INDEX_PROPERTIES.has(prop) && index[prop] !== undefined) {
         return index[prop];
+      }
+      if (!real && INDEX_PROPERTIES.has(prop) && prop !== 'isGlobalSupplement') {
+        return undefined;
       }
       const r = materialise();
       const v = Reflect.get(r, prop, r);
@@ -285,7 +292,7 @@ class SqliteResourceCache extends ResourceCache {
       sealed: db.prepare('SELECT sealed FROM sessions WHERE scope = ? AND cache_id = ?'),
       resources: db.prepare('SELECT key, resource_type, fhir_version, kind, hash, json FROM resources WHERE scope = ? AND cache_id = ? ORDER BY id'),
       // the index: everything but the content (and the content only of what isn't a wrapper)
-      index: db.prepare(`SELECT key, resource_type, url, version, supplements, fhir_version, kind, hash,
+      index: db.prepare(`SELECT key, resource_type, url, version, supplements, global_supplement, fhir_version, kind, hash,
           CASE WHEN kind = 'wrapper' THEN NULL ELSE json END AS json
         FROM resources WHERE scope = ? AND cache_id = ? ORDER BY id`),
       content: db.prepare('SELECT json, fhir_version, hash FROM resources WHERE scope = ? AND cache_id = ? AND key = ?'),
@@ -293,10 +300,11 @@ class SqliteResourceCache extends ResourceCache {
       touch: db.prepare('UPDATE sessions SET last_used = ? WHERE scope = ? AND cache_id = ? AND last_used < ?'),
       insertSession: db.prepare('INSERT INTO sessions (scope, cache_id, created_at, last_used, sealed) VALUES (?, ?, ?, ?, ?)'),
       upsertResource: db.prepare(`
-        INSERT INTO resources (scope, cache_id, key, resource_type, url, version, supplements, fhir_version, kind, hash, json, bytes, concepts)
-        VALUES (@scope, @cacheId, @key, @resourceType, @url, @version, @supplements, @fhirVersion, @kind, @hash, @json, @bytes, @concepts)
+        INSERT INTO resources (scope, cache_id, key, resource_type, url, version, supplements, global_supplement, fhir_version, kind, hash, json, bytes, concepts)
+        VALUES (@scope, @cacheId, @key, @resourceType, @url, @version, @supplements, @globalSupplement, @fhirVersion, @kind, @hash, @json, @bytes, @concepts)
         ON CONFLICT (scope, cache_id, key) DO UPDATE SET
           resource_type = excluded.resource_type, url = excluded.url, version = excluded.version, supplements = excluded.supplements,
+          global_supplement = excluded.global_supplement,
           fhir_version = excluded.fhir_version, kind = excluded.kind, hash = excluded.hash,
           json = excluded.json, bytes = excluded.bytes, concepts = excluded.concepts`),
       totals: db.prepare(`
@@ -562,6 +570,7 @@ class SqliteResourceCache extends ResourceCache {
       url: resource.url ?? null,
       version: resource.version ?? null,
       supplements: isWrapper && typeof resource.jsonObj.supplements === 'string' ? resource.jsonObj.supplements : null,
+      globalSupplement: isWrapper && typeof resource.isGlobalSupplement === 'function' ? this._globalSupplement(resource) : null,
       fhirVersion: isWrapper ? (resource.fhirVersion || 'R5') : null,
       kind: isWrapper ? 'wrapper' : 'plain',
       hash: contentHash(json),
@@ -569,6 +578,14 @@ class SqliteResourceCache extends ResourceCache {
       bytes: Buffer.byteLength(json),
       concepts: this._conceptsOf(resource)
     };
+  }
+
+  _globalSupplement(resource) {
+    try {
+      return resource.isGlobalSupplement() ? 1 : 0;
+    } catch (e) {
+      return null; // not known: the stand-in loads the resource to ask it
+    }
   }
 
   add(cacheId, resources) {

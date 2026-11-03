@@ -663,6 +663,7 @@ describe('SqliteResourceCache', () => {
       expect(got.every(r => r.resourceType === 'CodeSystem' && r instanceof CodeSystem)).toBe(true);
       expect(got.some(r => r instanceof ConceptMap)).toBe(false);
       expect(got.map(r => r.supplementsUrl)).toEqual([undefined, undefined, 'http://x/a']);
+      expect(got[2].isGlobalSupplement()).toBe(false);
       expect(got.every(r => r.isCached === true)).toBe(true);
       expect(loads.n).toBe(0);
 
