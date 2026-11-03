@@ -87,6 +87,14 @@ function runPrimary() {
   const config = readConfig();
   const n = settings(config);
   log(`starting ${n} worker${n === 1 ? '' : 's'}, one at a time`);
+  // the memory of the whole service (one worker: it watches its own, as server.js does)
+  let memory = null;
+  if (n > 1) {
+    const { ClusterMemory } = require('./library/cluster-memory');
+    memory = new ClusterMemory({ memory: (config.server && config.server.memory) || {}, log });
+    log(memory.describe());
+    memory.start();
+  }
 
   const slots = new Map(); // worker.id -> slot number (1..n)
   const queue = [];        // slots waiting to start
@@ -103,6 +111,9 @@ function runPrimary() {
     const worker = cluster.fork({ FHIRSMITH_CLUSTER_WORKER: String(slot), FHIRSMITH_CLUSTER_SIZE: String(n) });
     slots.set(worker.id, slot);
     worker.startedAt = Date.now();
+    if (memory) {
+      memory.add(worker);
+    }
     log(`worker ${slot} (pid ${worker.process.pid}) starting`);
   };
 
@@ -110,6 +121,9 @@ function runPrimary() {
     const slot = slots.get(worker.id);
     worker.listening = true;
     failures.delete(slot);
+    if (memory) {
+      memory.listening(worker);
+    }
     log(`worker ${slot} (pid ${worker.process.pid}) listening after ${Math.round((Date.now() - worker.startedAt) / 1000)} s`);
     if (starting === slot) {
       starting = null;
@@ -120,6 +134,9 @@ function runPrimary() {
   cluster.on('exit', (worker, code, signal) => {
     const slot = slots.get(worker.id);
     slots.delete(worker.id);
+    if (memory) {
+      memory.remove(worker);
+    }
     if (stopping) {
       return;
     }
@@ -134,6 +151,8 @@ function runPrimary() {
       failures.set(slot, f);
       delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** (f - 1));
       log(`worker ${slot} (pid ${worker.process.pid}) exited (${how}) before it was listening; starting it again in ${Math.round(delay / 1000)} s`);
+    } else if (worker.recycled) {
+      log(`worker ${slot} (pid ${worker.process.pid}) recycled for memory (${how}); starting it again`);
     } else {
       log(`worker ${slot} (pid ${worker.process.pid}) exited (${how}); starting it again`);
     }
@@ -149,6 +168,9 @@ function runPrimary() {
       return;
     }
     stopping = true;
+    if (memory) {
+      memory.stop();
+    }
     log(`${sig}: stopping the workers`);
     const workers = Object.values(cluster.workers || {});
     for (const w of workers) {

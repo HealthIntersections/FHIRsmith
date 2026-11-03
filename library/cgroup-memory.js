@@ -110,4 +110,70 @@ function readCgroupMemoryLimit(opts = {}) {
   return { limit: 0, source: null };
 }
 
-module.exports = { readCgroupMemoryLimit };
+/**
+ * The directory of this process's own cgroup, and whether it is v2 or v1 (memory
+ * controller). null when there is none to be found (not Linux, or no /proc).
+ * @param {Object} [opts] - procFile, cgroupRoot (tests)
+ * @returns {{dir: string, version: 2|1}|null}
+ */
+function ownCgroupDir(opts = {}) {
+  const procFile = opts.procFile || '/proc/self/cgroup';
+  const cgroupRoot = opts.cgroupRoot || '/sys/fs/cgroup';
+  let lines;
+  try {
+    lines = fs.readFileSync(procFile, 'utf8').split('\n').filter(l => l.trim() !== '');
+  } catch {
+    return null;
+  }
+  const v2 = lines.find(l => l.startsWith('0::'));
+  if (v2) {
+    const dir = path.join(cgroupRoot, path.posix.normalize(v2.substring(3) || '/'));
+    if (fs.existsSync(path.join(dir, 'memory.stat'))) {
+      return { dir, version: 2 };
+    }
+  }
+  for (const l of lines) {
+    const parts = l.split(':');
+    if (parts.length >= 3 && parts[1].split(',').includes('memory')) {
+      const dir = path.join(cgroupRoot, 'memory', path.posix.normalize(parts.slice(2).join(':') || '/'));
+      if (fs.existsSync(path.join(dir, 'memory.stat'))) {
+        return { dir, version: 1 };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The private memory of everything in a cgroup: what the kernel can't get back
+ * without killing a process (the page cache - the SQLite and terminology files - it can
+ * drop and read again, so that isn't counted). cgroup v2: memory.stat 'anon'. v1:
+ * 'total_rss' (this cgroup and those below it), else 'rss'.
+ * @param {{dir: string, version: 2|1}} cg - from ownCgroupDir
+ * @returns {number} bytes, or 0 if it can't be read
+ */
+function readCgroupAnon(cg) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(cg.dir, 'memory.stat'), 'utf8');
+  } catch {
+    return 0;
+  }
+  const want = cg.version === 2 ? ['anon'] : ['total_rss', 'rss'];
+  const values = new Map();
+  for (const line of text.split('\n')) {
+    const i = line.indexOf(' ');
+    if (i > 0) {
+      values.set(line.substring(0, i), Number(line.substring(i + 1)));
+    }
+  }
+  for (const key of want) {
+    const v = values.get(key);
+    if (Number.isFinite(v) && v >= 0) {
+      return v;
+    }
+  }
+  return 0;
+}
+
+module.exports = { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon };

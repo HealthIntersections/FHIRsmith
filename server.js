@@ -102,6 +102,19 @@ app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
 const PORT = process.env.PORT || config.server.port || 3000;
 
+// Requests in progress, for a drain (below). While draining, every response closes its
+// connection, so a client on a keep-alive connection reconnects - to another worker
+let inFlight = 0;
+let draining = false;
+app.use((req, res, next) => {
+  inFlight++;
+  res.once('close', () => { inFlight--; });
+  if (draining) {
+    res.setHeader('Connection', 'close');
+  }
+  next();
+});
+
 // Middleware
 // Refuse new requests (503) while memory is near the limit - first, so a refused request
 // doesn't even have its body parsed. /dashboard stays reachable so the state can be seen.
@@ -849,10 +862,11 @@ async function startServer() {
     });
 
     // Start server
-    app.listen(PORT, () => {
+    httpServer = app.listen(PORT, () => {
       stats.markStarted(packageJson.version);
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
+    memoryGuard.onDrain(drain);
     npmAudit.start();
     dailyReport = new DailyReport(config.dailyReport, {
       log: Logger.getInstance().child({ module: 'daily-report' }),
@@ -886,6 +900,40 @@ async function startServer() {
     // Give the logger a moment to flush before exiting
     setTimeout(() => process.exit(1), 500);
   }
+}
+
+/**
+ * Cluster mode: the primary asks this worker to drain, so that it can be restarted (the
+ * service has stayed over its memory limit and this is the largest worker - see
+ * library/cluster-memory.js). Stop taking connections (the primary gives new ones to the
+ * other workers), close idle keep-alive connections and close each busy one after its
+ * response, wait for the requests in progress up to the deadline, then shut down as on
+ * SIGTERM; cluster.js starts a new worker in its place.
+ */
+let httpServer = null;
+function drain(deadlineMs) {
+  if (draining || shuttingDown) {
+    return;
+  }
+  draining = true;
+  const deadline = Date.now() + deadlineMs;
+  serverLog.warn(`Draining for a restart (memory): no new connections; ${inFlight} request(s) in progress, ` +
+    `up to ${Math.round(deadlineMs / 1000)} s to finish`);
+  if (httpServer) {
+    httpServer.close();
+    httpServer.closeIdleConnections();
+  }
+  const timer = setInterval(() => {
+    if (httpServer) {
+      httpServer.closeIdleConnections();
+    }
+    if (inFlight <= 0 || Date.now() >= deadline) {
+      clearInterval(timer);
+      serverLog.warn(inFlight <= 0 ? 'Drained: no requests in progress; restarting'
+        : `Drain deadline reached with ${inFlight} request(s) still in progress; restarting`);
+      void shutdown();
+    }
+  }, 100);
 }
 
 // Graceful shutdown: on Ctrl-C (SIGINT), and on SIGTERM - what systemd, docker stop and
