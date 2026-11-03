@@ -638,6 +638,87 @@ describe('SqliteResourceCache', () => {
     expect(c.get('c1')[0]).not.toBe(cs2);
   });
 
+  describe('a request only loads the resources it uses', () => {
+    const { ConceptMap } = require('../../tx/library/conceptmap');
+    const { ExpansionCache } = require('../../tx/operation-context');
+    const mkCs = (url, version, extra = {}) => new CodeSystem({
+      resourceType: 'CodeSystem', url, version, status: 'active', content: 'complete',
+      concept: [{ code: 'a', display: 'A' }], ...extra
+    }, 'R4');
+    const countLoads = (c) => {
+      const orig = c.q.content;
+      const counter = { n: 0 };
+      c.q.content = { get: (...args) => { counter.n++; return orig.get(...args); } };
+      return counter;
+    };
+
+    test('looking through the cache by url, version and type loads nothing', () => {
+      const c = make();
+      c.set('c1', [mkCs('http://x/a', '1'), mkCs('http://x/b', '2'), mkCs('http://x/sup', '1', { content: 'supplement', supplements: 'http://x/a' })]);
+      const loads = countLoads(c);
+      const got = c.get('c1');
+      expect(got.map(r => r.url)).toEqual(['http://x/a', 'http://x/b', 'http://x/sup']);
+      expect(got.map(r => r.version)).toEqual(['1', '2', '1']);
+      expect(got.map(r => r.vurl)).toEqual(['http://x/a|1', 'http://x/b|2', 'http://x/sup|1']);
+      expect(got.every(r => r.resourceType === 'CodeSystem' && r instanceof CodeSystem)).toBe(true);
+      expect(got.some(r => r instanceof ConceptMap)).toBe(false);
+      expect(got.map(r => r.supplementsUrl)).toEqual([undefined, undefined, 'http://x/a']);
+      expect(got.every(r => r.isCached === true)).toBe(true);
+      expect(loads.n).toBe(0);
+
+      // using one loads that one only, once
+      expect(got[1].content).toBe('complete');
+      expect(got[1].jsonObj.concept[0].code).toBe('a');
+      expect(got[1].conceptCount()).toBe(1);
+      expect(loads.n).toBe(1);
+    });
+
+    test('a loaded stand-in behaves like the wrapper it stands for', () => {
+      const c = make();
+      const original = mkCs('http://x/a', '1');
+      c.set('c1', [original]);
+      const [r] = c.get('c1');
+      expect(r.jsonObj).toEqual(original.jsonObj);
+      expect(r.fhirVersion).toBe('R4');
+      expect(r.versionAlgorithm()).toEqual(original.versionAlgorithm());
+      expect(JSON.parse(JSON.stringify(r)).jsonObj).toEqual(original.jsonObj);
+      r.sourcePackage = 'p';
+      expect(r.sourcePackage).toBe('p');
+    });
+
+    test('the expansion cache key is the same as for the resources built eagerly', () => {
+      const c = make();
+      const resources = [mkCs('http://x/a', '1'), new ValueSet({ resourceType: 'ValueSet', url: 'http://x/vs', status: 'active',
+        compose: { include: [{ system: 'http://x/a' }] } }, 'R4')];
+      c.set('c1', resources);
+      const ec = new ExpansionCache(null);
+      const vs = { resourceType: 'ValueSet', url: 'http://x/vs' };
+      const loads = countLoads(c);
+      const lazyKey = ec.computeKey(vs, null, c.get('c1'));
+      expect(loads.n).toBe(0);
+      const eager = c.q.resources.all('/r4', 'c1').map(row => c._build(row));
+      expect(ec.computeKey(vs, null, eager)).toBe(lazyKey);
+      expect(ec.computeKey(vs, null, resources)).toBe(lazyKey);
+    });
+
+    test('a resource that has gone by the time it is used fails like a dead cache-id', () => {
+      const c = make();
+      c.set('c1', [mkCs('http://x/a', '1')]);
+      const [r] = c.get('c1');
+      c.clear('c1');
+      let err = null;
+      try {
+        void r.jsonObj;
+      } catch (e) {
+        err = e;
+      }
+      expect(err).not.toBeNull();
+      expect(err.statusCode).toBe(404);
+      expect(err.issueCode).toBe('cache-id-unknown');
+      expect(err.message).toMatch(/was closed while this request was using it/);
+    });
+  });
+
   test('endpoints share the file but not caches', () => {
     const file = path.join(tmpDir, `scopes-${++fileNo}.db`);
     const r4 = new SqliteResourceCache(null, { path: file, scope: '/r4' });

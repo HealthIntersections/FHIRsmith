@@ -778,6 +778,11 @@ class ExpansionCache {
     if (additionalResources && additionalResources.length > 0) {
       const resourceHashes = additionalResources
           .map(r => {
+            // A resource from the shared resource cache carries the hash of its stored
+            // content, computed the same way, so it doesn't have to be loaded to be hashed
+            if (typeof r.cacheContentHash === 'string') {
+              return r.cacheContentHash;
+            }
             // Get the JSON object from wrapper or use directly
             const json = r.jsonObj || r;
             // Create a content hash for this resource

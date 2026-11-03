@@ -8,8 +8,14 @@
 // interface with the same semantics, over a file:
 //
 //  - Nothing about a cache's contents is held in memory between requests. Each use
-//    reads the rows and rebuilds the resources; there is no per-process copy that
-//    could go stale when another process changes the cache.
+//    reads the rows; there is no per-process copy that could go stale when another
+//    process changes the cache.
+//  - A request only pays for the resources it uses. get() reads the list of what the
+//    cache holds (type, url, version - not the content) and returns a stand-in for
+//    each CodeSystem / ValueSet / ConceptMap that answers those from the list; the
+//    first time a request touches anything else on one, its JSON is read and the
+//    real wrapper built (see lazyResource). Most requests look up a handful of
+//    resources by url in a cache of tens or hundreds.
 //  - Every write is one short BEGIN IMMEDIATE transaction; WAL mode lets readers
 //    carry on while one process writes; busy_timeout makes a writer wait for another
 //    rather than fail.
@@ -32,7 +38,7 @@ const Database = require('better-sqlite3');
 const { ResourceCache, formatDuration, formatBytes } = require('./operation-context');
 const { Issue } = require('./library/operation-outcome');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_TOUCH_INTERVAL_MS = 30 * 1000;
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 
@@ -85,6 +91,7 @@ function openDatabase(file, busyTimeoutMs) {
         json          TEXT NOT NULL,
         bytes         INTEGER NOT NULL,
         concepts      INTEGER NOT NULL DEFAULT 0,
+        supplements   TEXT,
         UNIQUE (scope, cache_id, key)
       );
       CREATE TABLE IF NOT EXISTS tombstones (
@@ -151,6 +158,93 @@ function contentHash(json) {
   return crypto.createHash('sha256').update(json).digest('hex').substring(0, 16);
 }
 
+// Read from the index row, without building the resource: what callers check while
+// looking through the cache for the one they want (see TerminologyWorker
+// findInAdditionalResources, listVersions, loadSupplements; ExpansionCache.computeKey)
+const INDEX_PROPERTIES = new Set(['url', 'version', 'vurl', 'versionedUrl', 'resourceType', 'fhirType',
+  'supplementsUrl', 'cacheContentHash', 'isCached']);
+
+/**
+ * A stand-in for a cached CodeSystem / ValueSet / ConceptMap that is only built
+ * when it is used. It is an instance of the wrapper class (instanceof works), and
+ * answers url, version, resourceType and the like from the index row. Touching
+ * anything else - jsonObj, a method, any other property - loads the JSON and builds
+ * the real wrapper, once; from then on everything goes to that wrapper, and methods
+ * run on it directly (bound), so a resource that is used costs the same as one
+ * built eagerly, and one that isn't costs nothing.
+ *
+ * @param {Function} Cls - the wrapper class
+ * @param {Object} row - index row: key, resource_type, url, version, supplements, hash
+ * @param {Function} load - () => the real wrapper (reads the JSON)
+ */
+function lazyResource(Cls, row, load) {
+  let real = null;
+  const bound = new Map();
+  const target = Object.create(Cls.prototype);
+  const url = row.url === null ? undefined : row.url;
+  const version = row.version === null ? undefined : row.version;
+  const index = {
+    url,
+    version,
+    vurl: version ? url + '|' + version : url,
+    versionedUrl: version ? url + '|' + version : url,
+    resourceType: row.resource_type,
+    fhirType: row.resource_type,
+    supplementsUrl: row.supplements === null ? undefined : row.supplements,
+    cacheContentHash: row.hash,
+    isCached: true
+  };
+  const materialise = () => {
+    if (!real) {
+      real = load();
+    }
+    return real;
+  };
+  return new Proxy(target, {
+    get(t, prop) {
+      if (prop === 'cacheContentHash') {
+        return row.hash;
+      }
+      if (!real && INDEX_PROPERTIES.has(prop)) {
+        return index[prop];
+      }
+      const r = materialise();
+      const v = Reflect.get(r, prop, r);
+      if (typeof v === 'function' && prop !== 'constructor') {
+        let b = bound.get(prop);
+        if (!b || b.fn !== v) {
+          b = { fn: v, bound: v.bind(r) };
+          bound.set(prop, b);
+        }
+        return b.bound;
+      }
+      return v;
+    },
+    set(t, prop, value) {
+      return Reflect.set(materialise(), prop, value);
+    },
+    has(t, prop) {
+      return Reflect.has(materialise(), prop);
+    },
+    deleteProperty(t, prop) {
+      return Reflect.deleteProperty(materialise(), prop);
+    },
+    defineProperty(t, prop, desc) {
+      return Reflect.defineProperty(materialise(), prop, desc);
+    },
+    ownKeys() {
+      return Reflect.ownKeys(materialise());
+    },
+    getOwnPropertyDescriptor(t, prop) {
+      const d = Reflect.getOwnPropertyDescriptor(materialise(), prop);
+      if (d) {
+        d.configurable = true; // a proxy may not report a non-configurable property its target lacks
+      }
+      return d;
+    }
+  });
+}
+
 function markCached(resource) {
   if (resource && typeof resource === 'object') {
     // the same non-enumerable marker the memory store sets (see ResourceCache.add)
@@ -190,14 +284,19 @@ class SqliteResourceCache extends ResourceCache {
       sessionExists: db.prepare('SELECT 1 FROM sessions WHERE scope = ? AND cache_id = ?'),
       sealed: db.prepare('SELECT sealed FROM sessions WHERE scope = ? AND cache_id = ?'),
       resources: db.prepare('SELECT key, resource_type, fhir_version, kind, hash, json FROM resources WHERE scope = ? AND cache_id = ? ORDER BY id'),
+      // the index: everything but the content (and the content only of what isn't a wrapper)
+      index: db.prepare(`SELECT key, resource_type, url, version, supplements, fhir_version, kind, hash,
+          CASE WHEN kind = 'wrapper' THEN NULL ELSE json END AS json
+        FROM resources WHERE scope = ? AND cache_id = ? ORDER BY id`),
+      content: db.prepare('SELECT json, fhir_version, hash FROM resources WHERE scope = ? AND cache_id = ? AND key = ?'),
       resourceHash: db.prepare('SELECT hash, concepts FROM resources WHERE scope = ? AND cache_id = ? AND key = ?'),
       touch: db.prepare('UPDATE sessions SET last_used = ? WHERE scope = ? AND cache_id = ? AND last_used < ?'),
       insertSession: db.prepare('INSERT INTO sessions (scope, cache_id, created_at, last_used, sealed) VALUES (?, ?, ?, ?, ?)'),
       upsertResource: db.prepare(`
-        INSERT INTO resources (scope, cache_id, key, resource_type, url, version, fhir_version, kind, hash, json, bytes, concepts)
-        VALUES (@scope, @cacheId, @key, @resourceType, @url, @version, @fhirVersion, @kind, @hash, @json, @bytes, @concepts)
+        INSERT INTO resources (scope, cache_id, key, resource_type, url, version, supplements, fhir_version, kind, hash, json, bytes, concepts)
+        VALUES (@scope, @cacheId, @key, @resourceType, @url, @version, @supplements, @fhirVersion, @kind, @hash, @json, @bytes, @concepts)
         ON CONFLICT (scope, cache_id, key) DO UPDATE SET
-          resource_type = excluded.resource_type, url = excluded.url, version = excluded.version,
+          resource_type = excluded.resource_type, url = excluded.url, version = excluded.version, supplements = excluded.supplements,
           fhir_version = excluded.fhir_version, kind = excluded.kind, hash = excluded.hash,
           json = excluded.json, bytes = excluded.bytes, concepts = excluded.concepts`),
       totals: db.prepare(`
@@ -255,10 +354,11 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   /**
-   * The resources held under a cache-id, rebuilt from the file (a fresh set of
-   * objects every call: nothing is shared with other requests). The session row
-   * and its resources are read in one read transaction, so a concurrent write by
-   * another process is seen entirely or not at all.
+   * The resources held under a cache-id: a fresh set of objects every call, nothing
+   * shared with other requests. Wrappers are stand-ins that are only built when the
+   * request uses them (see lazyResource). The session row and the index are read in
+   * one read transaction, so a concurrent write by another process is seen entirely
+   * or not at all.
    */
   get(cacheId) {
     let session = null;
@@ -266,7 +366,7 @@ class SqliteResourceCache extends ResourceCache {
     this.db.transaction(() => {
       session = this.q.session.get(this.scope, cacheId);
       if (session) {
-        rows = this.q.resources.all(this.scope, cacheId);
+        rows = this.q.index.all(this.scope, cacheId);
       }
     }).deferred();
     if (!session) {
@@ -276,7 +376,7 @@ class SqliteResourceCache extends ResourceCache {
       return [];
     }
     this._maybeTouch(cacheId, session.last_used);
-    const result = rows.map(r => this._hydrate(r));
+    const result = rows.map(r => this._hydrate({ ...r, cacheId }));
     if (this.logCacheOps) {
       this.log.info(`cache-id '${cacheId}': hit, returning ${result.length} resource(s): ${rows.map(r => r.key).join(', ')}`);
     }
@@ -289,6 +389,33 @@ class SqliteResourceCache extends ResourceCache {
    * the FHIR version they arrived in.
    */
   _hydrate(row) {
+    if (row.kind === 'wrapper' && row.json === null) {
+      const Cls = wrapperClass(row.resource_type);
+      if (Cls) {
+        const cacheId = row.cacheId;
+        return lazyResource(Cls, row, () => this._loadWrapper(Cls, cacheId, row));
+      }
+    }
+    return this._build(row);
+  }
+
+  /**
+   * Build the real wrapper behind a stand-in. If the resource is no longer there
+   * (the client ended the cache, or it expired or was evicted, while this request
+   * was using it), the request fails the way a request on a dead cache-id does.
+   */
+  _loadWrapper(Cls, cacheId, row) {
+    const c = this.q.content.get(this.scope, cacheId, row.key);
+    if (!c) {
+      const t = this.tombstone(cacheId);
+      throw new Issue('error', 'not-found', null, 'CACHE_ID_GONE_DURING_REQUEST',
+        `The cache '${cacheId}' ${t ? 'was ' + t.reason : 'went away'} while this request was using it, so ${row.key.replace(/\|/g, ' ')} is no longer available`,
+        'cache-id-unknown', 404);
+    }
+    return this._build({ kind: 'wrapper', resource_type: row.resource_type, fhir_version: c.fhir_version, json: c.json });
+  }
+
+  _build(row) {
     const json = JSON.parse(row.json);
     let resource = json;
     if (row.kind === 'wrapper') {
@@ -432,8 +559,9 @@ class SqliteResourceCache extends ResourceCache {
       cacheId,
       key: this._resourceKey(resource),
       resourceType: resource.resourceType || null,
-      url: resource.url || null,
-      version: resource.version || null,
+      url: resource.url ?? null,
+      version: resource.version ?? null,
+      supplements: isWrapper && typeof resource.jsonObj.supplements === 'string' ? resource.jsonObj.supplements : null,
       fhirVersion: isWrapper ? (resource.fhirVersion || 'R5') : null,
       kind: isWrapper ? 'wrapper' : 'plain',
       hash: contentHash(json),
