@@ -11,6 +11,7 @@
 const { Provider } = require('../../tx/provider');
 const { OperationContext } = require('../../tx/operation-context');
 const { Languages } = require('../../library/languages');
+const { CodeSystemFactoryProvider } = require('../../tx/cs/cs-api');
 
 const SYSTEM = 'http://example.org/states';
 const CODES = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona' };
@@ -128,5 +129,86 @@ describe('resolveCode', () => {
     const opContext = newContext();
     await expect(provider.resolveCode(opContext, SYSTEM, null, 'AL')).rejects.toThrow('no database');
     expect((await provider.resolveCode(opContext, SYSTEM, null, 'AL')).description).toBe('Alabama');
+  });
+});
+
+/** A factory whose locate() waits until released, recording how many run at once. */
+function slowFactory() {
+  const factory = fakeFactory();
+  const build = factory.build;
+  factory.inFlight = 0;
+  factory.maxInFlight = 0;
+  factory.locates = 0;
+  factory.build = async (...args) => {
+    const csp = await build(...args);
+    const locate = csp.locate;
+    csp.locate = async (code) => {
+      factory.locates++;
+      factory.inFlight++;
+      factory.maxInFlight = Math.max(factory.maxInFlight, factory.inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      factory.inFlight--;
+      return locate(code);
+    };
+    return csp;
+  };
+  return factory;
+}
+
+describe('resolveCodes', () => {
+  const many = (n) => Array.from({ length: n }, (_, i) => Object.keys(CODES)[i % 3]);
+
+  test('builds the provider once, and locates the codes several at a time but not all at once', async () => {
+    const factory = slowFactory();
+    const provider = providerWith({ [SYSTEM]: factory });
+    const results = await provider.resolveCodes(newContext(), SYSTEM, null, many(100));
+    expect(factory.builds).toBe(1);
+    expect(factory.locates).toBe(100);
+    expect(factory.maxInFlight).toBeGreaterThan(1);
+    expect(factory.maxInFlight).toBeLessThanOrEqual(8);
+    // ...and the answers come back in the order of the codes.
+    expect(results.map((r) => r.description)).toEqual(many(100).map((c) => CODES[c]));
+  });
+
+  test('one build per code system across a page, however the codes are asked for', async () => {
+    const a = slowFactory();
+    const b = slowFactory();
+    const provider = providerWith({ [SYSTEM + '|a']: a, [SYSTEM + '|b']: b });
+    const opContext = newContext();
+    await Promise.all([
+      provider.resolveCodes(opContext, SYSTEM, 'a', many(30)),
+      provider.resolveCodes(opContext, SYSTEM, 'b', many(30)),
+      provider.resolveCodes(opContext, SYSTEM, 'a', many(30)),
+      provider.resolveCode(opContext, SYSTEM, 'b', 'AL'),
+    ]);
+    expect([a.builds, b.builds]).toEqual([1, 1]);
+  });
+
+  test('a code it does not have is null, in its place', async () => {
+    const provider = providerWith({ [SYSTEM]: fakeFactory() });
+    const results = await provider.resolveCodes(newContext(), SYSTEM, null, ['AL', 'XX', 'AZ']);
+    expect(results.map((r) => r && r.description)).toEqual(['Alabama', null, 'Arizona']);
+  });
+
+  test('no codes, no build', async () => {
+    const factory = fakeFactory();
+    const provider = providerWith({ [SYSTEM]: factory });
+    expect(await provider.resolveCodes(newContext(), SYSTEM, null, [])).toEqual([]);
+    expect(factory.builds).toBe(0);
+  });
+
+  test('a code system that cannot link a code is not built or asked', async () => {
+    // Like RxNorm or LOINC: not iteratable, and codeLink() is the default, which links nothing.
+    const factory = Object.assign(Object.create(CodeSystemFactoryProvider.prototype), {
+      builds: 0,
+      id: () => 'db',
+      async build() { factory.builds++; throw new Error('should not be built'); },
+    });
+    const provider = providerWith({ [SYSTEM]: factory });
+    // A CodeSystem resource for the same system still gives its codes a link.
+    provider.codeSystems.set(SYSTEM, { id: 'states-cs', codeMap: new Map([['AL', { display: 'Alabama' }]]) });
+    const results = await provider.resolveCodes(newContext(), SYSTEM, null, ['AL', 'AK']);
+    expect(factory.builds).toBe(0);
+    expect(results).toEqual([{ link: '/tx/r4/CodeSystem/states-cs#AL', description: 'Alabama' }, null]);
   });
 });
