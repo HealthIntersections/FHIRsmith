@@ -24,7 +24,10 @@ describe('Library id prefixes', () => {
   function createLibrary() {
     const log = { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() };
     const stats = { addStat: jest.fn() };
-    return new Library(yamlPath, undefined, log, stats);
+    const library = new Library(yamlPath, undefined, log, stats);
+    // keep the folder-source-* caches out of the real terminology cache
+    library.cacheFolder = path.join(tmpDir, 'cache');
+    return library;
   }
 
   // a folder source holding a CodeSystem, a ValueSet and a ConceptMap, all with the same id

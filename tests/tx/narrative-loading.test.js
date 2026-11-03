@@ -26,8 +26,9 @@ describe('loading content with active narrative', () => {
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'narrative-loading-'));
+    fs.mkdirSync(path.join(tmp, 'content'));
     for (const [name, json] of Object.entries(RESOURCES)) {
-      fs.writeFileSync(path.join(tmp, name), JSON.stringify(json));
+      fs.writeFileSync(path.join(tmp, 'content', name), JSON.stringify(json));
     }
     warnings = [];
     // CodeSystems are reported through the Library's log; ValueSets and ConceptMaps through
@@ -39,7 +40,9 @@ describe('loading content with active narrative', () => {
       }
     });
     library = new Library(null, null, log, null);
-    await library.loadFolder(tmp, false, 'npm');
+    // keep the folder-source-* cache out of the real terminology cache
+    library.cacheFolder = path.join(tmp, '.cache');
+    await library.loadFolder(path.join(tmp, 'content'), false, 'npm');
   });
 
   afterAll(() => {

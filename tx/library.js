@@ -42,6 +42,11 @@ const {UriServicesFactory} = require("./cs/cs-uri");
 const {debugLog} = require("./operation-context");
 const { checkIdPrefix } = require("./library/resource-ids");
 
+// folder:/file: sources keep their SQLite caches in <terminology-cache>/folder-source-<hash>
+const LOCAL_SOURCE_CACHE_PREFIX = 'folder-source-';
+// how long an unused folder-source-* cache is kept, in case another Library is using it
+const LOCAL_SOURCE_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
+
 /**
  * This class holds all the loaded content ready for processing
  *
@@ -84,6 +89,12 @@ class Library {
    * {Set<string>} every id prefix the library YAML gives - autonumbered prefixes skip them
    */
   #givenPrefixes = new Set();
+
+  /**
+   * {Set<string>} the folder-source-* cache folders this load used - the rest are pruned
+   * once they're stale (see #pruneLocalSourceCaches)
+   */
+  #localSourceCaches = new Set();
 
   baseUrl = null;
   cacheFolder = null;
@@ -237,6 +248,8 @@ class Library {
       heapTotal: endMemory.heapTotal - this.startMemory.heapTotal,
       external: endMemory.external - this.startMemory.external
     };
+
+    await this.#pruneLocalSourceCaches();
 
     this.log.info(`Loading Time: ${(totalTime / 1000).toLocaleString()}s`);
     this.log.info(`Memory Used: ${(memoryIncrease.rss / 1024 / 1024).toFixed(2)} MB`);
@@ -910,10 +923,51 @@ class Library {
    */
   async #prepareLocalSourceCache(sourcePath) {
     const hash = crypto.createHash('sha1').update(sourcePath).digest('hex').substring(0, 16);
-    const cacheSubdir = path.join(this.cacheFolder, 'folder-source-' + hash);
+    const name = LOCAL_SOURCE_CACHE_PREFIX + hash;
+    const cacheSubdir = path.join(this.cacheFolder, name);
+    this.#localSourceCaches.add(name);
     await fs.rm(cacheSubdir, { recursive: true, force: true });
     await fs.mkdir(cacheSubdir, { recursive: true });
     return cacheSubdir;
+  }
+
+  /**
+   * Removes the folder-source-* caches left by sources that are no longer loaded (the
+   * name is a hash of the source path, so a moved or temporary folder leaves one behind).
+   *
+   * The cache folder can be shared by more than one Library at a time (a server and the
+   * tests, run from the same checkout), so a cache this load didn't use may be another
+   * one's. Every load rebuilds its caches, so a live one is always recent - only those
+   * untouched for LOCAL_SOURCE_CACHE_MAX_AGE are removed.
+   * @private
+   */
+  async #pruneLocalSourceCaches() {
+    let entries;
+    try {
+      entries = await fs.readdir(this.cacheFolder, { withFileTypes: true });
+    } catch (e) {
+      return;
+    }
+    const cutoff = Date.now() - LOCAL_SOURCE_CACHE_MAX_AGE;
+    let count = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(LOCAL_SOURCE_CACHE_PREFIX) || this.#localSourceCaches.has(entry.name)) {
+        continue;
+      }
+      const dir = path.join(this.cacheFolder, entry.name);
+      try {
+        const stat = await fs.stat(dir);
+        if (stat.mtimeMs < cutoff) {
+          await fs.rm(dir, { recursive: true, force: true });
+          count++;
+        }
+      } catch (e) {
+        this.log.warn(`Unable to remove stale local source cache ${dir}: ${e.message}`);
+      }
+    }
+    if (count > 0) {
+      this.log.info(`Removed ${count} stale local source cache folder${count === 1 ? '' : 's'}`);
+    }
   }
 
   /**
