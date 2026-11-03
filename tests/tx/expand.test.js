@@ -510,6 +510,21 @@ describe('Expand Worker', () => {
       expect(response.body.issue[0].code).toBe('business-rule');
       expect(messages(response)[0]).toContain('http://example.org/fhir/StructureDefinition/unknown-op-modifier');
     });
+
+    // A value set in the request needn't have a url: the message names it by its id, or as
+    // '??', which is what tx-ecosystem's snomed-expand-inactive2 expects - never 'undefined'
+    test('too costly: a value set with no url is named by its id, or as \'??\'', async () => {
+      const valueSet = { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: 'http://hl7.org/fhir/administrative-gender' }] } };
+      for (const [vs, name] of [[valueSet, '??'], [{ ...valueSet, id: 'genders' }, 'genders'],
+        [{ ...valueSet, url: 'http://example.org/fhir/ValueSet/genders' }, 'http://example.org/fhir/ValueSet/genders']]) {
+        for (const extra of [[], [{ name: 'activeOnly', valueBoolean: true }]]) {
+          const response = await expand([{ name: 'valueSet', resource: vs }, { name: 'limit', valueInteger: 2 }, ...extra]);
+          expect(response.status).toBe(422);
+          expect(response.body.issue[0].code).toBe('too-costly');
+          expect(messages(response)[0]).toBe(`The value set '${name}' expansion has too many codes to produce (>2)`);
+        }
+      }
+    });
   });
 
   describe('Expansion caching', () => {

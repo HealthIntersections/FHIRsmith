@@ -221,6 +221,18 @@ class ValueSetExpander {
     this.csCounter = new Map();
   }
 
+  /**
+   * The value set as a message names it: its url, or - for a value set in the request, which
+   * needn't have one - its id, or '??' (the text the tx-ecosystem tests expect)
+   */
+  valueSetName(url) {
+    if (url) {
+      return url;
+    }
+    const id = this.valueSet && this.valueSet.jsonObj ? this.valueSet.jsonObj.id : null;
+    return id ? id : '??';
+  }
+
   async listDisplaysFromProvider(displays, cs, context) {
     await cs.designations(context, displays, true);
     displays.source = cs;
@@ -349,10 +361,7 @@ class ValueSetExpander {
         this.noTotal();
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
-        if (!srcURL) {
-          srcURL = '??';
-        }
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [this.valueSetName(srcURL), '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
       }
     }
 
@@ -533,10 +542,7 @@ class ValueSetExpander {
       if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.fullList.length >= this.count + this.offset) {
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
-        if (!srcURL) {
-          srcURL = '??';
-        }
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [this.valueSetName(srcURL), '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
       }
     }
 
@@ -732,7 +738,7 @@ class ValueSetExpander {
               // Report the versioned url (vurl), matching the message the
               // enumeration path produces when it hits the same limit - this
               // guard is just that refusal moved earlier.
-              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [source && source.vurl ? source.vurl : srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [this.valueSetName(source && source.url ? source.vurl : srcURL), '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
             }
           }
         }
@@ -846,7 +852,7 @@ class ValueSetExpander {
             } else {
               const iter = await cs.iterator(null);
               if (valueSets.length === 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
-                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [vsSrc.vurl, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [this.valueSetName(vsSrc.url ? vsSrc.vurl : null), '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
               }
               let tcount = 0;
@@ -1647,7 +1653,7 @@ class ValueSetExpander {
 
     if (this.offset + this.count < 0 && this.fullList.length > this.limit) {
       this.log.log('Operation took too long @ expand (' + this.constructor.name + ')');
-      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [source.vurl, '>' + this.limit]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [this.valueSetName(source.url ? source.vurl : null), '>' + this.limit]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     } else {
       let t = 0;
       let o = 0;
