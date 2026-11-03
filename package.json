@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node --expose-gc server.js",
+    "start:cluster": "node --expose-gc cluster.js",
     "dev": "node --expose-gc --watch server.js",
     "test": "jest",
     "test:watch": "jest --watch",
