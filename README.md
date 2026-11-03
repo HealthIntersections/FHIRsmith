@@ -234,12 +234,16 @@ npm run dev
 
 # Production mode
 npm start
+
+# Production mode, several processes on one port (cluster mode)
+npm run start:cluster
 ```
 
 The server will be available at `http://localhost:{port}` using the port specified in the config.
 In the production servers listed above, the server always sits behind an NGINX server which manages
 SSL, security, rate limiting etc. See [nginx.md](nginx.md) for configuration advice, including
-running several servers behind one front door.
+running several servers behind one front door. To use more than one CPU core on one machine, see
+[cluster.md](cluster.md): several server processes share one port and one client cache.
 
 ## Testing
 

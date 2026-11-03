@@ -10,6 +10,16 @@
     // rejectFraction new requests get 503 + Retry-After; above abortFraction running operations
     // are aborted with 422 too-costly. Optional; these are the defaults.
     // "memory": { "rejectFraction": 0.85, "abortFraction": 0.92 }
+    // In cluster mode (node cluster.js) every worker shares the cgroup limit, so give each
+    // its share in bytes: "memory": { "limit": 4294967296 }
+    //
+    // Cluster mode (node cluster.js): how many server processes share the port. The
+    // FHIRSMITH_WORKERS environment variable overrides it. See cluster.md.
+    // "cluster": { "workers": 4 },
+    // Several separately started processes on one data directory: run the background jobs
+    // (crawlers, downloads, daily report...) in only one of them. On automatically in
+    // cluster mode. The lock file must be on a local disk.
+    // "backgroundJobs": { "lock": true, "lockFile": "background-jobs.lock" }
   },
   // Usage statistics. Request counts are kept per module, per endpoint and per
   // operation, and written to a SQLite database every intervalMinutes so they
@@ -258,6 +268,17 @@
       // several instances can route cached requests back to the instance that holds the
       // cache. Leave unset for a single server. See nginx.md.
       // "instanceCode": "tx1",
+      // The $cache-control client caches. "memory" (the default) keeps them in this process.
+      // "sqlite" keeps them in one SQLite file that every process on the machine shares,
+      // which cluster mode needs (cluster.md); caches then also survive a restart. The file
+      // must be on a local disk, never a network filesystem. maxBytes caps the total size of
+      // the cached resources, dropping least recently used caches whole (default: no cap).
+      // "resourceCache": {
+      //   "store": "sqlite",
+      //   "path": "resource-cache.db",
+      //   "maxBytes": 2147483648,
+      //   "touchIntervalSeconds": 30
+      // },
       // The syndication feed (Terminology Syndication Feed IG) at <endpoint>/syndication. When
       // it is on, the packages, resource files and published binaries the library loads are
       // recorded in <data>/terminology-cache/syndication as they load - only from the time it

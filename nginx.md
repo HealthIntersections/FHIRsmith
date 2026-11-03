@@ -248,6 +248,12 @@ That rules out DNS round-robin. Clients re-resolve the name and reconnect during
 so a long build drifts from one server to another. You need a single front door that routes
 each cached request back to the instance that owns the cache.
 
+If the instances are on one machine, there is a simpler way: [cluster mode](cluster.md) runs
+several processes on one port with the cache in a shared SQLite file, so any process can
+serve any request and there is nothing to route. The rest of this section is for instances
+on separate machines (each of which may itself run in cluster mode, with its own
+`instanceCode`).
+
 ### Instance codes
 
 Give each instance a short code in its config.json:
