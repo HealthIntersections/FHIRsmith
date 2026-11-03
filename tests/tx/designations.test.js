@@ -615,6 +615,16 @@ describe('Designations', () => {
       expect(filter.passes('cardiac rhythm')).toBe(false);
     });
 
+    test('passesAll needs every word of the filter, passes only one', () => {
+      const filter = new SearchFilterText('serum glucose');
+
+      expect(filter.passes('Cholesterol in Serum')).toBe(true);
+      expect(filter.passesAll('Cholesterol in Serum')).toBe(false);
+      expect(filter.passesAll('Glucose [Mass/volume] in Serum or Plasma')).toBe(true);
+      expect(filter.passesAll('Glucoses, serum')).toBe(true); // stemmed, in any order
+      expect(new SearchFilterText('').passesAll('anything')).toBe(true);
+    });
+
     test('should calculate match scores', () => {
       const filter = new SearchFilterText('blood pressure');
       const stems = ['blood', 'pressure', 'measurement'];
