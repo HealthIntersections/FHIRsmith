@@ -15,6 +15,8 @@ const fs = require('fs');
 const Logger = require('../library/logger');
 const { Library } = require('./library');
 const { OperationContext, ResourceCache, ExpansionCache, debugLog} = require('./operation-context');
+const { SqliteResourceCache } = require('./resource-cache-sqlite');
+const folders = require('../library/folder-setup');
 const { LanguageDefinitions } = require('../library/languages');
 const { I18nSupport } = require('../library/i18nsupport');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
@@ -306,7 +308,7 @@ class TXModule {
       path: endpointPath,
       fhirVersion,
       context: context || null,
-      resourceCache: new ResourceCache(this.stats),
+      resourceCache: this.createResourceCache(endpointPath),
       expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold)
     };
     // Create the provider once for this endpoint
@@ -352,6 +354,20 @@ class TXModule {
     } else {
       this.log.info(`Expansion cache for ${endpointPath}: max ${expansionCacheSize} entries, no memory threshold`);
     }
+
+    // A 503 means "try again later": say when. The resource cache answers 503 when it
+    // can't save uploaded resources (see SqliteResourceCache._write); anything else
+    // that already set Retry-After keeps its own value.
+    router.use((req, res, next) => {
+      const status = res.status;
+      res.status = function (code) {
+        if (code === 503 && !this.headersSent && !this.getHeader('Retry-After')) {
+          this.setHeader('Retry-After', '5');
+        }
+        return status.call(this, code);
+      };
+      next();
+    });
 
     // Middleware to attach provider, context, and timing to request, and wrap res.json for HTML
     router.use((req, res, next) => {
@@ -1381,6 +1397,46 @@ class TXModule {
   }
 
   /**
+   * The settings for the client resource cache ($cache-control), from
+   * config.resourceCache: {store: "memory" | "sqlite", path, touchIntervalSeconds}.
+   * "memory" (the default) keeps each endpoint's caches in this process. "sqlite" keeps
+   * them in one SQLite file that every process on the machine shares - needed when
+   * several processes serve one port (cluster mode), since any of them may get any
+   * request. The file must be on a local disk, never a network filesystem.
+   * @returns {{store: string, path: string|null, touchIntervalMs: number}}
+   */
+  resourceCacheSettings() {
+    const rc = (this.config && this.config.resourceCache) || {};
+    const store = rc.store || 'memory';
+    if (store !== 'memory' && store !== 'sqlite') {
+      throw new Error(`tx resourceCache.store '${store}' is not valid: use "memory" or "sqlite"`);
+    }
+    const touchIntervalMs = rc.touchIntervalSeconds !== undefined ? Number(rc.touchIntervalSeconds) * 1000 : 30 * 1000;
+    const file = store === 'sqlite'
+      ? (rc.path ? path.resolve(folders.dataDir(), rc.path) : folders.filePath('resource-cache.db'))
+      : null;
+    return { store, path: file, touchIntervalMs };
+  }
+
+  /**
+   * Make an endpoint's client resource cache (see resourceCacheSettings).
+   * @param {string} endpointPath - e.g. /r4: endpoints share the file but not caches
+   * @returns {ResourceCache}
+   */
+  createResourceCache(endpointPath) {
+    const settings = this.resourceCacheSettings();
+    if (settings.store === 'sqlite') {
+      this.log.info(`Resource cache for ${endpointPath}: shared SQLite file ${settings.path}`);
+      return new SqliteResourceCache(this.stats, {
+        path: settings.path,
+        scope: endpointPath,
+        touchIntervalMs: settings.touchIntervalMs
+      });
+    }
+    return new ResourceCache(this.stats);
+  }
+
+  /**
    * Shutdown the module
    */
   async shutdown() {
@@ -1389,6 +1445,11 @@ class TXModule {
       clearInterval(timer);
     }
     this.timers = [];
+    for (const ep of this.endpoints || []) {
+      if (ep.resourceCache) {
+        ep.resourceCache.close();
+      }
+    }
     if (this.syndicationStore) {
       // let an induction in progress finish, so the store isn't left with a half-copied file
       await this.syndicationStore.whenIdle();

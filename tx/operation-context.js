@@ -77,8 +77,13 @@ class TimeTracker {
 
 
 /**
- * Thread-safe resource cache for tx-resource parameters
- * Stores resources by cache-id for reuse across requests
+ * Resource cache for the cache-id protocol ($cache-control): resources a client
+ * supplies under a cache-id are kept for use by its later requests.
+ *
+ * This class keeps them in this process's memory (resourceCache.store = "memory",
+ * the default). SqliteResourceCache (resource-cache-sqlite.js) is the same
+ * interface over one SQLite file shared by every process on the machine, for
+ * running several server processes on one port.
  */
 class ResourceCache {
   logCacheOps = false;
@@ -577,6 +582,12 @@ class ResourceCache {
   conceptCountFor(cacheId) {
     const entry = this.cache.get(cacheId);
     return entry ? (entry.concepts || 0) : 0;
+  }
+
+  /**
+   * Release whatever the store holds open (nothing, for the memory store).
+   */
+  close() {
   }
 
   /**
