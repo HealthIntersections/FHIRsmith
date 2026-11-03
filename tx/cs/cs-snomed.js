@@ -19,6 +19,7 @@ const {debugLog} = require("../operation-context");
 const {editionName, editionCode} = require("../sct/editions");
 const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
 const Logger = require("../../library/logger");
+const {Language} = require("../../library/languages");
 const regexUtilities = require("../../library/regex-utilities");
 
 // Symbol key under which a resolved ECL filter analysis is memoised directly on
@@ -2493,16 +2494,20 @@ class SnomedServices {
    * matches for a typical multi-word filter, with the event loop blocked for
    * the whole scan (tx.fhir.org incident 2026-09-17).
    *
+   * Only descriptions in `lang` take part, when it is given (a text filter searches one
+   * language: see SnomedProvider.searchFilter).
+   *
    * @param {SearchFilterText} searchText
    * @param {boolean} includeInactive - include inactive concepts
    * @param {OperationContext|null} opContext - for yielding / deadline checks
+   * @param {number|null} lang - the description language byte, or null for all
    * @returns {Promise<SnomedFilterContext>}
    */
-  async searchFilter(searchText, includeInactive = false, opContext = null) {
+  async searchFilter(searchText, includeInactive = false, opContext = null, lang = null) {
     const filterText = (searchText && searchText.filter ? searchText.filter : '').toLowerCase().trim();
     const tokens = filterTokens(filterText);
     if (tokens.length > 0) {
-      const index = await this.getTextIndex(opContext);
+      const index = await this.getTextIndex(opContext, lang);
       if (index) {
         const result = new SnomedFilterContext();
         const ordinals = index.search(tokens, opContext);
@@ -2513,7 +2518,16 @@ class SnomedServices {
         return result;
       }
     }
-    return await this.scanSearch(filterText, includeInactive, opContext);
+    return await this.scanSearch(filterText, includeInactive, opContext, lang);
+  }
+
+  // whether lang is the only language the edition has active descriptions in (then there is
+  // nothing to restrict - the International Edition is all English)
+  #onlyLanguage(lang) {
+    if (!this._activeDescLanguages) {
+      this._activeDescLanguages = this.descriptions.activeLanguages();
+    }
+    return this._activeDescLanguages.size === 1 && this._activeDescLanguages.has(lang);
   }
 
   /**
@@ -2524,28 +2538,53 @@ class SnomedServices {
    * @param {OperationContext|null} opContext
    * @returns {Promise<SnomedTextIndex|null>}
    */
-  async getTextIndex(opContext = null) {
-    if (this._textIndex) {
-      return this._textIndex;
+  async getTextIndex(opContext = null, lang = null) {
+    // One index per language the edition is searched in; an edition with only one language
+    // (the International Edition) has just the one, for all its descriptions
+    if (lang === null || this.#onlyLanguage(lang)) {
+      if (this._textIndex) {
+        return this._textIndex;
+      }
+      if (!this._textIndexPromise) {
+        this._textIndexPromise = this.#buildTextIndex(null, index => { this._textIndex = index; }, () => { this._textIndexPromise = null; });
+      }
+      return await this.#awaitTextIndex(this._textIndexPromise, opContext);
     }
-    if (!this._textIndexPromise) {
-      const started = Date.now();
-      // Logger fetched lazily: importers and tests require this module too
-      const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
-      this._textIndexPromise = SnomedTextIndex.build(this).then(index => {
-        this._textIndex = index;
-        textIndexLog.info(`SNOMED text index for ${this.versionUri}: ${index.words.length} words, built in ${Date.now() - started}ms`);
-        return index;
-      }, error => {
-        this._textIndexPromise = null;
-        textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}: ${error.message}`);
-        return null;
-      });
+    if (!this._textIndexes) {
+      this._textIndexes = new Map();
+      this._textIndexPromises = new Map();
     }
+    if (this._textIndexes.has(lang)) {
+      return this._textIndexes.get(lang);
+    }
+    if (!this._textIndexPromises.has(lang)) {
+      this._textIndexPromises.set(lang, this.#buildTextIndex(lang, index => { this._textIndexes.set(lang, index); },
+        () => { this._textIndexPromises.delete(lang); }));
+    }
+    return await this.#awaitTextIndex(this._textIndexPromises.get(lang), opContext);
+  }
+
+  #buildTextIndex(lang, onBuilt, onFailed) {
+    const started = Date.now();
+    // Logger fetched lazily: importers and tests require this module too
+    const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
+    const which = lang === null ? '' : ` (language ${lang})`;
+    return SnomedTextIndex.build(this, lang).then(index => {
+      onBuilt(index);
+      textIndexLog.info(`SNOMED text index for ${this.versionUri}${which}: ${index.words.length} words, built in ${Date.now() - started}ms`);
+      return index;
+    }, error => {
+      onFailed();
+      textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}${which}: ${error.message}`);
+      return null;
+    });
+  }
+
+  async #awaitTextIndex(promise, opContext) {
     if (opContext && typeof opContext.waitFor === 'function') {
-      return await opContext.waitFor(this._textIndexPromise, 'sct:textIndex');
+      return await opContext.waitFor(promise, 'sct:textIndex');
     }
-    return await this._textIndexPromise;
+    return await promise;
   }
 
   /**
@@ -2559,7 +2598,7 @@ class SnomedServices {
    * @param {OperationContext|null} opContext
    * @returns {Promise<SnomedFilterContext>}
    */
-  async scanSearch(filterText, includeInactive = false, opContext = null) {
+  async scanSearch(filterText, includeInactive = false, opContext = null, lang = null) {
     const result = new SnomedFilterContext();
     const searchTerms = filterText.split(/\s+/).filter(t => t.length > 0);
     const matches = [];
@@ -2591,7 +2630,7 @@ class SnomedServices {
 
         for (const descIndex of descriptionIndices) {
           const description = this.descriptions.getDescription(descIndex);
-          if (description.active) {
+          if (description.active && (lang === null || description.lang === lang)) {
             const term = this.strings.getEntry(description.iDesc).toLowerCase();
             if (searchTerms.every(searchTerm => term.includes(searchTerm))) {
               matchFound = true;
@@ -3086,6 +3125,14 @@ class SnomedProvider extends BaseCSServices {
       default:
         return null;
     }
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
   }
 
   async extendLookup(context, props, params) {
@@ -3941,8 +3988,23 @@ class SnomedProvider extends BaseCSServices {
   // Search filter
   // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
-    // `sort` is not a match-mode flag: results are always ranked.
-    let f = await this.sct.searchFilter(filter, false, this.opContext);
+    // `sort` is not a match-mode flag: results are always ranked. Only descriptions in one
+    // language take part, chosen as for the display filter: the first language the request
+    // names that the edition has descriptions in, else the edition's default; and the codes
+    // whose designations in that language, in a supplement in use, match
+    const lang = this.#filterLanguage(filterContext.languages);
+    let f = await this.sct.searchFilter(filter, false, this.opContext, lang);
+    if (this.supplements && this.supplements.length > 0) {
+      const have = new Set(f.matches.map(m => m.index));
+      for (const code of this._supplementSearchCodes(filter, new Language(SCT_LANGUAGE_CODES[lang] || 'en'))) {
+        const id = this.sct.stringToIdOrZero(code);
+        const r = id !== 0n ? this.sct.concepts.findConcept(id) : null;
+        if (r && r.found && !have.has(r.index) && this.sct.isActive(r.index)) {
+          f.matches.push({ index: r.index, term: this.sct.concepts.getConceptId(r.index), priority: 10 });
+          have.add(r.index);
+        }
+      }
+    }
     filterContext.filters.push(f);
     return f;
   }

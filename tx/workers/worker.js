@@ -174,28 +174,42 @@ class TerminologyWorker {
     if (!noVParams) {
       version = this.determineVersionBase(url, version, params);
     }
-    let codeSystemResource = null;
-    let provider = null;
-    const supplements = this.loadSupplements(url, version, statedSupplements);
-
     // First check additional resources
-    codeSystemResource = this.findInAdditionalResources(url, version, 'CodeSystem', !nullOk);
+    const codeSystemResource = this.findInAdditionalResources(url, version, 'CodeSystem', !nullOk);
 
-    if (codeSystemResource) {
-      if (codeSystemResource.content === 'complete') {
+    const build = async (supplements) => {
+      let provider = null;
+      if (codeSystemResource && codeSystemResource.content === 'complete') {
         // Create provider from complete code system
         provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
       }
-    }
+      // If no provider from additional resources, try main provider
+      if (!provider) {
+        provider = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
+      }
+      // If still no provider but we have a code system with allowed content mode
+      if (!provider && codeSystemResource && kinds.includes(codeSystemResource.content)) {
+        provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
+      }
+      return provider;
+    };
 
-    // If no provider from additional resources, try main provider
-    if (!provider) {
-      provider = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
-    }
+    const supplements = this.loadSupplements(url, version, statedSupplements);
+    let provider = await build(supplements);
 
-    // If still no provider but we have a code system with allowed content mode
-    if (!provider && codeSystemResource && kinds.includes(codeSystemResource.content)) {
-      provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
+    // The supplements were chosen for the version asked for. When no version was asked for (or
+    // only part of one), it's the version the provider turned out to be that decides which apply:
+    // a supplement pinned to another version of the code system (supplements = url|2.80 on
+    // LOINC 2.83) is not used - so a value set that requires it fails - and one pinned to this
+    // version is
+    const actual = provider ? provider.version() : null;
+    if (actual && actual !== version) {
+      const fitting = this.loadSupplements(url, actual, statedSupplements);
+      const key = (list) => list.map(cs => cs.vurl || cs.url).sort().join(' ');
+      if (key(fitting) !== key(supplements)) {
+        this.opContext.registerProvider(provider); // released at the end of the request, like the rest
+        provider = await build(fitting);
+      }
     }
 
     if (!provider && !nullOk) {
@@ -284,10 +298,52 @@ class TerminologyWorker {
    * @returns {Array<CodeSystem>} Supplement code systems
    */
   loadSupplements(url, version = '', statedSupplements) {
+    return this.#oneVersionEach(this.#findSupplements(url, version, statedSupplements), statedSupplements);
+  }
+
+  /**
+   * Only one version of a supplement applies. When more than one is in scope (the server has
+   * one, and the request passes another in tx-resource), the one the request names by version
+   * (useSupplement url|version, or a value set's supplement extension) wins; failing that, the
+   * request's own over the server's; failing that, the latest
+   *
+   * @param {CodeSystem[]} supplements - server ones first, then the request's
+   * @param {Set<string>} statedSupplements
+   * @returns {CodeSystem[]}
+   */
+  #oneVersionEach(supplements, statedSupplements) {
+    const byUrl = new Map();
+    for (const cs of supplements) {
+      if (!byUrl.has(cs.url)) {
+        byUrl.set(cs.url, []);
+      }
+      byUrl.get(cs.url).push(cs);
+    }
+    if ([...byUrl.values()].every(list => list.length === 1)) {
+      return supplements;
+    }
+    const result = [];
+    for (const list of byUrl.values()) {
+      if (list.length === 1) {
+        result.push(list[0]);
+        continue;
+      }
+      let chosen = statedSupplements ? list.find(cs => cs.version && statedSupplements.has(cs.vurl)) : null;
+      if (!chosen) {
+        chosen = list.find(cs => (this.additionalResources || []).includes(cs));
+      }
+      if (!chosen) {
+        chosen = list.reduce((a, b) => (VersionUtilities.compareVersionsGeneral(b.version, a.version) > 0 ? b : a));
+      }
+      result.push(chosen);
+    }
+    return result;
+  }
+
+  #findSupplements(url, version, statedSupplements) {
     const supplements = [];
 
     supplements.push(...this.provider.loadSupplements(url, version, statedSupplements));
-    // todo: look in provider for supplements
 
     if (!this.additionalResources) {
       return supplements;
@@ -325,7 +381,11 @@ class TerminologyWorker {
           } else {
             // Version specified, check if it matches the tail of supplements URL
             const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
-            if (supplementsVersion === version || VersionUtilities.versionMatches(supplementsVersion, version)) {
+            // not every code system's versions are semver (SNOMED CT's are URIs, ICF's are dates):
+            // versionMatches throws on those, so match by the version's own algorithm, as
+            // CodeSystem.isSupplementFor does for the server's own supplements
+            if (supplementsVersion === version || VersionUtilities.versionMatchesByAlgorithm(supplementsVersion, version,
+                VersionUtilities.guessVersionAlgorithmFromVersion(version))) {
               supplements.push(cs);
             }
           }

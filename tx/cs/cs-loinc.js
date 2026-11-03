@@ -2,7 +2,7 @@ const sqlite3 = require('sqlite3').verbose();
 const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
 const { Language, Languages} = require('../../library/languages');
-const { CodeSystemFactoryProvider} = require('./cs-api');
+const { CodeSystemFactoryProvider, CodeSystemProvider } = require('./cs-api');
 const { validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
 const {sqlEscapeString} = require("../../xig/xig");
@@ -145,8 +145,9 @@ class LoincFilterHolder {
 }
 
 class LoincPrep {
-  constructor() {
+  constructor(languages = null) {
     this.filters = [];
+    this.languages = languages; // what the request asked for (a text filter searches one language)
   }
 }
 
@@ -337,6 +338,14 @@ class LoincServices extends BaseCSServices {
       this._listSupplementDesignations(ctxt.code, displays);
     }
 
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
   }
 
   async extendLookup(ctxt, props, params) {
@@ -828,8 +837,8 @@ class LoincServices extends BaseCSServices {
     return false;
   }
 
-  async getPrepContext(iterate) {
-    return new LoincPrep(iterate);
+  async getPrepContext(iterate, languages = null) {
+    return new LoincPrep(languages);
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
@@ -838,10 +847,49 @@ class LoincServices extends BaseCSServices {
     filterContext.filters.push(filter);
   }
 
+  /**
+   * A text filter matches the codes with a name in the search language (see searchLanguage:
+   * the request's language if LOINC has it, else English) that contains the text, and the
+   * codes that a supplement in use gives a matching designation in that language. In English
+   * the name is the display (scanning every English description - short names, consumer
+   * names - takes 2+ seconds, against 0.2 for the displays); in another language it is any
+   * description in it but RELATEDNAMES2, which is a list of keywords (a property), not a name.
+   * LOINC does not rate its matches, so sorted or not they come in display order
+   */
   async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
-    // LOINC does not rate its matches, so sorted or not they come in description order
-    await this.#executeFilterQuery('$text', '<', filterText.filter, filter);
+    const lang = this.searchLanguage(filterContext.languages);
+    const english = CodeSystemProvider.inSearchLanguage(null, lang);
+    const langKeys = [];
+    for (const [code, key] of this.langs) {
+      if (!english && CodeSystemProvider.inSearchLanguage(code, lang)) {
+        langKeys.push(key);
+      }
+    }
+    const text = sqlEscapeString(filterText.filter || '');
+    const conds = [];
+    if (english) {
+      conds.push(`Codes.Description like '%${text}%'`); // the display, which is English
+    }
+    if (langKeys.length > 0) {
+      conds.push(`Codes.CodeKey IN (SELECT CodeKey FROM Descriptions WHERE LanguageKey IN (${langKeys.join(',')})
+                   AND DescriptionTypeKey != 4 AND Value like '%${text}%')`);
+    }
+    if (conds.length > 0) {
+      await this.#executeSQL(`SELECT Codes.CodeKey as Key FROM Codes WHERE ${conds.join(' OR ')} ORDER BY Codes.Description ASC`, filter);
+    } else {
+      filter.keys = [];
+    }
+    const have = new Set(filter.keys);
+    for (const code of this._supplementSearchCodes(filterText, lang)) {
+      const ctxt = this.codes.get(code);
+      if (ctxt && !have.has(ctxt.key)) {
+        filter.keys.push(ctxt.key);
+        have.add(ctxt.key);
+      }
+    }
+    filter.lsql = 'text'; // checked by key (filterLocate needs it set)
+    filter.keySet = new Set(filter.keys); // in display order, not key order, so hasKey can't binary search
     filterContext.filters.push(filter);
   }
 
@@ -1150,7 +1198,8 @@ class LoincServices extends BaseCSServices {
 // Helper method for regex matching
   async #findRegexMatches(sql, pattern, valueColumn, keyColumn = 'Key') {
     return new Promise((resolve, reject) => {
-      const regex = regexUtilities.compile(pattern);
+      // the whole value, as for every regex filter: a|b is ^(?:a|b)$
+      const regex = regexUtilities.compile('^(?:' + pattern + ')$');
       const matchingKeys = [];
 
       this.db.all(sql, (err, rows) => {

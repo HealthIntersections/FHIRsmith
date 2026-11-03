@@ -233,6 +233,16 @@ describe('OMOP Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand: only the named ones, none when none are named', async () => {
+      if (testData.sampleConcepts.length > 0) {
+        const conceptId = testData.sampleConcepts[0];
+        expect(await provider.properties(conceptId, [])).toEqual([]);
+        const got = await provider.properties(conceptId, ['domain-id', 'vocabulary-id']);
+        expect(got.map(p => p.code).sort()).toEqual(['domain-id', 'vocabulary-id']);
+      }
+    });
+
     test('should extend lookup with basic properties', async () => {
       if (testData.sampleConcepts.length > 0) {
         const conceptId = testData.sampleConcepts[0];

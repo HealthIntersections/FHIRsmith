@@ -1970,4 +1970,19 @@ describe('SNOMED CT $lookup properties', () => {
     const expr = await props('367430006:{405813007=(85562004:272741003=24028007)}', ['normalFormTerse']);
     expect(expr.normalFormTerse).toEqual(['387713003:{260686004=257903006,405813007=(118632007:{272741003=182353008})},{405813007=(85562004:{272741003=24028007})}']);
   });
+
+  // $expand reports properties from properties(), which is built from extendLookup
+  test('properties() for $expand: only the named ones, none when none are named', async () => {
+    const { context } = await provider.locate('367430006');
+    expect(await provider.properties(context, [])).toEqual([]);
+    const got = await provider.properties(context, ['moduleId', 'sufficientlyDefined', '260686004']);
+    expect(got).toEqual([
+      { code: 'moduleId', valueCode: '900000000000207008' },
+      { code: 'sufficientlyDefined', valueBoolean: true },
+      { code: '260686004', valueCode: '257903006' }
+    ]);
+    // the same values $lookup returns, without the lookup-only parts (description, code-display)
+    const lookup = await props('367430006', ['moduleId', 'sufficientlyDefined', '260686004']);
+    expect(got.map(p => p.code).sort()).toEqual(Object.keys(lookup).sort());
+  });
 });

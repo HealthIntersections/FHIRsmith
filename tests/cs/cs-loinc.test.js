@@ -1083,6 +1083,20 @@ describe('LOINC Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand: only the named ones, none when none are named', async () => {
+      expect(await provider.properties('100007-4', [])).toEqual([]);
+      const got = await provider.properties('100007-4', ['COMPONENT', 'SCALE_TYP']);
+      expect(got.sort((a, b) => a.code.localeCompare(b.code))).toEqual([
+        { code: 'COMPONENT', valueCode: 'LP430726-2' },
+        { code: 'SCALE_TYP', valueCode: 'LP7751-3' }
+      ]);
+      // Coding-valued (a mapping), without the equivalence subproperty
+      expect(await provider.properties('LP14355-9', ['sct'])).toEqual([
+        { code: 'sct', valueCoding: { system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20260101', code: '15373003', display: 'Creatinine (substance)' } }
+      ]);
+    });
+
     test('should extend lookup with properties and relationships', async () => {
       const testCode = expectedResults.basic.knownCodes[0];
       const paramSet = [];

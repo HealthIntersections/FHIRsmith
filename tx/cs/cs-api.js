@@ -279,6 +279,95 @@ class CodeSystemProvider {
     }
   }
 
+  /**
+   * The language a text filter ($expand filter) searches. A text filter matches a code's
+   * displays and designations in one language only (the same rule as for the SNOMED CT display
+   * filter): the first language the request names (displayLanguage, else Accept-Language) that
+   * the code system - or a supplement in use - has displays in, else the code system's default
+   * language. Matching is at the language subtag level: de-DE searches all German.
+   *
+   * @param {Languages|null} languages - what the request asked for
+   * @returns {Language}
+   */
+  searchLanguage(languages) {
+    for (const lang of (languages && languages.languages) || []) {
+      if (!lang || !lang.language || lang.code === '*') {
+        continue;
+      }
+      const one = new Languages();
+      one.add(lang);
+      if (this.hasAnyDisplays(one) || this._hasSupplementText(lang)) {
+        return lang;
+      }
+    }
+    return new Language(this.defLang());
+  }
+
+  /**
+   * Whether a supplement in use has any display or designation (of any use) in the language
+   *
+   * @param {Language} lang
+   * @returns {boolean}
+   */
+  _hasSupplementText(lang) {
+    for (const supplement of this.supplements || []) {
+      const suppLang = supplement.jsonObj.language || this.defLang();
+      for (const concept of supplement.getAllConcepts()) {
+        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, lang)) {
+          return true;
+        }
+        if ((concept.designation || []).some(d => d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, suppLang))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether text in language `code` (a tag; empty means `fallback`) is in the search language
+   *
+   * @param {string|Language|null} code
+   * @param {Language} searchLang - from searchLanguage()
+   * @param {string} [fallback] - the language of text that doesn't say
+   * @returns {boolean}
+   */
+  static inSearchLanguage(code, searchLang, fallback = 'en') {
+    let lang = code instanceof Language ? code : (code ? new Language(code) : null);
+    if (!lang || !lang.language) {
+      lang = new Language(fallback || 'en');
+    }
+    return lang.language === searchLang.language;
+  }
+
+  /**
+   * The codes whose displays or designations in a supplement in use, in the search language,
+   * pass a text filter - a supplement's designations are searched like the code system's own
+   *
+   * @param {SearchFilterText} filter
+   * @param {Language} searchLang - from searchLanguage()
+   * @returns {Set<string>}
+   */
+  _supplementSearchCodes(filter, searchLang) {
+    const codes = new Set();
+    for (const supplement of this.supplements || []) {
+      const suppLang = supplement.jsonObj.language || this.defLang();
+      for (const concept of supplement.getAllConcepts()) {
+        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, searchLang) && filter.passes(concept.display)) {
+          codes.add(concept.code);
+          continue;
+        }
+        for (const d of concept.designation || []) {
+          if (d.value && CodeSystemProvider.inSearchLanguage(d.language, searchLang, suppLang) && filter.passes(d.value)) {
+            codes.add(concept.code);
+            break;
+          }
+        }
+      }
+    }
+    return codes;
+  }
+
   _hasAnySupplementDisplays(languages) {
     // Check if any supplements have displays in the requested languages
     if (this.supplements) {
@@ -570,11 +659,50 @@ class CodeSystemProvider {
   async extensions(code) { return null; }
 
   /**
-   
+   * The properties of a concept, in CodeSystem.concept.property form ({code, value[x]}).
+   * $expand reports them on expansion.contains, so a provider that has properties must
+   * override this, not just extendLookup - otherwise $lookup returns them and $expand never does
+   *
    * @param {string | CodeSystemProviderContext} code
+   * @param {string[]} [names] the properties the caller wants ('*' for all of them). A provider
+   *   that has to compute its properties should compute only these (none when the list is
+   *   empty: an expansion that asks for no properties must not pay for them); one that holds
+   *   them in memory may return the lot, and the caller picks what it asked for
    * @returns {CodeSystem.concept.property[]} list of properties (may be empty)
    */
-  async properties(code) { return []; }
+  // eslint-disable-next-line no-unused-vars
+  async properties(code, names) { return []; }
+
+  /**
+   * properties() for a provider whose properties are only built by extendLookup: run it for
+   * just the named properties, and turn the $lookup property parameters it adds into
+   * CodeSystem.concept.property form. Lookup-only parts (subproperty, description, language,
+   * code-display...) are dropped; designations are not properties
+   *
+   * @param {string | CodeSystemProviderContext} context
+   * @param {string[]} names - the properties wanted ('*' for all); none means none
+   * @returns {Promise<Object[]>}
+   */
+  async _propertiesFromLookup(context, names) {
+    if (!names || names.length === 0) {
+      return [];
+    }
+    const params = [];
+    await this.extendLookup(context, names, params);
+    const result = [];
+    for (const p of params) {
+      if (p.name !== 'property' || !Array.isArray(p.part)) {
+        continue;
+      }
+      const code = p.part.find(x => x.name === 'code')?.valueCode;
+      const value = p.part.find(x => x.name === 'value');
+      const vn = value ? Object.keys(value).find(k => k.startsWith('value')) : null;
+      if (code && vn && value[vn] !== undefined && value[vn] !== null) {
+        result.push({ code, [vn]: value[vn] });
+      }
+    }
+    return result;
+  }
 
   /**
    
@@ -711,7 +839,11 @@ class CodeSystemProvider {
    *
    **/
   // eslint-disable-next-line no-unused-vars
-  async getPrepContext(iterate, languages = null) { return new FilterExecutionContext(iterate); }
+  async getPrepContext(iterate, languages = null) {
+    const result = new FilterExecutionContext(iterate);
+    result.languages = languages; // what the request asked for (a text filter searches one language)
+    return result;
+  }
 
 
   /**
