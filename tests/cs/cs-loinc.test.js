@@ -7,6 +7,7 @@ const { OperationContext } = require('../../tx/operation-context');
 const {validateParameter} = require("../../library/utilities");
 const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
+const {CodeSystem} = require('../../tx/library/codesystem');
 const folders = require('../../library/folder-setup');
 
 describe('LOINC Module Import', () => {
@@ -914,6 +915,33 @@ describe('LOINC Provider', () => {
       const filter = filters[0];
       const size = await provider.filterSize(filterContext, filter);
       expect(size).toBeGreaterThanOrEqual(0);
+    });
+
+    // LOINC's own text search needs every word (no display in the test data has "serum
+    // glucose"); a supplement's designations must match the same way, not on any one word
+    test('a supplement\'s designations match a text filter only when they have every word', async () => {
+      const supplement = new CodeSystem({
+        resourceType: 'CodeSystem', url: 'http://example.org/loinc-supplement', version: '1', status: 'active',
+        content: 'supplement', supplements: 'http://loinc.org', language: 'en',
+        concept: [
+          { code: '101448-9', designation: [{ language: 'en', value: 'Serum antibody screen' }] },
+          { code: '104597-0', display: 'Blood glucose by meter' },
+          { code: '102820-8', designation: [{ language: 'en', value: 'Glucose level in serum' }] }
+        ]
+      });
+      const supplemented = await factory.build(opContext, [supplement]);
+      try {
+        const filterContext = await supplemented.getPrepContext(true);
+        await supplemented.searchFilter(filterContext, new SearchFilterText('serum glucose'), false);
+        const filters = await supplemented.executeFilters(filterContext);
+        const codes = [];
+        while (await supplemented.filterMore(filterContext, filters[0])) {
+          codes.push(await supplemented.code(await supplemented.filterConcept(filterContext, filters[0])));
+        }
+        expect(codes).toEqual(['102820-8']);
+      } finally {
+        supplemented.close();
+      }
     });
 
     test('lists text filter matches in description order, sorted or not', async () => {
