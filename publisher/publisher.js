@@ -417,6 +417,8 @@ class PublisherModule {
 
     this.taskProcessor = setInterval(async () => {
       if (this.shutdownRequested) return;
+      // with several processes, only one of them works through the task queue
+      if (!this.isProcessing && !require('../library/background-jobs').isLeader()) return;
 
       if (this.isProcessing) {
         // A publication can legitimately run for longer than an hour (go-publish on a

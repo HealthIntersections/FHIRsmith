@@ -868,10 +868,7 @@ class IpsModule {
   }
 
   setupQueue() {
-    const reset = this.store.resetProcessing();
-    if (reset > 0) {
-      this.log.info(`IPS module: ${reset} documents were being processed at the last shutdown; queued again`);
-    }
+    this.resetStuckDocuments();
     const cfg = this.config.processing || {};
     if (cfg.enabled === false) {
       return;
@@ -889,9 +886,36 @@ class IpsModule {
    * runs at once; a run that finds nothing is free.
    * @returns {Promise<number>} how many documents were processed
    */
+  /**
+   * Put documents that were being processed when the queue's runner stopped back in
+   * the queue. With several processes, only the one that runs the queue may do this
+   * (otherwise a process starting up would re-queue what the runner is working on),
+   * and it does it when it starts running the queue - including when it takes over
+   * from a runner that stopped.
+   */
+  resetStuckDocuments() {
+    if (!this.store || !require('../library/background-jobs').isLeader()) {
+      this.queueReset = false;
+      return;
+    }
+    const reset = this.store.resetProcessing();
+    if (reset > 0) {
+      this.log.info(`IPS module: ${reset} documents were being processed at the last shutdown; queued again`);
+    }
+    this.queueReset = true;
+  }
+
   async processQueue() {
     if (this.processing || !this.store) {
       return 0;
+    }
+    // with several processes, one of them works through the queue
+    if (!require('../library/background-jobs').isLeader()) {
+      this.queueReset = false;
+      return 0;
+    }
+    if (!this.queueReset) {
+      this.resetStuckDocuments();
     }
     // claimed before anything is awaited, so two timer ticks can never both get past here
     this.processing = true;

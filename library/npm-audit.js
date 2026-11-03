@@ -329,9 +329,12 @@ class NpmAudit {
     if (this.stats) {
       this.stats.addTask('npm audit', `${this.intervalHours} hr`);
     }
-    // run() handles its own errors, so the promise never rejects
-    const first = setTimeout(() => void this.run(), FIRST_RUN_DELAY_MS);
-    const repeat = setInterval(() => void this.run(), this.intervalHours * HOUR_MS);
+    // run() handles its own errors, so the promise never rejects. With several
+    // processes, only the one running the background jobs audits.
+    const backgroundJobs = require('./background-jobs');
+    const tick = () => { if (backgroundJobs.isLeader()) { void this.run(); } };
+    const first = setTimeout(tick, FIRST_RUN_DELAY_MS);
+    const repeat = setInterval(tick, this.intervalHours * HOUR_MS);
     for (const t of [first, repeat]) {
       if (t.unref) {
         t.unref();

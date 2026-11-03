@@ -160,7 +160,7 @@ class DailyReport {
     const state = this.readState();
     // owed if a midnight has passed since the last report went out (a server
     // that has never reported waits for its first midnight)
-    if (state.sentAt && localDate(state.sentAt) !== localDate(now)) {
+    if (state.sentAt && localDate(state.sentAt) !== localDate(now) && require('./background-jobs').isLeader()) {
       this.log.info('Daily report: the server was down at midnight, sending it now');
       void this.run(now);
     }
@@ -171,6 +171,11 @@ class DailyReport {
     const delay = Math.max(1000, nextMidnight(now) - now);
     this.timer = setTimeout(() => {
       this.timer = null;
+      // With several processes, only the one running the background jobs sends it
+      if (!require('./background-jobs').isLeader()) {
+        this.schedule();
+        return;
+      }
       // run() handles its own errors, so the promise never rejects
       void this.run().finally(() => this.schedule());
     }, delay);

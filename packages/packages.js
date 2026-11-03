@@ -932,6 +932,10 @@ class PackagesModule {
     if (this.config.crawler && this.config.crawler.schedule) {
       this.stats.addTask("Package Crawler", describeCron(this.config.crawler.schedule));
       this.crawlerJob = cron.schedule(this.config.crawler.schedule, async () => {
+        // with several processes, one of them crawls
+        if (!require('../library/background-jobs').isLeader()) {
+          return;
+        }
         pckLog.info('Starting scheduled package crawler...');
         try {
           await this.runCrawler();

@@ -37,7 +37,12 @@ class SqliteSessionStore extends session.Store {
       .then(() => this.cleanup());
     this.ready.catch(() => { /* reported by the first operation that waits on it */ });
     const interval = options.cleanupIntervalMs > 0 ? options.cleanupIntervalMs : ONE_DAY_MS;
-    this.timer = setInterval(() => void this.cleanup().catch(() => {}), interval);
+    // expired sessions are deleted by whichever process runs the background jobs
+    this.timer = setInterval(() => {
+      if (require('./background-jobs').isLeader()) {
+        void this.cleanup().catch(() => {});
+      }
+    }, interval);
     if (this.timer.unref) {
       this.timer.unref();
     }

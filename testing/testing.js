@@ -281,8 +281,11 @@ class TestingModule {
     if (this.stats) {
       this.stats.addTask('TestReport retention', 'daily');
     }
-    purge();
-    this.retentionTimer = setInterval(purge, DAY_MS);
+    // with several processes, one of them purges
+    const backgroundJobs = require('../library/background-jobs');
+    const tick = () => { if (backgroundJobs.isLeader()) { purge(); } };
+    tick();
+    this.retentionTimer = setInterval(tick, DAY_MS);
     this.retentionTimer.unref();
   }
 

@@ -193,16 +193,22 @@ class RegistryModule {
   startPeriodicCrawl(intervalMinutes) {
     const intervalMs = intervalMinutes * 60 * 1000;
 
+    // With several processes, one of them crawls and saves; the others load what it saved
+    const backgroundJobs = require('../library/background-jobs');
+    const tick = () => {
+      if (backgroundJobs.isLeader()) {
+        this.performCrawl().catch((err) => this.logger.error('Registry crawl failed: ' + err.message));
+      } else {
+        this.loadSavedData().catch((err) => this.logger.error('Registry reload failed: ' + err.message));
+      }
+    };
+
     // Run initial crawl after a short delay
-    setTimeout(() => {
-      this.performCrawl().catch((err) => this.logger.error('Registry crawl failed: ' + err.message));
-    }, 5000);
+    setTimeout(tick, 5000);
 
     // Set up periodic crawling
     this.stats.addTask("TxRegistry", `${intervalMinutes} min`);
-    this.crawlInterval = setInterval(() => {
-      this.performCrawl().catch((err) => this.logger.error('Registry crawl failed: ' + err.message));
-    }, intervalMs);
+    this.crawlInterval = setInterval(tick, intervalMs);
 
     this.logger.info(`Started periodic crawl every ${intervalMinutes} minutes`);
   }

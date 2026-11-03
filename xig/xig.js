@@ -19,6 +19,7 @@ const escape = require('escape-html');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
+const backgroundJobs = require('../library/background-jobs');
 const {tokenMatches, tokenConfigured} = require('../library/request-token');
 const xigLog = Logger.getInstance().child({ module: 'xig' });
 
@@ -2005,12 +2006,50 @@ async function loadConfigCache() {
   }
 }
 
+// The file the open database was opened from (its inode), so a process can tell when
+// another process has replaced it (see followDatabaseFile)
+let xigDbInode = null;
+
+/**
+ * When several processes share the data directory, only one downloads the XIG
+ * database; it replaces the file by renaming a new one over it. The others still
+ * have the old file open, so they check now and then whether the file is a
+ * different one from the one they opened, and if so open the new one.
+ */
+function followDatabaseFile() {
+  if (!backgroundJobs.enabled) {
+    return;
+  }
+  const watcher = fs.watchFile(XIG_DB_PATH, { persistent: false, interval: 60 * 1000 }, (curr) => {
+    if (updateInProgress || !curr.ino || curr.ino === xigDbInode) {
+      return;
+    }
+    xigLog.info('XIG database file replaced by another process; reopening it');
+    const reopen = () => initializeDatabase().catch((err) => xigLog.error('XIG database reopen failed: ' + err.message));
+    if (xigDb) {
+      const old = xigDb;
+      xigDb = null;
+      old.close(() => void reopen());
+    } else {
+      void reopen();
+    }
+  });
+  if (watcher && watcher.unref) {
+    watcher.unref();
+  }
+}
+
 function initializeDatabase() {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(XIG_DB_PATH)) {
       xigLog.error('XIG database file not found, will download on first update');
       resolve();
       return;
+    }
+    try {
+      xigDbInode = fs.statSync(XIG_DB_PATH).ino;
+    } catch (e) {
+      xigDbInode = null;
     }
 
     xigDb = new sqlite3.Database(XIG_DB_PATH, sqlite3.OPEN_READONLY, async (err) => {
@@ -3226,12 +3265,14 @@ async function initializeXigModule(stats, xigConfig) {
 
     await initializeDatabase();
 
-    if (!fs.existsSync(XIG_DB_PATH)) {
+    // With several processes, one of them downloads; the others follow the file
+    if (!fs.existsSync(XIG_DB_PATH) && backgroundJobs.isLeader()) {
       xigLog.info('No existing XIG database found, triggering initial download');
       setTimeout(() => {
         updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       }, 5000);
     }
+    followDatabaseFile();
 
     if (globalStats) {
       globalStats.addTask('XIG Download', describeCron('0 2 * * *'));
@@ -3240,6 +3281,9 @@ async function initializeXigModule(stats, xigConfig) {
     // Note: This assumes we're called only when XIG is enabled
     if (xigConfig?.autoUpdate !== false) {
       cron.schedule('0 2 * * *', () => {
+        if (!backgroundJobs.isLeader()) {
+          return;
+        }
         updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       });
     }

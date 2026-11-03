@@ -411,6 +411,10 @@ class SHLModule {
   startCleanupJob() {
     if (this.config.cleanup && this.config.cleanup.schedule) {
       this.cleanupJob = cron.schedule(this.config.cleanup.schedule, () => {
+        // with several processes, one of them cleans up
+        if (!require('../library/background-jobs').isLeader()) {
+          return;
+        }
         shlLog.info('Running scheduled cleanup of expired SHL entries...');
         this.cleanupExpiredEntries();
       });

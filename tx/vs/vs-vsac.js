@@ -5,6 +5,7 @@ const { AbstractValueSetProvider } = require('./vs-api');
 const { ValueSetDatabase } = require('./vs-database');
 const { VersionUtilities } = require('../../library/version-utilities');
 const folders = require('../../library/folder-setup');
+const backgroundJobs = require('../../library/background-jobs');
 const {debugLog} = require("../operation-context");
 const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
 
@@ -98,7 +99,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       // connection. Just load existing data.
       await this._reloadMap();
     }
-    if (this.SYNC_AT_START_UP || this.valueSetMap.size == 0) {
+    // With several processes, one of them syncs; the others read what it wrote
+    if ((this.SYNC_AT_START_UP || this.valueSetMap.size == 0) && backgroundJobs.isLeader()) {
       await this.refreshValueSets();
     }
     // Start periodic refresh
@@ -118,7 +120,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     const intervalMs = this.refreshIntervalHours * 60 * 60 * 1000;
     this.refreshTimer = setInterval(async () => {
       try {
-        await this.refreshValueSets();
+        if (backgroundJobs.isLeader()) {
+          await this.refreshValueSets();
+        } else {
+          // another process refreshes the database; pick up what it has written
+          await this._reloadMap();
+        }
       } catch (error) {
         debugLog(error);
         this.log.error(error, 'Error during scheduled refresh:');

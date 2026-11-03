@@ -20,6 +20,8 @@ const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
+const backgroundJobs = require('./library/background-jobs');
+const cluster = require('cluster');
 const DailyReport = require('./library/daily-report');
 
 // Load configuration BEFORE logger
@@ -46,6 +48,17 @@ serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
 memoryGuard.configure(config.server.memory || {});
 serverLog.info(memoryGuard.describe());
+// Several processes on one data directory (cluster.js, or server.backgroundJobs.lock
+// for separately started instances): only one of them runs the background jobs
+backgroundJobs.configure({
+  enabled: cluster.isWorker || !!(config.server.backgroundJobs && config.server.backgroundJobs.lock),
+  path: config.server.backgroundJobs && config.server.backgroundJobs.lockFile
+    ? path.resolve(folders.dataDir(), config.server.backgroundJobs.lockFile) : undefined,
+  log: Logger.getInstance().child({ module: 'background-jobs' })
+});
+if (cluster.isWorker) {
+  serverLog.info(`Cluster worker ${process.env.FHIRSMITH_CLUSTER_WORKER || '?'} of ${process.env.FHIRSMITH_CLUSTER_SIZE || '?'}; background jobs run in whichever worker holds ${backgroundJobs.file}`);
+}
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -851,7 +864,7 @@ async function startServer() {
       serverId: config.hostName
     });
     dailyReport.start();
-    if (modules.packages && config.modules?.packages?.enabled) {
+    if (modules.packages && config.modules?.packages?.enabled && backgroundJobs.isLeader()) {
       modules.packages.startInitialCrawler();
     }
     // Run usage tracker in background after startup
@@ -890,6 +903,7 @@ async function shutdown() {
   if (dailyReport) {
     dailyReport.stop();
   }
+  backgroundJobs.close();
 
   // Shutdown all modules
   for (const [moduleName, moduleInstance] of Object.entries(modules)) {

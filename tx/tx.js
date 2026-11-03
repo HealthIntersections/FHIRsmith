@@ -220,8 +220,16 @@ class TXModule {
             this.log.error(`closure: pruning failed: ${error.message}`);
           }
         };
-        void prune(); // errors are logged inside
-        this.timers.push(setInterval(() => void prune(), 24 * 60 * 60 * 1000));
+        // errors are logged inside; with several processes, one of them prunes
+        const backgroundJobs = require('../library/background-jobs');
+        if (backgroundJobs.isLeader()) {
+          void prune();
+        }
+        this.timers.push(setInterval(() => {
+          if (backgroundJobs.isLeader()) {
+            void prune();
+          }
+        }, 24 * 60 * 60 * 1000));
       }
     }
 
