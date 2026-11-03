@@ -12,6 +12,10 @@ const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
 // Persisted watermark for the phase-1b _lastUpdated scan.
 const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
 
+// A process that doesn't run the sync looks at the database's generation (one indexed
+// read) at most this often, when a request uses the value sets - see catchUp
+const GENERATION_CHECK_MS = 1000;
+
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
@@ -59,6 +63,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     this.refreshTimer = null;
     this.isRefreshing = false;
     this.lastRefresh = null;
+    // the database generation the map was loaded at, and when it was last compared
+    this.loadedGeneration = null;
+    this.generationCheckedAt = 0;
+    this.catchingUp = null;
 
     // HTTP client with authentication - manually create Basic auth header
     const authString = Buffer.from(`apikey:${this.apiKey}`).toString('base64');
@@ -118,13 +126,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
 
     const intervalMs = this.refreshIntervalHours * 60 * 60 * 1000;
+    // with several processes, one of them refreshes; the others pick up what it wrote
+    // when they next use the value sets (catchUp), not on a timer
     this.refreshTimer = setInterval(async () => {
       try {
         if (backgroundJobs.isLeader()) {
           await this.refreshValueSets();
-        } else {
-          // another process refreshes the database; pick up what it has written
-          await this._reloadMap();
         }
       } catch (error) {
         debugLog(error);
@@ -242,9 +249,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         tracking.count++;
       }
 
-      // Reload map with fresh data
-      await this._reloadMap();
-
       // Commit the _lastUpdated watermark only now that phase 2 has durably
       // written everything. Hold it back if any URL was permanently dropped, so
       // those URLs are re-scanned next run (never advance past un-applied
@@ -262,7 +266,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       this.stats.taskDone('VSAC Sync', msg);
       console.log(msg);
 
+      // the run is recorded and the generation bumped in one transaction; then this process
+      // reloads (at the new generation), and the others see the bump when they next look
       await this.database.finishRun(runId, tracking.totalFetched, tracking.totalNew, tracking.totalUpdated);
+      await this._reloadMap();
     } catch (error) {
       debugLog(error, 'Error during VSAC refresh:');
       this.stats.taskError('VSAC Sync', `Error (${error.message})`);
@@ -435,6 +442,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @private
    */
   async _reloadMap() {
+    // the generation first: if a sync finishes while the map is loading, the map is
+    // recorded as older than it may be, and the next check loads it again (never the
+    // other way round)
+    const generation = await this.database.getGeneration();
     const newMap = await this.database.loadAllValueSets(this.sourcePackage());
     for (const vs of newMap.values()) {
       if (vs.jsonObj.compose) {
@@ -455,6 +466,45 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
     // Atomic replacement of the map
     this.valueSetMap = newMap;
+    this.loadedGeneration = generation;
+    this.generationCheckedAt = Date.now();
+  }
+
+  /**
+   * Pick up value sets another process has written. Called when a request uses the value
+   * sets; at most once every GENERATION_CHECK_MS it reads the database's generation (one
+   * read by primary key), and when that differs from the generation the map was loaded at,
+   * reloads the map. The reload runs in the background: requests meanwhile use the map
+   * they have, and it is replaced in one step when the new one is ready.
+   * @param {boolean} [wait] - wait for the check (and any reload) to finish (tests)
+   * @returns {Promise<void>}
+   */
+  async catchUp(wait = false) {
+    if (!this.initialized || this.isRefreshing) {
+      return;
+    }
+    const now = Date.now();
+    if (this.catchingUp || now - this.generationCheckedAt < GENERATION_CHECK_MS) {
+      if (wait && this.catchingUp) {
+        await this.catchingUp;
+      }
+      return;
+    }
+    this.generationCheckedAt = now;
+    this.catchingUp = (async () => {
+      const generation = await this.database.getGeneration();
+      if (generation !== this.loadedGeneration) {
+        console.log(`VSAC: the value sets are at generation ${generation}, this process has ${this.loadedGeneration}; reloading`);
+        await this._reloadMap();
+      }
+    })().catch((error) => {
+      debugLog(error, 'VSAC: catching up with the database failed');
+    }).finally(() => {
+      this.catchingUp = null;
+    });
+    if (wait) {
+      await this.catchingUp;
+    }
   }
 
   /**
@@ -465,6 +515,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async fetchValueSet(url, version) {
     await this.initialize();
+    await this.catchUp();
     this._validateFetchParams(url, version);
 
     // Try exact match first: url|version
@@ -497,6 +548,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
+    await this.catchUp();
     // the map is keyed by the value set's own id (and its url); the value set itself
     // carries the prefixed id, which is how a url key that happens to match is excluded
     const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
@@ -509,6 +561,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async searchValueSets(searchParams, elements) {
     await this.initialize();
+    await this.catchUp();
     this._validateSearchParams(searchParams);
 
     if (searchParams.length === 0) {
@@ -738,6 +791,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
+    // every process, not just this one, should see it
+    await this.database.bumpGeneration();
     await this._reloadMap();
     return tracking.totalFetched;
   }

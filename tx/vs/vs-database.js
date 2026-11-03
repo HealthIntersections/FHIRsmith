@@ -6,6 +6,12 @@ const ValueSet = require("../library/valueset");
 
 // Settings key written once a package cache has been fully populated (see isComplete)
 const CACHE_COMPLETE_KEY = 'cache-complete';
+// A counter in vsac_settings, bumped in the same transaction that records the end of a
+// sync (or a resync of one value set). A process that loaded the value set list at
+// generation n knows it is up to date while the counter still says n - which is how
+// cluster-mode workers that don't run the sync notice that the one that does has
+// finished one (see VSACValueSetProvider.catchUp)
+const GENERATION_KEY = 'generation';
 
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
@@ -76,6 +82,9 @@ class ValueSetDatabase {
     });
 
     return (async () => {
+      // several server processes read this database while one writes it (cluster mode):
+      // WAL lets the readers carry on during a write
+      await all("PRAGMA journal_mode = WAL");
       const cols = await all("PRAGMA table_info(valuesets)");
       const hasDateFirstSeen = cols.some(c => c.name === 'date_first_seen');
       const hasContentHash = cols.some(c => c.name === 'content_hash');
@@ -205,6 +214,8 @@ class ValueSetDatabase {
           reject(new Error(`Failed to open database for writing: ${err.message}`));
           return;
         }
+        // wait for another process's write rather than failing at once
+        this._writeDb.configure('busyTimeout', 5000);
         this._migrateIfNeeded(this._writeDb).then(resolve).catch(reject);
       });
     });
@@ -403,18 +414,58 @@ class ValueSetDatabase {
    * @param {number} totalFetched - Total value sets fetched
    * @param {number} totalNew - Number of new value sets found
    * @param {number} [totalUpdated=0] - Number of existing value sets whose content changed
-   * @returns {Promise<void>}
+   * @returns {Promise<number>} the new generation (see getGeneration)
    */
   async finishRun(id, totalFetched, totalNew, totalUpdated = 0) {
+    return this._withGenerationBump(
+        `UPDATE vsac_runs SET finished_at = strftime('%s','now'), status = 'ok',
+                              total_fetched = ?, total_new = ?, total_updated = ? WHERE id = ?`,
+        [totalFetched, totalNew, totalUpdated, id]);
+  }
+
+  /**
+   * The generation: how many times the value sets have been changed by a sync (or a
+   * resync) that finished. 0 for a database no sync has finished on. One read by
+   * primary key.
+   * @returns {Promise<number>}
+   */
+  async getGeneration() {
+    const value = await this.getSetting(GENERATION_KEY);
+    return value === null ? 0 : Number(value);
+  }
+
+  /**
+   * Bump the generation on its own (after writing value sets outside a sync run).
+   * @returns {Promise<number>} the new generation
+   */
+  async bumpGeneration() {
+    return this._withGenerationBump(null, []);
+  }
+
+  /**
+   * Run one statement (or none) and add one to the generation, in one BEGIN IMMEDIATE
+   * transaction, so that a reader never sees the run recorded without the bump.
+   * @returns {Promise<number>} the new generation
+   * @private
+   */
+  async _withGenerationBump(sql, params) {
     const db = await this._getWriteConnection();
-    return new Promise((resolve, reject) => {
-      db.run(
-          `UPDATE vsac_runs SET finished_at = strftime('%s','now'), status = 'ok',
-                                total_fetched = ?, total_new = ?, total_updated = ? WHERE id = ?`,
-          [totalFetched, totalNew, totalUpdated, id],
-          err => err ? reject(err) : resolve()
-      );
-    });
+    const run = (q, p = []) => new Promise((resolve, reject) => db.run(q, p, err => err ? reject(err) : resolve()));
+    const get = (q, p = []) => new Promise((resolve, reject) => db.get(q, p, (err, row) => err ? reject(err) : resolve(row)));
+    await run('BEGIN IMMEDIATE');
+    try {
+      if (sql) {
+        await run(sql, params);
+      }
+      await run(`INSERT INTO vsac_settings (key, value) VALUES (?, '1')
+                   ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`, [GENERATION_KEY]);
+      const row = await get('SELECT value FROM vsac_settings WHERE key = ?', [GENERATION_KEY]);
+      await run('COMMIT');
+      return Number(row.value);
+    } catch (error) {
+      await run('ROLLBACK').catch(() => {});
+      throw error;
+    }
   }
 
   /**
@@ -441,18 +492,15 @@ class ValueSetDatabase {
    * Record a failed VSAC sync run
    * @param {number} id - The run ID from startRun()
    * @param {string} errorMessage - The error message
-   * @returns {Promise<void>}
+   * @returns {Promise<number>} the new generation
    */
   async failRun(id, errorMessage) {
-    const db = await this._getWriteConnection();
-    return new Promise((resolve, reject) => {
-      db.run(
-          `UPDATE vsac_runs SET finished_at = strftime('%s','now'), status = 'error',
-                                error_message = ? WHERE id = ?`,
-          [errorMessage, id],
-          err => err ? reject(err) : resolve()
-      );
-    });
+    // what the run wrote before it failed is in the database: bump the generation, so
+    // every process picks it up
+    return this._withGenerationBump(
+        `UPDATE vsac_runs SET finished_at = strftime('%s','now'), status = 'error',
+                              error_message = ? WHERE id = ?`,
+        [errorMessage, id]);
   }
 
   /**
