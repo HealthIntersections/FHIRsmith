@@ -701,7 +701,8 @@ class ECLParser {
   }
 
   /**
-   * Parse one "{{ ... }}" block. Returns { kind: 'M'|'D'|'C'|'+', filters } where
+   * Parse one "{{ ... }}" block (the D of a description filter is optional). Returns
+   * { kind: 'M'|'D'|'C'|'+', filters } where
    * filters is only populated for member filters; the other kinds keep their
    * raw token text so the evaluator can report them as unsupported.
    */
@@ -714,8 +715,13 @@ class ECLParser {
     } else if (this.match(ECLTokenType.SCTID) && /^[MDCmdc]$/.test(this.current.value)) {
       kind = this.current.value.toUpperCase();
       this.advance();
+    } else if (this.match(ECLTokenType.SCTID) && /^[A-Za-z_]/.test(this.current.value)) {
+      // ECL 2.2: descriptionFilterConstraint = "{{" ws [ "d" / "D" ] ws descriptionFilter ...
+      // - the D is optional, so a filter that starts with a field name (term, language,
+      // type, ...) is a description filter
+      kind = 'D';
     } else {
-      this.error('Expected M, D, C or + after {{');
+      this.error('Expected M, D, C, + or a description filter after {{');
     }
 
     if (kind === 'C' || kind === 'D') {

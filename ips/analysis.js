@@ -25,13 +25,15 @@
  *   modifier   a modifier extension, or implicitRules (maroon)
  *   status     inactive, entered in error, unknown, or missing status (navy)
  *   subject    a subject other than the document's, or a focus (dark green)
- *   attention  a future date, a Patient's link, a Composition that isn't final
+ *   attention  a date in the future where one isn't expected, a Patient's link, a
+ *              Composition that isn't final
  *   note       anything else (a section's emptyReason, a section's author)
  *
  * @module ips/analysis
  */
 
 const { structureTree, flatten, isObject, text } = require('./structure');
+const { typeOf } = require('./terminology');
 
 // the resources whose status (or lifecycleStatus) is required, as the element that holds it
 const STATUS_ELEMENTS = {
@@ -45,11 +47,59 @@ const STATUS_ELEMENTS = {
 // extensions not worth mentioning
 const IGNORED_EXTENSIONS = new Set(['http://hl7.org/fhir/StructureDefinition/textLink']);
 
-// resources where a date in the future is to be expected
-const FUTURE_OK = new Set(['Appointment', 'AppointmentResponse']);
+// ---- dates in the future ----
+//
+// Only elements the (R4) type model says are dates (date, dateTime, instant) are looked at,
+// so a string or an identifier that happens to look like a date isn't one. Some dates are
+// about the future by their nature, wherever they are; some resources are about the future
+// - always, or while their status says the thing hasn't happened yet.
 
-// keys whose values are dates even when they are just a year
-const DATE_KEY = /date|time|instant|period|start|end|issued|recorded|onset|abatement|occurrence|effective|authored|when|birth|deceased|lastUpdated|created/i;
+// the statuses of a request (or plan) that is over: its dates should be past
+const CLOSED = new Set(['completed', 'revoked', 'cancelled', 'entered-in-error', 'stopped', 'failed', 'rejected']);
+const open = (r) => !CLOSED.has(r.status);
+
+// resources whose dates may be in the future, by type: a function of the resource that says
+// whether they may (for that resource as it is)
+const FUTURE_INTENT = {
+  // about the future, whatever their status
+  Appointment: () => true,
+  AppointmentResponse: () => true,
+  ImmunizationRecommendation: () => true,
+  Schedule: () => true,
+  Slot: () => true,
+  // requests and plans, until they are over
+  ServiceRequest: open,
+  MedicationRequest: open,
+  DeviceRequest: open,
+  NutritionOrder: open,
+  CommunicationRequest: open,
+  SupplyRequest: open,
+  VisionPrescription: open,
+  CarePlan: open,
+  Task: open,
+  Goal: (r) => !CLOSED.has(r.lifecycleStatus),
+  // events, while they are still to come
+  Procedure: (r) => r.status === 'preparation',
+  Encounter: (r) => r.status === 'planned',
+  MedicationStatement: (r) => r.status === 'intended',
+  MedicationUsage: (r) => r.status === 'intended',
+  DeviceUseStatement: (r) => r.status === 'intended',
+  DeviceUsage: (r) => r.status === 'intended'
+};
+
+/** Whether a resource's dates may be in the future. */
+function mayBeFuture(r) {
+  const f = FUTURE_INTENT[r.resourceType];
+  return !!f && f(r);
+}
+
+// dates that are about the future by their nature, wherever they are: the end of a period
+// (a name, an address, an identifier valid until; a prescription's validity), an expiry,
+// a due date. By element name, or by the type they are in (a Timing is a schedule)
+const FUTURE_ELEMENTS = new Set(['end', 'expirationDate', 'dueDate']);
+const FUTURE_TYPES = new Set(['Timing']);
+const DATE_TYPES = new Set(['date', 'dateTime', 'instant']);
+
 const DATE_VALUE = /^(\d{4})(?:-(\d\d)(?:-(\d\d)(?:T(\d\d):(\d\d)(?::(\d\d)(?:\.\d+)?)?(Z|[+-]\d\d:\d\d)?)?)?)?$/;
 
 /** The earliest moment a date/dateTime/instant can mean, as ms, or null if it isn't one. */
@@ -107,17 +157,49 @@ function extensionsIn(node, prefix, skip) {
   return out;
 }
 
-/** The dates after now in a resource or section, as [path, value]. */
-function futureDates(node, prefix, skip, now) {
+/**
+ * The dates after now in a resource or section, as [path, value]: the elements whose type is
+ * date, dateTime or instant, walking the resource with the type model - but not those about
+ * the future by their nature (FUTURE_ELEMENTS, FUTURE_TYPES), nor inside extensions (what
+ * their dates mean isn't known), nor elements the model doesn't know.
+ * @param {Object} node - the resource, or a section
+ * @param {string} modelPath - the model's path for node: the resource type, or Composition.section
+ * @param {string} prefix - the path shown for node
+ * @param {string[]} skip - keys of node not to look in (a Composition's sections)
+ * @param {number} now - in ms
+ */
+function futureDates(node, modelPath, prefix, skip, now) {
   const out = [];
-  walk(node, prefix, skip, (k, v, at, path) => {
-    if (typeof v === 'string' && k !== 'div' && (v.includes('-') || DATE_KEY.test(k))) {
-      const t = earliest(v);
-      if (t !== null && t > now) {
-        out.push([path, v]);
+  const go = (obj, model, shown, top) => {
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === null || k === 'resourceType' || k === 'contained' || k === 'extension' || k === 'modifierExtension' ||
+        k.startsWith('_') || (top && skip.includes(k)) || FUTURE_ELEMENTS.has(k)) {
+        continue;
       }
+      const resolved = typeOf(`${model}.${k}`);
+      if (!resolved || FUTURE_TYPES.has(resolved.type)) {
+        continue;
+      }
+      const items = Array.isArray(v) ? v : [v];
+      items.forEach((item, i) => {
+        const path = `${shown}.${k}${Array.isArray(v) ? `[${i}]` : ''}`;
+        if (DATE_TYPES.has(resolved.type)) {
+          const t = typeof item === 'string' ? earliest(item) : null;
+          if (t !== null && t > now) {
+            out.push([path, item]);
+          }
+        } else if (isObject(item)) {
+          if (resolved.type === 'BackboneElement' || resolved.type === 'Element') {
+            go(item, resolved.path, path, false);
+          } else if (/^[A-Z]/.test(resolved.type) && !['Resource', 'Narrative', 'Extension'].includes(resolved.type)) {
+            // a datatype: its own elements are defined on the type
+            go(item, resolved.type, path, false);
+          }
+        }
+      });
     }
-  });
+  };
+  go(node, modelPath, prefix, true);
   return out;
 }
 
@@ -163,7 +245,7 @@ function sameReference(a, fromA, b, fromB, resolve) {
 }
 
 /** The findings common to resources and sections: extensions, narrative, focus, future dates. */
-async function common(findings, thing, prefix, skip, options, cache) {
+async function common(findings, thing, modelPath, prefix, skip, options, cache) {
   for (const [kind, url, path] of extensionsIn(thing, prefix, skip)) {
     if (!cache.has(url)) {
       let def = null;
@@ -183,8 +265,8 @@ async function common(findings, thing, prefix, skip, options, cache) {
   if (focus.length) {
     findings.push({ kind: 'subject', text: `Has a focus: ${focus.map(referenceWords).join(', ')}` });
   }
-  if (!FUTURE_OK.has(thing.resourceType)) {
-    for (const [path, v] of futureDates(thing, prefix, skip, options.now)) {
+  if (!mayBeFuture(thing)) {
+    for (const [path, v] of futureDates(thing, modelPath, prefix, skip, options.now)) {
       findings.push({ kind: 'attention', text: `A date in the future: ${path} = ${v}` });
     }
   }
@@ -239,7 +321,7 @@ async function analyseResource(node, ctx) {
       findings.push({ kind: 'attention', text: `Linked${text(link.type) ? ` (${link.type})` : ''} to ${referenceWords(link.other)}${target ? '' : ' - not in the document'}` });
     }
   }
-  await common(findings, r, prefix, skip, ctx.options, ctx.cache);
+  await common(findings, r, type || 'Resource', prefix, skip, ctx.options, ctx.cache);
   return finish(findings, narrativeOf(r));
 }
 
@@ -259,7 +341,7 @@ async function analyseSection(node, ctx) {
         (parent.length ? ` (${parent.map(referenceWords).join(', ')})` : ' (none)') });
     }
   }
-  await common(findings, sec, 'section', ['section'], ctx.options, ctx.cache);
+  await common(findings, sec, 'Composition.section', 'section', ['section'], ctx.options, ctx.cache);
   return finish(findings, narrativeOf(sec));
 }
 
@@ -328,4 +410,4 @@ const analysisStep = {
   }
 };
 
-module.exports = { analyseDocument, analysisStep, extensionsIn, futureDates, earliest, STATUS_ELEMENTS };
+module.exports = { analyseDocument, analysisStep, extensionsIn, futureDates, mayBeFuture, earliest, STATUS_ELEMENTS, FUTURE_INTENT };

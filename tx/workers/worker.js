@@ -420,7 +420,12 @@ class TerminologyWorker {
 
     // Then try the provider
     if (this.provider && this.provider.findValueSet) {
-      const vs = await this.provider.findValueSet(this.opContext, effectiveUrl, effectiveVersion);
+      // an implicit value set in the generic form (http://snomed.info/sct?fhir_vs...) is drawn
+      // from the code system version the request asks for, if it asks for one
+      const systemVersionFor = this.params && this.params.requestedSystemVersion
+        ? (system) => this.params.requestedSystemVersion(system)
+        : null;
+      const vs = await this.provider.findValueSet(this.opContext, effectiveUrl, effectiveVersion, systemVersionFor);
       if (vs) {
         return vs;
       }

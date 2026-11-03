@@ -198,6 +198,16 @@ function providerClassFor(url) {
 
 class FhirCodeSystemProvider extends BaseCSServices {
   /**
+   * A code system that reserves code spaces for users (codesystem-reservedCodeSpace) has codes that
+   * aren't listed in an expansion of all of it
+   * @returns {string|null}
+   */
+  openCodeSpaceReason() {
+    return this.codeSystem.reservedCodeSpaces().length > 0 ?
+      "The code system '" + this.system() + "' reserves code spaces for users to define their own codes, and those codes are not in the expansion" : null;
+  }
+
+  /**
    * The provider for a CodeSystem resource: a FhirCodeSystemProvider, or the subclass
    * registered for its url. Always use this rather than the constructor.
    * @param {OperationContext} opContext
@@ -1192,7 +1202,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     // Supported hierarchy filters
     if ((prop === 'concept' || prop === 'code') &&
-      ['is-a', 'descendent-of', 'is-not-a', 'child-of', 'in', '=', 'regex'].includes(op)) {
+      ['is-a', 'descendent-of', 'descendent-leaf', 'is-not-a', 'child-of', 'in', '=', 'regex'].includes(op)) {
       return true;
     }
 
@@ -1510,7 +1520,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
    */
   _isCacheableFilter(prop, op) {
     if (prop === 'concept' || prop === 'code') {
-      return op === 'is-a' || op === 'descendent-of' || op === 'is-not-a' || op === 'regex';
+      return op === 'is-a' || op === 'descendent-of' || op === 'descendent-leaf' || op === 'is-not-a' || op === 'regex';
     }
     if (prop === 'child' && op === 'exists') {
       return true;
@@ -1549,6 +1559,19 @@ class FhirCodeSystemProvider extends BaseCSServices {
       // Find all descendants of the specified code
       const includeRoot = (op === 'is-a');
       await this._addDescendants(results, value, includeRoot);
+    } else if (op === 'descendent-leaf') {
+      // R5: the descendants that have no children of their own
+      if (this.codeSystem.getConceptByCode(value)) {
+        for (const code of this.codeSystem.getDescendants(value)) {
+          this.opContext.deadCheck('cs:conceptFilter:descendent-leaf');
+          if (code !== value && this.codeSystem.getChildren(code).length === 0) {
+            const concept = this.codeSystem.getConceptByCode(code);
+            if (concept) {
+              results.add(concept, 0);
+            }
+          }
+        }
+      }
     } else if (op === 'child-of') {
       // Find all descendants of the specified code
       await this._addChildren(results, value);

@@ -880,7 +880,7 @@ function renderAnalysis(row, options = {}) {
     'extensions (with their definitions, from the validator, where it knows them; textLink is left out), <span class="ips-an-modifier">modifier extensions and implicitRules</span>, ' +
     '<span class="ips-an-status">records that are inactive, entered in error, of unknown status, or missing a status they should have</span>, ' +
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
-    '<span class="ips-an-attention">dates in the future (except in Appointments), a Patient\'s links, and a Composition that is not final</span>, ' +
+    '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), a Patient\'s links, and a Composition that is not final</span>, ' +
     'a section\'s emptyReason or an author other than its container\'s, and whether there is narrative. A resource with nothing else to say is All OK. References to resources that are not in the document are left out.</p></div>';
   return h;
 }

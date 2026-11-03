@@ -8,8 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node --expose-gc server.js",
+    "dev": "node --expose-gc --watch server.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
@@ -48,7 +48,7 @@
     "express-rate-limit": "^7.4.1",
     "express-session": "^1.19.0",
     "fast-xml-parser": "^5.3.4",
-    "fhir-validator-wrapper": "1.6.2",
+    "fhir-validator-wrapper": "1.6.3",
     "fhirpath": "^5.2.1",
     "fs-extra": "^11.3.3",
     "ini": "^6.0.0",

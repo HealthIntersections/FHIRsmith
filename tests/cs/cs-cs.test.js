@@ -1425,6 +1425,7 @@ describe('FHIR CodeSystem Provider', () => {
           expect(await simpleProvider.doesFilter('concept', 'is-a', 'code1')).toBe(true);
           expect(await simpleProvider.doesFilter('code', 'descendent-of', 'code2')).toBe(true);
           expect(await simpleProvider.doesFilter('concept', 'is-not-a', 'code1')).toBe(true);
+          expect(await simpleProvider.doesFilter('concept', 'descendent-leaf', 'code2')).toBe(true);
           expect(await simpleProvider.doesFilter('concept', 'child-of', 'code2')).toBe(true);
           expect(await simpleProvider.doesFilter('code', 'in', 'code1,code2')).toBe(true);
           expect(await simpleProvider.doesFilter('code', '=', 'code1')).toBe(true);
@@ -1595,6 +1596,23 @@ describe('FHIR CodeSystem Provider', () => {
           expect(results.findConceptByCode('code2aI')).toBeDefined();
           expect(results.findConceptByCode('code2aII')).toBeDefined();
           expect(results.findConceptByCode('code2b')).toBeDefined();
+        });
+
+        test('should filter by descendent-leaf relationship', async () => {
+          // R5: the descendants with no children - not code2 itself, and not code2a, which has children
+          const results = await simpleProvider.filter(filterContext, true, 'code', 'descendent-leaf', 'code2');
+          expect(results.size()).toBe(3);
+
+          expect(results.findConceptByCode('code2aI')).toBeDefined();
+          expect(results.findConceptByCode('code2aII')).toBeDefined();
+          expect(results.findConceptByCode('code2b')).toBeDefined();
+          expect(results.findConceptByCode('code2')).toBeNull();
+          expect(results.findConceptByCode('code2a')).toBeNull();
+        });
+
+        test('descendent-leaf of a leaf is empty', async () => {
+          const results = await simpleProvider.filter(filterContext, true, 'concept', 'descendent-leaf', 'code1');
+          expect(results.size()).toBe(0);
         });
 
         test('should filter by is-not-a relationship', async () => {

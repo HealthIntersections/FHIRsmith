@@ -502,6 +502,19 @@ class TxParameters {
     return '';
   }
 
+  // The code system version the request's version rules ask for - force-system-version,
+  // else system-version, else check-system-version - or null when they name none
+  requestedSystemVersion(systemURI) {
+    const rules = this.rulesForSystem(systemURI).filter(t => !t.vs);
+    for (const mode of ['override', 'default', 'check']) {
+      const rule = rules.find(t => t.mode === mode);
+      if (rule) {
+        return rule.version;
+      }
+    }
+    return null;
+  }
+
   rulesForSystem(systemURI) {
     let result = [];
     for (let t of this.FVersionRules) {
@@ -519,6 +532,18 @@ class TxParameters {
     } else {
       throw new Error('Unable to understand ' + mode + ' system version "' + url + '"');
     }
+  }
+
+  // The languages the request named - displayLanguage, else the HTTP Accept-Language - or
+  // null when it named none (workingLanguages() falls back to a default; this does not)
+  requestedLanguages() {
+    if (this.FHasDisplayLanguages && this.FDisplayLanguages) {
+      return this.FDisplayLanguages;
+    }
+    if (this.FHasHTTPLanguages && this.FHTTPLanguages) {
+      return this.FHTTPLanguages;
+    }
+    return null;
   }
 
   workingLanguages() {

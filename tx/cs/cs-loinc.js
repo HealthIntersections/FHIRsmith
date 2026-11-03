@@ -124,6 +124,9 @@ class LoincFilterHolder {
   }
 
   hasKey(key) {
+    if (this.keySet) {
+      return this.keySet.has(key);
+    }
     // Binary search since keys should be sorted
     let l = 0;
     let r = this.keys.length - 1;
@@ -478,8 +481,11 @@ class LoincServices extends BaseCSServices {
 
   async #addRelationshipProperties(ctxt, props, params) {
     return new Promise((resolve, reject) => {
+      // DISTINCT: databases imported before the importer de-duplicated relationships have the
+      // same row more than once - a part listed twice under the same parent in
+      // ComponentHierarchyBySystem (on two paths) has two parent rows
       const sql = `
-          SELECT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
+          SELECT DISTINCT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
           FROM Relationships, RelationshipTypes, Codes
           WHERE Relationships.SourceKey = ?
             AND Relationships.RelationshipTypeKey = RelationshipTypes.RelationshipTypeKey
@@ -802,6 +808,13 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
+    // LOINC's own hierarchy filter: ancestor = part (or in parts), the codes the part subsumes
+    // in the multi-axial hierarchy. LOINC's implicit value sets (http://loinc.org/vs/[partcode])
+    // are defined with it
+    if (prop === 'ancestor' && ['=', 'in'].includes(op)) {
+      return true;
+    }
+
     // code filters (VSAC workaround)
     if (prop === 'code' && ['is-a', 'descendent-of', '='].includes(op)) {
       return true;
@@ -1033,6 +1046,14 @@ class LoincServices extends BaseCSServices {
     else if (prop === 'concept' && ['is-a', 'descendent-of'].includes(op)) {
       ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
     }
+    // ancestor = X is LOINC's name for descendent-of X: "Ancestor includes parents transitively",
+    // and the part itself is not its own ancestor. in is the union over the parts
+    else if (prop === 'ancestor' && op === '=') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', value));
+    }
+    else if (prop === 'ancestor' && op === 'in') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', null, this.#commaListOfCodes(value)));
+    }
     // Concept equal filter (workaround for VSAC misuse)
     else if (prop === 'concept' && op === '=') {
       sql = `SELECT CodeKey as Key FROM Codes
@@ -1109,14 +1130,15 @@ class LoincServices extends BaseCSServices {
    * the file as a graph would, for example, put Glucose in Serum or Plasma under Urinalysis,
    * because Protein appears under both.
    */
-  #hierarchyFilterSql(op, value) {
-    const code = this.#sqlWrapString(value);
-    const descendants = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${code}')`;
+  #hierarchyFilterSql(op, value, codeList = null) {
+    // one code, or (codeList) an already quoted, comma separated list of them
+    const codes = codeList || `'${this.#sqlWrapString(value)}'`;
+    const descendants = `SELECT DISTINCT DescendentKey as Key FROM Closure
+             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))`;
     const set = op === 'is-a'
       ? `${descendants}
              UNION
-             SELECT CodeKey as Key FROM Codes WHERE Code = '${code}'`
+             SELECT CodeKey as Key FROM Codes WHERE Code IN (${codes})`
       : descendants;
     return {
       sql: `${set}
@@ -1173,8 +1195,19 @@ class LoincServices extends BaseCSServices {
   }
 
   async executeFilters(filterContext) {
-
-    return filterContext.filters;
+    const filters = filterContext.filters;
+    if (filters.length <= 1) {
+      return filters;
+    }
+    // Every filter is already a list of keys in memory, so the include is their intersection,
+    // as one set: its size is the include's size (count=0 needs no walk, and so no limit), and
+    // the expander walks only the codes that are in it. In the first filter's order
+    const others = filters.slice(1).map(f => new Set(f.keys));
+    const set = new LoincFilterHolder();
+    set.keys = filters[0].keys.filter(k => others.every(o => o.has(k)));
+    set.keySet = new Set(set.keys);
+    set.lsql = filters.map(f => f.lsql).find(l => l) || 'intersection';
+    return [set];
   }
 
   async filterSize(filterContext, set) {
@@ -1528,8 +1561,9 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     }
 
     return new Promise((resolve, reject) => {
+      // DISTINCT, for databases imported with duplicate rows (see #addRelationshipProperties)
       const sql = `
-          SELECT SourceKey, TargetKey FROM Relationships
+          SELECT DISTINCT SourceKey, TargetKey FROM Relationships
           WHERE RelationshipTypeKey = ${childRelKey}
       `;
 
