@@ -23,6 +23,10 @@ const VALID_CONCEPTMAP_EQUIVALENCES = new Set([
 const VALID_CODESYSTEM_CONTENT = new Set([
   'not-present', 'example', 'fragment', 'complete', 'supplement'
 ]);
+// How many of an include's listed codes displayValueSetInclude writes out before
+// summarising the rest as a count.
+const MAX_INCLUDE_CODES_SHOWN = 20;
+
 const VALID_PUBLICATION_STATUS = new Set(['draft', 'active', 'retired', 'unknown']);
 
 /**
@@ -122,22 +126,21 @@ class Renderer {
     return '[' + result + ']';
   }
 
+  /**
+   * A one-line summary of a compose include/exclude, for the operation log and the
+   * $validate-code diagnostics. An include that lists many codes is summarised: the
+   * first MAX_INCLUDE_CODES_SHOWN codes, then how many more there are. (Written in
+   * full, a 33,000-code include is a ~250 KB string, built and kept for every
+   * validation against the value set.)
+   */
   displayValueSetInclude(inc) {
     let result;
     if (inc.system) {
       result = '(' + inc.system + ')';
       if (inc.concept) {
-        result = result + '(';
-        let first = true;
-        for (const cc of inc.concept) {
-          if (first) {
-            first = false;
-          } else {
-            result = result + ',';
-          }
-          result = result + cc.code;
-        }
-        result = result + ')';
+        const shown = inc.concept.slice(0, MAX_INCLUDE_CODES_SHOWN).map(cc => cc.code).join(',');
+        const more = inc.concept.length - MAX_INCLUDE_CODES_SHOWN;
+        result = result + '(' + shown + (more > 0 ? ',... +' + more + ' more (' + inc.concept.length + ' codes)' : '') + ')';
       }
       if (inc.filter) {
         result = result + '(';
@@ -2821,4 +2824,4 @@ class Renderer {
 
 }
 
-module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES };
+module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES, MAX_INCLUDE_CODES_SHOWN };

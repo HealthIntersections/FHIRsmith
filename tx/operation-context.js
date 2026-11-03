@@ -1010,9 +1010,15 @@ class OperationContext {
 
   /**
    * Create a copy of this operation context
+   * @param {Object} [options]
+   * @param {boolean} [options.ownProviders=false] - give the copy its own provider
+   *   list instead of sharing this one. The caller must then call closeProviders()
+   *   on the copy when its sub-operation is done (a batch does this per entry, so
+   *   an entry's providers - and through them the entry's context and log - are
+   *   released when the entry is answered, not held until the whole batch ends).
    * @returns {OperationContext}
    */
-  copy() {
+  copy(options = {}) {
     const newContext = new OperationContext(
         this.langs, this.i18n, this.id, this.timeLimit / 1000,
         this.resourceCache, this.expansionCache
@@ -1025,8 +1031,11 @@ class OperationContext {
     newContext.cacheId = this.cacheId;
     newContext.usageTracker = this.usageTracker;
     // Share the same provider-cleanup list so providers opened by the copy
-    // are released when the parent operation ends.
-    newContext._openProviders = this._openProviders;
+    // are released when the parent operation ends - unless the caller will
+    // release them itself.
+    if (!options.ownProviders) {
+      newContext._openProviders = this._openProviders;
+    }
     // Share the compute clock: sub-operations spend the parent's budget.
     newContext._clock = this._clock;
     return newContext;

@@ -129,7 +129,12 @@ class BatchValidateWorker extends TerminologyWorker {
             : p.resource.parameter;
           op.jsonObj.parameter.push(...entryParams);
 
-          let worker = new ValidateWorker(this.opContext.copy(), this.log, this.provider, this.languages, this.i18n);
+          // Each entry gets its own provider list, closed as soon as the entry is
+          // answered. Sharing the batch's list would keep every entry's providers
+          // (each with an open sqlite connection, and a reference to the entry's
+          // context and its log) alive until the whole batch ends.
+          const entryContext = this.opContext.copy({ ownProviders: true });
+          let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
             let p;
             if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
@@ -148,6 +153,8 @@ class BatchValidateWorker extends TerminologyWorker {
             } else {
               output.push({name: "validation", resource : outcomeFromError(error) } );
             }
+          } finally {
+            await entryContext.closeProviders();
           }
         }
       }
