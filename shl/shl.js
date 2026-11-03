@@ -275,6 +275,8 @@ class SHLModule {
           shlLog.error('Error opening SHL SQLite database at "'+dbPath+'":', err.message);
           reject(err);
         } else {
+          // with several server processes, a write waits for another process's rather than failing
+          this.db.configure('busyTimeout', 5000);
           shlLog.info('Connected to SHL SQLite database at "'+dbPath+'"');
 
           // Check if tables already exist before creating them
@@ -385,7 +387,8 @@ class SHLModule {
 
       const validatorJarPath = folders.filePath('bin', 'validator_cli.jar');
       this.fhirValidator = new FhirValidator(validatorJarPath, shlLog);
-      await this.fhirValidator.start(validatorConfig);
+      // with several server processes, each runs its own validator (library/cluster-state)
+      await require('../library/cluster-state').startValidator(this.fhirValidator, validatorConfig, shlLog);
 
       shlLog.info('FHIR Validator started successfully');
     } catch (error) {

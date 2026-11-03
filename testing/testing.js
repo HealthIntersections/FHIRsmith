@@ -34,6 +34,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
+const { rateLimitOptions } = require('../library/cluster-state');
 const escape = require('escape-html');
 const session = require('express-session');
 const lusca = require('lusca');
@@ -183,14 +184,17 @@ class TestingModule {
    * _csrf field, and the Origin check (library/same-origin). The cookie is also SameSite=Lax.
    */
   setupSession() {
-    if (!this.config.sessionSecret) {
+    const clusterState = require('../library/cluster-state');
+    if (!this.config.sessionSecret && !clusterState.isShared()) {
       // as for the publisher: never a constant secret, which would be a published signing key
       this.log.warn('testing: no sessionSecret configured - using a random one, so logins will not ' +
         'survive a restart. Set modules.testing.sessionSecret.');
     }
     this.session = session({
       name: 'testing.sid',
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      // several processes: sessions and a generated secret are shared (library/cluster-state)
+      store: clusterState.sessionStore('testing'),
+      secret: clusterState.sessionSecret('testing', this.config.sessionSecret),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -220,13 +224,13 @@ class TestingModule {
     const max = rl.max === undefined ? 60 : rl.max;
     const posting = [];
     if (max > 0) {
-      posting.push(rateLimit({
+      posting.push(rateLimit(rateLimitOptions('testing-submit', {
         windowMs: (rl.windowMinutes || 1) * 60 * 1000,
         limit: max,
         standardHeaders: 'draft-7',
         legacyHeaders: false,
         handler: (req, res) => this.sendOutcome(res, 429, 'throttled', 'Too many reports submitted; try again later')
-      }));
+      })));
     }
 
     // RFC 8631: where to find the machine-readable description of this API
@@ -628,13 +632,13 @@ class TestingModule {
   setupAdminRoutes() {
     const r = this.router;
     const form = express.urlencoded({ extended: false, limit: '64kb' });
-    const loginLimiter = rateLimit({
+    const loginLimiter = rateLimit(rateLimitOptions('testing-login', {
       windowMs: 15 * 60 * 1000,
       limit: this.config.loginAttemptsPerWindow ?? 20,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
       handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
+    }));
     // every form post must come from one of our own pages
     const sameOrigin = requireSameOrigin((req, res) =>
       htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Cross-site form posts are not accepted'), 403));

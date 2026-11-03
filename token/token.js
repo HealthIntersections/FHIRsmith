@@ -16,6 +16,7 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const FacebookStrategy = require('passport-facebook').Strategy;
 const GitHubStrategy = require('passport-github2').Strategy;
 const rateLimit = require('express-rate-limit');
+const { rateLimitOptions } = require('../library/cluster-state');
 const lusca = require('lusca');
 const folders = require('../library/folder-setup');
 const { SqliteSessionStore } = require('../library/sqlite-session-store');
@@ -72,6 +73,9 @@ class TokenModule {
           reject(err);
           return;
         }
+        // with several server processes, a write (a session, a login) waits for another
+        // process's rather than failing
+        this.db.configure('busyTimeout', 5000);
 
         // Create tables
         this.db.serialize(() => {
@@ -160,7 +164,8 @@ class TokenModule {
 
     const sessionConfig = {
       store: this.sessionStore,
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      // several processes: a generated secret is shared (library/cluster-state)
+      secret: require('../library/cluster-state').sessionSecret('token', this.config.sessionSecret),
       name: 'fhir.token.sid', // Don't use default session name
       resave: false,
       saveUninitialized: false,
@@ -201,7 +206,7 @@ class TokenModule {
     }));
 
     // Rate limiting
-    const authLimiter = rateLimit({
+    const authLimiter = rateLimit(rateLimitOptions('token-auth', {
       windowMs: 15 * 60 * 1000, // 15 minutes
       max: 5, // 5 attempts per window
       message: 'Too many authentication attempts, please try again later.',
@@ -211,15 +216,15 @@ class TokenModule {
         // Skip rate limiting for successful authentications
         return req.user && req.isAuthenticated();
       }
-    });
+    }));
 
-    const apiLimiter = rateLimit({
+    const apiLimiter = rateLimit(rateLimitOptions('token-api', {
       windowMs: 15 * 60 * 1000, // 15 minutes
       max: 100, // 100 requests per window for API calls
       message: 'Too many API requests, please try again later.',
       standardHeaders: true,
       legacyHeaders: false
-    });
+    }));
 
     // Apply rate limiting to specific routes
     this.router.use('/auth', authLimiter);

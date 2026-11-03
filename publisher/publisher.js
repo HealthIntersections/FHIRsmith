@@ -9,7 +9,7 @@ const bcrypt = require('bcrypt');
 const session = require('express-session');
 const lusca = require('lusca');
 const rateLimit = require('express-rate-limit');
-const crypto = require('crypto');
+const { rateLimitOptions } = require('../library/cluster-state');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const { requireSameOrigin } = require('../library/same-origin');
@@ -41,7 +41,8 @@ class PublisherModule {
     await this.initializeDatabase();
 
     // Set up session middleware - use in-memory sessions or separate session db
-    if (!this.config.sessionSecret) {
+    const clusterState = require('../library/cluster-state');
+    if (!this.config.sessionSecret && !clusterState.isShared()) {
       // Never fall back to a constant. This project is open source, so a fixed default
       // secret is a published signing key: anyone could mint themselves an admin session
       // on any deployment that forgot the setting, and nothing about the server would
@@ -51,7 +52,9 @@ class PublisherModule {
         'logins will not survive a restart. Set modules.publisher.sessionSecret.');
     }
     this.router.use(session({
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      // several processes: sessions and a generated secret are shared (library/cluster-state)
+      store: clusterState.sessionStore('publisher'),
+      secret: clusterState.sessionSecret('publisher', this.config.sessionSecret),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -68,7 +71,6 @@ class PublisherModule {
         httpOnly: true,
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       }
-      // Not using SQLiteStore to avoid the database conflict
     }));
 
     // every POST must come from one of our own pages - see library/same-origin.js
@@ -113,6 +115,8 @@ class PublisherModule {
           return;
         }
 
+        // with several server processes, a write waits for another process's rather than failing
+        this.db.configure('busyTimeout', 5000);
         this.logger.info('Connected to SQLite database: ' + dbPath);
         this.createTables().then(resolve).catch(reject);
       });
@@ -331,32 +335,32 @@ class PublisherModule {
     // is the one unauthenticated route that runs bcrypt, and bcrypt.compare holds a libuv
     // threadpool thread (4 by default) for ~100ms - so without a limit a handful of
     // concurrent attempts stall every file operation the server wants to do.
-    const loginLimiter = rateLimit({
+    const loginLimiter = rateLimit(rateLimitOptions('publisher-login', {
       windowMs: 15 * 60 * 1000,
       max: this.config.loginAttemptsPerWindow ?? 20,
       message: 'Too many login attempts, please try again later.',
       standardHeaders: true,
       legacyHeaders: false
-    });
+    }));
 
     // Task actions delete build output from disk or queue new builds: a logged-in user can't
     // be allowed to hammer them either
-    const taskActionLimiter = rateLimit({
+    const taskActionLimiter = rateLimit(rateLimitOptions('publisher-task-action', {
       windowMs: 60 * 1000,
       max: this.config.taskActionsPerMinute ?? 30,
       message: 'Too many task actions, please try again later.',
       standardHeaders: true,
       legacyHeaders: false
-    });
+    }));
 
     // the task pages read build logs and QA output from disk
-    const taskReadLimiter = rateLimit({
+    const taskReadLimiter = rateLimit(rateLimitOptions('publisher-task-read', {
       windowMs: 60 * 1000,
       max: this.config.taskReadsPerMinute ?? 300,
       message: 'Too many requests, please try again later.',
       standardHeaders: true,
       legacyHeaders: false
-    });
+    }));
 
     this.router.get('/login', this.csrf, this.renderLogin.bind(this));
     this.router.post('/login', loginLimiter, this.csrf, this.handleLogin.bind(this));

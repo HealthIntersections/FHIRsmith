@@ -20,6 +20,7 @@ const {tokenMatches, tokenConfigured} = require("../library/request-token");
 const pckLog = Logger.getInstance().child({ module: 'packages' });
 const packagesOpenApi = require('./openapi');
 const rateLimit = require('express-rate-limit');
+const { rateLimitOptions } = require('../library/cluster-state');
 const { runNpmCheck, makeGetter } = require('./npm-check');
 const npmCheckPage = require('./npm-check-page');
 
@@ -1104,14 +1105,14 @@ class PackagesModule {
     });
 
     // GET /packages/npm-check - the npm registry protocol checks, against any registry
-    const npmCheckLimiter = rateLimit({
+    const npmCheckLimiter = rateLimit(rateLimitOptions('packages-npm-check', {
       windowMs: 10 * 60 * 1000,
       limit: () => this.npmCheckConfig().runsPerWindow,
       skip: req => !req.query.registry, // only runs count, not the form
       standardHeaders: true,
       legacyHeaders: false,
       message: {error: 'Too many npm registry checks from this address; try again in a few minutes'}
-    });
+    }));
     this.router.get('/npm-check', npmCheckLimiter, this.validateQueryParams(NPM_CHECK_PARAMS), async (req, res) => {
       const start = Date.now();
       try {

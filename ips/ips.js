@@ -46,6 +46,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const scripts = require('./scripts');
 const rateLimit = require('express-rate-limit');
+const { rateLimitOptions } = require('../library/cluster-state');
 const escape = require('escape-html');
 const session = require('express-session');
 const lusca = require('lusca');
@@ -372,13 +373,16 @@ class IpsModule {
    * this.session + a form parser + this.csrf.
    */
   setupSession() {
-    if (!this.config.sessionSecret) {
+    const clusterState = require('../library/cluster-state');
+    if (!this.config.sessionSecret && !clusterState.isShared()) {
       this.log.warn('ips: no sessionSecret configured - using a random one, so logins will not ' +
         'survive a restart. Set modules.ips.sessionSecret.');
     }
     this.session = session({
       name: 'ips.sid',
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      // several processes: sessions and a generated secret are shared (library/cluster-state)
+      store: clusterState.sessionStore('ips'),
+      secret: clusterState.sessionSecret('ips', this.config.sessionSecret),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -403,13 +407,13 @@ class IpsModule {
   setupRootRoutes() {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
-    const loginLimiter = rateLimit({
+    const loginLimiter = rateLimit(rateLimitOptions('ips-login', {
       windowMs: 15 * 60 * 1000,
       limit: this.config.loginAttemptsPerWindow ?? 20,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
       handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
+    }));
     const admin = (req, res, next) => {
       const user = this.currentUser(req);
       if (!user) {
@@ -469,13 +473,13 @@ class IpsModule {
     const rl = this.config.rateLimit || {};
     // the editors' code lookups: many small requests, their own allowance
     const lookupMax = rl.lookupMax === undefined ? 600 : rl.lookupMax;
-    this.lookups = lookupMax > 0 ? [rateLimit({
+    this.lookups = lookupMax > 0 ? [rateLimit(rateLimitOptions('ips-lookup', {
       windowMs: (rl.windowMinutes || 1) * 60 * 1000,
       limit: lookupMax,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
       handler: (req, res) => res.status(429).json({ error: 'Too many lookups; try again later' })
-    })] : [];
+    }))] : [];
     const admin = this.adminOnly;
     // the administrator, for the editor's fetches: JSON, not a redirect to the login page
     const adminJson = (req, res, next) => {
@@ -547,7 +551,7 @@ class IpsModule {
     const max = rl.max === undefined ? 60 : rl.max;
     const posting = [];
     if (max > 0) {
-      posting.push(rateLimit({
+      posting.push(rateLimit(rateLimitOptions('ips-submit', {
         windowMs: (rl.windowMinutes || 1) * 60 * 1000,
         limit: max,
         standardHeaders: 'draft-7',
@@ -555,7 +559,7 @@ class IpsModule {
         handler: (req, res) => wantsHtml(req)
           ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Too many documents submitted; try again later'), 429)
           : this.sendOutcome(res, 429, 'throttled', 'Too many documents submitted; try again later')
-      }));
+      })));
     }
 
     // the project, from its code; 404 if there isn't one
@@ -693,7 +697,8 @@ class IpsModule {
       timeout: cfg.timeout || 120000
     };
     this.log.info(`IPS module: starting the FHIR validator${localJar ? ` (${localJar})` : ''} on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
-    this.validatorStarting = this.validator.start(settings).then(() => {
+    // with several server processes, each runs its own validator (library/cluster-state)
+    this.validatorStarting = require('../library/cluster-state').startValidator(this.validator, settings, this.log).then(() => {
       this.log.info('IPS module: the FHIR validator is running');
     }).catch(e => {
       this.log.error('IPS module: the FHIR validator failed to start: ' + e.message);

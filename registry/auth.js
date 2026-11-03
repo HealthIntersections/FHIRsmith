@@ -26,6 +26,7 @@ const express = require('express');
 const session = require('express-session');
 const lusca = require('lusca');
 const rateLimit = require('express-rate-limit');
+const { rateLimitOptions } = require('../library/cluster-state');
 const { SqliteSessionStore, betterSqlite } = require('../library/sqlite-session-store');
 
 // the requests already authenticated, and who they are (a promise)
@@ -219,7 +220,7 @@ class RegistryAuth {
     if (limit === 0) {
       return (req, res, next) => next();
     }
-    return rateLimit({
+    return rateLimit(rateLimitOptions('registry-failed-auth', {
       windowMs: 15 * 60 * 1000,
       limit,
       standardHeaders: 'draft-7',
@@ -230,7 +231,7 @@ class RegistryAuth {
       requestWasSuccessful: (req, res) => res.statusCode !== 401,
       skipSuccessfulRequests: true,
       handler: (req, res) => res.status(429).json({ error: 'too-many-requests', message: 'Too many requests with a token that is not valid for this registry; try again later' })
-    });
+    }));
   }
 
   /**
@@ -381,7 +382,8 @@ class RegistryAuth {
   // ---- the pages: login, users, account ----
 
   setupSession() {
-    if (!this.usersConfig.sessionSecret) {
+    const clusterState = require('../library/cluster-state');
+    if (!this.usersConfig.sessionSecret && !clusterState.isShared()) {
       this.log.warn('Registry security: no users.sessionSecret configured - using a random one, so logins will not survive a restart');
     }
     // sessions live in the auth database, so logins survive a restart (with a configured
@@ -390,7 +392,8 @@ class RegistryAuth {
     this.session = session({
       name: 'txreg.sid',
       store: this.sessionStore,
-      secret: this.usersConfig.sessionSecret || crypto.randomBytes(64).toString('hex'),
+      // several processes: a generated secret is shared (library/cluster-state)
+      secret: clusterState.sessionSecret('registry', this.usersConfig.sessionSecret),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -417,13 +420,13 @@ class RegistryAuth {
       return;
     }
     const r = router;
-    const loginLimiter = rateLimit({
+    const loginLimiter = rateLimit(rateLimitOptions('registry-login', {
       windowMs: 15 * 60 * 1000,
       limit: this.usersConfig.loginAttemptsPerWindow ?? 20,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
       handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
+    }));
     const admin = (req, res, next) => {
       const user = this.currentUser(req);
       if (!user) {
