@@ -1097,6 +1097,38 @@ describe('LOINC Provider', () => {
       ]);
     });
 
+    // The importer stores class type 3 as 'Claims attachment' (1,161 codes in LOINC 2.83, such
+    // as 18719-5). The test data has none, so one code is given it here for the test
+    test('CLASSTYPE 3 (Claims attachment): $lookup reports it, and the CLASSTYPE = 3 filter finds it', async () => {
+      const code = '104597-0';
+      const rw = new sqlite3.Database(testDbPath);
+      const run = (sql, args = []) => new Promise((resolve, reject) => rw.run(sql, args, function (err) { err ? reject(err) : resolve(this); }));
+      const get = (sql, args = []) => new Promise((resolve, reject) => rw.get(sql, args, (err, row) => err ? reject(err) : resolve(row)));
+      const prop = await get(`SELECT Properties.PropertyKey, Properties.PropertyValueKey FROM Properties, PropertyTypes, Codes
+        WHERE Properties.PropertyTypeKey = PropertyTypes.PropertyTypeKey AND PropertyTypes.Description = 'CLASSTYPE'
+          AND Properties.CodeKey = Codes.CodeKey AND Codes.Code = ?`, [code]);
+      const added = await run(`INSERT INTO PropertyValues (Value) VALUES ('Claims attachment')`);
+      try {
+        await run('UPDATE Properties SET PropertyValueKey = ? WHERE PropertyKey = ?', [added.lastID, prop.PropertyKey]);
+
+        const params = [];
+        await provider.extendLookup(code, ['CLASSTYPE'], params);
+        const classType = params.find(p => p.name === 'property' && p.part.find(x => x.name === 'code').valueCode === 'CLASSTYPE');
+        expect(classType.part.find(x => x.name === 'value').valueString).toBe('3');
+        expect(classType.part.find(x => x.name === 'description').valueString).toBe('Claims attachment');
+
+        const filterContext = await provider.getPrepContext(true);
+        await provider.filter(filterContext, true, 'CLASSTYPE', '=', '3');
+        const filters = await provider.executeFilters(filterContext);
+        expect(await provider.filterSize(filterContext, filters[0])).toBe(1);
+        expect((await provider.filterLocate(filterContext, filters[0], code)).code).toBe(code);
+      } finally {
+        await run('UPDATE Properties SET PropertyValueKey = ? WHERE PropertyKey = ?', [prop.PropertyValueKey, prop.PropertyKey]);
+        await run('DELETE FROM PropertyValues WHERE PropertyValueKey = ?', [added.lastID]);
+        await new Promise(resolve => rw.close(resolve));
+      }
+    });
+
     test('should extend lookup with properties and relationships', async () => {
       const testCode = expectedResults.basic.knownCodes[0];
       const paramSet = [];

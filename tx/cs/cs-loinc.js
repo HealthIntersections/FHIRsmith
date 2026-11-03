@@ -53,13 +53,16 @@ function mapRelationship(equivalence, fromLoinc) {
   }
 }
 
+// CLASSTYPE as the importer stores it (descClassType in import-loinc.module.js) and its number.
+// The importer writes 'Claims attachment', singular; the plural is accepted too
 const classTypes = {
   '1': 'Laboratory class',
   '2': 'Clinical class',
-  '3': 'Claims attachments',
+  '3': 'Claims attachment',
   '4': 'Surveys',
   'Laboratory class' : '1',
   'Clinical class' : '2',
+  'Claims attachment' : '3',
   'Claims attachments' : '3',
   'Surveys' : '4'
 };
