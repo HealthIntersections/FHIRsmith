@@ -477,6 +477,41 @@ describe('Expand Worker', () => {
     });
   });
 
+  describe('Value sets that cannot be expanded', () => {
+    const expand = (parameter) => request(app)
+      .post('/tx/r5/ValueSet/$expand')
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter });
+    const messages = (response) => response.body.issue.map(i => (i.details && i.details.text) || i.diagnostics);
+
+    // The extension changes what the filter means, so refusing is right; but the problem is in
+    // the request's content, not the server
+    test('a filter with an unknown modifier extension: 422', async () => {
+      const response = await expand([{
+        name: 'valueSet',
+        resource: {
+          resourceType: 'ValueSet',
+          url: 'http://example.org/fhir/ValueSet/unknown-filter-modifier',
+          status: 'active',
+          compose: {
+            include: [{
+              system: 'http://hl7.org/fhir/administrative-gender',
+              filter: [{
+                modifierExtension: [{ url: 'http://example.org/fhir/StructureDefinition/unknown-op-modifier', valueString: 'childOf' }],
+                property: 'concept', op: 'is-a', value: 'male'
+              }]
+            }]
+          }
+        }
+      }]);
+
+      expect(response.status).toBe(422);
+      expect(response.body.issue[0].code).toBe('business-rule');
+      expect(messages(response)[0]).toContain('http://example.org/fhir/StructureDefinition/unknown-op-modifier');
+    });
+  });
+
   describe('Expansion caching', () => {
     test('should return same expansion for identical requests', async () => {
       // Make the same expand request twice

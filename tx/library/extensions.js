@@ -36,6 +36,8 @@ const Extensions = {
     if (element.jsonObj) {
       element = element.jsonObj
     }
+    // A modifier extension this server doesn't know changes what the element means, so it
+    // can't be processed: a problem with the resource's content (422), not with the server
     if (element.modifierExtension) {
       let urls = new Set();
       for (const extension of element.modifierExtension) {
@@ -44,9 +46,9 @@ const Extensions = {
       const resId = resource ? resource : "";
       const urlList = [...urls].join('\', \'');
       if (urls.size > 1) {
-        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of modifier extensions '+urlList);
+        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of modifier extensions '+urlList, null, 422);
       } else {
-        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of the modifier extension '+urlList);
+        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of the modifier extension '+urlList, null, 422);
       }
     }
     return true;
