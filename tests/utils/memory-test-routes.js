@@ -7,6 +7,7 @@
 //   /__mem/fill?mb=N&hold=ms   the same, without asking: holds N MB for hold ms
 //   /__mem/check               what overAbortThreshold says in this worker now
 //   /__mem/whoami              nothing (which worker answered)
+//   /__mem/state               what the guard measures now, and its thresholds
 // Every response carries X-Served-By: <pid>.
 const http = require('http');
 const path = require('path');
@@ -62,6 +63,11 @@ async function handle(req, res) {
       return reply(res, 200, {});
     case '/__mem/check':
       return reply(res, 200, { aborts: memoryGuard.overAbortThreshold('memory-probe') > 0 });
+    case '/__mem/state':
+      // what the guard measures now (this process's reading, or the group's in cluster mode)
+      memoryGuard._state.sampleTime = 0;
+      memoryGuard.shouldReject();
+      return reply(res, 200, { measured: memoryGuard._state.sampleRss, rejectAt: memoryGuard._state.rejectAt, abortAt: memoryGuard._state.abortAt });
     default:
       return reply(res, 404, {});
   }

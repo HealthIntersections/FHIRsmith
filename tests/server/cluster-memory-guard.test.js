@@ -102,9 +102,13 @@ describe('memory guard in cluster mode', () => {
     expect((await to(a, '/__mem/leak?mb=300')).status).toBe(200);
     await sleep(2500);
     expect((await get('/testing')).status).toBe(200);
+    const state = (await to(b, '/__mem/state')).json;
+    expect(state.measured).toBeLessThan(state.rejectAt);
 
-    // A fills another 250 MB for a while: ~0.85 GB, over reject and abort (828 MB)
-    const filling = to(a, '/__mem/fill?mb=250&hold=4000');
+    // A fills enough for a while to take the service to 96% of the limit: over reject and
+    // abort (828 MB). (How much that is depends on how a process is measured.)
+    const fill = Math.ceil((0.96 * 900 * MB - state.measured) / MB / 10) * 10;
+    const filling = to(a, `/__mem/fill?mb=${fill}&hold=4000`);
     await sleep(3000);
     const refusedA = await to(a, '/testing');
     const refusedB = await to(b, '/testing');
@@ -123,7 +127,8 @@ describe('memory guard in cluster mode', () => {
     expect(heavy.json.atMb).toBeLessThan(600);
 
     // A keeps enough to stay over: after 8 s it is drained and restarted
-    await to(a, '/__mem/leak?mb=300');
+    const now = (await to(b, '/__mem/state')).json;
+    await to(a, `/__mem/leak?mb=${Math.ceil((now.rejectAt - now.measured) / MB / 10) * 10 + 60}`);
     for (let i = 0; i < 300 && !/recycled for memory/.test(output); i++) {
       await sleep(100);
     }
