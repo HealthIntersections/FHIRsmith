@@ -26,11 +26,21 @@ const VALID_CODESYSTEM_CONTENT = new Set([
 const VALID_PUBLICATION_STATUS = new Set(['draft', 'active', 'retired', 'unknown']);
 
 /**
+ * How many of the codes a ValueSet.compose include (or exclude) lists are rendered by
+ * default. Past this, the list ends with a line saying how many more there are and, when
+ * the renderer has been given showAllCodesHref, a link to the page with all of them.
+ * VSAC's Medication Brand Name lists 33,341 codes in one include.
+ */
+const MAX_RENDERED_INCLUDE_CODES = 500;
+
+/**
  * @typedef {Object} TerminologyLinkResolver
  * @property {function(OperationContext, string, string=): {description: string, link: string}|null} resolveURL
  *   Given a URL and optional version, returns description and link, or null if not found
  * @property {function(OperationContext, string, string, string=): {display: string, link: string}|null} resolveCode
  *   Given a URL, code, and optional version, returns display and link, or null if not found
+ * @property {function(OperationContext, string, string, string[]): Array<{description: string, link: string}|null>} [resolveCodes]
+ *   resolveCode for many codes of one code system, in their order; used where present
  */
 
 class Renderer {
@@ -38,6 +48,10 @@ class Renderer {
   constructor(opContext, linkResolver = null) {
     this.opContext = opContext;
     this.linkResolver = linkResolver;
+    /** How many codes of an include to render; null renders them all. */
+    this.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
+    /** Where "Show all" goes when an include is cut short; null for no link. */
+    this.showAllCodesHref = null;
   }
 
   displayCoded(...args) {
@@ -726,8 +740,14 @@ class Renderer {
         const ul = li.ul();
         for (let c of inc.concept) {
           this._requireValidCode(c.code, 'ValueSet.compose.include.concept.code');
+        }
+        const limit = this.includeCodeLimit;
+        const shown = limit != null && inc.concept.length > limit ? inc.concept.slice(0, limit) : inc.concept;
+        const links = await this.resolveIncludeCodes(inc, shown);
+        for (let i = 0; i < shown.length; i++) {
+          const c = shown[i];
+          const link = links[i];
           const li = ul.li();
-          const link = this.linkResolver ? await this.linkResolver.resolveCode(this.opContext, inc.system, inc.version, c.code) : null;
           if (link) {
             li.ah(link.link).tx(c.code);
           } else {
@@ -737,6 +757,15 @@ class Renderer {
             li.tx(": "+c.display);
           } else if (link) {
             li.span("opaque: 0.5").tx(": "+link.description);
+          }
+        }
+        if (shown.length < inc.concept.length) {
+          const more = inc.concept.length - shown.length;
+          const li = ul.li();
+          li.i().tx(`\u2026 and ${more.toLocaleString('en-US')} more code${more === 1 ? '' : 's'}.`);
+          if (this.showAllCodesHref) {
+            li.tx(" ");
+            li.ah(this.showAllCodesHref).tx("Show all");
           }
         }
       } else {
@@ -775,6 +804,29 @@ class Renderer {
     } else {
       this._invalid('ValueSet.compose.include', inc, 'invalid ValueSet include (must specify a system or at least one valueSet)');
     }
+  }
+
+  /**
+   * The link and description for each of the codes of an include that are shown, in one
+   * request to the link resolver for the include's code system where it can take one.
+   *
+   * @param {Object} inc the include
+   * @param {Object[]} concepts the include's concepts being rendered
+   * @returns {Promise<Array<{link: string, description: string}|null>>}
+   */
+  async resolveIncludeCodes(inc, concepts) {
+    if (!this.linkResolver || concepts.length === 0) {
+      return concepts.map(() => null);
+    }
+    const codes = concepts.map((c) => c.code);
+    if (this.linkResolver.resolveCodes) {
+      return await this.linkResolver.resolveCodes(this.opContext, inc.system, inc.version, codes);
+    }
+    const links = [];
+    for (const code of codes) {
+      links.push(await this.linkResolver.resolveCode(this.opContext, inc.system, inc.version, code));
+    }
+    return links;
   }
 
   async generateProperties(x, cs) {
@@ -2769,4 +2821,4 @@ class Renderer {
 
 }
 
-module.exports = { Renderer, VALID_FILTER_OPS };
+module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES };

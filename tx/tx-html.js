@@ -21,7 +21,7 @@ const {ParametersXML} = require("./xml/parameters-xml");
 const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
 const {debugLog} = require("./operation-context");
 const {InvalidError} = require("./library/errors");
-const {VALID_FILTER_OPS} = require("./library/renderer");
+const {VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES} = require("./library/renderer");
 const txOpenApi = require("./openapi");
 
 const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
@@ -60,6 +60,12 @@ const ELEMENT_OPTIONS = ['id', 'url', 'version', 'name', 'title', 'status', 'dat
 // FHIRsmith's own namespace: it says something about how this server was asked to do
 // something, not about terminology, so it does not belong in the FHIR tools namespace.
 const SNOMED_URI = 'http://snomed.info/sct';
+
+// A value set page lists the first MAX_RENDERED_INCLUDE_CODES codes of each include;
+// ?_showAll=true lists them all. Underscored, as the other parameters that control how a
+// result is presented are (_format, _summary, _elements), which also keeps it apart from
+// the $expand parameters: the page's query string is passed to the expansion it shows.
+const SHOW_ALL_PARAM = '_showAll';
 
 const TRANSIENT_VALUESET = 'http://healthintersections.com.au/fhirsmith/StructureDefinition/valueset-transient';
 
@@ -592,6 +598,7 @@ class TxHtmlRenderer {
           case 'CodeSystem':
             return await this.renderCodeSystem(json, inBundle, _fmt, op, req.sourcePackage);
           case 'ValueSet': {
+            this.limitIncludeCodes(json, req, inBundle);
             let exp = undefined;
             if (!inBundle && !op && (!_fmt || _fmt == 'html')) {
               try {
@@ -623,6 +630,35 @@ class TxHtmlRenderer {
         console.error(error);
         throw error;
       }
+    }
+  }
+
+  /**
+   * How many codes of each include the value set's page lists, and where its "Show all"
+   * link goes: this page with ?_showAll=true, or, for a value set shown in a bundle, the
+   * value set's own page. A page that came from a POST has no URL to ask again with, so
+   * it says how many codes there are but has no link.
+   *
+   * @param {Object} json the value set
+   * @param {express.Request|null} req
+   * @param {boolean} inBundle
+   */
+  limitIncludeCodes(json, req, inBundle) {
+    if (!inBundle && req?.query?.[SHOW_ALL_PARAM] === 'true') {
+      this.renderer.includeCodeLimit = null;
+      this.renderer.showAllCodesHref = null;
+      return;
+    }
+    this.renderer.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
+    if (inBundle) {
+      this.renderer.showAllCodesHref = json.id
+        ? `${this.path}/ValueSet/${encodeURIComponent(json.id)}?_format=html&${SHOW_ALL_PARAM}=true` : null;
+    } else if (req?.method === 'GET' && req.originalUrl) {
+      const url = new URL(req.originalUrl, 'http://localhost');
+      url.searchParams.set(SHOW_ALL_PARAM, 'true');
+      this.renderer.showAllCodesHref = url.pathname + url.search;
+    } else {
+      this.renderer.showAllCodesHref = null;
     }
   }
 
