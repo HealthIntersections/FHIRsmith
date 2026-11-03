@@ -462,6 +462,14 @@ describe('$cache-control routing (scaffolding)', () => {
       const text = (((res.body.issue || [])[0] || {}).details || {}).text || '';
       expect(text).toMatch(/never issued by this server/i);
       expect(text).not.toMatch(/expired/i);
+      // the memory store loses its caches when the server restarts, so that is offered as a
+      // reason; the shared SQLite store keeps them, so it isn't
+      if (process.env.FHIRSMITH_TEST_RESOURCE_CACHE === 'sqlite') {
+        expect(text).not.toMatch(/restarted/i);
+        expect(text).toMatch(/survive a restart/i);
+      } else {
+        expect(text).toMatch(/restarted/i);
+      }
     });
 
     // A cache-id whose prefix names another instance got here through a routing

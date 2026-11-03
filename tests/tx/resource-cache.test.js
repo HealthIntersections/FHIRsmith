@@ -35,11 +35,14 @@ afterAll(() => {
 const STORES = [
   {
     name: 'memory',
+    unknownId: 'CACHE_ID_UNKNOWN',
     make: (opts = {}) => new ResourceCache(null, opts.maxTombstones || 1000, opts),
     setLastUsed: (cache, id, when) => { cache.cache.get(id).lastUsed = when; }
   },
   {
     name: 'sqlite',
+    // caches survive a restart here, so the message doesn't offer one as the reason
+    unknownId: 'CACHE_ID_UNKNOWN_SHARED',
     make: (opts = {}) => {
       const c = new SqliteResourceCache(null, {
         path: path.join(tmpDir, `cache-${++fileNo}.db`),
@@ -194,10 +197,10 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
   // the whole point: "you closed it yourself" and "it sat idle for 31 minutes" send
   // an investigator to completely different places (see issue #279).
   describe('tombstones (why a cache-id is gone)', () => {
-    test('an id that was never issued has no tombstone and reports CACHE_ID_UNKNOWN', () => {
+    test('an id that was never issued has no tombstone and reports CACHE_ID_UNKNOWN (memory) or CACHE_ID_UNKNOWN_SHARED', () => {
       const d = cache.describeMissing('never-seen');
       expect(cache.tombstone('never-seen')).toBeNull();
-      expect(d.messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(d.messageId).toBe(store.unknownId);
       expect(d.params).toEqual(['never-seen']);
     });
 
@@ -272,13 +275,13 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       expect(small.tombstone('b')).toBeNull();      // evicted
       expect(small.tombstone('e')).not.toBeNull();  // newest kept
       // An evicted tombstone degrades to "never issued" rather than lying.
-      expect(small.describeMissing('a').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(small.describeMissing('a').messageId).toBe(store.unknownId);
     });
 
     test('closing an id the server never had leaves no tombstone', () => {
       cache.clear('not-mine');
       expect(cache.tombstone('not-mine')).toBeNull();
-      expect(cache.describeMissing('not-mine').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('not-mine').messageId).toBe(store.unknownId);
     });
   });
 
@@ -340,12 +343,12 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
 
     test('an unrecorded id with our own prefix is plain unknown (e.g. issued before a restart)', () => {
       cache.setInstanceCode('tx1');
-      expect(cache.describeMissing('tx1.abc').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('tx1.abc').messageId).toBe(store.unknownId);
     });
 
     test('an unprefixed id on a named server is plain unknown', () => {
       cache.setInstanceCode('tx1');
-      expect(cache.describeMissing('abc').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('abc').messageId).toBe(store.unknownId);
     });
 
     test('a tombstone wins over the prefix check', () => {

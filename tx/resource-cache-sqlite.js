@@ -437,6 +437,16 @@ class SqliteResourceCache extends ResourceCache {
     return resource;
   }
 
+  /**
+   * As for the memory store, except for an id with no record at all: the memory
+   * store's message offers a restart as one explanation, and caches here survive a
+   * restart, so this one doesn't (CACHE_ID_UNKNOWN_SHARED).
+   */
+  describeMissing(cacheId) {
+    const d = super.describeMissing(cacheId);
+    return d.messageId === 'CACHE_ID_UNKNOWN' ? { ...d, messageId: 'CACHE_ID_UNKNOWN_SHARED' } : d;
+  }
+
   tombstone(cacheId) {
     const t = this.q.tombstone.get(this.scope, cacheId);
     if (!t) {
