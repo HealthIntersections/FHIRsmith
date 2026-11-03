@@ -95,11 +95,11 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // Create database if it doesn't exist
     if (!(await this.database.exists())) {
       await this.database.create();
-    } else {
-      // Schema migrations are applied lazily by the database layer on first
-      // connection. Just count the existing data.
-      await this._recount();
     }
+    // Schema migrations are applied lazily by the database layer on first
+    // connection. Count what is there (none, for a new database), so a
+    // database with no value sets is synced now rather than at the first timer
+    await this._recount();
     if (this.SYNC_AT_START_UP || this.database.vsCount == 0) {
       await this.refreshValueSets();
     }

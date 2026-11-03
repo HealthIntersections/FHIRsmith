@@ -200,3 +200,48 @@ describe('VSAC value sets read on demand', () => {
     expect((await provider.fetchValueSet(URL2)).version).toBe('20200101');
   });
 });
+
+describe('VSAC startup sync', () => {
+  const dir = folders.ensureFolder('vsac-on-demand-test');
+
+  async function initialized(dbPath) {
+    const p = Object.create(VSACValueSetProvider.prototype);
+    p.database = new ValueSetDatabase(dbPath);
+    p.stats = { addTask() {}, task() {}, taskDone() {}, taskError() {} };
+    p.refreshIntervalHours = 24;
+    p.initialized = false;
+    p.SYNC_AT_START_UP = false;
+    p.syncs = 0;
+    p.refreshValueSets = async () => { p.syncs++; };
+    p._startRefreshTimer = () => {};
+    await p.initialize();
+    return p;
+  }
+
+  test('a new database is synced at startup, not at the first timer', async () => {
+    const dbPath = path.join(dir, `vsac-new-${process.pid}-${Date.now()}.db`);
+    const p = await initialized(dbPath);
+    try {
+      expect(p.syncs).toBe(1);
+    } finally {
+      await p.close();
+      for (const f of [dbPath, dbPath + '-journal']) if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  test('a database that has value sets is not synced at startup', async () => {
+    const dbPath = path.join(dir, `vsac-full-${process.pid}-${Date.now()}.db`);
+    const database = new ValueSetDatabase(dbPath);
+    await database.create();
+    const v = vs(URL1, '20240101');
+    await database.upsertValueSet(v, require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex'));
+    await database.close();
+    const p = await initialized(dbPath);
+    try {
+      expect(p.syncs).toBe(0);
+    } finally {
+      await p.close();
+      for (const f of [dbPath, dbPath + '-journal']) if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+});
