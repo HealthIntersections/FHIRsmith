@@ -219,7 +219,11 @@ class ClosureWorker extends TerminologyWorker {
         if (!table && this.store.tableCount() >= max) {
           throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
         }
-        table = this.store.createTable(name, config);
+        table = this.store.createTable(name, config, max);
+        if (!table) {
+          // another process created tables in the meantime
+          throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
+        }
         this.log.info(`closure table '${name}' ${reset ? 'reset' : 'created'}`);
         if (concepts.length === 0) {
           return await this.buildConceptMap(name, table.version, [], fhirVersion);

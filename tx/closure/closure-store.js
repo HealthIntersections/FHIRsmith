@@ -20,7 +20,11 @@
 // better-sqlite3 on purpose: every write is synchronous, so a write transaction can never
 // be interleaved with another request's. The only thing that needs a lock is the span of
 // one $closure call on one table - read the table, compute (which awaits, and yields),
-// write - and that is the per-table lock below.
+// write - and that is the per-table lock below. Within a process it is a queue of
+// promises; when several server processes share the database (cluster mode), the call
+// at the head of a process's queue also takes a lease on the table in the shared
+// cluster-state database (library/cluster-state withLease), so calls on one table from
+// different processes take turns too.
 //
 // Synchronous also means every statement blocks the event loop while it runs, so nothing
 // here reads or writes an unbounded amount in one go: reads that can be large are paged
@@ -41,12 +45,16 @@ class ClosureStore {
    * @param {Object} config - modules.tx.closure
    * @param {Object} [log]
    */
-  constructor(config, log) {
+  constructor(config, log, options = {}) {
     this.config = config || {};
     this.log = log || console;
     this.db = null;
     this.path = ClosureStore.resolvePath(this.config);
     this.locks = new Map(); // table name -> { tail: Promise, count: holder + waiters }
+    // other processes use this database too: lock tables across processes as well
+    // (default: when the server says the data directory is shared)
+    this.crossProcess = options.crossProcess !== undefined ? !!options.crossProcess
+      : (this.path !== ':memory:' && require('../../library/cluster-state').isShared());
   }
 
   /**
@@ -184,6 +192,9 @@ class ClosureStore {
    * @param {Function} [opts.waitFor] - (promise) => promise; wraps the wait (the worker
    *   uses OperationContext.waitFor, so the wait isn't charged to the compute deadline and
    *   a disconnected client stops waiting)
+   * The queue bound is per process. Across processes (crossProcess), the call at the head
+   * of this process's queue then waits for the table's lease, within the same timeout.
+   *
    * @throws {Error} with .closureBusy = 'queue' | 'timeout' when the lock isn't got
    */
   async withLock(name, fn, opts = {}) {
@@ -205,6 +216,7 @@ class ClosureStore {
 
     let timer = null;
     let acquired = false;
+    const started = Date.now();
     try {
       let wait = prior;
       if (opts.timeoutMs) {
@@ -218,6 +230,13 @@ class ClosureStore {
       }
       await (opts.waitFor ? opts.waitFor(wait) : wait);
       acquired = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (this.crossProcess) {
+        return await this.withLease(name, fn, opts, started);
+      }
       return await fn();
     } finally {
       if (timer) {
@@ -232,6 +251,27 @@ class ClosureStore {
       if (q.count === 0 && this.locks.get(name) === q) {
         this.locks.delete(name);
       }
+    }
+  }
+
+  /**
+   * The cross-process half of withLock: the table's lease in the shared cluster-state
+   * database, waited for within what is left of opts.timeoutMs.
+   */
+  async withLease(name, fn, opts, started) {
+    let timeoutMs = 0;
+    if (opts.timeoutMs) {
+      timeoutMs = Math.max(1, opts.timeoutMs - (Date.now() - started));
+    }
+    try {
+      return await require('../../library/cluster-state').withLease('closure:' + name, fn, { timeoutMs, waitFor: opts.waitFor });
+    } catch (error) {
+      if (error.leaseTimeout) {
+        const busy = new Error(`timed out waiting for closure table '${name}'`);
+        busy.closureBusy = 'timeout';
+        throw busy;
+      }
+      throw error;
     }
   }
 
@@ -269,21 +309,26 @@ class ClosureStore {
    * whether that's allowed). Its parameters are fixed here, for the life of the table.
    * @param {string} name
    * @param {Array<Object>} params - Parameters.parameter entries that configure the table
-   * @returns {Object} the new table row
+   * @param {number} [maxTables] - if given, and the table is new, and there are already this
+   *   many: nothing is created, and the result is null. Checked in the same transaction as
+   *   the insert, so processes creating tables at the same time can't go over it together
+   * @returns {Object|null} the new table row
    */
-  createTable(name, params) {
+  createTable(name, params, maxTables) {
     const now = new Date().toISOString();
     const tx = this.db.transaction(() => {
       const existing = this.stmt.getTable.get(name);
       if (existing) {
         this.stmt.deleteTable.run(existing.id);
+      } else if (maxTables !== undefined && this.stmt.countTables.get().n >= maxTables) {
+        return null;
       }
       const info = this.stmt.insertTable.run(name, now, now);
       const id = info.lastInsertRowid;
       params.forEach((p, i) => this.stmt.insertParam.run(id, i, p.name, JSON.stringify(p)));
       return this.stmt.getTable.get(name);
     });
-    return tx();
+    return tx.immediate();
   }
 
   /**
