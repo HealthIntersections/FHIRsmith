@@ -9,7 +9,8 @@
  * stays loaded for the life of the process.
  *
  * mapFile() returns null where mapping is not available (Windows, koffi missing, mmap
- * failing), and the caller then reads the file into memory as before.
+ * failing), and the caller then reads the file into memory as before. It says why through the
+ * warn function it is given (the server log), or console.warn where there is none.
  */
 
 const fs = require('fs');
@@ -19,37 +20,49 @@ const MAP_PRIVATE = 2;          // same value on Linux, macOS and the BSDs
 const MAP_FAILED = 0xFFFFFFFFFFFFFFFFn;
 
 let libcMmap;                   // undefined: not tried yet; null: not available
+let unavailable = null;         // why libcMmap is null
 
 function getMmap() {
   if (libcMmap === undefined) {
     libcMmap = null;
-    if (process.platform !== 'win32' && process.arch.endsWith('64')) {
+    if (process.platform === 'win32' || !process.arch.endsWith('64')) {
+      unavailable = `not supported on ${process.platform}/${process.arch}`;
+    } else {
       try {
         const koffi = require('koffi');
         const mmap = koffi.load(null).func('void *mmap(void *addr, size_t len, int prot, int flags, int fd, int64_t off)');
         libcMmap = { koffi, mmap };
       } catch (e) {
-        console.warn(`SNOMED CT: memory mapping is not available here (${e.message}); reading cache files into memory`);
+        unavailable = e.message;
       }
     }
   }
   return libcMmap;
 }
 
+/** True if mapFile() can map files on this platform (it may still fail for a given file). */
+function mappingAvailable() {
+  return getMmap() !== null;
+}
+
 /**
  * @param {string} filePath
+ * @param {function(string)} [warn] - where to say why the file was not mapped
  * @returns {Buffer|null} a read-only Buffer over the whole file, or null
  */
-function mapFile(filePath) {
+function mapFile(filePath, warn = (msg) => console.warn(msg)) {
   const lib = getMmap();
-  if (!lib) return null;
+  if (!lib) {
+    warn(`SNOMED CT: memory mapping is not available here (${unavailable}); reading ${filePath} into memory`);
+    return null;
+  }
   const fd = fs.openSync(filePath, 'r');
   try {
     const size = fs.fstatSync(fd).size;
     if (size === 0) return null;
     const ptr = lib.mmap(null, size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (ptr === null || lib.koffi.address(ptr) === MAP_FAILED) {
-      console.warn(`SNOMED CT: could not map ${filePath} (errno ${lib.koffi.errno()}); reading it into memory`);
+      warn(`SNOMED CT: could not map ${filePath} (errno ${lib.koffi.errno()}); reading it into memory`);
       return null;
     }
     return Buffer.from(lib.koffi.view(ptr, size));
@@ -84,4 +97,13 @@ async function prewarmFile(filePath) {
   return Date.now() - start;
 }
 
-module.exports = { mapFile, prewarmFile };
+/**
+ * For tests: replace the mmap binding ({koffi, mmap}, or null with a reason for "not
+ * available"), or with no arguments go back to the real one.
+ */
+function _setMmapForTesting(lib, reason = 'disabled by a test') {
+  libcMmap = arguments.length === 0 ? undefined : lib;
+  unavailable = lib ? null : reason;
+}
+
+module.exports = { mapFile, prewarmFile, mappingAvailable, _setMmapForTesting };

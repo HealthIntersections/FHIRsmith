@@ -1345,14 +1345,18 @@ class SnomedFileReader {
   /**
    * @param {string} filePath
    * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
-   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': map
-   *   it, and have the kernel read it into the page cache straight away. Where mapping is not
-   *   available (see mmap.js) the file is read.
+   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': mapped,
+   *   then read through once in the background at startup, so its pages are already in the
+   *   page cache when requests arrive; startup doesn't wait for it. Where mapping is not
+   *   available (see mmap.js) the file is read, and `mapped` stays false.
+   * @param {object} [log] - a logger with warn(); says why a file that was to be mapped was read
    */
-  constructor(filePath, loadMode = 'read') {
+  constructor(filePath, loadMode = 'read', log = null) {
     this.filePath = filePath;
     this.loadMode = loadMode;
+    this.log = log;
     this.buffer = null;
+    this.mapped = false; // true once load() has the buffer as a memory mapping of the file
     this.offset = 0;
   }
 
@@ -1381,7 +1385,9 @@ class SnomedFileReader {
   }
 
   async load() {
-    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath) : null;
+    const warn = this.log ? (msg) => this.log.warn(msg) : undefined;
+    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath, warn) : null;
+    this.mapped = mapped !== null;
     this.buffer = mapped || await fs.promises.readFile(this.filePath);
     fileBuffers.add(this.buffer.buffer);
     if (mapped && this.loadMode === 'prewarm') {

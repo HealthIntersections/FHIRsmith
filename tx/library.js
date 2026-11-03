@@ -668,12 +668,17 @@ class Library {
       return;
     }
     const loadMode = this.snomedLoad.modeFor(sctFN, SnomedFileReader.versionUri(sctFN));
-    if (loadMode !== 'read' && !memoryGuard._state.excludeFileBacked) {
+    const sct = new SnomedServicesFactory(this.i18n, sctFN, loadMode, this.log);
+    await sct.load();
+    if (loadMode !== 'read') {
+      // if it could not be mapped, mapFile has already said why, through this.log
+      this.log.info(`SNOMED CT ${path.basename(sctFN)}: load ${loadMode}, ` +
+        (sct.mapped ? 'memory-mapped' : 'not mapped, read into memory'));
+    }
+    if (sct.mapped && !memoryGuard._state.excludeFileBacked) {
       memoryGuard.measureExcludingFileBacked();
       this.log.info(`SNOMED CT cache files are memory-mapped. ${memoryGuard.describe()}`);
     }
-    const sct = new SnomedServicesFactory(this.i18n, sctFN, loadMode);
-    await sct.load();
     this.registerProvider(sctFN, sct, isDefault);
     this.#syndicateBinary('snomed', sctFN, sct);
   }
