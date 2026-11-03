@@ -362,6 +362,32 @@ class TerminologyWorker {
           continue;
         }
 
+        // Does it supplement this code system (and version)? Checked first because it
+        // needs only the canonical: isGlobalSupplement() reads the whole resource, which
+        // for a resource from the shared resource cache means loading it.
+        let applies = false;
+        if (supplementsUrl === url) {
+          // exact URL match (no version specified in supplements field)
+          applies = true;
+        } else if (supplementsUrl.startsWith(`${url}|`)) {
+          // versioned URL (format: url|version)
+          if (!version) {
+            // No version specified in search, include all supplements for this URL
+            applies = true;
+          } else {
+            // Version specified, check if it matches the tail of supplements URL
+            const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
+            // not every code system's versions are semver (SNOMED CT's are URIs, ICF's are dates):
+            // versionMatches throws on those, so match by the version's own algorithm, as
+            // CodeSystem.isSupplementFor does for the server's own supplements
+            applies = supplementsVersion === version || VersionUtilities.versionMatchesByAlgorithm(supplementsVersion, version,
+              VersionUtilities.guessVersionAlgorithmFromVersion(version));
+          }
+        }
+        if (!applies) {
+          continue;
+        }
+
         // we consider either global supplements or specified supplements
         if (!(cs.isGlobalSupplement() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
           continue;
@@ -369,29 +395,7 @@ class TerminologyWorker {
         if (this.hasSupplement(cs, supplements)) {
           continue;
         }
-        // Handle exact URL match (no version specified in supplements field)
-        if (supplementsUrl === url) {
-          supplements.push(cs);
-          continue;
-        }
-
-        // Handle versioned URL (format: url|version)
-        if (supplementsUrl.startsWith(`${url}|`)) {
-          if (!version) {
-            // No version specified in search, include all supplements for this URL
-            supplements.push(cs);
-          } else {
-            // Version specified, check if it matches the tail of supplements URL
-            const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
-            // not every code system's versions are semver (SNOMED CT's are URIs, ICF's are dates):
-            // versionMatches throws on those, so match by the version's own algorithm, as
-            // CodeSystem.isSupplementFor does for the server's own supplements
-            if (supplementsVersion === version || VersionUtilities.versionMatchesByAlgorithm(supplementsVersion, version,
-                VersionUtilities.guessVersionAlgorithmFromVersion(version))) {
-              supplements.push(cs);
-            }
-          }
-        }
+        supplements.push(cs);
       }
     }
 
