@@ -1118,6 +1118,12 @@ class LoincDataMigrator {
     }
 
     const answerCode = removeQuotes(items[6]);
+    if (!answerCode) {
+      // an externally defined answer list (ExtDefinedYN = Y: ICD-10, RxNorm, ...) has one row with
+      // no AnswerStringId. The list is a code; the row names no answer, so there is nothing to add
+      // (it used to become a single Answer code '' shared by all 65 such lists)
+      return;
+    }
     let answerCodeKey;
 
     if (this.codes.has(answerCode)) {
