@@ -10,8 +10,14 @@
     // rejectFraction new requests get 503 + Retry-After; above abortFraction running operations
     // are aborted with 422 too-costly. Optional; these are the defaults.
     // "memory": { "rejectFraction": 0.85, "abortFraction": 0.92 }
-    // In cluster mode (node cluster.js) every worker shares the cgroup limit, so give each
-    // its share in bytes: "memory": { "limit": 4294967296 }
+    // In cluster mode (node cluster.js) the limit and the measure are the whole service's:
+    // the cgroup's private memory on Linux when the service has a cgroup limit of its own,
+    // else the workers' RSS added up. Every worker refuses above rejectFraction; above
+    // abortFraction only the largest worker aborts its operations; if the service stays over
+    // rejectFraction for recycleAfterSeconds (0: never) the largest worker is drained (up to
+    // drainSeconds) and restarted. limit (bytes) overrides the cgroup's / the machine's; measure
+    // ("cgroup" | "processes") overrides the choice. See cluster.md.
+    // "memory": { "limit": 17179869184, "recycleAfterSeconds": 60, "drainSeconds": 30 }
     //
     // Cluster mode (node cluster.js): how many server processes share the port. The
     // FHIRSMITH_WORKERS environment variable overrides it. See cluster.md.
@@ -270,7 +276,8 @@
       // "instanceCode": "tx1",
       // The $cache-control client caches. "memory" (the default) keeps them in this process.
       // "sqlite" keeps them in one SQLite file that every process on the machine shares,
-      // which cluster mode needs (cluster.md); caches then also survive a restart. The file
+      // which cluster mode needs and uses whatever this says (cluster.md); caches then also
+      // survive a restart. The file
       // must be on a local disk, never a network filesystem. maxBytes caps the total size of
       // the cached resources, dropping least recently used caches whole (default: no cap).
       // "resourceCache": {
