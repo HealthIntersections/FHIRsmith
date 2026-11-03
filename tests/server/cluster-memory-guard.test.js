@@ -128,7 +128,7 @@ describe('memory guard in cluster mode', () => {
 
     // A keeps enough to stay over: after 8 s it is drained and restarted
     const now = (await to(b, '/__mem/state')).json;
-    await to(a, `/__mem/leak?mb=${Math.ceil((now.rejectAt - now.measured) / MB / 10) * 10 + 60}`);
+    await to(a, `/__mem/leak?mb=${Math.ceil((now.rejectAt - now.measured) / MB / 10) * 10 + 120}`); // well over: a GC must not bring it back under
     for (let i = 0; i < 300 && !/recycled for memory/.test(output); i++) {
       await sleep(100);
     }
