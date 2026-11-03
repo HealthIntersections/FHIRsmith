@@ -13,8 +13,9 @@
 // What has to be shared is shared on disk:
 //  - the tx client resource cache ($cache-control): modules.tx.resourceCache.store
 //    must be "sqlite" - with the memory store, a request that reaches a different
-//    worker from the one that started its cache would fail with cache-id-unknown, so
-//    cluster.js refuses to start that way.
+//    worker from the one that started its cache would fail with cache-id-unknown.
+//    cluster.js refuses to start a configuration like that, or one with any other
+//    part that only works in one process (see singleProcessOnly).
 //  - background jobs (VSAC refresh, package crawler, XIG download, ...) run in one
 //    worker at a time, chosen by a lock file - see library/background-jobs.js.
 // Statistics and the dashboard stay per worker.
@@ -68,15 +69,45 @@ function settings(config) {
     console.error(`cluster: the number of workers must be a whole number of at least 1 (got '${fromEnv ?? configured}')`);
     process.exit(1);
   }
-  const tx = config.modules && config.modules.tx;
-  const store = tx && tx.resourceCache && tx.resourceCache.store;
-  if (configured > 1 && tx && tx.enabled && store !== 'sqlite') {
-    console.error('cluster: modules.tx.resourceCache.store must be "sqlite" to run more than one worker. ' +
-      'With the memory store each worker has its own client caches, so a request that reaches a different ' +
-      'worker from the one that started its cache fails with cache-id-unknown. See docs/cluster.md.');
-    process.exit(1);
+  if (configured > 1) {
+    const problems = singleProcessOnly(config);
+    if (problems.length > 0) {
+      console.error(`cluster: this configuration can't run in more than one worker:\n  - ${problems.join('\n  - ')}\n` +
+        'Run those parts in a separate single-process server, or use one worker. See cluster.md.');
+      process.exit(1);
+    }
   }
   return configured;
+}
+
+/**
+ * The parts of a configuration that only work in one process: each keeps state in
+ * memory that a request reaching a different worker would not find.
+ * @returns {string[]} what is wrong, one line each (empty: fine)
+ */
+function singleProcessOnly(config) {
+  const problems = [];
+  const mods = config.modules || {};
+  const tx = mods.tx;
+  if (tx && tx.enabled) {
+    const store = tx.resourceCache && tx.resourceCache.store;
+    if (store !== 'sqlite') {
+      problems.push('modules.tx.resourceCache.store must be "sqlite": with the memory store each worker has its ' +
+        'own client caches, so a request that reaches a different worker from the one that started its cache ' +
+        'fails with cache-id-unknown');
+    }
+    if (tx.closure && tx.closure.enabled) {
+      problems.push('modules.tx.closure: $closure keeps a per-table lock in memory around each read-compute-write, ' +
+        'so two workers could interleave updates to the same closure table');
+    }
+  }
+  for (const name of ['publisher', 'ips', 'testing']) {
+    if (mods[name] && mods[name].enabled) {
+      problems.push(`modules.${name}: logins are kept in each process's memory, so a user logged in on one worker ` +
+        'is logged out on the next request that reaches another');
+    }
+  }
+  return problems;
 }
 
 function runPrimary() {
