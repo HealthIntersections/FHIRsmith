@@ -428,6 +428,10 @@ class RxNormModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rel ON RXNREL(REL)',
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela ON RXNREL(RELA)',
       'CREATE INDEX IF NOT EXISTS X_RXNSTY_2 ON RXNSTY(TUI)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
       'CREATE INDEX IF NOT EXISTS idx_rxnstems_stem_cui ON RXNSTEMS(stem, CUI)',
       'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)'
     ];
@@ -707,70 +711,103 @@ class RxNormImporter {
 
     this.updateProgress(0, `Loading ${fileName}`);
 
+    // Rows go in as multi-row INSERTs, as many rows per statement as fit in SQLite's 999
+    // parameters: one statement (and one callback) per row made the import slow, and slower
+    // still when the process is busy collecting a large heap - the test suite runs it in a
+    // jest process already holding GBs. OR IGNORE keeps the old per-row behaviour, where a row
+    // that broke a constraint was dropped and the rest of the file went in
+    const m = insertSQL.match(/^\s*INSERT\s+(?:OR\s+IGNORE\s+)?INTO([\s\S]*?VALUES\s*)(\([^)]*\))\s*$/i);
+    if (!m) {
+      throw new Error(`Unexpected insert statement for ${fileName}: ${insertSQL}`);
+    }
+    const head = 'INSERT OR IGNORE INTO' + m[1];
+    const group = m[2];
+    const cols = (group.match(/\?/g) || []).length;
+    const batchRows = Math.max(1, Math.floor(999 / cols));
+    const sqlFor = (n) => head + new Array(n).fill(group).join(', ');
+    const fullSql = sqlFor(batchRows);
+
     const rl = readline.createInterface({
       input: fs.createReadStream(filePath),
       crlfDelay: Infinity
     });
 
     return new Promise((resolve, reject) => {
-      db.serialize(() => {
-        db.run('BEGIN TRANSACTION');
+      // serialized: BEGIN, every batch, and COMMIT run in the order they are queued
+      db.serialize();
+      db.run('BEGIN TRANSACTION');
 
-        const stmt = db.prepare(insertSQL);
-        let lineCount = 0;
-        let processedCount = 0;
-        let errorCount = 0;
+      let lineCount = 0;
+      let processedCount = 0;
+      let errorCount = 0;
+      let pending = [];
+      let pendingRows = 0;
 
-        rl.on('line', (line) => {
-          lineCount++;
-
-          const items = line.split('|');
-          if (items.length === 0) return;
-
-          try {
-            const values = extractValues(items);
-            stmt.run(values, (err) => {
-              if (err && err.code !== 'SQLITE_CONSTRAINT') {
-                errorCount++;
-                if (this.options.verbose && errorCount <= 10) {
-                  console.warn(`Error processing line ${lineCount} in ${fileName}: ${err.message}`);
-                }
-              }
-            });
-            processedCount++;
-
-            if (processedCount % 1000 === 0) {
-              this.updateProgress(1000);
-            }
-          } catch (error) {
+      const flush = () => {
+        if (pendingRows === 0) {
+          return;
+        }
+        const rows = pendingRows;
+        db.run(rows === batchRows ? fullSql : sqlFor(rows), pending, (err) => {
+          if (err) {
             errorCount++;
             if (this.options.verbose && errorCount <= 10) {
-              console.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
+              console.warn(`Error loading ${rows} rows of ${fileName}: ${err.message}`);
             }
           }
         });
+        pending = [];
+        pendingRows = 0;
+      };
 
-        rl.on('close', () => {
-          stmt.finalize();
-          db.run('COMMIT', (err) => {
-            if (err) reject(err);
-            else {
-              // Update progress for remaining records
-              const remaining = processedCount % 1000;
-              if (remaining > 0) {
-                this.updateProgress(remaining);
-              }
+      rl.on('line', (line) => {
+        lineCount++;
 
-              if (this.options.verbose) {
-                console.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
-              }
-              resolve();
-            }
-          });
-        });
+        const items = line.split('|');
+        if (items.length === 0) return;
 
-        rl.on('error', reject);
+        try {
+          const values = extractValues(items);
+          for (let i = 0; i < cols; i++) {
+            pending.push(values[i] === undefined ? null : values[i]);
+          }
+          pendingRows++;
+          if (pendingRows === batchRows) {
+            flush();
+          }
+          processedCount++;
+
+          if (processedCount % 1000 === 0) {
+            this.updateProgress(1000);
+          }
+        } catch (error) {
+          errorCount++;
+          if (this.options.verbose && errorCount <= 10) {
+            console.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
+          }
+        }
       });
+
+      rl.on('close', () => {
+        flush();
+        db.run('COMMIT', (err) => {
+          if (err) reject(err);
+          else {
+            // Update progress for remaining records
+            const remaining = processedCount % 1000;
+            if (remaining > 0) {
+              this.updateProgress(remaining);
+            }
+
+            if (this.options.verbose) {
+              console.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
+            }
+            resolve();
+          }
+        });
+      });
+
+      rl.on('error', reject);
     });
   }
 

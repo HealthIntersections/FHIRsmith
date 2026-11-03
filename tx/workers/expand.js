@@ -201,6 +201,7 @@ class ValueSetExpander {
   params;
   doingVersion = true;
   excludedSystems = new Set();
+  excludedProviders = []; // {system, cs} - see checkForExclusionVersionSpecialCase
   excluded = new Set();
   hasExclusions = false;
   requiredSupplements = new Set();
@@ -271,11 +272,21 @@ class ValueSetExpander {
       return true;
     }
     for (const s of this.params.designations) {
-      const [l, r] = s.split('|');
-      if (cd.use != null && cd.use.system === l && cd.use.code === r) {
+      // a token: system|code, or a bare code (or |code), which matches a language or a use
+      // code from any system. designation=nl-NL is the same as urn:ietf:bcp:47|nl-NL
+      const bar = s.indexOf('|');
+      const system = bar < 0 ? '' : s.substring(0, bar);
+      const code = bar < 0 ? s : s.substring(bar + 1);
+      if (!system) {
+        if ((cd.language != null && cd.language.code === code) || (cd.use != null && cd.use.code === code)) {
+          return true;
+        }
+        continue;
+      }
+      if (cd.use != null && cd.use.system === system && cd.use.code === code) {
         return true;
       }
-      if (cd.language != null && l === 'urn:ietf:bcp:47' && r === cd.language.code) {
+      if (cd.language != null && system === 'urn:ietf:bcp:47' && code === cd.language.code) {
         return true;
       }
     }
@@ -300,7 +311,7 @@ class ValueSetExpander {
     }
   }
 
-  includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL) {
+  async includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL) {
     let result = null;
     this.worker.deadCheck('processCode');
 
@@ -310,7 +321,7 @@ class ValueSetExpander {
     if (isInactive && excludeInactive) {
       return null;
     }
-    if (this.isExcluded(system, version, code)) {
+    if (await this.isExcluded(system, version, code)) {
       return null;
     }
 
@@ -612,7 +623,7 @@ class ValueSetExpander {
     let count = 0;
     await this.worker.checkAndYield('importValueSetItem');
     const s = this.keyC(c);
-    if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !this.isExcluded(c.system, c.version, c.code)) {
+    if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
       count++;
       if (imported) {
         imported.push(c);
@@ -815,6 +826,14 @@ class ValueSetExpander {
                 Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members");
               }
               notClosed.value = true;
+            } else if (cs.openCodeSpaceReason()) {
+              // all the codes the code system defines are listed, but not the ones users define in its
+              // reserved code spaces: $validate-code accepts those as members, so the expansion isn't closed
+              if (!Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed")) {
+                Extensions.addBoolean(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
+                Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", cs.openCodeSpaceReason());
+              }
+              notClosed.value = true;
             }
 
             if (this.count === 0 && filters.length === 0 && valueSets.length === 0) {
@@ -930,7 +949,7 @@ class ValueSetExpander {
         if (cset.filter && cset.filter.length > 0) {
           this.worker.opContext.log('prepare filters');
           const fcl = cset.filter;
-          const prep = await cs.getPrepContext(true);
+          const prep = await cs.getPrepContext(true, this.params.requestedLanguages());
 
           if (!filter.isNull) {
             await cs.searchFilter(prep, filter, true);
@@ -1086,15 +1105,11 @@ class ValueSetExpander {
               // excluding a whole system - we don't list the codes in this case
               this.excludedSystems.add(cset.system + (this.doingVersion && cset.version ? '|' + cset.version : ''));
             } else {
-              const iter = await cs.iteratorAll();
-              if (iter) {
-                let c = await cs.nextContext(iter);
-                while (c) {
-                  await this.worker.checkAndYield('processCodes#3aa');
-                  this.excludeCode(cs, cs.system(), cs.version(), await cs.code(c), expansion, valueSets, vsSrc.url);
-                  c = await cs.nextContext(iter);
-                }
-              }
+              // include one version, exclude another whole version: a code is
+              // excluded if it exists in the excluded version. We don't list
+              // the excluded version's codes (most providers can't - e.g.
+              // SNOMED CT, LOINC); we ask it about each included code instead
+              this.excludedProviders.push({ system: cs.system(), cs });
             }
           } else {
             if (cs.isNotClosed(filter)) {
@@ -1110,15 +1125,15 @@ class ValueSetExpander {
               }
             }
 
-            const iter = await cs.iteratorAll();
-            if (iter) {
-              let c = await cs.nextContext(iter);
-              while (c) {
-                await this.worker.checkAndYield('processCodes#3a');
-                if (await this.passesFilters(cs, c, prep, filters, 0)) {
-                  this.excludeCode(cs, cs.system(), cs.version(), await cs.code(c), expansion, valueSets, vsSrc.url);
-                }
-                c = await cs.nextContext(iter);
+            // the codes of this system that are in all the value sets. Walk the
+            // first value set's codes, not the code system (most providers
+            // can't list theirs - e.g. SNOMED CT, LOINC); excludeCode checks
+            // the other value sets
+            const system = cs.system();
+            for (const entry of valueSets[0].codeMap.values()) {
+              await this.worker.checkAndYield('processCodes#3a');
+              if (entry.system === system && await this.#knownTo(cs, entry.code)) {
+                this.excludeCode(cs, system, cs.version(), entry.code, expansion, valueSets, vsSrc.url);
               }
             }
           }
@@ -1146,7 +1161,7 @@ class ValueSetExpander {
 
         if (cset.filter) {
           this.worker.opContext.log('prep filters');
-          const prep = await cs.getPrepContext(true);
+          const prep = await cs.getPrepContext(true, this.params.requestedLanguages());
           if (!filter.isNull) {
             await cs.searchFilter(prep, filter, true);
           }
@@ -1591,6 +1606,10 @@ class ValueSetExpander {
       }
     }
 
+    // declare only the properties the returned codes use: codes outside the page (or a count=0
+    // expansion) declared theirs as they were added, and a declaration nothing uses is noise
+    this.#pruneUnusedPropertyDeclarations(exp);
+
     if (result.expansion.contains && result.expansion.contains.length > 0) {
       let hasChildren = false;
       for (let c of result.expansion.contains) {
@@ -1729,11 +1748,31 @@ class ValueSetExpander {
   }
 
 
+  #pruneUnusedPropertyDeclarations(exp) {
+    if (!exp.property || exp.property.length === 0) {
+      return;
+    }
+    const used = new Set();
+    const walk = (list) => {
+      for (const c of list || []) {
+        for (const p of c.property || []) {
+          used.add(p.code);
+        }
+        walk(c.contains);
+      }
+    };
+    walk(exp.contains);
+    exp.property = exp.property.filter(pd => used.has(pd.code));
+    if (exp.property.length === 0) {
+      delete exp.property;
+    }
+  }
+
   hasParam(exp, name, value) {
     return (exp.parameter || []).find((ex => ex.name == name && getValuePrimitive(ex) == value));
   }
 
-  isExcluded(system, version, code) {
+  async isExcluded(system, version, code) {
     if (this.excludedSystems.has(system)) {
       return true;
     }
@@ -1742,7 +1781,27 @@ class ValueSetExpander {
       return true;
     }
     key = (this.doingVersion && !this.params.versionsMatch ? system+'|'+version : system)+'#'+code;
-    return this.excluded.has(key);
+    if (this.excluded.has(key)) {
+      return true;
+    }
+    for (const ep of this.excludedProviders) {
+      if (ep.system === system && await this.#knownTo(ep.cs, code)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * @returns {Promise<boolean>} whether the code exists in that provider's code system (version)
+   */
+  async #knownTo(cs, code) {
+    try {
+      const loc = await cs.locate(code);
+      return !!(loc && loc.context);
+    } catch (e) {
+      return false;
+    }
   }
 
   keyS(system, version, code) {
@@ -2110,6 +2169,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // If no valueSet yet, try to find by url
     if (!valueSet) {
@@ -2174,6 +2236,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // Perform the expansion
     return await this.doExpand(valueSet, txp, logExtraOutput);
@@ -2222,6 +2287,9 @@ class ExpandWorker extends TerminologyWorker {
 
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
+    // set now, not only in performExpansion: finding the value set by url can depend on them
+    // (an implicit value set is drawn from the code system version the request asks for)
+    this.params = txp;
 
     // Perform the expansion
     const result = await this.doExpand(valueSet, txp, logExtraOutput);

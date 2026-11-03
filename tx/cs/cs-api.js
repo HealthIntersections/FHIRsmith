@@ -225,6 +225,17 @@ class CodeSystemProvider {
   }
 
   /**
+   * Why an expansion of all of the code system is not closed even though every code it defines
+   * is in it - e.g. it reserves code spaces for users to define their own codes
+   * (codesystem-reservedCodeSpace), and those codes can't be listed - or null when it is closed
+   * (as far as this is concerned: see isNotClosed() for grammars)
+   * @returns {string|null}
+   */
+  openCodeSpaceReason() {
+    return null;
+  }
+
+  /**
    * returns false if the code system cannot be iterated / enumerated in any
    * meaningful sense - as distinct from isNotClosed(), which marks a code system
    * that has a grammar whose base set may still be partially expanded. An
@@ -694,10 +705,13 @@ class CodeSystemProvider {
    * it's only use is to be passed back to the CodeSystem provider so it can make use of it to organise the filter process
    *
    * @param {boolean} iterate true if the conceptSets that result from this will be iterated, and false if they'll be used to locate a single code
+   * @param {Languages|null} languages the languages the request named (TxParameters.requestedLanguages()), or null if it named none;
+   *   for filters whose meaning depends on language, such as a regex on the display
    * @returns {FilterExecutionContext} filter
    *
    **/
-  async getPrepContext(iterate) { return new FilterExecutionContext(iterate); }
+  // eslint-disable-next-line no-unused-vars
+  async getPrepContext(iterate, languages = null) { return new FilterExecutionContext(iterate); }
 
 
   /**

@@ -63,6 +63,7 @@ These methods describe the code system as a whole. All are synchronous.
 | `sourcePackage()` | `null` | The NPM package that contributed this code system, if known. |
 | `propertyDefinitions()` | `null` | The set of defined properties; override to expose them. |
 | `isNotClosed()` | `false` | Return `true` for grammar-based systems (e.g. UCUM) that cannot be fully enumerated. |
+| `openCodeSpaceReason()` | `null` | Why an expansion of all of the code system isn't closed although it lists every code the system defines - e.g. the system reserves code spaces for user-defined codes (`codesystem-reservedCodeSpace`). The expansion is marked unclosed with this as the reason. |
 | `isCaseSensitive()` | `true` | Whether code comparisons are case-sensitive. |
 | `hasParents()` | `false` | Whether the code system has a concept hierarchy. |
 | `specialEnumeration()` | `null` | Override to nominate a substitute enumeration (used by UCUM). |

@@ -1795,7 +1795,7 @@ class ValueSetChecker {
 
     if (cset.filter) {
       let cfl = cset.filter;
-      let prep = await cs.getPrepContext(false);
+      let prep = await cs.getPrepContext(false, this.params.requestedLanguages());
       for (let fc of cfl) {
         this.worker.deadCheck('checkConceptSet#2');
         if (!fc.value) {
@@ -2374,7 +2374,12 @@ class ValidateWorker extends TerminologyWorker {
         return fromAdditional;
       }
 
-      let vs = await this.provider.findValueSet(this.opContext, url, version);
+      // an implicit value set in the generic form is drawn from the code system version the
+      // request asks for (system-version and the like)
+      const systemVersionFor = txParams && txParams.requestedSystemVersion
+        ? (system) => txParams.requestedSystemVersion(system)
+        : null;
+      let vs = await this.provider.findValueSet(this.opContext, url, version, systemVersionFor);
       this.seeSourceVS(vs, url);
       if (vs == null) {
         throw new Issue('error', 'not-found', null, 'Unable_to_resolve_value_Set_', this.i18n.translate('Unable_to_resolve_value_Set_', params.HTTPLanguages, [url+(version ? "|"+version : "")]), 'not-found', 422);

@@ -214,8 +214,18 @@ Composition itself without its sections), keeps a list of findings, by the node'
   status where the resource requires one (`lifecycleStatus` for a Goal);
 - in dark green: a `subject` (or `patient`) that isn't the document's - not the same
   resource in the document, nor the same reference, nor the same identifier - and any `focus`;
-- dates in the future (except in an Appointment or AppointmentResponse): a date with no time
-  zone is in the future only if it is everywhere;
+- dates in the future, where one isn't expected. Only elements the (R4) type model says are
+  dates (date, dateTime, instant) are looked at - so not an identifier or a note that looks
+  like a date - and not inside extensions. Some dates are about the future by their nature and
+  are never mentioned: the end of a period (a name's, address's or identifier's validity, a
+  prescription's), expiry dates, due dates, and schedules (Timing). Some resources may have
+  future dates: Appointment, AppointmentResponse, ImmunizationRecommendation, Schedule and
+  Slot always; requests and plans (ServiceRequest, MedicationRequest, DeviceRequest,
+  NutritionOrder, CommunicationRequest, SupplyRequest, VisionPrescription, CarePlan, Task, and
+  a Goal by its lifecycleStatus) until they are over (completed, revoked, cancelled,
+  entered-in-error, stopped, failed or rejected); and events still to come - a Procedure in
+  preparation, a planned Encounter, an intended MedicationStatement or DeviceUseStatement. A
+  date with no time zone is in the future only if it is everywhere;
 - a Patient's `link`s; a Composition whose status isn't `final`;
 - for a section: its `emptyReason`, and an author other than that of what contains it (the
   Composition, or the containing section - which may have inherited its own);

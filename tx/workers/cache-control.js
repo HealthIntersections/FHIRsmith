@@ -97,7 +97,8 @@ class CacheControlWorker extends TerminologyWorker {
 
   /**
    * mode=start: mint a server-issued cache-id, create the (per-endpoint) cache,
-   * front-load any supplied resources into it, and return the id in the body.
+   * front-load any supplied resources into it, and return the id in the body
+   * (and, for proxy request logs, in the `${CACHE_ID_HEADER}` response header).
    *
    * The id is returned in the body rather than a header to keep it readable by
    * browser clients without CORS expose-header configuration; subsequent calls
@@ -137,6 +138,12 @@ class CacheControlWorker extends TerminologyWorker {
     // "<instanceCode>.<uuid>" when this server has an instance code, else a bare UUID
     const cacheId = cache.newCacheId();
     cache.set(cacheId, resources, sealed);
+
+    // Also echoed as a response header, so that a request log at the proxy (nginx
+    // $sent_http_x_cache_id) can tie each issued id to the start request that got
+    // it - which is what replaying a captured request log needs, because a replay
+    // target issues different ids. The body stays the authoritative carrier (see above).
+    res.setHeader(CACHE_ID_HEADER, cacheId);
 
     return res.status(200).json({
       resourceType: 'Parameters',
