@@ -1526,6 +1526,31 @@ describe('SNOMED CT descendent-leaf and is-not-a filters', () => {
     expect(isA.length + notA.length).toBe(provider.sct.concepts.count());
     expect(notA.filter(c => isA.includes(c))).toEqual([]);
   });
+
+  // 41000147108 is from the Dutch edition, which the test edition doesn't include. As an
+  // unknown code does in other code systems, it selects nothing (is-not-a: everything) in an
+  // expansion. (doesFilter still says no to it, so $validate-code reports the filter as not
+  // understood where it asks.)
+  test('a concept the edition does not have selects no concepts, rather than failing', async () => {
+    const unknown = '41000147108';
+    expect(provider.sct.concepts.findConcept(provider.sct.stringToIdOrZero(unknown)).found).toBe(false);
+    const iterated = async (op, value) => {
+      const fc = await provider.getPrepContext(true);
+      await provider.filter(fc, true, 'concept', op, value);
+      const [set] = await provider.executeFilters(fc);
+      const out = [];
+      while (await provider.filterMore(fc, set)) {
+        out.push(await provider.code(await provider.filterConcept(fc, set)));
+      }
+      return out;
+    };
+    for (const op of ['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'descendent-leaf', 'in']) {
+      expect(await iterated(op, unknown)).toEqual([]);
+      expect(await located(op, unknown, '16763008')).toBe(false);
+    }
+    expect(await iterated('in', unknown + ',16763008')).toEqual(['16763008']);
+    expect((await iterated('is-not-a', unknown)).length).toBe(provider.sct.concepts.count());
+  });
 });
 
 // display regex (S6): a concept matches when it has an active description (FSN or synonym,

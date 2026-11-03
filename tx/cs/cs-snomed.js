@@ -946,7 +946,7 @@ class SnomedServices {
       const conceptResult = this.concepts.findConcept(id);
 
       if (!conceptResult.found) {
-        throw new Error(`The SNOMED CT Concept ${id} is not known`);
+        continue; // a concept the edition doesn't have adds nothing
       }
 
       const refSetIndex = this.getConceptRefSet(conceptResult.index, false);
@@ -3554,6 +3554,16 @@ class SnomedProvider extends BaseCSServices {
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n && op !== 'in') {
         throw new Error(`Invalid concept ID: ${value}`);
+      }
+      // A concept the edition doesn't have (one from another edition, say) selects no
+      // concepts - every concept, for is-not-a - as an unknown code does in other code systems
+      if (op !== 'in' && !this.sct.concepts.findConcept(id).found) {
+        const none = new SnomedFilterContext();
+        if (op === 'is-not-a') {
+          none.descendants = this.sct._eclEnumerateAllConcepts(this.opContext);
+        }
+        filterContext.filters.push(none);
+        return null;
       }
 
       switch (op) {
