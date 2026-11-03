@@ -161,7 +161,7 @@ function startGroup({ size, measure, cgroup, report }) {
   state.group = g;
   const send = () => {
     try {
-      g.report({ fhirsmith: 'memory-rss', rss: process.memoryUsage.rss() });
+      g.report({ fhirsmith: 'memory-rss', rss: ownRss() });
     } catch {
       // the primary has gone; it will take this worker with it
     }
@@ -228,7 +228,7 @@ function groupMeasure() {
     }
   }
   // the primary's total, with this process's part brought up to date
-  const own = process.memoryUsage.rss();
+  const own = ownRss();
   return g.total > 0 ? Math.max(own, g.total - g.totalSelf + own) : own;
 }
 
@@ -255,6 +255,11 @@ function abortsHere(own, workers, size, abortAt, pid = process.pid) {
   return true;
 }
 
+/** This process's memory, as the guard counts it (in cluster mode, its part of the group). */
+function ownRss() {
+  return process.memoryUsage.rss();
+}
+
 /**
  * The measure the thresholds apply to: this process's RSS, or in cluster mode the group's
  * private memory. A sample at most SAMPLE_MS old unless fresh.
@@ -262,7 +267,7 @@ function abortsHere(own, workers, size, abortAt, pid = process.pid) {
 function rss(fresh = false) {
   const now = Date.now();
   if (fresh || now - state.sampleTime > SAMPLE_MS) {
-    state.sampleRss = state.group ? groupMeasure() : process.memoryUsage.rss();
+    state.sampleRss = state.group ? groupMeasure() : ownRss();
     state.sampleTime = now;
   }
   return state.sampleRss;
@@ -323,7 +328,7 @@ function overAbortThreshold(place = 'unknown') {
     return 0;
   }
   if (g) {
-    const own = process.memoryUsage.rss();
+    const own = ownRss();
     if (!abortsHere(own, g.workers, g.size, state.abortAt)) {
       g.spared++;
       const now = Date.now();
@@ -348,7 +353,7 @@ function overAbortThreshold(place = 'unknown') {
         abortLog = require('./logger').getInstance().child({ module: 'memory' });
       }
       abortLog.warn(`Memory critical: ${gb(r)} GB of ${gb(state.limit)} GB` +
-        (g ? ` for the service (this worker ${gb(process.memoryUsage.rss())} GB, the largest)` : '') +
+        (g ? ` for the service (this worker ${gb(ownRss())} GB, the largest)` : '') +
         ` - aborting running operations (at ${place}; ${aborts} aborted so far)`);
     } catch {
       // logging must never stop the abort
