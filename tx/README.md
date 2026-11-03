@@ -269,8 +269,8 @@ By default each SNOMED CT cache file is read into the server process, at about i
 - every server process on the machine that maps the same file shares those pages.
 
 The first request to touch a part of a mapped edition waits for the disk, unless that edition
-is *prewarmed*: mapped, with the kernel asked to read the whole file into the page cache at
-startup, in the background.
+is *prewarmed*: mapped, then read through once in the background at startup, so its pages are
+already in the page cache when requests arrive. Startup doesn't wait for it.
 
 This is set per server, in the tx module's `snomed` block in `config.json`:
 
@@ -286,8 +286,8 @@ This is set per server, in the tx module's `snomed` block in `config.json`:
 ```
 
 - **`load`** is `"read"` (the default) or `"mmap"`, for every edition not named below.
-- **`prewarm`** lists editions to map and read into the page cache at startup, even when
-  `load` is `"read"`.
+- **`prewarm`** lists editions to prewarm (map, then read through once in the background at
+  startup), even when `load` is `"read"`.
 - **`read`** lists editions to read into the process even when `load` is `"mmap"`.
 - An entry is any of:
   - a cache file name (`sct_us_20250901b.cache`)
@@ -299,8 +299,9 @@ This is set per server, in the tx module's `snomed` block in `config.json`:
 - With no `snomed` block, everything is read, as before.
 
 Mapping uses the optional `koffi` dependency. Where it is not available (Windows, 32-bit
-platforms, or koffi not installed), a mapped edition is read instead, with a warning. When any
-edition is mapped, the memory guard leaves file-backed pages out of the memory it measures
+platforms, or koffi not installed), a mapped edition is read instead, with a warning in the
+server log. The log says, for each edition that was to be mapped, whether it really was. When
+any edition is mapped, the memory guard leaves file-backed pages out of the memory it measures
 (Linux).
 
 ## Library Configuration

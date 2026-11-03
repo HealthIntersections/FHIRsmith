@@ -5,7 +5,7 @@
  *
  *   "snomed": {
  *     "load": "read" | "mmap",   // the default for every edition (absent: "read")
- *     "prewarm": [ ... ],        // map these, and have the kernel read them in at startup
+ *     "prewarm": [ ... ],        // map these, then read them through once in the background at startup
  *     "read": [ ... ]            // read these into the process even when load is "mmap"
  *   }
  *
