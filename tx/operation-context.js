@@ -77,6 +77,24 @@ class TimeTracker {
 
 
 /**
+ * Render a byte count for a human: "512 KB", "3.4 MB", "2 GB".
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined || !isFinite(bytes) || bytes < 0) {
+    return 'an unknown size';
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1).replace(/\.0$/, '')} GB`;
+}
+
+/**
  * Resource cache for the cache-id protocol ($cache-control): resources a client
  * supplies under a cache-id are kept for use by its later requests.
  *
@@ -88,8 +106,19 @@ class TimeTracker {
 class ResourceCache {
   logCacheOps = false;
 
-  constructor(stats, maxTombstones = 1000) {
+  /**
+   * @param {Object} stats - server stats (may be null)
+   * @param {number} [maxTombstones=1000] - how many dead cache-ids to remember
+   * @param {Object} [options]
+   * @param {number} [options.maxBytes=0] - cap on the total size (JSON bytes) of the
+   *   resources held; when a change takes the total over it, whole caches are dropped,
+   *   least recently used first (tombstone reason `evicted`). 0 = no cap.
+   */
+  constructor(stats, maxTombstones = 1000, options = {}) {
     this.stats = stats;
+    this.maxBytes = options.maxBytes > 0 ? options.maxBytes : 0;
+    // Running total of resource bytes, only maintained when there is a cap
+    this.totalBytes = 0;
     this.cache = new Map();
     this.locks = new Map(); // For thread-safety with async operations
     this.log = Logger.getInstance().child({module: 'tx-cache'});
@@ -190,10 +219,11 @@ class ResourceCache {
    *
    * @param {string} cacheId - The cache identifier
    * @param {Object} entry - The entry being removed (for its timings)
-   * @param {'closed'|'expired'|'cleared'} reason - How it went away:
+   * @param {'closed'|'expired'|'cleared'|'evicted'} reason - How it went away:
    *   `closed` = the client released it with $cache-control?mode=end;
    *   `expired` = it went unused for longer than the idle timeout;
-   *   `cleared` = the server dropped every cache at once.
+   *   `cleared` = the server dropped every cache at once;
+   *   `evicted` = dropped to keep the cache under its size cap (maxBytes).
    * @param {Object} [extra] - Reason-specific detail (e.g. idleMs, maxAgeMs)
    */
   _recordTombstone(cacheId, entry, reason, extra = {}) {
@@ -259,6 +289,11 @@ class ResourceCache {
         return {
           messageId: 'CACHE_ID_EXPIRED',
           params: [cacheId, formatDuration(t.idleMs), formatDuration(t.maxAgeMs), ago]
+        };
+      case 'evicted':
+        return {
+          messageId: 'CACHE_ID_EVICTED',
+          params: [cacheId, ago, formatBytes(t.maxBytes), formatDuration(t.idleMs)]
         };
       default:
         return { messageId: 'CACHE_ID_CLEARED', params: [cacheId, ago] };
@@ -405,7 +440,7 @@ class ResourceCache {
       }
     }
 
-    const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
+    const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0, bytes: 0, sizes: new Map() };
 
     // Merge resources, avoiding duplicates by url+version. Keep the entry's concept
     // subtotal and the cache-wide total in step with each insertion/replacement.
@@ -419,6 +454,7 @@ class ResourceCache {
         entry.resources[existingIndex] = resource;
         entry.concepts += delta;
         this.totalConcepts += delta;
+        this._sizeResource(entry, key, resource);
         if (this.logCacheOps) {
           this.log.info(`cache-id '${cacheId}': replaced ${key}`);
         }
@@ -426,6 +462,7 @@ class ResourceCache {
         entry.resources.push(resource);
         entry.concepts += newConcepts;
         this.totalConcepts += newConcepts;
+        this._sizeResource(entry, key, resource);
         if (this.logCacheOps) {
           this.log.info(`cache-id '${cacheId}': added ${key}`);
         }
@@ -435,6 +472,66 @@ class ResourceCache {
     entry.lastUsed = Date.now();
     this.cache.set(cacheId, entry);
     this._trackMax();
+    this._enforceMaxBytes(cacheId);
+  }
+
+  /**
+   * Record the size of a resource in an entry (only when there is a size cap: it
+   * costs a JSON serialisation, and without a cap nothing needs the number).
+   */
+  _sizeResource(entry, key, resource) {
+    if (!this.maxBytes) {
+      return;
+    }
+    if (!entry.sizes) {
+      entry.sizes = new Map();
+      entry.bytes = 0;
+    }
+    const bytes = ResourceCache.byteSize(resource);
+    const old = entry.sizes.get(key) || 0;
+    entry.sizes.set(key, bytes);
+    entry.bytes += bytes - old;
+    this.totalBytes += bytes - old;
+  }
+
+  /**
+   * Size of a resource as the cache counts it: the length of its JSON (the
+   * wrapper's jsonObj, or the object itself).
+   * @param {Object} resource
+   * @returns {number}
+   */
+  static byteSize(resource) {
+    if (!resource) {
+      return 0;
+    }
+    const json = JSON.stringify(resource.jsonObj || resource);
+    return json ? Buffer.byteLength(json) : 0;
+  }
+
+  /**
+   * If the cache is over its size cap, drop whole caches, least recently used
+   * first, until it isn't. The cache that was just written is never dropped by its
+   * own write: the client is in the middle of using it.
+   * @param {string} keepId - the cache-id being written
+   */
+  _enforceMaxBytes(keepId) {
+    if (!this.maxBytes || this.totalBytes <= this.maxBytes) {
+      return;
+    }
+    const victims = [...this.cache.entries()]
+      .filter(([id]) => id !== keepId)
+      .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    const now = Date.now();
+    for (const [id, entry] of victims) {
+      if (this.totalBytes <= this.maxBytes) {
+        break;
+      }
+      this.totalConcepts -= entry.concepts || 0;
+      this.totalBytes -= entry.bytes || 0;
+      this._recordTombstone(id, entry, 'evicted', { idleMs: now - entry.lastUsed, maxBytes: this.maxBytes });
+      this.cache.delete(id);
+      this.log.info(`cache-id '${id}': evicted (cache over its ${formatBytes(this.maxBytes)} cap; idle ${formatDuration(now - entry.lastUsed)})`);
+    }
   }
 
   /**
@@ -461,22 +558,30 @@ class ResourceCache {
     const existing = this.cache.get(cacheId);
     if (existing) {
       this.totalConcepts -= existing.concepts || 0;
+      this.totalBytes -= existing.bytes || 0;
     }
     let concepts = 0;
     for (const resource of resources) {
       concepts += this._conceptsOf(resource);
     }
     this.totalConcepts += concepts;
-    this.cache.set(cacheId, {
+    const entry = {
       resources: [...resources],
       createdAt: existing ? existing.createdAt : Date.now(),
       lastUsed: Date.now(),
       concepts,
+      bytes: 0,
+      sizes: new Map(),
       sealed: !!sealed
-    });
+    };
+    for (const resource of resources) {
+      this._sizeResource(entry, this._resourceKey(resource), resource);
+    }
+    this.cache.set(cacheId, entry);
     // This id is alive again, so any record of its previous death is now wrong.
     this.tombstones.delete(cacheId);
     this._trackMax();
+    this._enforceMaxBytes(cacheId);
   }
 
   /**
@@ -491,6 +596,7 @@ class ResourceCache {
     const entry = this.cache.get(cacheId);
     if (entry) {
       this.totalConcepts -= entry.concepts || 0;
+      this.totalBytes -= entry.bytes || 0;
       this._recordTombstone(cacheId, entry, 'closed');
       if (this.logCacheOps) {
         this.log.info(`cache-id '${cacheId}': closed by client after ${formatDuration(Date.now() - entry.createdAt)} (held ${entry.resources.length} resource(s))`);
@@ -508,6 +614,7 @@ class ResourceCache {
     }
     this.cache.clear();
     this.totalConcepts = 0;
+    this.totalBytes = 0;
   }
 
   /**
@@ -525,6 +632,7 @@ class ResourceCache {
       if (idleMs > maxAge) {
         i++;
         this.totalConcepts -= entry.concepts || 0;
+        this.totalBytes -= entry.bytes || 0;
         // Record the *measured* idle time, not the configured timeout: the sweep
         // runs periodically, so a cache can sit dead for up to one sweep interval
         // past the timeout, and only the measured figure lets a client line the
@@ -582,6 +690,14 @@ class ResourceCache {
   conceptCountFor(cacheId) {
     const entry = this.cache.get(cacheId);
     return entry ? (entry.concepts || 0) : 0;
+  }
+
+  /**
+   * Total JSON bytes held (only tracked when there is a size cap; 0 otherwise).
+   * @returns {number}
+   */
+  byteCount() {
+    return this.totalBytes;
   }
 
   /**
@@ -1223,6 +1339,7 @@ module.exports = {
   ExpansionParamsVersionRuleMode,
   TimeTracker,
   ResourceCache,
+  formatBytes,
   ExpansionCache,
   isDebugging,
   debugLog,

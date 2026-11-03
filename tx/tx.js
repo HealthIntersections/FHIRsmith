@@ -1398,12 +1398,12 @@ class TXModule {
 
   /**
    * The settings for the client resource cache ($cache-control), from
-   * config.resourceCache: {store: "memory" | "sqlite", path, touchIntervalSeconds}.
+   * config.resourceCache: {store: "memory" | "sqlite", path, maxBytes, touchIntervalSeconds}.
    * "memory" (the default) keeps each endpoint's caches in this process. "sqlite" keeps
    * them in one SQLite file that every process on the machine shares - needed when
    * several processes serve one port (cluster mode), since any of them may get any
    * request. The file must be on a local disk, never a network filesystem.
-   * @returns {{store: string, path: string|null, touchIntervalMs: number}}
+   * @returns {{store: string, path: string|null, maxBytes: number, touchIntervalMs: number}}
    */
   resourceCacheSettings() {
     const rc = (this.config && this.config.resourceCache) || {};
@@ -1411,11 +1411,12 @@ class TXModule {
     if (store !== 'memory' && store !== 'sqlite') {
       throw new Error(`tx resourceCache.store '${store}' is not valid: use "memory" or "sqlite"`);
     }
+    const maxBytes = Number(rc.maxBytes) > 0 ? Number(rc.maxBytes) : 0;
     const touchIntervalMs = rc.touchIntervalSeconds !== undefined ? Number(rc.touchIntervalSeconds) * 1000 : 30 * 1000;
     const file = store === 'sqlite'
       ? (rc.path ? path.resolve(folders.dataDir(), rc.path) : folders.filePath('resource-cache.db'))
       : null;
-    return { store, path: file, touchIntervalMs };
+    return { store, path: file, maxBytes, touchIntervalMs };
   }
 
   /**
@@ -1426,14 +1427,16 @@ class TXModule {
   createResourceCache(endpointPath) {
     const settings = this.resourceCacheSettings();
     if (settings.store === 'sqlite') {
-      this.log.info(`Resource cache for ${endpointPath}: shared SQLite file ${settings.path}`);
+      this.log.info(`Resource cache for ${endpointPath}: shared SQLite file ${settings.path}` +
+        (settings.maxBytes ? `, capped at ${settings.maxBytes} bytes` : ''));
       return new SqliteResourceCache(this.stats, {
         path: settings.path,
         scope: endpointPath,
+        maxBytes: settings.maxBytes,
         touchIntervalMs: settings.touchIntervalMs
       });
     }
-    return new ResourceCache(this.stats);
+    return new ResourceCache(this.stats, 1000, { maxBytes: settings.maxBytes });
   }
 
   /**

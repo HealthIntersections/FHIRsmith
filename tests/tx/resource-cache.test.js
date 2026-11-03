@@ -35,7 +35,7 @@ afterAll(() => {
 const STORES = [
   {
     name: 'memory',
-    make: (opts = {}) => new ResourceCache(null, opts.maxTombstones || 1000),
+    make: (opts = {}) => new ResourceCache(null, opts.maxTombstones || 1000, opts),
     setLastUsed: (cache, id, when) => { cache.cache.get(id).lastUsed = when; }
   },
   {
@@ -547,6 +547,59 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       expect(JSON.stringify(r)).not.toContain('isCached');
     });
   });
+
+  // A cap on the total size of what the cache holds: when a write takes it over, whole
+  // caches are dropped, least recently used first, and remembered as `evicted`.
+  describe('size cap (maxBytes)', () => {
+    const big = (url, n) => ({ ...CS(url, '1'), description: 'x'.repeat(n) });
+
+    test('drops the least recently used caches, never the one being written', () => {
+      cache = store.make({ maxBytes: 2500 });
+      cache.set('a', [big('http://a', 1000)]);
+      cache.set('b', [big('http://b', 1000)]);
+      setLastUsed('a', Date.now() - 60000);
+      setLastUsed('b', Date.now() - 30000);
+      cache.set('c', [big('http://c', 1000)]); // over the cap: 'a' is the oldest
+      expect(cache.has('a')).toBe(false);
+      expect(cache.has('b')).toBe(true);
+      expect(cache.has('c')).toBe(true);
+      expect(cache.byteCount()).toBeLessThanOrEqual(2500);
+
+      const t = cache.tombstone('a');
+      expect(t.reason).toBe('evicted');
+      expect(t.maxBytes).toBe(2500);
+      expect(t.idleMs).toBeGreaterThanOrEqual(60000);
+      const d = cache.describeMissing('a');
+      expect(d.messageId).toBe('CACHE_ID_EVICTED');
+      expect(d.params[0]).toBe('a');
+      expect(d.params[2]).toBe('2 KB');
+      expect(d.params[3]).toBe('60 seconds');
+    });
+
+    test('growing a cache with add() can evict others too', () => {
+      cache = store.make({ maxBytes: 2500 });
+      cache.set('a', [big('http://a', 1000)]);
+      setLastUsed('a', Date.now() - 60000);
+      cache.set('b', [big('http://b', 1000)]);
+      cache.add('b', [big('http://b2', 1000)]);
+      expect(cache.has('a')).toBe(false);
+      expect(cache.tombstone('a').reason).toBe('evicted');
+      expect(cache.get('b')).toHaveLength(2);
+    });
+
+    test('a single cache bigger than the cap is kept (there is nothing else to drop)', () => {
+      cache = store.make({ maxBytes: 500 });
+      cache.set('a', [big('http://a', 1000)]);
+      expect(cache.has('a')).toBe(true);
+    });
+
+    test('no cap, nothing is dropped', () => {
+      for (let i = 0; i < 20; i++) {
+        cache.set('c' + i, [big('http://c' + i, 1000)]);
+      }
+      expect(cache.size()).toBe(20);
+    });
+  });
 });
 
 // Behaviour that only the shared SQLite store has.
@@ -678,6 +731,20 @@ describe('SqliteResourceCache', () => {
     c.add('c1', [CS('http://b', '1')]);
     expect(c.has('c1')).toBe(false);
     expect(c.tombstone('c1').reason).toBe('closed');
+  });
+
+  test('the size cap covers every endpoint in the file', () => {
+    const file = path.join(tmpDir, `cap-${++fileNo}.db`);
+    const r4 = new SqliteResourceCache(null, { path: file, scope: '/r4', maxBytes: 2500 });
+    const r5 = new SqliteResourceCache(null, { path: file, scope: '/r5', maxBytes: 2500 });
+    opened.push(r4, r5);
+    r4.set('a', [{ ...CS('http://a', '1'), description: 'x'.repeat(1000) }]);
+    r4.db.prepare('UPDATE sessions SET last_used = ?').run(Date.now() - 60000);
+    r5.set('b', [{ ...CS('http://b', '1'), description: 'x'.repeat(1000) }]);
+    r5.set('c', [{ ...CS('http://c', '1'), description: 'x'.repeat(1000) }]);
+    expect(r4.has('a')).toBe(false);
+    expect(r4.tombstone('a').reason).toBe('evicted');
+    expect(r5.has('b')).toBe(true);
   });
 
   test('a cache survives a restart (closing and reopening the file)', () => {

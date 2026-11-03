@@ -15,10 +15,10 @@
 //    rather than fail.
 //  - last_used is refreshed at most every touchIntervalMs (default 30 s) per cache,
 //    not on every read, so steady use of a cache is reads only.
-//  - The idle sweep (prune) moves the caches it drops to tombstones in the same
-//    transaction, so whichever process asks about a dead cache-id later is told what
-//    happened to it. Any process may sweep; a sweep that finds nothing to do
-//    (because another process just did it) does nothing.
+//  - The idle sweep (prune) and the size cap (maxBytes) move the caches they drop to
+//    tombstones in the same transaction, so whichever process asks about a dead
+//    cache-id later is told what happened to it. Any process may sweep; a sweep that
+//    finds nothing to do (because another process just did it) does nothing.
 //
 // The file must be on a local disk. SQLite's locking is not reliable on network
 // filesystems (NFS, SMB, most container volume drivers backed by them), and a
@@ -29,7 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const { ResourceCache, formatDuration } = require('./operation-context');
+const { ResourceCache, formatDuration, formatBytes } = require('./operation-context');
 const { Issue } = require('./library/operation-outcome');
 
 const SCHEMA_VERSION = 1;
@@ -166,11 +166,12 @@ class SqliteResourceCache extends ResourceCache {
    * @param {string} [options.scope=''] - which endpoint's caches these are; endpoints
    *   share the file but not caches
    * @param {number} [options.maxTombstones=1000]
+   * @param {number} [options.maxBytes=0] - size cap for the whole file, 0 = none
    * @param {number} [options.touchIntervalMs=30000] - least time between last_used refreshes
    * @param {number} [options.busyTimeoutMs=5000]
    */
   constructor(stats, options = {}) {
-    super(stats, options.maxTombstones || 1000);
+    super(stats, options.maxTombstones || 1000, { maxBytes: options.maxBytes });
     if (!options.path) {
       throw new Error('SqliteResourceCache needs a path');
     }
@@ -220,7 +221,8 @@ class SqliteResourceCache extends ResourceCache {
       expired: db.prepare('SELECT * FROM sessions WHERE scope = ? AND last_used < ?'),
       allSessions: db.prepare('SELECT * FROM sessions WHERE scope = ?'),
       scopeTotals: db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(concepts), 0) AS concepts, COALESCE(SUM(bytes), 0) AS bytes FROM sessions WHERE scope = ?'),
-      fileBytes: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS bytes FROM sessions')
+      fileBytes: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS bytes FROM sessions'),
+      lru: db.prepare('SELECT * FROM sessions WHERE NOT (scope = ? AND cache_id = ?) ORDER BY last_used, created_at LIMIT 16')
     };
   }
 
@@ -334,7 +336,7 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   /**
-   * Bytes held across the whole file (every endpoint).
+   * Bytes held across the whole file (every endpoint): that is what maxBytes caps.
    */
   byteCount() {
     return this.q.fileBytes.get().bytes;
@@ -488,6 +490,7 @@ class SqliteResourceCache extends ResourceCache {
         }
       }
       this.q.totals.run(now, this.scope, cacheId);
+      this._enforceMaxBytesTx(cacheId, now);
     });
     this._trackMax();
   }
@@ -513,6 +516,7 @@ class SqliteResourceCache extends ResourceCache {
       this.q.totals.run(now, this.scope, cacheId);
       // alive again, so any record of an earlier death is now wrong
       this.q.deleteTombstone.run(this.scope, cacheId);
+      this._enforceMaxBytesTx(cacheId, now);
     });
     this._trackMax();
   }
@@ -520,10 +524,36 @@ class SqliteResourceCache extends ResourceCache {
   /** Move a session to the tombstones (inside a write transaction). */
   _bury(session, reason, now, extra = {}) {
     this.q.insertTombstone.run(session.scope, session.cache_id, reason, now, session.created_at, session.last_used,
-      extra.idleMs ?? null, extra.maxAgeMs ?? null, null);
+      extra.idleMs ?? null, extra.maxAgeMs ?? null, extra.maxBytes ?? null);
     this.q.deleteResources.run(session.scope, session.cache_id);
     this.q.deleteSession.run(session.scope, session.cache_id);
     this.q.trimTombstones.run(session.scope, session.scope, this.maxTombstones);
+  }
+
+  /**
+   * The size cap covers the whole file (all endpoints): drop the least recently
+   * used caches until the file is under it. Never the cache being written.
+   */
+  _enforceMaxBytesTx(keepId, now) {
+    if (!this.maxBytes) {
+      return;
+    }
+    let total = this.q.fileBytes.get().bytes;
+    while (total > this.maxBytes) {
+      const victims = this.q.lru.all(this.scope, keepId);
+      if (victims.length === 0) {
+        return;
+      }
+      for (const v of victims) {
+        if (total <= this.maxBytes) {
+          break;
+        }
+        const idleMs = now - v.last_used;
+        this._bury(v, 'evicted', now, { idleMs, maxBytes: this.maxBytes });
+        total -= v.bytes;
+        this.log.info(`cache-id '${v.cache_id}': evicted (cache over its ${formatBytes(this.maxBytes)} cap; idle ${formatDuration(idleMs)})`);
+      }
+    }
   }
 
   clear(cacheId) {
