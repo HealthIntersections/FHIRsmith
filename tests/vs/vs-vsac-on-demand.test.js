@@ -2,7 +2,9 @@
 // when it is asked for. These check that what it serves is what it served when it loaded them
 // all into a map at startup - the same version picked for a url, the same changes made to the
 // stored value set (no code system versions in the compose, an id in the provider's id space),
-// the same value sets rejected - and that a refresh compares against the database.
+// the same value sets rejected - and that a refresh compares against the database. The value
+// sets most recently used are kept parsed: these check that they are dropped when the sync
+// changes them, and that what is kept is not changed by what reads it.
 
 const fs = require('fs');
 const path = require('path');
@@ -81,10 +83,7 @@ describe('VSAC value sets read on demand', () => {
     expect(v.jsonObj.id).toBe('vsac-2.16.840.1.113883.3.1-20250601');
     expect(v.sourcePackage).toBe('vsac');
     expect(v.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    // each request reads its own copy: changing one doesn't change what the next one gets,
-    // and the stored content (which a refresh hashes) is untouched
-    v.jsonObj.title = 'changed';
-    expect((await provider.fetchValueSet(URL1)).jsonObj.title).toBe('Test 2.16.840.1.113883.3.1 20250601');
+    // the stored content (which a refresh hashes) is untouched
     const db = await provider.database._getReadConnection();
     const stored = await new Promise((res, rej) => db.get('SELECT content FROM valuesets', [], (e, r) => e ? rej(e) : res(r.content)));
     expect(JSON.parse(stored).compose.include[0].version).toBe('http://snomed.info/sct/731000124108/version/20250901');
@@ -198,6 +197,212 @@ describe('VSAC value sets read on demand', () => {
     expect(fetched.filter(u => u.startsWith('/ValueSet?url='))).toEqual([`/ValueSet?url=${URL2}`]);
     expect(provider.count()).toBe(2);
     expect((await provider.fetchValueSet(URL2)).version).toBe('20200101');
+  });
+});
+
+describe('VSAC recently used value sets', () => {
+  let dbPath;
+  let provider;
+  let loads;
+
+  async function makeProvider(valueSets, cacheBytes) {
+    dbPath = path.join(folders.ensureFolder('vsac-on-demand-test'), `vsac-mru-${process.pid}-${Date.now()}.db`);
+    const database = new ValueSetDatabase(dbPath);
+    await database.create();
+    for (const v of valueSets) {
+      await database.upsertValueSet(v, require('crypto').createHash('sha256').update(JSON.stringify(v)).digest('hex'));
+    }
+    const p = Object.create(VSACValueSetProvider.prototype);
+    p.database = database;
+    p.stats = { addTask() {}, task() {}, taskDone() {}, taskError() {} };
+    p.initialized = true;
+    if (cacheBytes !== undefined) {
+      p.valueSetCacheMB = cacheBytes / (1024 * 1024);
+    }
+    await p._recount();
+    p.assignIds('vsac');
+    // count the reads (each one parses the stored JSON)
+    loads = [];
+    const loadValueSet = database.loadValueSet.bind(database);
+    database.loadValueSet = async (id, source) => { loads.push(id); return loadValueSet(id, source); };
+    return p;
+  }
+
+  // anything that writes to a frozen object in strict code (class bodies are) throws
+  function deepFreeze(o) {
+    if (o && typeof o === 'object' && !Object.isFrozen(o)) {
+      Object.freeze(o);
+      for (const v of Object.values(o)) deepFreeze(v);
+    }
+    return o;
+  }
+
+  function storedLength(v) {
+    return JSON.stringify(v).length;
+  }
+
+  afterEach(async () => {
+    if (provider) {
+      await provider.close();
+      provider = null;
+    }
+    for (const f of [dbPath, dbPath + '-journal']) {
+      if (f && fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  });
+
+  test('repeated fetches, by url or by id, read and parse the value set once', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601')]);
+    const first = await provider.fetchValueSet(URL1);
+    expect(await provider.fetchValueSet(URL1)).toBe(first);
+    expect(await provider.fetchValueSet(URL1, '20250601')).toBe(first);
+    expect(await provider.fetchValueSetById('vsac-2.16.840.1.113883.3.1-20250601')).toBe(first);
+    expect(loads).toEqual(['2.16.840.1.113883.3.1-20250601']);
+    // another version is another row
+    expect((await provider.fetchValueSet(URL1, '20240101')).version).toBe('20240101');
+    expect(loads.length).toBe(2);
+  });
+
+  test('what is kept is shared between requests, and nothing the provider does writes to it', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL2, '20200101')]);
+    const kept = deepFreeze(await provider.fetchValueSet(URL1));
+    expect(await provider.fetchValueSet(URL1)).toBe(kept);
+    expect(await provider.fetchValueSetById(kept.id)).toBe(kept);
+    const found = await provider.searchValueSets([{ name: 'url', value: URL1 }]);
+    const loaded = await Promise.all(found.map(m => m.load()));
+    expect(loaded).toContain(kept.jsonObj);
+    await provider.scanAllValueSets(async () => {});
+    expect(() => { 'use strict'; kept.jsonObj.title = 'changed'; }).toThrow(TypeError); // it is frozen
+  });
+
+  test('a row the sync updates is dropped, and the next fetch reads the new content', async () => {
+    const v1 = vs(URL1, '20240101');
+    provider = await makeProvider([v1, vs(URL2, '20200101')]);
+    expect((await provider.fetchValueSet(URL1)).jsonObj.title).toBe('Test 2.16.840.1.113883.3.1 20240101');
+    const other = await provider.fetchValueSet(URL2);
+    // unchanged: still kept
+    await provider.batchUpsertValueSets([v1]);
+    expect((await provider.fetchValueSet(URL1)).jsonObj.title).toBe('Test 2.16.840.1.113883.3.1 20240101');
+    expect(loads.length).toBe(2);
+    await provider.batchUpsertValueSets([{ ...v1, title: 'New title' }]);
+    const after = await provider.fetchValueSet(URL1);
+    expect(after.jsonObj.title).toBe('New title');
+    expect(after.contentHash).toBe((await provider.database.getVersion(URL1, '20240101')).content_hash);
+    expect(loads.length).toBe(3);
+    // the other one is still kept
+    expect(await provider.fetchValueSet(URL2)).toBe(other);
+    expect(loads.length).toBe(3);
+  });
+
+  test('a read that was under way when the sync dropped a row is not kept', async () => {
+    provider = await makeProvider([vs(URL1, '20240101')]);
+    const loadValueSet = provider.database.loadValueSet;
+    provider.database.loadValueSet = async (id, source) => {
+      const vs = await loadValueSet(id, source);
+      provider._recentValueSets().delete(id); // as if the sync wrote the row meanwhile
+      return vs;
+    };
+    await provider.fetchValueSet(URL1);
+    provider.database.loadValueSet = loadValueSet;
+    await provider.fetchValueSet(URL1);
+    await provider.fetchValueSet(URL1);
+    expect(loads.length).toBe(2);
+  });
+
+  test('once the stored JSON kept is over the limit, the least recently used is dropped', async () => {
+    const urls = [URL1, URL2, 'http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113883.3.3'];
+    const sets = urls.map(u => vs(u, '20240101'));
+    // room for two
+    provider = await makeProvider(sets, storedLength(sets[0]) * 2 + 10);
+    const a = await provider.fetchValueSet(urls[0]);
+    await provider.fetchValueSet(urls[1]);
+    expect(await provider.fetchValueSet(urls[0])).toBe(a); // urls[0] is now the most recently used
+    await provider.fetchValueSet(urls[2]); // so urls[1] is dropped
+    expect(provider._recentValueSets().size).toBe(2);
+    expect(await provider.fetchValueSet(urls[0])).toBe(a);
+    expect(loads.length).toBe(3);
+    await provider.fetchValueSet(urls[1]);
+    expect(loads.length).toBe(4);
+  });
+
+  test('a value set bigger than the limit is not kept; a limit of 0 keeps none', async () => {
+    const v = vs(URL1, '20240101');
+    provider = await makeProvider([v], storedLength(v) - 1);
+    await provider.fetchValueSet(URL1);
+    await provider.fetchValueSet(URL1);
+    expect(loads.length).toBe(2);
+    await provider.close();
+    provider = await makeProvider([v], 0);
+    await provider.fetchValueSet(URL1);
+    await provider.fetchValueSet(URL1);
+    expect(loads.length).toBe(2);
+  });
+
+  test('a search reads the matches on its page without keeping them, or pushing out what is kept', async () => {
+    const urls = [URL1, URL2, 'http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113883.3.3'];
+    const sets = urls.map(u => vs(u, '20240101'));
+    provider = await makeProvider(sets, storedLength(sets[0]) + 10);
+    const hot = await provider.fetchValueSet(URL1);
+    const found = await provider.searchValueSets([{ name: 'publisher', value: 'Test Publisher' }]);
+    expect(found.length).toBe(3);
+    const loaded = await Promise.all(found.map(m => m.load()));
+    expect(loaded).toContain(hot.jsonObj); // the kept one is used
+    expect(loads.length).toBe(3); // the other two are read
+    expect(provider._recentValueSets().size).toBe(1);
+    expect(await provider.fetchValueSet(URL1)).toBe(hot);
+  });
+
+  test('a full sync, an operator resync, a new database and close() each start again', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL2, '20200101')]);
+    await provider.fetchValueSet(URL1);
+    await provider.fetchValueSet(URL2);
+    expect(provider._recentValueSets().size).toBe(2);
+
+    // operator resync of one url: only that url's rows are dropped
+    provider._fetchBundle = async () => ({ resourceType: 'Bundle', entry: [{ resource: vs(URL1, '20240101') }] });
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await provider.resyncValueSet(URL1);
+      expect(provider._recentValueSets().size).toBe(1);
+      expect(provider._recentValueSets().peek('2.16.840.1.113883.3.2-20200101')).toBeDefined();
+
+      // full sync with nothing new
+      await provider.fetchValueSet(URL1);
+      provider.database.getSetting = async () => '2026-01-01T00:00:00Z';
+      provider.database.setSetting = async () => {};
+      provider._fetchBundle = async (url) => url.startsWith('/ValueSet?_offset')
+        ? { resourceType: 'Bundle', total: 2, entry: [{ resource: { url: URL1, version: '20240101' } }, { resource: { url: URL2, version: '20200101' } }] }
+        : { resourceType: 'Bundle', entry: [] };
+      await provider.refreshValueSets();
+      expect(provider._recentValueSets().size).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+
+    await provider.fetchValueSet(URL1);
+    const database = provider.database;
+    provider.database = new ValueSetDatabase(dbPath);
+    expect(provider._recentValueSets().size).toBe(0);
+    await database.close();
+
+    await provider.fetchValueSet(URL1);
+    expect(provider._recentValueSets().size).toBe(1);
+    await provider.close();
+    expect(provider._recentValueSets().size).toBe(0);
+    provider = null;
+  });
+
+  test('which version a url (and version) gets is as it was: exact, then major.minor, then the latest - kept or not', async () => {
+    const SV = 'http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113883.3.9';
+    provider = await makeProvider([vs(SV, '1.1.0'), vs(SV, '2.0.0'), vs(SV, '1.1.2'), vs(SV, '1.0.0')]);
+    const asked = [['1.1.0', '1.1.0'], ['1.1.5', '1.1.2'], ['1.0.7', '1.0.0'], ['3.0.0', '2.0.0'], [undefined, '2.0.0'], ['1.1.2', '1.1.2']];
+    for (let pass = 0; pass < 2; pass++) {
+      for (const [version, expected] of asked) {
+        expect((await provider.fetchValueSet(SV, version)).version).toBe(expected);
+      }
+    }
+    // the second pass was all kept
+    expect(loads.length).toBe(4);
   });
 });
 

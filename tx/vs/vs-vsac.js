@@ -14,6 +14,92 @@ const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
+// Default size of the cache of recently used value sets (see RecentValueSets)
+const DEFAULT_VALUESET_CACHE_MB = 64;
+
+/**
+ * The value sets most recently read from the database, parsed and prepared, by row id, with
+ * the least recently used dropped first once the stored JSON they were read from adds up to
+ * more than maxBytes.
+ *
+ * Reading a value set means parsing its JSON every time: 15ms for a list of 33,000 codes, and
+ * $batch-validate-code reads it once per entry. Most use is of a few value sets over and over,
+ * so the ones in use are kept. The sync drops a row from here when it writes it, so what is
+ * kept is never older than the database (each keeps the contentHash it was read with).
+ *
+ * What is kept is shared between requests (as the map was): it must not be changed.
+ */
+class RecentValueSets {
+  constructor(maxBytes) {
+    this.maxBytes = maxBytes;
+    this.entries = new Map(); // id -> { vs, bytes }, least recently used first
+    this.bytes = 0;
+    // changes whenever anything is dropped, so a read that started before is not kept (see _readValueSet)
+    this.generation = 0;
+  }
+
+  get size() {
+    return this.entries.size;
+  }
+
+  /** The value set for a row id, which is now the most recently used; undefined if it isn't kept */
+  get(id) {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return undefined;
+    }
+    this.entries.delete(id);
+    this.entries.set(id, entry);
+    return entry.vs;
+  }
+
+  /** The value set for a row id, without making it any more recently used */
+  peek(id) {
+    const entry = this.entries.get(id);
+    return entry ? entry.vs : undefined;
+  }
+
+  set(id, vs, bytes) {
+    this.delete(id);
+    if (!(bytes >= 0) || bytes > this.maxBytes) {
+      return;
+    }
+    this.entries.set(id, { vs, bytes });
+    this.bytes += bytes;
+    while (this.bytes > this.maxBytes) {
+      this._drop(this.entries.keys().next().value);
+    }
+  }
+
+  delete(id) {
+    this.generation++;
+    this._drop(id);
+  }
+
+  deleteUrl(url) {
+    this.generation++;
+    for (const [id, entry] of this.entries) {
+      if (entry.vs.url === url) {
+        this._drop(id);
+      }
+    }
+  }
+
+  clear() {
+    this.generation++;
+    this.entries.clear();
+    this.bytes = 0;
+  }
+
+  _drop(id) {
+    const entry = this.entries.get(id);
+    if (entry) {
+      this.entries.delete(id);
+      this.bytes -= entry.bytes;
+    }
+  }
+}
+
 /**
  * VSAC (Value Set Authority Center) ValueSet provider
  * Fetches and caches ValueSets from the NLM VSAC FHIR server
@@ -30,6 +116,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {number} [config.timeoutMs=120000] - HTTP request timeout in milliseconds
    * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
+   * @param {number} [config.valueSetCacheMB=64] - Size (of their stored JSON) of the recently used
+   *   value sets kept parsed (see RecentValueSets); 0 for none
    */
   constructor(config, stats) {
     super();
@@ -50,11 +138,13 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       console.warn(`VSAC: baseUrl ${this.baseUrl} is http, so the API key is sent unencrypted - use https`);
     }
     this.refreshIntervalHours = config.refreshIntervalHours || 24;
+    this.valueSetCacheMB = config.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB;
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
     this.database = new ValueSetDatabase(this.dbPath);
     // The value sets aren't held in memory: each one is read from the database when it is
-    // asked for (see fetchValueSet). This is the count of urls as of the last recount
+    // asked for (see fetchValueSet), apart from the recently used ones (see RecentValueSets).
+    // This is the count of urls as of the last recount
     this.urlCount = 0;
     this.initialized = false;
     this.refreshTimer = null;
@@ -76,6 +166,30 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
   code() {
     return "vsac";
+  }
+
+  // the recently used value sets were read from this database: another one starts with none
+  get database() {
+    return this._database;
+  }
+
+  set database(database) {
+    this._database = database;
+    if (this._recent) {
+      this._recent.clear();
+    }
+  }
+
+  /**
+   * The recently used value sets (made when first needed)
+   * @returns {RecentValueSets}
+   * @private
+   */
+  _recentValueSets() {
+    if (!this._recent) {
+      this._recent = new RecentValueSets((this.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB) * 1024 * 1024);
+    }
+    return this._recent;
   }
 
   sourcePackage() {
@@ -266,6 +380,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       throw error;
     } finally {
       this.isRefreshing = false;
+      // each row written was dropped as it was written; start again anyway after a full sync
+      this._recentValueSets().clear();
     }
   }
 
@@ -320,14 +436,18 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           // touch + hash update rather than a full upsert+event.
           await this.database.seeValueSet(valueSet);
           await this.database.setContentHash(valueSet.id, newHash);
+          this._recentValueSets().delete(existing.id);
         } else {
           // Content has changed - treat as update
           await this.database.upsertValueSet(valueSet, newHash);
+          this._recentValueSets().delete(existing.id);
+          this._recentValueSets().delete(valueSet.id);
           await this.database.recordEvent('updated', valueSet.url, valueSet.version);
           updatedCount++;
         }
       } else {
         await this.database.upsertValueSet(valueSet, newHash);
+        this._recentValueSets().delete(valueSet.id);
         await this.database.recordEvent('new', valueSet.url, valueSet.version);
         newCount++;
       }
@@ -448,6 +568,27 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     return vs;
   }
 
+  /**
+   * A value set by row id, from the recently used ones if it is there, or else read (and kept)
+   * @param {string} id - the value set's own id
+   * @returns {Promise<ValueSet|null>} shared with other requests: not to be changed
+   * @private
+   */
+  async _readValueSet(id) {
+    const recent = this._recentValueSets();
+    let vs = recent.get(id);
+    if (vs) {
+      return vs;
+    }
+    // if the sync drops anything while this is read, what is read may be older than the database
+    const generation = recent.generation;
+    vs = await this._loadValueSet(id);
+    if (vs && recent.generation === generation) {
+      recent.set(id, vs, vs.storedLength);
+    }
+    return vs;
+  }
+
   _prepare(vs) {
     if (vs.jsonObj.compose) {
       for (const inc of vs.jsonObj.compose.include || []) {
@@ -487,7 +628,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       if (!row) {
         return null;
       }
-      const vs = await this._loadValueSet(row.id);
+      const vs = await this._readValueSet(row.id);
       if (vs) {
         return await this.checkFullVS(vs);
       }
@@ -529,7 +670,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
   async fetchValueSetById(id) {
     const ownId = stripIdPrefix(id, this.spaceId);
-    const vs = ownId ? await this._loadValueSet(ownId) : null;
+    const vs = ownId ? await this._readValueSet(ownId) : null;
     return vs && vs.id === id ? await this.checkFullVS(vs) : null;
   }
   /**
@@ -561,10 +702,11 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         match[name] = row[name];
       }
     }
-    // the value set as search would have returned it; null if it is rejected when it is read
+    // the value set as search would have returned it; null if it is rejected when it is read.
+    // A search can match thousands, so what it reads is not kept, and doesn't push out what is
     Object.defineProperty(match, 'load', {
       value: async () => {
-        const vs = await this._loadValueSet(row.id);
+        const vs = this._recentValueSets().peek(row.id) || await this._loadValueSet(row.id);
         return vs ? vs.jsonObj : null;
       }
     });
@@ -665,6 +807,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async close() {
+    this._recentValueSets().clear();
     await this.database.close();
   }
 
@@ -807,6 +950,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
+    // the rows written were dropped as they were written; an operator asking expects none kept
+    this._recentValueSets().deleteUrl(url);
     await this._recount();
     return tracking.totalFetched;
   }

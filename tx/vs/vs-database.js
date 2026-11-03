@@ -828,7 +828,12 @@ class ValueSetDatabase {
       db.get('SELECT id, url, version, content, content_hash FROM valuesets WHERE id = ?', [id],
         (err, row) => err ? reject(new Error(`Failed to load value set ${id}: ${err.message}`)) : resolve(row));
     });
-    return row ? this._rowToValueSet(row, source) : null;
+    const vs = row ? this._rowToValueSet(row, source) : null;
+    if (vs) {
+      // the size of what it was read from, for a provider that keeps some (see VSAC RecentValueSets)
+      vs.storedLength = row.content.length;
+    }
+    return vs;
   }
 
   /**
