@@ -32,6 +32,34 @@ describe('with one process nothing is shared', () => {
   });
 });
 
+describe('server.sharedState: one process opts in', () => {
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cluster-state-opt-'));
+  });
+  afterEach(() => {
+    clusterState._configure();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('off (the default): nothing shared; on: shared, and the secret is kept across a restart', () => {
+    clusterState._configure({ file: path.join(dir, 'cluster-state.db') });
+    clusterState.configure({});
+    expect(clusterState.isShared()).toBe(false);
+    expect(clusterState.sessionStore('testing')).toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'cluster-state.db'))).toBe(false);
+
+    clusterState.configure({ sharedState: true });
+    expect(clusterState.isShared()).toBe(true);
+    expect(clusterState.sessionStore('testing')).toBeDefined();
+    const secret = clusterState.sessionSecret('testing');
+    // a restart: the database is closed and opened again
+    clusterState._configure({ file: path.join(dir, 'cluster-state.db') });
+    clusterState.configure({ sharedState: true });
+    expect(clusterState.sessionSecret('testing')).toBe(secret);
+  });
+});
+
 describe('shared, in one process', () => {
   let dir;
   beforeEach(() => {
@@ -81,8 +109,8 @@ describe('two processes on one data directory', () => {
   let dir;
   const children = [];
 
-  const spawn = () => {
-    const child = fork(CHILD, [dir], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const spawn = (mode = 'cluster') => {
+    const child = fork(CHILD, [dir, mode], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     children.push(child);
     let stderr = '';
     child.stderr.on('data', (d) => { stderr += d; });
@@ -104,7 +132,11 @@ describe('two processes on one data directory', () => {
       waiting.set(s, resolve);
       child.send({ seq: s, op, ...args });
     });
-    return ready.then(port => ({ port, call, base: `http://127.0.0.1:${port}/testing` }));
+    const stop = () => new Promise(resolve => {
+      child.once('exit', resolve);
+      child.kill();
+    });
+    return ready.then(port => ({ port, call, stop, base: `http://127.0.0.1:${port}/testing` }));
   };
 
   beforeEach(() => {
@@ -178,6 +210,27 @@ describe('two processes on one data directory', () => {
       statuses.push((await me.post(p.base, `${p.base}/login`, { login: 'admin', password: 'wrong' })).status);
     }
     expect(statuses).toEqual([401, 401, 401, 401, 401, 429]);
+  });
+
+  // one process, stopped and started again: is the login still good?
+  const loginSurvivesRestart = async (mode) => {
+    const first = await spawn(mode);
+    const me = browser();
+    const login = await me.post(first.base, `${first.base}/login`, { login: 'admin', password: 'admin-secret' });
+    expect(login.status).toBe(302);
+    expect((await me.go(`${first.base}/admin/users`)).status).toBe(200);
+    await first.stop();
+    const second = await spawn(mode);
+    return (await me.go(`${second.base}/admin/users`)).status === 200;
+  };
+
+  test('one process by default: a login ends with a restart (as on main)', async () => {
+    expect(await loginSurvivesRestart('off')).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'cluster-state.db'))).toBe(false);
+  });
+
+  test('one process with server.sharedState: a login survives a restart', async () => {
+    expect(await loginSurvivesRestart('opt-in')).toBe(true);
   });
 
   test('a lease is held by one process at a time', async () => {

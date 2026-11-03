@@ -22,6 +22,10 @@
     // Cluster mode (node cluster.js): how many server processes share the port. The
     // FHIRSMITH_WORKERS environment variable overrides it. See cluster.md.
     // "cluster": { "workers": 4 },
+    // Keep logins, generated session secrets (for modules with no sessionSecret) and rate-limit
+    // counts in <data>/cluster-state.db rather than in memory, so logins survive a restart.
+    // Off by default for one process; always on in cluster mode. See cluster.md.
+    // "sharedState": true,
     // Several separately started processes on one data directory: run the background jobs
     // (crawlers, downloads, daily report...) in only one of them. On automatically in
     // cluster mode. The lock file must be on a local disk.

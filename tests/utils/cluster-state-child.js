@@ -1,14 +1,23 @@
 // A separate server process for tests/library/cluster-state.test.js: the testing
 // module (logins, CSRF, a login rate limit) over a data directory it shares with
 // other copies of itself, as cluster-mode workers do. Also runs leases on request.
-//   node cluster-state-child.js <dir>
+//   node cluster-state-child.js <dir> [cluster | opt-in | off]
+//   cluster: as a cluster-mode worker; opt-in: one server with server.sharedState;
+//   off: one server as by default (logins in memory)
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
 
 const dir = process.argv[2];
+const mode = process.argv[3] || 'cluster';
 const clusterState = require('../../library/cluster-state');
-clusterState._configure({ file: path.join(dir, 'cluster-state.db'), shared: true });
+if (mode === 'cluster') {
+  clusterState._configure({ file: path.join(dir, 'cluster-state.db'), shared: true });
+} else {
+  // decided as the server decides: no background-jobs lock in this process
+  clusterState._configure({ file: path.join(dir, 'cluster-state.db') });
+  clusterState.configure({ sharedState: mode === 'opt-in' });
+}
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
 require('../../library/html-server').useLog(quietLog);

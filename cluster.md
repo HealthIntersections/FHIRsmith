@@ -54,6 +54,7 @@ In `config.json`:
 | `modules.tx.resourceCache.path` | `<data>/resource-cache.db` | The SQLite file. Relative paths are under the data directory. |
 | `modules.tx.resourceCache.maxBytes` | none | A cap on the total size of the cached client resources (bytes of JSON). See [the size cap](#the-size-cap). |
 | `modules.tx.resourceCache.touchIntervalSeconds` | 30 | How often, at most, a cache's "last used" time is written. |
+| `server.sharedState` | off (on in cluster mode) | Keep logins, generated session secrets and rate-limit counts in `<data>/cluster-state.db` with one process too, so logins survive a restart. See [below](#logins-rate-limits-closure-tables). |
 | `server.backgroundJobs.lock` | off (on in cluster mode) | Turn the background-jobs lock on for separately started processes that share a data directory. |
 | `server.backgroundJobs.lockFile` | `<data>/background-jobs.lock` | The lock file. |
 | `server.memory.limit` | the cgroup limit, else the machine's RAM | The memory limit, in bytes, of the **whole service** (all the workers together). See [Memory](#memory). |
@@ -150,8 +151,11 @@ in `<data>/cluster-state.db`, a SQLite file like the resource cache (WAL, a 5 se
   worker. `maxTables` is checked in the same transaction that creates a table, so two workers
   creating tables at once can't go over it together.
 
-With one process none of this file is used, and logins and rate limits are in memory as
-before.
+With one process none of this file is used by default, and logins and rate limits are in
+memory as before; a module with no `sessionSecret` makes up a new one each start, so logins
+end with a restart. Set `"server": {"sharedState": true}` to have one process use
+`cluster-state.db` as cluster mode does: logins then survive a restart, and a generated
+secret is kept in the data directory.
 
 ## Background jobs
 

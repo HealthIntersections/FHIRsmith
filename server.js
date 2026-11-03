@@ -56,6 +56,9 @@ backgroundJobs.configure({
     ? path.resolve(folders.dataDir(), config.server.backgroundJobs.lockFile) : undefined,
   log: Logger.getInstance().child({ module: 'background-jobs' })
 });
+// Logins, generated session secrets and rate limits in <data>/cluster-state.db: always with
+// several processes (above), and for one when server.sharedState is set
+require('./library/cluster-state').configure({ sharedState: config.server.sharedState });
 if (cluster.isWorker) {
   serverLog.info(`Cluster worker ${process.env.FHIRSMITH_CLUSTER_WORKER || '?'} of ${process.env.FHIRSMITH_CLUSTER_SIZE || '?'}; background jobs run in whichever worker holds ${backgroundJobs.file}`);
 }

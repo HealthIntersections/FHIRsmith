@@ -4,7 +4,9 @@
 //
 // With one server process (the default) none of this is used: each module keeps its
 // logins and rate-limit counts in memory as before, and a module without a
-// configured sessionSecret makes up a random one at start-up.
+// configured sessionSecret makes up a random one at start-up. A single process can
+// opt in with "server": {"sharedState": true}: logins then survive a restart, and a
+// generated secret is kept in the data directory.
 //
 // With several (cluster mode, or separately started processes with the
 // background-jobs lock turned on - see library/background-jobs.js) any process may
@@ -41,17 +43,28 @@ const NAME = /^[A-Za-z0-9_-]{1,64}$/;
 let db = null;
 let dbFile = null;
 let override = null; // tests: force shared on or off
+let optedIn = false;  // server.sharedState
 
 /**
- * Do several processes share this data directory? True in cluster mode, and when the
- * background-jobs lock is turned on for separately started processes.
+ * Is state kept in cluster-state.db? True when several processes may share this data
+ * directory - cluster mode, or the background-jobs lock turned on for separately started
+ * processes - and when a single server asks for it (server.sharedState).
  * @returns {boolean}
  */
 function isShared() {
   if (override !== null) {
     return override;
   }
-  return require('./background-jobs').enabled;
+  return optedIn || require('./background-jobs').enabled;
+}
+
+/**
+ * Called by server.js with the server settings.
+ * @param {{sharedState?: boolean}} [opts] - server.sharedState: keep logins, generated
+ *   session secrets and rate-limit counts in cluster-state.db even with one process
+ */
+function configure(opts = {}) {
+  optedIn = opts.sharedState === true;
 }
 
 function file() {
@@ -311,12 +324,14 @@ async function startValidator(validator, settings, log) {
   if (!isShared()) {
     return validator.start(settings);
   }
+  // a cluster worker other than the first; one process (server.sharedState, or separately
+  // started processes) keeps the configured port
   const slot = Number(process.env.FHIRSMITH_CLUSTER_WORKER) || 0;
   const s = { ...settings };
-  if (slot !== 1) {
+  if (slot > 1) {
     s.port = await freePort();
     if (s.txLog) {
-      s.txLog = s.txLog.replace(/(\.[^./\\]*)?$/, `-${slot || process.pid}$1`);
+      s.txLog = s.txLog.replace(/(\.[^./\\]*)?$/, `-${slot}$1`);
     }
   }
   if (s.autoDownload !== false) {
@@ -372,6 +387,7 @@ function _configure(opts = {}) {
   close();
   dbFile = opts.file || null;
   override = opts.shared === undefined ? null : opts.shared;
+  optedIn = false;
 }
 
-module.exports = { isShared, sessionSecret, sessionStore, rateLimitOptions, SharedRateLimitStore, withLease, startValidator, close, _configure };
+module.exports = { isShared, configure, sessionSecret, sessionStore, rateLimitOptions, SharedRateLimitStore, withLease, startValidator, close, _configure };
