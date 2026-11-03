@@ -18,7 +18,15 @@ const N = 12;
 const codes = Array.from({ length: N }, (_, i) => 'c' + String(i).padStart(2, '0'));
 const CS = {
   resourceType: 'CodeSystem', url: CS_URL, version: '1.0.0', status: 'active', content: 'complete',
-  concept: codes.map(code => ({ code, display: 'Display ' + code }))
+  property: [{ code: 'grade', type: 'code' }],
+  concept: codes.map((code, i) => ({ code, display: 'Display ' + code, property: [{ code: 'grade', valueCode: 'g' + (i % 3) }] }))
+};
+// a supplement that gives two of the codes a property the code system doesn't have
+const SUPP_URL = 'http://example.org/fhir/CodeSystem/process-selection-supplement';
+const SUPPLEMENT = {
+  resourceType: 'CodeSystem', url: SUPP_URL, version: '1', status: 'active', content: 'supplement', supplements: CS_URL,
+  property: [{ code: 'group', type: 'code' }],
+  concept: [{ code: 'c03', property: [{ code: 'group', valueCode: 'x' }] }, { code: 'c04', property: [{ code: 'group', valueCode: 'x' }] }]
 };
 
 let vsCounter = 0;
@@ -227,6 +235,26 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
       [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 4 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual(codes.slice(4, 7));
     expect(vs.expansion.total).toBe(1000000);
+  });
+
+  test('the requested properties are on each code the provider selected', async () => {
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }),
+      [{ name: 'property', valueString: 'grade' }, { name: 'count', valueInteger: 4 }]);
+    expect(calls).toHaveLength(1);
+    expect(vs.expansion.contains.map(c => (c.property || []).map(p => p.code + '=' + p.valueCode).join())).toEqual(['grade=g0', 'grade=g1', 'grade=g2', 'grade=g0']);
+  });
+
+  test('a filter on a property a supplement defines: not handed over, evaluated from the supplement', async () => {
+    const vs = valueSet({ include: [{ system: CS_URL, filter: [{ property: 'group', op: '=', value: 'x' }] }] });
+    vs.extension = [{ url: 'http://hl7.org/fhir/StructureDefinition/valueset-supplement', valueCanonical: SUPP_URL + '|1' }];
+    const res = await request(app).post('/tx/r5/ValueSet/$expand')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [
+        { name: 'tx-resource', resource: CS }, { name: 'tx-resource', resource: SUPPLEMENT }, { name: 'valueSet', resource: vs }
+      ] });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(0);
+    expect(codesOf(res.body)).toEqual(['c03', 'c04']);
   });
 
   test.each([
