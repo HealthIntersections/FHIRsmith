@@ -270,6 +270,28 @@ describe('Expand Worker', () => {
     });
   });
 
+  describe('A code system with nothing to expand from', () => {
+    const expand = (parameter) => request(app)
+      .post('/tx/r5/ValueSet/$expand')
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter });
+    const messages = (response) => response.body.issue.map(i => (i.details && i.details.text) || i.diagnostics);
+
+    // As for a code system the server doesn't have (422 not-found): there is nothing to expand from
+    test('codes from a code system with no content (not-present), or from a supplement: 422', async () => {
+      for (const [system, code, text] of [['http://hl7.org/fhir/color-rgb', '#FF0000', 'has no content'],
+        ['http://hl7.org/fhir/CodeSystem/example-supplement', 'chol', 'defines a supplement']]) {
+        const response = await expand([{
+          name: 'valueSet',
+          resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system, concept: [{ code }] }] } }
+        }]);
+        expect(response.status).toBe(422);
+        expect(messages(response)[0]).toContain(text);
+      }
+    });
+  });
+
   describe('Resource caching with cache-id', () => {
     const testCodeSystem = {
       resourceType: 'CodeSystem',
