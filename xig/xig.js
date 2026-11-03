@@ -2010,22 +2010,37 @@ async function loadConfigCache() {
 // another process has replaced it (see followDatabaseFile)
 let xigDbInode = null;
 
+// how often, at most, a request looks at whether the file has been replaced
+const FOLLOW_CHECK_MS = 1000;
+let followCheckedAt = 0;
+let followReopening = false;
+
 /**
  * When several processes share the data directory, only one downloads the XIG
- * database; it replaces the file by renaming a new one over it. The others still
- * have the old file open, so they check now and then whether the file is a
- * different one from the one they opened, and if so open the new one.
+ * database; it replaces the file by renaming a new one over it, so the file's inode
+ * is its version. The others still have the old file open, so when a request
+ * reaches them (at most once a second) they compare the file's inode with the one
+ * they opened, and if it differs open the new file. The check is one stat; the
+ * reopen happens in the background, and requests use the open database until then.
  */
 function followDatabaseFile() {
-  if (!backgroundJobs.enabled) {
+  if (!backgroundJobs.enabled || updateInProgress || followReopening) {
     return;
   }
-  const watcher = fs.watchFile(XIG_DB_PATH, { persistent: false, interval: 60 * 1000 }, (curr) => {
-    if (updateInProgress || !curr.ino || curr.ino === xigDbInode) {
+  const now = Date.now();
+  if (now - followCheckedAt < FOLLOW_CHECK_MS) {
+    return;
+  }
+  followCheckedAt = now;
+  fs.stat(XIG_DB_PATH, (err, st) => {
+    if (err || !st.ino || st.ino === xigDbInode || updateInProgress || followReopening) {
       return;
     }
+    followReopening = true;
     xigLog.info('XIG database file replaced by another process; reopening it');
-    const reopen = () => initializeDatabase().catch((err) => xigLog.error('XIG database reopen failed: ' + err.message));
+    const reopen = () => initializeDatabase()
+      .catch((e) => xigLog.error('XIG database reopen failed: ' + e.message))
+      .finally(() => { followReopening = false; });
     if (xigDb) {
       const old = xigDb;
       xigDb = null;
@@ -2034,9 +2049,6 @@ function followDatabaseFile() {
       void reopen();
     }
   });
-  if (watcher && watcher.unref) {
-    watcher.unref();
-  }
 }
 
 function initializeDatabase() {
@@ -2070,7 +2082,29 @@ function initializeDatabase() {
   });
 }
 
+/**
+ * Download a new XIG database and switch to it. With several processes (the nightly
+ * job runs in one of them, but the update page can be posted to any) only one may
+ * download at a time: they write the same temporary file. Another process's update in
+ * progress is treated like one in this process.
+ */
 async function updateXigDatabase() {
+  const clusterState = require('../library/cluster-state');
+  if (!clusterState.isShared()) {
+    return updateXigDatabaseHere();
+  }
+  try {
+    return await clusterState.withLease('xig-update', () => updateXigDatabaseHere(), { timeoutMs: 1, ttlMs: 60 * 1000 });
+  } catch (error) {
+    if (error.leaseTimeout) {
+      xigLog.warn('Update already in progress in another process, skipping');
+      return;
+    }
+    throw error;
+  }
+}
+
+async function updateXigDatabaseHere() {
   if (updateInProgress) {
     xigLog.warn('Update already in progress, skipping');
     return;
@@ -2171,6 +2205,11 @@ function trackRequest(req, res, next) {
 }
 
 router.use(trackRequest);
+// with several processes: open the database file another process has downloaded
+router.use((req, res, next) => {
+  followDatabaseFile();
+  next();
+});
 
 // Statistics functions
 function getDatabaseTableCounts() {
@@ -3272,8 +3311,6 @@ async function initializeXigModule(stats, xigConfig) {
         updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       }, 5000);
     }
-    followDatabaseFile();
-
     if (globalStats) {
       globalStats.addTask('XIG Download', describeCron('0 2 * * *'));
     }
@@ -3346,6 +3383,10 @@ function shutdown() {
 // Export everything
 module.exports = {
   router,
+  // for tests: following a file another process has replaced
+  _followDatabaseFile: followDatabaseFile,
+  _initializeDatabase: initializeDatabase,
+  _openedInode: () => xigDbInode,
   setXigSettings,
   updateXigDatabase,
   getDatabaseInfo,

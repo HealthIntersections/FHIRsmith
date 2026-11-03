@@ -57,6 +57,26 @@ function commonBaseUrl(urls) {
   return /^https?:\/\/[^/]+/.test(prefix) ? prefix : list[0];
 }
 
+// how often, at most, a request looks at whether another process has saved a crawl
+const FOLLOW_CHECK_MS = 1000;
+
+/** inode, size and mtime of a file: different whenever it has been replaced. null if absent */
+async function fileVersion(file) {
+  try {
+    const st = await require('fs').promises.stat(file);
+    return `${st.ino}:${st.size}:${st.mtimeMs}`;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function writeAtomically(file, text) {
+  const fsp = require('fs').promises;
+  const tmp = `${file}.${process.pid}.tmp`;
+  await fsp.writeFile(tmp, text);
+  await fsp.rename(tmp, file);
+}
+
 class RegistryModule {
   constructor(stats) {
     this.router = express.Router();
@@ -146,7 +166,10 @@ class RegistryModule {
   async loadSavedData() {
     try {
       const fs = require('fs').promises;
-      const dataPath = folders.ensureFilePath('registry', 'registry-data.json');  // <-- CHANGE
+      const dataPath = this.dataFile();
+      // which version of the file this is (see followSavedData): taken before reading, so a
+      // file replaced while it's being read is read again next time
+      this.loadedDataVersion = await fileVersion(dataPath);
       const data = await fs.readFile(dataPath, 'utf8');
       const jsonData = JSON.parse(data);
 
@@ -169,18 +192,49 @@ class RegistryModule {
     }
   }
 
+  /** Where the crawl is saved */
+  dataFile() {
+    return folders.ensureFilePath('registry', 'registry-data.json');
+  }
+
+  /**
+   * With several processes on the data directory, one crawls and saves
+   * registry-data.json; the others notice on a request (at most one stat a second) that
+   * the file is a different version from the one they loaded - its inode changes, since
+   * it is renamed into place - and load it, in the background.
+   */
+  followSavedData() {
+    if (!require('../library/background-jobs').enabled || this.crawlInProgress || this.followLoading) {
+      return;
+    }
+    const now = Date.now();
+    if (now - (this.followCheckedAt || 0) < FOLLOW_CHECK_MS) {
+      return;
+    }
+    this.followCheckedAt = now;
+    this.followLoading = fileVersion(this.dataFile()).then((version) => {
+      if (version && version !== this.loadedDataVersion) {
+        this.logger.info('Registry data saved by another process; loading it');
+        return this.loadSavedData();
+      }
+    }).catch((err) => this.logger.error('Registry reload failed: ' + err.message))
+      .finally(() => { this.followLoading = null; });
+  }
+
   /**
    * Save registry data to disk
    */
   async saveData() {
     try {
-      const fs = require('fs').promises;
-      const dataPath = folders.ensureFilePath('registry', 'registry-data.json');
+      const dataPath = this.dataFile();
 
       const data = this.crawler.saveData();
-      await fs.writeFile(dataPath, JSON.stringify(data, null, 2));
+      // written whole and renamed into place: other processes read these files (followSavedData)
       const uptimePath = folders.ensureFilePath('registry', 'registry-uptime.json');
-      await fs.writeFile(uptimePath, JSON.stringify(this.crawler.saveUptime()));
+      await writeAtomically(uptimePath, JSON.stringify(this.crawler.saveUptime()));
+      await writeAtomically(dataPath, JSON.stringify(data, null, 2));
+      // this process has what it saved: no need to read it back
+      this.loadedDataVersion = await fileVersion(dataPath);
       this.logger.debug('Saved registry data to disk');
     } catch (error) {
       this.logger.error('Failed to save registry data:', error);
@@ -194,12 +248,11 @@ class RegistryModule {
     const intervalMs = intervalMinutes * 60 * 1000;
 
     // With several processes, one of them crawls and saves; the others load what it saved
+    // when a request next reaches them (followSavedData)
     const backgroundJobs = require('../library/background-jobs');
     const tick = () => {
       if (backgroundJobs.isLeader()) {
         this.performCrawl().catch((err) => this.logger.error('Registry crawl failed: ' + err.message));
-      } else {
-        this.loadSavedData().catch((err) => this.logger.error('Registry reload failed: ' + err.message));
       }
     };
 
@@ -310,6 +363,12 @@ class RegistryModule {
    */
   setupRoutes() {
     this.setupSecurityMiddleware();
+
+    // with several processes: pick up a crawl another process has saved
+    this.router.use((req, res, next) => {
+      this.followSavedData();
+      next();
+    });
 
     // Attach API to all routes
     this.router.use((req, res, next) => {
@@ -1892,4 +1951,6 @@ RegistryModule.RESOLVE_PARAMS = RESOLVE_PARAMS;
 RegistryModule.CHOOSE_SERVER_PARAMS = CHOOSE_SERVER_PARAMS;
 
 module.exports = RegistryModule;
+module.exports.fileVersion = fileVersion;
+module.exports.writeAtomically = writeAtomically;
 module.exports.commonBaseUrl = commonBaseUrl;

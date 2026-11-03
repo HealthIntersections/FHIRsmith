@@ -691,9 +691,12 @@ class PackagesModule {
   }
 
   async runCrawler() {
+    await this.followCrawlerStatus(true);
     this.totalRuns++;
     pckLog.info(`Running package crawler (run #${this.totalRuns})...`);
     this.crawlerRunning = true;
+    this.crawlingHere = true;
+    await this.saveCrawlerStatus();
     try {
       try {
         this.lastCrawlerLog = await this.crawler.crawl(pckLog);
@@ -713,6 +716,8 @@ class PackagesModule {
       }
     } finally {
       this.crawlerRunning = false;
+      this.crawlingHere = false;
+      await this.saveCrawlerStatus();
     }
   }
 
@@ -1044,9 +1049,81 @@ class PackagesModule {
     }
   }
 
+  /**
+   * With several processes on the data directory one of them runs the crawler, and the
+   * crawler's status (running, run count, when it last ran, its log) is what the status,
+   * log and stats pages show. The process that runs it writes the status to
+   * packages/crawler-status.json (renamed into place) when a run starts and ends; the
+   * others read it when a request reaches them and the file has changed since they last
+   * read it (checked at most once a second, one stat). With one process nothing is
+   * written: the status is in memory, as it always was.
+   */
+  crawlerStatusFile() {
+    return folders.filePath('packages', 'crawler-status.json');
+  }
+
+  async saveCrawlerStatus() {
+    if (!require('../library/background-jobs').enabled) {
+      return;
+    }
+    try {
+      const file = this.crawlerStatusFile();
+      const tmp = `${file}.${process.pid}.tmp`;
+      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.writeFile(tmp, JSON.stringify({
+        totalRuns: this.totalRuns, lastRunTime: this.lastRunTime,
+        crawlerRunning: this.crawlerRunning, lastCrawlerLog: this.lastCrawlerLog
+      }));
+      await fs.promises.rename(tmp, file);
+      const st = await fs.promises.stat(file);
+      this.crawlerStatusVersion = `${st.ino}:${st.mtimeMs}`;
+    } catch (error) {
+      pckLog.warn(`Could not save the crawler status: ${error.message}`);
+    }
+  }
+
+  /**
+   * Read the crawler status another process saved, if it has changed.
+   * @param {boolean} [now] - don't wait for the once-a-second check
+   */
+  async followCrawlerStatus(now = false) {
+    if (!require('../library/background-jobs').enabled || this.crawlingHere) {
+      return;
+    }
+    const t = Date.now();
+    if (!now && t - (this.crawlerStatusCheckedAt || 0) < 1000) {
+      return;
+    }
+    this.crawlerStatusCheckedAt = t;
+    try {
+      const file = this.crawlerStatusFile();
+      const st = await fs.promises.stat(file);
+      const version = `${st.ino}:${st.mtimeMs}`;
+      if (version === this.crawlerStatusVersion) {
+        return;
+      }
+      const saved = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+      if (this.crawlingHere) {
+        return; // started here meanwhile
+      }
+      this.crawlerStatusVersion = version;
+      this.totalRuns = saved.totalRuns || 0;
+      this.lastRunTime = saved.lastRunTime || null;
+      this.lastCrawlerLog = saved.lastCrawlerLog || {};
+      this.crawlerRunning = !!saved.crawlerRunning;
+    } catch (error) {
+      // no status saved yet, or being replaced: next time
+    }
+  }
+
   setupRoutes() {
     const searchParams = SEARCH_PARAMS;
     const updatesParams = UPDATES_PARAMS;
+
+    // with several processes: the crawler status the process running the crawler saved
+    this.router.use((req, res, next) => {
+      this.followCrawlerStatus().then(() => next(), () => next());
+    });
 
     // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
     // reference for browsers, the JSON otherwise). Registered before /:id, which would
