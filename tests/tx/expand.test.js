@@ -525,6 +525,19 @@ describe('Expand Worker', () => {
         }
       }
     });
+
+    // As for a code system the server doesn't have (422 not-found): there is nothing to expand from
+    test('codes from a code system with no content (not-present), or from a supplement: 422', async () => {
+      for (const [system, code, text] of [['http://hl7.org/fhir/color-rgb', '#FF0000', 'has no content'],
+        ['http://hl7.org/fhir/CodeSystem/example-supplement', 'chol', 'defines a supplement']]) {
+        const response = await expand([{
+          name: 'valueSet',
+          resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system, concept: [{ code }] }] } }
+        }]);
+        expect(response.status).toBe(422);
+        expect(messages(response)[0]).toContain(text);
+      }
+    });
   });
 
   describe('Expansion caching', () => {

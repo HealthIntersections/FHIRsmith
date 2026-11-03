@@ -700,13 +700,14 @@ class ValueSetExpander {
         if (vsInfo && vsInfo.isSimple) {
           vsInfo.handleByCS = cs.handlesSelecting();
         }
+        // A code system with no content to expand from is refused like an unknown one: 422
         if (!cs.contentMode()) {
-          throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' has no content property, so this expansion cannot be performed', 'invalid');
+          throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' has no content property, so this expansion cannot be performed', 'invalid', 422);
         } else if (cs.contentMode() !== 'complete') {
           if (cs.contentMode() === 'not-present') {
-            throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' has no content, so this expansion cannot be performed', 'invalid');
+            throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' has no content, so this expansion cannot be performed', 'invalid', 422);
           } else if (cs.contentMode() === 'supplement') {
-            throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' defines a supplement, so this expansion cannot be performed', 'invalid');
+            throw new Issue('error', 'business-rule', null, null, 'The code system definition for ' + cset.system + ' defines a supplement, so this expansion cannot be performed', 'invalid', 422);
           } else if (cs.contentMode() === 'fragment') {
             this.addParamUri(exp, 'used-fragment', cs.system()+ (cs.version() ?  '|' + cs.version(): ""));
             Extensions.addBoolean(exp, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
