@@ -211,8 +211,8 @@ class CountryCodeServices extends CodeSystemProvider {
       const result = new CountryCodeConceptFilter();
 
       try {
-        // Create regex with anchors to match the Pascal implementation (^value$)
-        const regex = regexUtilities.compile('^' + value + '$');
+        // anchored to the whole code
+        const regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
 
         for (const concept of this.codes) {
           if (regex.test(concept.code)) {

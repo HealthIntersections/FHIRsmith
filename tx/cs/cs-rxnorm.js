@@ -709,6 +709,14 @@ class RxNormServices extends BaseCSServices {
     return 'not-subsumed'; // Not implemented yet
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   // Extension for lookup operation
   //
   // TTY, STY and SAB are returned unless other properties are asked for; the relationships

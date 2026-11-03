@@ -250,6 +250,15 @@ describe('RxNorm filters, totals, status and lookup', () => {
       expect(params.map(p => p.part[0].valueCode).sort()).toEqual(['STY', 'has_dose_form']);
     });
 
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand: only the named ones, none when none are named', async () => {
+      expect(await provider.properties('197589', [])).toEqual([]);
+      expect(await provider.properties('197589', ['has_dose_form', 'STY'])).toEqual([
+        { code: 'STY', valueCode: 'T200' },
+        { code: 'has_dose_form', valueCode: '317541' }
+      ]);
+    });
+
     test('a relationship property value finds the code again as a filter', async () => {
       // 197589 has_dose_form 317541 (as a lookup property) <=> has_dose_form = CUI:317541 (as a filter)
       expect(await codes(['has_dose_form', '=', 'CUI:317541'])).toContain('197589');

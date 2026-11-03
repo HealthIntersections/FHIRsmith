@@ -12,6 +12,7 @@
 //
 
 const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
+const { splitFilters, supplementFilter } = require('./supplement-filters');
 const {Languages, Language} = require("../../library/languages");
 const {Extensions} = require("../library/extensions");
 const {validateParameter, isAbsoluteUrl, validateOptionalParameter, getValuePrimitive} = require("../../library/utilities");
@@ -400,7 +401,7 @@ class ValueSetChecker {
           throw new Issue('error', 'invalid', "ValueSet.compose."+desc+".filter["+i+"]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE',
             this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), ccf.property, ccf.op]), "vs-invalid").handleAsOO(400);
         }
-        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op))) {
+        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op)) && !(await supplementFilter(cs, ccf))) {
           if (!(await cs.doesFilter(ccf.property, ccf.op, ccf.value))) {
             throw new Issue('error', 'not-supported', "ValueSet.compose."+desc+".filter["+i+"]", 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', 
               this.params.HTTPLanguages, [ccf.property, ccf.op, ccf.value, this.valueSet.url, cs.system()]), "vs-invalid").handleAsOO(400);
@@ -1697,15 +1698,7 @@ class ValueSetChecker {
         } else if (this.params.activeOnly && await cs.isInactive(loc.context)) {
           this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
           result = false;
-          if (role !== 'not in') {
-            inactive.value = true;
-            inactive.path = path;
-            inactive.code = code;
-            vstatus.value = await cs.getStatus(loc.context);
-            let msg = this.worker.i18n.translate('STATUS_CODE_WARNING_CODE', this.params.HTTPLanguages, ['not active', code]);
-            messages.push(msg);
-            op.addIssue(new Issue('error', 'business-rule', addToPath(path, 'code'), 'STATUS_CODE_WARNING_CODE', msg, 'code-rule'));
-          }
+          await this.#excludedByActiveOnly(cs, loc.context, code, path, role, op, messages, inactive, vstatus);
         } else {
           result = true;
           if (role !== 'not in') {
@@ -1764,6 +1757,10 @@ class ValueSetChecker {
               inactive.code = code;
               vstatus.value = await cs.getStatus(loc);
             }
+          } else if (this.params.activeOnly && await cs.isInactive(loc)) {
+            this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
+            result = false;
+            await this.#excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus);
           } else {
             if (vcc !== null) {
               if (!vcc.coding)  {vcc.coding = [];}
@@ -1795,28 +1792,42 @@ class ValueSetChecker {
 
     if (cset.filter) {
       let cfl = cset.filter;
-      let prep = await cs.getPrepContext(false, this.params.requestedLanguages());
       for (let fc of cfl) {
-        this.worker.deadCheck('checkConceptSet#2');
         if (!fc.value) {
           throw new Issue('error', 'invalid', null, 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), fc.property, fc.op]));
         }
-        await cs.filter(prep, false, fc.property, fc.op, fc.value, (vs && vs.isCached) ? fc : null);
-        // if (f === null) {
-        //   throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', this.params.HTTPLanguages, [fc.property, fc.op, fc.value, vs.vurl, cs.system()]) + ' (2)', 'vs-invalid');
-        // }
       }
-      let filters = await cs.executeFilters(prep);
-      if (!filters || filters.length == 0) {
-        throw new Error("executing filters failed for " + cs.name());
-      }
-      let loc = await cs.filterLocate(prep, filters[0], code);
-      if (loc != null && !(typeof loc === 'string') && filters.length > 1) {
-        for (let i = 1; i < filters.length; i++) {
-          if ((await cs.filterCheck(prep, filters[i], loc)) != true) { // a failing check may return a message, which is truthy
-            loc = null;
-            break;
+      // filters on properties that supplements in use define are evaluated from the supplements;
+      // the code system does the rest
+      const { base: baseFilters, supplement: suppFilters } = await splitFilters(cs, cfl);
+      let loc;
+      if (baseFilters.length > 0) {
+        let prep = await cs.getPrepContext(false, this.params.requestedLanguages());
+        for (let fc of baseFilters) {
+          this.worker.deadCheck('checkConceptSet#2');
+          await cs.filter(prep, false, fc.property, fc.op, fc.value, (vs && vs.isCached) ? fc : null);
+        }
+        let filters = await cs.executeFilters(prep);
+        if (!filters || filters.length == 0) {
+          throw new Error("executing filters failed for " + cs.name());
+        }
+        loc = await cs.filterLocate(prep, filters[0], code);
+        if (loc != null && !(typeof loc === 'string') && filters.length > 1) {
+          for (let i = 1; i < filters.length; i++) {
+            if ((await cs.filterCheck(prep, filters[i], loc)) != true) { // a failing check may return a message, which is truthy
+              loc = null;
+              break;
+            }
           }
+        }
+      } else {
+        const located = await cs.locate(code);
+        loc = located ? located.context : null;
+      }
+      if (loc != null && !(typeof loc === 'string') && suppFilters.length > 0) {
+        const lcode = await cs.code(loc);
+        if (!suppFilters.every(sf => sf.matches(lcode))) {
+          loc = null;
         }
       }
       if (loc != null && !(typeof loc === 'string')) {
@@ -1835,6 +1846,10 @@ class ValueSetChecker {
             inactive.code = code;
             vstatus.value = await cs.getStatus(loc);
           }
+        } else if (this.params.activeOnly && await cs.isInactive(loc)) {
+          result = false;
+          this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
+          await this.#excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus);
         } else {
           this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs), this.indentCount);
           if (vcc !== null) {
@@ -1849,6 +1864,13 @@ class ValueSetChecker {
               // only replace a status we already have with a real one - a filter context
               // doesn't always carry the status (SNOMED, LOINC), and the assembly reads
               // vstatus for the message wording as well as for the status parameter
+              const st = await cs.getStatus(loc);
+              if (st) {
+                vstatus.value = st;
+              }
+            } else if (!vstatus.value) {
+              // an active code can still have a status worth reporting (deprecated), as it is
+              // when the value set lists the code
               const st = await cs.getStatus(loc);
               if (st) {
                 vstatus.value = st;
@@ -1898,6 +1920,27 @@ class ValueSetChecker {
     return result;
   }
 
+
+  /**
+   * activeOnly: the code is checked against the value set as expanded with activeOnly, which has no
+   * inactive codes - whether the value set includes all of the code system, lists the code or
+   * selects it with a filter - so an inactive code is not in it
+   */
+  async #excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus) {
+    if (role === 'not in') {
+      return;
+    }
+    inactive.value = true;
+    inactive.path = path;
+    inactive.code = code;
+    const st = await cs.getStatus(loc);
+    if (st) {
+      vstatus.value = st;
+    }
+    const msg = this.worker.i18n.translate('STATUS_CODE_WARNING_CODE', this.params.HTTPLanguages, ['not active', code]);
+    messages.push(msg);
+    op.addIssue(new Issue('error', 'business-rule', addToPath(path, 'code'), 'STATUS_CODE_WARNING_CODE', msg, 'code-rule'));
+  }
 
   excludeInactives() {
     return this.valueSet.jsonObj.compose && this.valueSet.jsonObj.compose.inactive != undefined && !this.valueSet.jsonObj.compose.inactive;

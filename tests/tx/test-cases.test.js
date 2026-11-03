@@ -169,6 +169,14 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex"}, "4.0");
   });
 
+  it("simple-expand-regex-alt" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-regex-alt"}, "5.0");
+  });
+
+  it("simple-expand-regex-alt" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-regex-alt"}, "4.0");
+  });
+
   it("simple-expand-regex2" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex2"}, "5.0");
   });
@@ -1253,6 +1261,22 @@ describe('global-lang-pack', () => {
     await runTest({"suite":"global-lang-pack","test":"glp-own-validate-pack-display-de"}, "4.0");
   });
 
+  it("glp-expand-pinned-other-version" + 'R5', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version"}, "5.0");
+  });
+
+  it("glp-expand-pinned-other-version" + 'R4', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version"}, "4.0");
+  });
+
+  it("glp-expand-pinned-other-version-required" + 'R5', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version-required"}, "5.0");
+  });
+
+  it("glp-expand-pinned-other-version-required" + 'R4', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version-required"}, "4.0");
+  });
+
 });
 
 describe('extension-codes', () => {
@@ -1642,6 +1666,46 @@ describe('extensions', () => {
 
   it("validate-supplement-nolang-other-lang" + 'R4', async () => {
     await runTest({"suite":"extensions","test":"validate-supplement-nolang-other-lang"}, "4.0");
+  });
+
+  it("expand-supplement-prop" + 'R5', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop"}, "5.0");
+  });
+
+  it("expand-supplement-prop" + 'R4', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop"}, "4.0");
+  });
+
+  it("expand-supplement-prop-base" + 'R5', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop-base"}, "5.0");
+  });
+
+  it("expand-supplement-prop-base" + 'R4', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop-base"}, "4.0");
+  });
+
+  it("validate-supplement-prop-base-code5" + 'R5', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code5"}, "5.0");
+  });
+
+  it("validate-supplement-prop-base-code5" + 'R4', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code5"}, "4.0");
+  });
+
+  it("validate-supplement-prop-base-code4" + 'R5', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code4"}, "5.0");
+  });
+
+  it("validate-supplement-prop-base-code4" + 'R4', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code4"}, "4.0");
+  });
+
+  it("expand-supplement-version" + 'R5', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-version"}, "5.0");
+  });
+
+  it("expand-supplement-version" + 'R4', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-version"}, "4.0");
   });
 
 });
@@ -4974,6 +5038,30 @@ describe('inactive', () => {
     await runTest({"suite":"inactive","test":"inactive-5-validate"}, "4.0");
   });
 
+  it("inactive-enum-validate" + 'R5', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-validate"}, "5.0");
+  });
+
+  it("inactive-enum-validate" + 'R4', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-validate"}, "4.0");
+  });
+
+  it("inactive-enum-activeonly-validate" + 'R5', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-activeonly-validate"}, "5.0");
+  });
+
+  it("inactive-enum-activeonly-validate" + 'R4', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-activeonly-validate"}, "4.0");
+  });
+
+  it("inactive-filter-activeonly-validate" + 'R5', async () => {
+    await runTest({"suite":"inactive","test":"inactive-filter-activeonly-validate"}, "5.0");
+  });
+
+  it("inactive-filter-activeonly-validate" + 'R4', async () => {
+    await runTest({"suite":"inactive","test":"inactive-filter-activeonly-validate"}, "4.0");
+  });
+
 });
 
 describe('case', () => {
@@ -5564,6 +5652,54 @@ describe('search', () => {
     await runTest({"suite":"search","test":"search-enum-no"}, "4.0");
   });
 
+  it("search-all-de-yes" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-all-de-yes"}, "5.0");
+  });
+
+  it("search-all-de-yes" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-all-de-yes"}, "4.0");
+  });
+
+  it("search-all-de-no-language" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-all-de-no-language"}, "5.0");
+  });
+
+  it("search-all-de-no-language" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-all-de-no-language"}, "4.0");
+  });
+
+  it("search-enum-de-yes" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-enum-de-yes"}, "5.0");
+  });
+
+  it("search-enum-de-yes" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-enum-de-yes"}, "4.0");
+  });
+
+  it("search-filter-de-yes" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-filter-de-yes"}, "5.0");
+  });
+
+  it("search-filter-de-yes" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-filter-de-yes"}, "4.0");
+  });
+
+  it("search-all-supplement-fr-yes" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-yes"}, "5.0");
+  });
+
+  it("search-all-supplement-fr-yes" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-yes"}, "4.0");
+  });
+
+  it("search-all-supplement-fr-no-language" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-no-language"}, "5.0");
+  });
+
+  it("search-all-supplement-fr-no-language" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-no-language"}, "4.0");
+  });
+
 });
 
 describe('default-valueset-version', () => {
@@ -5985,6 +6121,46 @@ describe('loinc', () => {
 
   it("loinc-expand-enum" + 'R4', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-enum"}, "4.0");
+  });
+
+  it("loinc-expand-property" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-property"}, "5.0");
+  });
+
+  it("loinc-expand-property" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-property"}, "4.0");
+  });
+
+  it("loinc-expand-compose-property" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-compose-property"}, "5.0");
+  });
+
+  it("loinc-expand-compose-property" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-compose-property"}, "4.0");
+  });
+
+  it("loinc-expand-search-de" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-de"}, "5.0");
+  });
+
+  it("loinc-expand-search-de" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-de"}, "4.0");
+  });
+
+  it("loinc-expand-search-no-language" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-no-language"}, "5.0");
+  });
+
+  it("loinc-expand-search-no-language" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-no-language"}, "4.0");
+  });
+
+  it("loinc-expand-search-filter-de" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-filter-de"}, "5.0");
+  });
+
+  it("loinc-expand-search-filter-de" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-filter-de"}, "4.0");
   });
 
   it("loinc-expand-all" + 'R5', async () => {
@@ -7446,6 +7622,14 @@ describe('snomed', () => {
 
   it("snomed-expand-concept-in" + 'R4', async () => {
     await runTest({"suite":"snomed","test":"snomed-expand-concept-in"}, "4.0");
+  });
+
+  it("snomed-expand-property" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-property"}, "5.0");
+  });
+
+  it("snomed-expand-property" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-property"}, "4.0");
   });
 
   it("snomed-validate-concept-in" + 'R5', async () => {
@@ -9732,6 +9916,14 @@ describe('omop', () => {
     await runTest({"suite":"omop","test":"omop-expand-explicit"}, "4.0");
   });
 
+  it("omop-expand-property" + 'R5', async () => {
+    await runTest({"suite":"omop","test":"omop-expand-property"}, "5.0");
+  });
+
+  it("omop-expand-property" + 'R4', async () => {
+    await runTest({"suite":"omop","test":"omop-expand-property"}, "4.0");
+  });
+
   it("translate-loinc-implicit" + 'R5', async () => {
     await runTest({"suite":"omop","test":"translate-loinc-implicit"}, "5.0");
   });
@@ -9783,6 +9975,14 @@ describe('UCUM', () => {
 
   it("expand-ucum-canonical" + 'R4', async () => {
     await runTest({"suite":"UCUM","test":"expand-ucum-canonical"}, "4.0");
+  });
+
+  it("expand-ucum-property" + 'R5', async () => {
+    await runTest({"suite":"UCUM","test":"expand-ucum-property"}, "5.0");
+  });
+
+  it("expand-ucum-property" + 'R4', async () => {
+    await runTest({"suite":"UCUM","test":"expand-ucum-property"}, "4.0");
   });
 
   it("validate-ucum-canonical-good" + 'R5', async () => {
@@ -13611,6 +13811,10 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex"}, "5.0");
   });
 
+  it("simple-expand-regex-alt" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-regex-alt"}, "5.0");
+  });
+
   it("simple-expand-regex2" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex2"}, "5.0");
   });
@@ -14163,6 +14367,14 @@ describe('global-lang-pack', () => {
     await runTest({"suite":"global-lang-pack","test":"glp-own-validate-pack-display-de"}, "5.0");
   });
 
+  it("glp-expand-pinned-other-version" + 'R5-cached', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version"}, "5.0");
+  });
+
+  it("glp-expand-pinned-other-version-required" + 'R5-cached', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version-required"}, "5.0");
+  });
+
 });
 
 describe('extension-codes', () => {
@@ -14364,6 +14576,26 @@ describe('extensions', () => {
 
   it("validate-supplement-nolang-other-lang" + 'R5-cached', async () => {
     await runTest({"suite":"extensions","test":"validate-supplement-nolang-other-lang"}, "5.0");
+  });
+
+  it("expand-supplement-prop" + 'R5-cached', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop"}, "5.0");
+  });
+
+  it("expand-supplement-prop-base" + 'R5-cached', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-prop-base"}, "5.0");
+  });
+
+  it("validate-supplement-prop-base-code5" + 'R5-cached', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code5"}, "5.0");
+  });
+
+  it("validate-supplement-prop-base-code4" + 'R5-cached', async () => {
+    await runTest({"suite":"extensions","test":"validate-supplement-prop-base-code4"}, "5.0");
+  });
+
+  it("expand-supplement-version" + 'R5-cached', async () => {
+    await runTest({"suite":"extensions","test":"expand-supplement-version"}, "5.0");
   });
 
 });
@@ -16056,6 +16288,18 @@ describe('inactive', () => {
     await runTest({"suite":"inactive","test":"inactive-5-validate"}, "5.0");
   });
 
+  it("inactive-enum-validate" + 'R5-cached', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-validate"}, "5.0");
+  });
+
+  it("inactive-enum-activeonly-validate" + 'R5-cached', async () => {
+    await runTest({"suite":"inactive","test":"inactive-enum-activeonly-validate"}, "5.0");
+  });
+
+  it("inactive-filter-activeonly-validate" + 'R5-cached', async () => {
+    await runTest({"suite":"inactive","test":"inactive-filter-activeonly-validate"}, "5.0");
+  });
+
 });
 
 describe('case', () => {
@@ -16382,6 +16626,30 @@ describe('search', () => {
     await runTest({"suite":"search","test":"search-enum-no"}, "5.0");
   });
 
+  it("search-all-de-yes" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-all-de-yes"}, "5.0");
+  });
+
+  it("search-all-de-no-language" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-all-de-no-language"}, "5.0");
+  });
+
+  it("search-enum-de-yes" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-enum-de-yes"}, "5.0");
+  });
+
+  it("search-filter-de-yes" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-filter-de-yes"}, "5.0");
+  });
+
+  it("search-all-supplement-fr-yes" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-yes"}, "5.0");
+  });
+
+  it("search-all-supplement-fr-no-language" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-all-supplement-fr-no-language"}, "5.0");
+  });
+
 });
 
 describe('default-valueset-version', () => {
@@ -16599,6 +16867,26 @@ describe('loinc', () => {
 
   it("loinc-expand-enum" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-enum"}, "5.0");
+  });
+
+  it("loinc-expand-property" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-property"}, "5.0");
+  });
+
+  it("loinc-expand-compose-property" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-compose-property"}, "5.0");
+  });
+
+  it("loinc-expand-search-de" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-de"}, "5.0");
+  });
+
+  it("loinc-expand-search-no-language" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-no-language"}, "5.0");
+  });
+
+  it("loinc-expand-search-filter-de" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-search-filter-de"}, "5.0");
   });
 
   it("loinc-expand-all" + 'R5-cached', async () => {
@@ -17332,6 +17620,10 @@ describe('snomed', () => {
 
   it("snomed-expand-concept-in" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"snomed-expand-concept-in"}, "5.0");
+  });
+
+  it("snomed-expand-property" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-property"}, "5.0");
   });
 
   it("snomed-validate-concept-in" + 'R5-cached', async () => {
@@ -18486,6 +18778,10 @@ describe('omop', () => {
     await runTest({"suite":"omop","test":"omop-expand-explicit"}, "5.0");
   });
 
+  it("omop-expand-property" + 'R5-cached', async () => {
+    await runTest({"suite":"omop","test":"omop-expand-property"}, "5.0");
+  });
+
   it("translate-loinc-implicit" + 'R5-cached', async () => {
     await runTest({"suite":"omop","test":"translate-loinc-implicit"}, "5.0");
   });
@@ -18517,6 +18813,10 @@ describe('UCUM', () => {
 
   it("expand-ucum-canonical" + 'R5-cached', async () => {
     await runTest({"suite":"UCUM","test":"expand-ucum-canonical"}, "5.0");
+  });
+
+  it("expand-ucum-property" + 'R5-cached', async () => {
+    await runTest({"suite":"UCUM","test":"expand-ucum-property"}, "5.0");
   });
 
   it("validate-ucum-canonical-good" + 'R5-cached', async () => {

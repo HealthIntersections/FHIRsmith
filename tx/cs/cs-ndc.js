@@ -134,6 +134,14 @@ class NdcServices extends CodeSystemProvider {
     }
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);

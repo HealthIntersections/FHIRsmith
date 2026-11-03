@@ -1,5 +1,5 @@
 const { CodeSystem}  = require("../library/codesystem");
-const { CodeSystemFactoryProvider, FilterExecutionContext }  = require( "./cs-api");
+const { CodeSystemFactoryProvider, FilterExecutionContext, CodeSystemProvider }  = require( "./cs-api");
 const { VersionUtilities }  = require("../../library/version-utilities");
 const { Language }  = require ("../../library/languages");
 const { validateOptionalParameter, getValuePrimitive, validateArrayParameter} = require("../../library/utilities");
@@ -56,7 +56,8 @@ function conceptSearchTexts(concept) {
       display: concept.display ? searchText(concept.display) : null,
       definition: concept.definition ? foldSearchText(concept.definition) : null,
       designations: Array.isArray(concept.designation)
-        ? concept.designation.filter(designation => designation.value).map(designation => searchText(designation.value))
+        ? concept.designation.filter(designation => designation.value)
+          .map(designation => ({ ...searchText(designation.value), language: designation.language || null }))
         : []
     };
     SEARCH_TEXTS.set(concept, texts);
@@ -1173,9 +1174,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @param {boolean} iterate - True if results will be iterated
    * @returns {FilterExecutionContext} Filter context
    */
-  async getPrepContext(iterate) {
-    
-    return new FilterExecutionContext(iterate);
+  async getPrepContext(iterate, languages = null) {
+    const result = new FilterExecutionContext(iterate);
+    result.languages = languages; // what the request asked for (a text filter searches one language)
+    return result;
   }
 
   /**
@@ -1345,13 +1347,16 @@ class FhirCodeSystemProvider extends BaseCSServices {
     const results = new FhirCodeSystemProviderFilterContext();
     const searchTerm = foldSearchText(filter.filter);
     const searchWords = searchTerm.split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
+    // the display, definition and designations in one language only (see searchLanguage),
+    // with the designations that supplements in use give in that language
+    const lang = this.searchLanguage(filterContext.languages);
 
     // Search through all concepts
     const allConcepts = this.codeSystem.getAllConcepts();
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:searchFilter');
-      const rating = this._calculateSearchRating(concept, searchTerm, searchWords);
+      const rating = this._calculateSearchRating(concept, searchTerm, searchWords, lang);
       if (rating > 0) {
         results.add(concept, rating);
       }
@@ -1378,8 +1383,20 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @returns {number} Rating (0 = no match, higher = better match)
    * @private
    */
-  _calculateSearchRating(concept, searchTerm, searchWords) {
-    const texts = conceptSearchTexts(concept);
+  _calculateSearchRating(concept, searchTerm, searchWords, lang = null) {
+    const all = conceptSearchTexts(concept);
+    let texts = all;
+    if (lang) {
+      const csLang = this.defLang();
+      const inLang = CodeSystemProvider.inSearchLanguage(csLang, lang);
+      texts = {
+        code: all.code,
+        display: inLang ? all.display : null,
+        definition: inLang ? all.definition : null,
+        designations: all.designations.filter(d => CodeSystemProvider.inSearchLanguage(d.language, lang, csLang))
+          .concat(this.#supplementSearchTexts(concept.code, lang))
+      };
+    }
     const display = texts.display;
     let rating = 0;
 
@@ -1428,6 +1445,55 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
 
     return rating;
+  }
+
+  /**
+   * As for any code system (CodeSystemProvider.searchLanguage), but whether there is text in
+   * a language is decided by what the code system actually has: its own language, a designation
+   * in it, or a supplement's (hasAnyDisplays says yes to English whatever the code system's
+   * language is)
+   */
+  searchLanguage(languages) {
+    for (const lang of (languages && languages.languages) || []) {
+      if (lang && lang.language && lang.code !== '*' && this.#hasSearchText(lang)) {
+        return lang;
+      }
+    }
+    return new Language(this.defLang());
+  }
+
+  #hasSearchText(lang) {
+    const csLang = this.defLang();
+    if (CodeSystemProvider.inSearchLanguage(csLang, lang)) {
+      return true;
+    }
+    for (const concept of this.codeSystem.getAllConcepts()) {
+      if ((concept.designation || []).some(d => d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, csLang))) {
+        return true;
+      }
+    }
+    return this._hasSupplementText(lang);
+  }
+
+  // the displays and designations that supplements in use give a code, in the search language
+  #supplementSearchTexts(code, lang) {
+    const result = [];
+    for (const supplement of this.supplements || []) {
+      const concept = supplement.getConceptByCode(code);
+      if (!concept) {
+        continue;
+      }
+      const suppLang = supplement.jsonObj.language || this.defLang();
+      if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, lang)) {
+        result.push(searchText(concept.display));
+      }
+      for (const d of concept.designation || []) {
+        if (d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, suppLang)) {
+          result.push(searchText(d.value));
+        }
+      }
+    }
+    return result;
   }
 
   /**
@@ -1611,7 +1677,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     else if (op === 'regex') {
       // Regular expression match
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
         const allCodes = this.codeSystem.getAllCodes();
         for (const code of allCodes) {
           this.opContext.deadCheck('cs:conceptFilter:regex');
@@ -1759,7 +1825,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     else if (op === 'regex') {
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
         return properties.some(p => regex.test(this._getPropertyValue(p)));
       } catch (error) {
         return false;
