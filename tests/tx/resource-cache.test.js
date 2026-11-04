@@ -831,6 +831,56 @@ describe('SqliteResourceCache', () => {
       expect(ec.computeKey(vs, params, eager)).toBe(memoryKey);
     });
 
+    test.each(['add', 'set'])('%s replacing a lazy resource cannot change the content behind its expansion key', async (method) => {
+      const { ExpandWorker } = require('../../tx/workers/expand');
+      const c = make();
+      const original = mkCs('http://x/a', '1');
+      const replacement = mkCs('http://x/a', '1', { concept: [{ code: 'b' }] });
+      c.set('c1', [original]);
+      const ec = new ExpansionCache(null);
+      ec.forceCaching = true;
+      const vs = { resourceType: 'ValueSet', compose: { include: [{ system: 'http://x/a' }] } };
+      const resources = c.get('c1');
+      const oldKey = ec.computeKey(vs, null, resources);
+      // Run the real cache lookup/compute/store path, with the replacement between
+      // computeKey and the first use of the lazy resource's JSON.
+      const worker = {
+        deadCheck() {}, log: { debug() {} }, opContext: { expansionCache: ec },
+        additionalResources: resources,
+        async performExpansion() {
+          c[method]('c1', [replacement]);
+          return { expansion: { contains: this.additionalResources[0].jsonObj.concept } };
+        }
+      };
+      await expect(ExpandWorker.prototype.doExpand.call(worker, vs, null))
+        .rejects.toMatchObject({ statusCode: 409, cause: 'conflict', msgId: 'CACHE_ID_CHANGED_DURING_REQUEST' });
+      expect(ec.get(oldKey)).toBeNull();
+      expect(resources[0].expansionKeyHash()).toBe(original.expansionKeyHash());
+
+      // Retrying from a fresh index succeeds and caches only under the new key.
+      worker.additionalResources = c.get('c1');
+      const newKey = ec.computeKey(vs, null, worker.additionalResources);
+      expect(newKey).not.toBe(oldKey);
+      const result = await ExpandWorker.prototype.doExpand.call(worker, vs, null);
+      expect(result.expansion.contains).toEqual([{ code: 'b' }]);
+      expect(ec.get(newKey)).toEqual(result);
+      expect(ec.get(oldKey)).toBeNull();
+    });
+
+    test('a loaded resource keeps its snapshot, and an unchanged lazy resource still loads after a write', () => {
+      const c = make();
+      const original = mkCs('http://x/a', '1');
+      c.set('c1', [original]);
+      const [loaded] = c.get('c1');
+      expect(loaded.jsonObj).toEqual(original.jsonObj);
+      const [lazy] = c.get('c1');
+      c.add('c1', [mkCs('http://x/b', '1')]);
+      expect(lazy.jsonObj).toEqual(original.jsonObj);
+      c.add('c1', [mkCs('http://x/a', '1', { concept: [{ code: 'b' }] })]);
+      expect(loaded.jsonObj).toEqual(original.jsonObj);
+      expect(loaded.expansionKeyHash()).toBe(original.expansionKeyHash());
+    });
+
     test('a resource that has gone by the time it is used fails like a dead cache-id', () => {
       const c = make();
       c.set('c1', [mkCs('http://x/a', '1')]);

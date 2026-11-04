@@ -386,8 +386,9 @@ class SqliteResourceCache extends ResourceCache {
    * The resources held under a cache-id: a fresh set of objects every call, nothing
    * shared with other requests. Wrappers are stand-ins that are only built when the
    * request uses them (see lazyResource). The session row and the index are read in
-   * one read transaction, so a concurrent write by another process is seen entirely
-   * or not at all.
+   * one read transaction. Later lazy reads check the indexed content hash: if another
+   * process replaced a resource meanwhile, this request fails so the client can retry
+   * from a fresh index, rather than mixing an old expansion key with new content.
    */
   get(cacheId) {
     let session = null;
@@ -440,6 +441,11 @@ class SqliteResourceCache extends ResourceCache {
       throw new Issue('error', 'not-found', null, 'CACHE_ID_GONE_DURING_REQUEST',
         `The cache '${cacheId}' ${t ? 'was ' + t.reason : 'went away'} while this request was using it, so ${row.key.replace(/\|/g, ' ')} is no longer available`,
         'cache-id-unknown', 404);
+    }
+    if (c.hash !== row.hash || c.fhir_version !== row.fhir_version) {
+      throw new Issue('error', 'conflict', null, 'CACHE_ID_CHANGED_DURING_REQUEST',
+        `The cache '${cacheId}' changed while this request was using it. Retry the request`,
+        null, 409);
     }
     return this._build({ kind: 'wrapper', resource_type: row.resource_type, fhir_version: c.fhir_version, json: c.json, hash: c.hash });
   }
