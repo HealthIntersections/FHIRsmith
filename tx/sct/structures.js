@@ -1,9 +1,9 @@
 const fs = require('fs');
+const { mapFile, prewarmFile } = require('./mmap');
 
 // The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
-// one in place rather than copying it: nothing writes to a loaded structure, and the reader's
-// sections (kept in the factory's shared data) would hold the whole file anyway. Any other
-// buffer is copied, so the structure owns its bytes.
+// one in place (nothing writes to a loaded structure, and the file stays loaded for the life
+// of the process); any other buffer is copied, so the structure owns its bytes.
 const fileBuffers = new WeakSet();
 
 function adopt(buffer) {
@@ -1342,16 +1342,58 @@ class SnomedReferenceSetIndex {
 
 
 class SnomedFileReader {
-  constructor(filePath) {
+  /**
+   * @param {string} filePath
+   * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
+   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': mapped,
+   *   then read through once in the background at startup, so its pages are already in the
+   *   page cache when requests arrive; startup doesn't wait for it. Where mapping is not
+   *   available (see mmap.js) the file is read, and `mapped` stays false.
+   * @param {object} [log] - a logger with warn(); says why a file that was to be mapped was read
+   */
+  constructor(filePath, loadMode = 'read', log = null) {
     this.filePath = filePath;
+    this.loadMode = loadMode;
+    this.log = log;
     this.buffer = null;
+    this.mapped = false; // true once load() has the buffer as a memory mapping of the file
     this.offset = 0;
   }
 
+  /**
+   * The edition version URI in a cache file's header, without loading the file.
+   * @param {string} filePath
+   * @returns {string|null}
+   */
+  static versionUri(filePath) {
+    const head = Buffer.alloc(1024);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      reader.readString(); // cache version
+      return reader.readString();
+    } catch {
+      return null;
+    }
+  }
+
   async load() {
-    // Read entire file into buffer
-    this.buffer = await fs.promises.readFile(this.filePath);
+    const warn = this.log ? (msg) => this.log.warn(msg) : undefined;
+    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath, warn) : null;
+    this.mapped = mapped !== null;
+    this.buffer = mapped || await fs.promises.readFile(this.filePath);
     fileBuffers.add(this.buffer.buffer);
+    if (mapped && this.loadMode === 'prewarm') {
+      // not awaited: the server starts while the file is read into the page cache
+      this.prewarmed = prewarmFile(this.filePath).catch(() => null);
+    }
     this.offset = 0;
   }
 

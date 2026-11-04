@@ -16,6 +16,7 @@
  * @module library/memory-guard
  */
 
+const fs = require('fs');
 const os = require('os');
 const v8 = require('v8');
 const vm = require('vm');
@@ -33,6 +34,13 @@ const GC_INTERVAL_MS = 5000;
 // next, up to this: when most of RSS is outside the JS heap (the SNOMED and LOINC cache
 // buffers), collecting frees little, and every full GC stops the process
 const GC_MAX_INTERVAL_MS = 60000;
+// RssFile (/proc/self/status) is read at most this often. The in-operation check runs many
+// times a request, and a read of /proc/self/status costs twice what the RSS itself does;
+// between reads, a fresh RSS less the last RssFile is a close enough estimate
+const FILE_SAMPLE_MS = 200;
+// the in-operation check reuses a measure at most this old. It runs about ten times a request,
+// and RSS moves little in 10 ms
+const ABORT_SAMPLE_MS = 10;
 
 const state = {
   limit: 0,
@@ -42,7 +50,11 @@ const state = {
   rejectAt: 0,
   abortAt: 0,
   sampleTime: 0,
-  sampleRss: 0
+  sampleRss: 0,
+  // set by measureExcludingFileBacked()
+  excludeFileBacked: false,
+  fileTime: 0,
+  fileRss: 0 // the last RssFile read (see fileBackedRss)
 };
 
 function fraction(v, dflt) {
@@ -75,10 +87,42 @@ function configure(opts = {}) {
   state.sampleTime = 0;
 }
 
+/**
+ * Measure RSS less its file-backed pages (Linux only). With SNOMED CT cache files memory-mapped
+ * ("snomed": {"load": "mmap"} in config.json) RSS includes every mapped page that has been read, which the kernel drops
+ * and re-reads as it needs to - counting them would refuse requests on a server that is fine.
+ */
+function measureExcludingFileBacked() {
+  state.excludeFileBacked = process.platform === 'linux';
+  state.sampleTime = 0;
+}
+
+/**
+ * RssFile as last read, read again if that was FILE_SAMPLE_MS ago or more, or if the sample
+ * has been dropped (sampleTime 0: configure, measureExcludingFileBacked, a test).
+ */
+function fileBackedRss() {
+  const now = Date.now();
+  if (state.sampleTime === 0 || now - state.fileTime >= FILE_SAMPLE_MS) {
+    state.fileRss = rssFileBytes();
+    state.fileTime = now;
+  }
+  return state.fileRss;
+}
+
+function rssFileBytes() {
+  try {
+    const m = /^RssFile:\s+(\d+) kB/m.exec(fs.readFileSync('/proc/self/status', 'utf8'));
+    return m ? Number(m[1]) * 1024 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function rss(fresh = false) {
   const now = Date.now();
   if (fresh || now - state.sampleTime > SAMPLE_MS) {
-    state.sampleRss = process.memoryUsage.rss();
+    state.sampleRss = process.memoryUsage.rss() - (state.excludeFileBacked ? fileBackedRss() : 0);
     state.sampleTime = now;
   }
   return state.sampleRss;
@@ -123,7 +167,9 @@ let lastAbortLog = 0;
 let abortLog = null;
 
 /**
- * Current RSS in bytes if running operations should be aborted, else 0. Always a fresh read.
+ * Current RSS in bytes if running operations should be aborted, else 0. A measure at most
+ * ABORT_SAMPLE_MS old (less the file-backed part as read at most FILE_SAMPLE_MS ago), or fresh
+ * if the sample was dropped (configure, measureExcludingFileBacked).
  * A trip is written to the server log (at most once a minute, with a running count) - the
  * caller's own message only goes to the aborted operation's diagnostics.
  * @param {string} [place] - where the check was made, for the log
@@ -132,7 +178,7 @@ function overAbortThreshold(place = 'unknown') {
   if (state.abortAt <= 0) {
     return 0;
   }
-  const r = rss(true);
+  const r = rss(Date.now() - state.sampleTime > ABORT_SAMPLE_MS);
   if (r <= state.abortAt) {
     return 0;
   }
@@ -158,6 +204,7 @@ function gb(bytes) {
 
 function describe() {
   return `Memory limit: ${gb(state.limit)} GB (from ${state.source}); ` +
+    (state.excludeFileBacked ? 'measured as RSS less file-backed pages; ' : '') +
     `new requests refused above ${gb(state.rejectAt)} GB (${Math.round(state.rejectFraction * 100)}%), ` +
     `operations aborted above ${gb(state.abortAt)} GB (${Math.round(state.abortFraction * 100)}%)`;
 }
@@ -260,4 +307,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { configure, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };
+module.exports = { configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };

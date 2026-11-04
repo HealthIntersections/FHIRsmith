@@ -252,6 +252,12 @@
       // (and a "Library" item in the tx nav bar), anything else gets the YAML file itself.
       // Off by default - the file names every database, cache and package the server runs.
       "publishLibrarySource": false,
+      // How SNOMED CT cache files are loaded (see tx/README.md, "Loading SNOMED CT"). Optional;
+      // without it every edition is read into the process, as before. "load": "read" or "mmap"
+      // for every edition; "prewarm": editions to map, then read through once in the background at startup;
+      // "read": editions to read into the process anyway. Entries are cache file names, edition
+      // version URIs or edition URIs
+      // "snomed": { "load": "mmap", "prewarm": ["sct_intl_20250201.cache", "sct_us_20250901b.cache"], "read": [] },
       "cacheTimeout": 30,
       // Optional. A short code (1-16 letters and digits) naming this server instance. Every
       // cache-id the server issues then starts with "<code>.", so a proxy in front of
