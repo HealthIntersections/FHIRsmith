@@ -34,6 +34,10 @@ const GC_INTERVAL_MS = 5000;
 // next, up to this: when most of RSS is outside the JS heap (the SNOMED and LOINC cache
 // buffers), collecting frees little, and every full GC stops the process
 const GC_MAX_INTERVAL_MS = 60000;
+// RssFile (/proc/self/status) is read at most this often. The in-operation check runs many
+// times a request, and a read of /proc/self/status costs twice what the RSS itself does;
+// between reads, a fresh RSS less the last RssFile is a close enough estimate
+const FILE_SAMPLE_MS = 200;
 
 const state = {
   limit: 0,
@@ -45,7 +49,9 @@ const state = {
   sampleTime: 0,
   sampleRss: 0,
   // set by measureExcludingFileBacked()
-  excludeFileBacked: false
+  excludeFileBacked: false,
+  fileTime: 0,
+  fileRss: 0 // the last RssFile read (see fileBackedRss)
 };
 
 function fraction(v, dflt) {
@@ -88,6 +94,19 @@ function measureExcludingFileBacked() {
   state.sampleTime = 0;
 }
 
+/**
+ * RssFile as last read, read again if that was FILE_SAMPLE_MS ago or more, or if the sample
+ * has been dropped (sampleTime 0: configure, measureExcludingFileBacked, a test).
+ */
+function fileBackedRss() {
+  const now = Date.now();
+  if (state.sampleTime === 0 || now - state.fileTime >= FILE_SAMPLE_MS) {
+    state.fileRss = rssFileBytes();
+    state.fileTime = now;
+  }
+  return state.fileRss;
+}
+
 function rssFileBytes() {
   try {
     const m = /^RssFile:\s+(\d+) kB/m.exec(fs.readFileSync('/proc/self/status', 'utf8'));
@@ -100,7 +119,7 @@ function rssFileBytes() {
 function rss(fresh = false) {
   const now = Date.now();
   if (fresh || now - state.sampleTime > SAMPLE_MS) {
-    state.sampleRss = process.memoryUsage.rss() - (state.excludeFileBacked ? rssFileBytes() : 0);
+    state.sampleRss = process.memoryUsage.rss() - (state.excludeFileBacked ? fileBackedRss() : 0);
     state.sampleTime = now;
   }
   return state.sampleRss;
@@ -145,7 +164,8 @@ let lastAbortLog = 0;
 let abortLog = null;
 
 /**
- * Current RSS in bytes if running operations should be aborted, else 0. Always a fresh read.
+ * Current RSS in bytes if running operations should be aborted, else 0. A fresh RSS (less the
+ * file-backed part as read at most FILE_SAMPLE_MS ago).
  * A trip is written to the server log (at most once a minute, with a running count) - the
  * caller's own message only goes to the aborted operation's diagnostics.
  * @param {string} [place] - where the check was made, for the log

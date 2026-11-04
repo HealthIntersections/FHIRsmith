@@ -165,4 +165,44 @@ describe('memory-guard', () => {
       readSpy.mockRestore();
     }
   });
+
+  (process.platform === 'linux' ? test : test.skip)('with mapped files, the in-operation check reads RssFile at most once per window, and RSS every time', () => {
+    const fs = require('fs');
+    const realRead = fs.readFileSync;
+    let reads = 0;
+    let rssFileKb = 2 * 1024 * 1024;
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
+      if (file !== '/proc/self/status') {
+        return realRead(file, ...rest);
+      }
+      reads++;
+      return `VmRSS:\t1 kB\nRssFile:\t${rssFileKb} kB\n`;
+    });
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      memoryGuard.measureExcludingFileBacked();
+      setRss(10.5 * GB);
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0); // 8.5 GB counts
+      expect(reads).toBe(1);
+      // many checks inside the window: one read, while a rise in RSS is still seen at once
+      for (let i = 0; i < 1000; i++) {
+        now += 0.1;
+        expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+      }
+      rssSpy.mockReturnValue(11.5 * GB);
+      expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
+      expect(reads).toBe(1);
+      expect(rssSpy.mock.calls.length).toBeGreaterThanOrEqual(1002);
+      // once the window has passed, RssFile is read again
+      rssFileKb = 3 * 1024 * 1024;
+      now += 200;
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0); // 8.5 GB counts
+      expect(reads).toBe(2);
+    } finally {
+      nowSpy.mockRestore();
+      memoryGuard._state.excludeFileBacked = false;
+      readSpy.mockRestore();
+    }
+  });
 });
