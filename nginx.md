@@ -484,3 +484,22 @@ Keeping the `map` still works (the launcher's `cacheAffinity: true`). It keeps e
 one process, whose expansion cache (which is per process) already holds the expansions it
 asked for; without it, the load spreads evenly, and the first time each process expands a
 value set for a client it does the work again.
+
+### With shared closure tables
+
+With `server.cluster.sharedClosure: true` ([cluster.md](cluster.md#options)), every process
+answers `$closure` on the one closure database, so `$closure` can leave the master's location
+and go to the pool (it never uses a cache-id):
+
+```nginx
+    location ~ ^/(r4|r5)/(syndication(/.*)?|info/.*)$ {
+        include fhirsmith-proxy.conf;
+        proxy_set_header X-Cache-Id "";
+        proxy_pass http://fs_master;
+    }
+
+    location ~ ^/(r4|r5)/\$closure$ {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://fs_tx_pool;
+    }
+```

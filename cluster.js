@@ -76,7 +76,7 @@ function loadSettings(argv, env, config) {
     procs,
     txPaths: (tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')),
     drainMs: Number(cluster.drainSeconds || 30) * 1000,
-    routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true }
+    routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
 }
 
@@ -86,7 +86,8 @@ function loadSettings(argv, env, config) {
  * @param {Object} headers - the request headers (lower case names)
  * @param {string[]} txPaths - the tx endpoint paths, e.g. ['/r4', '/r5']
  * @param {Object} [routing] - from loadSettings: cacheAffinity (default true) sends a
- *   request with a cache-id to the process that issued it
+ *   request with a cache-id to the process that issued it; sharedClosure sends $closure
+ *   to any tx process rather than the master
  * @returns {{to: 'master'}|{to: 'owner', code: string}|{to: 'tx'}}
  */
 function classify(url, headers, txPaths, routing = {}) {
@@ -101,9 +102,13 @@ function classify(url, headers, txPaths, routing = {}) {
     return { to: 'master' };
   }
   const rest = p.substring(ep.length);
-  // the closure tables and the syndication store are the master's; the source info pages
-  // carry the VSAC resync form, which writes the VSAC database
-  if (/^\/\$closure\/?$/.test(rest) || /^\/syndication(\/|$)/.test(rest) || rest.startsWith('/info/')) {
+  // the closure tables (unless shared) and the syndication store are the master's; the
+  // source info pages carry the VSAC resync form, which writes the VSAC database
+  if (/^\/\$closure\/?$/.test(rest)) {
+    // closure never uses a cache-id, so the least loaded, whatever the header says
+    return routing.sharedClosure ? { to: 'tx' } : { to: 'master' };
+  }
+  if (/^\/syndication(\/|$)/.test(rest) || rest.startsWith('/info/')) {
     return { to: 'master' };
   }
   if (routing.cacheAffinity === false) {

@@ -80,7 +80,7 @@ function applyRole(config, role) {
   // the options in server.cluster (cluster.md, "Options"). Every process reads the same
   // config.json, so they all agree; without a role these are never looked at
   const options = (config.server && config.server.cluster) || {};
-  for (const name of ['sharedCache', 'cacheAffinity']) {
+  for (const name of ['sharedCache', 'cacheAffinity', 'sharedClosure']) {
     if (options[name] !== undefined && typeof options[name] !== 'boolean') {
       throw new Error(`server.cluster.${name} must be true or false`);
     }
@@ -92,6 +92,9 @@ function applyRole(config, role) {
       throw new Error('server.cluster.sharedCacheMaxMB must be a number of megabytes (0: no cap)');
     }
     tx.sharedCacheMaxBytes = Math.round(mb * 1024 * 1024);
+  }
+  if (options.sharedClosure === true) {
+    tx.sharedClosure = true;
   }
   if (tx.vsacCfg) {
     tx.vsacCfg = { ...tx.vsacCfg, cluster: role.role === 'master' ? 'leader' : 'follower' };
