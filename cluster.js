@@ -33,7 +33,7 @@ const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
 // a process that ran this long before exiting is restarted at once
 const HEALTHY_RUN_MS = 60000;
-const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer'];
+const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
  * The settings, from the flags, then the environment, then config.json (server.cluster).
