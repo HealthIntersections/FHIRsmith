@@ -18,6 +18,7 @@ or with nginx in front of separately started processes ([below](#with-nginx)).
 * [Routing](#routing)
 * [The launcher (cluster.js)](#the-launcher-clusterjs)
 * [With nginx](#with-nginx)
+* [Options](#options)
 * [Memory](#memory)
 * [Limits of this arrangement](#limits-of-this-arrangement)
 
@@ -44,12 +45,12 @@ which parts of the configuration each one acts on.
 |---|---|---|
 | tx module (`/r4`, `/r5` and the other endpoints) | yes (may also serve tx requests) | yes |
 | Every other module (packages, xig, registry, publisher, token, shl, ips, ...) | yes | no |
-| `$closure` (the closure tables) | yes | no: routed to the master |
+| `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
 | Syndication feed (the store) | yes | no: routed to the master |
 | VSAC sync, and the resync form on `/info/vsac` | yes | no: reads what the master wrote |
 | Package crawler, XIG download, registry crawl, daily report, npm audit | yes | no (those modules don't run) |
 | Statistics database, uptime history | yes | no: in memory only |
-| `$cache-control` caches | its own, in memory | its own, in memory |
+| `$cache-control` caches | its own, in memory (shared, with [`sharedCache`](#options)) | its own, in memory (shared, with [`sharedCache`](#options)) |
 | Expansion cache, CodeSystem list refresh | its own | its own |
 | Log file | `logs/server-<date>.log` | the same file (lines interleave) |
 
@@ -80,6 +81,9 @@ Whatever the front door, the rules are the same:
    tx process, which answers `cache-id-unknown`; the client starts a new cache.
 4. Any other tx request goes to the tx process with the fewest requests outstanding: the
    workers, and the master too unless it is set not to serve tx.
+
+The [options](#options) change rules 1 and 3: with `sharedClosure`, `$closure` goes by rule 4;
+with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is on).
 
 ## The launcher (cluster.js)
 
@@ -131,6 +135,79 @@ nginx can be the front door instead: start the processes yourself (master first,
 it answers `/health`), and use the configuration in
 [nginx.md](nginx.md#a-master-and-tx-workers-on-one-machine), which applies the same rules.
 
+## Options
+
+Two options in `server.cluster` change what the processes share. Both are off by default, and
+both only apply with a role: `node server.js` with no role ignores them.
+
+```json
+"server": {
+  "cluster": { "workers": 4, "sharedCache": true, "sharedClosure": true }
+}
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `server.cluster.sharedCache` | false | The `$cache-control` caches go in one SQLite file, `databases/resource-cache.db`, that every process reads and writes. |
+| `server.cluster.cacheAffinity` | false | With `sharedCache`: still send a request with a cache-id to the process that issued it, while it is up. |
+| `server.cluster.sharedCacheMaxMB` | 0 (none) | With `sharedCache`: the most the file holds. Past it, the caches least recently used are dropped whole. |
+| `server.cluster.sharedClosure` | false | Every tx process answers `$closure`, on the one closure database. |
+| `modules.tx.closure.writeRetries` | 10 | With `sharedClosure`: how many times an add is worked out again when another process changed the table first. |
+
+### Shared cache
+
+Without it, a cache lives in the memory of the process that issued it, and the routing has to
+send every request that uses it there. A restarted process has lost its caches, and its
+clients get `cache-id-unknown` and start new ones. The load a client brings stays on one
+process.
+
+With it, any process can answer any cache-id, and caches survive a restart of any process (or
+of all of them). The launcher sends a request with a cache-id to the least-loaded tx process,
+like any other. The cost is a read of the file on each use of a cache: a request reads the
+list of what the cache holds, and only loads the resources it uses. Writes are short
+transactions in WAL mode, so readers don't wait for them. `last_used` is written at most every
+30 seconds per cache. The idle sweep (`modules.tx.cacheTimeout`) runs in every process, and
+running it twice does no harm. An unknown cache-id gets a message that doesn't offer a restart
+or a routing mistake as the reason, since neither can be the cause.
+
+`cacheAffinity: true` keeps the prefix routing on top. The expansion cache is still per
+process, so a client that stays on one process finds its expansions there; without affinity,
+each process does the first expansion again. The file must be on a local disk.
+
+### Shared closure
+
+Without it, the master answers every `$closure` request, and its per-table lock keeps the
+calls on one table in order.
+
+With it, any tx process answers `$closure`, against the same `databases/closure.db`, and the
+launcher sends `$closure` to the least-loaded tx process. Within a process the per-table lock
+still queues the calls on a table. Across processes the writes are **checked, not locked**. A
+call works out its add against the table as it read it (its version *n*). It writes in one
+`BEGIN IMMEDIATE` transaction that first checks the table is still at version *n*, and was
+not reset meanwhile. If it isn't, nothing is written: the call reads the table again and works
+the add out again, with the code lookups and subsumption tests it already did remembered. It
+waits a few milliseconds, with jitter, between tries. After `writeRetries` tries it answers
+`429` (`CLOSURE_TABLE_BUSY`), as a full queue does. Creating a table checks for one of the
+same name, and for the table limit, in the same transaction as the insert. A resync reports
+only entries up to the version it read. The master alone drops stale tables
+(`retentionDays`).
+
+This spreads the subsumption work of `$closure` over the processes. When many processes add
+to the same table at once, some adds are worked out more than once.
+
+### What changes, by combination
+
+| `sharedCache` | `sharedClosure` | A request with a cache-id goes to | `$closure` goes to | A restarted process |
+|---|---|---|---|---|
+| off | off | the process that issued it (if it is down: any, which answers `cache-id-unknown`) | the master | has lost its caches |
+| on | off | the least-loaded tx process (the issuer, with `cacheAffinity`) | the master | still has every cache |
+| off | on | the process that issued it | the least-loaded tx process | has lost its caches |
+| on | on | the least-loaded tx process (the issuer, with `cacheAffinity`) | the least-loaded tx process | still has every cache |
+
+The syndication feed, the `/info` pages and everything outside the tx endpoints go to the
+master in every combination. For nginx, see
+[nginx.md](nginx.md#with-the-shared-cache).
+
 ## Memory
 
 With a role, the memory guard measures the whole cgroup, since the kernel's limit is on all the
@@ -155,9 +232,11 @@ use roughly N+1 times the memory of one server. Size the limit for that.
 
 ## Limits of this arrangement
 
-* **Caches are per process.** A `$cache-control` cache lives in the process that issued it; a
-  restarted process loses its caches, and clients start new ones, as after any restart.
+* **Caches are per process** (unless [`sharedCache`](#options) is on). A `$cache-control`
+  cache lives in the process that issued it; a restarted process loses its caches, and
+  clients start new ones, as after any restart.
 * **Statistics are per process.** `/` and `/dashboard` show the master. The workers' request
   counts are not in the statistics database.
-* **Everything the master runs is a single point.** While the master restarts, `$closure`, the
-  non-tx modules and the dashboard answer 503 through the launcher; tx requests carry on.
+* **Everything the master runs is a single point.** While the master restarts, `$closure`
+  (unless [`sharedClosure`](#options) is on), the non-tx modules and the dashboard answer 503
+  through the launcher; tx requests carry on.
