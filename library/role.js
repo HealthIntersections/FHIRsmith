@@ -77,6 +77,22 @@ function applyRole(config, role) {
     throw new Error('The master needs an instance code: --instance-code, FHIRSMITH_INSTANCE_CODE or modules.tx.instanceCode');
   }
   tx.clusterRole = role.role;
+  // the options in server.cluster (cluster.md, "Options"). Every process reads the same
+  // config.json, so they all agree; without a role these are never looked at
+  const options = (config.server && config.server.cluster) || {};
+  for (const name of ['sharedCache', 'cacheAffinity']) {
+    if (options[name] !== undefined && typeof options[name] !== 'boolean') {
+      throw new Error(`server.cluster.${name} must be true or false`);
+    }
+  }
+  if (options.sharedCache === true) {
+    tx.sharedCache = true;
+    const mb = options.sharedCacheMaxMB === undefined ? 0 : Number(options.sharedCacheMaxMB);
+    if (!Number.isFinite(mb) || mb < 0) {
+      throw new Error('server.cluster.sharedCacheMaxMB must be a number of megabytes (0: no cap)');
+    }
+    tx.sharedCacheMaxBytes = Math.round(mb * 1024 * 1024);
+  }
   if (tx.vsacCfg) {
     tx.vsacCfg = { ...tx.vsacCfg, cluster: role.role === 'master' ? 'leader' : 'follower' };
   }

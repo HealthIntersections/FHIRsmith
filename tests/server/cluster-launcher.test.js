@@ -48,6 +48,21 @@ describe('routing rules', () => {
     expect(classify('/r4/ValueSet/$expand', {}, TX)).toEqual({ to: 'tx' });
   });
 
+  test('with the shared cache, a cache-id goes to any tx process, unless cacheAffinity is on', () => {
+    const shared = loadSettings([], {}, { server: { cluster: { sharedCache: true } }, modules: { tx: { enabled: true } } }).routing;
+    expect(shared).toEqual({ cacheAffinity: false });
+    expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, shared)).toEqual({ to: 'tx' });
+    const affinity = loadSettings([], {}, { server: { cluster: { sharedCache: true, cacheAffinity: true } }, modules: { tx: { enabled: true } } }).routing;
+    expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, affinity)).toEqual({ to: 'owner', code: 'tx2' });
+    // without the shared cache, a cache-id always goes to its issuer: there is nowhere else it is
+    const plain = loadSettings([], {}, { server: { cluster: { cacheAffinity: false } }, modules: { tx: { enabled: true } } }).routing;
+    expect(plain).toEqual({ cacheAffinity: true });
+    expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, plain)).toEqual({ to: 'owner', code: 'tx2' });
+    // the master-only paths stay the master's
+    expect(classify('/r4/$closure', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, shared)).toEqual({ to: 'master' });
+    expect(classify('/', {}, TX, shared)).toEqual({ to: 'master' });
+  });
+
   test('$closure, in any FHIR version, encoded or not, goes to the master, whatever the cache-id', () => {
     for (const url of ['/r4/$closure', '/r5/$closure', '/r4/%24closure', '/r4/$closure?name=x']) {
       expect(classify(url, { 'x-cache-id': 'tx1.abc' }, TX)).toEqual({ to: 'master' });

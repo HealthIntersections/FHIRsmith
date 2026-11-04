@@ -318,7 +318,9 @@ class TXModule {
       path: endpointPath,
       fhirVersion,
       context: context || null,
-      resourceCache: new ResourceCache(this.stats),
+      // server.cluster.sharedCache (cluster.md, "Options"; set only with a role): one SQLite
+      // file that every process shares. Otherwise this process's memory, as ever
+      resourceCache: this.config.sharedCache ? this.createSharedResourceCache(endpointPath) : new ResourceCache(this.stats),
       expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold, this.expansionCacheBudget)
     };
     // Create the provider once for this endpoint
@@ -1395,12 +1397,35 @@ class TXModule {
   /**
    * Shutdown the module
    */
+  /**
+   * An endpoint's $cache-control cache in the shared SQLite file (databases/resource-cache.db),
+   * for server.cluster.sharedCache. Endpoints share the file but not caches.
+   * @param {string} endpointPath - e.g. /r4
+   * @returns {SqliteResourceCache}
+   */
+  createSharedResourceCache(endpointPath) {
+    const { SqliteResourceCache } = require('./resource-cache-sqlite');
+    const folders = require('../library/folder-setup');
+    const file = path.join(folders.databasesDir(), 'resource-cache.db');
+    const maxBytes = this.config.sharedCacheMaxBytes || 0;
+    this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}` +
+      (maxBytes ? `, capped at ${maxBytes} bytes` : ''));
+    return new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes });
+  }
+
   async shutdown() {
     this.log.info('Shutting down TX module');
     for (const timer of this.timers) {
       clearInterval(timer);
     }
     this.timers = [];
+    if (this.config && this.config.sharedCache) {
+      for (const ep of this.endpoints || []) {
+        if (ep.resourceCache) {
+          ep.resourceCache.close();
+        }
+      }
+    }
     if (this.syndicationStore) {
       // let an induction in progress finish, so the store isn't left with a half-copied file
       await this.syndicationStore.whenIdle();
