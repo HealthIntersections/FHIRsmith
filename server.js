@@ -41,6 +41,20 @@ try {
   process.exit(1);
 }
 
+// --role=master|tx-worker (cluster.md). With no role this is null and the configuration is
+// untouched: every `if (role)` below is skipped
+const { parseRole, applyRole, describeRole } = require('./library/role');
+let role;
+try {
+  role = parseRole(process.argv.slice(2), process.env);
+  if (role) {
+    applyRole(config, role);
+  }
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+
 const Logger = require('./library/logger');
 const serverLog = Logger.getInstance(config.logging || {}).child({ module: 'server' });
 const packageJson = require('./package.json');
@@ -54,6 +68,9 @@ serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
 memoryGuard.configure(config.server.memory || {});
 serverLog.info(memoryGuard.describe());
+if (role) {
+  serverLog.info(describeRole(role, config));
+}
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -96,7 +113,7 @@ const app = express();
 const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
-const PORT = process.env.PORT || config.server.port || 3000;
+const PORT = (role && role.port) || process.env.PORT || config.server.port || 3000;
 
 // Middleware
 // Refuse new requests (503) while memory is near the limit - first, so a refused request
