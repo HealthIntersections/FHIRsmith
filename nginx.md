@@ -467,3 +467,22 @@ server {
 List your own tx endpoint paths (`modules.tx.endpoints`) in the two regex locations. The
 optional launcher, `node cluster.js`, starts the processes in this order and applies the same
 rules without nginx (it can also sit behind nginx, as one upstream).
+
+### With the shared cache
+
+With `server.cluster.sharedCache: true` ([cluster.md](cluster.md#options)), every process
+keeps its `$cache-control` caches in one SQLite file, so any of them can answer any cache-id.
+The `map` on `X-Cache-Id` and the per-worker upstreams (`fs_tx1`, `fs_tx2`) are then not
+needed: the tx location goes straight to the pool.
+
+```nginx
+    location ~ ^/(r4|r5)(/|$) {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://fs_tx_pool;
+    }
+```
+
+Keeping the `map` still works (the launcher's `cacheAffinity: true`). It keeps each client on
+one process, whose expansion cache (which is per process) already holds the expansions it
+asked for; without it, the load spreads evenly, and the first time each process expands a
+value set for a client it does the work again.

@@ -77,6 +77,23 @@ describe('applyRole', () => {
     expect(config.dailyReport.enabled).toBe(false);
   });
 
+  test('server.cluster.sharedCache reaches tx (with a role), and nothing is set when it is off', () => {
+    const off = applyRole(baseConfig(), { role: 'tx-worker', instanceCode: 'tx1' });
+    expect(off.modules.tx.sharedCache).toBeUndefined();
+    expect(off.modules.tx.sharedCacheMaxBytes).toBeUndefined();
+    const on = baseConfig();
+    on.server.cluster = { sharedCache: true, sharedCacheMaxMB: 2 };
+    applyRole(on, { role: 'master', instanceCode: null });
+    expect(on.modules.tx.sharedCache).toBe(true);
+    expect(on.modules.tx.sharedCacheMaxBytes).toBe(2 * 1024 * 1024);
+    const bad = baseConfig();
+    bad.server.cluster = { sharedCache: 'yes' };
+    expect(() => applyRole(bad, { role: 'master', instanceCode: null })).toThrow(/true or false/);
+    const badCap = baseConfig();
+    badCap.server.cluster = { sharedCache: true, sharedCacheMaxMB: -1 };
+    expect(() => applyRole(badCap, { role: 'master', instanceCode: null })).toThrow(/megabytes/);
+  });
+
   test('a worker needs its own instance code, and tx must be enabled', () => {
     expect(() => applyRole(baseConfig(), { role: 'tx-worker', instanceCode: null })).toThrow(/its own instance code/);
     const noCode = baseConfig();

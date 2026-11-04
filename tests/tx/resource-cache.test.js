@@ -4,9 +4,20 @@
  * ResourceCache backs the cache-id protocol: resources sent under a cache-id on one
  * request must be retrievable on later requests with the same cache-id, and kept
  * isolated between different cache-ids.
+ *
+ * Every test here runs against both stores - the in-process memory store and the
+ * shared SQLite store (server.cluster.sharedCache) - because they are one interface with
+ * one set of semantics. The two differ only where a shared store must: an id with no
+ * record is CACHE_ID_UNKNOWN_SHARED whatever its prefix, only the shared store has a
+ * size cap, and only the memory store has the concept limits (cacheMaxConcepts,
+ * cacheMaxTotalConcepts).
  */
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { ResourceCache, formatDuration } = require('../../tx/operation-context');
+const { SqliteResourceCache } = require('../../tx/resource-cache-sqlite');
 
 const CS = (url, version) => ({ resourceType: 'CodeSystem', url, version });
 const VS = (url, version) => ({ resourceType: 'ValueSet', url, version });
@@ -14,11 +25,53 @@ const VS = (url, version) => ({ resourceType: 'ValueSet', url, version });
 // A resource that reports a concept count, like the real wrapper classes do.
 const sized = (resource, n) => ({ ...resource, conceptCount: () => n });
 
-describe('ResourceCache', () => {
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resource-cache-test-'));
+let fileNo = 0;
+const opened = [];
+afterAll(() => {
+  for (const c of opened) {
+    c.close();
+  }
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// How each store is made, and how a test makes an entry look idle
+const STORES = [
+  {
+    name: 'memory',
+    unknownId: 'CACHE_ID_UNKNOWN',
+    misrouted: (named) => (named ? 'CACHE_ID_OTHER_INSTANCE' : 'CACHE_ID_OTHER_INSTANCE_UNNAMED'),
+    make: (opts = {}) => new ResourceCache(null, opts.maxTombstones || 1000),
+    setLastUsed: (cache, id, when) => { cache.cache.get(id).lastUsed = when; }
+  },
+  {
+    name: 'sqlite',
+    // caches survive a restart here, so the message doesn't offer one as the reason
+    unknownId: 'CACHE_ID_UNKNOWN_SHARED',
+    // every process sees every cache, so a prefix naming another process says nothing
+    misrouted: () => 'CACHE_ID_UNKNOWN_SHARED',
+    make: (opts = {}) => {
+      const c = new SqliteResourceCache(null, {
+        path: path.join(tmpDir, `cache-${++fileNo}.db`),
+        scope: '/r4',
+        touchIntervalMs: 0,
+        ...opts
+      });
+      opened.push(c);
+      return c;
+    },
+    setLastUsed: (cache, id, when) => {
+      cache.db.prepare('UPDATE sessions SET last_used = ? WHERE scope = ? AND cache_id = ?').run(when, cache.scope, id);
+    }
+  }
+];
+
+describe.each(STORES)('ResourceCache ($name store)', (store) => {
   let cache;
+  const setLastUsed = (id, when) => store.setLastUsed(cache, id, when);
 
   beforeEach(() => {
-    cache = new ResourceCache(null);
+    cache = store.make();
   });
 
   describe('get / has on empty cache', () => {
@@ -129,7 +182,7 @@ describe('ResourceCache', () => {
     test('removes entries older than maxAge but keeps fresh ones', () => {
       cache.add('old', [CS('http://old', '1')]);
       // Force the entry to look stale.
-      cache.cache.get('old').lastUsed = Date.now() - 10000;
+      setLastUsed('old', Date.now() - 10000);
       cache.add('fresh', [CS('http://fresh', '1')]);
 
       cache.prune(5000); // maxAge 5s
@@ -140,7 +193,7 @@ describe('ResourceCache', () => {
 
     test('get() refreshes lastUsed so an active entry is not pruned', () => {
       cache.add('c1', [CS('http://a', '1')]);
-      cache.cache.get('c1').lastUsed = Date.now() - 10000;
+      setLastUsed('c1', Date.now() - 10000);
       cache.get('c1'); // touch -> refreshes lastUsed
       cache.prune(5000);
       expect(cache.has('c1')).toBe(true);
@@ -151,10 +204,10 @@ describe('ResourceCache', () => {
   // the whole point: "you closed it yourself" and "it sat idle for 31 minutes" send
   // an investigator to completely different places (see issue #279).
   describe('tombstones (why a cache-id is gone)', () => {
-    test('an id that was never issued has no tombstone and reports CACHE_ID_UNKNOWN', () => {
+    test('an id that was never issued has no tombstone and reports CACHE_ID_UNKNOWN (memory) or CACHE_ID_UNKNOWN_SHARED', () => {
       const d = cache.describeMissing('never-seen');
       expect(cache.tombstone('never-seen')).toBeNull();
-      expect(d.messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(d.messageId).toBe(store.unknownId);
       expect(d.params).toEqual(['never-seen']);
     });
 
@@ -171,7 +224,7 @@ describe('ResourceCache', () => {
 
     test('prune() records the expiry with the measured idle time, not the timeout', () => {
       cache.add('c1', [CS('http://a', '1')]);
-      cache.cache.get('c1').lastUsed = Date.now() - 10 * 60 * 1000; // idle 10 min
+      setLastUsed('c1', Date.now() - 10 * 60 * 1000); // idle 10 min
       cache.prune(5 * 60 * 1000); // timeout 5 min - the sweep is late, as it is in production
 
       const t = cache.tombstone('c1');
@@ -209,7 +262,7 @@ describe('ResourceCache', () => {
 
     test('the latest fate wins when an id dies twice', () => {
       cache.set('c1', [CS('http://a', '1')]);
-      cache.cache.get('c1').lastUsed = Date.now() - 10000;
+      setLastUsed('c1', Date.now() - 10000);
       cache.prune(5000);
       expect(cache.tombstone('c1').reason).toBe('expired');
 
@@ -219,7 +272,7 @@ describe('ResourceCache', () => {
     });
 
     test('tombstones are bounded: the oldest are evicted, never unbounded growth', () => {
-      const small = new ResourceCache(null, 3);
+      const small = store.make({ maxTombstones: 3 });
       for (const id of ['a', 'b', 'c', 'd', 'e']) {
         small.set(id, [CS('http://' + id, '1')]);
         small.clear(id);
@@ -229,13 +282,13 @@ describe('ResourceCache', () => {
       expect(small.tombstone('b')).toBeNull();      // evicted
       expect(small.tombstone('e')).not.toBeNull();  // newest kept
       // An evicted tombstone degrades to "never issued" rather than lying.
-      expect(small.describeMissing('a').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(small.describeMissing('a').messageId).toBe(store.unknownId);
     });
 
     test('closing an id the server never had leaves no tombstone', () => {
       cache.clear('not-mine');
       expect(cache.tombstone('not-mine')).toBeNull();
-      expect(cache.describeMissing('not-mine').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('not-mine').messageId).toBe(store.unknownId);
     });
   });
 
@@ -282,27 +335,31 @@ describe('ResourceCache', () => {
       expect(ResourceCache.issuerOf(undefined)).toBeNull();
     });
 
-    test('an id from another instance is reported as misrouted, naming both instances', () => {
+    test('an id from another instance is reported as misrouted, naming both instances (memory store)', () => {
       cache.setInstanceCode('tx1');
       const d = cache.describeMissing('tx2.abc');
-      expect(d.messageId).toBe('CACHE_ID_OTHER_INSTANCE');
-      expect(d.params).toEqual(['tx2.abc', 'tx2', 'tx1']);
+      expect(d.messageId).toBe(store.misrouted(true));
+      if (store.name === 'memory') {
+        expect(d.params).toEqual(['tx2.abc', 'tx2', 'tx1']);
+      }
     });
 
-    test('a server with no code reports a prefixed id as issued elsewhere', () => {
+    test('a server with no code reports a prefixed id as issued elsewhere (memory store)', () => {
       const d = cache.describeMissing('tx2.abc');
-      expect(d.messageId).toBe('CACHE_ID_OTHER_INSTANCE_UNNAMED');
-      expect(d.params).toEqual(['tx2.abc', 'tx2']);
+      expect(d.messageId).toBe(store.misrouted(false));
+      if (store.name === 'memory') {
+        expect(d.params).toEqual(['tx2.abc', 'tx2']);
+      }
     });
 
     test('an unrecorded id with our own prefix is plain unknown (e.g. issued before a restart)', () => {
       cache.setInstanceCode('tx1');
-      expect(cache.describeMissing('tx1.abc').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('tx1.abc').messageId).toBe(store.unknownId);
     });
 
     test('an unprefixed id on a named server is plain unknown', () => {
       cache.setInstanceCode('tx1');
-      expect(cache.describeMissing('abc').messageId).toBe('CACHE_ID_UNKNOWN');
+      expect(cache.describeMissing('abc').messageId).toBe(store.unknownId);
     });
 
     test('a tombstone wins over the prefix check', () => {
@@ -320,7 +377,7 @@ describe('ResourceCache', () => {
   describe('status / touch (mode=check)', () => {
     test('status reports a live cache without touching it', () => {
       cache.set('c1', [CS('http://a', '1'), VS('http://b', '1')], true);
-      cache.cache.get('c1').lastUsed = Date.now() - 90 * 1000;
+      setLastUsed('c1', Date.now() - 90 * 1000);
 
       const s = cache.status('c1');
       expect(s.exists).toBe(true);
@@ -338,7 +395,7 @@ describe('ResourceCache', () => {
 
     test('touch resets the idle clock and saves the cache from the next prune', () => {
       cache.add('c1', [CS('http://a', '1')]);
-      cache.cache.get('c1').lastUsed = Date.now() - 10000;
+      setLastUsed('c1', Date.now() - 10000);
 
       expect(cache.touch('c1')).toBe(true);
       expect(cache.status('c1').idleMs).toBeLessThan(1000);
@@ -431,14 +488,15 @@ describe('ResourceCache', () => {
 
     test('prune subtracts evicted entries', () => {
       cache.add('old', [sized(CS('http://old', '1'), 7)]);
-      cache.cache.get('old').lastUsed = Date.now() - 10000;
+      setLastUsed('old', Date.now() - 10000);
       cache.add('fresh', [sized(CS('http://fresh', '1'), 4)]);
       cache.prune(5000);
       expect(cache.conceptCount()).toBe(4);
     });
   });
 
-  describe('limits', () => {
+  // the concept limits are the memory store's: the shared store does not apply them
+  (store.name === 'memory' ? describe : describe.skip)('limits', () => {
     test('a request that would take a cache past its limit drops the cache: 404 cache-id-unknown, saying why', () => {
       cache.setLimits(10, 100);
       cache.add('c1', [sized(CS('http://a', '1'), 8)]);
@@ -520,5 +578,407 @@ describe('ResourceCache', () => {
       expect(cache.conceptCount()).toBe(3);
       expect(cache.maxConceptCount()).toBe(20);
     });
+  });
+
+  describe('sealed and unsealed', () => {
+    test('set() records whether the cache is sealed; add() keeps an unsealed cache unsealed', () => {
+      cache.set('open', [CS('http://a', '1')], false);
+      cache.set('shut', [CS('http://a', '1')], true);
+      expect(cache.isSealed('open')).toBe(false);
+      expect(cache.isSealed('shut')).toBe(true);
+      expect(cache.isSealed('nope')).toBe(false);
+      cache.add('open', [VS('http://v', '1')]);
+      expect(cache.isSealed('open')).toBe(false);
+      expect(cache.get('open').map(r => r.url)).toEqual(['http://a', 'http://v']);
+    });
+
+    test('an empty cache made by set() exists', () => {
+      cache.set('empty', [], true);
+      expect(cache.has('empty')).toBe(true);
+      expect(cache.get('empty')).toEqual([]);
+      expect(cache.status('empty').resources).toBe(0);
+    });
+
+    test('order is kept, and a replacement keeps its place', () => {
+      cache.add('c1', [CS('http://a', '1'), CS('http://b', '1'), CS('http://c', '1')]);
+      cache.add('c1', [{ ...CS('http://b', '1'), title: 'new b' }, CS('http://d', '1')]);
+      const got = cache.get('c1');
+      expect(got.map(r => r.url)).toEqual(['http://a', 'http://b', 'http://c', 'http://d']);
+      expect(got[1].title).toBe('new b');
+    });
+  });
+
+  describe('resources are marked as cached', () => {
+    test('get() returns resources with a non-enumerable isCached marker', () => {
+      cache.add('c1', [CS('http://a', '1')]);
+      const [r] = cache.get('c1');
+      expect(r.isCached).toBe(true);
+      expect(Object.keys(r)).not.toContain('isCached');
+      expect(JSON.stringify(r)).not.toContain('isCached');
+    });
+  });
+
+  // A cap on the total size of what the cache holds: when a write takes it over, whole
+  // caches are dropped, least recently used first, and remembered as `evicted`.
+  // only the shared store has a cap: the memory store is as it was
+  (store.name === 'sqlite' ? describe : describe.skip)('size cap (maxBytes)', () => {
+    const big = (url, n) => ({ ...CS(url, '1'), description: 'x'.repeat(n) });
+
+    test('drops the least recently used caches, never the one being written', () => {
+      cache = store.make({ maxBytes: 2500 });
+      cache.set('a', [big('http://a', 1000)]);
+      cache.set('b', [big('http://b', 1000)]);
+      setLastUsed('a', Date.now() - 60000);
+      setLastUsed('b', Date.now() - 30000);
+      cache.set('c', [big('http://c', 1000)]); // over the cap: 'a' is the oldest
+      expect(cache.has('a')).toBe(false);
+      expect(cache.has('b')).toBe(true);
+      expect(cache.has('c')).toBe(true);
+      expect(cache.byteCount()).toBeLessThanOrEqual(2500);
+
+      const t = cache.tombstone('a');
+      expect(t.reason).toBe('evicted');
+      expect(t.maxBytes).toBe(2500);
+      expect(t.idleMs).toBeGreaterThanOrEqual(60000);
+      const d = cache.describeMissing('a');
+      expect(d.messageId).toBe('CACHE_ID_EVICTED_SIZE');
+      expect(d.params[0]).toBe('a');
+      expect(d.params[2]).toBe('2 KB');
+      expect(d.params[3]).toBe('60 seconds');
+    });
+
+    test('growing a cache with add() can evict others too', () => {
+      cache = store.make({ maxBytes: 2500 });
+      cache.set('a', [big('http://a', 1000)]);
+      setLastUsed('a', Date.now() - 60000);
+      cache.set('b', [big('http://b', 1000)]);
+      cache.add('b', [big('http://b2', 1000)]);
+      expect(cache.has('a')).toBe(false);
+      expect(cache.tombstone('a').reason).toBe('evicted');
+      expect(cache.get('b')).toHaveLength(2);
+    });
+
+    test('a single cache bigger than the cap is kept (there is nothing else to drop)', () => {
+      cache = store.make({ maxBytes: 500 });
+      cache.set('a', [big('http://a', 1000)]);
+      expect(cache.has('a')).toBe(true);
+    });
+
+    test('no cap, nothing is dropped', () => {
+      for (let i = 0; i < 20; i++) {
+        cache.set('c' + i, [big('http://c' + i, 1000)]);
+      }
+      expect(cache.size()).toBe(20);
+    });
+  });
+});
+
+// Behaviour that only the shared SQLite store has.
+describe('SqliteResourceCache', () => {
+  const { CodeSystem } = require('../../tx/library/codesystem');
+  const ValueSet = require('../../tx/library/valueset');
+  const make = (opts = {}) => {
+    const c = new SqliteResourceCache(null, { path: path.join(tmpDir, `only-${++fileNo}.db`), scope: '/r4', ...opts });
+    opened.push(c);
+    return c;
+  };
+  const lastUsedOf = (c, id) => c.db.prepare('SELECT last_used FROM sessions WHERE scope = ? AND cache_id = ?').get(c.scope, id).last_used;
+
+  test('wrappers come back as wrappers, with the FHIR version they arrived in', () => {
+    const c = make();
+    const cs = new CodeSystem({
+      resourceType: 'CodeSystem', url: 'http://example.org/cs', version: '1', status: 'active', content: 'complete',
+      concept: [{ code: 'a', display: 'A' }, { code: 'b', display: 'B', concept: [{ code: 'b1' }] }]
+    }, 'R4');
+    const vs = new ValueSet({
+      resourceType: 'ValueSet', url: 'http://example.org/vs', status: 'active',
+      compose: { include: [{ system: 'http://example.org/cs', filter: [{ property: 'concept', op: 'is-a', value: 'b' }] }] }
+    }, 'R3');
+    c.set('c1', [cs, vs]);
+    const [cs2, vs2] = c.get('c1');
+    expect(cs2).toBeInstanceOf(CodeSystem);
+    expect(vs2).toBeInstanceOf(ValueSet);
+    expect(cs2.fhirVersion).toBe('R4');
+    expect(vs2.fhirVersion).toBe('R3');
+    expect(cs2.jsonObj).toEqual(cs.jsonObj);
+    expect(vs2.jsonObj).toEqual(vs.jsonObj);
+    expect(cs2.conceptCount()).toBe(3);
+    expect(c.conceptCountFor('c1')).toBe(3);
+    expect(cs2.isCached).toBe(true);
+    // a fresh object every time: nothing is shared between requests
+    expect(c.get('c1')[0]).not.toBe(cs2);
+  });
+
+  describe('a request only loads the resources it uses', () => {
+    const { ConceptMap } = require('../../tx/library/conceptmap');
+    const { ExpansionCache } = require('../../tx/operation-context');
+    const mkCs = (url, version, extra = {}) => new CodeSystem({
+      resourceType: 'CodeSystem', url, version, status: 'active', content: 'complete',
+      concept: [{ code: 'a', display: 'A' }], ...extra
+    }, 'R4');
+    const countLoads = (c) => {
+      const orig = c.q.content;
+      const counter = { n: 0 };
+      c.q.content = { get: (...args) => { counter.n++; return orig.get(...args); } };
+      return counter;
+    };
+
+    test('looking through the cache by url, version and type loads nothing', () => {
+      const c = make();
+      c.set('c1', [mkCs('http://x/a', '1'), mkCs('http://x/b', '2'), mkCs('http://x/sup', '1', { content: 'supplement', supplements: 'http://x/a' })]);
+      const loads = countLoads(c);
+      const got = c.get('c1');
+      expect(got.map(r => r.url)).toEqual(['http://x/a', 'http://x/b', 'http://x/sup']);
+      expect(got.map(r => r.version)).toEqual(['1', '2', '1']);
+      expect(got.map(r => r.vurl)).toEqual(['http://x/a|1', 'http://x/b|2', 'http://x/sup|1']);
+      expect(got.every(r => r.resourceType === 'CodeSystem' && r instanceof CodeSystem)).toBe(true);
+      expect(got.some(r => r instanceof ConceptMap)).toBe(false);
+      expect(got.map(r => r.supplementsUrl)).toEqual([undefined, undefined, 'http://x/a']);
+      expect(got[2].isGlobalSupplement()).toBe(false);
+      expect(got.every(r => r.isCached === true)).toBe(true);
+      expect(loads.n).toBe(0);
+
+      // using one loads that one only, once
+      expect(got[1].content).toBe('complete');
+      expect(got[1].jsonObj.concept[0].code).toBe('a');
+      expect(got[1].conceptCount()).toBe(1);
+      expect(loads.n).toBe(1);
+    });
+
+    test('a loaded stand-in behaves like the wrapper it stands for', () => {
+      const c = make();
+      const original = mkCs('http://x/a', '1');
+      c.set('c1', [original]);
+      const [r] = c.get('c1');
+      expect(r.jsonObj).toEqual(original.jsonObj);
+      expect(r.fhirVersion).toBe('R4');
+      expect(r.versionAlgorithm()).toEqual(original.versionAlgorithm());
+      expect(JSON.parse(JSON.stringify(r)).jsonObj).toEqual(original.jsonObj);
+      r.sourcePackage = 'p';
+      expect(r.sourcePackage).toBe('p');
+    });
+
+    test('the expansion cache key is the same as for the resources built eagerly', () => {
+      const c = make();
+      const resources = [mkCs('http://x/a', '1'), new ValueSet({ resourceType: 'ValueSet', url: 'http://x/vs', status: 'active',
+        compose: { include: [{ system: 'http://x/a' }] } }, 'R4')];
+      c.set('c1', resources);
+      const ec = new ExpansionCache(null);
+      const vs = { resourceType: 'ValueSet', url: 'http://x/vs' };
+      const loads = countLoads(c);
+      const lazyKey = ec.computeKey(vs, null, c.get('c1'));
+      expect(loads.n).toBe(0);
+      const eager = c.q.resources.all('/r4', 'c1').map(row => c._build(row));
+      expect(ec.computeKey(vs, null, eager)).toBe(lazyKey);
+      expect(ec.computeKey(vs, null, resources)).toBe(lazyKey);
+    });
+
+    test('the stored hash pre-fills each resource\'s expansion-key hash (P6): same keys, no hashing', () => {
+      const crypto = require('crypto');
+      const { CanonicalResource } = require('../../tx/library/canonical-resource');
+      const c = make();
+      const resources = [
+        mkCs('http://x/a', '1'),
+        mkCs('http://x/sup', '1', { content: 'supplement', supplements: 'http://x/a' }),
+        new ValueSet({ resourceType: 'ValueSet', url: 'http://x/vs', status: 'active',
+          compose: { include: [{ system: 'http://x/a', filter: [{ property: 'concept', op: 'is-a', value: 'a' }] }] } }, 'R3'),
+        new ConceptMap({ resourceType: 'ConceptMap', url: 'http://x/cm', status: 'active',
+          group: [{ source: 'http://x/a', target: 'http://x/b', element: [{ code: 'a', target: [{ code: 'b', relationship: 'equivalent' }] }] }] }),
+        { resourceType: 'NamingSystem', url: 'http://x/ns', name: 'plain' }
+      ];
+      // the keys the memory store's resources (the ones the client sent) make
+      const vs = new ValueSet({ resourceType: 'ValueSet', url: 'http://x/expand-me', status: 'active', compose: { include: [{ system: 'http://x/a' }] } });
+      const ec = new ExpansionCache(null);
+      const params = { hashSource: () => 'p' };
+      const memoryKey = ec.computeKey(vs, params, resources);
+      c.set('c1', resources);
+
+      // stand-ins: the hash comes from the row - nothing is loaded and nothing hashed
+      // but the key itself and the plain resource
+      const lazy = c.get('c1');
+      const loads = countLoads(c);
+      const createHash = jest.spyOn(crypto, 'createHash');
+      let lazyKey;
+      try {
+        lazyKey = ec.computeKey(vs, params, lazy);
+        expect(createHash).toHaveBeenCalledTimes(2);
+      } finally {
+        createHash.mockRestore();
+      }
+      expect(loads.n).toBe(0);
+      expect(lazyKey).toBe(memoryKey);
+
+      // loaded: each wrapper was given the row's hash when it was built
+      for (const r of lazy.slice(0, 4)) {
+        void r.jsonObj;
+      }
+      expect(loads.n).toBe(4);
+      for (const [i, r] of lazy.entries()) {
+        const expected = CanonicalResource.computeExpansionKeyHash(resources[i].jsonObj || resources[i]);
+        if (typeof r.expansionKeyHash === 'function') {
+          expect(r.expansionKeyHash()).toBe(expected);
+        }
+      }
+      const spy = jest.spyOn(crypto, 'createHash');
+      try {
+        expect(ec.computeKey(vs, params, lazy)).toBe(memoryKey);
+        expect(spy).toHaveBeenCalledTimes(2);
+      } finally {
+        spy.mockRestore();
+      }
+      // and built eagerly from the rows
+      const eager = c.q.resources.all('/r4', 'c1').map(row => c._build(row));
+      expect(ec.computeKey(vs, params, eager)).toBe(memoryKey);
+    });
+
+    test('a resource that has gone by the time it is used fails like a dead cache-id', () => {
+      const c = make();
+      c.set('c1', [mkCs('http://x/a', '1')]);
+      const [r] = c.get('c1');
+      c.clear('c1');
+      let err = null;
+      try {
+        void r.jsonObj;
+      } catch (e) {
+        err = e;
+      }
+      expect(err).not.toBeNull();
+      expect(err.statusCode).toBe(404);
+      expect(err.issueCode).toBe('cache-id-unknown');
+      expect(err.message).toMatch(/was closed while this request was using it/);
+    });
+  });
+
+  test('endpoints share the file but not caches', () => {
+    const file = path.join(tmpDir, `scopes-${++fileNo}.db`);
+    const r4 = new SqliteResourceCache(null, { path: file, scope: '/r4' });
+    const r5 = new SqliteResourceCache(null, { path: file, scope: '/r5' });
+    opened.push(r4, r5);
+    r4.set('c1', [CS('http://a', '1')]);
+    expect(r4.has('c1')).toBe(true);
+    expect(r5.has('c1')).toBe(false);
+    expect(r5.get('c1')).toEqual([]);
+    r4.clear('c1');
+    expect(r5.tombstone('c1')).toBeNull();
+  });
+
+  test('last_used is refreshed at most once per touch interval', () => {
+    const c = make({ touchIntervalMs: 30000 });
+    c.set('c1', [CS('http://a', '1')]);
+    const t0 = Date.now() - 10000;
+    c.db.prepare('UPDATE sessions SET last_used = ?').run(t0);
+    c.get('c1');
+    expect(lastUsedOf(c, 'c1')).toBe(t0); // 10 s ago: within the interval, not written
+    c.add('c1', [CS('http://a', '1')]);   // same content again: no write either
+    expect(lastUsedOf(c, 'c1')).toBe(t0);
+
+    const t1 = Date.now() - 31000;
+    c.db.prepare('UPDATE sessions SET last_used = ?').run(t1);
+    c.get('c1');
+    expect(lastUsedOf(c, 'c1')).toBeGreaterThan(Date.now() - 2000); // past the interval: refreshed
+  });
+
+  test('an explicit touch (mode=check) is not throttled', () => {
+    const c = make({ touchIntervalMs: 30000 });
+    c.set('c1', [CS('http://a', '1')]);
+    c.db.prepare('UPDATE sessions SET last_used = ?').run(Date.now() - 10000);
+    expect(c.touch('c1')).toBe(true);
+    expect(c.status('c1').idleMs).toBeLessThan(1000);
+  });
+
+  test('a failed last_used refresh is ignored', () => {
+    const c = make({ touchIntervalMs: 0 });
+    c.set('c1', [CS('http://a', '1')]);
+    const orig = c.q.touch;
+    c.q.touch = { run: () => { throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); } };
+    try {
+      expect(c.get('c1')).toHaveLength(1);
+      expect(c.touch('c1')).toBe(true);
+    } finally {
+      c.q.touch = orig;
+    }
+  });
+
+  test('a failed write of uploaded resources is retried once, then answered 503 - never dropped silently', () => {
+    const c = make();
+    c.set('c1', [CS('http://a', '1')]);
+    const orig = c.q.upsertResource;
+    let calls = 0;
+    c.q.upsertResource = { run: () => { calls++; throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }); } };
+    let err = null;
+    try {
+      c.add('c1', [CS('http://b', '1')]);
+    } catch (e) {
+      err = e;
+    } finally {
+      c.q.upsertResource = orig;
+    }
+    expect(calls).toBe(2);
+    expect(err).not.toBeNull();
+    expect(err.statusCode).toBe(503);
+    expect(err.msgId).toBe('CACHE_WRITE_FAILED');
+    // the failed transaction changed nothing
+    expect(c.get('c1').map(r => r.url)).toEqual(['http://a']);
+  });
+
+  test('one failure then success: the retry saves the resources', () => {
+    const c = make();
+    c.set('c1', []);
+    const orig = c.q.upsertResource;
+    let calls = 0;
+    c.q.upsertResource = { run: (row) => { if (++calls === 1) { throw Object.assign(new Error('busy'), { code: 'SQLITE_BUSY' }); } return orig.run(row); } };
+    try {
+      c.add('c1', [CS('http://b', '1')]);
+    } finally {
+      c.q.upsertResource = orig;
+    }
+    expect(c.get('c1').map(r => r.url)).toEqual(['http://b']);
+  });
+
+  test('add() does not bring back a cache that has been closed', () => {
+    const c = make();
+    c.set('c1', [CS('http://a', '1')]);
+    c.clear('c1');
+    c.add('c1', [CS('http://b', '1')]);
+    expect(c.has('c1')).toBe(false);
+    expect(c.tombstone('c1').reason).toBe('closed');
+  });
+
+  test('the size cap covers every endpoint in the file', () => {
+    const file = path.join(tmpDir, `cap-${++fileNo}.db`);
+    const r4 = new SqliteResourceCache(null, { path: file, scope: '/r4', maxBytes: 2500 });
+    const r5 = new SqliteResourceCache(null, { path: file, scope: '/r5', maxBytes: 2500 });
+    opened.push(r4, r5);
+    r4.set('a', [{ ...CS('http://a', '1'), description: 'x'.repeat(1000) }]);
+    r4.db.prepare('UPDATE sessions SET last_used = ?').run(Date.now() - 60000);
+    r5.set('b', [{ ...CS('http://b', '1'), description: 'x'.repeat(1000) }]);
+    r5.set('c', [{ ...CS('http://c', '1'), description: 'x'.repeat(1000) }]);
+    expect(r4.has('a')).toBe(false);
+    expect(r4.tombstone('a').reason).toBe('evicted');
+    expect(r5.has('b')).toBe(true);
+  });
+
+  test('a cache survives a restart (closing and reopening the file)', () => {
+    const file = path.join(tmpDir, `restart-${++fileNo}.db`);
+    const before = new SqliteResourceCache(null, { path: file, scope: '/r4' });
+    before.set('c1', [CS('http://a', '1')], true);
+    before.set('c2', []);
+    before.clear('c2');
+    before.close();
+
+    const after = new SqliteResourceCache(null, { path: file, scope: '/r4' });
+    opened.push(after);
+    expect(after.has('c1')).toBe(true);
+    expect(after.isSealed('c1')).toBe(true);
+    expect(after.get('c1').map(r => r.url)).toEqual(['http://a']);
+    expect(after.describeMissing('c2').messageId).toBe('CACHE_ID_CLOSED');
+  });
+
+  test('a file from a different schema version is refused, not misread', () => {
+    const file = path.join(tmpDir, `schema-${++fileNo}.db`);
+    const c = new SqliteResourceCache(null, { path: file, scope: '/r4' });
+    c.db.prepare("UPDATE meta SET value = '999' WHERE key = 'schema'").run();
+    c.close();
+    expect(() => new SqliteResourceCache(null, { path: file, scope: '/r4' })).toThrow(/schema version 999/);
   });
 });

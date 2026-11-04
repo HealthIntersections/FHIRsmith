@@ -67,11 +67,16 @@ function loadSettings(argv, env, config) {
     }
     procs.push({ name: 'worker ' + code, role: 'tx-worker', code, port: internalPort + i, servesTx: true });
   }
+  // the options (cluster.md, "Options"): with the shared cache, any process can answer any
+  // cache-id, so by default a cached request goes to the least loaded; cacheAffinity: true
+  // keeps sending it to the process that issued it while that one is up
+  const sharedCache = cluster.sharedCache === true;
   return {
     port,
     procs,
     txPaths: (tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')),
-    drainMs: Number(cluster.drainSeconds || 30) * 1000
+    drainMs: Number(cluster.drainSeconds || 30) * 1000,
+    routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true }
   };
 }
 
@@ -80,9 +85,11 @@ function loadSettings(argv, env, config) {
  * @param {string} url - the request target (path and query)
  * @param {Object} headers - the request headers (lower case names)
  * @param {string[]} txPaths - the tx endpoint paths, e.g. ['/r4', '/r5']
+ * @param {Object} [routing] - from loadSettings: cacheAffinity (default true) sends a
+ *   request with a cache-id to the process that issued it
  * @returns {{to: 'master'}|{to: 'owner', code: string}|{to: 'tx'}}
  */
-function classify(url, headers, txPaths) {
+function classify(url, headers, txPaths, routing = {}) {
   let p = String(url).split('?')[0];
   try {
     p = decodeURIComponent(p);
@@ -98,6 +105,9 @@ function classify(url, headers, txPaths) {
   // carry the VSAC resync form, which writes the VSAC database
   if (/^\/\$closure\/?$/.test(rest) || /^\/syndication(\/|$)/.test(rest) || rest.startsWith('/info/')) {
     return { to: 'master' };
+  }
+  if (routing.cacheAffinity === false) {
+    return { to: 'tx' };
   }
   const m = /^([A-Za-z0-9]{1,16})\./.exec(headers['x-cache-id'] || '');
   return m ? { to: 'owner', code: m[1] } : { to: 'tx' };
@@ -118,8 +128,9 @@ function pickTarget(route, procs) {
     if (owner) {
       return owner;
     }
-    // the owner is down (or the code is unknown): any tx process answers cache-id-unknown,
-    // which the client recovers from by starting a new cache
+    // the owner is down (or the code is unknown): any tx process answers. Without the
+    // shared cache that is cache-id-unknown, which the client recovers from by starting a
+    // new cache; with it, the cache is there
   }
   const candidates = procs.filter(p => p.servesTx && p.ready);
   if (candidates.length === 0) {
@@ -207,7 +218,7 @@ function createLauncher(settings) {
   }
 
   function proxy(req, res) {
-    const target = pickTarget(classify(req.url, req.headers, settings.txPaths), procs);
+    const target = pickTarget(classify(req.url, req.headers, settings.txPaths, settings.routing), procs);
     if (!target) {
       return fail(res, 503, 'No server process is ready to take this request; try again shortly');
     }
