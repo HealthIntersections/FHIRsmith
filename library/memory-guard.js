@@ -38,6 +38,9 @@ const GC_MAX_INTERVAL_MS = 60000;
 // times a request, and a read of /proc/self/status costs twice what the RSS itself does;
 // between reads, a fresh RSS less the last RssFile is a close enough estimate
 const FILE_SAMPLE_MS = 200;
+// the in-operation check reuses a measure at most this old. It runs about ten times a request,
+// and RSS moves little in 10 ms
+const ABORT_SAMPLE_MS = 10;
 
 const state = {
   limit: 0,
@@ -164,8 +167,9 @@ let lastAbortLog = 0;
 let abortLog = null;
 
 /**
- * Current RSS in bytes if running operations should be aborted, else 0. A fresh RSS (less the
- * file-backed part as read at most FILE_SAMPLE_MS ago).
+ * Current RSS in bytes if running operations should be aborted, else 0. A measure at most
+ * ABORT_SAMPLE_MS old (less the file-backed part as read at most FILE_SAMPLE_MS ago), or fresh
+ * if the sample was dropped (configure, measureExcludingFileBacked).
  * A trip is written to the server log (at most once a minute, with a running count) - the
  * caller's own message only goes to the aborted operation's diagnostics.
  * @param {string} [place] - where the check was made, for the log
@@ -174,7 +178,7 @@ function overAbortThreshold(place = 'unknown') {
   if (state.abortAt <= 0) {
     return 0;
   }
-  const r = rss(true);
+  const r = rss(Date.now() - state.sampleTime > ABORT_SAMPLE_MS);
   if (r <= state.abortAt) {
     return 0;
   }
