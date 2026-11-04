@@ -773,6 +773,27 @@ class CodeSystemProvider {
   async subsumesTest(codeA, codeB) { return 'not-subsumed'; }
 
   /**
+   * The codes a code sits under: every ancestor in the hierarchy subsumesTest() answers from,
+   * not just the parents, and not the code itself. Optional: $closure uses it, when it is given,
+   * to relate many concepts to one another from one call per concept instead of one
+   * subsumesTest() per pair. The default returns null (not supported), and $closure then calls
+   * subsumesTest() for each pair, as it always has.
+   *
+   * A provider that implements it must agree with its own subsumesTest(): for two different
+   * codes a and b that this method answers for, subsumesTest(a, b) is 'subsumes' exactly when a
+   * is in ancestorsOf(b), 'subsumed-by' exactly when b is in ancestorsOf(a) (and a is not in
+   * ancestorsOf(b)), and never 'equivalent'. The codes are given in the form code() returns them.
+   * For any code where that can't be promised - an unknown code, a code not in the form code()
+   * gives (so another code may be the same concept), a postcoordinated expression - return null,
+   * and the pairs that involve it are tested with subsumesTest().
+   *
+   * @param {string | CodeSystemProviderContext} code
+   * @returns {Promise<Set<string>|null>} the ancestors' codes, or null when not supported for this code
+   */
+  // eslint-disable-next-line no-unused-vars
+  async ancestorsOf(code) { return null; }
+
+  /**
    
    * @param {CodeSystemProviderContext} ctxt the context to add properties for
    * @param {string[]} props the properties requested
