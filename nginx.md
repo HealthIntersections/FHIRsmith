@@ -414,6 +414,11 @@ node --expose-gc server.js --role=tx-worker --instance-code=tx1 --port=3002
 node --expose-gc server.js --role=tx-worker --instance-code=tx2 --port=3003
 ```
 
+Keep each server's keepAliveTimeout (65 s with `library/keep-alive.js`) above nginx's upstream
+`keepalive_timeout` (60 s by default); on servers without that fix (Node's 5 s), set
+`keepalive_timeout 4s;` in each upstream block, or nginx reuses connections the servers are
+closing, and the resets mark the owner of a cache down.
+
 The routing is the pool above, with the master as the designated `$closure` instance and the
 home of everything that isn't a tx endpoint:
 

@@ -32,6 +32,11 @@ const { spawn } = require('child_process');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
+// An idle keep-alive connection to a process is closed by the launcher after this long:
+// below the processes' own keepAliveTimeout (65 s with library/keep-alive.js, Node's default
+// of 5 s on a server without it), so the launcher never sends a request down a connection the
+// process is closing at that moment (a reset, which the client would see as a 502)
+const UPSTREAM_IDLE_MS = 4000;
 // a process that ran this long before exiting is restarted at once
 const HEALTHY_RUN_MS = 60000;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
@@ -169,7 +174,9 @@ function createLauncher(settings) {
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
     ...p, child: null, ready: false, outstanding: 0, failures: 0, startedAt: 0, restartTimer: null,
-    agent: new http.Agent({ keepAlive: true, maxSockets: 256 })
+    // timeout: a connection idle in the pool this long is closed (see UPSTREAM_IDLE_MS); a
+    // request in progress is not affected
+    agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
   let server = null;
   let stopping = false;
