@@ -26,6 +26,18 @@
 // here reads or writes an unbounded amount in one go: reads that can be large are paged
 // (entriesPage), and the size of what one call can write is capped by the worker.
 //
+// Shared (server.cluster.sharedClosure, cluster.md "Options"): several processes open this
+// file and any of them may answer $closure. The per-table lock is still taken, but it only
+// orders the calls within one process, so correctness across processes comes from the
+// writes themselves. A call computes against the table as it read it (its id and version),
+// and writes in one BEGIN IMMEDIATE transaction that first checks the table is still at
+// that id and version (recordAddChecked); if it isn't, nothing is written and the worker
+// computes again from what is there now. Creating a table checks for an existing one and
+// for the table limit in the same transaction as the insert (createTableChecked). A resync
+// reads only up to the version it reports (entriesPage's upTo), so a write by another
+// process between its pages can't put entries of a later version in it. Without shared,
+// none of these paths is taken.
+//
 
 const path = require('path');
 const fs = require('fs');
@@ -40,10 +52,13 @@ class ClosureStore {
   /**
    * @param {Object} config - modules.tx.closure
    * @param {Object} [log]
+   * @param {Object} [options]
+   * @param {boolean} [options.shared] - other processes use the file too (see above)
    */
-  constructor(config, log) {
+  constructor(config, log, options = {}) {
     this.config = config || {};
     this.log = log || console;
+    this.shared = !!options.shared;
     this.db = null;
     this.path = ClosureStore.resolvePath(this.config);
     this.locks = new Map(); // table name -> { tail: Promise, count: holder + waiters }
@@ -69,8 +84,22 @@ class ClosureStore {
       fs.mkdirSync(path.dirname(this.path), {recursive: true});
     }
     this.db = new Database(this.path);
+    if (this.shared) {
+      // first: switching to WAL and creating the tables need locks another process may hold
+      this.db.pragma('busy_timeout = 5000');
+    }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    if (this.shared) {
+      // one process at a time creates the tables and brings an old database up to date
+      this.db.transaction(() => this.#createSchema()).immediate();
+    } else {
+      this.#createSchema();
+    }
+    this.#prepare();
+  }
+
+  #createSchema() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS closure_table (
         id        INTEGER PRIMARY KEY,
@@ -118,6 +147,9 @@ class ClosureStore {
           entry_count = (SELECT count(*) FROM closure_entry e WHERE e.table_id = closure_table.id);
       `);
     }
+  }
+
+  #prepare() {
     this.stmt = {
       getTable: this.db.prepare('SELECT id, name, version, created, last_used FROM closure_table WHERE name = ?'),
       countTables: this.db.prepare('SELECT count(*) AS n FROM closure_table'),
@@ -156,6 +188,22 @@ class ClosureStore {
          WHERE e.table_id = ? AND e.added_version > ?`),
       staleTables: this.db.prepare('SELECT id, name FROM closure_table WHERE last_used < ?')
     };
+    if (this.shared) {
+      Object.assign(this.stmt, {
+        entriesPageUpTo: this.db.prepare(`
+          SELECT e.rowid AS rowid,
+                 s.system AS source_system, s.code AS source_code, s.display AS source_display,
+                 t.system AS target_system, t.code AS target_code, t.display AS target_display,
+                 e.relationship
+            FROM closure_entry e
+            JOIN closure_concept s ON s.id = e.source_id
+            JOIN closure_concept t ON t.id = e.target_id
+           WHERE e.table_id = ? AND e.added_version > ? AND e.added_version <= ? AND e.rowid > ?
+           ORDER BY e.rowid
+           LIMIT ?`),
+        deleteStale: this.db.prepare('DELETE FROM closure_table WHERE id = ? AND last_used < ?')
+      });
+    }
   }
 
   close() {
@@ -260,7 +308,11 @@ class ClosureStore {
    * written. Page through with the last row's rowid as afterRowid (start with 0).
    * @returns {Array<{rowid, source_system, source_code, source_display, target_system, target_code, target_display, relationship}>}
    */
-  entriesPage(tableId, version, afterRowid, limit) {
+  entriesPage(tableId, version, afterRowid, limit, upTo) {
+    if (upTo !== undefined) {
+      // shared: only up to the version the caller read (see the header)
+      return this.stmt.entriesPageUpTo.all(tableId, version, upTo, afterRowid, limit);
+    }
     return this.stmt.entriesPage.all(tableId, version, afterRowid, limit);
   }
 
@@ -354,6 +406,53 @@ class ClosureStore {
   }
 
   /**
+   * Shared: create (or, with reset, replace) a table, checking in the same write
+   * transaction that there isn't one already (unless reset) and that the table limit
+   * isn't reached - so two processes creating at once can't both succeed, or go over it.
+   * @param {string} name
+   * @param {Array<Object>} params - as for createTable
+   * @param {Object} opts
+   * @param {boolean} opts.reset - replace a table of that name
+   * @param {number} opts.maxTables - Infinity for none
+   * @returns {{table: Object}|{refused: 'exists'|'limit'}}
+   */
+  createTableChecked(name, params, { reset, maxTables }) {
+    return this.db.transaction(() => {
+      const existing = this.stmt.getTable.get(name);
+      if (existing && !reset) {
+        return { refused: 'exists' };
+      }
+      if (!existing && this.stmt.countTables.get().n >= maxTables) {
+        return { refused: 'limit' };
+      }
+      return { table: this.createTable(name, params) };
+    }).immediate();
+  }
+
+  /**
+   * Shared: recordAdd, if the table is still the one the caller computed against - the
+   * same id (not reset or dropped since) and the same version (nothing added since). The
+   * check and the write are one BEGIN IMMEDIATE transaction, so no other process can
+   * write in between.
+   * @returns {number|null} the version after the add, or null if the table has changed
+   *   (nothing was written)
+   */
+  recordAddChecked(table, concepts, entries) {
+    if (concepts.length === 0) {
+      // nothing to write: what the caller read is still a true answer (it was the table
+      // when it read it, and nothing it was asked to add is missing from the table now)
+      return this.recordAdd(table, concepts, entries);
+    }
+    return this.db.transaction(() => {
+      const now = this.stmt.getTable.get(table.name);
+      if (!now || now.id !== table.id || now.version !== table.version) {
+        return null;
+      }
+      return this.recordAdd(table, concepts, entries);
+    }).immediate();
+  }
+
+  /**
    * Every entry added after the given version.
    * @returns {Array<{source_system, source_code, source_display, target_system, target_code, target_display, relationship}>}
    */
@@ -395,6 +494,13 @@ class ClosureStore {
     const dropped = [];
     for (const t of stale) {
       await this.withLock(t.name, async () => {
+        if (this.shared) {
+          // another process may use the table between a read and a delete: one statement
+          if (this.db && this.stmt.deleteStale.run(t.id, cutoff).changes > 0) {
+            dropped.push(t.name);
+          }
+          return;
+        }
         const now = this.db ? this.stmt.getTable.get(t.name) : null;
         if (now && now.id === t.id && now.last_used < cutoff) {
           this.stmt.deleteTable.run(t.id);
