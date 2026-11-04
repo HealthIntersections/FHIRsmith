@@ -62,6 +62,9 @@ const HEAVY_SHARE = 1.5;
 const REPORT_MS = 1000;
 // the group measure is read at most this often by the in-operation check
 const GROUP_SAMPLE_MS = 100;
+// one process: the in-operation check reuses a measure at most this old. It runs about ten
+// times a request, and RSS moves little in 10 ms
+const ABORT_SAMPLE_MS = 10;
 
 const state = {
   limit: 0,
@@ -312,7 +315,9 @@ let lastAbortLog = 0;
 let abortLog = null;
 
 /**
- * Current RSS in bytes if running operations should be aborted, else 0. Always a fresh read.
+ * Current RSS in bytes if running operations should be aborted, else 0. A measure at most
+ * ABORT_SAMPLE_MS old (in cluster mode, the group's measure at most GROUP_SAMPLE_MS old), or
+ * fresh if the sample was dropped (configure, a report from the primary).
  * A trip is written to the server log (at most once a minute, with a running count) - the
  * caller's own message only goes to the aborted operation's diagnostics.
  * @param {string} [place] - where the check was made, for the log
@@ -322,8 +327,9 @@ function overAbortThreshold(place = 'unknown') {
     return 0;
   }
   const g = state.group;
-  // the group measure reads a file (or adds up reports): not on every check
-  const r = g ? rss(Date.now() - state.sampleTime > GROUP_SAMPLE_MS) : rss(true);
+  // not a new measure on every check: the group measure reads a file (or adds up reports),
+  // and even RSS alone costs a few us, about ten times a request
+  const r = rss(Date.now() - state.sampleTime > (g ? GROUP_SAMPLE_MS : ABORT_SAMPLE_MS));
   if (r <= state.abortAt) {
     return 0;
   }

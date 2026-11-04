@@ -138,6 +138,40 @@ describe('memory-guard', () => {
     }
   });
 
+  test('many checks inside 10 ms read RSS once; a dropped sample is measured again at once', () => {
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      setRss(9.5 * GB);
+      rssSpy.mockClear();
+      for (let i = 0; i < 100; i++) {
+        now += 0.09;
+        expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
+      }
+      expect(rssSpy).toHaveBeenCalledTimes(1);
+      // a fall inside the 10 ms is not seen yet...
+      rssSpy.mockReturnValue(7 * GB);
+      expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
+      expect(rssSpy).toHaveBeenCalledTimes(1);
+      // ...but it is once the 10 ms have passed
+      now += 10;
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+      expect(rssSpy).toHaveBeenCalledTimes(2);
+      // configure drops the sample, and the next check reads afresh
+      rssSpy.mockReturnValue(9.5 * GB);
+      memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
+      expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
+      expect(rssSpy).toHaveBeenCalledTimes(3);
+      // as does any other drop (a report from the primary, in cluster mode)
+      rssSpy.mockReturnValue(7 * GB);
+      memoryGuard._state.sampleTime = 0;
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+      expect(rssSpy).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   test('logs when refusing starts and when it stops', () => {
     const log = { info: jest.fn(), warn: jest.fn() };
     const mw = memoryGuard.middleware({ log, gcInterval: 60000 });
