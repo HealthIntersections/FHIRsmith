@@ -16,6 +16,10 @@ const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
 const VSAC_PENDING_QUEUE_KEY = 'vsac_pending_queue';
 const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 
+// A follower (cluster.md) compares its generation with the database's at most this often,
+// when a request uses the value sets
+const GENERATION_CHECK_MS = 1000;
+
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
@@ -40,6 +44,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {number} [config.timeoutMs=120000] - HTTP request timeout in milliseconds
    * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
+   * @param {string} [config.cluster] - set by --role (library/role.js), else absent: 'leader'
+   *   (the master) syncs, and bumps the database's generation after each sync; 'follower' (a
+   *   tx-worker) never syncs, and reloads its list when the generation moves (catchUp)
    */
   constructor(config, stats) {
     super();
@@ -62,8 +69,13 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     this.refreshIntervalHours = config.refreshIntervalHours || 24;
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
-    this.database = new ValueSetDatabase(this.dbPath);
+    this.cluster = config.cluster || null;
+    this.database = new ValueSetDatabase(this.dbPath, { shared: !!this.cluster });
     this.valueSetMap = new Map();
+    // a follower: the generation its map was loaded at, and when it last compared
+    this.loadedGeneration = null;
+    this.generationCheckedAt = 0;
+    this.catchingUp = null;
     this.initialized = false;
     this.refreshTimer = null;
     this.isRefreshing = false;
@@ -96,6 +108,14 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async initialize() {
     if (this.initialized) {
+      return;
+    }
+    if (this.cluster === 'follower') {
+      // the master creates the database and syncs; this process only reads
+      if (await this.database.exists()) {
+        await this._reloadMap();
+      }
+      this.initialized = true;
       return;
     }
     // initialize() is re-entered by lookups while the first call is still syncing; only
@@ -341,6 +361,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         await this._savePendingProgress(progress);
       }
 
+      // the followers reload when they see the generation move
+      if (this.cluster) {
+        await this.database.bumpGeneration();
+      }
       // Reload map with fresh data
       await this._reloadMap();
 
@@ -368,6 +392,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       debugLog(error, 'Error during VSAC refresh:');
       this.stats.taskError('VSAC Sync', `Error (${error.message})`);
       await this.database.failRun(runId, error.message);
+      if (this.cluster) {
+        // what the run wrote before it failed is in the database
+        await this.database.bumpGeneration();
+      }
       throw error;
     } finally {
       this.isRefreshing = false;
@@ -536,6 +564,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @private
    */
   async _reloadMap() {
+    // the generation before the list: a sync finishing meanwhile makes the next check load
+    // again, never the reverse
+    const generation = this.cluster ? await this.database.getGeneration() : null;
     const newMap = await this.database.loadAllValueSets(this.sourcePackage());
     for (const vs of newMap.values()) {
       if (vs.jsonObj.compose) {
@@ -556,6 +587,40 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
     // Atomic replacement of the map
     this.valueSetMap = newMap;
+    if (this.cluster) {
+      this.loadedGeneration = generation;
+    }
+  }
+
+  /**
+   * A follower: pick up what the master's sync wrote. At most every GENERATION_CHECK_MS,
+   * read the database's generation; if it isn't the one the map was loaded at, reload the
+   * map. Runs in the background (requests meanwhile use the map they have) and never
+   * rejects. Returns the promise of the check, for tests.
+   * @returns {Promise<void>}
+   */
+  catchUp() {
+    const now = Date.now();
+    if (this.catchingUp || now - this.generationCheckedAt < GENERATION_CHECK_MS) {
+      return this.catchingUp || Promise.resolve();
+    }
+    this.generationCheckedAt = now;
+    this.catchingUp = (async () => {
+      // not before the master has made it: opening it would create an empty file
+      if (this.loadedGeneration === null && !(await this.database.exists())) {
+        return;
+      }
+      const generation = await this.database.getGeneration();
+      if (generation !== this.loadedGeneration) {
+        console.log(`VSAC: the database is at generation ${generation}, this process at ${this.loadedGeneration}; reloading`);
+        await this._reloadMap();
+      }
+    })().catch((error) => {
+      debugLog(error, 'VSAC: catching up with the database failed');
+    }).finally(() => {
+      this.catchingUp = null;
+    });
+    return this.catchingUp;
   }
 
   /**
@@ -566,6 +631,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async fetchValueSet(url, version) {
     await this.initialize();
+    if (this.cluster === 'follower') {
+      void this.catchUp();
+    }
     this._validateFetchParams(url, version);
 
     // Try exact match first: url|version
@@ -598,6 +666,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
+    if (this.cluster === 'follower') {
+      void this.catchUp();
+    }
     // the map is keyed by the value set's own id (and its url); the value set itself
     // carries the prefixed id, which is how a url key that happens to match is excluded
     const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
@@ -610,6 +681,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async searchValueSets(searchParams, elements) {
     await this.initialize();
+    if (this.cluster === 'follower') {
+      void this.catchUp();
+    }
     this._validateSearchParams(searchParams);
 
     if (searchParams.length === 0) {
@@ -811,7 +885,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * Whether the on-demand resync form is enabled (a resyncPassword is configured).
    */
   _resyncEnabled() {
-    return !!this.resyncPassword;
+    // a follower doesn't write: the info pages are routed to the master
+    return !!this.resyncPassword && this.cluster !== 'follower';
   }
 
   /**
@@ -839,6 +914,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
+    if (this.cluster) {
+      await this.database.bumpGeneration();
+    }
     await this._reloadMap();
     return tracking.totalFetched;
   }

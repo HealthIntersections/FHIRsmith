@@ -6,6 +6,9 @@ const ValueSet = require("../library/valueset");
 
 // Settings key written once a package cache has been fully populated (see isComplete)
 const CACHE_COMPLETE_KEY = 'cache-complete';
+// A counter in vsac_settings that the VSAC sync bumps when it has written (cluster.md):
+// a process that loaded the value set list at generation n is up to date while it says n
+const GENERATION_KEY = 'generation';
 
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
@@ -43,9 +46,13 @@ class ValueSetDatabase {
 
   /**
    * @param {string} dbPath - Path to the SQLite database file
+   * @param {Object} [options] - {shared: true} when several processes use the file (one
+   *   writing, the others reading - cluster.md): WAL, so the readers don't block the writer,
+   *   and a wait of up to 5 s for another process's lock instead of failing at once
    */
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     this.dbPath = dbPath;
+    this.shared = !!options.shared;
     // Single read-write connection used for everything. Using a separate
     // OPEN_READONLY connection for reads can miss WAL-based schema changes
     // made through the write connection (because read-only opens can't fully
@@ -76,6 +83,10 @@ class ValueSetDatabase {
     });
 
     return (async () => {
+      if (this.shared) {
+        db.configure('busyTimeout', 5000);
+        await all('PRAGMA journal_mode = WAL');
+      }
       const cols = await all("PRAGMA table_info(valuesets)");
       const hasDateFirstSeen = cols.some(c => c.name === 'date_first_seen');
       const hasContentHash = cols.some(c => c.name === 'content_hash');
@@ -497,6 +508,28 @@ class ValueSetDatabase {
         if (err) reject(err);
         else resolve(row ? row.value : null);
       });
+    });
+  }
+
+  /**
+   * The generation (see GENERATION_KEY): 0 until a sync has bumped it. One read by key.
+   * @returns {Promise<number>}
+   */
+  async getGeneration() {
+    const value = await this.getSetting(GENERATION_KEY);
+    return value === null ? 0 : Number(value);
+  }
+
+  /**
+   * Add one to the generation, in one statement.
+   * @returns {Promise<void>}
+   */
+  async bumpGeneration() {
+    const db = await this._getWriteConnection();
+    return new Promise((resolve, reject) => {
+      db.run(`INSERT INTO vsac_settings (key, value) VALUES (?, '1')
+                ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`,
+          [GENERATION_KEY], err => err ? reject(err) : resolve());
     });
   }
 
