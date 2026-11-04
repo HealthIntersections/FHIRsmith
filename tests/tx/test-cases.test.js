@@ -113,6 +113,22 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-child-of"}, "4.0");
   });
 
+  it("simple-expand-concept-not-in" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-concept-not-in"}, "5.0");
+  });
+
+  it("simple-expand-concept-not-in" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-concept-not-in"}, "4.0");
+  });
+
+  it("simple-expand-code-not-in" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-code-not-in"}, "5.0");
+  });
+
+  it("simple-expand-code-not-in" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-code-not-in"}, "4.0");
+  });
+
   it("simple-expand-isa-o2" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-isa-o2"}, "5.0");
   });
@@ -1735,6 +1751,38 @@ describe('validation', () => {
 
   it("validation-simple-child-of-grandchild" + 'R4', async () => {
     await runTest({"suite":"validation","test":"validation-simple-child-of-grandchild"}, "4.0");
+  });
+
+  it("validation-simple-concept-not-in-listed" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-listed"}, "5.0");
+  });
+
+  it("validation-simple-concept-not-in-listed" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-listed"}, "4.0");
+  });
+
+  it("validation-simple-concept-not-in-child-of-listed" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-child-of-listed"}, "5.0");
+  });
+
+  it("validation-simple-concept-not-in-child-of-listed" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-child-of-listed"}, "4.0");
+  });
+
+  it("validation-simple-code-not-in-listed" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-listed"}, "5.0");
+  });
+
+  it("validation-simple-code-not-in-listed" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-listed"}, "4.0");
+  });
+
+  it("validation-simple-code-not-in-other" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-other"}, "5.0");
+  });
+
+  it("validation-simple-code-not-in-other" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-other"}, "4.0");
   });
 
   it("validation-simple-code-implied-good" + 'R5', async () => {
@@ -3838,6 +3886,22 @@ describe('version', () => {
     await runTest({"suite":"version","test":"vs-expand-v2-force"}, "4.0");
   });
 
+  it("vs-expand-stale-import" + 'R5', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import"}, "5.0");
+  });
+
+  it("vs-expand-stale-import" + 'R4', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import"}, "4.0");
+  });
+
+  it("vs-expand-stale-import-force" + 'R5', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import-force"}, "5.0");
+  });
+
+  it("vs-expand-stale-import-force" + 'R4', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import-force"}, "4.0");
+  });
+
   it("vs-expand-all-v-default" + 'R5', async () => {
     await runTest({"suite":"version","test":"vs-expand-all-v-default"}, "5.0");
   });
@@ -4407,6 +4471,14 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"broken-filter-expand"}, "4.0");
   });
 
+  it("filter-modifier-expand" + 'R5', async () => {
+    await runTest({"suite":"errors","test":"filter-modifier-expand"}, "5.0");
+  });
+
+  it("filter-modifier-expand" + 'R4', async () => {
+    await runTest({"suite":"errors","test":"filter-modifier-expand"}, "4.0");
+  });
+
   it("combination-ok" + 'R5', async () => {
     await runTest({"suite":"errors","test":"combination-ok"}, "5.0");
   });
@@ -4421,6 +4493,22 @@ describe('errors', () => {
 
   it("combination-bad" + 'R4', async () => {
     await runTest({"suite":"errors","test":"combination-bad"}, "4.0");
+  });
+
+  it("infer-unknown-system" + 'R5', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system"}, "5.0");
+  });
+
+  it("infer-unknown-system" + 'R4', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system"}, "4.0");
+  });
+
+  it("infer-unknown-system-import" + 'R5', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system-import"}, "5.0");
+  });
+
+  it("infer-unknown-system-import" + 'R4', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system-import"}, "4.0");
   });
 
 });
@@ -5233,12 +5321,12 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "4.0");
   });
 
-  it("translate-reverse-r5+" + 'R5', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
+  it("translate-reverse-r5plus" + 'R5', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5plus"}, "5.0");
   });
 
-  it("translate-reverse-r5+-a" + 'R5', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
+  it("translate-reverse-r5plus-a" + 'R5', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5plus-a"}, "5.0");
   });
 
   it("translate-reverse-r4" + 'R4', async () => {
@@ -5977,6 +6065,14 @@ describe('loinc', () => {
 
   it("loinc-lookup-code" + 'R4', async () => {
     await runTest({"suite":"loinc","test":"loinc-lookup-code"}, "4.0");
+  });
+
+  it("loinc-lookup-classtype" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-classtype"}, "5.0");
+  });
+
+  it("loinc-lookup-classtype" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-classtype"}, "4.0");
   });
 
   it("loinc-lookup-part" + 'R5', async () => {
@@ -13783,6 +13879,14 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-child-of"}, "5.0");
   });
 
+  it("simple-expand-concept-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-concept-not-in"}, "5.0");
+  });
+
+  it("simple-expand-code-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-code-not-in"}, "5.0");
+  });
+
   it("simple-expand-isa-o2" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-isa-o2"}, "5.0");
   });
@@ -14613,6 +14717,22 @@ describe('validation', () => {
 
   it("validation-simple-child-of-grandchild" + 'R5-cached', async () => {
     await runTest({"suite":"validation","test":"validation-simple-child-of-grandchild"}, "5.0");
+  });
+
+  it("validation-simple-concept-not-in-listed" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-listed"}, "5.0");
+  });
+
+  it("validation-simple-concept-not-in-child-of-listed" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-concept-not-in-child-of-listed"}, "5.0");
+  });
+
+  it("validation-simple-code-not-in-listed" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-listed"}, "5.0");
+  });
+
+  it("validation-simple-code-not-in-other" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-simple-code-not-in-other"}, "5.0");
   });
 
   it("validation-simple-code-implied-good" + 'R5-cached', async () => {
@@ -15668,6 +15788,14 @@ describe('version', () => {
     await runTest({"suite":"version","test":"vs-expand-v2-force"}, "5.0");
   });
 
+  it("vs-expand-stale-import" + 'R5-cached', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import"}, "5.0");
+  });
+
+  it("vs-expand-stale-import-force" + 'R5-cached', async () => {
+    await runTest({"suite":"version","test":"vs-expand-stale-import-force"}, "5.0");
+  });
+
   it("vs-expand-all-v-default" + 'R5-cached', async () => {
     await runTest({"suite":"version","test":"vs-expand-all-v-default"}, "5.0");
   });
@@ -15965,12 +16093,24 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"broken-filter-expand"}, "5.0");
   });
 
+  it("filter-modifier-expand" + 'R5-cached', async () => {
+    await runTest({"suite":"errors","test":"filter-modifier-expand"}, "5.0");
+  });
+
   it("combination-ok" + 'R5-cached', async () => {
     await runTest({"suite":"errors","test":"combination-ok"}, "5.0");
   });
 
   it("combination-bad" + 'R5-cached', async () => {
     await runTest({"suite":"errors","test":"combination-bad"}, "5.0");
+  });
+
+  it("infer-unknown-system" + 'R5-cached', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system"}, "5.0");
+  });
+
+  it("infer-unknown-system-import" + 'R5-cached', async () => {
+    await runTest({"suite":"errors","test":"infer-unknown-system-import"}, "5.0");
   });
 
 });
@@ -16399,12 +16539,12 @@ describe('translate2', () => {
     await runTest({"suite":"translate2","test":"translate-6b"}, "5.0");
   });
 
-  it("translate-reverse-r5+" + 'R5-cached', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+"}, "5.0");
+  it("translate-reverse-r5plus" + 'R5-cached', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5plus"}, "5.0");
   });
 
-  it("translate-reverse-r5+-a" + 'R5-cached', async () => {
-    await runTest({"suite":"translate2","test":"translate-reverse-r5+-a"}, "5.0");
+  it("translate-reverse-r5plus-a" + 'R5-cached', async () => {
+    await runTest({"suite":"translate2","test":"translate-reverse-r5plus-a"}, "5.0");
   });
 
   it("translate-reverse-r4" + 'R4-cached', async () => {
@@ -16795,6 +16935,10 @@ describe('loinc', () => {
 
   it("loinc-lookup-code" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-lookup-code"}, "5.0");
+  });
+
+  it("loinc-lookup-classtype" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-lookup-classtype"}, "5.0");
   });
 
   it("loinc-lookup-part" + 'R5-cached', async () => {

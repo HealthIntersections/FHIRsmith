@@ -292,6 +292,13 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               isMatch = false;
               break;
             }
+          } else if (param === 'version') {
+            // version-aware matching, on the version as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'version').value;
+            if (!VersionUtilities.versionSearchMatches(asked, json.version, VersionUtilities.versionAlgorithmOf(json))) {
+              isMatch = false;
+              break;
+            }
           } else if (param === 'jurisdiction') {
             // Special handling for jurisdiction - array of CodeableConcept
             if (!this._matchJurisdiction(json.jurisdiction, searchValue)) {
@@ -305,8 +312,9 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               break;
             }
           } else if (param === 'url') {
-            const propValue = json[param];
-            if (!this._matchValueFull(propValue, searchValue)) {
+            // a left match, on the url as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'url').value;
+            if (!(json.url || '').startsWith(asked)) {
               isMatch = false;
               break;
             }

@@ -296,6 +296,8 @@
       },
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
+      // most codes the expansion caches hold in all (default: a quarter of the heap limit, at 1 KB a code)
+      // "expansionCacheMaxCodes": 1000000,
       "endpoints": [
         {
           "path": "/tx/r5",

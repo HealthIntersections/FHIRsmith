@@ -174,6 +174,18 @@ describe('PackageConceptMapProvider', () => {
       console.log(`Found ${results.length} ConceptMaps with 'CDS' in name`);
     });
 
+    test('url is a left match: the url starts with it', async () => {
+      const prefix = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-';
+      const results = await provider.searchConceptMaps([{ name: 'url', value: prefix }]);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.url === 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir')).toBe(true);
+      for (const r of results) {
+        expect(r.url.startsWith(prefix)).toBe(true);
+      }
+      // not anywhere in the url
+      expect((await provider.searchConceptMaps([{ name: 'url', value: 'ConceptMap/bfs-encounter-class-to-fhir' }])).length).toBe(0);
+    });
+
     test('should search by url', async () => {
       const url = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir';
       const results = await provider.searchConceptMaps([

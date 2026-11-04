@@ -129,6 +129,11 @@ class ValueSetChecker {
     } catch (error) {
       this.worker.log.error(error);
       debugLog(error);
+      if (error instanceof Issue && error.statusCode >= 400 && error.statusCode < 500) {
+        // the value set can't be expanded (a code system it imports is unknown, it's too big...):
+        // that's the answer, not a server failure
+        throw error.handleAsOO(error.statusCode);
+      }
       throw new Error('Exception expanding value set in order to infer system: ' + error.message);
     }
     return result;
@@ -155,64 +160,64 @@ class ValueSetChecker {
   }
 
   async determineSystem(opContext, code, systems, op) {
-    let result = '';
-    let needDoExpansion = false;
-    let mayNeedExpansion = false;
-
-    for (let vsi of this.valueSet.jsonObj.compose.exclude || []) {
-      if (vsi.valueSet || !vsi.system || vsi.filter) {
-        needDoExpansion = true;
-      }
+    if (!this.valueSet.jsonObj.compose) {
+      return await this.determineSystemFromExpansion(code, systems);
     }
-    for (let vsi of this.valueSet.jsonObj.compose.include || []) {
-      if (vsi.valueSet || !vsi.system) {
-        needDoExpansion = true;
-      }
-      if (vsi.filter) {
-        mayNeedExpansion = true;
-      }
+    // Check the code against each include, and each value set they import, rather than expanding
+    // the value set: that costs as much as the value set is big (all of UCUM, say), and an
+    // expansion can be too big to produce at all
+    const scratch = new OperationOutcome(); // the reasons the code isn't in an include don't matter
+    for (const s of await this.systemsForCode(code, op, scratch)) {
+      systems.add(s);
     }
+    return systems.size === 1 ? [...systems][0] : '';
+  }
 
-    if (needDoExpansion) {
-      result = await this.determineSystemFromExpansion(code, systems);
-    } else {
-      for (let vsi of this.valueSet.jsonObj.compose.include) {
-        this.worker.deadCheck('determineSystem');
-        let cs = await this.worker.findCodeSystem(vsi.system, '', null, ['complete', 'fragment'], op,true, false, false, this.worker.requiredSupplements);
-        if (cs === null) {
-          return '';
+  /**
+   * The systems of the includes that have the code (in this value set, and the ones it imports), less
+   * those of this value set's excludes that leave it out
+   * @returns {Promise<Set<string>>}
+   */
+  async systemsForCode(code, op, scratch) {
+    const systems = new Set();
+    const check = async (vsi, role) => {
+      this.worker.deadCheck('determineSystem');
+      const v = this.worker.determineVersionBase(vsi.system, vsi.version, this.params);
+      const cs = await this.worker.findCodeSystem(vsi.system, v, this.params, ['complete', 'fragment'], op, true, false, false, this.worker.requiredSupplements);
+      if (cs === null) {
+        // The system can only be inferred from all of the value set: if an include names a code
+        // system that isn't known, the code might be in it, so the request can't be answered (422)
+        const url = vsi.version ? vsi.system + '|' + vsi.version : vsi.system;
+        throw new Issue('error', 'not-found', null, 'UNABLE_TO_INFER_CODESYSTEM_UNKNOWN_SYSTEM',
+          this.worker.i18n.translate('UNABLE_TO_INFER_CODESYSTEM_UNKNOWN_SYSTEM', this.params.HTTPLanguages, [code, this.valueSet.vurl, url]), 'not-found')
+          .handleAsOO(422);
+      }
+      return await this.checkConceptSet('', role, cs, vsi, code, new Designations(this.worker.i18n.languageDefinitions), this.valueSet, '',
+        {value: false}, {value: ''}, {value: ''}, scratch, null, []);
+    };
+    for (const vsi of this.valueSet.jsonObj.compose.include || []) {
+      if (vsi.system) {
+        // (an include that also imports value sets narrows this one: the validation that follows checks that)
+        if (await check(vsi, 'in')) {
+          systems.add(vsi.system);
         }
-        if (vsi.concept) {
-          for (let cc of vsi.concept) {
-            this.worker.deadCheck('determineSystem#2');
-            let match = cc.code === code;
-            if (match) {
-              systems.add(vsi.system);
-              if (!result) {
-                result = vsi.system;
-              } else if (result !== vsi.system) {
-                return '';
-              }
-            }
-          }
-        } else {
-          let loc = await cs.locate(code);
-          if (loc.context !== null) {
-            systems.add(vsi.system);
-            if (!result) {
-              result = vsi.system;
-            } else if (result !== vsi.system) {
-              if (mayNeedExpansion) {
-                result = await this.determineSystemFromExpansion(code, systems);
-              } else {
-                return '';
-              }
+      } else {
+        for (const u of vsi.valueSet || []) {
+          const other = this.others.get(this.worker.pinValueSet(u));
+          if (other) {
+            for (const s of await other.systemsForCode(code, op, scratch)) {
+              systems.add(s);
             }
           }
         }
       }
     }
-    return result;
+    for (const vsi of this.valueSet.jsonObj.compose.exclude || []) {
+      if (vsi.system && !(vsi.valueSet && vsi.valueSet.length) && await check(vsi, 'not in')) {
+        systems.delete(vsi.system);
+      }
+    }
+    return systems;
   }
 
   async determineVersion(path, system, versionVS, versionCoding, op, unknownSystems, messages) {
@@ -366,7 +371,10 @@ class ValueSetChecker {
 
   async prepareConceptSet(desc, cc, vs) {
     this.worker.deadCheck('prepareConceptSet');
-    Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', desc, vs.vurl);
+    Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc, vs.vurl);
+    for (const [ci, c] of (cc.concept || []).entries()) {
+      Extensions.checkNoModifiers(c, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.concept[' + ci + ']', vs.vurl);
+    }
     this.worker.opContext.addNote(this.valueSet, 'Prepare ' + desc + ': "' + this.worker.renderer.displayValueSetInclude(cc) + '"', this.indentCount);
     if (cc.valueSet) {
       for (let u of cc.valueSet) {
@@ -396,7 +404,7 @@ class ValueSetChecker {
       let i = 0;
       for (let ccf of cc.filter || []) {
         this.worker.deadCheck('prepareConceptSet#2');
-        Extensions.checkNoModifiers(ccf, 'ValueSetChecker.prepare', desc + '.filter', this.valueSet.vurl);
+        Extensions.checkNoModifiers(ccf, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.filter[' + i + ']', this.valueSet.vurl);
         if (!ccf.value) {
           throw new Issue('error', 'invalid', "ValueSet.compose."+desc+".filter["+i+"]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE',
             this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), ccf.property, ccf.op]), "vs-invalid").handleAsOO(400);

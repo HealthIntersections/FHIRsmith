@@ -53,13 +53,16 @@ function mapRelationship(equivalence, fromLoinc) {
   }
 }
 
+// CLASSTYPE: the code and the description the importer stores (see descClassType in
+// import-loinc.module.js - 'Claims attachment', singular), and back
 const classTypes = {
   '1': 'Laboratory class',
   '2': 'Clinical class',
-  '3': 'Claims attachments',
+  '3': 'Claims attachment',
   '4': 'Surveys',
   'Laboratory class' : '1',
   'Clinical class' : '2',
+  'Claims attachment' : '3',
   'Claims attachments' : '3',
   'Surveys' : '4'
 };
@@ -540,7 +543,8 @@ class LoincServices extends BaseCSServices {
           for (const row of rows) {
             if (this._hasProp(props, row.Description, true)) {
               if (row.Description == 'CLASSTYPE') {
-                this._addStringProperty(params, 'property', row.Description, classTypes[row.Value])
+                // the code (1-4), with its description; a description with no known code is the value
+                this._addStringProperty(params, 'property', row.Description, classTypes[row.Value] || row.Value)
                   .part.push({name: 'description', valueString: row.Value});
               } else {
                 this._addStringProperty(params, 'property', row.Description, row.Value);
@@ -1873,6 +1877,11 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   id() {
     return "loinc"+this.version();
+  }
+
+  /** Codes, parts, answers and groups all have a page at loinc.org (as LoincLinker in org.hl7.fhir.core) */
+  codeLink(context) {
+    return context && context.code ? `https://loinc.org/${encodeURIComponent(context.code)}/` : undefined;
   }
 }
 

@@ -922,6 +922,21 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
     return this.name()+"-"+this.version();
   }
 
+  /**
+   * RxNorm codes link to RxNav (as DataRenderer.getLinkForCode in org.hl7.fhir.core). The NCI
+   * code system's codes are NCI Thesaurus codes (the SCUIs of SAB NCI), which link to EVS
+   * Explore: the NCIt browser link core uses now lands on EVS Explore's home page.
+   */
+  codeLink(context) {
+    if (!context || !context.code) {
+      return undefined;
+    }
+    const code = encodeURIComponent(context.code);
+    return this.isNCI
+      ? `https://evsexplore.semantics.cancer.gov/evsexplore/concept/ncit/${code}`
+      : `https://mor.nlm.nih.gov/RxNav/search?searchBy=RXCUI&searchTerm=${code}`;
+  }
+
   describeVersion(version) {
     try {
       return formatDateMMDDYYYY(version);

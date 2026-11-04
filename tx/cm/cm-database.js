@@ -473,10 +473,15 @@ class ConceptMapDatabase {
     const canOptimize = elements && elements.length > 0 &&
       elements.every(e => INDEXED_COLUMNS.includes(e));
 
-    // Always include 'id' in the columns to select when optimizing
-    const columnsToSelect = canOptimize
+    // Always include 'id' in the columns to select when optimizing (and the version, when the
+    // results are matched on it - see versionSearchMatches)
+    const versionAsked = searchParams.filter(p => p.name.toLowerCase() === 'version').map(p => p.value);
+    let columnsToSelect = canOptimize
       ? (elements.includes('id') ? elements : ['id', ...elements])
       : null;
+    if (columnsToSelect && versionAsked.length > 0 && !columnsToSelect.includes('version')) {
+      columnsToSelect = [...columnsToSelect, 'version'];
+    }
 
     return new Promise((resolve, reject) => {
       const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
@@ -521,6 +526,9 @@ class ConceptMapDatabase {
                 }
                 return parsed;
               });
+            }
+            for (const criteria of versionAsked) {
+              results = results.filter(r => VersionUtilities.versionSearchMatches(criteria, r.version, VersionUtilities.versionAlgorithmOf(r)));
             }
 
             db.close((err) => {
@@ -705,13 +713,16 @@ class ConceptMapDatabase {
 
       switch (name.toLowerCase()) {
         case 'url':
-          conditions.push('v.url LIKE ?');
-          params.push(`%${value}%`);
+          // a left match (case-sensitive): the url starts with the value
+          conditions.push('substr(v.url, 1, length(?)) = ?');
+          params.push(value, value);
           break;
 
         case 'version':
-          conditions.push('v.version LIKE ?');
-          params.push(`%${value}%`);
+          // version-aware matching (see VersionUtilities.versionSearchMatches): narrowed here to
+          // the versions that could match, and matched on the results (see search)
+          conditions.push("v.version LIKE ? ESCAPE '\\'");
+          params.push(VersionUtilities.versionSearchPrefix(value).replace(/[\\%_]/g, c => '\\' + c) + '%');
           break;
 
         case 'name':

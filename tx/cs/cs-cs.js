@@ -1204,7 +1204,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     // Supported hierarchy filters
     if ((prop === 'concept' || prop === 'code') &&
-      ['is-a', 'descendent-of', 'descendent-leaf', 'is-not-a', 'child-of', 'in', '=', 'regex'].includes(op)) {
+      ['is-a', 'descendent-of', 'descendent-leaf', 'is-not-a', 'child-of', 'in', 'not-in', '=', 'regex'].includes(op)) {
       return true;
     }
 
@@ -1664,6 +1664,20 @@ class FhirCodeSystemProvider extends BaseCSServices {
         const concept = this.codeSystem.getConceptByCode(code);
         if (concept) {
           results.add(concept, 0);
+        }
+      }
+    }
+    else if (op === 'not-in') {
+      // Every code except the listed ones (comma separated) - their descendants are not excluded
+      const excludeSet = new Set(value.split(',').map(c => c.trim()));
+      const allCodes = this.codeSystem.getAllCodes();
+      for (const code of allCodes) {
+        this.opContext.deadCheck('cs:conceptFilter:not-in');
+        if (!excludeSet.has(code)) {
+          const concept = this.codeSystem.getConceptByCode(code);
+          if (concept) {
+            results.add(concept, 0);
+          }
         }
       }
     }

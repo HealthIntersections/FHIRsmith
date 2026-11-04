@@ -211,6 +211,9 @@ class ValueSetExpander {
   internalLimit = INTERNAL_DEFAULT_LIMIT;
   externalLimit = EXTERNAL_DEFAULT_LIMIT;
   noDetails = false;
+  // count=0: the codes counted (see #countListedCodes) but not built, by keyS
+  countedKeys = new Set();
+  composeOnlyListsCodes = false;
 
   constructor(worker, params) {
     this.worker = worker;
@@ -349,10 +352,7 @@ class ValueSetExpander {
         this.noTotal();
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
-        if (!srcURL) {
-          srcURL = '??';
-        }
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
       }
     }
 
@@ -533,10 +533,7 @@ class ValueSetExpander {
       if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.fullList.length >= this.count + this.offset) {
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
-        if (!srcURL) {
-          srcURL = '??';
-        }
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
       }
     }
 
@@ -664,9 +661,9 @@ class ValueSetExpander {
     walk(vs.expansion.contains);
   }
 
-  async checkSource(cset, exp, filter, srcURL, ts, vsInfo , source) {
+  async checkSource(cset, exp, filter, srcURL, ts, vsInfo , source, path = 'ValueSet.compose.include') {
     await this.worker.checkAndYield('checkSource');
-    Extensions.checkNoModifiers(cset, 'ValueSetExpander.checkSource', 'set', srcURL);
+    Extensions.checkNoModifiers(cset, 'ValueSetExpander.checkSource', path, source && source.vurl ? source.vurl : srcURL);
     let imp = false;
     for (const u of cset.valueSet || []) {
       await this.worker.checkAndYield('checkSource');
@@ -732,7 +729,7 @@ class ValueSetExpander {
               // Report the versioned url (vurl), matching the message the
               // enumeration path produces when it hits the same limit - this
               // guard is just that refusal moved earlier.
-              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [source && source.vurl ? source.vurl : srcURL, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source && source.vurl ? source.vurl : srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
             }
           }
         }
@@ -755,7 +752,7 @@ class ValueSetExpander {
     await this.worker.checkAndYield('processCodes#1');
     const valueSets = [];
 
-    Extensions.checkNoModifiers(cset, 'ValueSetExpander.processCodes', 'set', vsSrc.vurl);
+    Extensions.checkNoModifiers(cset, 'ValueSetExpander.processCodes', path, vsSrc.vurl);
 
     if (cset.valueSet || cset.concept || (cset.filter || []).length > 1) {
       this.canBeHierarchy = false;
@@ -846,7 +843,7 @@ class ValueSetExpander {
             } else {
               const iter = await cs.iterator(null);
               if (valueSets.length === 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
-                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [vsSrc.vurl, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
               }
               let tcount = 0;
@@ -912,16 +909,39 @@ class ValueSetExpander {
           }
         }
 
-        if (cset.concept) {
+        // A value set that lists its codes: count them first - locating each code is cheap,
+        // building it (displays, properties) is not. count=0 asks only for the total, so when
+        // every include lists its codes, the count is the answer; otherwise, if the codes
+        // would take the expansion over the limit, refuse now rather than after building them
+        // (only worth a pass when it could change anything: the list alone could be over the limit)
+        const countFirst = cset.concept && filter.isNull
+          && ((this.count === 0 && this.composeOnlyListsCodes) || this.#listedCodesOverLimit(cset.concept.length));
+        const counted = countFirst ? await this.#countListedCodes(cs, cset, valueSets, filters, prep, excludeInactive) : null;
+        if (counted && this.count === 0 && this.composeOnlyListsCodes) {
+          this.worker.opContext.log('count only: counted the listed codes');
+          for (const key of counted) {
+            this.countedKeys.add(key);
+          }
+          if (counted.size > 0 && !this.noDetails) {
+            this.addParamUri(expansion, 'used-codesystem', this.canonical(cs.system(), cs.version()));
+            for (const vs of cs.listSupplements(false)) {
+              this.reportedSupplements.add(vs);
+            }
+          }
+          this.addToTotal(counted.size);
+        } else if (cset.concept) {
+          if (counted && this.#listedCodesOverLimit(counted.size)) {
+            throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.url, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+          }
           this.worker.opContext.log('iterate concepts');
           const cds = new Designations(this.worker.i18n.languageDefinitions);
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
-          for (const cc of cset.concept) {
+          for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
-            Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', 'set concept reference', vsSrc.vurl);
+            Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, this.allAltCodes);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
@@ -969,7 +989,7 @@ class ValueSetExpander {
             if (!fc.value) {
               throw new Issue('error', 'invalid', path + ".filter[" + i + "]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.httpLanguages, [cs.system(), fc.property, fc.op]), 'vs-invalid', 400);
             }
-            Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', 'filter', vsSrc.vurl);
+            Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', path + '.filter[' + i + ']', vsSrc.vurl);
           }
           // filters on properties that supplements in use define are evaluated from the
           // supplements; the code system does the rest
@@ -1107,7 +1127,7 @@ class ValueSetExpander {
     await this.worker.checkAndYield('processCodes#1');
     const valueSets = [];
 
-    Extensions.checkNoModifiers(cset, 'ValueSetExpander.processCodes', 'set', vsSrc.vurl);
+    Extensions.checkNoModifiers(cset, 'ValueSetExpander.processCodes', path, vsSrc.vurl);
 
     if (cset.valueSet || cset.concept || (cset.filter || []).length > 1) {
       this.canBeHierarchy = false;
@@ -1204,10 +1224,10 @@ class ValueSetExpander {
           const cds = new Designations(this.worker.i18n.languageDefinitions);
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
-          for (const cc of cset.concept) {
+          for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
-            Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', 'set concept reference', vsSrc.vurl);
+            Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, this.allAltCodes);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
@@ -1234,8 +1254,8 @@ class ValueSetExpander {
             Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members. This extension is based on " + cs.specialEnumeration());
           }
 
-          for (let fc of cset.filter) {
-            Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', 'filter', vsSrc.vurl);
+          for (const [i, fc] of cset.filter.entries()) {
+            Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', path + '.filter[' + i + ']', vsSrc.vurl);
           }
           // as for an include: filters on properties that supplements define are evaluated from them
           const { base: baseFilters, supplement: suppFilters } = await splitFilters(cs, cset.filter);
@@ -1391,15 +1411,18 @@ class ValueSetExpander {
     this.worker.opContext.log('compose #1');
 
     this.doingVersion = false;
+    // count=0 can be answered by counting listed codes when that's all the value set is
+    this.composeOnlyListsCodes = (source.jsonObj.compose.include || []).every(inc => inc.system && inc.concept && inc.concept.length > 0
+      && !(inc.filter && inc.filter.length) && !(inc.valueSet && inc.valueSet.length));
     const ts = new Map();
-    for (const c of source.jsonObj.compose.include || []) {
+    for (const [i, c] of (source.jsonObj.compose.include || []).entries()) {
       await this.worker.checkAndYield('handleCompose#2');
-      await this.checkSource(c, expansion, filter, source.url, ts, vsInfo, source);
+      await this.checkSource(c, expansion, filter, source.url, ts, vsInfo, source, 'ValueSet.compose.include[' + i + ']');
     }
-    for (const c of source.jsonObj.compose.exclude || []) {
+    for (const [i, c] of (source.jsonObj.compose.exclude || []).entries()) {
       await this.worker.checkAndYield('handleCompose#3');
       this.hasExclusions = true;
-      await this.checkSource(c, expansion, filter, source.url, ts, null, source);
+      await this.checkSource(c, expansion, filter, source.url, ts, null, source, 'ValueSet.compose.exclude[' + i + ']');
     }
 
     this.worker.opContext.log('compose #2');
@@ -1429,6 +1452,71 @@ class ValueSetExpander {
         i++;
       }
     }
+  }
+
+  /**
+   * Whether a value set's stored expansion is the answer. When it has a compose, the compose is
+   * what's expanded - a stored expansion may have been made from other code system versions, or
+   * just be wrong, and there's no telling without expanding the compose - unless a code system the
+   * compose includes isn't available here (not loaded, or not the version the include names): then
+   * the compose can't be expanded, and the stored expansion is the best answer there is
+   * @param {Object} vs - the value set (JSON)
+   * @returns {Promise<boolean>}
+   */
+  async useStoredExpansion(vs) {
+    if (!vs.compose) {
+      return true;
+    }
+    // finding the code systems records the version parameters it applied; this is only a look
+    const found = this.worker.foundParameters.length;
+    try {
+      for (const inc of [...(vs.compose.include || []), ...(vs.compose.exclude || [])]) {
+        if (inc.system) {
+          const cs = await this.worker.findCodeSystem(inc.system, inc.version || '', this.params, ['complete', 'fragment'], null, true);
+          if (!cs) {
+            this.worker.opContext.log(`${inc.system}${inc.version ? '|' + inc.version : ''} isn't available: using the stored expansion of ${vs.url}`);
+            return true;
+          }
+        }
+      }
+    } catch (error) {
+      return false; // expanding the compose will report the problem properly
+    } finally {
+      this.worker.foundParameters.length = found;
+    }
+    return false;
+  }
+
+  /**
+   * How a value set is named in a message: by the url (|version) given, else as the value set this
+   * expander is expanding - its url|version, else its id - else null, for one with neither (a value
+   * set passed inline in the request)
+   * @param {string} [name] - the url (|version) the caller has, if any
+   * @returns {string}
+   */
+  vsLabel(name) {
+    if (name && !String(name).startsWith('undefined')) { // (a vurl with no url is 'undefined|version')
+      return name;
+    }
+    const json = this.valueSet ? (this.valueSet.jsonObj || this.valueSet) : null;
+    if (json && json.url) {
+      return json.version ? json.url + '|' + json.version : json.url;
+    }
+    if (json && json.id) {
+      return json.id;
+    }
+    return null;
+  }
+
+  /**
+   * The VALUESET_TOO_COSTLY message for a value set (see vsLabel), or for one passed in the
+   * request with no url or id, which it can't name, VALUESET_TOO_COSTLY_REQUEST - the message
+   * id reported is VALUESET_TOO_COSTLY either way
+   */
+  tooCostlyMessage(name, limit) {
+    const label = this.vsLabel(name);
+    return label ? this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [label, limit])
+      : this.worker.i18n.translate('VALUESET_TOO_COSTLY_REQUEST', this.params.httpLanguages, [limit]);
   }
 
   excludeInactives(source) {
@@ -1477,7 +1565,11 @@ class ValueSetExpander {
     }
 
     if (result.expansion) {
-      return result; // just return the expansion
+      if (await this.useStoredExpansion(source.jsonObj)) {
+        return result; // just return the expansion
+      }
+      // otherwise it's expanded from the compose, as if it had no expansion
+      result.expansion = undefined;
     }
     if (!source.jsonObj.compose) {
       throw new Issue('error', 'invalid', null, 'VALUESET_NO_COMPOSE',
@@ -1571,7 +1663,7 @@ class ValueSetExpander {
 
     let vsInfo = this.scanValueSet(source.jsonObj.compose);
     try {
-      if (source.jsonObj.compose && Extensions.checkNoModifiers(source.jsonObj.compose, 'ValueSetExpander.Expand', 'compose', source.vurl)
+      if (source.jsonObj.compose && Extensions.checkNoModifiers(source.jsonObj.compose, 'ValueSetExpander.Expand', 'ValueSet.compose', source.vurl)
           && this.worker.checkNoLockedDate(source.url, source.jsonObj.compose)) {
         await this.handleCompose(source, filter, exp, notClosed, vsInfo);
       }
@@ -1647,7 +1739,7 @@ class ValueSetExpander {
 
     if (this.offset + this.count < 0 && this.fullList.length > this.limit) {
       this.log.log('Operation took too long @ expand (' + this.constructor.name + ')');
-      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [source.vurl, '>' + this.limit]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source.vurl, '>' + this.limit), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     } else {
       let t = 0;
       let o = 0;
@@ -2008,6 +2100,57 @@ class ValueSetExpander {
   noTotal() {
     this.total = -1;
     this.totalStatus = 'off';
+  }
+
+  /**
+   * The codes an include that lists them would add to the expansion, without building them:
+   * the same checks, in the same order, as the concept loop and includeCode make (located,
+   * active if asked, imports, exclusions, the code system's own cap on how many codes it
+   * contributes, not already in the expansion). Nothing is changed - the cap's counter is
+   * simulated - so the include can still be walked afterwards
+   * @returns {Promise<Set<string>>} the keys (see keyS) of the codes that would be added
+   */
+  async #countListedCodes(cs, cset, valueSets, filters, prep, excludeInactive) {
+    const keys = new Set();
+    const expandLimit = cs.expandLimitation();
+    let capCount = expandLimit > 0 && this.csCounter.has(cs.system()) ? this.csCounter.get(cs.system()).count : 0;
+    for (const cc of cset.concept) {
+      await this.worker.checkAndYield('countListedCodes');
+      const cctxt = await cs.locate(cc.code, this.allAltCodes);
+      if (!cctxt || !cctxt.context) {
+        continue;
+      }
+      const inactive = await cs.isInactive(cctxt.context);
+      if ((this.params.activeOnly && inactive) || !(await this.passesFilters(cs, cctxt.context, prep, filters, 0))) {
+        continue;
+      }
+      const code = await cs.expansionCode(cctxt.context, cc.code);
+      if (!this.passesImports(valueSets, cs.system(), code, 0) || (inactive && excludeInactive)
+          || await this.isExcluded(cs.system(), cs.version(), code)) {
+        continue;
+      }
+      if (expandLimit > 0 && ++capCount > expandLimit) {
+        continue;
+      }
+      const key = this.keyS(cs.system(), cs.version(), code);
+      if (!this.map.has(key) && !this.countedKeys.has(key)) {
+        keys.add(key);
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * Whether adding this many codes would end in VALUESET_TOO_COSTLY in includeCode: over the
+   * limit, and not a page that the limit leaves room for
+   */
+  #listedCodesOverLimit(n) {
+    // (limitCount is only set by expand(): an expander used for something else - $related - has no limit)
+    if (!(this.limitCount > 0) || this.hasExclusions || this.fullList.length + n <= this.limitCount) {
+      return false;
+    }
+    const paged = this.count > -1 && this.offset > -1 && this.count + this.offset > 0;
+    return !(paged && this.count + this.offset <= this.limitCount);
   }
 
   /**

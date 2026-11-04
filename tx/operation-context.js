@@ -593,9 +593,96 @@ class ResourceCache {
 }
 
 /**
+ * How many codes the expansion caches may hold between them - one budget for the server, shared
+ * by the caches of all its endpoints. An expansion's cost in memory is roughly proportional to the
+ * number of codes in it (about 0.8 KB each, for SNOMED CT pages with displays), so counting codes
+ * bounds the memory the caches use without measuring anything. When a new entry takes the total
+ * over the budget, the least recently used entries - from whichever cache - are dropped.
+ */
+class ExpansionCacheBudget {
+  /**
+   * Assumed memory per cached code, used to derive the default budget from the heap size
+   */
+  static BYTES_PER_CODE = 1024;
+
+  /**
+   * Share of the heap the default budget allows the caches
+   */
+  static HEAP_SHARE = 0.25;
+
+  /**
+   * The default budget: a quarter of the heap limit (node's --max-old-space-size, or its default),
+   * at BYTES_PER_CODE a code
+   * @returns {number}
+   */
+  static defaultMaxCodes() {
+    const heapLimit = require('v8').getHeapStatistics().heap_size_limit;
+    return Math.floor(heapLimit * ExpansionCacheBudget.HEAP_SHARE / ExpansionCacheBudget.BYTES_PER_CODE);
+  }
+
+  /**
+   * @param {number} [maxCodes] - how many codes the caches may hold; 0 or missing = the default
+   */
+  constructor(maxCodes = 0) {
+    this.maxCodes = maxCodes > 0 ? maxCodes : ExpansionCacheBudget.defaultMaxCodes();
+    this.total = 0;
+    // every entry of every cache sharing this budget, least recently used first
+    this.lru = new Map();
+  }
+
+  /**
+   * Add an entry (already in its cache) and drop the least recently used entries while over budget
+   */
+  add(entry) {
+    this.lru.set(entry, true);
+    this.total += entry.codes;
+    for (const old of this.lru.keys()) {
+      if (this.total <= this.maxCodes) {
+        break;
+      }
+      old.owner.evictEntry(old);
+    }
+  }
+
+  touch(entry) {
+    if (this.lru.delete(entry)) {
+      this.lru.set(entry, true);
+    }
+  }
+
+  remove(entry) {
+    if (this.lru.delete(entry)) {
+      this.total -= entry.codes;
+    }
+  }
+}
+
+/**
+ * The number of codes in an expansion (all levels of a hierarchical one)
+ * @param {Object} expansion - an expanded ValueSet (wrapper or JSON)
+ * @returns {number}
+ */
+function countExpansionCodes(expansion) {
+  const json = expansion && expansion.jsonObj ? expansion.jsonObj : expansion;
+  let count = 0;
+  const walk = (list) => {
+    for (const c of list || []) {
+      count++;
+      if (c.contains) {
+        walk(c.contains);
+      }
+    }
+  };
+  walk(json && json.expansion ? json.expansion.contains : null);
+  return count;
+}
+
+/**
  * Cache for expanded ValueSets
  * Stores expansions keyed by hash of (valueSet, params, additionalResources)
  * Only caches expansions that took longer than the minimum cache time
+ * Bounded by an entry count, and by a budget of codes (see ExpansionCacheBudget), which may be
+ * shared with other caches
  */
 class ExpansionCache {
   /**
@@ -611,9 +698,12 @@ class ExpansionCache {
   /**
    * @param {number} maxSize - Maximum number of entries to keep (default 1000)
    * @param {number} memoryThresholdMB - Heap usage in MB that triggers dropping oldest half (0 = disabled)
+   * @param {ExpansionCacheBudget} [budget] - the budget of codes, shared with other caches (default: one of its own)
    */
-  constructor(stats, maxSize = ExpansionCache.DEFAULT_MAX_SIZE, memoryThresholdMB = 0) {
+  constructor(stats, maxSize = ExpansionCache.DEFAULT_MAX_SIZE, memoryThresholdMB = 0, budget = null) {
     this.stats = stats;
+    this.budget = budget || new ExpansionCacheBudget();
+    // least recently used first (get moves an entry to the end)
     this.cache = new Map();
     this.maxSize = maxSize;
     this.memoryThresholdBytes = memoryThresholdMB * 1024 * 1024;
@@ -679,6 +769,9 @@ class ExpansionCache {
     if (entry) {
       entry.lastUsed = Date.now();
       entry.hitCount++;
+      this.cache.delete(key);
+      this.cache.set(key, entry);
+      this.budget.touch(entry);
       return entry.expansion;
     }
     return null;
@@ -707,19 +800,42 @@ class ExpansionCache {
       return false;
     }
 
-    // Enforce max size before adding - evict oldest (by lastUsed) if needed
+    // an expansion bigger than the whole budget would only empty the caches
+    const codes = countExpansionCodes(expansion);
+    if (codes > this.budget.maxCodes) {
+      return false;
+    }
+
+    this.clear(key);
+    // Enforce max size before adding - evict the least recently used if needed
     if (this.cache.size >= this.maxSize) {
       this.evictOldest(1);
     }
 
-    this.cache.set(key, {
+    const entry = {
+      owner: this,
+      key: key,
       expansion: expansion,
+      codes: codes,
       createdAt: Date.now(),
       lastUsed: Date.now(),
       durationMs: durationMs,
       hitCount: 0
-    });
+    };
+    this.cache.set(key, entry);
+    this.budget.add(entry);
     return true;
+  }
+
+  /**
+   * Drop an entry (the budget drops this cache's entries through this)
+   * @param {Object} entry
+   */
+  evictEntry(entry) {
+    if (this.cache.get(entry.key) === entry) {
+      this.cache.delete(entry.key);
+    }
+    this.budget.remove(entry);
   }
 
   /**
@@ -730,15 +846,12 @@ class ExpansionCache {
   evictOldest(count) {
     if (this.cache.size === 0 || count <= 0) return 0;
 
-    // Get entries sorted by lastUsed (oldest first)
-    const entries = Array.from(this.cache.entries())
-        .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-
-    const toEvict = Math.min(count, entries.length);
-    for (let i = 0; i < toEvict; i++) {
-      this.cache.delete(entries[i][0]);
+    // the map is in least recently used order
+    const toEvict = [...this.cache.values()].slice(0, count);
+    for (const entry of toEvict) {
+      this.evictEntry(entry);
     }
-    return toEvict;
+    return toEvict.length;
   }
 
   /**
@@ -780,14 +893,19 @@ class ExpansionCache {
    * @param {string} key - Hash key
    */
   clear(key) {
-    this.cache.delete(key);
+    const entry = this.cache.get(key);
+    if (entry) {
+      this.evictEntry(entry);
+    }
   }
 
   /**
    * Clear all cached entries
    */
   clearAll() {
-    this.cache.clear();
+    for (const entry of [...this.cache.values()]) {
+      this.evictEntry(entry);
+    }
   }
 
   /**
@@ -799,12 +917,17 @@ class ExpansionCache {
    */
   getStats() {
     let totalHits = 0;
+    let codes = 0;
     for (const entry of this.cache.values()) {
       totalHits += entry.hitCount;
+      codes += entry.codes;
     }
     return {
       size: this.cache.size,
       maxSize: this.maxSize,
+      codes,
+      budgetCodes: this.budget.total,
+      budgetMaxCodes: this.budget.maxCodes,
       memoryThresholdMB: this.memoryThresholdBytes > 0 ? this.memoryThresholdBytes / (1024 * 1024) : 0,
       totalHits
     };
@@ -1213,6 +1336,8 @@ module.exports = {
   TimeTracker,
   ResourceCache,
   ExpansionCache,
+  ExpansionCacheBudget,
+  countExpansionCodes,
   isDebugging,
   debugLog,
   formatDuration
