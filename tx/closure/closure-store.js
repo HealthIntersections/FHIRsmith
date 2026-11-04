@@ -147,6 +147,22 @@ class ClosureStore {
           entry_count = (SELECT count(*) FROM closure_entry e WHERE e.table_id = closure_table.id);
       `);
     }
+    if (this.shared) {
+      // An INTEGER PRIMARY KEY can be reused after a reset/dispose. Shared calls keep
+      // the id across awaits, including in their retry memo and paged reads, so it
+      // must identify one incarnation forever. A durable counter also upgrades old
+      // databases without rebuilding the table and its foreign keys. This runs in
+      // the schema's IMMEDIATE transaction, before any shared writer can allocate.
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS closure_table_sequence (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          last_id INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO closure_table_sequence VALUES (1, 0);
+        UPDATE closure_table_sequence SET last_id = max(last_id,
+          (SELECT coalesce(max(id), 0) FROM closure_table)) WHERE singleton = 1;
+      `);
+    }
   }
 
   #prepare() {
@@ -190,6 +206,8 @@ class ClosureStore {
     };
     if (this.shared) {
       Object.assign(this.stmt, {
+        nextTableId: this.db.prepare('UPDATE closure_table_sequence SET last_id = last_id + 1 WHERE singleton = 1 RETURNING last_id AS id'),
+        insertSharedTable: this.db.prepare('INSERT INTO closure_table (id, name, version, created, last_used) VALUES (?, ?, 0, ?, ?)'),
         entriesPageUpTo: this.db.prepare(`
           SELECT e.rowid AS rowid,
                  s.system AS source_system, s.code AS source_code, s.display AS source_display,
@@ -330,7 +348,9 @@ class ClosureStore {
       if (existing) {
         this.stmt.deleteTable.run(existing.id);
       }
-      const info = this.stmt.insertTable.run(name, now, now);
+      const info = this.shared
+        ? this.stmt.insertSharedTable.run(this.stmt.nextTableId.get().id, name, now, now)
+        : this.stmt.insertTable.run(name, now, now);
       const id = info.lastInsertRowid;
       params.forEach((p, i) => this.stmt.insertParam.run(id, i, p.name, JSON.stringify(p)));
       return this.stmt.getTable.get(name);
@@ -438,11 +458,8 @@ class ClosureStore {
    *   (nothing was written)
    */
   recordAddChecked(table, concepts, entries) {
-    if (concepts.length === 0) {
-      // nothing to write: what the caller read is still a true answer (it was the table
-      // when it read it, and nothing it was asked to add is missing from the table now)
-      return this.recordAdd(table, concepts, entries);
-    }
+    // Even a duplicate-only add must check: a reset may have removed those concepts
+    // while this request was working, or an intervening add changed their version.
     return this.db.transaction(() => {
       const now = this.stmt.getTable.get(table.name);
       if (!now || now.id !== table.id || now.version !== table.version) {

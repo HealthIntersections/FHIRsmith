@@ -243,6 +243,57 @@ describe('$closure on a shared database', () => {
     expect(txModule.closureStore.getTable(T)).toBeNull();
   });
 
+  test.each(['reset', 'dispose and recreate'])('%s during an add uses the replacement configuration on retry', async (change) => {
+    const T = 'replace-during-add';
+    expect((await post(app, init(T))).status).toBe(200);
+    const replacement = { ...CS, concept: [
+      { code: 'a', display: 'New A', concept: [{ code: 'r', display: 'New R' }] }
+    ] };
+    const i = interfere((call) => {
+      if (call === 1) {
+        if (change === 'dispose and recreate') {
+          other.dropTable(T);
+        }
+        other.createTableChecked(T, [{ name: 'tx-resource', resource: replacement }],
+          { reset: true, maxTables: Infinity });
+      }
+    });
+    try {
+      const res = await post(app, params(name(T), concept('a'), concept('r')));
+      expect(res.status).toBe(200);
+      // Same canonical/version and codes, but the replacement reverses their relationship.
+      // A retry must discard the old providers, displays and subsumption memo as well.
+      expect(entries(res.body)).toEqual([n('r', 'a')]);
+      expect(i.calls()).toBe(2);
+      expect(other.getConcepts(other.getTable(T).id).map(c => c.display).sort()).toEqual(['New A', 'New R']);
+    } finally {
+      i.restore();
+      other.dropTable(T);
+    }
+  });
+
+  test('a reset during resync refuses the interrupted snapshot', async () => {
+    const T = 'replace-during-resync';
+    await post(app, init(T));
+    await post(app, params(name(T), concept('a'), concept('r')));
+    const store = txModule.closureStore;
+    const realPage = store.entriesPage.bind(store);
+    const page = jest.spyOn(store, 'entriesPage').mockImplementation((...args) => {
+      const rows = realPage(...args);
+      other.createTableChecked(T, init(T).parameter.slice(1), { reset: true, maxTables: Infinity });
+      return rows;
+    });
+    try {
+      const res = await post(app, params(name(T), { name: 'version', valueString: '0' }));
+      expect(res.status).toBe(409);
+      expect(res.body.issue[0].code).toBe('conflict');
+      expect(other.getTable(T).version).toBe(0);
+    } finally {
+      page.mockRestore();
+      other.dropTable(T);
+    }
+  });
+
   test('a resync reports only up to the version it read', () => {
     const T = 'bounded';
     const made = other.createTableChecked(T, [], { reset: false, maxTables: Infinity });
