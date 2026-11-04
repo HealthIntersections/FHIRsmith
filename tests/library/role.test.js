@@ -94,6 +94,19 @@ describe('applyRole', () => {
     expect(() => applyRole(badCap, { role: 'master', instanceCode: null })).toThrow(/megabytes/);
   });
 
+  test('server.cluster.sharedClosure reaches tx (with a role)', () => {
+    const off = applyRole(baseConfig(), { role: 'tx-worker', instanceCode: 'tx1' });
+    expect(off.modules.tx.sharedClosure).toBeUndefined();
+    const on = baseConfig();
+    on.server.cluster = { sharedClosure: true };
+    applyRole(on, { role: 'tx-worker', instanceCode: 'tx1' });
+    expect(on.modules.tx.sharedClosure).toBe(true);
+    expect(on.modules.tx.sharedCache).toBeUndefined();
+    const bad = baseConfig();
+    bad.server.cluster = { sharedClosure: 1 };
+    expect(() => applyRole(bad, { role: 'master', instanceCode: null })).toThrow(/true or false/);
+  });
+
   test('a worker needs its own instance code, and tx must be enabled', () => {
     expect(() => applyRole(baseConfig(), { role: 'tx-worker', instanceCode: null })).toThrow(/its own instance code/);
     const noCode = baseConfig();

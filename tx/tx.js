@@ -231,14 +231,18 @@ class TXModule {
     // would be worse.
     this.closureStore = null;
     // a tx-worker (cluster.md) opens neither the closure tables nor the syndication store:
-    // the master owns them, and $closure and the feed are routed to it
+    // the master owns them, and $closure and the feed are routed to it - unless
+    // server.cluster.sharedClosure is on (set only with a role), when every process
+    // answers $closure on the one database (see closure-store.js)
     const worker = config.clusterRole === 'tx-worker';
-    if (config.closure && config.closure.enabled && !worker) {
-      this.closureStore = new ClosureStore(config.closure, this.log);
+    const sharedClosure = config.sharedClosure === true;
+    if (config.closure && config.closure.enabled && (!worker || sharedClosure)) {
+      this.closureStore = new ClosureStore(config.closure, this.log, { shared: sharedClosure });
       this.closureStore.open();
-      this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
+      this.log.info(`$closure enabled: tables in ${this.closureStore.path}${sharedClosure ? ', shared with the other processes' : ''}`);
       const days = config.closure.retentionDays;
-      if (days) {
+      // with the tables shared, the master alone drops the stale ones
+      if (days && !worker) {
         const prune = async () => {
           try {
             const dropped = await this.closureStore.pruneUnused(days);
