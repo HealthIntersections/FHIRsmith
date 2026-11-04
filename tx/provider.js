@@ -12,6 +12,38 @@ const {PackageValueSetProvider} = require("./vs/vs-package");
 const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
+const { CodeSystemFactoryProvider } = require("./cs/cs-api");
+
+/**
+ * The code system providers resolveCode() has built, per operation: opContext ->
+ * Map(factory -> Promise of the provider). A page asks resolveCode about every code it
+ * shows, and for a database-backed code system each build opens a connection that stays
+ * open until the request ends, so one is built per code system and version, and reused.
+ * Keyed weakly, so the entry goes when the operation does.
+ */
+const resolveCodeProviders = new WeakMap();
+
+/**
+ * How many codes resolveCodes() locates at once. Enough to keep a database-backed code
+ * system busy without queueing a whole page's worth of queries at the same time.
+ */
+const RESOLVE_CODES_CONCURRENCY = 8;
+
+/**
+ * fn over items, at most `limit` at a time, with the results in the order of the items.
+ */
+async function mapConcurrently(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
 
 /**
  * This class holds what information is in context
@@ -536,10 +568,31 @@ class Provider {
   }
 
   async resolveCode(opContext, system, version, code) {
+    validateParameter(code, "code", String);
+    return (await this.resolveCodes(opContext, system, version, [code]))[0];
+  }
+
+  /**
+   * resolveCode() for many codes of one code system: where each code lives (a link) and
+   * its display, or null, in the order of the codes.
+   *
+   * The code system is found and its provider built once for all of them, and the codes
+   * are located RESOLVE_CODES_CONCURRENCY at a time rather than one after another.
+   *
+   * @param {OperationContext} opContext
+   * @param {string} system
+   * @param {string|null} version
+   * @param {string[]} codes
+   * @returns {Promise<Array<{link: string, description: string}|null>>}
+   */
+  async resolveCodes(opContext, system, version, codes) {
     validateParameter(opContext, "opContext", OperationContext);
     validateParameter(system, "system", String);
     validateOptionalParameter(version, "version", String);
-    validateParameter(code, "code", String);
+    validateArrayParameter(codes, "codes", String);
+    if (codes.length === 0) {
+      return [];
+    }
 
     if (system.includes("|")) {
       const url = system.substring(0, system.indexOf("|"));
@@ -559,41 +612,80 @@ class Provider {
     if (factory == null && vurlMM) {
       factory = this.codeSystemFactories.get(vurlMM);
     }
-    if (factory != null) {
-      const csp = await factory.build(opContext, []);
-      opContext.registerProvider(csp);
-      const c = csp ? csp.locate(code) : null;
-      if (c) {
-        if (factory.iteratable()) {
-          return {
-            link: this.path + "/CodeSystem/x-" + factory.id(),
-            description: csp.display(c)
-          }
-        } else {
-           const link = factory.codeLink(c);
-           if (link) {
-             return {
-               link: link,
-               description: csp.display(c)
-             }
-           }
-        }
-      }
-    }
+    // A code system from a factory gives a code a link only if the factory is iteratable
+    // (US states) or has a codeLink() of its own. For the rest (RxNorm, LOINC, SNOMED CT,
+    // ...) what locate() finds would be thrown away, so they are not built or asked.
+    // That matters: RxNorm looks for a code it does not have in its archive table, which
+    // takes 36 ms a code, and 4,529 of Medication Brand Name's codes are not current.
+    const linksCodes = factory != null
+      && (factory.iteratable() || factory.codeLink !== CodeSystemFactoryProvider.prototype.codeLink);
+    const csp = linksCodes ? await this.resolveCodeProvider(opContext, factory) : null;
     let cs = this.codeSystems.get(vurl);
     if (cs == null && vurlMM) {
       cs = this.codeSystems.get(vurlMM);
     }
-    if (cs != null) {
-      const c = cs.codeMap.get(code);
-      if (c) {
-        return {
-          link: this.path + "/CodeSystem/" + cs.id + '#' + code,
-          description: c.display
-        };
+
+    return mapConcurrently(codes, RESOLVE_CODES_CONCURRENCY, async (code) => {
+      if (csp) {
+        const located = await csp.locate(code);
+        const c = located ? located.context : null;
+        if (c) {
+          if (factory.iteratable()) {
+            return {
+              link: this.path + "/CodeSystem/x-" + factory.id(),
+              description: await csp.display(c)
+            }
+          } else {
+             const link = factory.codeLink(c);
+             if (link) {
+               return {
+                 link: link,
+                 description: await csp.display(c)
+               }
+             }
+          }
+        }
       }
+      if (cs != null) {
+        const c = cs.codeMap.get(code);
+        if (c) {
+          return {
+            link: this.path + "/CodeSystem/" + cs.id + '#' + code,
+            description: c.display
+          };
+        }
+      }
+      return null;
+    });
+  }
+
+  /**
+   * The provider resolveCode() uses for a code system factory in this operation: built
+   * the first time it is asked for, registered for closing when the operation ends, and
+   * reused after that. The promise is kept, so calls that overlap share one build.
+   *
+   * @param {OperationContext} opContext
+   * @param {CodeSystemFactoryProvider} factory
+   * @returns {Promise<CodeSystemProvider|null>}
+   */
+  resolveCodeProvider(opContext, factory) {
+    let built = resolveCodeProviders.get(opContext);
+    if (!built) {
+      built = new Map();
+      resolveCodeProviders.set(opContext, built);
     }
-    return null;
+    let csp = built.get(factory);
+    if (!csp) {
+      csp = (async () => {
+        const p = await factory.build(opContext, []);
+        opContext.registerProvider(p);
+        return p;
+      })();
+      // A failed build is not kept, so the next call tries again.
+      csp.catch(() => built.delete(factory));
+      built.set(factory, csp);
+    }
+    return csp;
   }
 
   /**
