@@ -213,3 +213,54 @@ describe('the launcher, with fake processes', () => {
     launcher = null;
   });
 });
+
+describe('the launcher\'s keep-alive connections to the processes', () => {
+  // a process that closes idle connections as Node's default does (5 s): the launcher must
+  // close its idle ones first, or a request sent as the process closes one is reset
+  const PORT = 20190;
+  let launcher;
+  afterEach(async () => {
+    if (launcher) {
+      await launcher.stop();
+      launcher = null;
+    }
+  });
+
+  test('an idle connection is closed by the launcher before the process closes it, and a long request is not cut', async () => {
+    launcher = createLauncher({
+      port: PORT,
+      txPaths: TX,
+      drainMs: 10000,
+      procs: [
+        { name: 'master', role: 'master', code: 'm0', port: 20191, servesTx: false },
+        { name: 'worker tx1', role: 'tx-worker', code: 'tx1', port: 20192, servesTx: true }
+      ],
+      command: (proc) => [process.execPath, [FAKE, proc.code, String(proc.port), '5000']],
+      log: () => {}
+    });
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const tx1 = launcher.procs.find(p => p.code === 'tx1');
+    const pooled = () => Object.values(tx1.agent.freeSockets).reduce((n, list) => n + list.length, 0);
+
+    expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(200);
+    await until(() => pooled() === 1);
+    // reused while it is fresh
+    const before = (await get(PORT, '/r4/connections')).json.connections;
+    expect((await get(PORT, '/r4/connections')).json.connections).toBe(before);
+    // gone from the pool before the process's 5 s are up
+    const idleSince = Date.now();
+    await until(() => pooled() === 0, 6000);
+    expect(Date.now() - idleSince).toBeLessThan(4900);
+    // so a request at the moment the process would close it goes down a new connection
+    await sleep(5000 - (Date.now() - idleSince));
+    const r = await get(PORT, '/r4/connections');
+    expect(r.status).toBe(200);
+    expect(r.json.connections).toBeGreaterThan(before);
+
+    // the idle limit doesn't apply to a request in progress
+    const slow = await get(PORT, '/r4/ValueSet/$expand?delay=6000');
+    expect(slow.status).toBe(200);
+    expect(slow.json.code).toBe('tx1');
+  }, 30000);
+});
