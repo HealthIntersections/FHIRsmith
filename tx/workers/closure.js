@@ -336,6 +336,17 @@ class ClosureWorker extends TerminologyWorker {
       }
       after = page[page.length - 1].rowid;
     }
+    if (this.store.shared) {
+      // Reset/dispose deletes the old pages. Never return a truncated snapshot, or
+      // entries from a replacement, as though they belonged to the version we read.
+      const current = this.store.getTable(name);
+      if (!current) {
+        throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+      }
+      if (current.id !== table.id) {
+        throw this.closureIssue('conflict', 'CLOSURE_TABLE_CHANGED', [name], 'business-rule', 409);
+      }
+    }
     return await this.buildConceptMap(name, table.version, entries, fhirVersion);
   }
 
