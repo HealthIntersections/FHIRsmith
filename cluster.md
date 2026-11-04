@@ -184,6 +184,11 @@ transactions in WAL mode, so readers don't wait for them. `last_used` is written
 running it twice does no harm. An unknown cache-id gets a message that doesn't offer a restart
 or a routing mistake as the reason, since neither can be the cause.
 
+If another request replaces a resource after its index was read but before its content is
+loaded, the request returns `409` (`CACHE_ID_CHANGED_DURING_REQUEST`). Retry the whole
+request to read the new contents together. This prevents using new content under an old
+expansion-cache key; unchanged resources and additions of unrelated resources still work.
+
 `cacheAffinity: true` keeps the prefix routing on top. The expansion cache is still per
 process, so a client that stays on one process finds its expansions there; without affinity,
 each process does the first expansion again. The file must be on a local disk.
@@ -205,6 +210,12 @@ waits a few milliseconds, with jitter, between tries. After `writeRetries` tries
 same name, and for the table limit, in the same transaction as the insert. A resync reports
 only entries up to the version it read. The master alone drops stale tables
 (`retentionDays`).
+
+Shared table IDs are never reused after reset or disposal, including across restarts; an
+existing database is upgraded in place. An add that races a reset retries internally with
+the new configuration and fresh lookup state. A resync interrupted by reset returns `409`
+(`CLOSURE_TABLE_CHANGED`); retry against the new table, whose version starts at zero. If the
+table was disposed without being recreated, the existing unknown-table `404` applies.
 
 This spreads the subsumption work of `$closure` over the processes. When many processes add
 to the same table at once, some adds are worked out more than once.
