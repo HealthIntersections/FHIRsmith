@@ -49,6 +49,7 @@ which parts of the configuration each one acts on.
 | Syndication feed (the store) | yes | no: routed to the master |
 | VSAC sync, and the resync form on `/info/vsac` | yes | no: reads what the master wrote |
 | Package crawler, XIG download, registry crawl, daily report, npm audit | yes | no (those modules don't run) |
+| IANA media types registry (`terminology-cache/media-types.xml`), downloaded at each load | yes | no: reads the master's copy (none: a warning, and no `registered` filter) |
 | Statistics database, uptime history | yes | no: in memory only |
 | `$cache-control` caches | its own, in memory (shared, with [`sharedCache`](#options)) | its own, in memory (shared, with [`sharedCache`](#options)) |
 | Expansion cache, CodeSystem list refresh | its own | its own |

@@ -121,6 +121,12 @@ class Library {
   packageCachesReadOnly = false;
 
   /**
+   * {boolean} a tx-worker (cluster.md): the cached IANA media types registry is the master's.
+   * This process reads it and never downloads or writes it
+   */
+  mimeTypesReadOnly = false;
+
+  /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
    * syndication feed, when the server has one (see tx/syndication)
    */
@@ -582,7 +588,7 @@ class Library {
         break;
       }
       case "mimetypes" : {
-        const mime = new MimeTypeServicesFactory(this.i18n, this.cacheFolder, this.log);
+        const mime = new MimeTypeServicesFactory(this.i18n, this.cacheFolder, this.log, { readOnly: this.mimeTypesReadOnly });
         await mime.load();
         this.registerProvider('internal', mime);
         break;
