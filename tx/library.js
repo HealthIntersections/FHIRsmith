@@ -114,6 +114,13 @@ class Library {
   localSourceTag = null;
 
   /**
+   * {boolean} a tx-worker (cluster.md): the package value set and concept map caches are the
+   * master's. This process opens them read-only, waits for the master to have finished one,
+   * and never builds, rebuilds or migrates one
+   */
+  packageCachesReadOnly = false;
+
+  /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
    * syndication feed, when the server has one (see tx/syndication)
    */
@@ -875,10 +882,10 @@ class Library {
     this.codeSystemProviders.push(cp);
     let vs = null;
     if (!csOnly) {
-      vs = new PackageValueSetProvider(contentLoader);
+      vs = new PackageValueSetProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
       await vs.initialize();
       this.valueSetProviders.push(vs);
-      const cm = new PackageConceptMapProvider(contentLoader);
+      const cm = new PackageConceptMapProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
       await cm.initialize();
       this.conceptMapProviders.push(cm);
     }
@@ -1057,10 +1064,10 @@ class Library {
     }
     this.codeSystemProviders.push(cp);
 
-    const vs = new PackageValueSetProvider(contentLoader);
+    const vs = new PackageValueSetProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
     await vs.initialize();
     this.valueSetProviders.push(vs);
-    const cm = new PackageConceptMapProvider(contentLoader);
+    const cm = new PackageConceptMapProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
     await cm.initialize();
     this.conceptMapProviders.push(cm);
 

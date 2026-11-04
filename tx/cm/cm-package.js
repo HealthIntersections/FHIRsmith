@@ -9,6 +9,7 @@ const {validateParameter} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
 const { keepForPinnedReference } = require('../library/tho-precedence');
+const { waitForCache } = require('../library/wait-for-cache');
 
 /**
  * Package-based ConceptMap provider using shared database layer
@@ -18,14 +19,19 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
   /**
    * @param {PackageContentLoader} packageLoader - Path to the extracted package folder
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - a tx-worker (cluster.md): the cache is the master's; it
+   *   is only read (ConceptMapDatabase reads with OPEN_READONLY), waited for until the master has
+   *   finished it, and never built or changed
    */
-  constructor(packageLoader) {
+  constructor(packageLoader, options = {}) {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
     // -2: caches from before concept maps were checked for active content in their
     // narrative are rebuilt (see initialize)
     this.dbPath = path.join(packageLoader.packageFolder, '.conceptmaps-2.db');
+    this.readOnly = !!options.readOnly;
     this.database = new ConceptMapDatabase(this.dbPath);
     this.conceptMapMap = new Map();
     this.initialized = false;
@@ -41,6 +47,14 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
       return;
     }
     await this.packageLoader.initialize();
+    if (this.readOnly) {
+      await waitForCache(async () => (await this.database.exists()) && (await this.database.isComplete()),
+        `Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: concept map cache ${this.dbPath}`);
+      this.conceptMapMap = await this.database.loadAllConceptMaps();
+      this.#applyIdPrefix();
+      this.initialized = true;
+      return;
+    }
     await fs.rm(path.join(this.packageLoader.packageFolder, '.conceptmaps.db'), { force: true }); // the old cache
 
     // A cache is only used once its population finished. One that was cut short

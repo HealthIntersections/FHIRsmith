@@ -281,6 +281,8 @@ class TXModule {
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
     if (config.clusterRole) {
       this.library.localSourceTag = config.instanceCode;
+      // the master builds the package caches; a worker only reads them
+      this.library.packageCachesReadOnly = config.clusterRole === 'tx-worker';
     }
 
     // The syndication feed: content is recorded in the store as the library loads it, from

@@ -63,6 +63,15 @@ by key, at most once a second) and reloads the list in the background if it has 
 sync reaches every worker about a second after it finishes. The database is in WAL mode with a
 5 second busy timeout, so a worker's reload doesn't make the master's writes fail.
 
+**The package caches are the master's.** The value set and concept map caches in each
+package folder (`.valuesets-2.db`, `.conceptmaps-2.db`) are built, rebuilt and migrated only
+by the master; it has finished every one before it answers `/health`. A worker opens them
+read-only, and never creates, rebuilds or migrates one: if one is missing, incomplete or still
+needs a migration (a worker started on its own, before the master), the worker waits for the
+master to finish it, and after 5 minutes (`FHIRSMITH_CACHE_WAIT_MS`) stops with an error that
+says so. Starting the master first is what makes the wait unnecessary, not what keeps the
+workers from writing.
+
 **Nothing else is shared.** The workers run no module but tx, so they never read what the
 package crawler, the XIG download or the registry crawl write. Each process keeps the caches
 of a `folder:` or `file:` library source in its own folder
@@ -90,9 +99,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 `node cluster.js` reads `config.json` from the data directory and:
 
 * starts the master and waits until it answers `/health`. On a new data directory the master
-  builds the package caches and creates the VSAC database; processes starting together would
-  corrupt them, so the workers start only when the master is ready
-* listens on the configured port, and starts the workers
+  builds the package caches and creates the VSAC database
+* listens on the configured port, and starts the workers one after another, each once the one
+  before answers `/health`
 * proxies each request by the rules above, over keep-alive connections to each process. It
   adds the client address to `X-Forwarded-For`, so the servers' logs and rate limits see the
   real client (its own address is a loopback one, which `server.trustProxy` trusts by default)

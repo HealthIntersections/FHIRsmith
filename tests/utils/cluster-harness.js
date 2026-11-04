@@ -54,8 +54,10 @@ function pidOn(port) {
  * @param {number} [opts.workers=2]
  * @param {Object} [opts.cluster] - more server.cluster settings (the options)
  * @param {Object} [opts.tx] - more modules.tx settings
+ * @param {string[]} [opts.sources] - more library sources (library.yml), after VSAC
+ * @param {function(string)} [opts.prepare] - called with the data directory before the launch
  */
-async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {} }) {
+async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {}, sources = [], prepare = null }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cluster-opt-'));
   const master = front + 1;
   const workerPorts = Array.from({ length: workers }, (_, i) => master + 1 + i);
@@ -64,7 +66,8 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {} })
   if (fs.existsSync(core)) {
     fs.cpSync(core, path.join(dir, 'terminology-cache', 'hl7.fhir.r4.core#4.0.1'), { recursive: true });
   }
-  fs.writeFileSync(path.join(dir, 'library.yml'), 'base:\n  url: https://storage.googleapis.com/tx-fhir-org\n\nsources:\n  - internal:vsac=vsac\n');
+  fs.writeFileSync(path.join(dir, 'library.yml'), 'base:\n  url: https://storage.googleapis.com/tx-fhir-org\n\nsources:\n  - internal:vsac=vsac\n' +
+    sources.map(source => `  - ${source}\n`).join(''));
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
     hostName: 'cluster-test',
     logging: { console: false },
@@ -88,12 +91,17 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {} })
   });
   await new Promise(resolve => vsacServer.listen(vsac, resolve));
 
+  if (prepare) {
+    prepare(dir);
+  }
   const out = fs.openSync(path.join(dir, 'processes.log'), 'a');
   const launcher = spawn(process.execPath, [path.join(ROOT, 'cluster.js')], {
     cwd: ROOT, env: { ...process.env, FHIRSMITH_DATA_DIR: dir }, stdio: ['ignore', out, out]
   });
   const exited = new Promise(resolve => launcher.once('exit', (code, signal) => resolve({ code, signal })));
 
+  // port -> when it was first seen answering /health
+  const upAt = new Map();
   async function waitUp(ports, ms = 300000) {
     const t0 = Date.now();
     for (const port of ports) {
@@ -102,6 +110,9 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {} })
           throw new Error(`port ${port} did not come up; see ${path.join(dir, 'processes.log')}`);
         }
         await sleep(250);
+      }
+      if (!upAt.has(port)) {
+        upAt.set(port, Date.now());
       }
     }
     // the launcher marks a process ready a moment after it first answers
@@ -119,7 +130,7 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {} })
     return result;
   }
 
-  return { dir, front, master, workers: workerPorts, launcher, exited, waitUp, stop };
+  return { dir, front, master, workers: workerPorts, launcher, exited, waitUp, upAt, stop };
 }
 
 module.exports = { startCluster, request, isUp, param, issueCodes, unknownCache, pidOn, sleep, ROOT };

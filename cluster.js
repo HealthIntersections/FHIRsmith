@@ -12,7 +12,8 @@
  * don't run nginx in front:
  *
  *  - starts the master (node server.js --role=master), waits until it answers /health, then
- *    starts the workers (--role=tx-worker), each with its own instance code and port
+ *    starts the workers (--role=tx-worker) one after another, each once the one before is
+ *    ready, each with its own instance code and port
  *  - routes: a request with X-Cache-Id to the process that issued it (by the id's prefix);
  *    $closure, the syndication feed, the source info pages and everything that isn't a tx
  *    endpoint to the master; any other tx request to the tx process with the fewest
@@ -311,11 +312,17 @@ function createLauncher(settings) {
       server.listen(settings.port, resolve);
     });
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
-    for (const p of procs) {
-      if (p !== master) {
-        void startProcess(p);
+    // one after another, each once the one before is ready (or has exited, and is being
+    // restarted): a worker only reads the caches the master built, but starting them together
+    // would put every worker's load (and its memory peak) at the same moment
+    // (in the background: start() returns once the master is ready and the port is open)
+    void (async () => {
+      for (const p of procs) {
+        if (p !== master && !stopping) {
+          await startProcess(p);
+        }
       }
-    }
+    })();
   }
 
   /**
