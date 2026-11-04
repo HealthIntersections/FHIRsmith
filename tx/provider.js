@@ -24,6 +24,86 @@ const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
  * - a list of concept map providers that can provide concept map instances
  *
  */
+/**
+ * The provider's CodeSystem map (keys url and url|version), with an index of the CodeSystems it
+ * holds by the url they supplement, so that loadSupplements() looks only at those instead of
+ * every loaded CodeSystem on every code-system lookup.
+ *
+ * The index is part of the map, not a cache: set, delete and clear are the only ways to change a
+ * Map, and each updates the index in the same call. Provider.addCodeSystem and deleteCodeSystem
+ * are the only callers that change this map.
+ *
+ * supplementsOf(url) gives every value whose CodeSystem.isSupplementFor(url, version) can be
+ * true, in the map's own order, and possibly some for which it is false; loadSupplements still
+ * asks isSupplementFor of each. isSupplementFor is true only when `supplements` equals url or
+ * starts with url + '|', and then the part of `supplements` before any '|' is the part of url
+ * before any '|': that is the index key.
+ */
+class CodeSystemMap extends Map {
+  constructor(entries) {
+    super();
+    this.supplementIndex = new Map(); // key used by supplementsOf -> Set of map keys
+    this.indexedUnder = new Map();    // map key -> its key in supplementIndex
+    this.position = new Map();        // map key -> insertion number, to keep the map's order
+    this.nextPosition = 0;
+    if (entries) {
+      for (const [k, v] of entries) this.set(k, v);
+    }
+  }
+
+  /** the index key for a url, or for a CodeSystem's supplements value: the part before any '|' */
+  static indexKey(url) {
+    return String(url).split('|')[0];
+  }
+
+  set(k, v) {
+    if (!super.has(k)) {
+      this.position.set(k, this.nextPosition++); // a Map keeps a replaced key where it was
+    }
+    this.#unindex(k);
+    super.set(k, v);
+    const supplements = v && v.jsonObj ? v.jsonObj.supplements : null;
+    if (supplements) {
+      const u = CodeSystemMap.indexKey(supplements);
+      let keys = this.supplementIndex.get(u);
+      if (!keys) this.supplementIndex.set(u, keys = new Set());
+      keys.add(k);
+      this.indexedUnder.set(k, u);
+    }
+    return this;
+  }
+
+  delete(k) {
+    this.#unindex(k);
+    this.position.delete(k);
+    return super.delete(k);
+  }
+
+  clear() {
+    this.supplementIndex.clear();
+    this.indexedUnder.clear();
+    this.position.clear();
+    super.clear();
+  }
+
+  // removes k from the index under the key it was indexed under when it was set
+  #unindex(k) {
+    const u = this.indexedUnder.get(k);
+    if (u === undefined) return;
+    this.indexedUnder.delete(k);
+    const keys = this.supplementIndex.get(u);
+    keys.delete(k);
+    if (keys.size === 0) this.supplementIndex.delete(u);
+  }
+
+  /** the values that may supplement url (any version), in the order values() gives them */
+  supplementsOf(url) {
+    const keys = this.supplementIndex.get(CodeSystemMap.indexKey(url));
+    if (!keys) return [];
+    return [...keys].sort((a, b) => this.position.get(a) - this.position.get(b)).map(k => super.get(k));
+  }
+}
+
 class Provider {
   i18n;
   fhirVersion;
@@ -116,7 +196,10 @@ class Provider {
     for (let csp of this.codeSystemFactories.values()) {
       csp.listSupplements(supplements, url, version, statedSupplements);
     }
-    for (let cs of this.codeSystems.values()) {
+    // the index gives the same candidates in the same order as values(), less the ones that
+    // can't be supplements of url (see CodeSystemMap)
+    const candidates = this.codeSystems instanceof CodeSystemMap ? this.codeSystems.supplementsOf(url) : this.codeSystems.values();
+    for (let cs of candidates) {
       if (cs.isSupplementFor(url, version)) {
         if (cs.isGlobalSupplement() || this.isStatedSupplement(cs, statedSupplements)) {
           supplements.set(cs.vurl, cs);
@@ -749,4 +832,4 @@ class Provider {
 
 }
 
-module.exports = { Provider };
+module.exports = { CodeSystemMap, Provider };

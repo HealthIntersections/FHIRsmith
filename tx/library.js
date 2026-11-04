@@ -33,7 +33,7 @@ const {IETFLanguageCodeFactory} = require("./cs/cs-lang");
 const {LanguageDefinitions} = require("../library/languages");
 const {VersionUtilities} = require("../library/version-utilities");
 const {ListCodeSystemProvider} = require("./cs/cs-provider-list");
-const { Provider } = require("./provider");
+const { Provider, CodeSystemMap } = require("./provider");
 const {I18nSupport} = require("../library/i18nsupport");
 const folders = require('../library/folder-setup');
 const memoryGuard = require('../library/memory-guard');
@@ -1195,7 +1195,7 @@ class Library {
     const provider = new Provider();
     provider.i18n = this.i18n;
     provider.codeSystemFactories = new Map(this.codeSystemFactories); // all of them
-    provider.codeSystems = new Map();
+    provider.codeSystems = new CodeSystemMap();
     provider.valueSetProviders = [];
     provider.conceptMapProviders = [];
     provider.path = path;
