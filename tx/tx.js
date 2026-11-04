@@ -280,7 +280,8 @@ class TXModule {
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
     if (config.clusterRole) {
-      this.library.localSourceTag = config.instanceCode;
+      // the folder:/file: source caches are the master's, under one name every process shares
+      this.library.localSourceTag = 'master';
       // the master builds the package caches; a worker only reads them
       this.library.packageCachesReadOnly = config.clusterRole === 'tx-worker';
       // the master refreshes the IANA media types registry; a worker reads its copy

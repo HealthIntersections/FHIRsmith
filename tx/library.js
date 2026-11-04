@@ -107,9 +107,12 @@ class Library {
   totalDownloaded = 0;
   vsacCfg = undefined;
   /**
-   * {string|null} with several processes on one data directory (cluster.md), this one's
-   * instance code: its folder-source-* caches are its own, since each load wipes and
-   * rebuilds them, and it leaves the other processes' alone (no pruning)
+   * {string|null} with several processes on one data directory (cluster.md), a name every
+   * process in the cluster shares (the master's role): the folder-source-* caches are the
+   * master's, named folder-source-<tag>-<hash>. The master builds each in a temporary sibling
+   * and renames it into place, so a worker never sees one half built; a worker
+   * (packageCachesReadOnly) only reads them, waiting for the master as for package caches,
+   * and never prunes
    */
   localSourceTag = null;
 
@@ -281,7 +284,8 @@ class Library {
       external: endMemory.external - this.startMemory.external
     };
 
-    if (!this.localSourceTag) {
+    if (!this.packageCachesReadOnly) {
+      // the master, or no role: a worker leaves the master's caches alone
       await this.#pruneLocalSourceCaches();
     }
 
@@ -918,7 +922,7 @@ class Library {
     }
 
     const folderPath = this.#resolveLocalSourcePath(details);
-    const cacheSubdir = await this.#prepareLocalSourceCache(folderPath);
+    const cacheSubdir = await this.#prepareLocalSourceCache(folderPath, dir => new FolderContentLoader(folderPath, dir));
     await this.#loadLocalSource(new FolderContentLoader(folderPath, cacheSubdir));
   }
 
@@ -943,7 +947,7 @@ class Library {
     }
 
     const filePath = this.#resolveLocalSourcePath(details);
-    const cacheSubdir = await this.#prepareLocalSourceCache(filePath);
+    const cacheSubdir = await this.#prepareLocalSourceCache(filePath, dir => new FileContentLoader(filePath, dir));
     await this.#loadLocalSource(new FileContentLoader(filePath, cacheSubdir));
   }
 
@@ -963,15 +967,54 @@ class Library {
    * Parks the Package*Provider SQLite caches under the terminology cache rather
    * than polluting the user's source folder, and wipes between runs so edits to
    * the source are reliably picked up.
+   *
+   * In a cluster (localSourceTag set) every process uses the master's folder:
+   * - a worker (packageCachesReadOnly) touches nothing; its providers open the caches
+   *   read-only, waiting for the master to have built them
+   * - the master builds the caches in a temporary sibling, then renames it into place, so a
+   *   running worker never finds the folder half built
+   *
+   * @param {string} sourcePath
+   * @param {function(string): FolderContentLoader} makeLoader - a loader with its caches in a folder
+   * @returns {Promise<string>} the cache folder
    * @private
    */
-  async #prepareLocalSourceCache(sourcePath) {
+  async #prepareLocalSourceCache(sourcePath, makeLoader) {
     const hash = crypto.createHash('sha1').update(sourcePath).digest('hex').substring(0, 16);
     const name = LOCAL_SOURCE_CACHE_PREFIX + (this.localSourceTag ? this.localSourceTag + '-' : '') + hash;
     const cacheSubdir = path.join(this.cacheFolder, name);
     this.#localSourceCaches.add(name);
-    await fs.rm(cacheSubdir, { recursive: true, force: true });
-    await fs.mkdir(cacheSubdir, { recursive: true });
+    if (this.packageCachesReadOnly) {
+      return cacheSubdir;
+    }
+    if (!this.localSourceTag) {
+      await fs.rm(cacheSubdir, { recursive: true, force: true });
+      await fs.mkdir(cacheSubdir, { recursive: true });
+      return cacheSubdir;
+    }
+    const building = `${cacheSubdir}.building-${process.pid}`;
+    const old = `${cacheSubdir}.old-${process.pid}`;
+    await fs.rm(building, { recursive: true, force: true });
+    await fs.rm(old, { recursive: true, force: true });
+    await fs.mkdir(building, { recursive: true });
+    const loader = makeLoader(building);
+    await loader.initialize();
+    const vs = new PackageValueSetProvider(loader);
+    await vs.initialize();
+    await vs.close();
+    const cm = new PackageConceptMapProvider(loader);
+    await cm.initialize();
+    // a directory can't be renamed over a non-empty one: move the old one aside first. A
+    // worker that looks in between finds no folder, and waits for it
+    try {
+      await fs.rename(cacheSubdir, old);
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        throw e;
+      }
+    }
+    await fs.rename(building, cacheSubdir);
+    await fs.rm(old, { recursive: true, force: true });
     return cacheSubdir;
   }
 

@@ -73,10 +73,14 @@ master to finish it, and after 5 minutes (`FHIRSMITH_CACHE_WAIT_MS`) stops with 
 says so. Starting the master first is what makes the wait unnecessary, not what keeps the
 workers from writing.
 
+The same goes for the caches of a `folder:` or `file:` library source
+(`terminology-cache/folder-source-master-<hash>`, one folder for every process). Each time the
+master loads the library it rebuilds them in a temporary sibling folder and renames it into
+place, so a running worker never finds one half built; a worker reads the new one when it next
+starts. Only the master removes the folders of sources no longer loaded.
+
 **Nothing else is shared.** The workers run no module but tx, so they never read what the
-package crawler, the XIG download or the registry crawl write. Each process keeps the caches
-of a `folder:` or `file:` library source in its own folder
-(`terminology-cache/folder-source-<code>-<hash>`), because each load wipes and rebuilds them.
+package crawler, the XIG download or the registry crawl write.
 
 ## Routing
 
