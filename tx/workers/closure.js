@@ -482,14 +482,36 @@ class ClosureWorker extends TerminologyWorker {
       this.limit('maxEntriesPerTable') - (fresh.length > 0 ? this.store.entryCount(table.id) : 0));
     const entries = [];
     const out = [];
-    const before = existing.map(c => ({ ref: c.id, system: c.system, code: c.code, display: c.display }));
+    const before = existing.map(c => ({ key: c.system + '|' + c.code, ref: c.id, system: c.system, code: c.code, display: c.display }));
+    // Where the provider can list a code's ancestors (CodeSystemProvider.ancestorsOf), a pair
+    // is related from the two ancestor sets, which costs one provider call per concept rather
+    // than a subsumesTest per pair. Each set is asked for once per call, when first needed,
+    // and only for concepts of a system that has new concepts; a concept the provider has no
+    // set for (null, the default) is compared by subsumesTest, as before. The sets are not
+    // kept between calls, so they always come from the code system as it is now.
+    const ancestorSets = new Map(); // key -> Set of codes, or null
+    const ancestorsOf = async (cs, c) => {
+      if (!ancestorSets.has(c.key)) {
+        await this.checkAndYield('closure-ancestors');
+        ancestorSets.set(c.key, await cs.ancestorsOf(c.code));
+      }
+      return ancestorSets.get(c.key);
+    };
     for (const n of fresh) {
+      const an = await ancestorsOf(n.cs, n);
       for (const o of before) {
         if (o.system !== n.system) {
           continue;
         }
         await this.checkAndYield('closure-subsumes');
-        const outcome = memo ? await this.memoSubsumes(memo, n, o) : await n.cs.subsumesTest(n.code, o.code);
+        const ao = an ? await ancestorsOf(n.cs, o) : null;
+        let outcome;
+        if (ao) {
+          // the same outcome subsumesTest gives (see ancestorsOf): n and o are different codes
+          outcome = ao.has(n.code) ? 'subsumes' : an.has(o.code) ? 'subsumed-by' : 'not-subsumed';
+        } else {
+          outcome = memo ? await this.memoSubsumes(memo, n, o) : await n.cs.subsumesTest(n.code, o.code);
+        }
         let source, target, relationship;
         if (outcome === 'subsumes') {          // the new concept is the broader one
           source = o; target = n; relationship = NARROWER;

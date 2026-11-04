@@ -110,6 +110,7 @@ All are `async`.
 | `sameConcept(a, b)` | `false` | Returns `true` if `a` and `b` refer to the same concept (e.g. different expression forms). |
 | `isDisplay(designation)` | `false` | Called for designations not already marked with a standard display use code; return `true` to treat the designation as a display. |
 | `subsumesTest(codeA, codeB)` | `'not-subsumed'` | Returns one of `equivalent`, `subsumes`, `subsumed-by`, or `not-subsumed`. |
+| `ancestorsOf(code)` | `null` | Optional. A `Set` of the codes this code sits under (all ancestors, not itself), in the form `code()` returns them. `$closure` uses it to relate concepts with one call per concept instead of one `subsumesTest()` per pair. It must agree with `subsumesTest()`: for different codes a and b it answers for, a is in `ancestorsOf(b)` exactly when `subsumesTest(a, b)` is `subsumes`, and the two are never `equivalent`. Return `null` for any code where that can't be promised (unknown, not in `code()` form, an expression); pairs involving it are tested with `subsumesTest()`. |
 | `extendLookup(ctxt, props, params)` | — | Called during `$lookup`; add any additional properties to `params`. |
 
 ---
