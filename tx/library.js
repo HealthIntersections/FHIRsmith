@@ -106,6 +106,12 @@ class Library {
   lastTime = null;
   totalDownloaded = 0;
   vsacCfg = undefined;
+  /**
+   * {string|null} with several processes on one data directory (cluster.md), this one's
+   * instance code: its folder-source-* caches are its own, since each load wipes and
+   * rebuilds them, and it leaves the other processes' alone (no pruning)
+   */
+  localSourceTag = null;
 
   /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
@@ -262,7 +268,9 @@ class Library {
       external: endMemory.external - this.startMemory.external
     };
 
-    await this.#pruneLocalSourceCaches();
+    if (!this.localSourceTag) {
+      await this.#pruneLocalSourceCaches();
+    }
 
     this.log.info(`Loading Time: ${(totalTime / 1000).toLocaleString()}s`);
     this.log.info(`Memory Used: ${(memoryIncrease.rss / 1024 / 1024).toFixed(2)} MB`);
@@ -946,7 +954,7 @@ class Library {
    */
   async #prepareLocalSourceCache(sourcePath) {
     const hash = crypto.createHash('sha1').update(sourcePath).digest('hex').substring(0, 16);
-    const name = LOCAL_SOURCE_CACHE_PREFIX + hash;
+    const name = LOCAL_SOURCE_CACHE_PREFIX + (this.localSourceTag ? this.localSourceTag + '-' : '') + hash;
     const cacheSubdir = path.join(this.cacheFolder, name);
     this.#localSourceCaches.add(name);
     await fs.rm(cacheSubdir, { recursive: true, force: true });
