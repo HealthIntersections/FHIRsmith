@@ -186,6 +186,35 @@ describe('PackageValueSetProvider', () => {
       expect(results[0].name).toBe('PrimitiveTypesVS');
     });
 
+    test('url is a left match: the url starts with it', async () => {
+      const prefix = 'http://hl7.org/fhir/tools/ValueSet/primitive-';
+      const results = await provider.searchValueSets([{ name: 'url', value: prefix }]);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+      for (const r of results) {
+        expect(r.url.startsWith(prefix)).toBe(true);
+      }
+      // not anywhere in the url, and case-sensitive
+      expect((await provider.searchValueSets([{ name: 'url', value: 'tools/ValueSet/primitive-types' }])).length).toBe(0);
+      expect((await provider.searchValueSets([{ name: 'url', value: 'HTTP://hl7.org/fhir/tools/ValueSet/primitive-types' }])).length).toBe(0);
+    });
+
+    test('version is matched version-aware, not as a substring (K8)', async () => {
+      const url = 'http://hl7.org/fhir/tools/ValueSet/primitive-types';
+      const search = async (version, elements = null) =>
+        (await provider.searchValueSets([{ name: 'url', value: url }, { name: 'version', value: version }], elements)).length;
+      expect(await search('0.8.0')).toBe(1);
+      expect(await search('0.8.x')).toBe(1);
+      expect(await search('0.x.x')).toBe(1);
+      expect(await search('0.8')).toBe(0);   // a partial version isn't a wildcard: 0.8.x is
+      expect(await search('0')).toBe(0);   // a substring of 0.8.0, but not a match
+      expect(await search('8.0')).toBe(0);
+      expect(await search('0.9.x')).toBe(0);
+      // the same with only some elements (selected from the index columns)
+      expect(await search('0.8.x', ['url'])).toBe(1);
+      expect(await search('0', ['url'])).toBe(0);
+    });
+
     test('should search with multiple criteria', async () => {
       const results = await provider.searchValueSets([
         { name: 'status', value: 'active' },

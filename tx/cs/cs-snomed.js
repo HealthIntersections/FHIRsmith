@@ -82,6 +82,41 @@ const ECL_DIALECT_ALIASES = {
 };
 
 // Context kinds matching Pascal enum
+// The editions snomed.info can resolve an edition-specific concept link for: the same list as
+// SnomedUtilities.getEditionFromVersion in org.hl7.fhir.core. A code from any other edition
+// links to http://snomed.info/id/<code>.
+const SNOMED_LINKABLE_EDITIONS = new Set([
+  '900000000000207008', // International
+  '449081005', // International Spanish
+  '11000221109', // Argentinian
+  '32506021000036107', // Australian (with drug extension)
+  '11000234105', // Austrian
+  '11000172109', // Belgian
+  '20621000087109', // Canadian English
+  '20611000087101', // Canadian Canadian French
+  '21000325107', // Chilean
+  '11000279109', // Czech
+  '554471000005108', // Danish
+  '11000181102', // Estonian
+  '11000229106', // Finnish
+  '11000274103', // German
+  '1121000189102', // Indian
+  '11000220105', // Irish
+  '11000146104', // Netherlands
+  '21000210109', // New Zealand
+  '51000202101', // Norwegian
+  '11000267109', // Republic of Korea (South Korea)
+  '900000001000122104', // Spanish National
+  '45991000052106', // Swedish
+  '2011000195101', // Swiss
+  '83821000000107', // UK
+  '999000021000000109', // UK Clinical
+  '5631000179106', // Uruguay
+  '731000124108', // US
+  '5991000124107', // US (with ICD-10-CM maps)
+  '827022005' // IPS Terminology
+]);
+
 const SnomedProviderContextKind = {
   CODE: 0,
   EXPRESSION: 1
@@ -4386,6 +4421,26 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 
   version() {
     return this._sharedData.versionUri;
+  }
+
+  /**
+   * A concept links to snomed.info, which redirects to a browser: in its edition when that is
+   * one snomed.info knows, otherwise without an edition. An expression links to the browser's
+   * home page. The same links as SnomedUtilities.getSctLink in org.hl7.fhir.core.
+   */
+  codeLink(context) {
+    if (!context || !context.expression) {
+      return undefined;
+    }
+    const code = context.isSimple() ? (context.source || context.expression.concepts[0].code) : null;
+    if (!code || !/^\d+$/.test(code)) {
+      return 'https://browser.ihtsdotools.org/';
+    }
+    const m = /^http:\/\/snomed\.info\/sct\/(\d+)/.exec(this.version() || '');
+    if (m && SNOMED_LINKABLE_EDITIONS.has(m[1])) {
+      return `http://snomed.info/sct/${m[1]}/id/${code}`;
+    }
+    return `http://snomed.info/id/${code}`;
   }
 
   getPartialVersion() {

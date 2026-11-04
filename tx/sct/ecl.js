@@ -480,6 +480,22 @@ class ECLLexer {
 }
 
 /**
+ * Bounds on the shape of an ECL expression, so that a hostile expression is a
+ * clean parse error rather than a RangeError (stack overflow) here, in the
+ * evaluator, or in any of the other recursive AST walkers.
+ *
+ * MAX_ECL_DEPTH limits nesting - bracketed expression constraints, bracketed
+ * refinements and attribute sets. Real ECL nests a handful of levels.
+ *
+ * MAX_ECL_TERMS limits the number of sub expression constraints (focus
+ * concepts, refinement values, ...). It is needed as well as the depth limit
+ * because a compound chain ("A OR B OR C ...") is parsed iteratively but builds
+ * a left-deep tree, one level per operator, which every walker then recurses.
+ */
+const MAX_ECL_DEPTH = 100;
+const MAX_ECL_TERMS = 500;
+
+/**
  * ECL Parser - Parses tokens into AST
  */
 class ECLParser {
@@ -487,6 +503,20 @@ class ECLParser {
     this.tokens = tokens;
     this.position = 0;
     this.current = this.tokens[0] || { type: ECLTokenType.EOF };
+    this.depth = 0;
+    this.terms = 0;
+  }
+
+  /** Run a parse step one nesting level deeper, enforcing MAX_ECL_DEPTH. */
+  #nested(fn) {
+    if (++this.depth > MAX_ECL_DEPTH) {
+      this.error(`The expression nests more than ${MAX_ECL_DEPTH} levels deep`);
+    }
+    try {
+      return fn();
+    } finally {
+      this.depth--;
+    }
   }
 
   error(message) {
@@ -526,7 +556,7 @@ class ECLParser {
   }
 
   parseExpressionConstraint() {
-    return this.parseCompoundExpressionConstraint();
+    return this.#nested(() => this.parseCompoundExpressionConstraint());
   }
 
   parseCompoundExpressionConstraint() {
@@ -607,6 +637,9 @@ class ECLParser {
   }
 
   parseSubExpressionConstraint() {
+    if (++this.terms > MAX_ECL_TERMS) {
+      this.error(`The expression has more than ${MAX_ECL_TERMS} terms`);
+    }
     // Handle constraint operators
     let operator = null;
     if (this.match(
@@ -1262,7 +1295,7 @@ class ECLParser {
    * returned as-is; otherwise an ATTRIBUTE_SET with operator 'AND' or 'OR'.
    */
   parseRefinement() {
-    return this.parseRefinementSet(() => this.parseSubRefinement(), 'refinement');
+    return this.#nested(() => this.parseRefinementSet(() => this.parseSubRefinement(), 'refinement'));
   }
 
   parseRefinementSet(parseItem, what) {
@@ -1338,7 +1371,7 @@ class ECLParser {
    * (the contents of an attribute group - no nested groups)
    */
   parseAttributeSet() {
-    return this.parseRefinementSet(() => {
+    return this.#nested(() => this.parseRefinementSet(() => {
       if (this.match(ECLTokenType.LPAREN) && !this.#parenIsAttributeName()) {
         this.advance();
         const inner = this.parseAttributeSet();
@@ -1346,7 +1379,7 @@ class ECLParser {
         return inner;
       }
       return this.parseAttribute();
-    }, 'attribute set');
+    }, 'attribute set'));
   }
 
   parseAttributeGroup(cardinality = null) {
@@ -2361,6 +2394,8 @@ class ECLValidator {
 }
 
 module.exports = {
+  MAX_ECL_DEPTH,
+  MAX_ECL_TERMS,
   ECLValidator,
   ECLLexer,
   ECLParser,

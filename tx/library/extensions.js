@@ -25,10 +25,17 @@ const Extensions = {
       resource = resource.jsonObj
     }
     if (resource.implicitRules && 'https://hl7.org/fhir/implicit-rules/omitted-mandatory-interversion-code' != resource.implicitRules) {
-      throw new Issue("error", "business-rule", null, null, 'Cannot process resource "'+name+'" due to the presence of implicit rules \''+resource.implicitRules+'\' @'+place);
+      throw new Issue("error", "business-rule", null, null, 'Cannot process resource "'+name+'" due to the presence of implicit rules \''+resource.implicitRules+'\' @'+place, null, 422);
     }
   },
 
+  /**
+   * @param {Object} element - what may carry modifier extensions
+   * @param {string} place - the code doing the check (unused, for reading)
+   * @param {string} name - the element's path (FHIRPath, e.g. ValueSet.compose.include[0].filter[1]),
+   *   reported as the issue's expression
+   * @param {string} resource - the value set's url|version
+   */
   checkNoModifiers(element, place, name, resource) {
     if (!element) {
       return;
@@ -41,13 +48,12 @@ const Extensions = {
       for (const extension of element.modifierExtension) {
         urls.add(extension.url);
       }
+      // a modifier extension changes the meaning of what it's on, so an unknown one means the value
+      // set can't be processed: a problem with the request's content, not the server (422)
       const resId = resource ? resource : "";
-      const urlList = [...urls].join('\', \'');
-      if (urls.size > 1) {
-        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of modifier extensions '+urlList);
-      } else {
-        throw new Issue("error", "business-rule", null, null, 'Cannot process resource '+resId+' at "' + name + '" due to the presence of the modifier extension '+urlList);
-      }
+      throw new Issue("error", "business-rule", name, 'VALUESET_MODIFIER_EXTENSION_UNKNOWN',
+        "The value set " + resId + " can't be processed: " + name + " has a modifier extension that isn't understood (" + [...urls].join(', ') + ")",
+        'vs-invalid', 422).handleAsOO(422);
     }
     return true;
   },

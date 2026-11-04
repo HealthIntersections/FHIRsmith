@@ -1233,7 +1233,15 @@ class CodeSystemFactoryProvider {
     throw new Error("Must override");
   }
 
-  codeLink(code) {
+  /**
+   * A link for a code, usually to the code system's own web site, for pages that list codes
+   * (a ValueSet's includes). Override it to give codes from this code system a link; the
+   * default gives none, and then resolveCode() doesn't look the code up at all.
+   *
+   * @param {*} context - what locate() found for the code (the provider's own context)
+   * @returns {string|undefined} the URL, or undefined for no link
+   */
+  codeLink(context) {
     return undefined;
   }
 

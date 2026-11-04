@@ -456,6 +456,36 @@ class ValueSetDatabase {
   }
 
   /**
+   * The most recent VSAC sync run, or null if there has never been one
+   * @returns {Promise<{id: number, status: string, started_at: number, finished_at: number|null}|null>}
+   */
+  async getLastRun() {
+    const db = await this._getReadConnection();
+    return new Promise((resolve, reject) => {
+      db.get('SELECT id, status, started_at, finished_at FROM vsac_runs ORDER BY id DESC LIMIT 1', [],
+          (err, row) => err ? reject(err) : resolve(row || null));
+    });
+  }
+
+  /**
+   * Close off runs still marked 'running'. Only one process syncs a cache, so at
+   * startup any such run was cut short when the server stopped.
+   * @returns {Promise<number>} the number of runs marked as interrupted
+   */
+  async markInterruptedRuns() {
+    const db = await this._getWriteConnection();
+    return new Promise((resolve, reject) => {
+      db.run(
+          `UPDATE vsac_runs SET finished_at = strftime('%s','now'), status = 'error',
+                                error_message = 'interrupted (server stopped during the sync)'
+           WHERE status = 'running'`,
+          [],
+          function(err) { err ? reject(err) : resolve(this.changes); }
+      );
+    });
+  }
+
+  /**
    * Get a setting value from the vsac_settings table
    * @param {string} key - The setting key
    * @returns {Promise<string|null>} The setting value, or null if not found
@@ -485,6 +515,18 @@ class ValueSetDatabase {
           [key, value],
           err => err ? reject(err) : resolve()
       );
+    });
+  }
+
+  /**
+   * Remove a setting from the vsac_settings table
+   * @param {string} key - The setting key
+   * @returns {Promise<void>}
+   */
+  async deleteSetting(key) {
+    const db = await this._getWriteConnection();
+    return new Promise((resolve, reject) => {
+      db.run('DELETE FROM vsac_settings WHERE key = ?', [key], err => err ? reject(err) : resolve());
     });
   }
 
@@ -840,10 +882,15 @@ class ValueSetDatabase {
     const canOptimize = elements && elements.length > 0 &&
         elements.every(e => INDEXED_COLUMNS.includes(e));
 
-    // Always include 'id' in the columns to select when optimizing
-    const columnsToSelect = canOptimize
+    // Always include 'id' in the columns to select when optimizing (and the version, when the
+    // results are matched on it - see versionSearchMatches)
+    const versionAsked = searchParams.filter(p => p.name.toLowerCase() === 'version').map(p => p.value);
+    let columnsToSelect = canOptimize
         ? (elements.includes('id') ? elements : ['id', ...elements])
         : null;
+    if (columnsToSelect && versionAsked.length > 0 && !columnsToSelect.includes('version')) {
+      columnsToSelect = [...columnsToSelect, 'version'];
+    }
 
     const db = await this._getReadConnection();
 
@@ -878,6 +925,12 @@ class ValueSetDatabase {
             // a value set the map doesn't have was rejected when the map was loaded
             // (see loadAllValueSets), so it isn't a result
             results = rows.map(row => map.get(row.id)).filter(vs => vs);
+          }
+          for (const criteria of versionAsked) {
+            results = results.filter(r => {
+              const json = r.jsonObj || r;
+              return VersionUtilities.versionSearchMatches(criteria, json.version, VersionUtilities.versionAlgorithmOf(json));
+            });
           }
 
           resolve(results);
@@ -1043,13 +1096,16 @@ class ValueSetDatabase {
 
       switch (name.toLowerCase()) {
         case 'url':
-          conditions.push('v.url = ?');
-          params.push(value);
+          // a left match (case-sensitive): the url starts with the value
+          conditions.push('substr(v.url, 1, length(?)) = ?');
+          params.push(value, value);
           break;
 
         case 'version':
-          conditions.push('v.version LIKE ?');
-          params.push(`%${value}%`);
+          // version-aware matching (see VersionUtilities.versionSearchMatches): narrowed here to
+          // the versions that could match, and matched on the results (see search)
+          conditions.push("v.version LIKE ? ESCAPE '\\'");
+          params.push(VersionUtilities.versionSearchPrefix(value).replace(/[\\%_]/g, c => '\\' + c) + '%');
           break;
 
         case 'name':

@@ -857,6 +857,56 @@ class VersionUtilities {
         }
     }
 
+    /**
+     * Whether a resource's version matches the version a search asks for (the version search
+     * parameter): version-aware matching (see versionMatchesByAlgorithm), so 3.0.x finds 3.0.2,
+     * but 0 doesn't find 3.0.0
+     * @param {string} criteria - the version asked for
+     * @param {string} candidate - the resource's version
+     * @param {string} [versionAlgorithm] - the resource's versionAlgorithm, if it has one
+     * @returns {boolean}
+     */
+    static versionSearchMatches(criteria, candidate, versionAlgorithm = null) {
+        if (!criteria) {
+            return true;
+        }
+        if (!candidate) {
+            return false;
+        }
+        try {
+            return this.versionMatchesByAlgorithm(criteria, candidate, versionAlgorithm);
+        } catch (e) {
+            return criteria === candidate;
+        }
+    }
+
+    /**
+     * What every version that matches the criteria (see versionSearchMatches) starts with - the
+     * criteria up to its first wildcard - so a database can narrow a search before the
+     * matching is done
+     * @param {string} criteria
+     * @returns {string}
+     */
+    static versionSearchPrefix(criteria) {
+        const i = criteria.search(/[xX*?]/);
+        return i < 0 ? criteria : criteria.substring(0, i);
+    }
+
+    /**
+     * The versionAlgorithm of a resource (JSON), if it states one
+     * @param {Object} json
+     * @returns {string|null}
+     */
+    static versionAlgorithmOf(json) {
+        if (!json) {
+            return null;
+        }
+        if (json.versionAlgorithmCoding && json.versionAlgorithmCoding.code) {
+            return json.versionAlgorithmCoding.code;
+        }
+        return json.versionAlgorithmString || null;
+    }
+
     static versionMatchesByAlgorithm(criteria, candidate, versionAlgorithm) {
         validateOptionalParameter(criteria, "criteria", String);
         validateOptionalParameter(candidate, "candidate", String);
