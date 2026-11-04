@@ -91,8 +91,8 @@ describe('cluster.js with server.cluster.sharedClosure', () => {
       db.close();
     }
     if (cluster) {
-      const logs = path.join(cluster.dir, 'logs');
-      const log = fs.readdirSync(logs).map(f => fs.readFileSync(path.join(logs, f), 'utf8')).join('\n');
+      // (the processes log to logs/server.log; the dated file is a copy)
+      const log = fs.readFileSync(path.join(cluster.dir, 'logs', 'server.log'), 'utf8');
       stats.retriesLogged = (log.match(/working the add out again/g) || []).length;
       // for the record: how much contention the run produced
       console.log(`shared closure: ${stats.retriesLogged} retries after a conflict, ${stats.busy} busy answers (retried by the client)`);
