@@ -9,6 +9,7 @@ const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
 const { keepForPinnedReference } = require('../library/tho-precedence');
+const { waitForCache } = require('../library/wait-for-cache');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -18,15 +19,19 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
 
   /**
    * @param {PackageContentLoader} packageLoader - Path to the extracted package folder
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - a tx-worker (cluster.md): the cache is the master's; it
+   *   is opened read-only, waited for until the master has finished it, and never built or changed
    */
-  constructor(packageLoader) {
+  constructor(packageLoader, options = {}) {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
     // -2: caches from before value sets were checked for active content in their narrative
     // are rebuilt (see initialize)
     this.dbPath = path.join(packageLoader.packageFolder, '.valuesets-2.db');
-    this.database = new ValueSetDatabase(this.dbPath);
+    this.readOnly = !!options.readOnly;
+    this.database = new ValueSetDatabase(this.dbPath, { readOnly: this.readOnly });
     this.valueSetMap = new Map();
     this.initialized = false;
     this.count = 0;
@@ -49,6 +54,13 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
       return;
     }
     await this.packageLoader.initialize();
+    if (this.readOnly) {
+      await waitForCache(async () => (await this.database.exists()) && (await this.database.isComplete()),
+        `Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: value set cache ${this.dbPath}`);
+      this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
+      this.#finishLoad();
+      return;
+    }
     await fs.rm(path.join(this.packageLoader.packageFolder, '.valuesets.db'), { force: true }); // the old cache
 
     // A cache is only used once its population finished. One that was cut short
@@ -77,7 +89,10 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
       await this.#buildDatabase();
       this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
     }
+    this.#finishLoad();
+  }
 
+  #finishLoad() {
     // Mark each value set as cached as it enters the store: it is retained in
     // memory for the process lifetime, so its compose.include.filter elements
     // persist and a provider may memoise resolved filter analysis on them
