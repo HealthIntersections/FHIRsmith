@@ -172,9 +172,12 @@ class CompareWorker extends TerminologyWorker {
 
   async doCompare(txp, thisVS, otherVS) {
 
-    // ok, we have to compare the composes. we don't care about anything else
-    const thisC = thisVS.jsonObj.compose;
-    const otherC = otherVS.jsonObj.compose;
+    // ok, we have to compare the composes. we don't care about anything else.
+    // Copies: tidyIncludes merges, removes and sorts includes in place, and these value
+    // sets are shared - cache-id resources, and the server's own - so must not change
+    // (ExpansionCache.computeKey remembers a cached resource's hash, for one).
+    const thisC = thisVS.jsonObj.compose ? structuredClone(thisVS.jsonObj.compose) : thisVS.jsonObj.compose;
+    const otherC = otherVS.jsonObj.compose ? structuredClone(otherVS.jsonObj.compose) : otherVS.jsonObj.compose;
     if (!thisC) {
       return this.makeOutcome("indeterminate", `The ValueSet ${thisVS.vurl} has no compose`);
     }

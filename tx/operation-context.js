@@ -3,6 +3,7 @@ const inspector = require("inspector");
 const crypto = require("crypto");
 const {Languages} = require("../library/languages");
 const {Issue} = require("./library/operation-outcome");
+const {CanonicalResource} = require("./library/canonical-resource");
 const Logger = require("../library/logger");
 const memoryGuard = require('../library/memory-guard');
 
@@ -741,13 +742,13 @@ class ExpansionCache {
     if (additionalResources && additionalResources.length > 0) {
       const resourceHashes = additionalResources
           .map(r => {
-            // Get the JSON object from wrapper or use directly
-            const json = r.jsonObj || r;
-            // Create a content hash for this resource
-            return crypto.createHash('sha256')
-                .update(JSON.stringify(json))
-                .digest('hex')
-                .substring(0, 16); // Use first 16 chars for brevity
+            // A wrapper remembers its hash (CanonicalResource.expansionKeyHash): a cache-id's
+            // resources come with every $expand, and serialising and hashing them all
+            // each time was most of the cost of a cached request. Raw JSON is hashed the
+            // same way, so the key is the same either way.
+            return typeof r.expansionKeyHash === 'function'
+              ? r.expansionKeyHash()
+              : CanonicalResource.computeExpansionKeyHash(r.jsonObj || r);
           })
           .sort();
       keyParts.push(`additional:${resourceHashes.join(',')}`);
