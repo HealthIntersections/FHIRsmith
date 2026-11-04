@@ -739,6 +739,15 @@ class CodeSystem extends CanonicalResource {
     return (this.jsonObj.property || []).find(x => x.code == code && x.uri == uri);
   }
 
+  /**
+   * The canonical of the code system this one supplements (CodeSystem.supplements),
+   * or undefined if it isn't a supplement.
+   * @returns {string|undefined}
+   */
+  get supplementsUrl() {
+    return this.jsonObj.supplements;
+  }
+
   isSupplementFor(url, version) {
     if (this.jsonObj.content !== 'supplement') {
       return false;
