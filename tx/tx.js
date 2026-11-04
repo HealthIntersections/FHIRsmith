@@ -230,7 +230,10 @@ class TXModule {
     // the database can't be opened, that stops startup - silently running without it
     // would be worse.
     this.closureStore = null;
-    if (config.closure && config.closure.enabled) {
+    // a tx-worker (cluster.md) opens neither the closure tables nor the syndication store:
+    // the master owns them, and $closure and the feed are routed to it
+    const worker = config.clusterRole === 'tx-worker';
+    if (config.closure && config.closure.enabled && !worker) {
       this.closureStore = new ClosureStore(config.closure, this.log);
       this.closureStore.open();
       this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
@@ -253,7 +256,7 @@ class TXModule {
 
     // Initialize metadata handler with config
     this.metadataHandler = new MetadataHandler({
-      closure: this.closureStore != null,
+      closure: this.closureStore != null || (worker && !!(config.closure && config.closure.enabled)),
       baseUrl: config.baseUrl,
       serverVersion: packageJson.version,
       txVersion: packageJson.txVersion,
@@ -272,13 +275,16 @@ class TXModule {
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
+    if (config.clusterRole) {
+      this.library.localSourceTag = config.instanceCode;
+    }
 
     // The syndication feed: content is recorded in the store as the library loads it, from
     // the time the administrator turns it on (see tx/syndication). One store serves every
     // endpoint, since the library is shared. If it is turned on and the store can't be
     // opened, that stops startup.
     this.syndicationStore = null;
-    if (config.syndication && config.syndication.enabled) {
+    if (config.syndication && config.syndication.enabled && !worker) {
       this.syndicationStore = new SyndicationStore(path.join(this.library.cacheFolder, 'syndication'), this.log).open();
       this.library.syndication = this.syndicationStore;
       this.log.info(`Syndication feed enabled: store in ${this.syndicationStore.folder}`);
