@@ -976,7 +976,9 @@ class OperationContext {
     // resources (sqlite connections, etc.) released when the operation ends.
     // Shared by reference with copy()'d contexts so a sub-operation's
     // providers are cleaned up by the parent request's closeProviders().
-    this._openProviders = [];
+    // closed: closeProviders() has run, so one registered later (a build that
+    // finished after the client went) is closed at once - nothing else will.
+    this._providers = { open: [], closed: false };
     // Compute-time accounting for the deadline and for yielding. One object,
     // shared by reference with copy()'d contexts, so an operation and its
     // sub-operations (e.g. batch entries) draw down a single budget:
@@ -1026,7 +1028,7 @@ class OperationContext {
     newContext.usageTracker = this.usageTracker;
     // Share the same provider-cleanup list so providers opened by the copy
     // are released when the parent operation ends.
-    newContext._openProviders = this._openProviders;
+    newContext._providers = this._providers;
     // Share the compute clock: sub-operations spend the parent's budget.
     newContext._clock = this._clock;
     return newContext;
@@ -1040,7 +1042,7 @@ class OperationContext {
    */
   copyWithOwnProviders() {
     const newContext = this.copy();
-    newContext._openProviders = [];
+    newContext._providers = { open: [], closed: false };
     return newContext;
   }
 
@@ -1312,20 +1314,22 @@ class OperationContext {
    */
   registerProvider(provider) {
     if (provider && typeof provider.close === 'function') {
-      this._openProviders.push(provider);
+      this._providers.open.push(provider);
+      if (this._providers.closed) {
+        this.closeProviders().catch(() => {});
+      }
     }
   }
 
   /**
-   * Close every provider registered during this operation. Safe to call
-   * multiple times — the list is cleared after the first call. Errors
+   * Close every provider registered during this operation, including through
+   * a copy. Safe to call multiple times — the list is emptied each time. Errors
    * from individual close() calls are swallowed so one bad provider can't
    * prevent the others from releasing their resources.
    */
   async closeProviders() {
-    if (!this._openProviders || this._openProviders.length === 0) return;
-    const providers = this._openProviders;
-    this._openProviders = [];
+    this._providers.closed = true;
+    const providers = this._providers.open.splice(0);
     for (const p of providers) {
       try {
         await p.close();
