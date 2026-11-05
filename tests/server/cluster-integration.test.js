@@ -7,6 +7,7 @@
  *  - $closure and the non-tx paths reach the master
  *  - a VSAC sync on the master is seen by both workers
  *  - SIGTERM: the requests in progress finish, every process stops, the launcher exits 0
+ *  - the master's statistics database counts the requests every process served, once each
  */
 const fs = require('fs');
 const os = require('os');
@@ -214,6 +215,18 @@ describe('master and two tx-workers behind cluster.js', () => {
     }
   });
 
+  // $lookup is used nowhere else here but in the SIGTERM test (10 more, through the launcher)
+  const LOOKUP = `/r4/CodeSystem/$lookup?system=${encodeURIComponent(GENDER)}&code=male`;
+  const DIRECT_LOOKUPS = { [MASTER]: 2, [WORKERS[0]]: 3, [WORKERS[1]]: 4 };
+
+  test('each process serves some requests of its own', async () => {
+    for (const [port, n] of Object.entries(DIRECT_LOOKUPS)) {
+      for (let i = 0; i < n; i++) {
+        expect((await request(Number(port), 'GET', LOOKUP)).status).toBe(200);
+      }
+    }
+  });
+
   test('SIGTERM: requests in progress finish, then every process stops', async () => {
     const inFlight = [];
     for (let i = 0; i < 10; i++) {
@@ -226,6 +239,18 @@ describe('master and two tx-workers behind cluster.js', () => {
     expect(await launcherExit).toEqual({ code: 0, signal: null });
     for (const port of [FRONT, MASTER, ...WORKERS]) {
       expect(await isUp(port)).toBe(false);
+    }
+  });
+
+  test('the master\'s statistics database counts every process\'s requests, once each', () => {
+    const Database = require('better-sqlite3');
+    const db = new Database(path.join(dir, 'databases', 'stats.db'), { readonly: true });
+    try {
+      const row = db.prepare("SELECT SUM(count_delta) AS n FROM request_counts WHERE module = 'tx' AND operation = '$lookup'").get();
+      const direct = Object.values(DIRECT_LOOKUPS).reduce((a, b) => a + b, 0);
+      expect(row.n).toBe(direct + 10);
+    } finally {
+      db.close();
     }
   });
 });

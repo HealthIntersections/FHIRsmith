@@ -31,6 +31,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { checkInstanceCode } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
+const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
@@ -181,6 +182,9 @@ function createLauncher(settings) {
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
   const metrics = new ClusterMetrics(procs);
+  // the workers' request counts, on their way to the master's statistics
+  const pendingCounts = new PendingCounts();
+  let countsInFlight = null;
   let server = null;
   let stopping = false;
   let onIdle = null;
@@ -208,6 +212,36 @@ function createLauncher(settings) {
     }
   }
 
+  // Pass the workers' request counts on to the master (library/cluster-counts.js), once it is
+  // ready: it listens before it answers /health. One lot at a time; a lot that can't be
+  // delivered is kept for the next try (more counts arriving, or the master becoming ready)
+  function deliverCounts() {
+    const master = procs.find(p => p.role === 'master');
+    const child = master && master.child;
+    if (countsInFlight || pendingCounts.size === 0 || !child || !child.connected || !master.ready) {
+      return countsInFlight || Promise.resolve();
+    }
+    const rows = pendingCounts.take();
+    countsInFlight = new Promise(resolve => {
+      const done = error => {
+        countsInFlight = null;
+        if (error) {
+          pendingCounts.add(rows);
+        }
+        resolve();
+        if (!error && pendingCounts.size > 0) {
+          void deliverCounts();
+        }
+      };
+      try {
+        child.send({ type: COUNTS, rows }, done);
+      } catch (error) {
+        done(error);
+      }
+    });
+    return countsInFlight;
+  }
+
   function totalOutstanding() {
     return procs.reduce((n, p) => n + p.outstanding, 0);
   }
@@ -225,6 +259,10 @@ function createLauncher(settings) {
       child.on('message', message => {
         if (proc.child === child && message && message.type === METRIC && metrics.record(proc.code, message)) {
           publishMetrics();
+        } else if (message && message.type === COUNTS && proc.role !== 'master') {
+          // real requests, even from a child that is going away
+          pendingCounts.add(message.rows);
+          void deliverCounts();
         }
       });
       child.on('disconnect', () => {
@@ -257,6 +295,9 @@ function createLauncher(settings) {
             proc.ready = true;
             metrics.state(proc.code, 'ready');
             publishMetrics();
+            if (proc.role === 'master') {
+              void deliverCounts();
+            }
             log(`${proc.name} (${proc.code}) ready on port ${proc.port}`);
             resolve(true);
           } else {
@@ -377,7 +418,8 @@ function createLauncher(settings) {
 
   /**
    * Stop taking connections, wait for the requests in progress (up to drainMs), then stop
-   * every process (SIGTERM, then SIGKILL after 30 s).
+   * the workers, then the master (SIGTERM, then SIGKILL after 30 s), so the workers' last
+   * request counts reach the master's statistics.
    */
   async function stop() {
     if (stopping) {
@@ -404,15 +446,32 @@ function createLauncher(settings) {
       clearInterval(idle);
       server.closeAllConnections();
     }
-    await Promise.all(procs.filter(p => p.child).map(p => new Promise(resolve => {
+    // the workers first: each sends its last request counts as it stops, and they reach
+    // the master's statistics before the master stops
+    const stopChild = (p) => new Promise(resolve => {
       const child = p.child;
+      if (!child) {
+        return resolve();
+      }
       const kill = setTimeout(() => child.kill('SIGKILL'), 30000);
-      child.once('exit', () => {
-        clearTimeout(kill);
-        resolve();
-      });
+      // exited, and everything it sent on the channel has been read
+      let waiting = child.connected ? 2 : 1;
+      const one = () => {
+        if (--waiting === 0) {
+          clearTimeout(kill);
+          resolve();
+        }
+      };
+      child.once('exit', one);
+      if (child.connected) {
+        child.once('disconnect', one);
+      }
       child.kill('SIGTERM');
-    })));
+    });
+    await Promise.all(procs.filter(p => p.role !== 'master').map(stopChild));
+    const deliverWait = new Promise(resolve => setTimeout(resolve, 5000).unref());
+    await Promise.race([deliverCounts(), deliverWait]);
+    await Promise.all(procs.filter(p => p.role === 'master').map(stopChild));
     for (const p of procs) {
       p.agent.destroy();
     }

@@ -87,6 +87,7 @@ const IpsModule = require('./ips/ips.js');
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
 const { connectMetrics, graphData } = require('./library/cluster-metrics');
+const { connectCounts } = require('./library/cluster-counts');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -141,6 +142,7 @@ const modules = {};
 
 let stats = null;
 let disconnectMetrics = () => {};
+let disconnectCounts = null;
 // The graphs on / and /dashboard. With a role, the cluster templates draw every process the
 // launcher reports (library/cluster-metrics.js); with none, main's templates, as before
 function metricsTemplate(page) {
@@ -160,6 +162,8 @@ async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
   if (role) {
     disconnectMetrics = connectMetrics(stats);
+    // a worker's request counts go to the master's statistics (library/cluster-counts.js)
+    disconnectCounts = connectCounts(stats, process, { role: role.role });
   }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
@@ -917,6 +921,10 @@ async function shutdown() {
   }
   shuttingDown = true;
   serverLog.info('\nShutting down server...');
+  if (disconnectCounts) {
+    // a worker's last request counts, while the launcher still listens
+    await disconnectCounts.flush();
+  }
   if (npmAudit) {
     npmAudit.stop();
   }
@@ -938,6 +946,9 @@ async function shutdown() {
   }
   stats.finishStats();
   disconnectMetrics();
+  if (disconnectCounts) {
+    disconnectCounts();
+  }
   serverLog.info('Server shutdown complete');
   process.exit(0);
 }
