@@ -116,4 +116,14 @@ describe('applyRole', () => {
     noTx.modules.tx.enabled = false;
     expect(() => applyRole(noTx, { role: 'master', instanceCode: 'm0' })).toThrow(/tx module enabled/);
   });
+
+  test('instance codes must keep every cache-id a FHIR id (1-16 letters and digits)', () => {
+    for (const bad of ['a'.repeat(17), 'tx.1', 'tx-1', 'tx 1']) {
+      expect(() => applyRole(baseConfig(), { role: 'tx-worker', instanceCode: bad })).toThrow(/1-16 letters and digits/);
+    }
+    const longMaster = baseConfig();
+    longMaster.modules.tx.instanceCode = 'm'.repeat(17);
+    expect(() => applyRole(longMaster, { role: 'master', instanceCode: null })).toThrow(/1-16 letters and digits/);
+    expect(applyRole(baseConfig(), { role: 'tx-worker', instanceCode: 'a'.repeat(16) }).modules.tx.instanceCode).toHaveLength(16);
+  });
 });

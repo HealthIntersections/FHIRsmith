@@ -21,6 +21,22 @@
  */
 
 const ROLES = ['master', 'tx-worker'];
+
+/**
+ * An instance code goes in front of every cache-id the process issues, and a front door
+ * routes on it (nginx.md's map on "^tx1\."). It has to be 1-16 letters and digits: the
+ * longest cache-id, "<code>.<generation>.<random>" (two 22-character tokens) or
+ * "<code>.<start>.<uuid>", is then 62 characters, inside a FHIR id's 64. The tx module
+ * checks the same (ResourceCache.checkInstanceCode); this fails before anything starts.
+ * @param {string} code
+ * @param {string} where - what to call it in the error
+ */
+function checkInstanceCode(code, where = 'instance code') {
+  if (typeof code !== 'string' || !/^[A-Za-z0-9]{1,16}$/.test(code)) {
+    throw new Error(`The ${where} '${code}' is not valid: it must be 1-16 letters and digits`);
+  }
+  return code;
+}
 const FLAGS = ['role', 'instance-code', 'port'];
 
 /**
@@ -76,6 +92,7 @@ function applyRole(config, role) {
   if (!tx.instanceCode) {
     throw new Error('The master needs an instance code: --instance-code, FHIRSMITH_INSTANCE_CODE or modules.tx.instanceCode');
   }
+  checkInstanceCode(tx.instanceCode);
   tx.clusterRole = role.role;
   // the options in server.cluster (cluster.md, "Options"). Every process reads the same
   // config.json, so they all agree; without a role these are never looked at
@@ -123,4 +140,4 @@ function describeRole(role, config) {
     : `Role: tx-worker (instance code ${code}): the tx module only, no background jobs`;
 }
 
-module.exports = { parseRole, applyRole, describeRole, ROLES };
+module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, ROLES };

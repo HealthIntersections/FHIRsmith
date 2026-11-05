@@ -15,7 +15,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ResourceCache, formatDuration } = require('../../tx/operation-context');
+const { ResourceCache, formatDuration, PROCESS_START } = require('../../tx/operation-context');
 const { SqliteResourceCache } = require('../../tx/resource-cache-sqlite');
 
 const CS = (url, version) => ({ resourceType: 'CodeSystem', url, version });
@@ -305,12 +305,17 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       expect(cache.newCacheId()).toMatch(UUID);
     });
 
-    test('with an instance code: ids are "<code>.<uuid>"', () => {
+    test('with an instance code: ids are "<code>.<start>.<uuid>", start being when this process started', () => {
       cache.setInstanceCode('tx1');
       const id = cache.newCacheId();
-      expect(id.startsWith('tx1.')).toBe(true);
-      expect(id.substring(4)).toMatch(UUID);
+      const [code, start, uuid] = id.split('.');
+      expect(code).toBe('tx1');
+      expect(parseInt(start, 36)).toBe(PROCESS_START);
+      expect(start).toMatch(/^[0-9a-z]{8}$/);
+      expect(uuid).toMatch(UUID);
       expect(ResourceCache.issuerOf(id)).toBe('tx1');
+      // what nginx.md's map routes on
+      expect(id).toMatch(/^tx1\./);
     });
 
     test('empty, null and undefined all mean no prefix', () => {
@@ -331,6 +336,7 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
     test('the longest allowed code still yields a valid FHIR id (<= 64 chars)', () => {
       cache.setInstanceCode('a'.repeat(16));
       expect(cache.newCacheId()).toMatch(/^[A-Za-z0-9\-.]{1,64}$/);
+      expect(cache.newCacheId().length).toBe(62);
     });
 
     test('issuerOf: bare UUIDs and other unprefixed ids have no issuer', () => {
@@ -356,9 +362,30 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       }
     });
 
-    test('an unrecorded id with our own prefix is plain unknown (e.g. issued before a restart)', () => {
+    test('an unrecorded id with our own prefix in the older "<code>.<uuid>" form is plain unknown', () => {
       cache.setInstanceCode('tx1');
       expect(cache.describeMissing('tx1.abc').messageId).toBe(store.unknownId);
+    });
+
+    test('an id with our code and an earlier start was lost to a restart; with this start, never issued (memory store)', () => {
+      if (store.name !== 'memory') {
+        return; // the shared store's ids carry a generation instead (resource-cache-generation.test.js)
+      }
+      cache.setInstanceCode('tx1');
+      const uuid = '4f0c2d1e-0000-4000-8000-000000000000';
+      const earlier = `tx1.${(PROCESS_START - 60000).toString(36)}.${uuid}`;
+      const lost = cache.describeMissing(earlier);
+      expect(lost.messageId).toBe('CACHE_ID_LOST_TO_RESTART');
+      expect(lost.params[0]).toBe(earlier);
+      const never = cache.describeMissing(`tx1.${PROCESS_START.toString(36)}.${uuid}`);
+      expect(never.messageId).toBe('CACHE_ID_NEVER_ISSUED');
+      // one minted here, and still live, is not missing at all; once ended it is CLOSED
+      const id = cache.start([]);
+      expect(cache.has(id)).toBe(true);
+      cache.clear(id);
+      expect(cache.describeMissing(id).messageId).toBe('CACHE_ID_CLOSED');
+      // another instance's id with an earlier start is still a routing problem
+      expect(cache.describeMissing(`tx2.${(PROCESS_START - 60000).toString(36)}.${uuid}`).messageId).toBe('CACHE_ID_OTHER_INSTANCE');
     });
 
     test('an unprefixed id on a named server is plain unknown', () => {

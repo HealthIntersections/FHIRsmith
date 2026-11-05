@@ -325,7 +325,9 @@ Notes:
 * Routing only works on the **header**. The older `cache-id` request parameter sits in the
   request body, where nginx can't see it. Current clients (fhir-core) send the header.
 * A restarted instance loses its caches. Clients recover by starting a new one, just as
-  they do after a cache expires.
+  they do after a cache expires. A cache-id is `<code>.<start>.<uuid>`, where `<start>` is
+  when the instance started, so the restarted instance reports an id it issued before the
+  restart as "lost to a server restart", and one it never issued as never issued.
 
 ### What must be the same on every instance
 
@@ -475,12 +477,11 @@ rules without nginx (it can also sit behind nginx, as one upstream).
 
 With `server.cluster.sharedCache: true` ([cluster.md](cluster.md#options)), every process
 keeps its `$cache-control` caches in one SQLite file, so any of them can answer any cache-id.
-Start the master before the workers. With these manually started roles, every master
-startup invalidates previous shared cache IDs; an individual worker restart preserves
-them. After a master restart, surviving workers accept fresh sessions, and clients holding
-old IDs receive `cache-id-unknown` and start new caches. When nginx fronts `cluster.js`
-instead, the launcher owns this lifecycle: child restarts preserve IDs, and a full launcher
-restart invalidates them.
+Start the master before the workers. Caches are not carried over a server restart: each
+time the master starts, every live cache is lost, and a client that uses one gets
+`cache-id-unknown`, "lost to a server restart", and starts a new cache. A worker restarted
+while the master carries on keeps every cache, and workers that survive a master restart
+issue new caches straight away. The same holds when nginx fronts `cluster.js`.
 
 The `map` on `X-Cache-Id` and the per-worker upstreams (`fs_tx1`, `fs_tx2`) are then not
 needed: the tx location goes straight to the pool.

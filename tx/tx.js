@@ -1419,15 +1419,21 @@ class TXModule {
     const file = path.join(folders.databasesDir(), 'resource-cache.db');
     const maxBytes = this.config.sharedCacheMaxBytes || 0;
     if (this.sharedCacheGeneration === undefined) {
-      // The launcher keeps this token over child restarts. With manually started
-      // roles, starting the master begins a new lifecycle; workers join it.
-      this.sharedCacheGeneration = this.config.clusterRole === 'master'
-        ? process.env.FHIRSMITH_CLUSTER_GENERATION || newCacheGeneration() : null;
+      // Caches don't survive a server restart: each time the master starts (under the
+      // launcher or by hand) it begins a new generation, and every live cache becomes a
+      // "lost to a server restart" tombstone. A tx-worker joins the current generation,
+      // so one restarting while the master carries on keeps every cache. One token for
+      // all of this process's endpoints
+      this.sharedCacheGeneration = this.config.clusterRole === 'master' ? newCacheGeneration() : null;
     }
     this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}` +
       (maxBytes ? `, capped at ${maxBytes} bytes` : ''));
-    return new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes,
+    const cache = new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes,
       generation: this.sharedCacheGeneration });
+    if (cache.lostToRestart) {
+      this.log.info(`Resource cache: ${cache.lostToRestart} cache(s) from before this start are now tombstones (lost to a server restart)`);
+    }
+    return cache;
   }
 
   async shutdown() {

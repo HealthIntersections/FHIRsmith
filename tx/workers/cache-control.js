@@ -135,9 +135,8 @@ class CacheControlWorker extends TerminologyWorker {
     // Flip this to default-true once all clients send an explicit value.
     const sealed = this.readSealed(params.jsonObj);
 
-    // An opaque ID, prefixed with "<instanceCode>." when configured.
-    const cacheId = cache.newCacheId();
-    cache.set(cacheId, resources, sealed);
+    // "<instanceCode>.<...>" when this server has an instance code, else a bare UUID
+    const cacheId = cache.start(resources, sealed);
 
     // Also echoed as a response header, so that a request log at the proxy (nginx
     // $sent_http_x_cache_id) can tie each issued id to the start request that got
