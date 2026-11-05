@@ -152,7 +152,9 @@ MemoryMax=16G
 With the launcher, `/` and `/dashboard` show the master and every worker as lines on the
 existing metric panels, with one legend above them. Colour (by lightness), line pattern and
 marker each tell the processes apart; up to eight are drawn, and past eight the legend says
-how many are left out. These are each process's own measurements; nothing is added together.
+how many are left out. With more than one process, Requests per Minute adds a thick dark
+Total line: every process's rate summed per sampling interval. The other panels have no
+total, since summed heap or turnaround means nothing.
 With `sharedCache`, every process samples the same shared client-cache counts, so those
 lines can overlap.
 

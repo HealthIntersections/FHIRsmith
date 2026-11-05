@@ -26,7 +26,9 @@
     { color:'#b4a7d6', dash:[8,2,2,2,2,2], point:'cross', symbol:'✚' },
     { color:'#404040', dash:[4,2], point:'rectRounded', symbol:'▢' }
   ];
+  const total = { color:'#111111', dash:[], symbol:'', width:3 };
   const drawn = metrics.series.slice(0, styles.length);
+  const showTotal = metrics.series.length > 1;
 
   const legend = document.getElementById('serverMetricsLegend');
   function legendItem(style, text) {
@@ -34,7 +36,7 @@
     const key = document.createElement('span');
     key.className = 'server-metrics-key';
     key.style.color = style.color;
-    key.style.borderBottom = '2px ' + (style.dash.length ? 'dashed' : 'solid') + ' ' + style.color;
+    key.style.borderBottom = (style.width || 2) + 'px ' + (style.dash.length ? 'dashed' : 'solid') + ' ' + style.color;
     key.textContent = style.symbol;
     item.appendChild(key);
     item.appendChild(document.createTextNode(text));
@@ -42,9 +44,10 @@
   }
   drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
     (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
+  if (showTotal) legendItem(total, 'Total (requests per minute only)');
   if (metrics.series.length > drawn.length) {
     legend.appendChild(document.createTextNode((metrics.series.length - drawn.length) +
-      ' more workers are not drawn individually.'));
+      ' more workers are not drawn individually; the Total includes them.'));
   }
 
   const times = metrics.series.flatMap(series => series.history.map(point => point.time));
@@ -52,6 +55,20 @@
   const earliest = times.length ? times.reduce((earliest, time) => Math.min(earliest, time), latest) : latest - 60000;
   // Every chart uses the same numeric time axis: each sample sits at its actual time.
   const minTime = earliest === latest ? earliest - 60000 : earliest;
+
+  // The cluster's requests per minute: every process's samples summed per sample interval,
+  // counted from the earliest sample (the processes start, and so sample, seconds apart).
+  function totalRpm() {
+    const interval = metrics.series.map(series => series.intervalMs).find(ms => ms > 0) || 600000;
+    const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point.rpm)));
+    const start = points.reduce((start, point) => Math.min(start, point.time), Infinity);
+    const sums = new Map();
+    for (const point of points) {
+      const x = start + Math.round((point.time - start) / interval) * interval;
+      sums.set(x, (sums.get(x) || 0) + point.rpm);
+    }
+    return [...sums].sort((a, b) => a[0] - b[0]).map(([x, y]) => ({ x, y }));
+  }
 
   // A hatched interval means at least one memory-pressure 503 was counted in it, not that
   // the guard refused all through it. Overlapping intervals of different processes merge.
@@ -112,6 +129,10 @@
       pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
       fill:!metrics.cluster, tension:0, spanGaps:false
     }));
+    if (field === 'rpm' && showTotal) {
+      datasets.push({ label:'Total', data:totalRpm(), borderColor:total.color, backgroundColor:total.color,
+        borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
+    }
     new Chart(canvas, {
       type:'line',
       data:{ datasets },
