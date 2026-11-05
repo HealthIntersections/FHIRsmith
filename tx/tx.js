@@ -1451,9 +1451,6 @@ class TXModule {
   }
 
   /**
-   * Shutdown the module
-   */
-  /**
    * An endpoint's $cache-control cache in the shared SQLite file (databases/resource-cache.db),
    * for server.cluster.sharedCache. Endpoints share the file but not caches.
    * @param {string} endpointPath - e.g. /r4
@@ -1483,6 +1480,9 @@ class TXModule {
     return cache;
   }
 
+  /**
+   * Shutdown the module
+   */
   async shutdown() {
     this.log.info('Shutting down TX module');
     for (const timer of this.timers) {
