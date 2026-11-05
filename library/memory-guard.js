@@ -278,7 +278,8 @@ function describe() {
  * help. It logs when refusing starts (then once a minute, with how long and how many) and
  * when it stops.
  * @param {object} [opts] - { log, exempt: [path prefixes never refused], retryAfter (seconds),
- *   gcInterval (ms), gcMaxInterval (ms), heapUsed (function returning bytes, for tests) }
+ *   gcInterval (ms), gcMaxInterval (ms), heapUsed (function returning bytes, for tests),
+ *   onReject (optional observation callback, called only when sending a 503) }
  */
 function middleware(opts = {}) {
   const exempt = opts.exempt || [];
@@ -352,6 +353,11 @@ function middleware(opts = {}) {
       lastLog = 0;
     }
     refused++;
+    try {
+      opts.onReject?.();
+    } catch {
+      // Observability must never change whether this request is refused.
+    }
     if (log && now - lastLog > 60000) {
       log.warn(`Memory high: ${gb(state.sampleRss)} GB of ${gb(state.limit)} GB - refusing new requests with 503 for ${secs(now - refusingSince)}s (${refused} refused)`);
       lastLog = now;

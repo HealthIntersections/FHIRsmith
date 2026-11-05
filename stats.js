@@ -63,6 +63,8 @@ class ServerStats {
   intervalMs = 10 * 60 * 1000;
   history = [];
   requestCountSnapshot = 0;
+  refusedCount = 0;
+  refusedCountSnapshot = 0;
   startMem = 0;
   startTime = Date.now();
   timer;
@@ -134,6 +136,9 @@ class ServerStats {
         ? this.intervalMs / 60000
         : (now - this.startTime) / 60000;
       const requestsPerMin = minutesSinceStart > 0 ? requestsDelta / minutesSinceStart : 0;
+      // where this sample's interval began, so the cluster graphs can place a late sample
+      const intervalStart = this.lastTime ?? this.startTime;
+      const refused = this.refusedCount - this.refusedCountSnapshot;
 
       const loopDelay = this.eventLoopMonitor.mean / 1e6;
       // Worst single stall in the window - the mean dilutes a multi-second
@@ -147,6 +152,11 @@ class ServerStats {
       const clientConcepts = this._sumCachingModules('clientConceptCount');
 
       const point = {time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts};
+      if (this.onMetric) {
+        // under the launcher (library/cluster-metrics.js): what the cluster graphs also show
+        point.intervalStart = intervalStart;
+        point.refused = refused;
+      }
       this.history.push(point);
       if (this.onMetric) {
         this.onMetric(point);
@@ -154,6 +164,7 @@ class ServerStats {
 
       this.eventLoopMonitor.reset();
       this.requestCountSnapshot = combinedCount;
+      this.refusedCountSnapshot = this.refusedCount;
       this.requestTime = 0;
       this.lastTime = now;
 
@@ -293,6 +304,12 @@ class ServerStats {
     counter.countTotal++;
     counter.timeDelta = counter.timeDelta + tat;
     counter.timeTotal = counter.timeTotal + tat;
+  }
+
+  // The memory guard runs before routing and body parsing. Keep its refusals
+  // separate from completed module work and its turnaround-time denominator.
+  countRefusedRequest() {
+    this.refusedCount++;
   }
 
   /**

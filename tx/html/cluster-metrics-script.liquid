@@ -3,8 +3,19 @@
   .server-metrics-chart { flex:1; min-width:0; }
   .server-metrics-chart h6 { font-size:12px; margin:0 0 4px; }
   .server-metrics-canvas { position:relative; height:200px; }
-  .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:0 0 12px; }
+  .server-metrics-canvas.server-metrics-separated { height:auto; }
+  .server-metrics-lane { position:relative; height:104px; }
+  .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:10px 0 8px; }
   .server-metrics-key { display:inline-block; width:22px; text-align:center; margin-right:4px; }
+  .server-metrics-view { font:11px sans-serif; margin:10px 0 6px; }
+  .server-metrics-view button, .server-metrics-legend button { font:inherit; color:inherit; background:transparent; border:1px solid #ccc; border-radius:3px; padding:3px 6px; cursor:pointer; }
+  .server-metrics-view button[aria-pressed="true"] { background:#e6edf3; border-color:#6b8094; }
+  .server-metrics-view button:focus-visible, .server-metrics-legend button:focus-visible { outline:2px solid #174a7e; outline-offset:2px; }
+  .server-metrics-legend button { border-color:transparent; padding:2px 3px; }
+  .server-metrics-legend button[aria-pressed="true"] { border-color:#6b8094; background:#f2f5f8; }
+  #serverMetricsViewHint { color:#666; margin-left:8px; }
+  .server-metrics-shedding { color:#8c2935; font:11px sans-serif; margin:0 0 8px; }
+  .server-metrics-shedding::before { content:''; display:inline-block; width:12px; height:9px; margin-right:5px; background:rgba(173,31,47,.12); border-top:2px solid #ad1f2f; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 <script>
@@ -18,10 +29,32 @@
     { color:'#a66a00', dash:[7,3,2,3], point:'rectRot', symbol:'◆' },
     { color:'#555555', dash:[9,4], point:'star', symbol:'★' }
   ];
+  const chartSpecs = [], charts = [], processButtons = [];
+  let selected = null;
+  let view = metrics.cluster && metrics.series.length > 1 ? 'process' : 'overlay';
+  try {
+    const stored = localStorage.getItem('fhirsmith.graphView');
+    if (stored === 'process' || stored === 'overlay') view = stored;
+  } catch { /* Storage can be disabled without affecting graphs. */ }
+  if (typeof location !== 'undefined') {
+    const requested = /(?:^|[?&])chartView=(process|overlay)(?:&|$)/.exec(location.search);
+    if (requested) view = requested[1];
+  }
+  if (metrics.series.length < 2) view = 'overlay';
   const legend = document.getElementById('serverMetricsLegend');
+  if (metrics.series.length > 1) {
+    const all = document.createElement('button');
+    all.type = 'button'; all.textContent = 'All'; all.setAttribute('aria-pressed', 'true');
+    all.addEventListener('click', () => { selected = null; highlight(); });
+    legend.appendChild(all); processButtons.push({ button:all, index:null });
+  }
   metrics.series.forEach((series, i) => {
     const style = styles[i % styles.length];
-    const item = document.createElement('span');
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.title = 'Highlight ' + series.label + ' across the charts';
+    item.setAttribute('aria-pressed', 'false');
+    item.addEventListener('click', () => { selected = selected === i ? null : i; highlight(); });
     const key = document.createElement('span');
     key.className = 'server-metrics-key';
     key.style.color = style.color;
@@ -31,6 +64,7 @@
     item.appendChild(document.createTextNode(series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
       (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
     legend.appendChild(item);
+    processButtons.push({ button:item, index:i });
   });
 
   const times = metrics.series.flatMap(series => series.history.map(point => point.time));
@@ -39,44 +73,170 @@
   // Every chart uses the same numeric time axis. A late or missing sample remains
   // at its actual time; array positions never align samples from different processes.
   const minTime = earliest === latest ? earliest - 60000 : earliest;
+  // A tinted sample interval means that at least one real guard refusal was
+  // counted in it, not that the guard was continuously closed for that time.
+  // Merge overlapping worker intervals so shading does not imply their sum.
+  const shedding = metrics.series.flatMap(series => series.history.filter(point =>
+    Number.isFinite(point.refused) && point.refused > 0));
+  function refusalWindows(series) {
+    const windows = [];
+    series.flatMap(item => item.history).filter(point => point.refused > 0 &&
+      Number.isFinite(point.intervalStart) && point.intervalStart < point.time)
+      .map(point => [point.intervalStart, point.time]).sort((a, b) => a[0] - b[0]).forEach(window => {
+        const last = windows[windows.length - 1];
+        if (last && window[0] <= last[1]) last[1] = Math.max(last[1], window[1]);
+        else windows.push(window);
+      });
+    return windows;
+  }
+  const notice = document.getElementById('serverMetricsShedding');
+  if (notice && shedding.length) {
+    const count = shedding.reduce((sum, point) => sum + point.refused, 0);
+    notice.hidden = false;
+    notice.textContent = count.toLocaleString() + ' memory-pressure 503 refusals in view. Shading marks affected sampling intervals; request lines count admitted work.';
+  }
+  const sheddingBands = windows => ({
+    id:'memoryShedding',
+    beforeDraw(chart) {
+      if (!windows.length || !chart.chartArea) return;
+      const {ctx, chartArea:area, scales:{x}} = chart;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(area.left, area.top, area.right - area.left, area.bottom - area.top);
+      ctx.clip();
+      for (const [from, to] of windows) {
+        const left = x.getPixelForValue(from), width = x.getPixelForValue(to) - left;
+        ctx.fillStyle = 'rgba(173,31,47,.08)';
+        ctx.fillRect(left, area.top, width, area.bottom - area.top);
+        ctx.fillStyle = '#ad1f2f';
+        ctx.fillRect(left, area.top, width, 2);
+      }
+      ctx.restore();
+    }
+  });
   function formatTime(time) {
     return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
       ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
   }
-  function chart(id, field, unit, divisor = 1) {
+  function chart(id, field, unit, divisor = 1, shortUnit = unit) {
     const canvas = document.getElementById(id);
     if (!canvas) return;
-    new Chart(canvas, {
+    chartSpecs.push({ id, field, unit, divisor, shortUnit, holder:canvas.parentElement });
+  }
+  function domain(spec) {
+    const values = metrics.series.flatMap(series => series.history.map(point => point[spec.field]))
+      .filter(Number.isFinite).map(value => value / spec.divisor);
+    let min = values.reduce((a, b) => Math.min(a, b), 0);
+    let max = values.reduce((a, b) => Math.max(a, b), 0);
+    if (min === max) max = min + 1;
+    const power = Math.pow(10, Math.floor(Math.log10((max - min) / 5)));
+    const step = [1, 2, 5, 10].find(n => n * power >= (max - min) / 5) * power;
+    return { min:Math.floor(min / step) * step, max:Math.ceil(max / step) * step };
+  }
+  function draw(spec, indexes, canvas, separate, bounds) {
+    const { field, unit, divisor } = spec;
+    const c = new Chart(canvas, {
       type:'line',
-      data:{ datasets:metrics.series.map((series, i) => {
+      data:{ datasets:indexes.map(i => {
+        const series = metrics.series[i];
         const style = styles[i % styles.length];
         return {
+          processIndex:i,
+          processRow:separate,
           label:series.label,
-          data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null })),
+          data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
+            refused:point.refused, intervalStart:point.intervalStart })),
           borderColor:style.color, backgroundColor:style.color + '18', borderDash:style.dash,
-          pointStyle:style.point, pointBackgroundColor:style.color, pointRadius:2, borderWidth:1.5,
+          pointStyle:style.point, pointBackgroundColor:style.color, pointRadius:separate ? 0 : metrics.cluster ? 1 : 2,
+          pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
           fill:!metrics.cluster, tension:0, spanGaps:false
         };
       }) },
       options:{
         responsive:true, maintainAspectRatio:false, animation:false,
         scales:{
-          x:{ type:'linear', min:minTime, max:latest, ticks:{ maxTicksLimit:4, callback:formatTime, font:{ size:10 } } },
-          y:{ beginAtZero:true, ticks:{ font:{ size:10 } }, title:{ display:true, text:unit, font:{ size:10 } } }
+          x:{ type:'linear', min:minTime, max:latest,
+            // Keep the same label measurements on every row so their plot areas
+            // align, even when only the bottom row shows the time labels.
+            ticks:{ maxTicksLimit:separate ? 3 : 4, callback:formatTime,
+              color:separate && indexes[0] < metrics.series.length - 1 ? 'transparent' : undefined, font:{ size:10 } },
+            ...(separate ? { afterFit:axis => { axis.height = 20; } } : {}) },
+          y:{ beginAtZero:true, ...(separate ? bounds : {}), ticks:{ maxTicksLimit:separate ? 3 : undefined, font:{ size:10 } },
+            title:{ display:!separate, text:unit, font:{ size:10 } } }
         },
         plugins:{
           legend:{ display:false },
-          tooltip:{ callbacks:{ title:items => items.length ? formatTime(items[0].parsed.x) : '' } }
+          title:{ display:separate, text:separate ? metrics.series[indexes[0]].label + ' · ' + spec.shortUnit : '',
+            align:'start', color:styles[(indexes[0] || 0) % styles.length].color, font:{ size:10, weight:'normal' }, padding:{ top:2, bottom:2 } },
+          tooltip:{ callbacks:{
+            title:items => items.length ? formatTime(items[0].parsed.x) : '',
+            afterLabel:item => Number.isFinite(item.raw.refused)
+              ? 'Memory-pressure 503s: ' + item.raw.refused.toLocaleString() + ' in this sample'
+              : ''
+          } }
         }
-      }
+      },
+      plugins:[sheddingBands(refusalWindows(indexes.map(i => metrics.series[i])))]
     });
+    charts.push(c);
   }
-  chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
+  function highlight() {
+    processButtons.forEach(item => item.button.setAttribute('aria-pressed', String(item.index === selected)));
+    for (const c of charts) {
+      for (const dataset of c.data.datasets) {
+        const dim = selected !== null && dataset.processIndex !== selected;
+        const color = styles[dataset.processIndex % styles.length].color + (dim ? '28' : '');
+        dataset.borderColor = color;
+        dataset.pointBackgroundColor = color;
+        dataset.pointBorderColor = color;
+        dataset.pointRadius = dataset.processRow || dim ? 0 : selected !== null ? 1.5 : metrics.cluster ? 1 : 2;
+        dataset.borderWidth = selected === dataset.processIndex ? 2.4 : 1.5;
+      }
+      c.update();
+    }
+  }
+  function renderView() {
+    charts.splice(0).forEach(c => c.destroy());
+    const separate = view === 'process';
+    document.getElementById('metricsPerProcess').setAttribute('aria-pressed', String(separate));
+    document.getElementById('metricsOverlay').setAttribute('aria-pressed', String(!separate));
+    document.getElementById('serverMetricsViewHint').textContent = separate
+      ? 'Shared scales across processes. Select a name to highlight it.'
+      : 'Select a process name to highlight its lines across charts.';
+    for (const spec of chartSpecs) {
+      spec.holder.replaceChildren();
+      spec.holder.classList.toggle('server-metrics-separated', separate);
+      const groups = separate ? metrics.series.map((_s, i) => [i]) : [metrics.series.map((_s, i) => i)];
+      const bounds = domain(spec);
+      for (const indexes of groups) {
+        const canvas = document.createElement('canvas');
+        canvas.id = spec.id + (separate ? '-' + indexes[0] : '');
+        canvas.setAttribute('aria-label', spec.unit + (separate ? ' · ' + metrics.series[indexes[0]].label : ''));
+        if (separate) {
+          const lane = document.createElement('div');
+          lane.className = 'server-metrics-lane'; lane.appendChild(canvas); spec.holder.appendChild(lane);
+        } else spec.holder.appendChild(canvas);
+        draw(spec, indexes, canvas, separate, bounds);
+      }
+    }
+    highlight();
+  }
+  chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024, 'MB');
   chart('tatChart', 'tat', 'ms');
   chart('requestChart', 'rpm', 'req/min');
   chart('clientCacheChart', 'clientConcepts', 'concepts');
   // Separate mean and max scales keep a single long stall from flattening the mean.
   chart('blockChart', 'block', 'ms');
   chart('blockMaxChart', 'blockMax', 'ms');
+  const controls = document.getElementById('serverMetricsView');
+  controls.hidden = metrics.series.length < 2;
+  for (const [id, mode] of [['metricsPerProcess', 'process'], ['metricsOverlay', 'overlay']]) {
+    document.getElementById(id).addEventListener('click', () => {
+      view = mode;
+      try { localStorage.setItem('fhirsmith.graphView', mode); } catch { /* Optional preference. */ }
+      renderView();
+    });
+  }
+  renderView();
 })();
 </script>

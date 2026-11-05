@@ -41,6 +41,17 @@ describe('cluster graph history', () => {
     expect(store.record('tx1', { ...sample(now), intervalMs:0 }, now)).toBe(false);
   });
 
+  test('retains refusal counts and actual sample boundaries across worker and restart gaps', () => {
+    const store = new ClusterMetrics(procs);
+    store.record('m0', sample(now, { refused:7, intervalStart:now - 2500 }), now);
+    store.record('tx1', sample(now + 100, { refused:11, intervalStart:now - 900 }), now + 100);
+    store.state('m0', 'restarting', now + 200);
+    const [master, worker] = store.snapshot(now + 200).series;
+    expect(master.history.map(p => p.refused)).toEqual([7, null]);
+    expect(master.history.map(p => p.intervalStart)).toEqual([now - 2500, null]);
+    expect(worker.history[0]).toMatchObject({ refused:11, intervalStart:now - 900 });
+  });
+
   test('marks no recent sample and disconnected data without inventing zeroes', () => {
     const store = new ClusterMetrics(procs);
     store.record('m0', sample(now), now);

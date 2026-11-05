@@ -71,6 +71,32 @@ describe('memory-guard', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  test('observes only actual refusals, excluding admitted and exempt requests', () => {
+    const onReject = jest.fn();
+    const next = jest.fn();
+    const mw = memoryGuard.middleware({ onReject, exempt:['/dashboard'], heapUsed:() => 0 });
+    setRss(7 * GB);
+    mw({ path:'/r4/x' }, fakeRes(), next);
+    setRss(8.5 * GB);
+    mw({ path:'/dashboard' }, fakeRes(), next);
+    const refused = fakeRes();
+    mw({ path:'/r4/x' }, refused, next);
+    setRss(7 * GB);
+    mw({ path:'/r4/x' }, fakeRes(), next);
+    expect(next).toHaveBeenCalledTimes(3);
+    expect(refused.statusCode).toBe(503);
+    expect(onReject).toHaveBeenCalledTimes(1);
+  });
+
+  test('a broken observer cannot prevent the guard from refusing a request', () => {
+    setRss(8.5 * GB);
+    const res = fakeRes();
+    const mw = memoryGuard.middleware({ heapUsed:() => 0, onReject:() => { throw new Error('metrics failed'); } });
+    expect(() => mw({ path:'/r4/x' }, res, () => {})).not.toThrow();
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('30');
+  });
+
   test('abort threshold is separate from, and above, the reject threshold', () => {
     setRss(8.5 * GB);
     expect(memoryGuard.shouldReject()).toBe(true);
@@ -92,8 +118,10 @@ describe('memory-guard', () => {
     memoryGuard._state.sampleRss = 8.5 * GB;
     memoryGuard._state.sampleTime = Date.now(); // the cached sample says "over"
     const next = jest.fn();
-    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 2 * GB })({ path: '/r4/x' }, fakeRes(), next);
+    const onReject = jest.fn();
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 2 * GB, onReject })({ path: '/r4/x' }, fakeRes(), next);
     expect(next).toHaveBeenCalled();
+    expect(onReject).not.toHaveBeenCalled();
   });
 
   test('no forced GC when the JS heap is smaller than the amount over the threshold', () => {

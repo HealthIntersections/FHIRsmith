@@ -146,14 +146,26 @@ MemoryMax=16G
 
 ## Graphs
 
-With the launcher, `/` and `/dashboard` show the master and every worker as labeled
-series on the existing charts. Color, marker and line pattern distinguish the processes,
-with one compact legend; styles repeat after five processes, while hover labels continue
-to identify each series. The dashboard still has three charts and fits the existing
-`utilities/dashboard.html` monitor layout. Home has six charts. These are each process's
-existing measurements; request rates and turnaround averages are not added together.
+With the launcher, `/` and `/dashboard` show the master and every worker on the existing
+metric panels. Clusters with multiple processes default to a separate row per process
+within each metric, with the same time and value scales across rows. The dashboard keeps
+its three metric columns; home keeps six metric panels. The Overlay button restores the
+compact view for the `utilities/dashboard.html` monitor layout or larger clusters.
+
+Color and line pattern identify a process consistently. Select a name in the shared legend
+to highlight it across the panels; other lines fade and their point markers disappear.
+All restores every line. The view preference is remembered across the app's pages.
+Styles repeat after five processes, while labels still identify each series. These are
+each process's existing measurements; request rates and turnaround averages are not added together.
 With `sharedCache`, every process samples the same shared client-cache counts, so those
 lines can overlap.
+
+The memory guard counts its 503 refusals before body parsing. Pale red shading on all
+charts marks sampling intervals containing those refusals; it does not mean the guard
+was closed continuously throughout an interval. The note above the charts counts
+refusals in the displayed samples, and hovering a process point shows that sample's
+count. Request-rate lines and turnaround averages continue to describe admitted work.
+Client timeouts, unsent load-generator arrivals and proxy errors are not guard refusals.
 
 Samples keep their actual timestamps. A restarting process leaves a gap and retains its
 earlier history; a skipped sampling interval also leaves a gap. The legend reports
