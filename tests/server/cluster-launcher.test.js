@@ -10,9 +10,9 @@ const FAKE = path.join(__dirname, '..', 'utils', 'fake-upstream.js');
 const TX = ['/r4', '/r5'];
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function get(port, urlPath, headers = {}) {
+function get(port, urlPath, headers = {}, { method = 'GET', agent = false } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.get({ host: '127.0.0.1', port, path: urlPath, headers, agent: false }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, headers, method, agent }, (res) => {
       let body = '';
       res.on('data', d => { body += d; });
       res.on('end', () => {
@@ -26,6 +26,7 @@ function get(port, urlPath, headers = {}) {
       });
     });
     req.on('error', reject);
+    req.end();
   });
 }
 
@@ -124,6 +125,14 @@ describe('routing rules', () => {
     const s2 = loadSettings(['--workers=1', '--port=20010', '--master-serves-tx=false'], {}, config);
     expect(s2.procs.map(p => [p.code, p.port, p.servesTx])).toEqual([['main', 20011, false], ['tx1', 20012, true]]);
     expect(() => loadSettings([], {}, { modules: { tx: { enabled: true, instanceCode: 'tx1' } } })).toThrow(/also the code of a worker/);
+    // the queue: 16 sent to a process at once, 3 s waiting for one
+    expect([s.maxOutstanding, s.queueMs]).toEqual([16, 3000]);
+    const s3 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 4, queueSeconds: 1.5 } } });
+    expect([s3.maxOutstanding, s3.queueMs]).toEqual([4, 1500]);
+    expect(s.ownerQueueMs).toBe(30000);
+    // 0 is 0: no limit, refuse at once
+    const s4 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 0, queueSeconds: 0, ownerQueueSeconds: 0 } } });
+    expect([s4.maxOutstanding, s4.queueMs, s4.ownerQueueMs]).toEqual([0, 0, 0]);
   });
 });
 
@@ -242,6 +251,145 @@ describe('the launcher, with fake processes', () => {
     expect(() => callbacks.shift()()).not.toThrow();
     expect(send).toHaveBeenCalledTimes(3);
     master.child.send = originalSend;
+  });
+
+  describe('at most maxOutstanding tx requests on a process; the rest wait', () => {
+    const queued = (queueMs) => ({ ...settings(false), maxOutstanding: 1, queueMs });
+    const busy = async (n, headers = {}) => {
+      const slow = [];
+      for (let i = 0; i < n; i++) {
+        slow.push(get(PORT, '/r4/ValueSet/$expand?delay=1000', headers));
+      }
+      await until(() => launcher.procs.reduce((t, p) => t + p.outstanding, 0) === n);
+      return slow;
+    };
+
+    test('a request waits while every process is full, and goes when one has room', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      const r = await get(PORT, '/r4/ValueSet/$expand');
+      expect(r.status).toBe(200);
+      expect(['tx1', 'tx2']).toContain(r.json.code);
+      expect(Date.now() - t0).toBeGreaterThan(500);
+      // each process had at most one at a time
+      expect((await Promise.all(slow)).map(x => x.status)).toEqual([200, 200]);
+    });
+
+    test('one that has waited queueSeconds gets 503 and Retry-After, without waiting longer', async () => {
+      launcher = createLauncher(queued(300));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      const r = await get(PORT, '/r4/ValueSet/$expand');
+      const waited = Date.now() - t0;
+      expect(r.status).toBe(503);
+      expect(r.headers['retry-after']).toBe('5');
+      expect(r.headers.connection).toBe('close');
+      expect(r.json.issue[0].code).toBe('transient');
+      expect(waited).toBeGreaterThanOrEqual(250);
+      expect(waited).toBeLessThan(900);
+      await Promise.all(slow);
+      // and nothing is left waiting or counted
+      expect(launcher.procs.every(p => p.outstanding === 0)).toBe(true);
+    });
+
+    test('a request with a cache-id waits for its issuer; one without goes to a process with room', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(1, { 'X-Cache-Id': 'tx1.x' });
+      const cached = get(PORT, '/r4/ValueSet/$expand', { 'X-Cache-Id': 'tx1.x' });
+      const plain = await get(PORT, '/r4/ValueSet/$expand');
+      expect(plain.json.code).toBe('tx2');
+      expect((await cached).json.code).toBe('tx1');
+      await Promise.all(slow);
+    });
+
+    test('a request with a cache-id waits for its issuer longer than ownerless ones', async () => {
+      launcher = createLauncher({ ...queued(300), ownerQueueMs: 5000 });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const cached = await get(PORT, '/r4/ValueSet/$expand', { 'X-Cache-Id': 'tx1.x' });
+      expect([cached.status, cached.json.code]).toEqual([200, 'tx1']);
+      await Promise.all(slow);
+    });
+
+    test('maxOutstanding 0: no limit; queueSeconds 0: 503 at once', async () => {
+      launcher = createLauncher(queued(0));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(503);
+      expect(Date.now() - t0).toBeLessThan(200);
+      await Promise.all(slow);
+      await launcher.stop();
+      launcher = createLauncher({ ...queued(0), maxOutstanding: 0 });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect((await Promise.all(await busy(4))).map(x => x.status)).toEqual([200, 200, 200, 200]);
+    });
+
+    test('a CORS preflight doesn\'t wait', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      expect((await get(PORT, '/r4/ValueSet/$expand', {}, { method: 'OPTIONS' })).status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(500);
+      await Promise.all(slow);
+    });
+
+    test('while stopping, a new request on a kept-alive connection gets 503, not a place in the queue', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+      expect((await get(PORT, '/packages', {}, { agent })).status).toBe(200);
+      const slow = await busy(2);
+      // as a client that sends just before the launcher closes its idle connection
+      launcher.server.closeIdleConnections = () => {};
+      const stopped = launcher.stop();
+      const r = await get(PORT, '/r4/ValueSet/$expand', {}, { agent });
+      expect(r.status).toBe(503);
+      expect(r.json.issue[0].diagnostics).toMatch(/stopping/);
+      expect((await Promise.all(slow)).map(x => x.status)).toEqual([200, 200]);
+      agent.destroy();
+      await stopped;
+      launcher = null;
+    });
+
+    test('the master\'s own paths don\'t wait', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      expect((await get(PORT, '/packages')).json.code).toBe('m0');
+      expect(Date.now() - t0).toBeLessThan(500);
+      await Promise.all(slow);
+    });
+
+    test('on stop, the requests still waiting are refused at once', async () => {
+      launcher = createLauncher(queued(5000));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const waiting = get(PORT, '/r4/ValueSet/$expand');
+      await sleep(100);
+      const stopped = launcher.stop();
+      const r = await waiting;
+      expect(r.status).toBe(503);
+      expect((await Promise.all(slow)).map(x => x.status)).toEqual([200, 200]);
+      await stopped;
+      launcher = null;
+    });
   });
 
   test('stop drains: no new connections, the request in progress finishes, then the processes stop', async () => {
