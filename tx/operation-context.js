@@ -113,7 +113,7 @@ class ResourceCache {
     // to poll instead of guessing. Null = not advertised.
     this.idleTimeoutMs = null;
     // This server instance's code (modules.tx.instanceCode), prefixed onto every
-    // cache-id it issues as "<code>.<uuid>". A proxy in front of several instances
+    // cache-id it issues as "<code>.<opaque id>". A proxy in front of several instances
     // routes on the prefix to get a cached request back to the one instance that
     // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
     this.instanceCode = null;
@@ -219,7 +219,8 @@ class ResourceCache {
 
   /**
    * The instance code in a cache-id, or null if it has none. Ids this server mints
-   * are either a bare UUID (no '.') or "<code>.<uuid>".
+   * from the memory store are either a bare UUID (no '.') or "<code>.<uuid>";
+   * managed shared stores use "<code>.<opaque lifecycle id>".
    * @param {string} cacheId
    * @returns {string|null}
    */

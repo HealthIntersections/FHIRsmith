@@ -199,14 +199,23 @@ send every request that uses it there. A restarted process has lost its caches, 
 clients get `cache-id-unknown` and start new ones. The load a client brings stays on one
 process.
 
-With it, any process can answer any cache-id, and caches survive a restart of any process (or
-of all of them). The launcher sends a request with a cache-id to the least-loaded tx process,
+With it, any process can answer any cache-id. An individual worker or master child restart
+under the launcher preserves caches. **Restarting the whole cluster invalidates its cache
+IDs**, even though the SQLite file remains. Clients receive `cache-id-unknown` and start
+new caches. With manually started roles behind nginx, **starting the master begins a new
+cache lifecycle**; restart workers independently to preserve IDs. Surviving workers can
+create and use fresh caches after a manual master restart.
+
+The launcher sends a request with a cache-id to the least-loaded tx process,
 like any other. The cost is a read of the file on each use of a cache: a request reads the
 list of what the cache holds, and only loads the resources it uses. Writes are short
 transactions in WAL mode, so readers don't wait for them. `last_used` is written at most every
 30 seconds per cache. The idle sweep (`modules.tx.cacheTimeout`) runs in every process, and
-running it twice does no harm. An unknown cache-id gets a message that doesn't offer a restart
-or a routing mistake as the reason, since neither can be the cause.
+running it twice does no harm. Cache IDs include an opaque lifecycle token after the issuer
+prefix, remain valid FHIR IDs of at most 64 characters, and should not be parsed beyond the
+issuer. Writes check the token inside their transaction, so a request in progress during a
+restart cannot recreate an old cache. A delayed lazy read also rejects an obsolete ID with
+`404` and `cache-id-unknown`.
 
 If another request replaces a resource after its index was read but before its content is
 loaded, the request returns `409` (`CACHE_ID_CHANGED_DURING_REQUEST`). Retry the whole
@@ -246,7 +255,7 @@ to the same table at once, some adds are worked out more than once.
 
 ### What changes, by combination
 
-| `sharedCache` | `sharedClosure` | A request with a cache-id goes to | `$closure` goes to | A restarted process |
+| `sharedCache` | `sharedClosure` | A request with a cache-id goes to | `$closure` goes to | A restarted launcher child |
 |---|---|---|---|---|
 | off | off | the process that issued it (if it is down: any, which answers `cache-id-unknown`) | the master | has lost its caches |
 | on | off | the least-loaded tx process (the issuer, with `cacheAffinity`) | the master | still has every cache |
@@ -255,7 +264,9 @@ to the same table at once, some adds are worked out more than once.
 
 The syndication feed, the `/info` pages and everything outside the tx endpoints go to the
 master in every combination. For nginx, see
-[nginx.md](nginx.md#with-the-shared-cache).
+[nginx.md](nginx.md#with-the-shared-cache). A full launcher restart, or a manual master
+startup, invalidates shared client caches in every combination above. Closure persistence
+is unchanged.
 
 ## Memory
 

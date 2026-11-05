@@ -477,6 +477,13 @@ rules without nginx (it can also sit behind nginx, as one upstream).
 
 With `server.cluster.sharedCache: true` ([cluster.md](cluster.md#options)), every process
 keeps its `$cache-control` caches in one SQLite file, so any of them can answer any cache-id.
+Start the master before the workers. With these manually started roles, every master
+startup invalidates previous shared cache IDs; an individual worker restart preserves
+them. After a master restart, surviving workers accept fresh sessions, and clients holding
+old IDs receive `cache-id-unknown` and start new caches. When nginx fronts `cluster.js`
+instead, the launcher owns this lifecycle: child restarts preserve IDs, and a full launcher
+restart invalidates them.
+
 The `map` on `X-Cache-Id` and the per-worker upstreams (`fs_tx1`, `fs_tx2`) are then not
 needed: the tx location goes straight to the pool.
 

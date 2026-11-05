@@ -4,7 +4,8 @@
 //
 // Used when server.cluster.sharedCache is on (cluster.md, "Options"): the master and the
 // tx-workers then keep their $cache-control caches here instead of in their own memory, so
-// any process can answer any cache-id, and caches survive a process restart. The memory
+// any process can answer any cache-id. Server-created stores preserve caches over child
+// restarts, but invalidate them when the launcher (or manual master) starts a new run. The memory
 // store (ResourceCache) is the default. This class is the same interface with the same
 // semantics, over a file:
 //
@@ -35,6 +36,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { newCacheGeneration } = require('../library/cache-generation');
 const Database = require('better-sqlite3');
 const { ResourceCache, formatDuration } = require('./operation-context');
 const { Issue } = require('./library/operation-outcome');
@@ -290,6 +292,9 @@ class SqliteResourceCache extends ResourceCache {
    * @param {number} [options.maxBytes=0] - size cap for the whole file, 0 = none
    * @param {number} [options.touchIntervalMs=30000] - least time between last_used refreshes
    * @param {number} [options.busyTimeoutMs=5000]
+   * @param {string|null} [options.generation] - internal server lifecycle: a boot token
+   *   initializes/rotates the file, null joins the master's current generation. Omit
+   *   for a general persistent store accepting arbitrary IDs (including test fixtures).
    */
   constructor(stats, options = {}) {
     super(stats, options.maxTombstones || 1000);
@@ -300,14 +305,26 @@ class SqliteResourceCache extends ResourceCache {
     this.path = path.resolve(options.path);
     this.scope = options.scope || '';
     this.touchIntervalMs = options.touchIntervalMs >= 0 ? options.touchIntervalMs : DEFAULT_TOUCH_INTERVAL_MS;
+    this.managedLifecycle = Object.hasOwn(options, 'generation');
+    if (this.managedLifecycle && options.generation !== null &&
+        (typeof options.generation !== 'string' || !/^[A-Za-z0-9.-]{22}$/.test(options.generation))) {
+      throw new Error('Invalid internal resource-cache generation');
+    }
     this.db = openDatabase(this.path, options.busyTimeoutMs || DEFAULT_BUSY_TIMEOUT_MS);
     this.closed = false;
     this._prepare();
+    try {
+      if (this.managedLifecycle) this._initializeGeneration(options.generation);
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
 
   _prepare() {
     const db = this.db;
     this.q = {
+      generation: db.prepare("SELECT value FROM meta WHERE key = 'generation'"),
       session: db.prepare('SELECT * FROM sessions WHERE scope = ? AND cache_id = ?'),
       sessionExists: db.prepare('SELECT 1 FROM sessions WHERE scope = ? AND cache_id = ?'),
       sealed: db.prepare('SELECT sealed FROM sessions WHERE scope = ? AND cache_id = ?'),
@@ -354,9 +371,49 @@ class SqliteResourceCache extends ResourceCache {
     };
   }
 
+  _initializeGeneration(generation) {
+    this.db.transaction(() => {
+      const current = this.q.generation.get()?.value;
+      if (generation === null) {
+        if (!current) throw new Error('Start the master before workers using the shared resource cache');
+      } else if (current !== generation) {
+        // Clear all endpoint scopes and switch the fence in the same transaction.
+        this.db.exec('DELETE FROM resources; DELETE FROM sessions; DELETE FROM tombstones;');
+        this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('generation', ?)").run(generation);
+      }
+    }).immediate();
+  }
+
+  newCacheId() {
+    if (!this.managedLifecycle) return super.newCacheId();
+    // Read the current token each time: surviving manual workers join a replacement
+    // master's lifecycle without restarting. Minting before a rotation is safe;
+    // set() checks the token again inside its write transaction.
+    const generation = this.q.generation.get().value;
+    const id = `${generation}.${newCacheGeneration()}`;
+    return this.instanceCode ? `${this.instanceCode}.${id}` : id;
+  }
+
+  _isCurrentGeneration(cacheId) {
+    if (!this.managedLifecycle) return true;
+    // Tokens may contain dots, so read fixed-width fields from the end rather than
+    // splitting on '.', which is also the issuer-routing delimiter.
+    return typeof cacheId === 'string' && cacheId.length >= 45 && cacheId.at(-23) === '.' &&
+      cacheId.slice(-45, -23) === this.q.generation.get()?.value;
+  }
+
+  _assertGeneration(cacheId) {
+    if (!this._isCurrentGeneration(cacheId)) {
+      throw new Issue('error', 'not-found', null, 'CACHE_ID_UNKNOWN_SHARED',
+        `The cache '${cacheId}' is not part of the current server run. Start a new cache with $cache-control?mode=start`,
+        'cache-id-unknown', 404);
+    }
+  }
+
   // ---------- reads ----------
 
   status(cacheId) {
+    if (!this._isCurrentGeneration(cacheId)) return { exists: false };
     const s = this.q.session.get(this.scope, cacheId);
     if (!s) {
       return { exists: false };
@@ -374,10 +431,11 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   has(cacheId) {
-    return !!this.q.sessionExists.get(this.scope, cacheId);
+    return this._isCurrentGeneration(cacheId) && !!this.q.sessionExists.get(this.scope, cacheId);
   }
 
   isSealed(cacheId) {
+    if (!this._isCurrentGeneration(cacheId)) return false;
     const s = this.q.sealed.get(this.scope, cacheId);
     return s ? !!s.sealed : false;
   }
@@ -394,6 +452,7 @@ class SqliteResourceCache extends ResourceCache {
     let session = null;
     let rows = [];
     this.db.transaction(() => {
+      this._assertGeneration(cacheId);
       session = this.q.session.get(this.scope, cacheId);
       if (session) {
         rows = this.q.index.all(this.scope, cacheId);
@@ -435,6 +494,7 @@ class SqliteResourceCache extends ResourceCache {
    * was using it), the request fails the way a request on a dead cache-id does.
    */
   _loadWrapper(Cls, cacheId, row) {
+    this._assertGeneration(cacheId);
     const c = this.q.content.get(this.scope, cacheId, row.key);
     if (!c) {
       const t = this.tombstone(cacheId);
@@ -473,8 +533,8 @@ class SqliteResourceCache extends ResourceCache {
    * As for the memory store, except:
    * - an id with no record at all is CACHE_ID_UNKNOWN_SHARED, whatever its prefix. The
    *   memory store's messages offer a restart, or a request routed to the wrong instance,
-   *   as explanations; here every process sees every cache, and caches survive a restart,
-   *   so neither applies.
+   *   as explanations; here every process sees every cache. An individual child restart
+   *   preserves caches, but a new launcher run (or manual master startup) invalidates them.
    * - an id dropped by the size cap (maxBytes) is CACHE_ID_EVICTED_SIZE.
    */
   describeMissing(cacheId) {
@@ -520,6 +580,7 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   conceptCountFor(cacheId) {
+    if (!this._isCurrentGeneration(cacheId)) return 0;
     const s = this.q.session.get(this.scope, cacheId);
     return s ? (s.concepts || 0) : 0;
   }
@@ -558,10 +619,12 @@ class SqliteResourceCache extends ResourceCache {
     try {
       return tx.immediate();
     } catch (first) {
+      if (first instanceof Issue) throw first;
       this.log.warn(`resource cache: ${what} failed (${first.code || first.message}); retrying once`);
       try {
         return tx.immediate();
       } catch (second) {
+        if (second instanceof Issue) throw second;
         this.log.error(`resource cache: ${what} failed twice: ${second.message}`);
         throw new Issue('error', 'transient', null, 'CACHE_WRITE_FAILED',
           `The server could not save to its resource cache just now (${what}: ${second.code || second.message}). Nothing was changed; try the request again`,
@@ -643,6 +706,7 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   add(cacheId, resources) {
+    this._assertGeneration(cacheId);
     if (!resources || resources.length === 0) return;
     resources = resources.filter(r => !!r);
     for (const resource of resources) {
@@ -672,6 +736,7 @@ class SqliteResourceCache extends ResourceCache {
     }
 
     this._write('add', () => {
+      this._assertGeneration(cacheId);
       const now = Date.now();
       if (!this.q.sessionExists.get(this.scope, cacheId)) {
         if (this.q.tombstone.get(this.scope, cacheId)) {
@@ -704,6 +769,7 @@ class SqliteResourceCache extends ResourceCache {
     }
     const rows = resources.map(r => this._row(cacheId, r));
     this._write('start', () => {
+      this._assertGeneration(cacheId);
       const now = Date.now();
       const existing = this.q.session.get(this.scope, cacheId);
       this.q.deleteResources.run(this.scope, cacheId);

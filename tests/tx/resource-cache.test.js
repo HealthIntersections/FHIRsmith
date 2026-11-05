@@ -46,7 +46,7 @@ const STORES = [
   },
   {
     name: 'sqlite',
-    // caches survive a restart here, so the message doesn't offer one as the reason
+    // The shared store describes its lifecycle rather than guessing from the issuer.
     unknownId: 'CACHE_ID_UNKNOWN_SHARED',
     // every process sees every cache, so a prefix naming another process says nothing
     misrouted: () => 'CACHE_ID_UNKNOWN_SHARED',
