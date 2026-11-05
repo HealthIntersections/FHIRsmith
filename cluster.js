@@ -18,6 +18,8 @@
  *    $closure, the syndication feed, the source info pages and everything that isn't a tx
  *    endpoint to the master; any other tx request to the tx process with the fewest
  *    requests outstanding
+ *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
+ *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
@@ -42,6 +44,12 @@ const MAX_BACKOFF_MS = 60000;
 const UPSTREAM_IDLE_MS = 4000;
 // a process that ran this long before exiting is restarted at once
 const HEALTHY_RUN_MS = 60000;
+// tx requests sent to one process at once; the rest wait in the launcher (cluster.md)
+const MAX_OUTSTANDING = 16;
+// a waiting tx request gets 503 after this long; one with a cache-id, which only its owner
+// can take, after OWNER_QUEUE_MS
+const QUEUE_MS = 3000;
+const OWNER_QUEUE_MS = 30000;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -85,6 +93,9 @@ function loadSettings(argv, env, config) {
     procs,
     txPaths: (tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')),
     drainMs: Number(cluster.drainSeconds || 30) * 1000,
+    maxOutstanding: Number(cluster.maxOutstanding ?? MAX_OUTSTANDING),
+    queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
+    ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
 }
@@ -172,6 +183,9 @@ function isLoopback(address) {
 function createLauncher(settings) {
   const log = settings.log || ((msg) => console.log(`[cluster] ${msg}`));
   const healthPath = settings.healthPath || '/health';
+  const maxOutstanding = settings.maxOutstanding ?? MAX_OUTSTANDING; // 0: no limit
+  const queueMs = settings.queueMs ?? QUEUE_MS; // 0: refuse at once
+  const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
@@ -188,6 +202,10 @@ function createLauncher(settings) {
   let server = null;
   let stopping = false;
   let onIdle = null;
+  // tx requests waiting for a process with room, oldest first
+  const waiting = [];
+  let queueRefused = 0;
+  let lastQueueLog = 0;
 
   // Only the master renders the public home/dashboard pages. Keep at most one
   // snapshot in flight, coalescing changes if its IPC channel is backpressured.
@@ -293,6 +311,7 @@ function createLauncher(settings) {
           res.resume();
           if (res.statusCode === 200 && proc.child === child) {
             proc.ready = true;
+            sendWaiting();
             metrics.state(proc.code, 'ready');
             publishMetrics();
             if (proc.role === 'master') {
@@ -314,17 +333,81 @@ function createLauncher(settings) {
     });
   }
 
-  function proxy(req, res) {
-    const target = pickTarget(classify(req.url, req.headers, settings.txPaths, settings.routing), procs);
+  const full = (p) => maxOutstanding > 0 && p.outstanding >= maxOutstanding;
+
+  // true if the request was sent (or refused), false if it must wait. The master's own
+  // paths and CORS preflights don't wait
+  function send(w) {
+    const target = pickTarget(w.route, procs);
     if (!target) {
-      return fail(res, 503, 'No server process is ready to take this request; try again shortly');
+      fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
+      return true;
     }
+    if (w.route.to !== 'master' && w.req.method !== 'OPTIONS' && full(target)) {
+      return false;
+    }
+    forward(w.req, w.res, target);
+    return true;
+  }
+
+  // oldest first; one waiting for its owner doesn't hold up the rest
+  function sendWaiting() {
+    for (let i = 0; i < waiting.length && procs.some(p => p.ready && p.servesTx && !full(p));) {
+      const w = waiting[i];
+      if (send(w)) {
+        clearTimeout(w.timer);
+        waiting.splice(i, 1);
+      } else {
+        i++;
+      }
+    }
+  }
+
+  function refuse(w, ms) {
+    queueRefused++;
+    const now = Date.now();
+    if (now - lastQueueLog >= 60000) {
+      lastQueueLog = now;
+      log(`over capacity: requests waited ${ms / 1000} s for a process and were refused (${queueRefused} so far)`);
+    }
+    fail(w.res, 503, `The server is busy: no process was free for ${ms / 1000} s; try again shortly`, true);
+  }
+
+  function proxy(req, res) {
+    const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
+    if (send(w)) {
+      return;
+    }
+    if (stopping) {
+      return fail(res, 503, 'The server is stopping; try again shortly');
+    }
+    const ms = w.route.to === 'owner' ? ownerQueueMs : queueMs;
+    if (ms <= 0) {
+      return refuse(w, 0);
+    }
+    waiting.push(w);
+    const leave = () => {
+      const i = waiting.indexOf(w);
+      if (i >= 0) {
+        waiting.splice(i, 1);
+        clearTimeout(w.timer);
+      }
+    };
+    res.on('close', leave);
+    w.timer = setTimeout(() => {
+      leave();
+      refuse(w, ms);
+    }, ms);
+  }
+
+  function forward(req, res, target) {
     target.outstanding++;
     let finished = false;
     const finish = () => {
       if (!finished) {
         finished = true;
         target.outstanding--;
+        sendWaiting();
         if (onIdle && totalOutstanding() === 0) {
           onIdle();
         }
@@ -370,8 +453,9 @@ function createLauncher(settings) {
     req.pipe(upstream);
   }
 
-  function fail(res, status, text) {
-    res.writeHead(status, { 'Content-Type': 'application/fhir+json', 'Retry-After': '5', ...(stopping ? { Connection: 'close' } : {}) });
+  // close: the request body has not been read, and an overloaded server sheds the connection too
+  function fail(res, status, text, close = false) {
+    res.writeHead(status, { 'Content-Type': 'application/fhir+json', 'Retry-After': '5', ...(stopping || close ? { Connection: 'close' } : {}) });
     res.end(JSON.stringify({
       resourceType: 'OperationOutcome',
       issue: [{ severity: 'error', code: 'transient', details: { text }, diagnostics: text }]
@@ -428,6 +512,11 @@ function createLauncher(settings) {
     stopping = true;
     for (const p of procs) {
       clearTimeout(p.restartTimer);
+    }
+    // those still waiting haven't started: refuse them; drain only those in progress
+    for (const w of waiting.splice(0)) {
+      clearTimeout(w.timer);
+      fail(w.res, 503, 'The server is stopping; try again shortly');
     }
     if (server) {
       server.close();

@@ -111,6 +111,15 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 * proxies each request by the rules above, over keep-alive connections to each process. It
   adds the client address to `X-Forwarded-For`, so the servers' logs and rate limits see the
   real client (its own address is a loopback one, which `server.trustProxy` trusts by default)
+* sends each process at most `maxOutstanding` tx requests at once (16); the rest wait in the
+  launcher, oldest first, and one that has waited `queueSeconds` (3) is refused with 503 and
+  `Retry-After`. Without this, a surge queues inside the processes, where everything waits
+  behind everything else: a 4 ms `$lookup` waited 16 s in a 3x surge, and the first 503s came
+  after 29 s. A request with a cache-id waits for the process that issued it, which no other
+  can stand in for, so it waits longer: `ownerQueueSeconds` (30). The master's own pages and
+  paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) don't wait, and while
+  stopping nothing does. These refusals are the launcher's, logged at most once a minute; they
+  are not in the graphs' refusals
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
   2 s, 4 s ... up to a minute
 * on `SIGTERM` or `SIGINT`: stops taking connections, closes idle keep-alive connections,
@@ -134,6 +143,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
+| `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once. A process is one event loop, whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one: 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
+| `server.cluster.queueSeconds` | | 3 | How long a tx request may wait for a process before it gets 503. 0: 503 at once when no process has room. |
+| `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which waits for the process that issued it. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
