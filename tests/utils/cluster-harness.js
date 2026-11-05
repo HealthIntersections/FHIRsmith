@@ -39,11 +39,60 @@ const param = (body, name) => ((body && body.parameter) || []).find(p => p.name 
 const issueCodes = (r) => ((r.json && r.json.issue) || []).flatMap(i => ((i.details && i.details.coding) || []).map(c => c.code));
 const unknownCache = (r) => r.json && r.json.resourceType === 'OperationOutcome' && issueCodes(r).includes('cache-id-unknown');
 
-/** The pid of the process listening on a port (Linux: ss). */
+// How to find the pid listening on a port: ss on Linux, lsof on macOS (and most Unixes).
+// Each returns the pid, or null when nothing is listening.
+const PID_TOOLS = [
+  ['ss', (port) => {
+    const out = execFileSync('ss', ['-ltnpH', `sport = :${port}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const m = /pid=(\d+)/.exec(out);
+    return m ? Number(m[1]) : null;
+  }],
+  ['lsof', (port) => {
+    let out;
+    try {
+      out = execFileSync('lsof', [`-iTCP:${port}`, '-sTCP:LISTEN', '-P', '-n', '-t'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (error) {
+      if (error.status === 1) {
+        return null; // lsof found nothing
+      }
+      throw error;
+    }
+    const m = /^(\d+)/m.exec(out);
+    return m ? Number(m[1]) : null;
+  }]
+];
+let pidTool;
+
+/**
+ * The tool pidOn uses, or null if this machine has neither ss nor lsof (tests that need a
+ * process's pid then skip; see canFindPid).
+ */
+function findPidTool() {
+  if (pidTool === undefined) {
+    pidTool = null;
+    for (const [, lookup] of PID_TOOLS) {
+      try {
+        lookup(1);
+        pidTool = lookup;
+        break;
+      } catch {
+        // not installed (ENOENT), or it doesn't work this way here: try the next
+      }
+    }
+  }
+  return pidTool;
+}
+
+/** Whether pidOn can work here (ss or lsof is installed). */
+const canFindPid = () => findPidTool() !== null;
+
+/** The pid of the process listening on a port, or null if none is (needs canFindPid). */
 function pidOn(port) {
-  const out = execFileSync('ss', ['-ltnpH', `sport = :${port}`], { encoding: 'utf8' });
-  const m = /pid=(\d+)/.exec(out);
-  return m ? Number(m[1]) : null;
+  const lookup = findPidTool();
+  if (!lookup) {
+    throw new Error('Neither ss nor lsof is available to find the process listening on a port');
+  }
+  return lookup(port);
 }
 
 /**
@@ -158,4 +207,4 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {}, s
     get exited() { return exited; }, waitUp, upAt, stop, stopLauncher, restart };
 }
 
-module.exports = { startCluster, request, isUp, param, issueCodes, unknownCache, pidOn, sleep, ROOT };
+module.exports = { startCluster, request, isUp, param, issueCodes, unknownCache, pidOn, canFindPid, sleep, ROOT };

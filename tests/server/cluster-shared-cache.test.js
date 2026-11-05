@@ -8,7 +8,10 @@
  *  - an id no process issued is CACHE_ID_UNKNOWN_SHARED
  *  - a worker killed and restarted by the launcher still has the sessions
  */
-const { startCluster, request, param, unknownCache, pidOn, sleep, ROOT } = require('../utils/cluster-harness');
+const { startCluster, request, param, unknownCache, pidOn, canFindPid, sleep, ROOT } = require('../utils/cluster-harness');
+
+// killing one process needs its pid (ss on Linux, lsof on macOS); without either, those cases skip
+const withPid = canFindPid() ? test : test.skip;
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -93,7 +96,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     expect(text).not.toMatch(/reached the wrong server/);
   });
 
-  test('a worker that is killed and restarted still has the sessions, its own included', async () => {
+  withPid('a worker that is killed and restarted still has the sessions, its own included', async () => {
     const port = cluster.workers[0];
     const pid = pidOn(port);
     expect(pid).toBeGreaterThan(0);
@@ -114,7 +117,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     }
   }, 180000);
 
-  test('a master child restart preserves sessions issued by every process', async () => {
+  withPid('a master child restart preserves sessions issued by every process', async () => {
     const port = cluster.master;
     const pid = pidOn(port);
     process.kill(pid, 'SIGKILL');
