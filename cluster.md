@@ -17,6 +17,7 @@ or with nginx in front of separately started processes ([below](#with-nginx)).
 * [What runs where](#what-runs-where)
 * [Routing](#routing)
 * [The launcher (cluster.js)](#the-launcher-clusterjs)
+* [Graphs](#graphs)
 * [With nginx](#with-nginx)
 * [Options](#options)
 * [Memory](#memory)
@@ -142,6 +143,29 @@ ExecStart=/usr/bin/node cluster.js
 KillMode=mixed
 MemoryMax=16G
 ```
+
+## Graphs
+
+With the launcher, `/` and `/dashboard` show the master and every worker as labeled
+series on the existing charts. Color, marker and line pattern distinguish the processes,
+with one compact legend; styles repeat after five processes, while hover labels continue
+to identify each series. The dashboard still has three charts and fits the existing
+`utilities/dashboard.html` monitor layout. Home has six charts. These are each process's
+existing measurements; request rates and turnaround averages are not added together.
+With `sharedCache`, every process samples the same shared client-cache counts, so those
+lines can overlap.
+
+Samples keep their actual timestamps. A restarting process leaves a gap and retains its
+earlier history; a skipped sampling interval also leaves a gap. The legend reports
+starting, restarting, unavailable or no recent sample when applicable. History lives in
+the launcher for up to 24 hours, capped at 1,440 points per process (including gaps), so
+short custom statistics intervals can cover less than 24 hours. A launcher restart clears
+the graph history. Memory is the change in heap use since each process started, not its
+absolute heap size. The uptime and request totals above the graphs remain the master's.
+
+A standalone server, or roles started separately behind nginx, shows only its own graph
+data. Combining process histories requires the launcher's IPC connection; no separate
+metrics service or HTTP polling is used.
 
 ## With nginx
 

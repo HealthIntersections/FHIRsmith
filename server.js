@@ -94,6 +94,7 @@ const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
+const { connectMetrics, graphData } = require('./library/cluster-metrics');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -148,6 +149,16 @@ app.use(cors(config.server.cors));
 const modules = {};
 
 let stats = null;
+let disconnectMetrics = () => {};
+// The graphs on / and /dashboard. With a role, the cluster templates draw every process the
+// launcher reports (library/cluster-metrics.js); with none, main's templates, as before
+function metricsTemplate(page) {
+  if (!role) {
+    return [page, { historyJson: JSON.stringify(stats.history), startTime: stats.startTime }];
+  }
+  const label = `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
+  return [`cluster-${page}`, { metricsJson: graphData(stats, label) }];
+}
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
 // the daily report, emailed at midnight when "email" and "dailyReport.to" are configured - see library/daily-report.js
@@ -156,6 +167,9 @@ let dailyReport = null;
 // Initialize modules based on configuration
 async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
+  if (role) {
+    disconnectMetrics = connectMetrics(stats);
+  }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
   // Initialize SHL module
@@ -511,6 +525,9 @@ async function buildRootPageContent() {
   const avgReqPerMin = uptimeMinutesTotal > 0 ? (stats.requestCount / uptimeMinutesTotal).toFixed(1) : '0.0';
 
   content += '<table class="grid">';
+  if (role) {
+    content += `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${escape(config.modules.tx.instanceCode)}: uptime and request counts for this process</caption>`;
+  }
   content += '<tr>';
   content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
   content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
@@ -543,10 +560,7 @@ async function buildRootPageContent() {
     root: path.join(__dirname, 'tx', 'html'),
     extname: '.liquid'
   });
-  content += await liquid.renderFile('home-metrics', {
-    historyJson: JSON.stringify(stats.history),
-    startTime: stats.startTime
-  });
+  content += await liquid.renderFile(...metricsTemplate('home-metrics'));
   content += stats.taskDetails();
 
   content += '</div>';
@@ -686,6 +700,9 @@ app.get('/dashboard', async (req, res) => {
 
     let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
     content += '<table class="grid">';
+    if (role) {
+      content += `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${escape(config.modules.tx.instanceCode)}: uptime and request counts for this process</caption>`;
+    }
     content += '<tr>';
     content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
     content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
@@ -699,10 +716,7 @@ app.get('/dashboard', async (req, res) => {
       root: path.join(__dirname, 'tx', 'html'),
       extname: '.liquid'
     });
-    content += await liquid.renderFile('dash-metrics', {
-      historyJson: JSON.stringify(stats.history),
-      startTime: stats.startTime
-    });
+    content += await liquid.renderFile(...metricsTemplate('dash-metrics'));
     content += stats.taskDetails();
     if (npmAudit) {
       content += npmAudit.renderDashboard();
@@ -929,6 +943,7 @@ async function shutdown() {
     }
   }
   stats.finishStats();
+  disconnectMetrics();
   serverLog.info('Server shutdown complete');
   process.exit(0);
 }

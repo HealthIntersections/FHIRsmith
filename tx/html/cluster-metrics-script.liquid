@@ -1,0 +1,82 @@
+<style>
+  .server-metrics-row { display:flex; gap:12px; margin-bottom:8px; }
+  .server-metrics-chart { flex:1; min-width:0; }
+  .server-metrics-chart h6 { font-size:12px; margin:0 0 4px; }
+  .server-metrics-canvas { position:relative; height:200px; }
+  .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:0 0 12px; }
+  .server-metrics-key { display:inline-block; width:22px; text-align:center; margin-right:4px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script>
+(function() {
+  const metrics = {{ metricsJson }};
+  // Color, line pattern and marker all identify a process in the compact monitor view.
+  const styles = [
+    { color:'#174a7e', dash:[], point:'circle', symbol:'●' },
+    { color:'#387eb8', dash:[6,3], point:'rect', symbol:'■' },
+    { color:'#8254a3', dash:[2,3], point:'triangle', symbol:'▲' },
+    { color:'#a66a00', dash:[7,3,2,3], point:'rectRot', symbol:'◆' },
+    { color:'#555555', dash:[9,4], point:'star', symbol:'★' }
+  ];
+  const legend = document.getElementById('serverMetricsLegend');
+  metrics.series.forEach((series, i) => {
+    const style = styles[i % styles.length];
+    const item = document.createElement('span');
+    const key = document.createElement('span');
+    key.className = 'server-metrics-key';
+    key.style.color = style.color;
+    key.style.borderBottom = '2px ' + (style.dash.length ? 'dashed' : 'solid') + ' ' + style.color;
+    key.textContent = style.symbol;
+    item.appendChild(key);
+    item.appendChild(document.createTextNode(series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
+      (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
+    legend.appendChild(item);
+  });
+
+  const times = metrics.series.flatMap(series => series.history.map(point => point.time));
+  const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);
+  const earliest = times.length ? times.reduce((earliest, time) => Math.min(earliest, time), latest) : latest - 60000;
+  // Every chart uses the same numeric time axis. A late or missing sample remains
+  // at its actual time; array positions never align samples from different processes.
+  const minTime = earliest === latest ? earliest - 60000 : earliest;
+  function formatTime(time) {
+    return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
+      ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
+  }
+  function chart(id, field, unit, divisor = 1) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    new Chart(canvas, {
+      type:'line',
+      data:{ datasets:metrics.series.map((series, i) => {
+        const style = styles[i % styles.length];
+        return {
+          label:series.label,
+          data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null })),
+          borderColor:style.color, backgroundColor:style.color + '18', borderDash:style.dash,
+          pointStyle:style.point, pointBackgroundColor:style.color, pointRadius:2, borderWidth:1.5,
+          fill:!metrics.cluster, tension:0, spanGaps:false
+        };
+      }) },
+      options:{
+        responsive:true, maintainAspectRatio:false, animation:false,
+        scales:{
+          x:{ type:'linear', min:minTime, max:latest, ticks:{ maxTicksLimit:4, callback:formatTime, font:{ size:10 } } },
+          y:{ beginAtZero:true, ticks:{ font:{ size:10 } }, title:{ display:true, text:unit, font:{ size:10 } } }
+        },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ callbacks:{ title:items => items.length ? formatTime(items[0].parsed.x) : '' } }
+        }
+      }
+    });
+  }
+  chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
+  chart('tatChart', 'tat', 'ms');
+  chart('requestChart', 'rpm', 'req/min');
+  chart('clientCacheChart', 'clientConcepts', 'concepts');
+  // Separate mean and max scales keep a single long stall from flattening the mean.
+  chart('blockChart', 'block', 'ms');
+  chart('blockMaxChart', 'blockMax', 'ms');
+})();
+</script>

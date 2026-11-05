@@ -29,6 +29,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
@@ -178,9 +179,33 @@ function createLauncher(settings) {
     // request in progress is not affected
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
+  const metrics = new ClusterMetrics(procs);
   let server = null;
   let stopping = false;
   let onIdle = null;
+
+  // Only the master renders the public home/dashboard pages. Keep at most one
+  // snapshot in flight, coalescing changes if its IPC channel is backpressured.
+  function publishMetrics() {
+    const master = procs.find(p => p.role === 'master');
+    const child = master && master.child;
+    if (!child || !child.connected) return;
+    if (master.metricsSending === child) {
+      master.metricsDirty = true;
+      return;
+    }
+    master.metricsSending = child;
+    master.metricsDirty = false;
+    try {
+      child.send({ type: SNAPSHOT, ...metrics.snapshot() }, () => {
+        if (master.metricsSending !== child) return;
+        master.metricsSending = null;
+        if (master.metricsDirty && master.child === child && child.connected) publishMetrics();
+      });
+    } catch {
+      master.metricsSending = null;
+    }
+  }
 
   function totalOutstanding() {
     return procs.reduce((n, p) => n + p.outstanding, 0);
@@ -193,13 +218,28 @@ function createLauncher(settings) {
       }
       const [cmd, args] = command(proc);
       proc.startedAt = Date.now();
-      const child = spawn(cmd, args, { stdio: 'inherit', env: process.env });
+      metrics.state(proc.code, 'starting');
+      const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: process.env });
       proc.child = child;
+      child.on('message', message => {
+        if (proc.child === child && message && message.type === METRIC && metrics.record(proc.code, message)) {
+          publishMetrics();
+        }
+      });
+      child.on('disconnect', () => {
+        if (proc.child === child) {
+          metrics.state(proc.code, 'unavailable');
+          publishMetrics();
+        }
+      });
+      publishMetrics();
       let poll = null;
       child.on('exit', (code, signal) => {
         clearTimeout(poll);
         proc.ready = false;
         proc.child = null;
+        metrics.state(proc.code, stopping ? 'unavailable' : 'restarting');
+        publishMetrics();
         resolve(false);
         if (stopping) {
           return;
@@ -214,6 +254,8 @@ function createLauncher(settings) {
           res.resume();
           if (res.statusCode === 200 && proc.child === child) {
             proc.ready = true;
+            metrics.state(proc.code, 'ready');
+            publishMetrics();
             log(`${proc.name} (${proc.code}) ready on port ${proc.port}`);
             resolve(true);
           } else {
@@ -376,7 +418,7 @@ function createLauncher(settings) {
     log('stopped');
   }
 
-  return { start, stop, procs, get server() { return server; } };
+  return { start, stop, procs, metrics, get server() { return server; } };
 }
 
 async function main() {

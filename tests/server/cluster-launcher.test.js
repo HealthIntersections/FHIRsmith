@@ -193,6 +193,57 @@ describe('the launcher, with fake processes', () => {
     expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
   });
 
+  test('the master receives every process history, with a gap across a child restart', async () => {
+    launcher = createLauncher(settings(true));
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const tx1 = launcher.procs.find(p => p.code === 'tx1');
+    const old = tx1.child;
+    const before = (await get(PORT, '/metrics')).json;
+    expect(before.metrics.series.map(s => s.id)).toEqual(['m0', 'tx1', 'tx2']);
+    expect(before.metrics.series.every(s => s.history.length)).toBe(true);
+    const first = before.metrics.series[1].history[0];
+    old.kill('SIGKILL');
+    await until(() => !tx1.ready);
+    expect(launcher.metrics.snapshot().series[1].status).toBe('restarting');
+    await until(() => tx1.ready && tx1.child !== old);
+    old.emit('message', { type:'fhirsmith:metric', startedAt:Date.now(), intervalMs:100,
+      point:{ time:Date.now() + 10000, rpm:99999 } });
+    const after = (await get(PORT, '/metrics')).json;
+    expect(after.metrics.series[1].history).toContainEqual(first);
+    expect(after.metrics.series[1].history.some(p => p.rpm === null)).toBe(true);
+    expect(after.metrics.series[1].history.some(p => p.rpm === 99999)).toBe(false);
+    expect(after.metrics.series[1].restarts).toBe(1);
+    // Losing the observation channel does not remove the healthy request target.
+    tx1.child.disconnect();
+    await until(() => launcher.metrics.snapshot().series[1].status === 'unavailable');
+    expect(tx1.ready).toBe(true);
+    expect((await get(tx1.port, '/r4/metadata')).status).toBe(200);
+  });
+
+  test('coalesces backpressured snapshots and survives send failures', async () => {
+    launcher = createLauncher(settings(true));
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const master = launcher.procs[0];
+    await until(() => !master.metricsSending);
+    const originalSend = master.child.send;
+    const callbacks = [];
+    const send = master.child.send = jest.fn((message, callback) => { callbacks.push(callback); return false; });
+    await until(() => send.mock.calls.length === 1);
+    await sleep(350);
+    expect(send).toHaveBeenCalledTimes(1);
+    callbacks.shift()();
+    expect(send).toHaveBeenCalledTimes(2);
+    // A disconnected channel can throw; statistics must not crash the launcher.
+    send.mockImplementationOnce(() => { throw new Error('channel closed'); });
+    launcher.procs[1].child.emit('message', { type:'fhirsmith:metric', startedAt:Date.now(), intervalMs:100,
+      point:{ time:Date.now() + 10000, rpm:2 } });
+    expect(() => callbacks.shift()()).not.toThrow();
+    expect(send).toHaveBeenCalledTimes(3);
+    master.child.send = originalSend;
+  });
+
   test('stop drains: no new connections, the request in progress finishes, then the processes stop', async () => {
     launcher = createLauncher(settings(true));
     await launcher.start();

@@ -146,7 +146,11 @@ class ServerStats {
       // shows its current size.)
       const clientConcepts = this._sumCachingModules('clientConceptCount');
 
-      this.history.push({time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts});
+      const point = {time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts};
+      this.history.push(point);
+      if (this.onMetric) {
+        this.onMetric(point);
+      }
 
       this.eventLoopMonitor.reset();
       this.requestCountSnapshot = combinedCount;
