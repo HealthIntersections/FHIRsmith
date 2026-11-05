@@ -49,7 +49,8 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   expect(charts).toHaveLength(count);
   expect(html).toContain('Heap change since process start');
   for (const chart of charts) {
-    expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2']);
+    const total = chart.canvas === elements.get('requestChart') ? ['Total'] : [];
+    expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2', ...total]);
     expect(chart.data.datasets[1].data.map(d => d.x)).toEqual([now + 3000, now + 12000]);
     expect(chart.data.datasets[1].data[1].y).toBeNull();
     expect(chart.data.datasets[2].data).toEqual([]);
@@ -95,15 +96,32 @@ test('refusals are hatched over merged real intervals, with counts in the note a
   }
 });
 
-test('past eight processes, no style repeats: the rest are only in the note', async () => {
+test('requests per minute adds a Total, summing each sample interval across processes', async () => {
+  const minute = 60000;
+  const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now + 3 * minute, series:[
+    { label:'Master', status:'ready', intervalMs:minute, history:[point(now, 1), point(now + minute, 2), point(now + 2 * minute, 3)] },
+    { label:'Worker', status:'ready', intervalMs:minute, history:[point(now + 2000, 10), { time:now + minute + 2000, rpm:null },
+      point(now + 2 * minute + 2000, 30)] }
+  ] });
+  const rpm = charts.find(c => c.canvas === elements.get('requestChart'));
+  const total = rpm.data.datasets.find(d => d.label === 'Total');
+  expect(total.data).toEqual([{ x:now, y:11 }, { x:now + minute, y:2 }, { x:now + 2 * minute, y:33 }]);
+  expect(total.borderWidth).toBeGreaterThan(rpm.data.datasets[0].borderWidth);
+  expect(charts.filter(c => c.data.datasets.some(d => d.label === 'Total'))).toEqual([rpm]);
+  expect(legendText(elements)).toContain('Total');
+});
+
+test('past eight processes, no style repeats: the rest are only in the Total and the note', async () => {
   const series = Array.from({ length:11 }, (_v, i) => ({ label:'P' + i, status:'ready', intervalMs:600000, history:[point(now, 1)] }));
   const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now, series });
   for (const chart of charts) {
-    const processes = chart.data.datasets;
+    const processes = chart.data.datasets.filter(d => d.label !== 'Total');
     expect(processes).toHaveLength(8);
     for (const key of ['pointStyle', 'borderColor']) expect(new Set(processes.map(d => d[key])).size).toBe(8);
     expect(new Set(processes.map(d => JSON.stringify(d.borderDash))).size).toBe(8);
   }
+  const rpm = charts.find(c => c.canvas === elements.get('requestChart'));
+  expect(rpm.data.datasets.find(d => d.label === 'Total').data).toEqual([{ x:now, y:11 }]);
   expect(legendText(elements)).toContain('3 more workers are not drawn individually');
 });
 
