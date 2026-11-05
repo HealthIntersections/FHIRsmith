@@ -127,6 +127,61 @@ describe('server statistics', () => {
     expect(rows.every(r => r.interval_ms === 600000)).toBe(true);
   });
 
+  test('a worker\'s counts, merged on the master, are in its database and its daily report, once each', () => {
+    // a tx-worker: no database (library/role.js turns it off)
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    const workerTx = worker.forModule('tx');
+    for (let i = 0; i < 4; i++) {
+      workerTx.countRequest('$expand', 10, '/r4');
+    }
+    workerTx.countRequest('$lookup', 2, '/r4');
+
+    const master = newStats();
+    const masterTx = master.forModule('tx');
+    masterTx.countRequest('$expand', 5, '/r4');
+
+    const sent = worker.takeCounts();
+    expect(sent).toEqual(expect.arrayContaining([
+      { module: 'tx', endpoint: '/r4', operation: '$expand', count: 4, time: 40 },
+      { module: 'tx', endpoint: '/r4', operation: '$lookup', count: 1, time: 2 }
+    ]));
+    // taken: nothing is sent twice
+    expect(worker.takeCounts()).toEqual([]);
+    expect(master.mergeCounts(sent)).toBe(5);
+    // malformed rows are ignored
+    expect(master.mergeCounts([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: -1, time: 0 }, null, 'x'])).toBe(0);
+
+    // before any flush: the daily report's numbers already include the worker
+    const now = Date.now();
+    expect(masterTx.countsSince(0, now)).toMatchObject({ total: 6, operations: { '$expand': 5, '$lookup': 1 } });
+    // the master's own figures for its graphs are unchanged
+    expect(master.requestCount).toBe(1);
+
+    // written out with the master's next interval
+    expect(master.flushCounters(now, 600000)).toBe(2);
+    const rows = readRows();
+    expect(rows.find(r => r.operation === '$expand')).toMatchObject({ module: 'tx', count_delta: 5, time_delta: 45 });
+    expect(rows.find(r => r.operation === '$lookup')).toMatchObject({ module: 'tx', count_delta: 1 });
+    expect(masterTx.countsSince(0, now + 1)).toMatchObject({ total: 6, persisted: true });
+
+    // the tx module's paragraph of the daily report
+    const TXModule = require('../../tx/tx');
+    const paragraph = TXModule.prototype.dailyReport.call({ stats: masterTx }, { since: 0, now: now + 1 });
+    expect(paragraph).toContain('$expand 5');
+    expect(paragraph).toContain('$lookup 1');
+  });
+
+  test('counts a worker could not send are sent with the next lot', () => {
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    worker.forModule('tx').countRequest('$expand', 10, '/r4');
+    const lot = worker.takeCounts();
+    worker.forModule('tx').countRequest('$expand', 5, '/r4');
+    worker.restoreCounts(lot);
+    expect(worker.takeCounts()).toEqual([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: 2, time: 15 }]);
+  });
+
   test('only keys with traffic in the interval are written', () => {
     const stats = newStats();
     const tx = stats.forModule('tx');

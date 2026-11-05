@@ -175,6 +175,16 @@ short custom statistics intervals can cover less than 24 hours. A launcher resta
 the graph history. Memory is the change in heap use since each process started, not its
 absolute heap size. The uptime and request totals above the graphs remain the master's.
 
+### Request counts
+
+A tx-worker has no statistics database and sends no daily report. Under the launcher, each
+worker sends the requests it counted to the master every minute, and once more when it stops
+(the launcher stops the workers before the master). The master adds them to its own counts,
+so its statistics database (`databases/stats.db`) and the daily report count every process,
+each request once. A worker's requests reach the database with the master's next write, so
+a request can be counted up to a minute after it was served (at midnight, in the next day's
+report). The counts on the master's page are its own.
+
 A standalone server, or roles started separately behind nginx, shows only its own graph
 data. Combining process histories requires the launcher's IPC connection; no separate
 metrics service or HTTP polling is used.
@@ -312,8 +322,11 @@ use roughly N+1 times the memory of one server. Size the limit for that.
 * **Caches are per process** (unless [`sharedCache`](#options) is on). A `$cache-control`
   cache lives in the process that issued it; a restarted process loses its caches, and
   clients start new ones, as after any restart.
-* **Statistics are per process.** `/` and `/dashboard` show the master. The workers' request
-  counts are not in the statistics database.
+* **Without the launcher, statistics are per process.** The workers' graphs and request
+  counts reach the master over the launcher's IPC channels. With processes started by hand
+  behind nginx there are none: `/` and `/dashboard` on the master show only the master, and
+  the workers' requests are not in its statistics database or daily report. (Running
+  `cluster.js` behind nginx, as one upstream, keeps both.)
 * **Everything the master runs is a single point.** While the master restarts, `$closure`
   (unless [`sharedClosure`](#options) is on), the non-tx modules and the dashboard answer 503
   through the launcher; tx requests carry on.
