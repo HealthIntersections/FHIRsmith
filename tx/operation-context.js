@@ -1064,6 +1064,8 @@ class OperationContext {
     if (this.debugging) {
       return false;
     }
+    // a flag, so cheap: once the client has gone, stop at the next check, not the next yield
+    this.abandonIfClientGone(place);
 
     OperationContext._checkCounter++;
     if (OperationContext._checkCounter < CHECK_FREQUENCY) {
@@ -1092,7 +1094,10 @@ class OperationContext {
       const pct = Math.round(memoryGuard._state.abortFraction * 100);
       this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
       const error = new Issue("error", "too-costly", null, null,
-          `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${pct}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
+          `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${pct}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422).handleAsOO(422);
+      // the whole operation stops: as an OperationOutcome, not a validation's result, and a
+      // batch doesn't go on to its next entry
+      error.memoryAbort = true;
       error.diagnostics = this.diagnostics();
       throw error;
     }
@@ -1112,9 +1117,9 @@ class OperationContext {
 
   /**
    * Mark that the client for this operation disconnected before the response
-   * was sent. The operation is aborted at its next yield point - there is no
-   * one left to send the result to. (Wired up by the request middleware from
-   * the response 'close' event.)
+   * was sent. The operation is aborted at its next check (deadCheck,
+   * checkAndYield, waitFor) - there is no one left to send the result to.
+   * (Wired up by the request middleware from the response 'close' event.)
    */
   markClientGone() {
     this._clock.clientGone = true;
@@ -1147,14 +1152,7 @@ class OperationContext {
       const resumed = performance.now();
       this._clock.sliceStart = resumed;
       this._clock.lastYield = resumed;
-      if (this._clock.clientGone) {
-        this.log(`Operation abandoned @ ${place}: client disconnected`);
-        const error = new Issue("error", "too-costly", null, null,
-            `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
-        error.abandoned = true;
-        error.diagnostics = this.diagnostics();
-        throw error;
-      }
+      this.abandonIfClientGone(place);
     }
   }
 
@@ -1180,15 +1178,25 @@ class OperationContext {
       this._clock.sliceStart = resumed;
       this._clock.lastYield = resumed;
     }
+    this.abandonIfClientGone(place);
+    return result;
+  }
+
+  /**
+   * Throw (422, abandoned) if the client has disconnected (markClientGone). The error is
+   * handled as an OperationOutcome (Issue.handleAsOO), so a validation doesn't report it as
+   * its result, and a batch stops at it rather than carry on with the next entry.
+   * @param {string} place - Location identifier for debugging
+   */
+  abandonIfClientGone(place) {
     if (this._clock.clientGone) {
       this.log(`Operation abandoned @ ${place}: client disconnected`);
       const error = new Issue("error", "too-costly", null, null,
-          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
+          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422).handleAsOO(422);
       error.abandoned = true;
       error.diagnostics = this.diagnostics();
       throw error;
     }
-    return result;
   }
 
   unSeeAll() {

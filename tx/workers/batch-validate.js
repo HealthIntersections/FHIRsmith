@@ -135,6 +135,9 @@ class BatchValidateWorker extends TerminologyWorker {
           const entryContext = this.opContext.copyWithOwnProviders();
           let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
+            // a turn for the rest of the event loop between entries (small ones never yield
+            // otherwise), so a disconnect is seen, and the batch stops
+            await this.opContext.checkAndYield('batch-validate');
             let p;
             if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
               p = await worker.handleValueSetInner(op.jsonObj);
@@ -143,6 +146,10 @@ class BatchValidateWorker extends TerminologyWorker {
             }
             output.push({name: "validation", resource : p});
           } catch (error) {
+            // the client has gone, or memory is short: the whole batch stops, not this entry
+            if (error.abandoned || error.memoryAbort) {
+              throw error;
+            }
             this.log.error(error);
             debugLog(error);
             if (error instanceof Issue) {
