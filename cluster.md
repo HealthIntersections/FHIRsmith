@@ -116,6 +116,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 * on `SIGTERM` or `SIGINT`: stops taking connections, closes idle keep-alive connections,
   waits for the requests in progress (up to `drainSeconds`), then sends each process
   `SIGTERM` (each shuts down as a single server does; `SIGKILL` after 30 seconds), and exits
+* if the launcher itself dies (even by `SIGKILL`), each process it started sees its IPC channel
+  close and shuts down, so none is left holding its port against the next launcher. A
+  process started by hand has no channel, and this doesn't apply to it
 
 ```json
 "server": {

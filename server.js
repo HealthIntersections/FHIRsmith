@@ -961,6 +961,15 @@ async function shutdown() {
 }
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
+// Started by the launcher (cluster.js, an IPC channel): when the launcher goes, even
+// SIGKILLed, so does this process, rather than hold its port against the next launcher's
+// workers. With no one left to SIGKILL a shutdown that hangs, exit after 30 s regardless
+if (role && process.connected) {
+  process.once('disconnect', () => {
+    setTimeout(() => process.exit(1), 30000).unref();
+    void shutdown();
+  });
+}
 
 async function serveFhirsmithHome(req, res) {
   // Check if client wants HTML response
