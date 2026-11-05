@@ -16,9 +16,10 @@
  * A master and its tx-workers (--role, cluster.md) share one cgroup, and the kernel's limit is
  * on all of them together, so with a role (config.server.memory.group) the measure is the
  * group's: the cgroup's private memory (memory.stat anon), read by each process itself. Every
- * process refuses new requests above rejectFraction; above abortFraction only the largest
- * process in the cgroup aborts its operations, so one heavy request doesn't abort the work of
- * every other process. This needs a cgroup with a limit of its own (MemoryMax on the unit or
+ * process refuses new requests above rejectFraction; above abortFraction every process aborts
+ * the operations it has running. Not only the largest: a process's size doesn't say whether it
+ * is busy, and a large idle one (the master, say) would leave a worker's runaway $expand to the
+ * kernel's OOM killer. This needs a cgroup with a limit of its own (MemoryMax on the unit or
  * scope, a container limit); without one each process measures its own RSS, as one does.
  *
  * @module library/memory-guard
@@ -214,9 +215,6 @@ function overAbortThreshold(place = 'unknown') {
   if (r <= state.abortAt) {
     return 0;
   }
-  if (state.group && !largestInGroup()) {
-    return 0;
-  }
   aborts++;
   const now = Date.now();
   if (now - lastAbortLog > 60000) {
@@ -233,36 +231,13 @@ function overAbortThreshold(place = 'unknown') {
   return r;
 }
 
-let largest = { time: 0, value: false };
-
-/**
- * A role: is this the process in the cgroup with the most RSS? (Looked at for at most
- * GROUP_SAMPLE_MS.) It is the one most likely to hold what took the group over, and the one
- * where aborting frees most.
- */
-function largestInGroup() {
-  const now = Date.now();
-  if (now - largest.time > GROUP_SAMPLE_MS) {
-    // Mapped pages are shared and reclaimable; compare the private part consistently.
-    const own = ownRss();
-    let value = true;
-    for (const [pid, bytes] of readCgroupProcessRss(state.group, { excludeFileBacked: state.excludeFileBacked })) {
-      if (pid !== process.pid && bytes > own) {
-        value = false;
-      }
-    }
-    largest = { time: now, value };
-  }
-  return largest.value;
-}
-
 function gb(bytes) {
   return (bytes / 1024 / 1024 / 1024).toFixed(1);
 }
 
 function describe() {
   const group = !state.groupWanted ? '' : state.group
-    ? `, for the whole cgroup ${state.group.dir} (its private memory; only its largest process aborts)`
+    ? `, for the whole cgroup ${state.group.dir} (its private memory)`
     : ', measured as this process\'s RSS (no cgroup limit of the service\'s own to measure as a group)';
   return `Memory limit: ${gb(state.limit)} GB (from ${state.source})${group}; ` +
     (state.excludeFileBacked && !state.group ? 'measured as RSS less file-backed pages; ' : '') +
@@ -376,4 +351,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, largestInGroup, _state: state };
+module.exports = { configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };

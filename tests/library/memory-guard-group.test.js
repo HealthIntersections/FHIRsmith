@@ -1,6 +1,6 @@
 /**
  * The memory guard with a role (master, tx-worker): the measure is the cgroup's private
- * memory (memory.stat anon), and only the largest process in the cgroup aborts.
+ * memory (memory.stat anon), and over the abort threshold every process aborts its operations.
  * A fake cgroup directory stands in for /sys/fs/cgroup/<service>.
  */
 const fs = require('fs');
@@ -54,17 +54,26 @@ describe('memory-guard, a group of processes in one cgroup', () => {
     expect(memoryGuard.shouldReject()).toBe(false);
   });
 
-  test('over the abort threshold, only the largest process aborts', () => {
-    writeCgroup(Math.round(9.5 * GB), [process.pid, other.pid]);
-    configure();
-    // smaller than the other process: its operations carry on
-    rssSpy.mockReturnValue(1024 * 1024);
-    expect(memoryGuard.overAbortThreshold('test')).toBe(0);
-    // the largest: it aborts (the answer is kept for 100 ms)
-    rssSpy.mockReturnValue(5 * GB);
-    return new Promise(resolve => setTimeout(resolve, 150)).then(() => {
-      expect(memoryGuard.overAbortThreshold('test')).toBeGreaterThan(9 * GB);
+  test('over the abort threshold, a small process aborts its operations though a larger one is idle', () => {
+    // the failure this guards against: a large idle master, and a worker's runaway $expand
+    // taking the group over. The worker must abort, or the kernel's OOM killer acts
+    const realRead = fs.readFileSync;
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
+      if (file === `/proc/${other.pid}/status`) return `VmRSS:\t${6 * 1024 * 1024} kB\nRssFile:\t0 kB\n`;
+      return realRead(file, ...rest);
     });
+    try {
+      writeCgroup(Math.round(9.5 * GB), [process.pid, other.pid]);
+      configure();
+      rssSpy.mockReturnValue(3 * GB);
+      expect(memoryGuard.overAbortThreshold('test')).toBeGreaterThan(9 * GB);
+      // under the threshold, nothing aborts
+      writeCgroup(Math.round(8.5 * GB), [process.pid, other.pid]);
+      memoryGuard._state.sampleTime = 0;
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+    } finally {
+      readSpy.mockRestore();
+    }
   });
 
   test('without a cgroup of its own, each process measures its own RSS', () => {
@@ -73,41 +82,6 @@ describe('memory-guard, a group of processes in one cgroup', () => {
     expect(memoryGuard.describe()).toMatch(/measured as this process's RSS/);
     rssSpy.mockReturnValue(1024 * 1024);
     expect(memoryGuard.shouldReject()).toBe(false);
-  });
-
-  (process.platform === 'linux' ? test : test.skip)('with mapped files, only the process with the largest private RSS aborts', () => {
-    const realRead = fs.readFileSync;
-    let ownFileGB = 4;
-    let otherRssGB = 12;
-    let otherFileGB = 11;
-    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
-      if (file === '/proc/self/status') return `RssFile:\t${ownFileGB * 1024 * 1024} kB\n`;
-      if (file === `/proc/${other.pid}/status`) {
-        return `VmRSS:\t${otherRssGB * 1024 * 1024} kB\nRssFile:\t${otherFileGB * 1024 * 1024} kB\n`;
-      }
-      return realRead(file, ...rest);
-    });
-    let now = Date.now() + 1000;
-    const timeSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
-    try {
-      writeCgroup(9.5 * GB, [process.pid, other.pid]);
-      configure();
-      memoryGuard.measureExcludingFileBacked();
-      rssSpy.mockReturnValue(6 * GB); // 2 GB private versus the other's 1 GB.
-      expect(memoryGuard.shouldReject()).toBe(true); // The group remains over its threshold.
-      expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
-
-      now += 1000;
-      ownFileGB = 10;
-      otherRssGB = 6;
-      otherFileGB = 3;
-      rssSpy.mockReturnValue(11 * GB); // 1 GB private versus the other's 3 GB.
-      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
-    } finally {
-      memoryGuard._state.excludeFileBacked = false;
-      timeSpy.mockRestore();
-      readSpy.mockRestore();
-    }
   });
 
   test('no role: no group, and the describe text is as it was', () => {

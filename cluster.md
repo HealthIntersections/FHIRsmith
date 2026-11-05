@@ -304,9 +304,10 @@ it when it needs the room.
 
 * Above `server.memory.rejectFraction` (85%) of the limit, **every** process refuses new
   requests with 503 and `Retry-After`.
-* Above `abortFraction` (92%), only the process with the **largest RSS** in the cgroup aborts
-  its operations (422 too-costly). It is the one most likely to hold what took the group over,
-  and aborting there frees the most; the others carry on.
+* Above `abortFraction` (92%), **every** process aborts the operations it has running (422
+  too-costly); a process with none running carries on. Not only the largest: a process's size
+  doesn't say whether it is busy, and a large idle master would otherwise leave a worker's
+  runaway `$expand` to the kernel's OOM killer, which would likely kill the master.
 
 This needs the limit on the processes' own cgroup: `MemoryMax` on the unit that runs
 `cluster.js`, or a container limit. If the limit is only on an enclosing slice, or there is

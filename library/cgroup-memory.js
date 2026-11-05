@@ -178,10 +178,9 @@ function readCgroupAnon(cg) {
  * The RSS of each process in a cgroup, from /proc/<pid>/status. Processes that have gone,
  * or can't be read, are left out.
  * @param {{dir: string}} cg - from ownCgroupDir
- * @param {{excludeFileBacked?: boolean}} [options] - exclude each process's RssFile
  * @returns {Map<number, number>} pid -> bytes
  */
-function readCgroupProcessRss(cg, options = {}) {
+function readCgroupProcessRss(cg) {
   const result = new Map();
   let pids;
   try {
@@ -194,8 +193,7 @@ function readCgroupProcessRss(cg, options = {}) {
       const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
       const m = /^VmRSS:\s+(\d+) kB/m.exec(status);
       if (m) {
-        const file = options.excludeFileBacked ? /^RssFile:\s+(\d+) kB/m.exec(status) : null;
-        result.set(pid, (Number(m[1]) - (file ? Number(file[1]) : 0)) * 1024);
+        result.set(pid, Number(m[1]) * 1024);
       }
     } catch {
       // gone
