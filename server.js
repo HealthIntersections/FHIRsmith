@@ -119,7 +119,8 @@ const PORT = (role && role.port) || process.env.PORT || config.server.port || 30
 // Middleware
 // Refuse new requests (503) while memory is near the limit - first, so a refused request
 // doesn't even have its body parsed. /dashboard stays reachable so the state can be seen.
-app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'] }));
+app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'],
+  onReject: role ? () => stats?.countRefusedRequest() : undefined }));
 // The body parsers, for every module but those that read their own bodies with their own
 // limits and checks (the ips module: a document is read only once its submitter's token has
 // been checked, and no bigger than the module's maxSize)

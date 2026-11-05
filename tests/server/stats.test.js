@@ -63,6 +63,37 @@ describe('server statistics', () => {
     }
   });
 
+  test('graph samples record their interval and keep refusals out of work and latency counts', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      // under the launcher (with no launcher, the samples are main's: no interval or refusals)
+      const sent = [];
+      stats.onMetric = point => sent.push(point);
+      stats.markStarted();
+      stats.countRequest('$expand', 10);
+      stats.countRequest('$expand', 30);
+      for (let i = 0; i < 3; i++) stats.countRefusedRequest();
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 2000, refused:3, rpm:60, tat:20 });
+      for (let i = 0; i < 4; i++) stats.countRequest('$lookup', 10);
+      now += 4000; // The next nominal two-second sample is delayed by a stall.
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 4000, refused:0, tat:10 });
+      expect(stats.requestCount).toBe(6);
+      expect(stats.refusedCount).toBe(3);
+      expect(sent).toHaveLength(3);
+      stats.onMetric = null;
+      now += 2000;
+      stats.recordMetrics();
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['block', 'blockMax', 'clientConcepts', 'mem', 'rpm', 'tat', 'time']);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test('counts are attributed by module, endpoint and operation', () => {
     const stats = newStats();
     const tx = stats.forModule('tx');

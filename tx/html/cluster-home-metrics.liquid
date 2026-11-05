@@ -1,3 +1,11 @@
+<div id="serverMetricsView" class="server-metrics-view" hidden>
+  <span>View:</span>
+  <button type="button" id="metricsPerProcess">By process</button>
+  <button type="button" id="metricsOverlay">Overlay</button>
+  <span id="serverMetricsViewHint"></span>
+</div>
+<div id="serverMetricsLegend" class="server-metrics-legend" aria-label="Highlight a process"></div>
+<div id="serverMetricsShedding" class="server-metrics-shedding" hidden></div>
 <div class="server-metrics-row">
   <div class="server-metrics-chart">
     <h6>Heap change since process start</h6>
@@ -26,5 +34,4 @@
     <div class="server-metrics-canvas"><canvas id="blockMaxChart" aria-label="Node Blocking (max)"></canvas></div>
   </div>
 </div>
-<div id="serverMetricsLegend" class="server-metrics-legend" aria-label="Graph processes"></div>
 {% render 'cluster-metrics-script', metricsJson: metricsJson %}
