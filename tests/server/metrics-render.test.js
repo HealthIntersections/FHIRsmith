@@ -12,7 +12,16 @@ const makeElement = () => ({ children:[], style:{}, attributes:{}, listeners:{},
   addEventListener(name, callback) { this.listeners[name] = callback; }
 });
 
-async function render(template, metrics, view = 'overlay') {
+const legendText = elements => elements.get('serverMetricsLegend').children
+  .flatMap(e => e.children || [e]).map(e => e.text || '').join(' ');
+const hatchCalls = (chart, pixel) => {
+  const calls = [];
+  const ctx = new Proxy({}, { get:(_t, name) => (...args) => calls.push([name, ...args]) });
+  chart.plugins[0].beforeDraw({ ctx, chartArea:{left:0,right:20,top:0,bottom:100}, scales:{x:{getPixelForValue:pixel}} });
+  return calls;
+};
+
+async function render(template, metrics) {
   const html = await liquid.renderFile(template, { metricsJson:JSON.stringify(metrics),
     historyJson:JSON.stringify(metrics.series[0]?.history || []), startTime:now });
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], makeElement()]));
@@ -20,7 +29,6 @@ async function render(template, metrics, view = 'overlay') {
   const charts = [];
   const context = vm.createContext({
     document:{ getElementById:id => elements.get(id), createElement:makeElement, createTextNode:text => ({ text }) },
-    location:{search:'?chartView=' + view},
     Chart:function(canvas, options) {
       Object.assign(this, { canvas, ...options });
       this.update = () => {}; this.destroy = () => {};
@@ -47,9 +55,9 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
     expect(chart.data.datasets[2].data).toEqual([]);
     expect(chart.options.scales.x).toMatchObject({ type:'linear', min:now, max:now + 20000 });
     expect(chart.data.datasets.every(d => d.fill === false && d.spanGaps === false)).toBe(true);
-    expect(new Set(chart.data.datasets.map(d => d.pointStyle)).size).toBe(3);
+    expect(new Set(chart.data.datasets.slice(0, 3).map(d => d.pointStyle)).size).toBe(3);
   }
-  const legend = elements.get('serverMetricsLegend').children.flatMap(e => e.children).map(e => e.text || '').join(' ');
+  const legend = legendText(elements);
   expect(legend).toContain('Worker tx1 · restarting · 1 restart');
   expect(legend).toContain('Worker tx2 · starting');
 });
@@ -64,7 +72,7 @@ test('one series alone is drawn as one labeled filled series', async () => {
   }
 });
 
-test('refusal annotations merge real overlapping intervals without adding process lines or shading recovery', async () => {
+test('refusals are hatched over merged real intervals, with counts in the note and tooltip', async () => {
   const { charts, elements } = await render('cluster-home-metrics', { cluster:true, sampledAt:now + 20000, series:[
     { label:'Master', status:'ready', history:[
       { ...point(now + 5000, 100), intervalStart:now, refused:7 },
@@ -78,51 +86,25 @@ test('refusal annotations merge real overlapping intervals without adding proces
   expect(elements.get('serverMetricsShedding').textContent).toContain('18 memory-pressure 503 refusals');
   expect(elements.get('serverMetricsShedding').hidden).toBe(false);
   for (const chart of charts) {
-    expect(chart.data.datasets).toHaveLength(2);
-    const fills = [];
-    const ctx = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, fillRect(...args) { fills.push(args); } };
-    chart.plugins[0].beforeDraw({ ctx, chartArea:{left:0,right:20,top:0,bottom:100}, scales:{x:{getPixelForValue:t => (t - now) / 1000}} });
-    expect(fills).toEqual([[0, 0, 7, 100], [0, 0, 7, 2]]);
+    const calls = hatchCalls(chart, t => (t - now) / 1000);
+    expect(calls.filter(c => c[0] === 'rect')).toEqual([['rect', 0, 0, 7, 100]]);
+    expect(calls.filter(c => c[0] === 'stroke')).toHaveLength(1); // the hatching, not a red fill
+    expect(calls.filter(c => c[0] === 'fillRect')).toEqual([['fillRect', 0, 0, 7, 2]]);
     expect(chart.options.plugins.tooltip.callbacks.afterLabel({raw:{refused:11}})).toContain('11 in this sample');
     expect(chart.options.plugins.tooltip.callbacks.afterLabel({raw:{refused:null}})).toBe('');
   }
 });
 
-test('process rows use shared time and value scales, with only the row process refusal intervals', async () => {
-  const metrics = { cluster:true, sampledAt:now + 20000, series:[
-    { label:'Master', status:'ready', history:[{ ...point(now + 5000, 20), intervalStart:now, refused:2 }] },
-    { label:'Worker', status:'ready', history:[{ ...point(now + 10000, 2000), intervalStart:now + 5000, refused:0 }] }
-  ] };
-  const { charts } = await render('cluster-dash-metrics', metrics, 'process');
-  expect(charts).toHaveLength(6);
-  for (let i = 0; i < charts.length; i += 2) {
-    expect(charts[i].data.datasets).toHaveLength(1);
-    expect(charts[i + 1].data.datasets).toHaveLength(1);
-    expect(charts[i].options.scales.y.min).toBe(charts[i + 1].options.scales.y.min);
-    expect(charts[i].options.scales.y.max).toBe(charts[i + 1].options.scales.y.max);
-    expect(charts[i].options.scales.x.min).toBe(charts[i + 1].options.scales.x.min);
-    const fills = [];
-    const ctx = { save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, fillRect(...args) { fills.push(args); } };
-    charts[i + 1].plugins[0].beforeDraw({ ctx, chartArea:{left:0,right:20,top:0,bottom:100}, scales:{x:{getPixelForValue:t => t}} });
-    expect(fills).toEqual([]); // This worker did not refuse requests.
-  }
-});
-
-test('selecting a process highlights it across overlay charts without hiding data', async () => {
-  const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now, series:[
-    { label:'Master', status:'ready', history:[point(now, 1)] },
-    { label:'Worker', status:'ready', history:[point(now, 100)] }
-  ] });
-  const legend = elements.get('serverMetricsLegend');
-  legend.children[2].listeners.click();
+test('past eight processes, no style repeats: the rest are only in the note', async () => {
+  const series = Array.from({ length:11 }, (_v, i) => ({ label:'P' + i, status:'ready', intervalMs:600000, history:[point(now, 1)] }));
+  const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now, series });
   for (const chart of charts) {
-    expect(chart.data.datasets[0].borderColor).toBe('#174a7e28');
-    expect(chart.data.datasets[0].pointRadius).toBe(0);
-    expect(chart.data.datasets[1].borderWidth).toBe(2.4);
-    expect(chart.data.datasets.map(d => d.data[0].y)).not.toContain(null);
+    const processes = chart.data.datasets;
+    expect(processes).toHaveLength(8);
+    for (const key of ['pointStyle', 'borderColor']) expect(new Set(processes.map(d => d[key])).size).toBe(8);
+    expect(new Set(processes.map(d => JSON.stringify(d.borderDash))).size).toBe(8);
   }
-  legend.children[0].listeners.click();
-  expect(charts[0].data.datasets[0].borderColor).toBe('#174a7e');
+  expect(legendText(elements)).toContain('3 more workers are not drawn individually');
 });
 
 test('an empty cluster snapshot still renders without an invented process', async () => {
