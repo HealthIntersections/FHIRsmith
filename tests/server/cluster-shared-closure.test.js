@@ -27,7 +27,6 @@ const SYS = 'http://example.org/closure-contention/cs';
 
 // a ternary tree of 40 concepts: c0 is the root, the parent of ci is c((i-1)/3)
 const N = 40;
-const parentOf = (i) => (i === 0 ? null : Math.floor((i - 1) / 3));
 function tree(i) {
   const kids = [];
   for (let j = 3 * i + 1; j <= 3 * i + 3 && j < N; j++) {

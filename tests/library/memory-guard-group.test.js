@@ -75,6 +75,41 @@ describe('memory-guard, a group of processes in one cgroup', () => {
     expect(memoryGuard.shouldReject()).toBe(false);
   });
 
+  (process.platform === 'linux' ? test : test.skip)('with mapped files, only the process with the largest private RSS aborts', () => {
+    const realRead = fs.readFileSync;
+    let ownFileGB = 4;
+    let otherRssGB = 12;
+    let otherFileGB = 11;
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementation((file, ...rest) => {
+      if (file === '/proc/self/status') return `RssFile:\t${ownFileGB * 1024 * 1024} kB\n`;
+      if (file === `/proc/${other.pid}/status`) {
+        return `VmRSS:\t${otherRssGB * 1024 * 1024} kB\nRssFile:\t${otherFileGB * 1024 * 1024} kB\n`;
+      }
+      return realRead(file, ...rest);
+    });
+    let now = Date.now() + 1000;
+    const timeSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      writeCgroup(9.5 * GB, [process.pid, other.pid]);
+      configure();
+      memoryGuard.measureExcludingFileBacked();
+      rssSpy.mockReturnValue(6 * GB); // 2 GB private versus the other's 1 GB.
+      expect(memoryGuard.shouldReject()).toBe(true); // The group remains over its threshold.
+      expect(memoryGuard.overAbortThreshold('test')).toBe(9.5 * GB);
+
+      now += 1000;
+      ownFileGB = 10;
+      otherRssGB = 6;
+      otherFileGB = 3;
+      rssSpy.mockReturnValue(11 * GB); // 1 GB private versus the other's 3 GB.
+      expect(memoryGuard.overAbortThreshold('test')).toBe(0);
+    } finally {
+      memoryGuard._state.excludeFileBacked = false;
+      timeSpy.mockRestore();
+      readSpy.mockRestore();
+    }
+  });
+
   test('no role: no group, and the describe text is as it was', () => {
     memoryGuard.configure({ limit: 10 * GB });
     expect(memoryGuard._state.group).toBeNull();
