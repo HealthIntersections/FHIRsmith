@@ -309,6 +309,67 @@ describe('VSAC recently used value sets', () => {
     expect(loads.length).toBe(2);
   });
 
+  // holds each read of the database, once the row is read, until released
+  function holdReads(p) {
+    const loadValueSet = p.database.loadValueSet;
+    const held = new Map(); // id -> { read, release }
+    p.database.loadValueSet = async (id, source) => {
+      const vs = await loadValueSet(id, source);
+      let release;
+      const released = new Promise(resolve => { release = resolve; });
+      held.get(id).read(release);
+      await released;
+      return vs;
+    };
+    return {
+      // resolves with a release function once the read of id is under way and its row read
+      read(id) {
+        return new Promise(resolve => held.set(id, { read: resolve }));
+      },
+      restore() {
+        p.database.loadValueSet = loadValueSet;
+      }
+    };
+  }
+
+  test('two overlapping reads of different value sets are both kept, whichever finishes first', async () => {
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL2, '20200101')]);
+    const hold = holdReads(provider);
+    const slowRead = hold.read('2.16.840.1.113883.3.1-20240101');
+    const fastRead = hold.read('2.16.840.1.113883.3.2-20200101');
+    const slow = provider.fetchValueSet(URL1);
+    const fast = provider.fetchValueSet(URL2);
+    const releaseSlow = await slowRead;
+    const releaseFast = await fastRead;
+    releaseFast(); // the one that started second finishes first, and is kept ...
+    const fastVs = await fast;
+    releaseSlow(); // ... which doesn't stop the slower one being kept too
+    const slowVs = await slow;
+    hold.restore();
+    expect(provider._recentValueSets().size).toBe(2);
+    expect(await provider.fetchValueSet(URL1)).toBe(slowVs);
+    expect(await provider.fetchValueSet(URL2)).toBe(fastVs);
+    expect(loads.length).toBe(2);
+  });
+
+  test('a read under way when the sync writes that row is not kept, and the next fetch reads the new content', async () => {
+    const v1 = vs(URL1, '20240101');
+    provider = await makeProvider([v1]);
+    const hold = holdReads(provider);
+    const reading = hold.read(v1.id);
+    const read = provider.fetchValueSet(URL1);
+    const release = await reading; // the old row has been read ...
+    hold.restore();
+    await provider.batchUpsertValueSets([{ ...v1, title: 'New title' }]); // ... and the sync writes the new one
+    release();
+    expect((await read).jsonObj.title).toBe('Test 2.16.840.1.113883.3.1 20240101');
+    expect(provider._recentValueSets().size).toBe(0);
+    const after = await provider.fetchValueSet(URL1);
+    expect(after.jsonObj.title).toBe('New title');
+    expect(await provider.fetchValueSet(URL1)).toBe(after);
+    expect(loads.length).toBe(2);
+  });
+
   test('once the stored JSON kept is over the limit, the least recently used is dropped', async () => {
     const urls = [URL1, URL2, 'http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113883.3.3'];
     const sets = urls.map(u => vs(u, '20240101'));

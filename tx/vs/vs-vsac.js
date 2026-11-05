@@ -34,7 +34,9 @@ class RecentValueSets {
     this.maxBytes = maxBytes;
     this.entries = new Map(); // id -> { vs, bytes }, least recently used first
     this.bytes = 0;
-    // changes whenever anything is dropped, so a read that started before is not kept (see _readValueSet)
+    // changes whenever the sync drops anything (delete, deleteUrl, clear), so a read that started
+    // before is not kept (see _readValueSet). Keeping a value set or dropping one to make room
+    // doesn't change it: reads of other value sets under way at the same time are still kept.
     this.generation = 0;
   }
 
@@ -60,7 +62,7 @@ class RecentValueSets {
   }
 
   set(id, vs, bytes) {
-    this.delete(id);
+    this._drop(id);
     if (!(bytes >= 0) || bytes > this.maxBytes) {
       return;
     }
@@ -91,6 +93,7 @@ class RecentValueSets {
     this.bytes = 0;
   }
 
+  /** Removes a row without changing the generation: what the sync drops goes through delete */
   _drop(id) {
     const entry = this.entries.get(id);
     if (entry) {

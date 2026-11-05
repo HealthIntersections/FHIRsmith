@@ -27,7 +27,7 @@ function fullProvider(list) {
 function deferredProvider(list, reads, rejected = new Set()) {
   return {
     sourcePackage: () => 'deferred',
-    searchValueSets: async (params, elements) => list.map(vs => {
+    searchValueSets: async () => list.map(vs => {
       const match = { resourceType: 'ValueSet', id: vs.id, url: vs.url, version: vs.version, date: vs.date, name: vs.name };
       Object.defineProperty(match, 'load', {
         value: async () => {
