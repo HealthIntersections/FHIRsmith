@@ -86,8 +86,15 @@ describe('VSAC value sets, master and worker', () => {
       await sleep(50);
     }
     expect(seen).toBe('20250101');
+    // with value sets read on demand (#333) the new row is seen at once, before the catch-up
+    // (which then clears the recently used ones): wait for the catch-up itself, on use
+    let after = await b.call('counts');
+    while (Date.now() - t0 < 5000 && after.loaded !== 2) {
+      await b.call('fetch', { url, version: '20250101' });
+      await sleep(50);
+      after = await b.call('counts');
+    }
     expect(Date.now() - t0).toBeLessThan(2500);
-    const after = await b.call('counts');
     expect(after.loaded).toBe(2);
     expect(after.reloads - before.reloads).toBe(1);
 

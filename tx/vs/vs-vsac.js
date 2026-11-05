@@ -113,7 +113,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     if (this.cluster === 'follower') {
       // the master creates the database and syncs; this process only reads
       if (await this.database.exists()) {
-        await this._reloadMap();
+        await this._followDatabase();
       }
       this.initialized = true;
       return;
@@ -564,9 +564,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @private
    */
   async _reloadMap() {
-    // the generation before the list: a sync finishing meanwhile makes the next check load
-    // again, never the reverse
-    const generation = this.cluster ? await this.database.getGeneration() : null;
     const newMap = await this.database.loadAllValueSets(this.sourcePackage());
     for (const vs of newMap.values()) {
       if (vs.jsonObj.compose) {
@@ -587,16 +584,43 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
     // Atomic replacement of the map
     this.valueSetMap = newMap;
-    if (this.cluster) {
-      this.loadedGeneration = generation;
+  }
+
+  /**
+   * A follower (cluster.md): bring what this process holds up to date with the database,
+   * and remember the generation it is now at. The generation is read first: a sync that
+   * finishes meanwhile makes the next check load again, never the reverse.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _followDatabase() {
+    const generation = await this.database.getGeneration();
+    await this._refreshFromDatabase();
+    this.loadedGeneration = generation;
+  }
+
+  /**
+   * What a follower does when the master's sync has moved the database on. With the whole
+   * list held in memory (main), reload it. With value sets read on demand (#333), drop the
+   * recently used ones, which may be older than the database now, and recount; nothing
+   * else is held. (Once #333 is in, only its branch is needed.)
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _refreshFromDatabase() {
+    if (typeof this._recount === 'function' && typeof this._recentValueSets === 'function') {
+      this._recentValueSets().clear();
+      await this._recount();
+    } else {
+      await this._reloadMap();
     }
   }
 
   /**
    * A follower: pick up what the master's sync wrote. At most every GENERATION_CHECK_MS,
-   * read the database's generation; if it isn't the one the map was loaded at, reload the
-   * map. Runs in the background (requests meanwhile use the map they have) and never
-   * rejects. Returns the promise of the check, for tests.
+   * read the database's generation; if it isn't the one this process last loaded at, load
+   * again (_refreshFromDatabase). Runs in the background (requests meanwhile use what they
+   * have) and never rejects. Returns the promise of the check, for tests.
    * @returns {Promise<void>}
    */
   catchUp() {
@@ -613,7 +637,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       const generation = await this.database.getGeneration();
       if (generation !== this.loadedGeneration) {
         console.log(`VSAC: the database is at generation ${generation}, this process at ${this.loadedGeneration}; reloading`);
-        await this._reloadMap();
+        await this._followDatabase();
       }
     })().catch((error) => {
       debugLog(error, 'VSAC: catching up with the database failed');
