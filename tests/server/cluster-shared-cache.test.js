@@ -5,8 +5,10 @@
  *  - a $cache-control session started on one process is used on each of the others,
  *    directly and through the launcher (which, without cacheAffinity, spreads cached
  *    requests by load), with no cache-id-unknown
- *  - an id no process issued is CACHE_ID_UNKNOWN_SHARED
+ *  - an id no process issued is CACHE_ID_UNKNOWN_SHARED ("never issued")
  *  - a worker killed and restarted by the launcher still has the sessions
+ *  - whenever the master starts (a master child restarted by the launcher, a new launcher,
+ *    or a master started by hand), every session is lost to the restart, and is reported so
  */
 const { startCluster, request, param, unknownCache, pidOn, canFindPid, sleep, ROOT } = require('../utils/cluster-harness');
 
@@ -31,6 +33,12 @@ function validate(port, cid, n, code = 'a') {
   });
 }
 
+function expectLost(r) {
+  expect(r.status).toBe(404);
+  expect(unknownCache(r)).toBe(true);
+  expect(r.json.issue[0].details.text).toMatch(/was lost to a server restart/);
+}
+
 describe('cluster.js with server.cluster.sharedCache', () => {
   let cluster;
 
@@ -45,6 +53,25 @@ describe('cluster.js with server.cluster.sharedCache', () => {
   });
 
   const sessions = [];
+
+  // start one fresh session on each process, in place of the ones held so far, and check
+  // each works from every process
+  async function startSessions() {
+    sessions.length = 0;
+    const all = [cluster.master, ...cluster.workers];
+    for (const [i, port] of all.entries()) {
+      const start = await request(port, 'POST', '/r4/$cache-control?mode=start', {
+        body: { resourceType: 'Parameters', parameter: [{ name: 'tx-resource', resource: cs(i) }, { name: 'tx-resource', resource: vs(i) }] }
+      });
+      expect(start.status).toBe(200);
+      sessions.push({ cid: param(start.json, 'cache-id').valueId, n: i, issuer: port });
+    }
+    for (const s of sessions) {
+      for (const port of all) {
+        expect(param((await validate(port, s.cid, s.n)).json, 'result').valueBoolean).toBe(true);
+      }
+    }
+  }
 
   test('a session started on one process is used on every other one', async () => {
     const all = [cluster.master, ...cluster.workers];
@@ -85,15 +112,17 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     expect(results.filter(r => r.status === 200 && param(r.json, 'result').valueBoolean === true)).toHaveLength(60);
   }, 60000);
 
-  test('an id that no process issued is unknown, in the shared store\'s words', async () => {
-    const r = await validate(FRONT, 'tx1.00000000-0000-4000-8000-000000000000', 0);
-    expect(r.status).toBe(404);
-    expect(unknownCache(r)).toBe(true);
-    const text = r.json.issue[0].details.text;
-    expect(text).toMatch(/cluster restart/);
-    expect(text).not.toMatch(/survive a restart/);
-    expect(text).not.toMatch(/restarted since/);
-    expect(text).not.toMatch(/reached the wrong server/);
+  test('an id that no process issued is never issued, in the shared store\'s words', async () => {
+    const generation = sessions[0].cid.split('.')[1];
+    for (const id of ['tx1.00000000-0000-4000-8000-000000000000', `tx1.${generation}.AAAAAAAAAAAAAAAAAAAAAA`]) {
+      const r = await validate(FRONT, id, 0);
+      expect(r.status).toBe(404);
+      expect(unknownCache(r)).toBe(true);
+      const text = r.json.issue[0].details.text;
+      expect(text).toMatch(/was never issued by this server/);
+      expect(text).not.toMatch(/restart/);
+      expect(text).not.toMatch(/reached the wrong server/);
+    }
   });
 
   withPid('a worker that is killed and restarted still has the sessions, its own included', async () => {
@@ -117,7 +146,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     }
   }, 180000);
 
-  withPid('a master child restart preserves sessions issued by every process', async () => {
+  withPid('a master child restarted by the launcher: every session is lost to the restart, and new ones work', async () => {
     const port = cluster.master;
     const pid = pidOn(port);
     process.kill(pid, 'SIGKILL');
@@ -127,20 +156,19 @@ describe('cluster.js with server.cluster.sharedCache', () => {
       await sleep(250);
     }
     await cluster.waitUp([port]);
-    for (const s of sessions) {
-      const r = await validate(port, s.cid, s.n);
-      expect(unknownCache(r)).toBe(false);
-      expect(param(r.json, 'result').valueBoolean).toBe(true);
+    for (const p of [cluster.master, ...cluster.workers]) {
+      for (const s of sessions) {
+        expectLost(await validate(p, s.cid, s.n));
+      }
     }
+    await startSessions();
   }, 180000);
 
-  test('a full launcher restart invalidates old IDs and accepts fresh sessions on every process', async () => {
+  test('a full launcher restart: every session is lost to the restart, and fresh ones work on every process', async () => {
     await cluster.restart();
     for (const port of [cluster.master, ...cluster.workers]) {
       for (const s of sessions) {
-        const r = await validate(port, s.cid, s.n);
-        expect(r.status).toBe(404);
-        expect(unknownCache(r)).toBe(true);
+        expectLost(await validate(port, s.cid, s.n));
       }
       const start = await request(port, 'POST', '/r4/$cache-control?mode=start', {
         body:{ resourceType:'Parameters', parameter:[{ name:'tx-resource', resource:cs(7) }, { name:'tx-resource', resource:vs(7) }] }
@@ -168,7 +196,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     }
   });
 
-  test('manual master startup invalidates old IDs while a surviving worker accepts fresh sessions', async () => {
+  test('a master started by hand: every session is lost to the restart, and a surviving worker issues fresh ones', async () => {
     await cluster.stopLauncher();
     const children = [];
     const stop = async child => {
@@ -181,7 +209,6 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     };
     const launch = async (role, code, port) => {
       const env = { ...process.env, FHIRSMITH_DATA_DIR:cluster.dir };
-      delete env.FHIRSMITH_CLUSTER_GENERATION; // ordinary manually started roles have no launcher token
       const out = fs.openSync(path.join(cluster.dir, 'manual.log'), 'a');
       const child = spawn(process.execPath, [path.join(ROOT, 'server.js'), `--role=${role}`, `--instance-code=${code}`, `--port=${port}`],
         { cwd:ROOT, env, stdio:['ignore', out, out] });
@@ -206,7 +233,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
       expect(param((await validate(cluster.master, old, 8)).json, 'result').valueBoolean).toBe(true);
       await stop(master);
       await launch('master', 'm0', cluster.master);
-      expect(unknownCache(await validate(cluster.workers[0], old, 8))).toBe(true);
+      expectLost(await validate(cluster.workers[0], old, 8));
       const fresh = await request(cluster.workers[0], 'POST', '/r4/$cache-control?mode=start', {
         body:{ resourceType:'Parameters', parameter:[{ name:'tx-resource', resource:cs(8) }, { name:'tx-resource', resource:vs(8) }] }
       });

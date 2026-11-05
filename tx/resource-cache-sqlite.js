@@ -4,11 +4,18 @@
 //
 // Used when server.cluster.sharedCache is on (cluster.md, "Options"): the master and the
 // tx-workers then keep their $cache-control caches here instead of in their own memory, so
-// any process can answer any cache-id. Server-created stores preserve caches over child
-// restarts, but invalidate them when the launcher (or manual master) starts a new run. The memory
-// store (ResourceCache) is the default. This class is the same interface with the same
-// semantics, over a file:
+// any process can answer any cache-id. The memory store (ResourceCache) is the default.
+// This class is the same interface with the same semantics, over a file:
 //
+//  - Caches are not carried over a server restart. A client can't be sure a cache is
+//    intact across operations it tried while the server was down, and the server can't
+//    either. So whenever the master starts (under the launcher or by hand), every live
+//    cache, in every endpoint, becomes a tombstone "lost to a server restart", and a new
+//    generation begins. A tx-worker restarting while the master carries on joins the
+//    current generation and keeps every cache. Cache-ids carry their generation
+//    ("<code>.<generation>.<random>"); writes and lazy reads check it inside their
+//    transaction, and the generations of earlier runs are remembered, so an id from
+//    before a restart is reported as lost to it, not as never issued.
 //  - Nothing about a cache's contents is held in memory between requests. Each use
 //    reads the rows; there is no per-process copy that could go stale when another
 //    process changes the cache.
@@ -36,7 +43,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { newCacheGeneration } = require('../library/cache-generation');
+const { newCacheGeneration, TOKEN } = require('../library/cache-generation');
 const Database = require('better-sqlite3');
 const { ResourceCache, formatDuration } = require('./operation-context');
 const { Issue } = require('./library/operation-outcome');
@@ -44,6 +51,8 @@ const { Issue } = require('./library/operation-outcome');
 const SCHEMA_VERSION = 2;
 const DEFAULT_TOUCH_INTERVAL_MS = 30 * 1000;
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+// how many earlier generations are remembered, to report their ids as lost to a restart
+const MAX_PAST_GENERATIONS = 1000;
 
 /**
  * Render a byte count for a human: "512 KB", "3.4 MB", "2 GB".
@@ -115,6 +124,11 @@ function openDatabase(file, busyTimeoutMs) {
         supplements   TEXT,
         global_supplement INTEGER,
         UNIQUE (scope, cache_id, key)
+      );
+      CREATE TABLE IF NOT EXISTS generations (
+        generation  TEXT PRIMARY KEY,
+        started     INTEGER NOT NULL,
+        ended       INTEGER
       );
       CREATE TABLE IF NOT EXISTS tombstones (
         scope       TEXT NOT NULL,
@@ -292,9 +306,11 @@ class SqliteResourceCache extends ResourceCache {
    * @param {number} [options.maxBytes=0] - size cap for the whole file, 0 = none
    * @param {number} [options.touchIntervalMs=30000] - least time between last_used refreshes
    * @param {number} [options.busyTimeoutMs=5000]
-   * @param {string|null} [options.generation] - internal server lifecycle: a boot token
-   *   initializes/rotates the file, null joins the master's current generation. Omit
-   *   for a general persistent store accepting arbitrary IDs (including test fixtures).
+   * @param {string|null} [options.generation] - the server lifecycle (tx.js): the master
+   *   passes a new token each time it starts, which moves every live cache to a "lost to
+   *   a server restart" tombstone and begins that generation; a tx-worker passes null and
+   *   joins the current one. Omit for a store that keeps caches across opens and accepts
+   *   any id (tests).
    */
   constructor(stats, options = {}) {
     super(stats, options.maxTombstones || 1000);
@@ -307,7 +323,7 @@ class SqliteResourceCache extends ResourceCache {
     this.touchIntervalMs = options.touchIntervalMs >= 0 ? options.touchIntervalMs : DEFAULT_TOUCH_INTERVAL_MS;
     this.managedLifecycle = Object.hasOwn(options, 'generation');
     if (this.managedLifecycle && options.generation !== null &&
-        (typeof options.generation !== 'string' || !/^[A-Za-z0-9.-]{22}$/.test(options.generation))) {
+        (typeof options.generation !== 'string' || !TOKEN.test(options.generation))) {
       throw new Error('Invalid internal resource-cache generation');
     }
     this.db = openDatabase(this.path, options.busyTimeoutMs || DEFAULT_BUSY_TIMEOUT_MS);
@@ -325,6 +341,7 @@ class SqliteResourceCache extends ResourceCache {
     const db = this.db;
     this.q = {
       generation: db.prepare("SELECT value FROM meta WHERE key = 'generation'"),
+      pastGeneration: db.prepare('SELECT * FROM generations WHERE generation = ? AND ended IS NOT NULL'),
       session: db.prepare('SELECT * FROM sessions WHERE scope = ? AND cache_id = ?'),
       sessionExists: db.prepare('SELECT 1 FROM sessions WHERE scope = ? AND cache_id = ?'),
       sealed: db.prepare('SELECT sealed FROM sessions WHERE scope = ? AND cache_id = ?'),
@@ -372,15 +389,34 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   _initializeGeneration(generation) {
+    this.lostToRestart = 0;
     this.db.transaction(() => {
       const current = this.q.generation.get()?.value;
       if (generation === null) {
         if (!current) throw new Error('Start the master before workers using the shared resource cache');
-      } else if (current !== generation) {
-        // Clear all endpoint scopes and switch the fence in the same transaction.
-        this.db.exec('DELETE FROM resources; DELETE FROM sessions; DELETE FROM tombstones;');
-        this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('generation', ?)").run(generation);
+        return;
       }
+      if (current === generation) {
+        return; // another endpoint of this same master: the first one did it
+      }
+      // The master is starting: no cache, in any endpoint, is carried over
+      const now = Date.now();
+      this.lostToRestart = this.db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n;
+      this.db.prepare(`
+        INSERT OR REPLACE INTO tombstones (scope, cache_id, reason, at, created_at, last_used)
+        SELECT scope, cache_id, 'restart', ?, created_at, last_used FROM sessions`).run(now);
+      this.db.exec('DELETE FROM resources; DELETE FROM sessions;');
+      for (const { scope } of this.db.prepare('SELECT DISTINCT scope FROM tombstones').all()) {
+        this.q.trimTombstones.run(scope, scope, this.maxTombstones);
+      }
+      if (current) {
+        this.db.prepare('INSERT OR IGNORE INTO generations (generation, started) VALUES (?, ?)').run(current, now);
+        this.db.prepare('UPDATE generations SET ended = ? WHERE generation = ?').run(now, current);
+      }
+      this.db.prepare('INSERT OR REPLACE INTO generations (generation, started) VALUES (?, ?)').run(generation, now);
+      this.db.prepare(`DELETE FROM generations WHERE rowid NOT IN
+        (SELECT rowid FROM generations ORDER BY rowid DESC LIMIT ?)`).run(MAX_PAST_GENERATIONS + 1);
+      this.db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('generation', ?)").run(generation);
     }).immediate();
   }
 
@@ -394,18 +430,29 @@ class SqliteResourceCache extends ResourceCache {
     return this.instanceCode ? `${this.instanceCode}.${id}` : id;
   }
 
+  /**
+   * The generation in a cache-id this store issued ("[<code>.]<generation>.<random>"), or
+   * null if it isn't in that form. Tokens have no '.', so the id splits into its parts.
+   */
+  static generationOf(cacheId) {
+    if (typeof cacheId !== 'string') return null;
+    const parts = cacheId.split('.');
+    if (parts.length < 2 || parts.length > 3) return null;
+    const [generation, random] = parts.slice(-2);
+    return TOKEN.test(generation) && TOKEN.test(random) ? generation : null;
+  }
+
   _isCurrentGeneration(cacheId) {
     if (!this.managedLifecycle) return true;
-    // Tokens may contain dots, so read fixed-width fields from the end rather than
-    // splitting on '.', which is also the issuer-routing delimiter.
-    return typeof cacheId === 'string' && cacheId.length >= 45 && cacheId.at(-23) === '.' &&
-      cacheId.slice(-45, -23) === this.q.generation.get()?.value;
+    const generation = SqliteResourceCache.generationOf(cacheId);
+    return generation !== null && generation === this.q.generation.get()?.value;
   }
 
   _assertGeneration(cacheId) {
     if (!this._isCurrentGeneration(cacheId)) {
-      throw new Issue('error', 'not-found', null, 'CACHE_ID_UNKNOWN_SHARED',
-        `The cache '${cacheId}' is not part of the current server run. Start a new cache with $cache-control?mode=start`,
+      // has() said it was here: the master restarted while this request was using it
+      throw new Issue('error', 'not-found', null, 'CACHE_ID_LOST_TO_RESTART',
+        `The cache '${cacheId}' was lost to a server restart while this request was using it. Start a new cache with $cache-control?mode=start`,
         'cache-id-unknown', 404);
     }
   }
@@ -531,16 +578,25 @@ class SqliteResourceCache extends ResourceCache {
 
   /**
    * As for the memory store, except:
-   * - an id with no record at all is CACHE_ID_UNKNOWN_SHARED, whatever its prefix. The
-   *   memory store's messages offer a restart, or a request routed to the wrong instance,
-   *   as explanations; here every process sees every cache. An individual child restart
-   *   preserves caches, but a new launcher run (or manual master startup) invalidates them.
+   * - a cache the master's start moved to a tombstone, or an id from an earlier
+   *   generation, is CACHE_ID_LOST_TO_RESTART.
+   * - any other id with no record is CACHE_ID_UNKNOWN_SHARED (never issued), whatever its
+   *   prefix: every process sees every cache, so neither a restart of one process nor a
+   *   request routed to the wrong one can be the reason.
    * - an id dropped by the size cap (maxBytes) is CACHE_ID_EVICTED_SIZE.
    */
   describeMissing(cacheId) {
     const t = this.tombstone(cacheId);
     if (!t) {
+      const generation = SqliteResourceCache.generationOf(cacheId);
+      const past = generation ? this.q.pastGeneration.get(generation) : null;
+      if (past) {
+        return { messageId: 'CACHE_ID_LOST_TO_RESTART', params: [cacheId, formatDuration(Date.now() - past.ended)] };
+      }
       return { messageId: 'CACHE_ID_UNKNOWN_SHARED', params: [cacheId] };
+    }
+    if (t.reason === 'restart') {
+      return { messageId: 'CACHE_ID_LOST_TO_RESTART', params: [cacheId, formatDuration(Date.now() - t.at)] };
     }
     if (t.reason === 'evicted') {
       return {
@@ -760,30 +816,64 @@ class SqliteResourceCache extends ResourceCache {
   }
 
   set(cacheId, resources, sealed = false) {
+    resources = this._prepareSet(cacheId, resources, sealed);
+    const rows = resources.map(r => this._row(cacheId, r));
+    this._write('start', () => {
+      this._assertGeneration(cacheId);
+      this._replaceTx(cacheId, rows, sealed);
+    });
+    this._trackMax();
+  }
+
+  /**
+   * $cache-control?mode=start. The id is minted inside the write transaction, from the
+   * generation as it is then: a master starting between minting and writing could
+   * otherwise leave a new cache with an id from the generation before, which would be
+   * reported as lost before the client ever used it.
+   */
+  start(resources, sealed = false) {
+    if (!this.managedLifecycle) {
+      return super.start(resources, sealed);
+    }
+    resources = this._prepareSet(null, resources, sealed);
+    const rows = resources.map(r => this._row(null, r));
+    let cacheId = null;
+    this._write('start', () => {
+      cacheId = this.newCacheId();
+      this._replaceTx(cacheId, rows.map(row => ({ ...row, cacheId })), sealed);
+    });
+    if (this.logCacheOps) {
+      this.log.info(`cache-id '${cacheId}': started`);
+    }
+    this._trackMax();
+    return cacheId;
+  }
+
+  _prepareSet(cacheId, resources, sealed) {
     resources = (resources || []).filter(r => !!r);
     if (this.logCacheOps) {
-      this.log.info(`cache-id '${cacheId}': set (replace all, sealed=${!!sealed}) with ${resources.length} resource(s): ${resources.map(r => this._resourceKey(r)).join(', ')}`);
+      this.log.info(`cache-id '${cacheId ?? '(new)'}': set (replace all, sealed=${!!sealed}) with ${resources.length} resource(s): ${resources.map(r => this._resourceKey(r)).join(', ')}`);
     }
     for (const resource of resources) {
       markCached(resource);
     }
-    const rows = resources.map(r => this._row(cacheId, r));
-    this._write('start', () => {
-      this._assertGeneration(cacheId);
-      const now = Date.now();
-      const existing = this.q.session.get(this.scope, cacheId);
-      this.q.deleteResources.run(this.scope, cacheId);
-      this.q.deleteSession.run(this.scope, cacheId);
-      this.q.insertSession.run(this.scope, cacheId, existing ? existing.created_at : now, now, sealed ? 1 : 0);
-      for (const row of rows) {
-        this.q.upsertResource.run(row);
-      }
-      this.q.totals.run(now, this.scope, cacheId);
-      // alive again, so any record of an earlier death is now wrong
-      this.q.deleteTombstone.run(this.scope, cacheId);
-      this._enforceMaxBytesTx(cacheId, now);
-    });
-    this._trackMax();
+    return resources;
+  }
+
+  /** Replace a cache's content (inside a write transaction). */
+  _replaceTx(cacheId, rows, sealed) {
+    const now = Date.now();
+    const existing = this.q.session.get(this.scope, cacheId);
+    this.q.deleteResources.run(this.scope, cacheId);
+    this.q.deleteSession.run(this.scope, cacheId);
+    this.q.insertSession.run(this.scope, cacheId, existing ? existing.created_at : now, now, sealed ? 1 : 0);
+    for (const row of rows) {
+      this.q.upsertResource.run(row);
+    }
+    this.q.totals.run(now, this.scope, cacheId);
+    // alive again, so any record of an earlier death is now wrong
+    this.q.deleteTombstone.run(this.scope, cacheId);
+    this._enforceMaxBytesTx(cacheId, now);
   }
 
   /** Move a session to the tombstones (inside a write transaction). */
