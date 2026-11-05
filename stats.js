@@ -58,6 +58,8 @@ class ServerStats {
   started = false;
   requestCount = 0;
   staticRequestCount = 0;
+  // on the master under the launcher: the workers' requests added by mergeCounts
+  mergedRequestCount = 0;
   requestTime = 0;
   // Collect metrics every 10 minutes
   intervalMs = 10 * 60 * 1000;
@@ -362,6 +364,7 @@ class ServerStats {
       counter.timeTotal = counter.timeTotal + row.time;
       added = added + row.count;
     }
+    this.mergedRequestCount = this.mergedRequestCount + added;
     return added;
   }
 

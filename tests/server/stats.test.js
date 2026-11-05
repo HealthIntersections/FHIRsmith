@@ -155,8 +155,9 @@ describe('server statistics', () => {
     // before any flush: the daily report's numbers already include the worker
     const now = Date.now();
     expect(masterTx.countsSince(0, now)).toMatchObject({ total: 6, operations: { '$expand': 5, '$lookup': 1 } });
-    // the master's own figures for its graphs are unchanged
+    // the master's own figures for its graphs are unchanged; the page's total adds the worker's
     expect(master.requestCount).toBe(1);
+    expect(master.mergedRequestCount).toBe(5);
 
     // written out with the master's next interval
     expect(master.flushCounters(now, 600000)).toBe(2);

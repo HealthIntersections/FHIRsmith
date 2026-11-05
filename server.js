@@ -381,6 +381,26 @@ async function loadTemplates() {
   }
 }
 
+// The stats table's caption and request count (/ and /dashboard). On the master under the
+// launcher the count is every process's: its own and the workers' it has merged
+// (library/cluster-counts.js), which arrive up to a minute late. The table's other figures
+// are this process's. With no role: no caption, and the count as before
+function requestCounts() {
+  const code = role ? escape(config.modules.tx.instanceCode) : '';
+  if (role && role.role === 'master' && process.send) {
+    return {
+      caption: `<caption style="caption-side:top">Cluster: request counts for every process (the workers' up to a minute behind); uptime and the other figures are master ${code}'s</caption>`,
+      count: stats.requestCount + stats.mergedRequestCount,
+      detail: `master: ${stats.requestCount}, workers: ${stats.mergedRequestCount}, static: ${stats.staticRequestCount}`
+    };
+  }
+  return {
+    caption: role ? `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${code}: uptime and request counts for this process</caption>` : '',
+    count: stats.requestCount,
+    detail: `static: ${stats.staticRequestCount}`
+  };
+}
+
 async function buildRootPageContent() {
   stats.requestCount++;
   let content = npmAudit ? npmAudit.renderBanner() : '';
@@ -526,16 +546,15 @@ async function buildRootPageContent() {
   const sysMemPCT = ((os.totalmem() - os.freemem()) * 100) / os.totalmem();
 
   // Average requests per minute
+  const requests = requestCounts();
   const uptimeMinutesTotal = uptimeMs / 60000;
-  const avgReqPerMin = uptimeMinutesTotal > 0 ? (stats.requestCount / uptimeMinutesTotal).toFixed(1) : '0.0';
+  const avgReqPerMin = uptimeMinutesTotal > 0 ? (requests.count / uptimeMinutesTotal).toFixed(1) : '0.0';
 
   content += '<table class="grid">';
-  if (role) {
-    content += `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${escape(config.modules.tx.instanceCode)}: uptime and request counts for this process</caption>`;
-  }
+  content += requests.caption;
   content += '<tr>';
   content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-  content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
+  content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
   content += `<td><strong>Avg Requests/min:</strong> ${avgReqPerMin}</td>`;
   content += '</tr>';
   content += '<tr>';
@@ -704,13 +723,12 @@ app.get('/dashboard', async (req, res) => {
     const diskPCT = 100 - ((fstats.bavail * 100) / fstats.blocks);  // % of disk used
 
     let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
+    const requests = requestCounts();
     content += '<table class="grid">';
-    if (role) {
-      content += `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${escape(config.modules.tx.instanceCode)}: uptime and request counts for this process</caption>`;
-    }
+    content += requests.caption;
     content += '<tr>';
     content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-    content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
+    content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
     content += `<td style="background-color:${pctColor(memMaxPCT)}"><strong>Memory:</strong> ${v8PCT.toFixed(0)}% V8, ${processPCT.toFixed(0)}% Process, ${sysMemPCT.toFixed(0)}% System</td>`;
     content += `<td style="background-color:${pctColor(diskPCT)}"><strong>Disk:</strong> ${diskPCT.toFixed(0)}%</td>`;
     content += '</tr>';

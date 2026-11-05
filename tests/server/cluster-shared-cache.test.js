@@ -185,7 +185,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     for (const page of ['/', '/dashboard']) {
       const r = await request(FRONT, 'GET', page, { headers:{ Accept:'text/html' } });
       expect(r.status).toBe(200);
-      expect(r.text).toContain('Master m0: uptime and request counts for this process');
+      expect(r.text).toContain('Cluster: request counts for every process');
       expect(r.text).toContain('Heap change since process start');
       const match = /const metrics = (.+);/.exec(r.text);
       expect(match).not.toBeNull();

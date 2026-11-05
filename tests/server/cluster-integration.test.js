@@ -6,6 +6,7 @@
  *    and every one of those requests reaches the process that holds the cache
  *  - $closure and the non-tx paths reach the master
  *  - a VSAC sync on the master is seen by both workers
+ *  - the master's home page counts every process's requests
  *  - SIGTERM: the requests in progress finish, every process stops, the launcher exits 0
  *  - the master's statistics database counts the requests every process served, once each
  */
@@ -14,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
+const { pidOn } = require('../utils/cluster-harness');
 
 const ROOT = path.join(__dirname, '..', '..');
 const FRONT = 20020;
@@ -49,6 +51,16 @@ function request(port, method, urlPath, { headers = {}, body } = {}) {
     });
     req.on('error', reject);
     req.end(data);
+  });
+}
+
+function requestText(port, urlPath, headers) {
+  return new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: urlPath, agent: false, headers }, (res) => {
+      let text = '';
+      res.on('data', d => { text += d; });
+      res.on('end', () => resolve(text));
+    }).on('error', reject);
   });
 }
 
@@ -226,6 +238,30 @@ describe('master and two tx-workers behind cluster.js', () => {
       }
     }
   });
+
+  test('the master\'s home page counts every process\'s requests', async () => {
+    // a worker stopped sends its last counts; the launcher passes them on and restarts it
+    process.kill(pidOn(WORKERS[0]), 'SIGTERM');
+    const t0 = Date.now();
+    let m = null;
+    while (Date.now() - t0 < 30000) {
+      const page = await requestText(MASTER, '/', { Accept: 'text/html' });
+      m = /Request Count:<\/strong> (\d+) \(master: (\d+), workers: (\d+)/.exec(page);
+      if (m && Number(m[3]) >= DIRECT_LOOKUPS[WORKERS[0]]) {
+        expect(page).toContain('Cluster: request counts for every process');
+        break;
+      }
+      await sleep(250);
+    }
+    expect(Number(m[3])).toBeGreaterThanOrEqual(DIRECT_LOOKUPS[WORKERS[0]]);
+    expect(Number(m[1])).toBe(Number(m[2]) + Number(m[3]));
+    // a worker's own page is still its own
+    while (!(await isUp(WORKERS[0]))) {
+      await sleep(250);
+    }
+    await sleep(500);
+    expect(await requestText(WORKERS[1], '/', { Accept: 'text/html' })).toContain('Worker tx2: uptime and request counts for this process');
+  }, 60000);
 
   test('SIGTERM: requests in progress finish, then every process stops', async () => {
     const inFlight = [];
