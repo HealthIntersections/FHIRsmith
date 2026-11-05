@@ -4,6 +4,16 @@
 // ?delay=<ms>. On SIGTERM it finishes the requests it has, then exits.
 const http = require('http');
 const [code, port, keepAlive] = process.argv.slice(2);
+let metrics = null;
+const startedAt = Date.now();
+process.on('message', message => {
+  if (message.type === 'fhirsmith:metrics') metrics = message;
+});
+const samples = setInterval(() => {
+  if (process.connected) process.send({ type:'fhirsmith:metric', startedAt, intervalMs:100,
+    point:{ time:Date.now(), mem:1, rpm:code === 'm0' ? 1 : 2, tat:3, block:4, blockMax:5, clientConcepts:6 } }, () => {});
+}, 100);
+samples.unref();
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     res.end('ok');
@@ -11,6 +21,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/r4/connections') {
     res.end(JSON.stringify({ code, connections }));
+    return;
+  }
+  if (req.url === '/metrics') {
+    res.end(JSON.stringify({ metrics }));
     return;
   }
   const delay = Number(new URL(req.url, 'http://x').searchParams.get('delay')) || 0;
@@ -27,6 +41,7 @@ let connections = 0;
 server.on('connection', () => { connections++; });
 server.listen(Number(port));
 process.on('SIGTERM', () => {
+  clearInterval(samples);
   server.close(() => process.exit(0));
   server.closeIdleConnections();
 });
