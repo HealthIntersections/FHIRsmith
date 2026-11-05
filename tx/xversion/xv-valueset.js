@@ -160,12 +160,15 @@ function valueSetR5ToR4(r5Obj) {
     if (exp.property && exp.property.length > 0) {
       exp.extension = exp.extension || [];
       for (let prop of exp.property) {
+        // uri is 0..1: a property without one (a provider that doesn't declare its properties)
+        // must not produce an empty uri extension, which is not valid
+        const ext = [{ url: "code", valueCode: prop.code }];
+        if (prop.uri) {
+          ext.push({ url: "uri", valueUri: prop.uri });
+        }
         exp.extension.push({
           url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.property",
-          extension: [
-            { url: "code", valueCode: prop.code },
-            { url: "uri", valueUri: prop.uri }
-          ]
+          extension: ext
         });
       }
       delete exp.property;

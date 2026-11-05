@@ -44,4 +44,5 @@ LABEL org.opencontainers.image.title="FHIRsmith" \
 
 # Expose port and define command
 EXPOSE 3000
-CMD ["node", "server.js"]
+# --expose-gc: the memory guard forces a GC while it refuses requests (library/memory-guard.js)
+CMD ["node", "--expose-gc", "server.js"]

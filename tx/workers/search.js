@@ -7,6 +7,7 @@
 
 const { TerminologyWorker } = require('./worker');
 const {Utilities} = require("../../library/utilities");
+const { VersionUtilities } = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
 const {acceptsHtml} = require("../tx-html");
 
@@ -145,7 +146,7 @@ class SearchWorker extends TerminologyWorker {
     const searchParams = {};
     for (const [key, value] of Object.entries(params)) {
       if (!key.startsWith('_') && value && SearchWorker.ALLOWED_PARAMS.includes(key)) {
-        searchParams[key] = key == 'url' ? value : value.toLowerCase();
+        searchParams[key] = key == 'url' || key == 'version' ? value : value.toLowerCase();
       }
     }
 
@@ -497,6 +498,11 @@ class SearchWorker extends TerminologyWorker {
               isMatch = false;
               break;
             }
+          } else if (param === 'version') { // version-aware matching
+            if (!VersionUtilities.versionSearchMatches(searchValue, json.version, VersionUtilities.versionAlgorithmOf(json))) {
+              isMatch = false;
+              break;
+            }
           } else if (param === 'url' || param === 'system') { // exact match
             const propValue = json.url;
             if (propValue !== searchValue) {
@@ -565,6 +571,11 @@ class SearchWorker extends TerminologyWorker {
         } else if (param === 'text') {
           const propValue = json.title + json.description;
           if (!this.matchValue(propValue, searchValue)) {
+            isMatch = false;
+            break;
+          }
+        } else if (param === 'version') { // version-aware matching
+          if (!VersionUtilities.versionSearchMatches(searchValue, json.version)) {
             isMatch = false;
             break;
           }

@@ -12,6 +12,7 @@
 //
 
 const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
+const { splitFilters, supplementFilter } = require('./supplement-filters');
 const {Languages, Language} = require("../../library/languages");
 const {Extensions} = require("../library/extensions");
 const {validateParameter, isAbsoluteUrl, validateOptionalParameter, getValuePrimitive} = require("../../library/utilities");
@@ -128,6 +129,11 @@ class ValueSetChecker {
     } catch (error) {
       this.worker.log.error(error);
       debugLog(error);
+      if (error instanceof Issue && error.statusCode >= 400 && error.statusCode < 500) {
+        // the value set can't be expanded (a code system it imports is unknown, it's too big...):
+        // that's the answer, not a server failure
+        throw error.handleAsOO(error.statusCode);
+      }
       throw new Error('Exception expanding value set in order to infer system: ' + error.message);
     }
     return result;
@@ -154,64 +160,64 @@ class ValueSetChecker {
   }
 
   async determineSystem(opContext, code, systems, op) {
-    let result = '';
-    let needDoExpansion = false;
-    let mayNeedExpansion = false;
-
-    for (let vsi of this.valueSet.jsonObj.compose.exclude || []) {
-      if (vsi.valueSet || !vsi.system || vsi.filter) {
-        needDoExpansion = true;
-      }
+    if (!this.valueSet.jsonObj.compose) {
+      return await this.determineSystemFromExpansion(code, systems);
     }
-    for (let vsi of this.valueSet.jsonObj.compose.include || []) {
-      if (vsi.valueSet || !vsi.system) {
-        needDoExpansion = true;
-      }
-      if (vsi.filter) {
-        mayNeedExpansion = true;
-      }
+    // Check the code against each include, and each value set they import, rather than expanding
+    // the value set: that costs as much as the value set is big (all of UCUM, say), and an
+    // expansion can be too big to produce at all
+    const scratch = new OperationOutcome(); // the reasons the code isn't in an include don't matter
+    for (const s of await this.systemsForCode(code, op, scratch)) {
+      systems.add(s);
     }
+    return systems.size === 1 ? [...systems][0] : '';
+  }
 
-    if (needDoExpansion) {
-      result = await this.determineSystemFromExpansion(code, systems);
-    } else {
-      for (let vsi of this.valueSet.jsonObj.compose.include) {
-        this.worker.deadCheck('determineSystem');
-        let cs = await this.worker.findCodeSystem(vsi.system, '', null, ['complete', 'fragment'], op,true, false, false, this.worker.requiredSupplements);
-        if (cs === null) {
-          return '';
+  /**
+   * The systems of the includes that have the code (in this value set, and the ones it imports), less
+   * those of this value set's excludes that leave it out
+   * @returns {Promise<Set<string>>}
+   */
+  async systemsForCode(code, op, scratch) {
+    const systems = new Set();
+    const check = async (vsi, role) => {
+      this.worker.deadCheck('determineSystem');
+      const v = this.worker.determineVersionBase(vsi.system, vsi.version, this.params);
+      const cs = await this.worker.findCodeSystem(vsi.system, v, this.params, ['complete', 'fragment'], op, true, false, false, this.worker.requiredSupplements);
+      if (cs === null) {
+        // The system can only be inferred from all of the value set: if an include names a code
+        // system that isn't known, the code might be in it, so the request can't be answered (422)
+        const url = vsi.version ? vsi.system + '|' + vsi.version : vsi.system;
+        throw new Issue('error', 'not-found', null, 'UNABLE_TO_INFER_CODESYSTEM_UNKNOWN_SYSTEM',
+          this.worker.i18n.translate('UNABLE_TO_INFER_CODESYSTEM_UNKNOWN_SYSTEM', this.params.HTTPLanguages, [code, this.valueSet.vurl, url]), 'not-found')
+          .handleAsOO(422);
+      }
+      return await this.checkConceptSet('', role, cs, vsi, code, new Designations(this.worker.i18n.languageDefinitions), this.valueSet, '',
+        {value: false}, {value: ''}, {value: ''}, scratch, null, []);
+    };
+    for (const vsi of this.valueSet.jsonObj.compose.include || []) {
+      if (vsi.system) {
+        // (an include that also imports value sets narrows this one: the validation that follows checks that)
+        if (await check(vsi, 'in')) {
+          systems.add(vsi.system);
         }
-        if (vsi.concept) {
-          for (let cc of vsi.concept) {
-            this.worker.deadCheck('determineSystem#2');
-            let match = cc.code === code;
-            if (match) {
-              systems.add(vsi.system);
-              if (!result) {
-                result = vsi.system;
-              } else if (result !== vsi.system) {
-                return '';
-              }
-            }
-          }
-        } else {
-          let loc = await cs.locate(code);
-          if (loc.context !== null) {
-            systems.add(vsi.system);
-            if (!result) {
-              result = vsi.system;
-            } else if (result !== vsi.system) {
-              if (mayNeedExpansion) {
-                result = await this.determineSystemFromExpansion(code, systems);
-              } else {
-                return '';
-              }
+      } else {
+        for (const u of vsi.valueSet || []) {
+          const other = this.others.get(this.worker.pinValueSet(u));
+          if (other) {
+            for (const s of await other.systemsForCode(code, op, scratch)) {
+              systems.add(s);
             }
           }
         }
       }
     }
-    return result;
+    for (const vsi of this.valueSet.jsonObj.compose.exclude || []) {
+      if (vsi.system && !(vsi.valueSet && vsi.valueSet.length) && await check(vsi, 'not in')) {
+        systems.delete(vsi.system);
+      }
+    }
+    return systems;
   }
 
   async determineVersion(path, system, versionVS, versionCoding, op, unknownSystems, messages) {
@@ -365,7 +371,10 @@ class ValueSetChecker {
 
   async prepareConceptSet(desc, cc, vs) {
     this.worker.deadCheck('prepareConceptSet');
-    Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', desc, vs.vurl);
+    Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc, vs.vurl);
+    for (const [ci, c] of (cc.concept || []).entries()) {
+      Extensions.checkNoModifiers(c, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.concept[' + ci + ']', vs.vurl);
+    }
     this.worker.opContext.addNote(this.valueSet, 'Prepare ' + desc + ': "' + this.worker.renderer.displayValueSetInclude(cc) + '"', this.indentCount);
     if (cc.valueSet) {
       for (let u of cc.valueSet) {
@@ -395,12 +404,12 @@ class ValueSetChecker {
       let i = 0;
       for (let ccf of cc.filter || []) {
         this.worker.deadCheck('prepareConceptSet#2');
-        Extensions.checkNoModifiers(ccf, 'ValueSetChecker.prepare', desc + '.filter', this.valueSet.vurl);
+        Extensions.checkNoModifiers(ccf, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.filter[' + i + ']', this.valueSet.vurl);
         if (!ccf.value) {
           throw new Issue('error', 'invalid', "ValueSet.compose."+desc+".filter["+i+"]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE',
             this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), ccf.property, ccf.op]), "vs-invalid").handleAsOO(400);
         }
-        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op))) {
+        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op)) && !(await supplementFilter(cs, ccf))) {
           if (!(await cs.doesFilter(ccf.property, ccf.op, ccf.value))) {
             throw new Issue('error', 'not-supported', "ValueSet.compose."+desc+".filter["+i+"]", 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', 
               this.params.HTTPLanguages, [ccf.property, ccf.op, ccf.value, this.valueSet.url, cs.system()]), "vs-invalid").handleAsOO(400);
@@ -1617,6 +1626,30 @@ class ValueSetChecker {
     return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
   }
 
+  /**
+   * The listed concept that is the code written in its other form (ICD-11's short code and
+   * entity id), or null. sameConceptDifferentForm asks two things of each listed concept: does
+   * the code have another form at all (locate the code, ask for its classification code), and
+   * is this listed concept that form. The first depends only on the code, so it is asked once
+   * here, and the listed concepts are compared only when the answer is yes.
+   */
+  async otherFormMatch(cs, code, concepts) {
+    if (!concepts || concepts.length === 0 || concepts.some(cc => cc.code === code)) {
+      return null;
+    }
+    const a = await cs.locate(code);
+    if (!a.context || !(await cs.classificationCode(a.context))) {
+      return null;
+    }
+    for (const cc of concepts) {
+      this.worker.deadCheck('checkConceptSet#3');
+      if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
+        return cc;
+      }
+    }
+    return null;
+  }
+
   async noteClassificationCode(cs, context, code, normalForm) {
     // the code system decides whether this spelling of the code earns a classificationCode
     // (ICD-11: when it was written with entity ids, in any order - not when it was written
@@ -1697,15 +1730,7 @@ class ValueSetChecker {
         } else if (this.params.activeOnly && await cs.isInactive(loc.context)) {
           this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
           result = false;
-          if (role !== 'not in') {
-            inactive.value = true;
-            inactive.path = path;
-            inactive.code = code;
-            vstatus.value = await cs.getStatus(loc.context);
-            let msg = this.worker.i18n.translate('STATUS_CODE_WARNING_CODE', this.params.HTTPLanguages, ['not active', code]);
-            messages.push(msg);
-            op.addIssue(new Issue('error', 'business-rule', addToPath(path, 'code'), 'STATUS_CODE_WARNING_CODE', msg, 'code-rule'));
-          }
+          await this.#excludedByActiveOnly(cs, loc.context, code, path, role, op, messages, inactive, vstatus);
         } else {
           result = true;
           if (role !== 'not in') {
@@ -1733,15 +1758,7 @@ class ValueSetChecker {
     }
 
     // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
-    let altMatch = null;
-    if (cset.concept && !cset.concept.some(cc => cc.code === code)) {
-      for (const cc of cset.concept) {
-        if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
-          altMatch = cc;
-          break;
-        }
-      }
-    }
+    const altMatch = await this.otherFormMatch(cs, code, cset.concept);
     for (let cc of cset.concept || []) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
@@ -1764,6 +1781,10 @@ class ValueSetChecker {
               inactive.code = code;
               vstatus.value = await cs.getStatus(loc);
             }
+          } else if (this.params.activeOnly && await cs.isInactive(loc)) {
+            this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
+            result = false;
+            await this.#excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus);
           } else {
             if (vcc !== null) {
               if (!vcc.coding)  {vcc.coding = [];}
@@ -1795,28 +1816,42 @@ class ValueSetChecker {
 
     if (cset.filter) {
       let cfl = cset.filter;
-      let prep = await cs.getPrepContext(false);
       for (let fc of cfl) {
-        this.worker.deadCheck('checkConceptSet#2');
         if (!fc.value) {
           throw new Issue('error', 'invalid', null, 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), fc.property, fc.op]));
         }
-        await cs.filter(prep, false, fc.property, fc.op, fc.value, (vs && vs.isCached) ? fc : null);
-        // if (f === null) {
-        //   throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', this.params.HTTPLanguages, [fc.property, fc.op, fc.value, vs.vurl, cs.system()]) + ' (2)', 'vs-invalid');
-        // }
       }
-      let filters = await cs.executeFilters(prep);
-      if (!filters || filters.length == 0) {
-        throw new Error("executing filters failed for " + cs.name());
-      }
-      let loc = await cs.filterLocate(prep, filters[0], code);
-      if (loc != null && !(typeof loc === 'string') && filters.length > 1) {
-        for (let i = 1; i < filters.length; i++) {
-          if ((await cs.filterCheck(prep, filters[i], loc)) != true) { // a failing check may return a message, which is truthy
-            loc = null;
-            break;
+      // filters on properties that supplements in use define are evaluated from the supplements;
+      // the code system does the rest
+      const { base: baseFilters, supplement: suppFilters } = await splitFilters(cs, cfl);
+      let loc;
+      if (baseFilters.length > 0) {
+        let prep = await cs.getPrepContext(false, this.params.requestedLanguages());
+        for (let fc of baseFilters) {
+          this.worker.deadCheck('checkConceptSet#2');
+          await cs.filter(prep, false, fc.property, fc.op, fc.value, (vs && vs.isCached) ? fc : null);
+        }
+        let filters = await cs.executeFilters(prep);
+        if (!filters || filters.length == 0) {
+          throw new Error("executing filters failed for " + cs.name());
+        }
+        loc = await cs.filterLocate(prep, filters[0], code);
+        if (loc != null && !(typeof loc === 'string') && filters.length > 1) {
+          for (let i = 1; i < filters.length; i++) {
+            if ((await cs.filterCheck(prep, filters[i], loc)) != true) { // a failing check may return a message, which is truthy
+              loc = null;
+              break;
+            }
           }
+        }
+      } else {
+        const located = await cs.locate(code);
+        loc = located ? located.context : null;
+      }
+      if (loc != null && !(typeof loc === 'string') && suppFilters.length > 0) {
+        const lcode = await cs.code(loc);
+        if (!suppFilters.every(sf => sf.matches(lcode))) {
+          loc = null;
         }
       }
       if (loc != null && !(typeof loc === 'string')) {
@@ -1835,6 +1870,10 @@ class ValueSetChecker {
             inactive.code = code;
             vstatus.value = await cs.getStatus(loc);
           }
+        } else if (this.params.activeOnly && await cs.isInactive(loc)) {
+          result = false;
+          this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs) + ' but is inactive', this.indentCount);
+          await this.#excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus);
         } else {
           this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs), this.indentCount);
           if (vcc !== null) {
@@ -1849,6 +1888,13 @@ class ValueSetChecker {
               // only replace a status we already have with a real one - a filter context
               // doesn't always carry the status (SNOMED, LOINC), and the assembly reads
               // vstatus for the message wording as well as for the status parameter
+              const st = await cs.getStatus(loc);
+              if (st) {
+                vstatus.value = st;
+              }
+            } else if (!vstatus.value) {
+              // an active code can still have a status worth reporting (deprecated), as it is
+              // when the value set lists the code
               const st = await cs.getStatus(loc);
               if (st) {
                 vstatus.value = st;
@@ -1898,6 +1944,27 @@ class ValueSetChecker {
     return result;
   }
 
+
+  /**
+   * activeOnly: the code is checked against the value set as expanded with activeOnly, which has no
+   * inactive codes - whether the value set includes all of the code system, lists the code or
+   * selects it with a filter - so an inactive code is not in it
+   */
+  async #excludedByActiveOnly(cs, loc, code, path, role, op, messages, inactive, vstatus) {
+    if (role === 'not in') {
+      return;
+    }
+    inactive.value = true;
+    inactive.path = path;
+    inactive.code = code;
+    const st = await cs.getStatus(loc);
+    if (st) {
+      vstatus.value = st;
+    }
+    const msg = this.worker.i18n.translate('STATUS_CODE_WARNING_CODE', this.params.HTTPLanguages, ['not active', code]);
+    messages.push(msg);
+    op.addIssue(new Issue('error', 'business-rule', addToPath(path, 'code'), 'STATUS_CODE_WARNING_CODE', msg, 'code-rule'));
+  }
 
   excludeInactives() {
     return this.valueSet.jsonObj.compose && this.valueSet.jsonObj.compose.inactive != undefined && !this.valueSet.jsonObj.compose.inactive;
@@ -2374,7 +2441,12 @@ class ValidateWorker extends TerminologyWorker {
         return fromAdditional;
       }
 
-      let vs = await this.provider.findValueSet(this.opContext, url, version);
+      // an implicit value set in the generic form is drawn from the code system version the
+      // request asks for (system-version and the like)
+      const systemVersionFor = txParams && txParams.requestedSystemVersion
+        ? (system) => txParams.requestedSystemVersion(system)
+        : null;
+      let vs = await this.provider.findValueSet(this.opContext, url, version, systemVersionFor);
       this.seeSourceVS(vs, url);
       if (vs == null) {
         throw new Issue('error', 'not-found', null, 'Unable_to_resolve_value_Set_', this.i18n.translate('Unable_to_resolve_value_Set_', params.HTTPLanguages, [url+(version ? "|"+version : "")]), 'not-found', 422);

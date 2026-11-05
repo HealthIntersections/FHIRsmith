@@ -66,6 +66,7 @@ Add the `tx` section to your `config.json`:
 | `cacheTimeout`                  | integer | No       | How many minutes to keep client side caches (for cache-id parameter). Default: 30                       |
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
+| `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
 | `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
 | `internalLimit`                 | integer | No       | Largest number of codes in internal expansions                                                          |
@@ -258,6 +259,52 @@ actually returns (metadata, read and search, `$expand`, `$validate-code`, `$look
 `$subsumes`, `$batch-validate-code`, `$versions`, `$cache-control`, an error) against the
 schemas, using ajv. So a new parameter needs adding to openapi-operations.js.
 
+## Loading SNOMED CT
+
+By default each SNOMED CT cache file is read into the server process, at about its file size
+(0.6–1.2 GB an edition). A file can instead be memory-mapped read-only:
+
+- the edition loads in milliseconds;
+- only the pages that requests touch become resident, as page cache that the kernel can drop
+  and read again;
+- every server process on the machine that maps the same file shares those pages.
+
+The first request to touch a part of a mapped edition waits for the disk, unless that edition
+is *prewarmed*: mapped, then read through once in the background at startup, so its pages are
+already in the page cache when requests arrive. Startup doesn't wait for it.
+
+This is set per server, in the tx module's `snomed` block in `config.json`:
+
+```json
+"tx": {
+  "snomed": {
+    "load": "mmap",
+    "prewarm": ["http://snomed.info/sct/900000000000207008/version/20250201",
+                "sct_us_20250901b.cache"],
+    "read": []
+  }
+}
+```
+
+- **`load`** is `"read"` (the default) or `"mmap"`, for every edition not named below.
+- **`prewarm`** lists editions to prewarm (map, then read through once in the background at
+  startup), even when `load` is `"read"`.
+- **`read`** lists editions to read into the process even when `load` is `"mmap"`.
+- An entry is any of:
+  - a cache file name (`sct_us_20250901b.cache`)
+  - an edition version URI (`http://snomed.info/sct/731000124108/version/20250901`)
+  - an edition URI (`http://snomed.info/sct/731000124108`), which covers every loaded version
+    of that edition
+- `read` wins over `prewarm`.
+- Entries that match no loaded edition are warned about at startup.
+- With no `snomed` block, everything is read, as before.
+
+Mapping uses the optional `koffi` dependency. Where it is not available (Windows, 32-bit
+platforms, or koffi not installed), a mapped edition is read instead, with a warning in the
+server log. The log says, for each edition that was to be mapped, whether it really was. When
+any edition is mapped, the memory guard leaves file-backed pages out of the memory it measures
+(Linux).
+
 ## Library Configuration
 
 The library - the source to load - is configured using a YAML file.
@@ -407,6 +454,9 @@ Common edition identifiers:
 - `ips` - IPS (International Patient Summary) Free Set
 
 The file is built by importing SNOMED CT (see [documentation](importers/readme.md))
+
+How the cache files are loaded is a deployment choice, so it is set in `config.json` (the
+tx module's `snomed` block), not here - see [Loading SNOMED CT](#loading-snomed-ct).
 
 
 #### `cpt` - CPT (Current Procedural Terminology)

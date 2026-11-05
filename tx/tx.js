@@ -14,7 +14,7 @@ const path = require('path');
 const fs = require('fs');
 const Logger = require('../library/logger');
 const { Library } = require('./library');
-const { OperationContext, ResourceCache, ExpansionCache, debugLog} = require('./operation-context');
+const { OperationContext, ResourceCache, ExpansionCache, ExpansionCacheBudget, debugLog} = require('./operation-context');
 const { LanguageDefinitions } = require('../library/languages');
 const { I18nSupport } = require('../library/i18nsupport');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
@@ -243,7 +243,7 @@ class TXModule {
 
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
-    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats);
+    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
 
     // The syndication feed: content is recorded in the store as the library loads it, from
     // the time the administrator turns it on (see tx/syndication). One store serves every
@@ -300,6 +300,12 @@ class TXModule {
     const cacheTimeoutMinutes = this.config.cacheTimeout || 30;
     const expansionCacheSize = this.config.expansionCacheSize || 1000;
     const expansionCacheMemoryThreshold = this.config.expansionCacheMemoryThreshold || 0;
+    // one budget of codes for the expansion caches of all the endpoints
+    if (!this.expansionCacheBudget) {
+      this.expansionCacheBudget = new ExpansionCacheBudget(this.config.expansionCacheMaxCodes || 0);
+      this.log.info(`Expansion caches: at most ${this.expansionCacheBudget.maxCodes} codes in all` +
+        (this.config.expansionCacheMaxCodes ? '' : ' (a quarter of the heap limit, at 1 KB a code)'));
+    }
 
     // Store endpoint info for provider creation
     const endpointInfo = {
@@ -307,7 +313,7 @@ class TXModule {
       fhirVersion,
       context: context || null,
       resourceCache: new ResourceCache(this.stats),
-      expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold)
+      expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold, this.expansionCacheBudget)
     };
     // Create the provider once for this endpoint
     endpointInfo.provider = await this.library.cloneWithFhirVersion(fhirVersion, context, endpointPath);

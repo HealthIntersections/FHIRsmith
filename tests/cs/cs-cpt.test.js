@@ -207,6 +207,19 @@ describe('CPT Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup - but not
+    // the copyright, which is about the code system
+    test('properties() for $expand: only the named ones, never the copyright', async () => {
+      for (const [code, expectedProps] of Object.entries(testData.properties)) {
+        expect(await provider.properties(code, [])).toEqual([]);
+        const names = Object.keys(expectedProps);
+        const got = await provider.properties(code, names);
+        expect(got.length).toBeGreaterThan(0);
+        expect(got.every(p => names.includes(p.code))).toBe(true);
+        expect((await provider.properties(code, ['*'])).some(p => p.code === 'copyright')).toBe(false);
+      }
+    });
+
     test('should extend lookup with properties and designations', async () => {
       for (const code of testData.allCodes) {
         const paramSet = [];

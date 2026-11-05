@@ -85,7 +85,13 @@ class SearchFilterText {
   /**
    * Check if designations pass the filter
    */
-  passesDesignations(cds) {
+  /**
+   * Whether any of the designations passes the filter. With a search language (see
+   * CodeSystemProvider.searchLanguage), only designations in that language take part,
+   * compared at the language subtag level; one that doesn't say is in `fallback` (the
+   * code system's language)
+   */
+  passesDesignations(cds, searchLang = null, fallback = 'en') {
     validateOptionalParameter(cds, 'cds', Designations);
 
     if (this.isNull) {
@@ -95,11 +101,21 @@ class SearchFilterText {
     if (!cds) return false;
 
     for (const cd of cds.designations) {
-      if (cd.value && this.passes(cd.value)) {
+      if (cd.value && (!searchLang || SearchFilterText.#languageOf(cd.language, fallback) === searchLang.language) && this.passes(cd.value)) {
         return true;
       }
     }
     return false;
+  }
+
+  static #languageOf(lang, fallback) {
+    if (lang && lang.language) {
+      return lang.language;
+    }
+    if (typeof lang === 'string' && lang) {
+      return lang.split('-')[0].toLowerCase();
+    }
+    return (fallback || 'en').split('-')[0].toLowerCase();
   }
 
   /**

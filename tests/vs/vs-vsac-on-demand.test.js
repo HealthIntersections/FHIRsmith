@@ -67,8 +67,14 @@ describe('VSAC value sets read on demand', () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL1, '20230101'), vs(URL2, '20200101')]);
     expect((await provider.fetchValueSet(URL1)).version).toBe('20250601');
     expect((await provider.fetchValueSet(URL1, '20240101')).version).toBe('20240101');
-    // a version there isn't falls back to the latest, as the map's bare-url key did
-    expect((await provider.fetchValueSet(URL1, '20990101')).version).toBe('20250601');
+    // a version there isn't is not found, unless VERSION_FALLBACK_TO_LATEST (then the latest)
+    expect(await provider.fetchValueSet(URL1, '20990101')).toBeNull();
+    VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST = true;
+    try {
+      expect((await provider.fetchValueSet(URL1, '20990101')).version).toBe('20250601');
+    } finally {
+      VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST = false;
+    }
     expect((await provider.fetchValueSet(URL2)).version).toBe('20200101');
     expect(await provider.fetchValueSet('http://cts.nlm.nih.gov/fhir/ValueSet/none')).toBeNull();
   });
@@ -101,7 +107,14 @@ describe('VSAC value sets read on demand', () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601', { status: 'bogus' })]);
     // the latest is rejected, so the url gets the version before it
     expect((await provider.fetchValueSet(URL1)).version).toBe('20240101');
-    expect((await provider.fetchValueSet(URL1, '20250601')).version).toBe('20240101');
+    // asked for by its version, it is not found (with VERSION_FALLBACK_TO_LATEST, the version before it)
+    expect(await provider.fetchValueSet(URL1, '20250601')).toBeNull();
+    VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST = true;
+    try {
+      expect((await provider.fetchValueSet(URL1, '20250601')).version).toBe('20240101');
+    } finally {
+      VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST = false;
+    }
     expect(await provider.fetchValueSetById('vsac-2.16.840.1.113883.3.1-20250601')).toBeNull();
     // search finds both rows; the rejected one reads as null, so the search worker drops it
     const found = await provider.searchValueSets([{ name: 'url', value: URL1 }]);
@@ -123,6 +136,9 @@ describe('VSAC value sets read on demand', () => {
     }
     const byVersion = await provider.searchValueSets([{ name: 'url', value: URL1 }, { name: 'version', value: '20240101' }]);
     expect(byVersion.map(v => v.id)).toEqual(['vsac-2.16.840.1.113883.3.1-20240101']);
+    // the version is matched as search() matches it, not as a prefix of the stored one
+    expect(await provider.searchValueSets([{ name: 'url', value: URL1 }, { name: 'version', value: '2024' }])).toEqual([]);
+    expect(await provider.searchValueSets([{ name: 'url', value: URL1 }, { name: 'version', value: '2024' }], ['url', 'version'])).toEqual([]);
     expect((await provider.searchValueSets([{ name: 'title', value: '113883.3.2' }])).map(v => v.version)).toEqual(['20200101']);
     expect(await provider.searchValueSets([{ name: 'url', value: 'http://nothing' }])).toEqual([]);
     // _elements of indexed columns only: built from the columns, no content read
@@ -453,13 +469,13 @@ describe('VSAC recently used value sets', () => {
     provider = null;
   });
 
-  test('which version a url (and version) gets is as it was: exact, then major.minor, then the latest - kept or not', async () => {
+  test('which version a url (and version) gets is as it was: exact, then major.minor, then (with no version) the latest - kept or not', async () => {
     const SV = 'http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113883.3.9';
     provider = await makeProvider([vs(SV, '1.1.0'), vs(SV, '2.0.0'), vs(SV, '1.1.2'), vs(SV, '1.0.0')]);
-    const asked = [['1.1.0', '1.1.0'], ['1.1.5', '1.1.2'], ['1.0.7', '1.0.0'], ['3.0.0', '2.0.0'], [undefined, '2.0.0'], ['1.1.2', '1.1.2']];
+    const asked = [['1.1.0', '1.1.0'], ['1.1.5', '1.1.2'], ['1.0.7', '1.0.0'], ['3.0.0', null], [undefined, '2.0.0'], ['1.1.2', '1.1.2']];
     for (let pass = 0; pass < 2; pass++) {
       for (const [version, expected] of asked) {
-        expect((await provider.fetchValueSet(SV, version)).version).toBe(expected);
+        expect((await provider.fetchValueSet(SV, version))?.version ?? null).toBe(expected);
       }
     }
     // the second pass was all kept

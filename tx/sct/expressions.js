@@ -13,6 +13,10 @@ const MAX_TERM_LENGTH = 1024;
 // Attribute values are themselves expanded, so a chain of definitions can descend a
 // long way; in real data it is a handful of levels.
 const MAX_NORMALISATION_DEPTH = 50;
+// How deep bracketed attribute values may nest in an expression the parser accepts. The parser
+// (and everything that walks the parsed expression) recurses once per level, so without a bound
+// a hostile expression is a RangeError (stack overflow) rather than a parse error.
+const MAX_EXPRESSION_DEPTH = 100;
 
 const NO_REFERENCE = 0xFFFFFFFF;
 
@@ -483,6 +487,7 @@ class SnomedExpressionParser {
   parse(source) {
     this.source = source;
     this.cursor = 0;
+    this.depth = 0;
 
     const result = new SnomedExpression();
     result.start = this.cursor;
@@ -681,9 +686,12 @@ class SnomedExpressionParser {
     this.ws();
 
     if (this.gchar('(')) {
+      this.depth++;
+      this.rule(this.depth <= MAX_EXPRESSION_DEPTH, `The expression nests more than ${MAX_EXPRESSION_DEPTH} levels deep`);
       const result = this.expression();
       this.ws();
       this.fixed(')');
+      this.depth--;
       return result;
     } else {
       const result = new SnomedExpression();
@@ -2951,6 +2959,7 @@ module.exports = {
 
   // Enums and constants
   SnomedServicesRenderOption,
-  SnomedRefinementGroupMatchState
+  SnomedRefinementGroupMatchState,
+  MAX_EXPRESSION_DEPTH
 };
 

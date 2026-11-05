@@ -993,6 +993,16 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
 
   id() { return `icd11-${this.systemCode}`; }
 
+  /**
+   * The WHO browser page for the concept, as the ICD-API gives it (browserUrl, kept in the
+   * database: https://icd.who.int/browse/2026-01/mms/en#257068234). A postcoordinated
+   * expression links to its stem.
+   */
+  codeLink(context) {
+    const concept = context && context.tokens ? context.tokens[0]?.concept : context;
+    return concept && concept.browserUrl ? concept.browserUrl : undefined;
+  }
+
   async load() {
     if (this._loaded) return;
     const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY);

@@ -357,6 +357,27 @@ describe('UCUM Provider Integration Tests', () => {
       }
     });
   });
+
+  describe('Properties', () => {
+    test('$lookup returns canonical when asked for it, not by default', async () => {
+      const { context } = await provider.locate('mg/dL');
+      let params = [];
+      await provider.extendLookup(context, [], params);
+      expect(params.filter(p => p.name === 'property')).toEqual([]);
+      params = [];
+      await provider.extendLookup(context, ['canonical'], params);
+      expect(params).toEqual([{ name: 'property', part: [
+        { name: 'code', valueCode: 'canonical' }, { name: 'value', valueString: ucumService.getCanonicalUnits('mg/dL') }] }]);
+    });
+
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand', async () => {
+      const { context } = await provider.locate('mg/dL');
+      expect(await provider.properties(context, [])).toEqual([]);
+      expect(await provider.properties(context, ['canonical'])).toEqual([
+        { code: 'canonical', valueString: ucumService.getCanonicalUnits('mg/dL') }]);
+    });
+  });
 });
 
 // Usage example for external integration

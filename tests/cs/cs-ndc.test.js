@@ -498,6 +498,14 @@ describe('NDC Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand', async () => {
+      expect(await provider.properties('0002-0152', [])).toEqual([]);
+      const got = await provider.properties('0002-0152', ['code-type', 'active']);
+      expect(got).toContainEqual({ code: 'code-type', valueString: 'product' });
+      expect(got.map(p => p.code)).toContain('active');
+    });
+
     test('should extend lookup for product with properties', async () => {
       const paramSet = [];
       await provider.extendLookup('0002-0152', [], paramSet);

@@ -22,6 +22,8 @@ const {RxNormServicesFactory} = require("./cs/cs-rxnorm");
 const {NdcServicesFactory} = require("./cs/cs-ndc");
 const {UniiServicesFactory} = require("./cs/cs-unii");
 const {SnomedServicesFactory} = require("./cs/cs-snomed");
+const {SnomedFileReader} = require("./sct/structures");
+const {SnomedLoadConfig} = require("./sct/load-config");
 const {CPTServicesFactory} = require("./cs/cs-cpt");
 const {OMOPServicesFactory} = require("./cs/cs-omop");
 const {ICD11ServicesFactory} = require("./cs/cs-icd11");
@@ -31,9 +33,10 @@ const {IETFLanguageCodeFactory} = require("./cs/cs-lang");
 const {LanguageDefinitions} = require("../library/languages");
 const {VersionUtilities} = require("../library/version-utilities");
 const {ListCodeSystemProvider} = require("./cs/cs-provider-list");
-const { Provider } = require("./provider");
+const { Provider, CodeSystemMap } = require("./provider");
 const {I18nSupport} = require("../library/i18nsupport");
 const folders = require('../library/folder-setup');
+const memoryGuard = require('../library/memory-guard');
 const {VSACValueSetProvider} = require("./vs/vs-vsac");
 const { OCLCodeSystemProvider, OCLSourceCodeSystemFactory } = require('./ocl/cs-ocl');
 const { OCLValueSetProvider } = require('./ocl/vs-ocl');
@@ -41,6 +44,11 @@ const { OCLConceptMapProvider } = require('./ocl/cm-ocl');
 const {UriServicesFactory} = require("./cs/cs-uri");
 const {debugLog} = require("./operation-context");
 const { checkIdPrefix } = require("./library/resource-ids");
+
+// folder:/file: sources keep their SQLite caches in <terminology-cache>/folder-source-<hash>
+const LOCAL_SOURCE_CACHE_PREFIX = 'folder-source-';
+// how long an unused folder-source-* cache is kept, in case another Library is using it
+const LOCAL_SOURCE_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
 
 /**
  * This class holds all the loaded content ready for processing
@@ -85,6 +93,12 @@ class Library {
    */
   #givenPrefixes = new Set();
 
+  /**
+   * {Set<string>} the folder-source-* cache folders this load used - the rest are pruned
+   * once they're stale (see #pruneLocalSourceCaches)
+   */
+  #localSourceCaches = new Set();
+
   baseUrl = null;
   cacheFolder = null;
   startTime = Date.now();
@@ -112,11 +126,20 @@ class Library {
     }
   }
 
-  constructor(configFile, vsacCfg, log, stats) {
+  /**
+   * @param {string} configFile - the library yml
+   * @param {object} vsacCfg
+   * @param {object} log
+   * @param {object} stats
+   * @param {object} [snomedCfg] - the tx module's "snomed" block: how SNOMED CT cache files are
+   *   loaded (see tx/sct/load-config.js)
+   */
+  constructor(configFile, vsacCfg, log, stats, snomedCfg = undefined) {
     this.configFile = configFile;
     this.vsacCfg = vsacCfg;
     this.log = log;
     this.stats = stats;
+    this.snomedLoad = new SnomedLoadConfig(snomedCfg, (msg) => (this.log ? this.log.warn(msg) : console.warn(msg)));
 
     // Only synchronous initialization here
     this.codeSystemFactories = new Map();
@@ -215,6 +238,7 @@ class Library {
         throw error;
       }
     }
+    this.snomedLoad.checkUnused();
     this.log.info('Loading Packages');
     this.#logPackagesHeader();
 
@@ -237,6 +261,8 @@ class Library {
       heapTotal: endMemory.heapTotal - this.startMemory.heapTotal,
       external: endMemory.external - this.startMemory.external
     };
+
+    await this.#pruneLocalSourceCaches();
 
     this.log.info(`Loading Time: ${(totalTime / 1000).toLocaleString()}s`);
     this.log.info(`Memory Used: ${(memoryIncrease.rss / 1024 / 1024).toFixed(2)} MB`);
@@ -654,8 +680,18 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const sct = new SnomedServicesFactory(this.i18n, sctFN);
+    const loadMode = this.snomedLoad.modeFor(sctFN, SnomedFileReader.versionUri(sctFN));
+    const sct = new SnomedServicesFactory(this.i18n, sctFN, loadMode, this.log);
     await sct.load();
+    if (loadMode !== 'read') {
+      // if it could not be mapped, mapFile has already said why, through this.log
+      this.log.info(`SNOMED CT ${path.basename(sctFN)}: load ${loadMode}, ` +
+        (sct.mapped ? 'memory-mapped' : 'not mapped, read into memory'));
+    }
+    if (sct.mapped && !memoryGuard._state.excludeFileBacked) {
+      memoryGuard.measureExcludingFileBacked();
+      this.log.info(`SNOMED CT cache files are memory-mapped. ${memoryGuard.describe()}`);
+    }
     this.registerProvider(sctFN, sct, isDefault);
     this.#syndicateBinary('snomed', sctFN, sct);
   }
@@ -910,10 +946,51 @@ class Library {
    */
   async #prepareLocalSourceCache(sourcePath) {
     const hash = crypto.createHash('sha1').update(sourcePath).digest('hex').substring(0, 16);
-    const cacheSubdir = path.join(this.cacheFolder, 'folder-source-' + hash);
+    const name = LOCAL_SOURCE_CACHE_PREFIX + hash;
+    const cacheSubdir = path.join(this.cacheFolder, name);
+    this.#localSourceCaches.add(name);
     await fs.rm(cacheSubdir, { recursive: true, force: true });
     await fs.mkdir(cacheSubdir, { recursive: true });
     return cacheSubdir;
+  }
+
+  /**
+   * Removes the folder-source-* caches left by sources that are no longer loaded (the
+   * name is a hash of the source path, so a moved or temporary folder leaves one behind).
+   *
+   * The cache folder can be shared by more than one Library at a time (a server and the
+   * tests, run from the same checkout), so a cache this load didn't use may be another
+   * one's. Every load rebuilds its caches, so a live one is always recent - only those
+   * untouched for LOCAL_SOURCE_CACHE_MAX_AGE are removed.
+   * @private
+   */
+  async #pruneLocalSourceCaches() {
+    let entries;
+    try {
+      entries = await fs.readdir(this.cacheFolder, { withFileTypes: true });
+    } catch (e) {
+      return;
+    }
+    const cutoff = Date.now() - LOCAL_SOURCE_CACHE_MAX_AGE;
+    let count = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(LOCAL_SOURCE_CACHE_PREFIX) || this.#localSourceCaches.has(entry.name)) {
+        continue;
+      }
+      const dir = path.join(this.cacheFolder, entry.name);
+      try {
+        const stat = await fs.stat(dir);
+        if (stat.mtimeMs < cutoff) {
+          await fs.rm(dir, { recursive: true, force: true });
+          count++;
+        }
+      } catch (e) {
+        this.log.warn(`Unable to remove stale local source cache ${dir}: ${e.message}`);
+      }
+    }
+    if (count > 0) {
+      this.log.info(`Removed ${count} stale local source cache folder${count === 1 ? '' : 's'}`);
+    }
   }
 
   /**
@@ -1118,7 +1195,7 @@ class Library {
     const provider = new Provider();
     provider.i18n = this.i18n;
     provider.codeSystemFactories = new Map(this.codeSystemFactories); // all of them
-    provider.codeSystems = new Map();
+    provider.codeSystems = new CodeSystemMap();
     provider.valueSetProviders = [];
     provider.conceptMapProviders = [];
     provider.path = path;

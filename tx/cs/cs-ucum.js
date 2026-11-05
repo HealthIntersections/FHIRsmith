@@ -440,17 +440,27 @@ class UcumCodeSystemProvider extends BaseCSServices {
     return 'not-subsumed';
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
 
 
-    if (this._hasProp(props, 'canonical', true)) {
+    // canonical: the unit's canonical form. Only when asked for (by name or *) - $lookup never
+    // returned it by default (the old code looked for an addProperty method that params, an
+    // array, doesn't have, so it never returned it at all)
+    if (this._hasProp(props, 'canonical', false)) {
       try {
         const canonical = this.ucumService.getCanonicalUnits(ctxt.code);
-        // Add canonical property to params - implementation depends on your Parameters class
-        if (params && typeof params.addProperty === 'function') {
-          params.addProperty('canonical', canonical);
+        if (canonical) {
+          this._addStringProperty(params, 'property', 'canonical', canonical);
         }
       } catch (error) {
         // Ignore errors in canonical form calculation

@@ -967,6 +967,44 @@ describe('LOINC Provider', () => {
       return codes;
     }
 
+    async function filterCodes(property, operator, value) {
+      const codes = [];
+      const filterContext = await provider.getPrepContext(true);
+      await provider.filter(filterContext, true, property, operator, value);
+      const filters = await provider.executeFilters(filterContext);
+      while (await provider.filterMore(filterContext, filters[0])) {
+        codes.push(await provider.code(await provider.filterConcept(filterContext, filters[0])));
+      }
+      return codes;
+    }
+
+    // LOINC's own name for the hierarchy filter, used by its implicit value sets
+    // (http://loinc.org/vs/[partcode]): ancestor = X is the codes X subsumes, not X itself
+    test('ancestor = a part is descendent-of the part', async () => {
+      expect(await provider.doesFilter('ancestor', '=', 'LP7786-9')).toBe(true);
+      const codes = await filterCodes('ancestor', '=', 'LP7786-9');
+      expect(codes.length).toBeGreaterThan(1);
+      expect(codes).not.toContain('LP7786-9');
+      expect(codes).toEqual(await descendantsOf('LP7786-9'));
+    });
+
+    test('ancestor in two parts is the union of their descendants', async () => {
+      expect(await provider.doesFilter('ancestor', 'in', 'LP7786-9,LP14082-9')).toBe(true);
+      const a = await descendantsOf('LP7786-9');
+      const b = await descendantsOf('LP14082-9');
+      expect(b.length).toBeGreaterThan(0);
+      const codes = await filterCodes('ancestor', 'in', 'LP7786-9, LP14082-9');
+      expect(new Set(codes)).toEqual(new Set([...a, ...b]));
+      expect(codes.length).toBe(new Set(codes).size);
+    });
+
+    test('the implicit value set for a part expands to its descendants', async () => {
+      const vs = await factory.buildKnownValueSet('http://loinc.org/vs/LP7786-9', null);
+      expect(vs.compose.include[0].filter).toEqual([{ property: 'ancestor', op: '=', value: 'LP7786-9' }]);
+      const f = vs.compose.include[0].filter[0];
+      expect(await provider.doesFilter(f.property, f.op, f.value)).toBe(true);
+    });
+
     test('should locate codes within filters', async () => {
       const testCase = expectedResults.filters.relationships[0]; // Use first relationship filter
       const filterContext = await provider.getPrepContext(false);
@@ -1045,6 +1083,20 @@ describe('LOINC Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand: only the named ones, none when none are named', async () => {
+      expect(await provider.properties('100007-4', [])).toEqual([]);
+      const got = await provider.properties('100007-4', ['COMPONENT', 'SCALE_TYP']);
+      expect(got.sort((a, b) => a.code.localeCompare(b.code))).toEqual([
+        { code: 'COMPONENT', valueCode: 'LP430726-2' },
+        { code: 'SCALE_TYP', valueCode: 'LP7751-3' }
+      ]);
+      // Coding-valued (a mapping), without the equivalence subproperty
+      expect(await provider.properties('LP14355-9', ['sct'])).toEqual([
+        { code: 'sct', valueCoding: { system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20260101', code: '15373003', display: 'Creatinine (substance)' } }
+      ]);
+    });
+
     test('should extend lookup with properties and relationships', async () => {
       const testCode = expectedResults.basic.knownCodes[0];
       const paramSet = [];
@@ -1107,6 +1159,71 @@ describe('LOINC Provider', () => {
       params = [];
       await provider.extendLookup('LA6576-8', ['sct'], params);
       expect(mappingProps(params).map(p => p.value.code)).toEqual(['10828004']);
+    });
+
+    // LP14355-9 Creatinine is listed under LP31398-8 Renal function on two paths in
+    // ComponentHierarchyBySystem. It has that parent once, and is that part's child once
+    test('a part listed twice under the same parent has it as parent once', async () => {
+      const params = [];
+      await provider.extendLookup('LP14355-9', ['parent'], params);
+      const parents = params.filter(p => p.name === 'property' && p.part[0].valueCode === 'parent')
+        .map(p => p.part[1].valueCode);
+      expect(parents).toEqual(['LP31398-8']);
+
+      const rows = await new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
+        db.all(`SELECT COUNT(*) AS n FROM Relationships r, RelationshipTypes t, Codes s, Codes p
+                WHERE r.RelationshipTypeKey = t.RelationshipTypeKey AND t.Description = 'parent'
+                  AND r.SourceKey = s.CodeKey AND s.Code = 'LP14355-9'
+                  AND r.TargetKey = p.CodeKey AND p.Code = 'LP31398-8'`, (err, result) => {
+          db.close();
+          if (err) reject(err); else resolve(result);
+        });
+      });
+      expect(rows[0].n).toBe(1);
+
+      const parent = await provider.locate('LP31398-8');
+      const iter = await provider.iterator(parent.context);
+      const children = [];
+      for (let c = await provider.nextContext(iter); c; c = await provider.nextContext(iter)) {
+        children.push(c.code);
+      }
+      expect(children.filter(c => c === 'LP14355-9')).toEqual(['LP14355-9']);
+    });
+
+    // The LinguisticVariant files' axis columns translate the term's Parts. Some languages
+    // (ko-KR, most of fr-CA) have nothing else, so they are loaded as PartName designations on
+    // the Parts, and every language that has a variant file is then available
+    test('every linguistic variant language is loaded', async () => {
+      const dir = path.resolve(__dirname, '../../tx/data/loinc/AccessoryFiles/LinguisticVariants');
+      const fileLangs = fs.readdirSync(dir)
+        .map(f => f.match(/^([a-z]{2})([A-Z]{2})\d+LinguisticVariant\.csv$/))
+        .filter(m => m)
+        .map(m => m[1] + '-' + m[2])
+        .sort();
+      expect(fileLangs).toContain('ko-KR');
+      const rows = await new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
+        db.all(`SELECT DISTINCT Languages.Code AS Lang FROM Descriptions, Languages
+                WHERE Descriptions.LanguageKey = Languages.LanguageKey`, (err, result) => {
+          db.close();
+          if (err) reject(err); else resolve(result);
+        });
+      });
+      const loaded = rows.map(r => r.Lang);
+      expect(fileLangs.filter(l => !loaded.includes(l))).toEqual([]);
+    });
+
+    test('a Part has the translations of its axis as PartName designations', async () => {
+      // LP7753-9 Qn is the SCALE_TYP of 11702-8 (zh-CN 定量型) and of 10391-1 (ko-KR 정량)
+      const designations = new Designations(opContext.i18n.languageDefinitions);
+      await provider.designations('LP7753-9', designations);
+      const partNames = designations.designations
+        .filter(d => d.use && d.use.code === 'PartName')
+        .map(d => d.language.code + ' ' + d.value);
+      expect(partNames).toEqual(expect.arrayContaining(['zh-CN 定量型', 'ko-KR 정량']));
+      // and the display is not changed
+      expect(await provider.display('LP7753-9')).toBe('Qn');
     });
 
     test('an implicit map is offered for a code it has a mapping for', async () => {
@@ -1213,10 +1330,15 @@ describe('LOINC Provider', () => {
       expect(codes).not.toContain('100865-5'); // has a method
       expect(codes).not.toContain('LP190769-2'); // a Part
 
+      // the two filters come back as one set, their intersection - so its size is the
+      // include's size (count=0 is answered without walking it)
+      expect(sets.length).toBe(1);
+      expect(await provider.filterSize(filterContext, sets[0])).toBe(298);
+
       // membership checks agree with the expansion
       expect(await provider.filterLocate(filterContext, sets[0], '100007-4')).toBeTruthy();
       expect(await provider.filterLocate(filterContext, sets[0], '100865-5')).toBeNull();
-      expect(await provider.filterLocate(filterContext, sets[1], 'LP190769-2')).toBeNull();
+      expect(await provider.filterLocate(filterContext, sets[0], 'LP190769-2')).toBeNull();
     });
 
     test('exists only takes true or false', async () => {

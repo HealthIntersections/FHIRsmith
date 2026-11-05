@@ -10,6 +10,11 @@ const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
 
 // Persisted watermark for the phase-1b _lastUpdated scan.
 const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
+// Phase-2 work list of the sync in progress, and how far through it the sync has got.
+// Both are cleared when a run completes; if they are still there, the last run was
+// interrupted (server stopped) or failed, and the next run picks up what it didn't finish.
+const VSAC_PENDING_QUEUE_KEY = 'vsac_pending_queue';
+const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
@@ -110,6 +115,11 @@ class RecentValueSets {
 class VSACValueSetProvider extends AbstractValueSetProvider {
   SYNC_AT_START_UP = false;
 
+  // A value set asked for at a version VSAC doesn't have is not found, as for value sets from
+  // packages (#94). It used to be answered from the latest version: set this to true to go back
+  // to that
+  static VERSION_FALLBACK_TO_LATEST = false;
+
   /**
    * @param {Object} config - Configuration object
    * @param {string} config.apiKey - API key for VSAC authentication
@@ -207,6 +217,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     if (this.initialized) {
       return;
     }
+    // initialize() is re-entered by lookups while the first call is still syncing; only
+    // the first call checks for (and resumes) an incomplete sync
+    const firstCall = !this._startupChecked;
+    this._startupChecked = true;
     this.stats.addTask('VSAC Sync', `${this.refreshIntervalHours} hours`);
 
     // Create database if it doesn't exist
@@ -217,12 +231,90 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // connection. Count what is there (none, for a new database), so a
     // database with no value sets is synced now rather than at the first timer
     await this._recount();
-    if (this.SYNC_AT_START_UP || this.database.vsCount == 0) {
-      await this.refreshValueSets();
+    const incomplete = firstCall ? await this._incompleteSyncReason() : null;
+    if (this.SYNC_AT_START_UP || this.database.vsCount == 0 || incomplete) {
+      if (incomplete) {
+        console.log(`VSAC: ${incomplete} - resuming the sync now`);
+      }
+      try {
+        await this.refreshValueSets();
+      } catch (error) {
+        // already recorded by refreshValueSets; the timer below retries it
+        this.log.error(error, 'Error during VSAC sync at startup:');
+      }
     }
     // Start periodic refresh
     this._startRefreshTimer();
     this.initialized = true;
+  }
+
+  /**
+   * Whether the last sync didn't finish: it was cut short when the server stopped (its
+   * run is still marked 'running', or its work list is still saved), or it failed.
+   * Runs left marked 'running' are closed off as interrupted.
+   * @returns {Promise<string|null>} why a sync is needed now, or null if the last one completed
+   * @private
+   */
+  async _incompleteSyncReason() {
+    const lastRun = await this.database.getLastRun();
+    const interrupted = await this.database.markInterruptedRuns();
+    if (interrupted > 0) {
+      return 'the last sync was interrupted';
+    }
+    if ((await this.database.getSetting(VSAC_PENDING_QUEUE_KEY)) != null) {
+      return 'the last sync did not finish';
+    }
+    if (lastRun && lastRun.status === 'error') {
+      return 'the last sync failed';
+    }
+    return null;
+  }
+
+  /**
+   * The URLs an interrupted or failed run didn't get through: the in-flight URL and
+   * everything after it, plus first-pass failures it hadn't retried yet.
+   * @returns {Promise<string[]>}
+   * @private
+   */
+  async _loadPendingQueue() {
+    try {
+      const queue = JSON.parse(await this.database.getSetting(VSAC_PENDING_QUEUE_KEY) || '[]');
+      const progress = JSON.parse(await this.database.getSetting(VSAC_PENDING_PROGRESS_KEY) || '{}');
+      if (!Array.isArray(queue)) {
+        return [];
+      }
+      const requeue = Array.isArray(progress.requeue) ? progress.requeue : [];
+      return [...requeue.slice(progress.requeueDone || 0), ...queue.slice(progress.done || 0)];
+    } catch (error) {
+      debugLog(error);
+      return [];
+    }
+  }
+
+  /**
+   * Save the phase-2 work list, so a restart can pick up where this run stops
+   * @private
+   */
+  async _savePendingQueue(queue) {
+    await this.database.setSetting(VSAC_PENDING_QUEUE_KEY, JSON.stringify(queue));
+    await this._savePendingProgress({ done: 0, requeue: [], requeueDone: 0 });
+  }
+
+  /**
+   * @param {{done: number, requeue: string[], requeueDone: number}} progress - first-pass
+   *   URLs processed, the URLs that failed and are waiting for a retry, and retries done
+   * @private
+   */
+  async _savePendingProgress(progress) {
+    await this.database.setSetting(VSAC_PENDING_PROGRESS_KEY, JSON.stringify(progress));
+  }
+
+  /**
+   * @private
+   */
+  async _clearPendingQueue() {
+    await this.database.deleteSetting(VSAC_PENDING_QUEUE_KEY);
+    await this.database.deleteSetting(VSAC_PENDING_PROGRESS_KEY);
   }
 
   /**
@@ -322,8 +414,17 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       console.log(`VSAC refresh phase 1b done. ${lastUpdatedCount} additional items from _lastUpdated`);
       this.stats.task('VSAC Sync', `Phase 1b: ${lastUpdatedCount} from _lastUpdated`);
 
-      // deduplicate the queue
-      this.queue = [...new Set(this.queue)];
+      // Pick up what an interrupted or failed run didn't finish. Phase 1 only queues a
+      // URL whose current version is missing, so a URL that was part way through its
+      // versions would otherwise be missed. The leftovers go first, and the deduplicated
+      // queue is saved so that a restart can carry on from here.
+      const leftover = await this._loadPendingQueue();
+      if (leftover.length > 0) {
+        console.log(`VSAC: resuming ${leftover.length} value set(s) left over from the last sync`);
+        this.stats.task('VSAC Sync', `Resuming ${leftover.length} left over from the last sync`);
+      }
+      this.queue = [...new Set([...leftover, ...this.queue])];
+      await this._savePendingQueue(this.queue);
 
       let tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount : 0 };
       // URLs that fail even after a requeue are permanently dropped this run; we
@@ -331,6 +432,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       let permanentFailures = 0;
       // phase 2: query for history & content
       this.requeue = [];
+      const progress = { done: 0, requeue: this.requeue, requeueDone: 0 };
       for (let q of this.queue) {
         this.stats.task('VSAC History for '+q, `running (${tracking.totalFetched} fetched, ${tracking.totalNew} new, ${tracking.totalUpdated} updated)`);
         try {
@@ -341,6 +443,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           this.stats.task('VSAC Sync', error.message);
         }
         tracking.count++;
+        progress.done++;
+        await this._savePendingProgress(progress);
       }
       console.log("Requeue");
       for (let q of this.requeue) {
@@ -353,6 +457,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           this.stats.task('VSAC Sync', error.message);
         }
         tracking.count++;
+        progress.requeueDone++;
+        await this._savePendingProgress(progress);
       }
 
       // Recount, with the fresh data
@@ -370,6 +476,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         console.log(holdMsg);
         this.stats.task('VSAC Sync', holdMsg);
       }
+      // the work list is done (URLs that failed twice are re-found through the held watermark)
+      await this._clearPendingQueue();
 
       let msg = `VSAC refresh completed. Total: ${tracking.totalFetched} ValueSets, New: ${tracking.totalNew}, Updated: ${tracking.totalUpdated}`;
       this.stats.taskDone('VSAC Sync', msg);
@@ -663,8 +771,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       // Ignore version parsing errors
     }
 
-    // Finally try just the URL
-    if (versions.has(url)) {
+    // Finally try just the URL - only when no version was asked for (see VERSION_FALLBACK_TO_LATEST)
+    if ((!version || VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST) && versions.has(url)) {
       return versions.get(url);
     }
 

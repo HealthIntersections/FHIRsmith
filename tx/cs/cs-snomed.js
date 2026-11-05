@@ -19,6 +19,8 @@ const {debugLog} = require("../operation-context");
 const {editionName, editionCode} = require("../sct/editions");
 const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
 const Logger = require("../../library/logger");
+const {Language} = require("../../library/languages");
+const regexUtilities = require("../../library/regex-utilities");
 
 // Symbol key under which a resolved ECL filter analysis is memoised directly on
 // the ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
@@ -30,6 +32,7 @@ const Logger = require("../../library/logger");
 // _cacheEcl): a wildcard's materialised form depends on forIteration and is not
 // shared - it simply recomputes.
 const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
+const SNOMED_DISPLAY_REGEX = Symbol('snomedDisplayRegex');
 
 /**
  * Alternate identifier schemes (sct2_Identifier) that FHIRsmith knows how to present:
@@ -58,6 +61,8 @@ const SCT_LANGUAGE_CODES = {
   9: 'cs'
 };
 
+const SCT_LANGUAGE_BYTES = Object.fromEntries(Object.entries(SCT_LANGUAGE_CODES).map(([b, c]) => [c, Number(b)]));
+
 // ECL dialect aliases (ECL specification, appendix "Dialect aliases") to the
 // language reference set they denote. Used by {{ D dialect = en-gb }}.
 const ECL_DIALECT_ALIASES = {
@@ -77,6 +82,41 @@ const ECL_DIALECT_ALIASES = {
 };
 
 // Context kinds matching Pascal enum
+// The editions snomed.info can resolve an edition-specific concept link for: the same list as
+// SnomedUtilities.getEditionFromVersion in org.hl7.fhir.core. A code from any other edition
+// links to http://snomed.info/id/<code>.
+const SNOMED_LINKABLE_EDITIONS = new Set([
+  '900000000000207008', // International
+  '449081005', // International Spanish
+  '11000221109', // Argentinian
+  '32506021000036107', // Australian (with drug extension)
+  '11000234105', // Austrian
+  '11000172109', // Belgian
+  '20621000087109', // Canadian English
+  '20611000087101', // Canadian Canadian French
+  '21000325107', // Chilean
+  '11000279109', // Czech
+  '554471000005108', // Danish
+  '11000181102', // Estonian
+  '11000229106', // Finnish
+  '11000274103', // German
+  '1121000189102', // Indian
+  '11000220105', // Irish
+  '11000146104', // Netherlands
+  '21000210109', // New Zealand
+  '51000202101', // Norwegian
+  '11000267109', // Republic of Korea (South Korea)
+  '900000001000122104', // Spanish National
+  '45991000052106', // Swedish
+  '2011000195101', // Swiss
+  '83821000000107', // UK
+  '999000021000000109', // UK Clinical
+  '5631000179106', // Uruguay
+  '731000124108', // US
+  '5991000124107', // US (with ICD-10-CM maps)
+  '827022005' // IPS Terminology
+]);
+
 const SnomedProviderContextKind = {
   CODE: 0,
   EXPRESSION: 1
@@ -146,8 +186,9 @@ class SnomedFilterContext {
 }
 
 class SnomedPrep {
-  constructor() {
+  constructor(languages = null) {
     this.filters = [];
+    this.languages = languages; // the languages the request named, or null
   }
 }
 
@@ -659,6 +700,9 @@ class SnomedServices {
     }
   }
 
+  // The concept's active outbound relationships. Inactive rows are imported (they are in the
+  // cache) but ignored altogether, as agreed with the SNOMED leads: a retired row no longer
+  // describes the concept, so no filter, lookup or refinement may see it.
   getConceptRelationships(reference) {
     try {
       const concept = this.concepts.getConcept(reference);
@@ -666,7 +710,7 @@ class SnomedServices {
 
       if (relRef === 0) return [];
 
-      return this.refs.getReferences(relRef) || [];
+      return (this.refs.getReferences(relRef) || []).filter(relIdx => this.relationships.isActive(relIdx));
     } catch (error) {
       return [];
     }
@@ -839,6 +883,35 @@ class SnomedServices {
     return result;
   }
 
+  // descendent-leaf (R5): the concept's descendants that have no children of their own
+  filterDescendentLeaf(id) {
+    const result = new SnomedFilterContext();
+    const conceptResult = this.concepts.findConcept(id);
+
+    if (!conceptResult.found) {
+      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+    }
+
+    result.descendants = this.getConceptDescendants(conceptResult.index)
+      .filter(ref => this.getConceptChildren(ref).length === 0);
+    return result;
+  }
+
+  // is-not-a (R5): every concept except the concept itself and its descendants - the
+  // same population as the ECL * MINUS << id
+  filterIsNotA(id, opContext = null) {
+    const result = new SnomedFilterContext();
+    const conceptResult = this.concepts.findConcept(id);
+
+    if (!conceptResult.found) {
+      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+    }
+
+    const excluded = new Set([conceptResult.index, ...this.getConceptDescendants(conceptResult.index)]);
+    result.descendants = this._eclEnumerateAllConcepts(opContext).filter(ref => !excluded.has(ref));
+    return result;
+  }
+
   filterChildOf(id = true) {
     const result = new SnomedFilterContext();
     const conceptResult = this.concepts.findConcept(id);
@@ -886,10 +959,25 @@ class SnomedServices {
   }
 
 
+  // concept in A,B,C: any of the listed concepts; a listed reference set stands for its
+  // members. Members are kept as reference set member records ({ref}), which is what every
+  // consumer of set.members reads, so a plain concept is wrapped the same way; and each
+  // concept appears once, however many times it is named or reached.
   filterIn(idList) {
     const result = new SnomedFilterContext();
-    let members = [];
+    const members = [];
+    const seen = new Set();
+    const add = (member) => {
+      if (!seen.has(member.ref)) {
+        seen.add(member.ref);
+        members.push(member);
+      }
+    };
     for (let id of idList.split(',')) {
+      id = id.trim();
+      if (!id) {
+        continue;
+      }
       const conceptResult = this.concepts.findConcept(id);
 
       if (!conceptResult.found) {
@@ -898,9 +986,11 @@ class SnomedServices {
 
       const refSetIndex = this.getConceptRefSet(conceptResult.index, false);
       if (refSetIndex === 0) {
-        members.push(conceptResult.index);
+        add({ ref: conceptResult.index });
       } else {
-        members.push(...this.refSetMembers.getMembers(refSetIndex));
+        for (const member of this.refSetMembers.getMembers(refSetIndex) || []) {
+          add(member);
+        }
       }
     }
     result.members = members;
@@ -2439,16 +2529,20 @@ class SnomedServices {
    * matches for a typical multi-word filter, with the event loop blocked for
    * the whole scan (tx.fhir.org incident 2026-09-17).
    *
+   * Only descriptions in `lang` take part, when it is given (a text filter searches one
+   * language: see SnomedProvider.searchFilter).
+   *
    * @param {SearchFilterText} searchText
    * @param {boolean} includeInactive - include inactive concepts
    * @param {OperationContext|null} opContext - for yielding / deadline checks
+   * @param {number|null} lang - the description language byte, or null for all
    * @returns {Promise<SnomedFilterContext>}
    */
-  async searchFilter(searchText, includeInactive = false, opContext = null) {
+  async searchFilter(searchText, includeInactive = false, opContext = null, lang = null) {
     const filterText = (searchText && searchText.filter ? searchText.filter : '').toLowerCase().trim();
     const tokens = filterTokens(filterText);
     if (tokens.length > 0) {
-      const index = await this.getTextIndex(opContext);
+      const index = await this.getTextIndex(opContext, lang);
       if (index) {
         const result = new SnomedFilterContext();
         const ordinals = index.search(tokens, opContext);
@@ -2459,7 +2553,16 @@ class SnomedServices {
         return result;
       }
     }
-    return await this.scanSearch(filterText, includeInactive, opContext);
+    return await this.scanSearch(filterText, includeInactive, opContext, lang);
+  }
+
+  // whether lang is the only language the edition has active descriptions in (then there is
+  // nothing to restrict - the International Edition is all English)
+  #onlyLanguage(lang) {
+    if (!this._activeDescLanguages) {
+      this._activeDescLanguages = this.descriptions.activeLanguages();
+    }
+    return this._activeDescLanguages.size === 1 && this._activeDescLanguages.has(lang);
   }
 
   /**
@@ -2470,28 +2573,53 @@ class SnomedServices {
    * @param {OperationContext|null} opContext
    * @returns {Promise<SnomedTextIndex|null>}
    */
-  async getTextIndex(opContext = null) {
-    if (this._textIndex) {
-      return this._textIndex;
+  async getTextIndex(opContext = null, lang = null) {
+    // One index per language the edition is searched in; an edition with only one language
+    // (the International Edition) has just the one, for all its descriptions
+    if (lang === null || this.#onlyLanguage(lang)) {
+      if (this._textIndex) {
+        return this._textIndex;
+      }
+      if (!this._textIndexPromise) {
+        this._textIndexPromise = this.#buildTextIndex(null, index => { this._textIndex = index; }, () => { this._textIndexPromise = null; });
+      }
+      return await this.#awaitTextIndex(this._textIndexPromise, opContext);
     }
-    if (!this._textIndexPromise) {
-      const started = Date.now();
-      // Logger fetched lazily: importers and tests require this module too
-      const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
-      this._textIndexPromise = SnomedTextIndex.build(this).then(index => {
-        this._textIndex = index;
-        textIndexLog.info(`SNOMED text index for ${this.versionUri}: ${index.words.length} words, built in ${Date.now() - started}ms`);
-        return index;
-      }, error => {
-        this._textIndexPromise = null;
-        textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}: ${error.message}`);
-        return null;
-      });
+    if (!this._textIndexes) {
+      this._textIndexes = new Map();
+      this._textIndexPromises = new Map();
     }
+    if (this._textIndexes.has(lang)) {
+      return this._textIndexes.get(lang);
+    }
+    if (!this._textIndexPromises.has(lang)) {
+      this._textIndexPromises.set(lang, this.#buildTextIndex(lang, index => { this._textIndexes.set(lang, index); },
+        () => { this._textIndexPromises.delete(lang); }));
+    }
+    return await this.#awaitTextIndex(this._textIndexPromises.get(lang), opContext);
+  }
+
+  #buildTextIndex(lang, onBuilt, onFailed) {
+    const started = Date.now();
+    // Logger fetched lazily: importers and tests require this module too
+    const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
+    const which = lang === null ? '' : ` (language ${lang})`;
+    return SnomedTextIndex.build(this, lang).then(index => {
+      onBuilt(index);
+      textIndexLog.info(`SNOMED text index for ${this.versionUri}${which}: ${index.words.length} words, built in ${Date.now() - started}ms`);
+      return index;
+    }, error => {
+      onFailed();
+      textIndexLog.error(`SNOMED text index build failed for ${this.versionUri}${which}: ${error.message}`);
+      return null;
+    });
+  }
+
+  async #awaitTextIndex(promise, opContext) {
     if (opContext && typeof opContext.waitFor === 'function') {
-      return await opContext.waitFor(this._textIndexPromise, 'sct:textIndex');
+      return await opContext.waitFor(promise, 'sct:textIndex');
     }
-    return await this._textIndexPromise;
+    return await promise;
   }
 
   /**
@@ -2505,7 +2633,7 @@ class SnomedServices {
    * @param {OperationContext|null} opContext
    * @returns {Promise<SnomedFilterContext>}
    */
-  async scanSearch(filterText, includeInactive = false, opContext = null) {
+  async scanSearch(filterText, includeInactive = false, opContext = null, lang = null) {
     const result = new SnomedFilterContext();
     const searchTerms = filterText.split(/\s+/).filter(t => t.length > 0);
     const matches = [];
@@ -2537,7 +2665,7 @@ class SnomedServices {
 
         for (const descIndex of descriptionIndices) {
           const description = this.descriptions.getDescription(descIndex);
-          if (description.active) {
+          if (description.active && (lang === null || description.lang === lang)) {
             const term = this.strings.getEntry(description.iDesc).toLowerCase();
             if (searchTerms.every(searchTerm => term.includes(searchTerm))) {
               matchFound = true;
@@ -3009,15 +3137,50 @@ class SnomedProvider extends BaseCSServices {
     return SnomedExpressionContext.fromReference(key);
   }
 
+  // The FHIR value for a concrete value in $lookup. A number is typed by the attribute's MRCM
+  // range where it has one - so #4000 for a dec() attribute is a decimal, as the concept model
+  // defines it - and otherwise by how it is written (#4000 an integer, #2.5 a decimal).
+  #concreteLookupValue(cv) {
+    const c = cv.concrete;
+    switch (c.kind) {
+      case 'string':
+        return { valueString: c.value };
+      case 'boolean':
+        return { valueBoolean: c.value };
+      case 'number': {
+        let type = c.decimal ? 'dec' : 'int';
+        const services = this.sct.expressionServices;
+        const constraint = services && services.mrcmAttributeRanges ? services.mrcmAttributeRanges().get(cv.relType) : null;
+        const range = constraint ? services.parseConcreteRange(constraint) : null;
+        if (range && (range.type === 'dec' || range.type === 'int')) {
+          type = range.type;
+        }
+        return type === 'int' && Number.isInteger(c.value) ? { valueInteger: c.value } : { valueDecimal: c.value };
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(context, props, params) {
     const ctxt = await this.#ensureContext(context);
     if (ctxt) {
       if (!(ctxt instanceof SnomedExpressionContext) || ctxt.expression?.concepts.length == 1) {
-        // Only what was asked for, if anything was (see _hasProp): effectiveTime, module,
+        // Only what was asked for, if anything was (see _hasProp): effectiveTime, moduleId,
         // parent, child and the defining relationships are returned by default but are not
         // important enough to return when the client named the properties it wants.
         // The mappings (alternate identifiers such as the LOINC code) are returned by
-        // default too, and when asked for by name.
+        // default too, and when asked for by name. property=* asks for every property the
+        // SNOMED CT on FHIR page defines (adding sufficientlyDefined and semanticTag) except
+        // the normal forms, which are computed and have to be asked for by name.
         if (this._hasProp(props, 'effectiveTime', true)) {
           const time = this.sct.concepts.getConcept(ctxt.getReference()).effectiveTime;
           // Pascal TDateTime epoch (1899-12-30) computed in UTC so the formatted
@@ -3047,11 +3210,35 @@ class SnomedProvider extends BaseCSServices {
           }
         }
 
-        if (this._hasProp(props, 'module', true)) {
+        // moduleId, as the SNOMED CT on FHIR page names it ("module" is still understood)
+        if (this._hasProp(props, 'moduleId', true) || SnomedProvider.#askedFor(props, 'module')) {
           const moduleId = this.sct.concepts.getModuleId(ctxt.getReference());
           if (moduleId) {
             const code = this.sct.getConceptId(moduleId);
-            this._addCodeProperty(params, 'property', 'module', code, null, this.sct.getDisplayName(moduleId));
+            this._addCodeProperty(params, 'property', 'moduleId', code, null, this.sct.getDisplayName(moduleId));
+          }
+        }
+
+        // returned for property=* or by name, not by default
+        if (this._hasProp(props, 'sufficientlyDefined', false)) {
+          params.push({
+            name: 'property',
+            part: [
+              {name: 'code', valueCode: 'sufficientlyDefined'},
+              {name: 'value', valueBoolean: !this.sct.isPrimitive(ctxt.getReference())}
+            ]
+          });
+        }
+        if (this._hasProp(props, 'semanticTag', false)) {
+          const tag = this.#semanticTag(ctxt.getReference());
+          if (tag) {
+            params.push({
+              name: 'property',
+              part: [
+                {name: 'code', valueCode: 'semanticTag'},
+                {name: 'value', valueString: tag}
+              ]
+            });
           }
         }
 
@@ -3072,8 +3259,28 @@ class SnomedProvider extends BaseCSServices {
           }
         }
 
+        // concrete values (strengths, counts, ...): not relationships to concepts, so held apart
+        for (const cv of (this.sct.concreteValues && this.sct.concreteValues.get(ctxt.getReference())) || []) {
+          const relType = this.sct.getConceptId(cv.relType);
+          if (this._hasProp(props, relType, true)) {
+            const value = this.#concreteLookupValue(cv);
+            if (value) {
+              params.push({
+                name: 'property',
+                part: [
+                  {name: 'code', valueCode: relType},
+                  {name: 'value', ...value},
+                  {name: 'code-display', valueString: this.sct.getDisplayName(cv.relType)}
+                ]
+              });
+            }
+          }
+        }
+
         this.#addMappingProperties(ctxt, props, params);
       }
+      // the normal forms: only when asked for by name (not by default, not by property=*)
+      this.#addNormalFormProperties(ctxt, props, params);
       if (ctxt instanceof SnomedExpressionContext) {
         // ignore concepts for now, but list refinements and refinement groups
         for (const refinement of ctxt.expression.refinements) {
@@ -3085,6 +3292,63 @@ class SnomedProvider extends BaseCSServices {
           }
         }
       }
+    }
+  }
+
+  // Whether props names this property explicitly (property=* does not count)
+  static #askedFor(props, name) {
+    const lower = name.toLowerCase();
+    return !!props && props.some(p => p && p.toLowerCase() === lower);
+  }
+
+  // The semantic tag: the bracketed suffix of the concept's active fully specified name
+  #semanticTag(reference) {
+    const K = this.sct._displayConstants();
+    const concept = this.sct.concepts.getConcept(reference);
+    const descIndices = concept.descriptions ? (this.sct.refs.getReferences(concept.descriptions) || []) : [];
+    for (const descIndex of descIndices) {
+      const d = this.sct.descriptions.getDescription(descIndex);
+      if (d.active && d.kind === K.fsn) {
+        const m = /\(([^()]+)\)\s*$/.exec(this.sct.strings.getEntry(d.iDesc));
+        if (m) {
+          return m[1];
+        }
+      }
+    }
+    return null;
+  }
+
+  // normalForm (with terms) and normalFormTerse (without), for a concept or an expression
+  #addNormalFormProperties(ctxt, props, params) {
+    const wantFull = SnomedProvider.#askedFor(props, 'normalForm');
+    const wantTerse = SnomedProvider.#askedFor(props, 'normalFormTerse');
+    if (!wantFull && !wantTerse) {
+      return;
+    }
+    const services = this.sct.expressionServices;
+    let nf;
+    if (ctxt instanceof SnomedExpressionContext && ctxt.isComplex()) {
+      nf = services.normaliseExpression(ctxt.expression);
+    } else {
+      nf = services.createNormalForm(ctxt.getReference());
+    }
+    if (wantFull) {
+      params.push({
+        name: 'property',
+        part: [
+          {name: 'code', valueCode: 'normalForm'},
+          {name: 'value', valueString: services.renderExpression(nf, SnomedServicesRenderOption.FillMissing)}
+        ]
+      });
+    }
+    if (wantTerse) {
+      params.push({
+        name: 'property',
+        part: [
+          {name: 'code', valueCode: 'normalFormTerse'},
+          {name: 'value', valueString: services.renderExpression(nf, SnomedServicesRenderOption.Minimal)}
+        ]
+      });
     }
   }
 
@@ -3131,15 +3395,16 @@ class SnomedProvider extends BaseCSServices {
 
   // Filter support
   async doesFilter(prop, op, value) {
+    prop = SnomedProvider.#filterProperty(prop);
     if (prop === 'concept') {
       const id = this.sct.stringToIdOrZero(value);
-      if (id !== 0n && ['=', 'is-a', 'descendent-of', 'in', 'generalizes', 'child-of'].includes(op)) {
+      if (id !== 0n && ['=', 'is-a', 'descendent-of', 'in', 'generalizes', 'child-of', 'descendent-leaf', 'is-not-a'].includes(op)) {
         return this.sct.conceptExists(value);
       }
       if (op === 'in' && value.includes(',')) {
         let ok = true;
         for (const idStr of value.split(',')) {
-          const id = this.sct.stringToIdOrZero(idStr);
+          const id = this.sct.stringToIdOrZero(idStr.trim());
           if (id === 0n) {
             ok = false;
             break;
@@ -3150,6 +3415,15 @@ class SnomedProvider extends BaseCSServices {
     }
     if (prop === 'inactive') {
       return op === '=' && ['true', 'false'].includes(value);
+    }
+
+    if (prop === 'display' && op === 'regex') {
+      try {
+        SnomedProvider.#displayRegex(value);
+        return true;
+      } catch (e) {
+        return false;
+      }
     }
 
     if (prop === 'moduleId') {
@@ -3179,9 +3453,8 @@ class SnomedProvider extends BaseCSServices {
   }
 
   // eslint-disable-next-line no-unused-vars
-  async getPrepContext(iterate) {
-
-    return new SnomedPrep(); // Simple filter context
+  async getPrepContext(iterate, languages = null) {
+    return new SnomedPrep(languages);
   }
 
   // Cache key pinning resolved analysis to the SNOMED edition url + version.
@@ -3233,7 +3506,84 @@ class SnomedProvider extends BaseCSServices {
     });
   }
 
+  // Value sets in production say "code" where SNOMED defines "concept" (users don't tell
+  // them apart), so the two are the same filter property here, as they are for code
+  // systems defined as resources (cs-cs.js).
+  static #filterProperty(prop) {
+    return prop === 'code' ? 'concept' : prop;
+  }
+
+  // display regex: matches a concept with an active description (FSN or synonym - a text
+  // definition is not a display), in one language, whose whole term matches the pattern
+  // (anchored, as for regex filters on code systems defined as resources), case-sensitively. RE2, so no catastrophic backtracking. The language is
+  // the first one the request named that the edition has descriptions in, else the
+  // edition's default.
+  static #displayRegex(pattern) {
+    return regexUtilities.compile('^(?:' + pattern + ')$');
+  }
+
+  #filterLanguage(languages) {
+    if (!this.sct._activeDescLanguages) {
+      this.sct._activeDescLanguages = this.sct.descriptions.activeLanguages();
+    }
+    const present = this.sct._activeDescLanguages;
+    for (const lang of languages || []) {
+      const code = SCT_LANGUAGE_BYTES[(lang.language || '').toLowerCase()];
+      if (code !== undefined && present.has(code)) {
+        return code;
+      }
+    }
+    return this.sct.defaultLanguage || 1;
+  }
+
+  // the concept index of 900000000000550004 |Definition|, or -1
+  #definitionKind() {
+    if (this.sct._definitionKind === undefined) {
+      const r = this.sct.concepts.findConcept(900000000000550004n);
+      this.sct._definitionKind = r.found ? r.index : -1;
+    }
+    return this.sct._definitionKind;
+  }
+
+  #displayMatches(set, reference) {
+    const definition = this.#definitionKind();
+    const concept = this.sct.concepts.getConcept(reference);
+    const descIndices = concept.descriptions ? (this.sct.refs.getReferences(concept.descriptions) || []) : [];
+    for (const descIndex of descIndices) {
+      const d = this.sct.descriptions.getDescription(descIndex);
+      if (d.active && d.lang === set.displayLang && d.kind !== definition && set.displayRegex.test(this.sct.strings.getEntry(d.iDesc))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The scan for an iterated display regex: every active description in the language,
+  // a chunk at a time, yielding between chunks so the server keeps serving meanwhile.
+  async #populateDisplayRegex(set) {
+    if (set.populationDone) {
+      return;
+    }
+    const CHUNK = 10000;
+    const found = new Set();
+    const test = (term) => set.displayRegex.test(term);
+    const definition = this.#definitionKind();
+    let count = Infinity;
+    for (let start = 0; start < count; start += CHUNK) {
+      if (this.opContext) {
+        await this.opContext.checkAndYield('snomed:displayRegex');
+      }
+      count = this.sct.descriptions.matchActiveTerms(start, start + CHUNK, set.displayLang, this.sct.strings, test, found, definition);
+    }
+    set.descendants = [...found].sort((a, b) => a - b);
+    set.populationDone = true;
+    if (set.displayCache) {
+      set.displayCache.map.set(set.displayCache.key, set.descendants);
+    }
+  }
+
   async filter(filterContext, forIteration, prop, op, value, fc) {
+    prop = SnomedProvider.#filterProperty(prop);
 
     if (prop === 'concept') {
       const id = this.sct.stringToIdOrZero(value);
@@ -3262,6 +3612,14 @@ class SnomedProvider extends BaseCSServices {
           filterContext.filters.push(this.sct.filterGeneralizes(id, false));
           return null;
         }
+        case 'descendent-leaf': {
+          filterContext.filters.push(this.sct.filterDescendentLeaf(id));
+          return null;
+        }
+        case 'is-not-a': {
+          filterContext.filters.push(this.sct.filterIsNotA(id, this.opContext));
+          return null;
+        }
         case 'in': {
           filterContext.filters.push(this.sct.filterIn(value));
           return null;
@@ -3269,6 +3627,31 @@ class SnomedProvider extends BaseCSServices {
         default:
           throw new Error(`Unsupported filter operation: concept ${op} ${value}`);
       }
+    }
+
+    if (prop === 'display' && op === 'regex') {
+      const result = new SnomedFilterContext();
+      result.displayRegex = SnomedProvider.#displayRegex(value);
+      result.displayLang = this.#filterLanguage(filterContext.languages);
+      // Like ECL, a cached value set's filter keeps what it resolved to: here, per edition
+      // and language, the concepts the scan found, so the scan is paid once.
+      if (fc) {
+        let map = fc[SNOMED_DISPLAY_REGEX];
+        if (!map) {
+          map = new Map();
+          Object.defineProperty(fc, SNOMED_DISPLAY_REGEX, { value: map, enumerable: false, configurable: true, writable: true });
+        }
+        const key = this._snomedFilterCacheKey() + '|' + result.displayLang;
+        const cached = map.get(key);
+        if (cached) {
+          result.descendants = cached;
+          result.populationDone = true;
+        } else {
+          result.displayCache = { map, key };
+        }
+      }
+      filterContext.filters.push(result);
+      return null;
     }
 
     if (prop === 'inactive') {
@@ -3383,6 +3766,9 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async filterSize(filterContext, set) {
+    if (set.displayRegex) {
+      await this.#populateDisplayRegex(set);
+    }
     // A wildcard (`*`) set is lazy - it carries the eclWildcard flag rather than a
     // materialised descendant list - so count the active concepts it denotes.
     if (set.eclWildcard && (!set.descendants || set.descendants.length === 0)) {
@@ -3401,6 +3787,9 @@ class SnomedProvider extends BaseCSServices {
 
   async filterMore(filterContext, set) {
     set.cursor = set.cursor || 0;
+    if (set.displayRegex) {
+      await this.#populateDisplayRegex(set);
+    }
     this.#ensurePopulated(set);
     const size = await this.filterSize(filterContext, set);
     return set.cursor < size;
@@ -3459,6 +3848,8 @@ class SnomedProvider extends BaseCSServices {
       let concept = this.sct.concepts.getConcept(reference);
       let moduleId = this.sct.concepts.getModuleId(concept.index);
       found = moduleId === set.moduleId;
+    } else if (set.displayRegex) {
+      found = this.#displayMatches(set, reference);
     } else if (set.propProp || set.propValue) {
       found = false;
       const relationships = this.sct.getConceptRelationships(reference);
@@ -3506,6 +3897,10 @@ class SnomedProvider extends BaseCSServices {
 
     if (set.moduleId) {
       return this.sct.concepts.getModuleId(reference) === set.moduleId;
+    }
+
+    if (set.displayRegex) {
+      return this.#displayMatches(set, reference);
     }
 
     if (set.propProp || set.propValue) {
@@ -3628,8 +4023,23 @@ class SnomedProvider extends BaseCSServices {
   // Search filter
   // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
-    // `sort` is not a match-mode flag: results are always ranked.
-    let f = await this.sct.searchFilter(filter, false, this.opContext);
+    // `sort` is not a match-mode flag: results are always ranked. Only descriptions in one
+    // language take part, chosen as for the display filter: the first language the request
+    // names that the edition has descriptions in, else the edition's default; and the codes
+    // whose designations in that language, in a supplement in use, match
+    const lang = this.#filterLanguage(filterContext.languages);
+    let f = await this.sct.searchFilter(filter, false, this.opContext, lang);
+    if (this.supplements && this.supplements.length > 0) {
+      const have = new Set(f.matches.map(m => m.index));
+      for (const code of this._supplementSearchCodes(filter, new Language(SCT_LANGUAGE_CODES[lang] || 'en'))) {
+        const id = this.sct.stringToIdOrZero(code);
+        const r = id !== 0n ? this.sct.concepts.findConcept(id) : null;
+        if (r && r.found && !have.has(r.index) && this.sct.isActive(r.index)) {
+          f.matches.push({ index: r.index, term: this.sct.concepts.getConceptId(r.index), priority: 10 });
+          have.add(r.index);
+        }
+      }
+    }
     filterContext.filters.push(f);
     return f;
   }
@@ -3994,9 +4404,12 @@ class SnomedProvider extends BaseCSServices {
  * Factory for creating SNOMED services and providers
  */
 class SnomedServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, filePath) {
+  constructor(i18n, filePath, loadMode = 'read', log = null) {
     super(i18n);
     this.filePath = filePath;
+    this.loadMode = loadMode; // 'read', 'mmap' or 'prewarm' - see SnomedFileReader
+    this.log = log;
+    this.mapped = false;      // set by load(): whether the cache file really is memory-mapped
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -4008,6 +4421,26 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 
   version() {
     return this._sharedData.versionUri;
+  }
+
+  /**
+   * A concept links to snomed.info, which redirects to a browser: in its edition when that is
+   * one snomed.info knows, otherwise without an edition. An expression links to the browser's
+   * home page. The same links as SnomedUtilities.getSctLink in org.hl7.fhir.core.
+   */
+  codeLink(context) {
+    if (!context || !context.expression) {
+      return undefined;
+    }
+    const code = context.isSimple() ? (context.source || context.expression.concepts[0].code) : null;
+    if (!code || !/^\d+$/.test(code)) {
+      return 'https://browser.ihtsdotools.org/';
+    }
+    const m = /^http:\/\/snomed\.info\/sct\/(\d+)/.exec(this.version() || '');
+    if (m && SNOMED_LINKABLE_EDITIONS.has(m[1])) {
+      return `http://snomed.info/sct/${m[1]}/id/${code}`;
+    }
+    return `http://snomed.info/id/${code}`;
   }
 
   getPartialVersion() {
@@ -4028,39 +4461,86 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
    *   http://snomed.info/sct?fhir_vs=refset             – list of reference sets
    *   http://snomed.info/sct?fhir_vs=refset/<id>        – members of a reference set
    *   http://snomed.info/sct?fhir_vs=isa/<id>           – concept and descendants
+   *   http://snomed.info/sct?fhir_vs=ecl/<ecl>          – the concepts an ECL expression selects
    *
    * The URL may optionally include edition and/or version segments:
    *   http://snomed.info/sct/<edition>?fhir_vs...
    *   http://snomed.info/sct/<edition>/version/<ver>?fhir_vs...
    *
+   * Which edition and version the value set is drawn from is the provider's choice, made
+   * with implicitValueSetForm(): the generic form from the default edition, the edition
+   * form from the latest version of that edition, the version form from that version.
+   * For the edition and version forms, the value set's include names this version, so that
+   * it is expanded against it; the generic form leaves the version to the request.
+   *
    * @param {string} url - The ValueSet URL to resolve
    * @returns {object|null} A FHIR ValueSet JSON object, or null if the URL is not recognised
    */
   async buildKnownValueSet(url, version) {
-    if (!url.startsWith("http://snomed.info/sct")) {
+    if (!url.startsWith('http://snomed.info/')) {
       return null;
     }
+    await this.#ensureLoaded();
     if (version != null && !this.version().startsWith(version)) {
       return null;
     }
+    const form = this.implicitValueSetForm(url);
+    if (!form) {
+      return null;
+    }
+    const id = form.query;
+    const vs = await this.#buildImplicitValueSet(url, id);
+    if (vs && form.form !== 'generic') {
+      for (const include of vs.compose.include) {
+        include.version = this.version();
+      }
+    }
+    return vs;
+  }
 
-    const URI_SNOMED = 'http://snomed.info/sct';
-
-    // Extract the query portion (?fhir_vs...) if this is a recognised SNOMED implicit VS URL
-    let id = null;
-    const qIdx = url.indexOf('?');
+  /**
+   * Whether url is an implicit value set of this edition, and in which form:
+   *   generic - http://snomed.info/sct?fhir_vs...              (any edition)
+   *   edition - http://snomed.info/sct/<edition>?fhir_vs...    (this edition, no version given)
+   *   version - http://snomed.info/sct/<edition>/version/<date>?fhir_vs... (this version)
+   * The edition and version forms are also recognised under this version's own base
+   * (http://snomed.info/xsct/... for the test edition).
+   *
+   * @param {string} url
+   * @returns {{form: string, query: string}|null}
+   */
+  implicitValueSetForm(url) {
+    if (!url || !this._sharedData) {
+      return null;
+    }
+    const qIdx = url.indexOf('?fhir_vs');
     if (qIdx === -1) {
       return null;
     }
-
-    if (url.startsWith('http://snomed.info/sct?fhir_vs') ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}?fhir_vs`) ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version()}?fhir_vs`)) {
-      id = url.substring(qIdx);
-    } else {
+    const base = url.substring(0, qIdx);
+    const query = url.substring(qIdx);
+    if (query !== '?fhir_vs' && !query.startsWith('?fhir_vs=')) {
       return null;
     }
+    const versionUri = this.version();
+    const edition = this._sharedData.edition;
+    const date = this._sharedData.version;
+    const editionBases = new Set([`http://snomed.info/sct/${edition}`, this.getPartialVersion()]);
+    const versionBases = new Set([versionUri, `http://snomed.info/sct/${edition}/version/${date}`]);
+    if (base === 'http://snomed.info/sct') {
+      return { form: 'generic', query };
+    }
+    if (editionBases.has(base)) {
+      return { form: 'edition', query };
+    }
+    if (versionBases.has(base)) {
+      return { form: 'version', query };
+    }
+    return null;
+  }
 
+  async #buildImplicitValueSet(url, id) {
+    const URI_SNOMED = 'http://snomed.info/sct';
     const now = new Date().toISOString();
 
     if (id === '?fhir_vs=refset') {
@@ -4074,7 +4554,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTReferenceSetList',
         title: 'SNOMED CT Reference Set List',
         description: 'Reference Sets defined in this SNOMED-CT version',
@@ -4094,7 +4573,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'ALLSNOMEDCT',
         title: 'SNOMED CT Reference Set (All of SNOMED CT)',
         description: 'SNOMED CT Reference Set (All of SNOMED CT)',
@@ -4121,7 +4599,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTRefSet' + refsetId,
         title: 'SNOMED CT Reference Set ' + refsetId,
         description: this.snomedServices.getDisplayName(ref.index),
@@ -4139,6 +4616,38 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
       };
     }
 
+    if (id.startsWith('?fhir_vs=ecl/')) {
+      // the ECL is URL-encoded in the value set URL; accept it already decoded as well
+      let ecl = id.substring(13);
+      try {
+        ecl = decodeURIComponent(ecl);
+      } catch (e) {
+        // not encoded (or not validly): use it as it stands
+      }
+      if (!ecl.trim()) {
+        return null;
+      }
+      return {
+        resourceType: 'ValueSet',
+        url,
+        status: 'active',
+        name: 'SNOMEDCTECL',
+        title: 'SNOMED CT ECL ' + ecl,
+        description: 'The SNOMED CT concepts selected by the expression constraint ' + ecl,
+        date: now,
+        compose: {
+          include: [{
+            system: URI_SNOMED,
+            filter: [{
+              property: 'constraint',
+              op: '=',
+              value: ecl,
+            }],
+          }],
+        },
+      };
+    }
+
     if (id.startsWith('?fhir_vs=isa/')) {
       const conceptId = id.substring(13);
       let ref = this.snomedServices.concepts.findConcept(conceptId);
@@ -4149,7 +4658,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTConcept' + conceptId,
         title: 'SNOMED CT Concept ' + conceptId + ' and descendants',
         description: 'All Snomed CT concepts for ' + this.snomedServices.getDisplayName(ref.index),
@@ -4176,8 +4684,9 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
   }
 
   async load() {
-    const reader = new SnomedFileReader(this.filePath);
+    const reader = new SnomedFileReader(this.filePath, this.loadMode, this.log);
     this._sharedData = await reader.loadSnomedData();
+    this.mapped = reader.mapped;
     this.snomedServices = new SnomedServices(this._sharedData);
     this._loaded = true;
   }

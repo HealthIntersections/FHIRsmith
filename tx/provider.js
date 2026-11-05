@@ -1,3 +1,4 @@
+const { chooseImplicitValueSetFactory } = require('./library/implicit-valuesets');
 const { CodeSystem } = require("./library/codesystem");
 const { assertNoActiveContent } = require('../library/narrative-check');
 const {VersionUtilities} = require("../library/version-utilities");
@@ -11,6 +12,38 @@ const {PackageValueSetProvider} = require("./vs/vs-package");
 const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
+const { CodeSystemFactoryProvider } = require("./cs/cs-api");
+
+/**
+ * The code system providers resolveCode() has built, per operation: opContext ->
+ * Map(factory -> Promise of the provider). A page asks resolveCode about every code it
+ * shows, and for a database-backed code system each build opens a connection that stays
+ * open until the request ends, so one is built per code system and version, and reused.
+ * Keyed weakly, so the entry goes when the operation does.
+ */
+const resolveCodeProviders = new WeakMap();
+
+/**
+ * How many codes resolveCodes() locates at once. Enough to keep a database-backed code
+ * system busy without queueing a whole page's worth of queries at the same time.
+ */
+const RESOLVE_CODES_CONCURRENCY = 8;
+
+/**
+ * fn over items, at most `limit` at a time, with the results in the order of the items.
+ */
+async function mapConcurrently(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
 
 /**
  * This class holds what information is in context
@@ -23,6 +56,86 @@ const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
  * - a list of concept map providers that can provide concept map instances
  *
  */
+/**
+ * The provider's CodeSystem map (keys url and url|version), with an index of the CodeSystems it
+ * holds by the url they supplement, so that loadSupplements() looks only at those instead of
+ * every loaded CodeSystem on every code-system lookup.
+ *
+ * The index is part of the map, not a cache: set, delete and clear are the only ways to change a
+ * Map, and each updates the index in the same call. Provider.addCodeSystem and deleteCodeSystem
+ * are the only callers that change this map.
+ *
+ * supplementsOf(url) gives every value whose CodeSystem.isSupplementFor(url, version) can be
+ * true, in the map's own order, and possibly some for which it is false; loadSupplements still
+ * asks isSupplementFor of each. isSupplementFor is true only when `supplements` equals url or
+ * starts with url + '|', and then the part of `supplements` before any '|' is the part of url
+ * before any '|': that is the index key.
+ */
+class CodeSystemMap extends Map {
+  constructor(entries) {
+    super();
+    this.supplementIndex = new Map(); // key used by supplementsOf -> Set of map keys
+    this.indexedUnder = new Map();    // map key -> its key in supplementIndex
+    this.position = new Map();        // map key -> insertion number, to keep the map's order
+    this.nextPosition = 0;
+    if (entries) {
+      for (const [k, v] of entries) this.set(k, v);
+    }
+  }
+
+  /** the index key for a url, or for a CodeSystem's supplements value: the part before any '|' */
+  static indexKey(url) {
+    return String(url).split('|')[0];
+  }
+
+  set(k, v) {
+    if (!super.has(k)) {
+      this.position.set(k, this.nextPosition++); // a Map keeps a replaced key where it was
+    }
+    this.#unindex(k);
+    super.set(k, v);
+    const supplements = v && v.jsonObj ? v.jsonObj.supplements : null;
+    if (supplements) {
+      const u = CodeSystemMap.indexKey(supplements);
+      let keys = this.supplementIndex.get(u);
+      if (!keys) this.supplementIndex.set(u, keys = new Set());
+      keys.add(k);
+      this.indexedUnder.set(k, u);
+    }
+    return this;
+  }
+
+  delete(k) {
+    this.#unindex(k);
+    this.position.delete(k);
+    return super.delete(k);
+  }
+
+  clear() {
+    this.supplementIndex.clear();
+    this.indexedUnder.clear();
+    this.position.clear();
+    super.clear();
+  }
+
+  // removes k from the index under the key it was indexed under when it was set
+  #unindex(k) {
+    const u = this.indexedUnder.get(k);
+    if (u === undefined) return;
+    this.indexedUnder.delete(k);
+    const keys = this.supplementIndex.get(u);
+    keys.delete(k);
+    if (keys.size === 0) this.supplementIndex.delete(u);
+  }
+
+  /** the values that may supplement url (any version), in the order values() gives them */
+  supplementsOf(url) {
+    const keys = this.supplementIndex.get(CodeSystemMap.indexKey(url));
+    if (!keys) return [];
+    return [...keys].sort((a, b) => this.position.get(a) - this.position.get(b)).map(k => super.get(k));
+  }
+}
+
 class Provider {
   i18n;
   fhirVersion;
@@ -115,7 +228,10 @@ class Provider {
     for (let csp of this.codeSystemFactories.values()) {
       csp.listSupplements(supplements, url, version, statedSupplements);
     }
-    for (let cs of this.codeSystems.values()) {
+    // the index gives the same candidates in the same order as values(), less the ones that
+    // can't be supplements of url (see CodeSystemMap)
+    const candidates = this.codeSystems instanceof CodeSystemMap ? this.codeSystems.supplementsOf(url) : this.codeSystems.values();
+    for (let cs of candidates) {
       if (cs.isSupplementFor(url, version)) {
         if (cs.isGlobalSupplement() || this.isStatedSupplement(cs, statedSupplements)) {
           supplements.set(cs.vurl, cs);
@@ -254,7 +370,7 @@ class Provider {
     return null;
   }
 
-  async findValueSet(opContext, url, version) {
+  async findValueSet(opContext, url, version, systemVersionFor = null) {
     for (const vp of this.valueSetProviders) {
       if (opContext) opContext.deadCheck('findValueSet');
       let vs = await vp.fetchValueSet(url, version);
@@ -262,7 +378,7 @@ class Provider {
         return vs;
       }
     }
-    let vs1 = await this.findKnownValueSet(url, version);
+    let vs1 = await this.findKnownValueSet(url, version, systemVersionFor);
     return vs1;
   }
 
@@ -325,7 +441,18 @@ class Provider {
     return result;
   }
 
-  async findKnownValueSet(url, version) {
+  async findKnownValueSet(url, version, systemVersionFor = null) {
+    // A code system with several versions loaded (SNOMED CT editions) says which form of
+    // implicit value set url is: the generic form comes from the version the request asks
+    // for (systemVersionFor, from system-version and the like) or else the default version
+    // (the one registered under the bare system), the edition form from the latest version
+    // of that edition, and the version form from that version alone - not from whichever
+    // version happens to be asked first.
+    const chosen = chooseImplicitValueSetFactory(this.codeSystemFactories.values(), system => this.codeSystemFactories.get(system), url, systemVersionFor);
+    if (chosen) {
+      const vs = await chosen.buildKnownValueSet(url, version);
+      return vs != null ? new ValueSet(vs) : null;
+    }
     for (let csp of this.codeSystemFactories.values()) {
       let vs = await csp.buildKnownValueSet(url, version);
       if (vs != null) {
@@ -441,10 +568,31 @@ class Provider {
   }
 
   async resolveCode(opContext, system, version, code) {
+    validateParameter(code, "code", String);
+    return (await this.resolveCodes(opContext, system, version, [code]))[0];
+  }
+
+  /**
+   * resolveCode() for many codes of one code system: where each code lives (a link) and
+   * its display, or null, in the order of the codes.
+   *
+   * The code system is found and its provider built once for all of them, and the codes
+   * are located RESOLVE_CODES_CONCURRENCY at a time rather than one after another.
+   *
+   * @param {OperationContext} opContext
+   * @param {string} system
+   * @param {string|null} version
+   * @param {string[]} codes
+   * @returns {Promise<Array<{link: string, description: string}|null>>}
+   */
+  async resolveCodes(opContext, system, version, codes) {
     validateParameter(opContext, "opContext", OperationContext);
     validateParameter(system, "system", String);
     validateOptionalParameter(version, "version", String);
-    validateParameter(code, "code", String);
+    validateArrayParameter(codes, "codes", String);
+    if (codes.length === 0) {
+      return [];
+    }
 
     if (system.includes("|")) {
       const url = system.substring(0, system.indexOf("|"));
@@ -464,41 +612,80 @@ class Provider {
     if (factory == null && vurlMM) {
       factory = this.codeSystemFactories.get(vurlMM);
     }
-    if (factory != null) {
-      const csp = await factory.build(opContext, []);
-      opContext.registerProvider(csp);
-      const c = csp ? csp.locate(code) : null;
-      if (c) {
-        if (factory.iteratable()) {
-          return {
-            link: this.path + "/CodeSystem/x-" + factory.id(),
-            description: csp.display(c)
-          }
-        } else {
-           const link = factory.codeLink(c);
-           if (link) {
-             return {
-               link: link,
-               description: csp.display(c)
-             }
-           }
-        }
-      }
-    }
+    // A code system from a factory gives a code a link only if the factory is iteratable
+    // (US states) or has a codeLink() of its own. For the rest (RxNorm, LOINC, SNOMED CT,
+    // ...) what locate() finds would be thrown away, so they are not built or asked.
+    // That matters: RxNorm looks for a code it does not have in its archive table, which
+    // takes 36 ms a code, and 4,529 of Medication Brand Name's codes are not current.
+    const linksCodes = factory != null
+      && (factory.iteratable() || factory.codeLink !== CodeSystemFactoryProvider.prototype.codeLink);
+    const csp = linksCodes ? await this.resolveCodeProvider(opContext, factory) : null;
     let cs = this.codeSystems.get(vurl);
     if (cs == null && vurlMM) {
       cs = this.codeSystems.get(vurlMM);
     }
-    if (cs != null) {
-      const c = cs.codeMap.get(code);
-      if (c) {
-        return {
-          link: this.path + "/CodeSystem/" + cs.id + '#' + code,
-          description: c.display
-        };
+
+    return mapConcurrently(codes, RESOLVE_CODES_CONCURRENCY, async (code) => {
+      if (csp) {
+        const located = await csp.locate(code);
+        const c = located ? located.context : null;
+        if (c) {
+          if (factory.iteratable()) {
+            return {
+              link: this.path + "/CodeSystem/x-" + factory.id(),
+              description: await csp.display(c)
+            }
+          } else {
+             const link = factory.codeLink(c);
+             if (link) {
+               return {
+                 link: link,
+                 description: await csp.display(c)
+               }
+             }
+          }
+        }
       }
+      if (cs != null) {
+        const c = cs.codeMap.get(code);
+        if (c) {
+          return {
+            link: this.path + "/CodeSystem/" + cs.id + '#' + code,
+            description: c.display
+          };
+        }
+      }
+      return null;
+    });
+  }
+
+  /**
+   * The provider resolveCode() uses for a code system factory in this operation: built
+   * the first time it is asked for, registered for closing when the operation ends, and
+   * reused after that. The promise is kept, so calls that overlap share one build.
+   *
+   * @param {OperationContext} opContext
+   * @param {CodeSystemFactoryProvider} factory
+   * @returns {Promise<CodeSystemProvider|null>}
+   */
+  resolveCodeProvider(opContext, factory) {
+    let built = resolveCodeProviders.get(opContext);
+    if (!built) {
+      built = new Map();
+      resolveCodeProviders.set(opContext, built);
     }
-    return null;
+    let csp = built.get(factory);
+    if (!csp) {
+      csp = (async () => {
+        const p = await factory.build(opContext, []);
+        opContext.registerProvider(p);
+        return p;
+      })();
+      // A failed build is not kept, so the next call tries again.
+      csp.catch(() => built.delete(factory));
+      built.set(factory, csp);
+    }
+    return csp;
   }
 
   /**
@@ -737,4 +924,4 @@ class Provider {
 
 }
 
-module.exports = { Provider };
+module.exports = { CodeSystemMap, Provider };

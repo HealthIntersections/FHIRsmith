@@ -157,6 +157,76 @@ describe('crawler: one copy of each id#version', () => {
     expect(files.filter(f => f.includes('.tmp-'))).toEqual([]);
   });
 
+  const tmpFiles = () => fs.readdirSync(path.join(env.tmp, 'mirror')).filter(f => f.includes('.tmp-'));
+
+  test('a failed mirror write leaves no partial file, and stores nothing', async () => {
+    const write = fs.writeFileSync;
+    const spy = jest.spyOn(fs, 'writeFileSync').mockImplementationOnce((file, data) => {
+      write(file, data.subarray(0, 10)); // a partial write, then the disk fills
+      throw new Error('ENOSPC: no space left on device');
+    });
+    try {
+      await feedItem(env.crawler, 'ex.w#1.0.0', direct('ex.w', '1.0.0'), tarball('ex.w', '1.0.0'));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(fs.readdirSync(path.join(env.tmp, 'mirror'))).not.toContain('ex.w-1.0.0.tgz');
+    expect(tmpFiles()).toEqual([]);
+    expect(await rows('ex.w')).toEqual([]);
+  });
+
+  test('a new package whose commit fails part way leaves no rows and no file', async () => {
+    env.crawler.insertRelatedData = jest.fn(async () => { throw new Error('insert failed'); });
+    await feedItem(env.crawler, 'ex.t#1.0.0', direct('ex.t', '1.0.0'), tarball('ex.t', '1.0.0'));
+    expect(await rows('ex.t')).toEqual([]);
+    expect(await env.all("SELECT Id FROM Packages WHERE Id = 'ex.t'")).toEqual([]);
+    expect(fs.readdirSync(path.join(env.tmp, 'mirror'))).not.toContain('ex.t-1.0.0.tgz');
+    expect(tmpFiles()).toEqual([]);
+  });
+
+  test('a replacement whose commit fails part way leaves the old row and file', async () => {
+    const old = tarball('ex.u', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.u#1.0.0', simplifier('ex.u', '1.0.0'), old);
+    const before = await rows('ex.u');
+    // fails after replaceVersion has already updated the PackageVersions row
+    env.crawler.insertRelatedData = jest.fn(async () => { throw new Error('insert failed'); });
+    await feedItem(env.crawler, 'ex.u#1.0.0', direct('ex.u', '1.0.0'), tarball('ex.u', '1.0.0', 'direct'));
+    expect(await rows('ex.u')).toEqual(before);
+    expect(await env.all(`SELECT Version FROM PackageFHIRVersions WHERE PackageVersionKey = ${before[0].PackageVersionKey}`)).toEqual([{ Version: '4.0.1' }]);
+    expect(mirror('ex.u', '1.0.0')).toEqual(old);
+    expect(tmpFiles()).toEqual([]);
+  });
+
+  test('a replacement whose file cannot be put in place is rolled back', async () => {
+    const old = tarball('ex.v', '1.0.0', 'simplifier');
+    await feedItem(env.crawler, 'ex.v#1.0.0', simplifier('ex.v', '1.0.0'), old);
+    const before = await rows('ex.v');
+    const spy = jest.spyOn(fs, 'renameSync').mockImplementationOnce(() => { throw new Error('EIO: rename failed'); });
+    try {
+      await feedItem(env.crawler, 'ex.v#1.0.0', direct('ex.v', '1.0.0'), tarball('ex.v', '1.0.0', 'direct'));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await rows('ex.v')).toEqual(before);
+    expect(mirror('ex.v', '1.0.0')).toEqual(old);
+    expect(tmpFiles()).toEqual([]);
+  });
+
+  test('stale temporary mirror files are cleaned up, recent ones and packages are left', () => {
+    const dir = path.join(env.tmp, 'mirror');
+    const stale = path.join(dir, 'ex.x-1.0.0.tgz.tmp-1');
+    const recent = path.join(dir, 'ex.y-1.0.0.tgz.tmp-1');
+    const pkg = path.join(dir, 'ex.z-1.0.0.tgz');
+    for (const f of [stale, recent, pkg]) {
+      fs.writeFileSync(f, 'x');
+    }
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    fs.utimesSync(stale, old, old);
+    fs.utimesSync(pkg, old, old);
+    expect(env.crawler.cleanMirrorTempFiles()).toBe(1);
+    expect(fs.readdirSync(dir).sort()).toEqual(['ex.y-1.0.0.tgz.tmp-1', 'ex.z-1.0.0.tgz']);
+  });
+
   test('a second direct copy from another GUID is an error, and ignored', async () => {
     const buf = tarball('ex.c', '1.0.0', 'first');
     await feedItem(env.crawler, 'ex.c#1.0.0', direct('ex.c', '1.0.0'), buf);

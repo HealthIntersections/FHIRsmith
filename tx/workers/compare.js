@@ -178,12 +178,12 @@ class CompareWorker extends TerminologyWorker {
     if (!thisC) {
       return this.makeOutcome("indeterminate", `The ValueSet ${thisVS.vurl} has no compose`);
     }
-    Extensions.checkNoModifiers(thisC, 'CompareWorker.doCompare', 'compose', thisVS.vurl)
+    Extensions.checkNoModifiers(thisC, 'CompareWorker.doCompare', 'ValueSet.compose', thisVS.vurl)
     this.checkNoLockedDate(thisVS.vurl, thisC);
     if (!otherC) {
       return this.makeOutcome("indeterminate", `The ValueSet ${otherVS.vurl} has no compose`);
     }
-    Extensions.checkNoModifiers(otherC, 'CompareWorker.doCompare', 'compose', otherVS.vurl)
+    Extensions.checkNoModifiers(otherC, 'CompareWorker.doCompare', 'ValueSet.compose', otherVS.vurl)
     this.checkNoLockedDate(otherVS.vurl, otherC);
 
     let systems = new Map(); // tracks whether the comparison is version dependent or not

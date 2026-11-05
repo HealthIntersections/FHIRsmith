@@ -1,9 +1,9 @@
 const fs = require('fs');
+const { mapFile, prewarmFile } = require('./mmap');
 
 // The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
-// one in place rather than copying it: nothing writes to a loaded structure, and the reader's
-// sections (kept in the factory's shared data) would hold the whole file anyway. Any other
-// buffer is copied, so the structure owns its bytes.
+// one in place (nothing writes to a loaded structure, and the file stays loaded for the life
+// of the process); any other buffer is copied, so the structure owns its bytes.
 const fileBuffers = new WeakSet();
 
 function adopt(buffer) {
@@ -11,10 +11,20 @@ function adopt(buffer) {
   return fileBuffers.has(buffer.buffer) ? buffer : Buffer.from(buffer);
 }
 
+// A structure made from a buffer is a loaded one, and is read-only: it may be sharing the
+// cache file's memory (see adopt). Only a structure the importer creates empty and builds can
+// be written to. Every method that changes a structure calls this first.
+function checkWritable(structure) {
+  if (structure.readOnly) {
+    throw new Error(`${structure.constructor.name} is read-only: it was loaded from a cache file, and can only be changed while importing`);
+  }
+}
+
 
 class SnomedStrings {
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.decoder = new TextDecoder('utf-8');
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
@@ -39,11 +49,13 @@ class SnomedStrings {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
 
   reopen() {
+    checkWritable(this);
     this.builder = [this.master];
     this.currentOffset = this.master.length; // SET: offset to current master length
   }
@@ -86,6 +98,7 @@ class SnomedStrings {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -98,6 +111,7 @@ class SnomedStrings {
 class SnomedWords {
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
   }
 
@@ -125,6 +139,7 @@ class SnomedWords {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -151,6 +166,7 @@ class SnomedWords {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -162,6 +178,7 @@ class SnomedWords {
 class SnomedStems {
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
   }
 
@@ -189,6 +206,7 @@ class SnomedStems {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -215,6 +233,7 @@ class SnomedStems {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -226,6 +245,7 @@ class SnomedStems {
 class SnomedReferences {
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
     this.MAGIC_NO_CHILDREN = 0xFFFFFFFF; // Assuming this constant - adjust as needed
@@ -274,6 +294,7 @@ class SnomedReferences {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -327,6 +348,7 @@ class SnomedReferences {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -354,6 +376,7 @@ class SnomedDescriptions {
 
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -393,6 +416,7 @@ class SnomedDescriptions {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -428,7 +452,44 @@ class SnomedDescriptions {
     return currentOffset;
   }
 
+  /**
+   * The concepts that have an active description in the language (the RF2 language code
+   * byte) whose term passes test, for descriptions [start, end) by position, leaving out
+   * descriptions of type skipKind (a concept index, or -1 for none). Reads the records in
+   * place rather than decoding each one, since a scan covers the whole edition. Adds the
+   * concept indexes to out (a Set); returns how many descriptions there are.
+   */
+  matchActiveTerms(start, end, lang, strings, test, out, skipKind = -1) {
+    const size = SnomedDescriptions.DESC_SIZE;
+    const count = Math.floor(this.master.length / size);
+    const last = Math.min(end, count);
+    for (let i = start; i < last; i++) {
+      const offset = i * size;
+      if (this.master.readUInt8(offset + 4) === 0 || this.master.readUInt8(offset + 31) !== lang
+        || this.master.readUInt32LE(offset + 21) === skipKind) {
+        continue;
+      }
+      if (test(strings.getEntry(this.master.readUInt32LE(offset)))) {
+        out.add(this.master.readUInt32LE(offset + 13));
+      }
+    }
+    return count;
+  }
+
+  /** The language code bytes that active descriptions use */
+  activeLanguages() {
+    const size = SnomedDescriptions.DESC_SIZE;
+    const langs = new Set();
+    for (let offset = 0; offset + size <= this.master.length; offset += size) {
+      if (this.master.readUInt8(offset + 4) !== 0) {
+        langs.add(this.master.readUInt8(offset + 31));
+      }
+    }
+    return langs;
+  }
+
   setRefsets(index, refsets, valueses) {
+    checkWritable(this);
     if (index >= this.master.length) {
       throw new Error('Wrong length index getting snomed Desc Details');
     }
@@ -452,6 +513,7 @@ class SnomedDescriptions {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -464,6 +526,7 @@ class SnomedDescriptions {
 class SnomedDescriptionIndex {
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
   }
 
@@ -499,6 +562,7 @@ class SnomedDescriptionIndex {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -528,6 +592,7 @@ class SnomedDescriptionIndex {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -549,6 +614,7 @@ class SnomedConceptList {
 
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -680,6 +746,7 @@ class SnomedConceptList {
   }
 
   setNormalFormDuringBuild(index, value) {
+    checkWritable(this);
     // Special version that can be called during building phase
     // This bypasses the post-build access check for normal forms specifically
     if (index >= this.master.length) {
@@ -720,67 +787,80 @@ class SnomedConceptList {
 
   // All the setter methods - these require doneBuild() to have been called
   setParents(index, active, inactive) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(active, index + 9);
     this.master.writeUInt32LE(inactive, index + 52);
   }
 
   setDescriptions(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 13);
   }
 
   setModuleId(index, moduleIndex) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(moduleIndex, index + 36);
   }
 
   setInbounds(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 17);
   }
 
   setOutbounds(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 21);
   }
 
   setAllDesc(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 25);
   }
 
   setDepth(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt8(value, index + 29);
   }
 
   setStems(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 30);
   }
 
   setDate(index, effectiveTime) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt16LE(effectiveTime, index + 34);
   }
 
   setStatus(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 40);
   }
 
   setRefsets(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 44);
   }
 
   setNormalForm(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 48);
   }
 
   setFlag(index, flags) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt8(flags, index + 8);
   }
@@ -791,6 +871,7 @@ class SnomedConceptList {
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -842,6 +923,7 @@ class SnomedConceptList {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -858,6 +940,7 @@ class SnomedRelationshipList {
 
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -882,12 +965,21 @@ class SnomedRelationshipList {
     };
   }
 
+  // Whether the relationship row at index is active, without decoding the whole row
+  isActive(index) {
+    if (index >= this.master.length) {
+      throw new Error('Wrong length index getting snomed relationship Details');
+    }
+    return this.master.readUInt8(index + 26) !== 0;
+  }
+
   count() {
     return Math.floor(this.master.length / SnomedRelationshipList.RELATIONSHIP_SIZE);
   }
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -935,6 +1027,7 @@ class SnomedRelationshipList {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -949,6 +1042,7 @@ class SnomedReferenceSetMembers {
 
   constructor(buffer = null) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -1018,6 +1112,7 @@ class SnomedReferenceSetMembers {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -1112,6 +1207,7 @@ class SnomedReferenceSetMembers {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -1127,6 +1223,7 @@ class SnomedReferenceSetIndex {
 
   constructor(buffer = null, hasLangs = true) {
     this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.hasLangs = hasLangs;
     this.recordSize = hasLangs ? SnomedReferenceSetIndex.REFSET_SIZE_LANG : SnomedReferenceSetIndex.REFSET_SIZE_NOLANG;
@@ -1197,6 +1294,7 @@ class SnomedReferenceSetIndex {
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -1233,6 +1331,7 @@ class SnomedReferenceSetIndex {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -1243,16 +1342,58 @@ class SnomedReferenceSetIndex {
 
 
 class SnomedFileReader {
-  constructor(filePath) {
+  /**
+   * @param {string} filePath
+   * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
+   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': mapped,
+   *   then read through once in the background at startup, so its pages are already in the
+   *   page cache when requests arrive; startup doesn't wait for it. Where mapping is not
+   *   available (see mmap.js) the file is read, and `mapped` stays false.
+   * @param {object} [log] - a logger with warn(); says why a file that was to be mapped was read
+   */
+  constructor(filePath, loadMode = 'read', log = null) {
     this.filePath = filePath;
+    this.loadMode = loadMode;
+    this.log = log;
     this.buffer = null;
+    this.mapped = false; // true once load() has the buffer as a memory mapping of the file
     this.offset = 0;
   }
 
+  /**
+   * The edition version URI in a cache file's header, without loading the file.
+   * @param {string} filePath
+   * @returns {string|null}
+   */
+  static versionUri(filePath) {
+    const head = Buffer.alloc(1024);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      reader.readString(); // cache version
+      return reader.readString();
+    } catch {
+      return null;
+    }
+  }
+
   async load() {
-    // Read entire file into buffer
-    this.buffer = await fs.promises.readFile(this.filePath);
+    const warn = this.log ? (msg) => this.log.warn(msg) : undefined;
+    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath, warn) : null;
+    this.mapped = mapped !== null;
+    this.buffer = mapped || await fs.promises.readFile(this.filePath);
     fileBuffers.add(this.buffer.buffer);
+    if (mapped && this.loadMode === 'prewarm') {
+      // not awaited: the server starts while the file is read into the page cache
+      this.prewarmed = prewarmFile(this.filePath).catch(() => null);
+    }
     this.offset = 0;
   }
 
