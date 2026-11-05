@@ -8,7 +8,10 @@
  *  - an id no process issued is CACHE_ID_UNKNOWN_SHARED
  *  - a worker killed and restarted by the launcher still has the sessions
  */
-const { startCluster, request, param, unknownCache, pidOn, sleep } = require('../utils/cluster-harness');
+const { startCluster, request, param, unknownCache, pidOn, sleep, ROOT } = require('../utils/cluster-harness');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
 const FRONT = 20080;
 const VSAC = 20089;
@@ -84,7 +87,8 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     expect(r.status).toBe(404);
     expect(unknownCache(r)).toBe(true);
     const text = r.json.issue[0].details.text;
-    expect(text).toMatch(/survive a restart/);
+    expect(text).toMatch(/cluster restart/);
+    expect(text).not.toMatch(/survive a restart/);
     expect(text).not.toMatch(/restarted since/);
     expect(text).not.toMatch(/reached the wrong server/);
   });
@@ -109,4 +113,105 @@ describe('cluster.js with server.cluster.sharedCache', () => {
       expect(param(r.json, 'result').valueBoolean).toBe(true);
     }
   }, 180000);
+
+  test('a master child restart preserves sessions issued by every process', async () => {
+    const port = cluster.master;
+    const pid = pidOn(port);
+    process.kill(pid, 'SIGKILL');
+    const t0 = Date.now();
+    while (pidOn(port) === pid || pidOn(port) === null) {
+      if (Date.now() - t0 > 120000) throw new Error('the master was not restarted');
+      await sleep(250);
+    }
+    await cluster.waitUp([port]);
+    for (const s of sessions) {
+      const r = await validate(port, s.cid, s.n);
+      expect(unknownCache(r)).toBe(false);
+      expect(param(r.json, 'result').valueBoolean).toBe(true);
+    }
+  }, 180000);
+
+  test('a full launcher restart invalidates old IDs and accepts fresh sessions on every process', async () => {
+    await cluster.restart();
+    for (const port of [cluster.master, ...cluster.workers]) {
+      for (const s of sessions) {
+        const r = await validate(port, s.cid, s.n);
+        expect(r.status).toBe(404);
+        expect(unknownCache(r)).toBe(true);
+      }
+      const start = await request(port, 'POST', '/r4/$cache-control?mode=start', {
+        body:{ resourceType:'Parameters', parameter:[{ name:'tx-resource', resource:cs(7) }, { name:'tx-resource', resource:vs(7) }] }
+      });
+      expect(start.status).toBe(200);
+      const id = param(start.json, 'cache-id').valueId;
+      expect(id).toMatch(/^[A-Za-z0-9.-]{1,64}$/);
+      const r = await validate(FRONT, id, 7);
+      expect(param(r.json, 'result').valueBoolean).toBe(true);
+    }
+  }, 330000);
+
+  test('home and dashboard include graph histories from the whole cluster', async () => {
+    for (const page of ['/', '/dashboard']) {
+      const r = await request(FRONT, 'GET', page, { headers:{ Accept:'text/html' } });
+      expect(r.status).toBe(200);
+      expect(r.text).toContain('Master m0: uptime and request counts for this process');
+      expect(r.text).toContain('Heap change since process start');
+      const match = /const metrics = (.+);/.exec(r.text);
+      expect(match).not.toBeNull();
+      const data = JSON.parse(match[1]);
+      expect(data.cluster).toBe(true);
+      expect(data.series.map(s => s.id)).toEqual(['m0', 'tx1', 'tx2']);
+      expect(data.series.every(s => s.history.length > 0)).toBe(true);
+    }
+  });
+
+  test('manual master startup invalidates old IDs while a surviving worker accepts fresh sessions', async () => {
+    await cluster.stopLauncher();
+    const children = [];
+    const stop = async child => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      await new Promise(resolve => {
+        const kill = setTimeout(() => child.kill('SIGKILL'), 30000);
+        child.once('exit', () => { clearTimeout(kill); resolve(); });
+        child.kill('SIGTERM');
+      });
+    };
+    const launch = async (role, code, port) => {
+      const env = { ...process.env, FHIRSMITH_DATA_DIR:cluster.dir };
+      delete env.FHIRSMITH_CLUSTER_GENERATION; // ordinary manually started roles have no launcher token
+      const out = fs.openSync(path.join(cluster.dir, 'manual.log'), 'a');
+      const child = spawn(process.execPath, [path.join(ROOT, 'server.js'), `--role=${role}`, `--instance-code=${code}`, `--port=${port}`],
+        { cwd:ROOT, env, stdio:['ignore', out, out] });
+      fs.closeSync(out);
+      children.push(child);
+      const t0 = Date.now();
+      while (Date.now() - t0 <= 120000 && child.exitCode === null) {
+        const up = await request(port, 'GET', '/health').then(r => r.status === 200, () => false);
+        if (up) return child;
+        await sleep(250);
+      }
+      throw new Error('manual role did not start');
+    };
+    try {
+      const master = await launch('master', 'm0', cluster.master);
+      await launch('tx-worker', 'tx1', cluster.workers[0]);
+      const start = await request(cluster.workers[0], 'POST', '/r4/$cache-control?mode=start', {
+        body:{ resourceType:'Parameters', parameter:[{ name:'tx-resource', resource:cs(8) }, { name:'tx-resource', resource:vs(8) }] }
+      });
+      expect(start.status).toBe(200);
+      const old = param(start.json, 'cache-id').valueId;
+      expect(param((await validate(cluster.master, old, 8)).json, 'result').valueBoolean).toBe(true);
+      await stop(master);
+      await launch('master', 'm0', cluster.master);
+      expect(unknownCache(await validate(cluster.workers[0], old, 8))).toBe(true);
+      const fresh = await request(cluster.workers[0], 'POST', '/r4/$cache-control?mode=start', {
+        body:{ resourceType:'Parameters', parameter:[{ name:'tx-resource', resource:cs(8) }, { name:'tx-resource', resource:vs(8) }] }
+      });
+      expect(fresh.status).toBe(200);
+      const id = param(fresh.json, 'cache-id').valueId;
+      expect(param((await validate(cluster.master, id, 8)).json, 'result').valueBoolean).toBe(true);
+    } finally {
+      await Promise.all(children.map(stop));
+    }
+  }, 330000);
 });

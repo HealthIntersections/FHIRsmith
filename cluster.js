@@ -28,6 +28,7 @@
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+const { newCacheGeneration } = require('./library/cache-generation');
 const { spawn } = require('child_process');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 
@@ -168,6 +169,8 @@ function isLoopback(address) {
  *   command(proc): [executable, args] to start a process (tests), healthPath, log
  */
 function createLauncher(settings) {
+  // One cache lifecycle per launcher boot, including every replacement child.
+  const cacheGeneration = newCacheGeneration();
   const log = settings.log || ((msg) => console.log(`[cluster] ${msg}`));
   const healthPath = settings.healthPath || '/health';
   const command = settings.command || ((proc) => [process.execPath, [
@@ -219,7 +222,8 @@ function createLauncher(settings) {
       const [cmd, args] = command(proc);
       proc.startedAt = Date.now();
       metrics.state(proc.code, 'starting');
-      const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: process.env });
+      const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
+        env: { ...process.env, FHIRSMITH_CLUSTER_GENERATION: cacheGeneration } });
       proc.child = child;
       child.on('message', message => {
         if (proc.child === child && message && message.type === METRIC && metrics.record(proc.code, message)) {

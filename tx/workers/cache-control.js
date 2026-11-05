@@ -135,7 +135,7 @@ class CacheControlWorker extends TerminologyWorker {
     // Flip this to default-true once all clients send an explicit value.
     const sealed = this.readSealed(params.jsonObj);
 
-    // "<instanceCode>.<uuid>" when this server has an instance code, else a bare UUID
+    // An opaque ID, prefixed with "<instanceCode>." when configured.
     const cacheId = cache.newCacheId();
     cache.set(cacheId, resources, sealed);
 

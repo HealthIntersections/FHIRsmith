@@ -26,7 +26,7 @@ function request(port, method, urlPath, { headers = {}, body } = {}) {
         } catch {
           // not JSON
         }
-        resolve({ status: res.statusCode, headers: res.headers, json });
+        resolve({ status: res.statusCode, headers: res.headers, json, text });
       });
     });
     req.on('error', reject);
@@ -95,10 +95,15 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {}, s
     prepare(dir);
   }
   const out = fs.openSync(path.join(dir, 'processes.log'), 'a');
-  const launcher = spawn(process.execPath, [path.join(ROOT, 'cluster.js')], {
-    cwd: ROOT, env: { ...process.env, FHIRSMITH_DATA_DIR: dir }, stdio: ['ignore', out, out]
-  });
-  const exited = new Promise(resolve => launcher.once('exit', (code, signal) => resolve({ code, signal })));
+  let launcher;
+  let exited;
+  function launch() {
+    launcher = spawn(process.execPath, [path.join(ROOT, 'cluster.js')], {
+      cwd: ROOT, env: { ...process.env, FHIRSMITH_DATA_DIR: dir }, stdio: ['ignore', out, out]
+    });
+    exited = new Promise(resolve => launcher.once('exit', (code, signal) => resolve({ code, signal })));
+  }
+  launch();
 
   // port -> when it was first seen answering /health
   const upAt = new Map();
@@ -118,19 +123,39 @@ async function startCluster({ front, vsac, workers = 2, cluster = {}, tx = {}, s
     // the launcher marks a process ready a moment after it first answers
     await sleep(500);
   }
-  await waitUp([master, ...workerPorts, front]);
+  try {
+    await waitUp([master, ...workerPorts, front]);
+  } catch (error) {
+    const log = fs.readFileSync(path.join(dir, 'processes.log'), 'utf8').slice(-4000);
+    await stop();
+    throw new Error(`${error.message}\n${log}`);
+  }
 
-  async function stop() {
+  async function stopLauncher() {
     if (launcher.exitCode === null && launcher.signalCode === null) {
       launcher.kill('SIGTERM');
     }
-    const result = await exited;
+    return exited;
+  }
+
+  // Keep the same SQLite files and fixture server while restarting every process.
+  async function restart() {
+    await stopLauncher();
+    upAt.clear();
+    launch();
+    await waitUp([master, ...workerPorts, front]);
+  }
+
+  async function stop() {
+    const result = await stopLauncher();
     await new Promise(resolve => vsacServer.close(resolve));
+    fs.closeSync(out);
     fs.rmSync(dir, { recursive: true, force: true });
     return result;
   }
 
-  return { dir, front, master, workers: workerPorts, launcher, exited, waitUp, upAt, stop };
+  return { dir, front, master, workers: workerPorts, get launcher() { return launcher; },
+    get exited() { return exited; }, waitUp, upAt, stop, stopLauncher, restart };
 }
 
 module.exports = { startCluster, request, isUp, param, issueCodes, unknownCache, pidOn, sleep, ROOT };
