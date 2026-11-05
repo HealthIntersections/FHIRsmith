@@ -184,9 +184,19 @@ A tx-worker has no statistics database and sends no daily report. Under the laun
 worker sends the requests it counted to the master every minute, and once more when it stops
 (the launcher stops the workers before the master). The master adds them to its own counts,
 so its statistics database (`databases/stats.db`) and the daily report count every process,
-each request once. A worker's requests reach the database with the master's next write, so
-a request can be counted up to a minute after it was served (at midnight, in the next day's
-report). The counts on the master's page are its own.
+each request once. The counting has these limits:
+
+* **A worker that crashes loses up to a minute of its counts**: those it hadn't sent yet. (A
+  worker that is stopped sends them as it stops.)
+* **A master that crashes loses the counts it hasn't written yet**, its own and the workers'
+  it has merged, as a single server loses its own today.
+* **Counts can land in the next day's report.** A worker's requests reach the database with
+  the master's next write, up to a minute or so after they were served, so a request just
+  before midnight can be counted in the next day.
+* **Workers started by hand behind nginx have no IPC channel**, so their requests never reach
+  the master's `stats.db` or daily report (see [Limits](#limits-of-this-arrangement)).
+
+The counts on the master's page are its own.
 
 A standalone server, or roles started separately behind nginx, shows only its own graph
 data. Combining process histories requires the launcher's IPC connection; no separate
