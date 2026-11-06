@@ -111,3 +111,17 @@ describe('a throw inside a sqlite3 callback', () => {
     expect(r.stdout).not.toMatch(/uncaught/);
   });
 });
+
+describe('guarded()', () => {
+  test('a throw after resolve() is logged as a warning, not lost', () => {
+    const Logger = require('../../library/logger');
+    const warn = jest.fn();
+    const child = jest.spyOn(Logger.getInstance(), 'child').mockReturnValue({ warn });
+    const { guarded } = require('../../tx/library/sqlite-utilities');
+    const reject = jest.fn();
+    guarded(reject, () => { throw new Error('after resolve'); })();
+    expect(reject).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/sqlite callback threw: after resolve/));
+    child.mockRestore();
+  });
+});
