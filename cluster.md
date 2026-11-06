@@ -127,7 +127,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
   `HEAD`) of `metadata`, a read (`/ValueSet/{id}`), `$lookup`, `$subsumes` or `$validate-code`,
   whose parameters are all in the URL, so it carries no inline value set. A `POST` of
   `$lookup`, `$subsumes` or `$validate-code` takes the lane only with a `Content-Length` of at
-  most `fastLaneMaxBytes` (0: never). Searches and `$expand` never do. A request in the lane
+  most `fastLaneMaxBytes` (1 KB: one coding, no inline value set or code system). Searches and `$expand` never do. A request in the lane
   that turns out to be costly (a `GET $validate-code` against a value set that must be
   expanded) costs at most `fastLaneExtra` more requests at once on a process
 * sends no new requests to a process that answered 503 (its memory guard is refusing) for
@@ -167,7 +167,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
 | `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
-| `server.cluster.fastLaneMaxBytes` | | 0 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 0: a `POST` never does. Most `POST CodeSystem/$validate-code` calls are under 1 KB, but they are half of a validator's calls: in the lane, a surge of them fills it. |
+| `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:

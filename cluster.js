@@ -77,7 +77,7 @@ const HEADROOM_GB = 2;
 // a fast-lane request (isFastLane) may go to a process with this many more than
 // MAX_OUTSTANDING; a POST takes the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
 const FAST_LANE_EXTRA = 4;
-const FAST_LANE_MAX_BYTES = 0;
+const FAST_LANE_MAX_BYTES = 1024;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
