@@ -203,7 +203,8 @@ describe('memory-guard', () => {
       let rss = 9.9 * GB;
       rssSpy.mockImplementation(() => rss);
       const trim = jest.fn(() => { rss -= 0.5 * GB; return true; });
-      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 8000, heapUsed: () => 0.1 * GB, trim });
+      // (the trim alone between the looks is the next test's)
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 8000, heapUsed: () => 0.1 * GB, trim, trimInterval: 100000 });
       const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
       at(0);     // 9.9 -> 9.4, a quarter of the excess: next in 1 s
       at(1000);  // 9.4 -> 8.9
@@ -214,6 +215,32 @@ describe('memory-guard', () => {
       expect(trim).toHaveBeenCalledTimes(3);
       at(4000);
       expect(trim).toHaveBeenCalledTimes(4);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('between the looks, malloc_trim alone before refusing, once a second, with no back-off', () => {
+    // a burst has backed the looks off; it ends, and what it used is free but resident
+    const log = { info: jest.fn(), warn: jest.fn() };
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      let rss = 8.5 * GB;
+      rssSpy.mockImplementation(() => rss);
+      const trim = jest.fn(() => true);
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 60000, heapUsed: () => 0.1 * GB, trim });
+      const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; const next = jest.fn(); mw({ path: '/r4/x' }, fakeRes(), next); return next; };
+      at(0);                    // a look: nothing back, next look in 2 s
+      at(500);                  // too soon for anything
+      expect(trim).toHaveBeenCalledTimes(1);
+      at(1000);                 // a trim alone
+      expect(trim).toHaveBeenCalledTimes(2);
+      rss = 8.04 * GB;          // the burst's memory is freed, resident
+      trim.mockImplementation(() => { rss = 7.5 * GB; return true; });
+      expect(at(1500)).not.toHaveBeenCalled(); // under a second since the last trim: refused
+      expect(at(2100)).toHaveBeenCalled();     // the look (GC wait 2 s) trims: through
+      expect(log.info.mock.calls.some(c => /while refusing - 8\.0 GB -> 7\.5 GB$/.test(c[0]))).toBe(true);
     } finally {
       nowSpy.mockRestore();
     }

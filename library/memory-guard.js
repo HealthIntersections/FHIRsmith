@@ -51,6 +51,12 @@ const GC_INTERVAL_MS = 5000;
 // and every full GC stops the process. One that gets back more keeps the wait: closing
 // thousands of SQLite connections takes seconds, and the next look gets back the rest
 const GC_MAX_INTERVAL_MS = 60000;
+// Between those looks, malloc_trim alone, before a request is refused, at most this often and
+// with no back-off: memory used in a burst is freed when the burst ends, and the C allocator
+// keeps it resident until asked, so a quiet server could sit just over the threshold and
+// refuse everything until the next look, up to GC_MAX_INTERVAL_MS away. With nothing to give
+// back, a trim takes milliseconds
+const TRIM_INTERVAL_MS = 1000;
 // the group measure reads a file: the in-operation check (about ten a request) reuses one
 // at most this old
 const GROUP_SAMPLE_MS = 100;
@@ -261,11 +267,12 @@ function describe() {
  * before the body parsers so a refused request costs nothing. While refusing, it looks for
  * memory to get back now and then and re-measures - every gcInterval ms, backing off to
  * gcMaxInterval while the looks get back little: a forced GC (not while the JS heap is too
- * small for one to help), then malloc_trim (unless trimAllocator is false). It logs when
+ * small for one to help), then malloc_trim (unless trimAllocator is false); and between those,
+ * malloc_trim alone at most every trimInterval ms, before refusing a request. It logs when
  * refusing starts (then once a minute, with how long and how many) and when it stops.
  * @param {object} [opts] - { log, exempt: [path prefixes never refused], retryAfter (seconds),
  *   gcInterval (ms), gcMaxInterval (ms), heapUsed (function returning bytes, for tests),
- *   trim (function, for tests: as trimNativeMemory), onReject (optional observation callback,
+ *   trim (function, for tests: as trimNativeMemory), trimInterval (ms), onReject (optional observation callback,
  *   called only when sending a 503) }
  */
 function middleware(opts = {}) {
@@ -276,11 +283,13 @@ function middleware(opts = {}) {
   const gcMaxInterval = Math.max(opts.gcMaxInterval || GC_MAX_INTERVAL_MS, gcInterval);
   const heapUsed = opts.heapUsed || (() => process.memoryUsage().heapUsed);
   const trim = opts.trim || trimNativeMemory;
+  const trimInterval = opts.trimInterval || TRIM_INTERVAL_MS;
   let gcWait = gcInterval; // the current wait between forced GCs (backs off, see below)
   let refusingSince = 0; // when the current spell of refusing began (0 = not refusing)
   let refused = 0;       // refused in the current spell
   let lastLog = 0;
   let lastGc = 0;
+  let lastTrim = 0;
 
   const secs = (ms) => Math.round(ms / 1000);
 
@@ -320,6 +329,7 @@ function middleware(opts = {}) {
       }
       if (state.trimAllocator && trim() !== null) {
         done.push('malloc_trim');
+        lastTrim = now;
       }
       if (done.length) {
         const after = rss(true);
@@ -331,6 +341,16 @@ function middleware(opts = {}) {
         }
       } else {
         gcWait = Math.min(gcWait * 2, gcMaxInterval);
+      }
+    } else if (over && state.trimAllocator && now - lastTrim >= trimInterval) {
+      lastTrim = now;
+      const before = state.sampleRss;
+      if (trim() !== null) {
+        const after = rss(true);
+        over = after > state.rejectAt;
+        if (log && (!over || before - after >= 0.1 * 2 ** 30)) {
+          log.info(`Memory: malloc_trim before refusing - ${gb(before)} GB -> ${gb(after)} GB`);
+        }
       }
     }
 
