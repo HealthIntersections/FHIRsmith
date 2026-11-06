@@ -120,21 +120,23 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
   paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) don't wait, and while
   stopping nothing does. These refusals are the launcher's, logged at most once a minute; they
   are not in the graphs' refusals
-* gives cheap requests a fast lane: they may go to a process that has up to `fastLaneExtra`
-  (4) more than `maxOutstanding`, and while they wait, they go before the others. Without it,
-  a 4 ms `$lookup` waits in line behind the surge (3 s, then 503), and after it, for the line to
-  drain. The launcher doesn't read bodies, so the rule is by method and path: a `GET` (or
-  `HEAD`) of `metadata`, a read (`/ValueSet/{id}`), `$lookup`, `$subsumes` or `$validate-code`,
-  whose parameters are all in the URL, so it carries no inline value set. A `POST` of
-  `$lookup`, `$subsumes` or `$validate-code` takes the lane only with a `Content-Length` of at
-  most `fastLaneMaxBytes` (1 KB: one coding, no inline value set or code system). Searches and `$expand` never do. A request in the lane
-  that turns out to be costly (a `GET $validate-code` against a value set that must be
-  expanded) costs at most `fastLaneExtra` more requests at once on a process
+* gives cheap requests a fast lane: `fastLaneExtra` (4) slots of their own on each process, on
+  top of its `maxOutstanding`, with their own line. The lane never takes the other requests'
+  slots, so a surge of cheap requests can't starve them. Without it, a 4 ms `$lookup` waits in
+  line behind the surge (3 s, then 503), and after it, for the line to drain. The launcher
+  doesn't read bodies, so the rule is by method and path: a `GET` (or `HEAD`) of `metadata`,
+  `$lookup`, `$subsumes` or `$validate-code`, whose parameters are all in the URL, so it carries
+  no inline value set. A `POST` of `$lookup`, `$subsumes` or `$validate-code` takes the lane
+  only with a `Content-Length` of at most `fastLaneMaxBytes` (1 KB: one coding, no inline value
+  set or code system). Reads (`/CodeSystem/{id}`: a large code system is costly to render),
+  searches and `$expand` never do. A request in the lane that turns out to be costly (a
+  `GET $validate-code` against a value set that must be expanded) costs at most `fastLaneExtra`
+  more requests at once on a process
 * sends no new requests to a process that answered 503 (its memory guard is refusing) for
   `cooldownSeconds` (2), unless every process is refusing. Otherwise the refusing process,
   quick to answer and so the least busy, would draw the waiting requests
 * logs its limits (`maxOutstanding`, the three waits, the fast lane's two, `memoryHeadroomGB`,
-  `drainSeconds`, `recycleSeconds`) as it starts, in one line
+  `drainSeconds`, `trimAllocator`, `recycleSeconds`) as it starts, in one line
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
   2 s, 4 s ... up to a minute
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
@@ -167,8 +169,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
-| `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
+| `server.cluster.fastLaneExtra` | | 4 | Slots each process has for fast-lane requests (above), on top of `maxOutstanding` and apart from it. 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
 | `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
+| `server.memory.trimAllocator` | | true | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and in every process while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false: for diagnosis. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
@@ -368,15 +371,23 @@ millisecond.) The trim matters: an operation that opens thousands of SQLite conn
 allocator keeps resident after the connections close, and no GC touches them. After such a
 batch was aborted, a worker held 8.0 GB, 4.7 GB of it free in malloc's arenas; `malloc_trim`
 took it to 3.9 GB in half a second, and without it the server refused everything until it was
-restarted. `server.memory.trimAllocator: false` leaves it out (for diagnosis). Where it is not
-available (macOS, Windows, musl, no `koffi`), only the GC runs.
+restarted. Setting `MALLOC_ARENA_MAX=2` in the environment was tried instead and did not give
+the memory back (the worker was still refusing 90 s after the abort); `malloc_trim` did (back
+in 6 s), so the trim is a call through `koffi`, not an environment setting.
+`server.memory.trimAllocator: false` leaves it out (for diagnosis). Where it is not available
+(macOS, Windows, musl, no `koffi`), only the GC runs. With a role, each process also trims
+once after loading the library, before it takes requests: the load leaves 0.6-0.7 GB free but
+resident, and N+1 processes share the one limit. With no role, a server doesn't.
 
 If a tx-worker stays over the refusal threshold anyway, for `server.cluster.recycleSeconds`
 (30) with no request at work on it, the launcher restarts it: whatever it holds, nothing
 running will free it. With the cgroup measured, only a worker that has grown, since it was
 ready, by more than the cgroup is over the threshold is restarted (a smaller one would come
 back at the same size, and the gate would stay shut); the largest first, one at a time. Without,
-a worker over the threshold on its own. The launcher reads each worker's `RssAnon` from `/proc`,
+a worker over the threshold on its own, and again only if it has grown since it was ready by
+more than it is over: one already over when it became ready would come back over, and be
+restarted every 45 s or so for good. The launcher logs a `WARNING` for such a worker, once,
+and leaves it. The launcher reads each worker's `RssAnon` from `/proc`,
 so this is Linux only. The master is never restarted for this: it holds what only it has. The
 launcher logs each restart and why, and its limits line says whether this is on.
 
@@ -389,13 +400,15 @@ its own.
 Each process is a whole terminology server: it loads the library, so N workers and a master
 use roughly N+1 times the memory of one server (about 2.8 to 3.8 GB each with the full library).
 Size the limit for that. The guard counts them all against the one limit, so N+1 idle processes
-sitting at the refusal threshold refuse every request: 1 master and 3 workers idle at 12.05 GB,
-against a threshold of 12 GB (0.75 of 16 GB), refused everything for minutes after a burst,
-while a single server on the same data stayed near 3.5 GB and never refused. So the launcher
+sitting at the refusal threshold refuse every request. In a test with a 16 GiB limit and
+`rejectFraction` set to 0.75 (a test setting; the default is 0.85), so a threshold of 12 GB,
+1 master and 3 workers idle at 12.05 GB refused everything for minutes after a burst, while a
+single server on the same data stayed near 3.5 GB and never refused. With the defaults on a
+32 GB limit the threshold is 27.2 GB (refusing) and 29.4 GB (aborting). So the launcher
 checks: once the master is loaded, it takes the master's memory as each worker's, and if
 `server.cluster.workers` is not given, it starts only as many workers as fit under the
 threshold with `memoryHeadroomGB` (2) to spare, at least one. If it is given, they all start, with
-a `WARNING` line. Once every worker is ready it logs what they all use idle, with a `WARNING` if
+a `WARNING` line. If even one worker doesn't fit, that is a `WARNING` too, with the numbers. Once every worker is ready it logs what they all use idle, with a `WARNING` if
 less than the headroom is left.
 
 ## Limits of this arrangement
