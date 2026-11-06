@@ -1177,7 +1177,8 @@ class TranslateWorker extends TerminologyWorker {
     if (!system || !code) {
       return { known: false };
     }
-    this.deadCheck('translate-resolve');
+    // called per element: a turn for the event loop now and then, so a client that has gone is seen
+    await this.checkAndYield('translate-resolve');
     let cs;
     try {
       cs = await this.findCodeSystem(system, version || '', params, ['complete', 'fragment'], null, true);

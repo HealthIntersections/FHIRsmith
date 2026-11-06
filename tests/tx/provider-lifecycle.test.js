@@ -10,6 +10,7 @@ const { CountryCodeFactoryProvider } = require('../../tx/cs/cs-country');
 const { OperationContext } = require('../../tx/operation-context');
 const { TerminologyWorker } = require('../../tx/workers/worker');
 const { TxParameters } = require('../../tx/params');
+const { ValidateWorker } = require('../../tx/workers/validate');
 
 const SYSTEM = 'urn:iso:std:iso:3166';
 
@@ -110,5 +111,18 @@ describe('provider lifecycle', () => {
     expect(res.status).toBe(200);
     expect(factory.builds).toBe(1);
     expect(factory.open).toBe(0);
+  });
+
+  test('a $validate-code of a CodeableConcept with many codings stops when the client goes', async () => {
+    const tx = getTxModule();
+    const ctx = new OperationContext('en', tx.i18n, 'z', 30, null, null);
+    ctx.debugging = false;
+    const worker = new ValidateWorker(ctx, tx.log, tx.endpoints[0].provider, tx.languages, tx.i18n);
+    const coding = Array.from({ length: 20000 }, (_, i) => ({ system: SYSTEM, code: 'X' + i }));
+    const params = { resourceType: 'Parameters', parameter: [{ name: 'codeableConcept', valueCodeableConcept: { coding } }] };
+    setTimeout(() => ctx.markClientGone(), 50);
+    const t0 = Date.now();
+    await expect(worker.handleCodeSystemInner(params)).rejects.toMatchObject({ abandoned: true });
+    expect(Date.now() - t0).toBeLessThan(2000);
   });
 });
