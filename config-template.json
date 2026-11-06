@@ -10,8 +10,10 @@
     // Memory protection, as fractions of the memory limit (the cgroup limit - MemoryMax on the
     // systemd unit - or else the machine's RAM), measured against process RSS. Above
     // rejectFraction new requests get 503 + Retry-After; above abortFraction running operations
-    // are aborted with 422 too-costly. Optional; these are the defaults.
-    // "memory": { "rejectFraction": 0.85, "abortFraction": 0.92 }
+    // are aborted with 422 too-costly. While refusing, the server forces a GC now and then and
+    // returns the C allocator's free memory (malloc_trim, Linux); trimAllocator false leaves
+    // that out. Optional; these are the defaults.
+    // "memory": { "rejectFraction": 0.85, "abortFraction": 0.92, "trimAllocator": true }
   },
   // Usage statistics. Request counts are kept per module, per endpoint and per
   // operation, and written to a SQLite database every intervalMinutes so they
