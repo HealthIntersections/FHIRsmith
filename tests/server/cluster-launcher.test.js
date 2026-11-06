@@ -140,6 +140,9 @@ describe('routing rules', () => {
     const s4 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 0, queueSeconds: 0, ownerQueueSeconds: 0 } } });
     expect([s4.maxOutstanding, s4.queueMs, s4.ownerQueueMs]).toEqual([0, 0, 0]);
     expect([s.cooldownMs, loadSettings([], {}, { ...config, server: { cluster: { cooldownSeconds: 0 } } }).cooldownMs]).toEqual([2000, 0]);
+    // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never
+    expect([s.recycleMs, loadSettings([], {}, { ...config, server: { cluster: { recycleSeconds: 0 } } }).recycleMs]).toEqual([30000, 0]);
+    expect(loadSettings([], {}, { ...config, server: { memory: { rejectFraction: 0.8 } } }).memory).toEqual({ rejectFraction: 0.8 });
   });
 });
 
@@ -373,7 +376,8 @@ describe('the launcher, with fake processes', () => {
       launcher = createLauncher({ ...settings(false), cooldownMs: 0, log: (m) => lines.push(m) });
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
-      expect(lines.filter(l => l.startsWith('limits:'))).toEqual(['limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0']);
+      expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
+        /^limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
@@ -421,6 +425,87 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all(slow)).map(x => x.status)).toEqual([200, 200]);
       await stopped;
       launcher = null;
+    });
+  });
+
+  describe('a tx-worker held over the memory guard\'s refusal threshold, with no request at work, is restarted', () => {
+    const GiB = 2 ** 30;
+    // the memory each process has (by code), and how far the cgroup is over the threshold
+    let mem, excess;
+    const recycling = (extra = {}) => {
+      const logs = [];
+      return {
+        logs,
+        settings: {
+          ...settings(true), recycleMs: 400, recycleCheckMs: 50, log: (m) => logs.push(m),
+          memorySampler: {
+            describe: 'over the test threshold', rejectAt: 5 * GiB,
+            sample: (ps) => ({ excess, own: new Map(ps.map(p => [p, mem[p.code] || 0])) })
+          },
+          ...extra
+        }
+      };
+    };
+    beforeEach(() => {
+      mem = { m0: 1 * GiB, tx1: 1 * GiB, tx2: 1 * GiB };
+      excess = -1 * GiB;
+    });
+
+    test('the cgroup over: the worker that grew by more than that is restarted, once, and the master never', async () => {
+      const { settings: s, logs } = recycling();
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      await sleep(200); // each worker's size when ready is recorded
+      const [m0, tx1, tx2] = launcher.procs;
+      const children = launcher.procs.map(p => p.child);
+      mem = { m0: 6 * GiB, tx1: 4 * GiB, tx2: 1.5 * GiB };
+      excess = 2 * GiB;
+      await until(() => tx1.child !== children[1] && tx1.ready);
+      mem.tx1 = 1 * GiB;
+      excess = -1 * GiB;
+      expect(logs.some(m => /^recycling worker tx1: its memory \(4\.0 GB\) has been over the test threshold \(by 2\.0 GB\) for 0 s with no request at work$/.test(m))).toBe(true);
+      await sleep(600);
+      // tx2 grew by less than the excess, and the master is never restarted
+      expect([m0.child, tx2.child]).toEqual([children[0], children[2]]);
+      expect(logs.filter(m => m.startsWith('recycling')).length).toBe(1);
+      expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
+    });
+
+    test('not while a request is at work on it, and not while it is under', async () => {
+      const { settings: s, logs } = recycling({ memorySampler: {
+        describe: 'over', rejectAt: 5 * GiB, sample: (ps) => ({ excess: null, own: new Map(ps.map(p => [p, mem[p.code] || 0])) })
+      } });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const tx1 = launcher.procs.find(p => p.code === 'tx1');
+      const tx2 = launcher.procs.find(p => p.code === 'tx2');
+      const child = tx1.child;
+      // a request at work on each worker (and the master): its memory may be that request's
+      const slow = [1, 2, 3].map(() => get(PORT, '/r4/ValueSet/$expand?delay=1500'));
+      await until(() => tx1.outstanding === 1 && tx2.outstanding === 1);
+      // no cgroup measure: each process against the threshold itself; tx2 is under it
+      mem = { m0: 1 * GiB, tx1: 6 * GiB, tx2: 4 * GiB };
+      await sleep(1200);
+      expect(tx1.child).toBe(child);
+      expect((await Promise.all(slow)).map(r => r.status)).toEqual([200, 200, 200]);
+      // once the request is done, the clock starts
+      await until(() => tx1.child !== child && tx1.ready);
+      expect(logs.filter(m => m.startsWith('recycling')).length).toBe(1);
+    });
+
+    test('recycleSeconds 0: never', async () => {
+      const { settings: s, logs } = recycling({ recycleMs: 0 });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const children = launcher.procs.map(p => p.child);
+      mem = { m0: 1, tx1: 6 * GiB, tx2: 6 * GiB };
+      excess = 2 * GiB;
+      await sleep(800);
+      expect(launcher.procs.map(p => p.child)).toEqual(children);
+      expect(logs.some(m => /recycleSeconds 0 \(never\)/.test(m))).toBe(true);
     });
   });
 
