@@ -25,6 +25,7 @@ const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
 const { applyKeepAliveTimeouts } = require('./library/keep-alive');
 const { countStaticResponses } = require('./library/static-response-stats');
+const { trimNativeMemory } = require('./library/native-memory');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
@@ -894,6 +895,16 @@ async function startServer() {
       serverLog.error('Failed to initialize modules:', error);
       throw error;
     });
+
+    // Loading the library frees much of what it allocated (0.6-0.7 GB a process, measured),
+    // and the C allocator keeps that resident: give it back before taking requests (Linux; see
+    // library/native-memory.js). The memory guard does this too, but only while refusing
+    if (memoryGuard._state.trimAllocator) {
+      const before = process.memoryUsage.rss();
+      if (trimNativeMemory() !== null) {
+        serverLog.info(`Memory: malloc_trim after loading - RSS ${memoryGuard.gb(before)} GB -> ${memoryGuard.gb(process.memoryUsage.rss())} GB`);
+      }
+    }
 
     // Start server
     const server = app.listen(PORT, () => {

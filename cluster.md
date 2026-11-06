@@ -146,7 +146,8 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | Setting | Flag | Default | Meaning |
 |---|---|---|---|
 | `server.port` | `--port`, `PORT` | 3000 | The port clients use. |
-| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | 2 | How many tx-workers. |
+| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | 2, or fewer if memory is short | How many tx-workers. Not given: 2, or as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, with a warning if they don't fit. |
+| `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
@@ -344,8 +345,12 @@ it when it needs the room.
 
 While refusing, each process looks for memory to get back, at once and then every 5 s (backing
 off to a minute while it gets back little): a forced GC, unless its JS heap is too small for
-one to help, then, on Linux with glibc and the optional `koffi` dependency, `malloc_trim`. The
-second matters: an operation that opens thousands of SQLite connections (a 20,000-entry LOINC
+one to help, then, on Linux with glibc and the optional `koffi` dependency, `malloc_trim`.
+Between those looks, before it refuses a request, it calls `malloc_trim` alone, at most once a
+second and without backing off, and measures again: what a burst used is freed when the burst
+ends but stays resident, and without this a quiet server could sit just over the line until
+the next look, a minute away. (With nothing to give back, a trim takes well under a
+millisecond.) The trim matters: an operation that opens thousands of SQLite connections (a 20,000-entry LOINC
 `$batch-validate-code`, which opens one per entry) leaves gigabytes that the C library's
 allocator keeps resident after the connections close, and no GC touches them. After such a
 batch was aborted, a worker held 8.0 GB, 4.8 GB of it free in malloc's arenas; `malloc_trim`
@@ -369,7 +374,16 @@ start the processes as separate systemd units, give each its own `MemoryMax`: ea
 its own.
 
 Each process is a whole terminology server: it loads the library, so N workers and a master
-use roughly N+1 times the memory of one server. Size the limit for that.
+use roughly N+1 times the memory of one server (about 2.8 to 3.8 GB each with the full library).
+Size the limit for that. The guard counts them all against the one limit, so N+1 idle processes
+sitting at the refusal threshold refuse every request: 1 master and 3 workers idle at 12.05 GB,
+against a threshold of 12 GB (0.75 of 16 GB), refused everything for minutes after a burst,
+while a single server on the same data stayed near 3.5 GB and never refused. So the launcher
+checks: once the master is loaded, it takes the master's memory as each worker's, and if
+`server.cluster.workers` is not given, it starts only as many workers as fit under the
+threshold with `memoryHeadroomGB` (2) to spare, at least one. If it is given, they all start, with
+a `WARNING` line. Once every worker is ready it logs what they all use idle, with a `WARNING` if
+less than the headroom is left.
 
 ## Limits of this arrangement
 

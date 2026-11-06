@@ -67,6 +67,11 @@ const RECYCLE_MS = 30000;
 const RECYCLE_CHECK_MS = 1000;
 // a request in flight this long is work; a refusal (503) is answered at once
 const AT_WORK_MS = 1000;
+// memory to leave free under the guard's refusal threshold once every process is loaded and
+// idle (cluster.md, "Memory"): about what one heavy operation uses. 2 GB: an $expand of a large
+// SNOMED value set or a big $batch-validate-code takes 1-2 GB; with less, the first one shuts
+// the gate for everyone
+const HEADROOM_GB = 2;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -89,7 +94,8 @@ function loadSettings(argv, env, config) {
     throw new Error('cluster.js runs terminology workers: the tx module must be enabled in config.json');
   }
   const port = Number(flags.port || env.PORT || (config.server && config.server.port) || 3000);
-  const workers = Number(flags.workers || env.FHIRSMITH_WORKERS || cluster.workers || 2);
+  const workersGiven = flags.workers || env.FHIRSMITH_WORKERS || cluster.workers;
+  const workers = Number(workersGiven || 2);
   const internalPort = Number(flags['internal-port'] || cluster.internalPort || port + 1);
   const masterCode = checkInstanceCode(tx.instanceCode || 'm0', 'modules.tx.instanceCode');
   const servesTx = flags['master-serves-tx'] !== undefined ? flags['master-serves-tx'] !== 'false' : cluster.masterServesTx !== false;
@@ -115,6 +121,9 @@ function loadSettings(argv, env, config) {
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
     cooldownMs: Number(cluster.cooldownSeconds ?? COOLDOWN_MS / 1000) * 1000,
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
+    // the number of workers was not given: fewer if memory is short (see sizeWorkers)
+    workersDefault: !workersGiven,
+    headroomBytes: Number(cluster.memoryHeadroomGB ?? HEADROOM_GB) * 2 ** 30,
     memory: (config.server && config.server.memory) || {},
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
@@ -250,7 +259,8 @@ function createLauncher(settings) {
   const cooldownMs = settings.cooldownMs ?? COOLDOWN_MS; // 0: none
   const recycleMs = settings.recycleMs ?? RECYCLE_MS; // 0: never
   // (tests give their own)
-  const memory = settings.memorySampler || (recycleMs > 0 ? memorySampler(settings.memory) : null);
+  const memory = settings.memorySampler || memorySampler(settings.memory);
+  const headroom = settings.headroomBytes ?? HEADROOM_GB * 2 ** 30;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
@@ -637,10 +647,11 @@ function createLauncher(settings) {
       server.once('error', reject);
       server.listen(settings.port, resolve);
     });
+    sizeWorkers(master);
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
-      `recycleSeconds ${recycleMs / 1000}` + (memory && recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
-    if (memory && recycleMs > 0) {
+      `recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+    if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
       memoryTimer.unref();
     }
@@ -654,7 +665,55 @@ function createLauncher(settings) {
           await startProcess(p);
         }
       }
+      if (!stopping) {
+        checkIdleMemory();
+      }
     })();
+  }
+
+  const GB = (b) => (b / 2 ** 30).toFixed(1);
+
+  /**
+   * Once the master is loaded: its memory is about what each worker will use idle. If the
+   * number of workers was not given, start no more than fit under the refusal threshold with
+   * `headroom` to spare (at least one); if it was, warn when they won't fit. The guard counts
+   * every process against the one limit, so N+1 loaded processes sitting at the threshold
+   * refuse every request, busy or not.
+   */
+  function sizeWorkers(master) {
+    const perProcess = memory.sample([master]).own.get(master) || 0;
+    if (!perProcess) {
+      return; // not measurable here (not Linux)
+    }
+    const workers = procs.filter(p => p.role === 'tx-worker');
+    const fit = Math.max(1, Math.floor((memory.rejectAt - headroom - perProcess) / perProcess));
+    const idle = (1 + workers.length) * perProcess;
+    const line = `the master uses ${GB(perProcess)} GB loaded, so ${workers.length + 1} processes would use about ${GB(idle)} GB idle; ` +
+      `the memory guard refuses requests ${memory.describe}, and memoryHeadroomGB is ${GB(headroom)}`;
+    if (idle + headroom <= memory.rejectAt) {
+      log(`memory: ${line}`);
+    } else if (settings.workersDefault && fit < workers.length) {
+      for (const p of workers.slice(fit)) {
+        procs.splice(procs.indexOf(p), 1);
+        metrics.series.delete(p.code);
+      }
+      log(`memory: ${line}: starting ${fit} worker(s), not ${workers.length} (set server.cluster.workers to choose)`);
+    } else {
+      log(`WARNING memory: ${line}: ${workers.length} worker(s) leave too little room; at most ${fit} would, or raise the limit`);
+    }
+  }
+
+  // once every worker is ready: what they all use idle, against the threshold
+  function checkIdleMemory() {
+    const { excess, own } = memory.sample(procs);
+    const total = excess !== null ? excess + memory.rejectAt : [...own.values()].reduce((a, b) => a + b, 0);
+    if (!total) {
+      return;
+    }
+    const room = memory.rejectAt - total;
+    log(`${room < headroom ? 'WARNING ' : ''}memory: all processes loaded and idle use ${GB(total)} GB, ` +
+      `${GB(room)} GB under the threshold (memoryHeadroomGB ${GB(headroom)})` +
+      (room < headroom ? '; a heavy request will shut the gate for everyone: use fewer workers or a larger limit' : ''));
   }
 
   /**

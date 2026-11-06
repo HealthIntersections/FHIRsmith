@@ -143,6 +143,9 @@ describe('routing rules', () => {
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never
     expect([s.recycleMs, loadSettings([], {}, { ...config, server: { cluster: { recycleSeconds: 0 } } }).recycleMs]).toEqual([30000, 0]);
     expect(loadSettings([], {}, { ...config, server: { memory: { rejectFraction: 0.8 } } }).memory).toEqual({ rejectFraction: 0.8 });
+    // the number of workers given or not (sized to memory); 2 GB left free when idle
+    expect([s.workersDefault, loadSettings([], {}, { ...config, server: {} }).workersDefault, loadSettings(['--workers=2'], {}, { ...config, server: {} }).workersDefault]).toEqual([false, true, false]);
+    expect([s.headroomBytes, loadSettings([], {}, { ...config, server: { cluster: { memoryHeadroomGB: 3 } } }).headroomBytes]).toEqual([2 * 2 ** 30, 3 * 2 ** 30]);
   });
 });
 
@@ -493,6 +496,33 @@ describe('the launcher, with fake processes', () => {
       // once the request is done, the clock starts
       await until(() => tx1.child !== child && tx1.ready);
       expect(logs.filter(m => m.startsWith('recycling')).length).toBe(1);
+    });
+
+    test('sizing: with the number of workers not given, no more start than fit under the threshold with the headroom', async () => {
+      // 5 GiB threshold, 2 GiB headroom, a 1.4 GiB master: 1 worker fits, not 2
+      mem = { m0: 1.4 * GiB, tx1: 1.4 * GiB, tx2: 1.4 * GiB };
+      excess = null; // each process on its own: the idle total is theirs added up
+      const { settings: s, logs } = recycling({ workersDefault: true, headroomBytes: 2 * GiB });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(launcher.procs.map(p => p.code)).toEqual(['m0', 'tx1']);
+      expect(logs).toContain('memory: the master uses 1.4 GB loaded, so 3 processes would use about 4.2 GB idle; the memory guard refuses requests over the test threshold, and memoryHeadroomGB is 2.0: starting 1 worker(s), not 2 (set server.cluster.workers to choose)');
+      await until(() => logs.some(m => /all processes loaded and idle/.test(m)));
+      expect(logs.find(m => /all processes loaded and idle/.test(m))).toBe('memory: all processes loaded and idle use 2.8 GB, 2.2 GB under the threshold (memoryHeadroomGB 2.0)');
+    });
+
+    test('sizing: with the number of workers given, they all start, with a warning', async () => {
+      mem = { m0: 1.4 * GiB, tx1: 1.4 * GiB, tx2: 1.4 * GiB };
+      excess = (4.2 - 5) * GiB; // the cgroup measured: idle, 0.8 GiB under
+      const { settings: s, logs } = recycling({ workersDefault: false, headroomBytes: 2 * GiB });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(launcher.procs.map(p => p.code)).toEqual(['m0', 'tx1', 'tx2']);
+      expect(logs.some(m => /^WARNING memory: the master uses 1\.4 GB .*: 2 worker\(s\) leave too little room; at most 1 would, or raise the limit$/.test(m))).toBe(true);
+      await until(() => logs.some(m => /all processes loaded and idle/.test(m)));
+      expect(logs.find(m => /all processes loaded and idle/.test(m))).toMatch(/^WARNING memory: all processes loaded and idle use 4\.2 GB, 0\.8 GB under the threshold .*use fewer workers or a larger limit$/);
     });
 
     test('recycleSeconds 0: never', async () => {
