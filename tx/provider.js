@@ -277,9 +277,12 @@ class Provider {
    * share ids, and so does other content (hl7.terminology), so no endpoint can serve them on
    * their own ids (see tx/library/resource-ids.js)
    *
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - a tx-worker (cluster.md): the package's value set and
+   *   concept map caches are the master's, opened read-only (see Library.packageCachesReadOnly)
    * @returns {Promise<PackageContentLoader|undefined>} the loaded package (mode "npm")
    */
-  async loadNpm(packageManager, cacheFolder,  details, isDefault, mode) {
+  async loadNpm(packageManager, cacheFolder,  details, isDefault, mode, options = {}) {
     // Parse packageId and version from details (e.g., "hl7.terminology.r4#6.0.2")
     let packageId = details;
     let version = null;
@@ -326,11 +329,11 @@ class Provider {
       applyIdPrefix(cs, CORE_PREFIX);
       this.addCodeSystem(cs);
     }
-    const vs = new PackageValueSetProvider(contentLoader);
+    const vs = new PackageValueSetProvider(contentLoader, { readOnly: !!options.readOnly });
     await vs.initialize();
     vs.assignIds(CORE_PREFIX);
     this.valueSetProviders.push(vs);
-    const cm = new PackageConceptMapProvider(contentLoader);
+    const cm = new PackageConceptMapProvider(contentLoader, { readOnly: !!options.readOnly });
     await cm.initialize();
     cm.assignIds(CORE_PREFIX);
     this.conceptMapProviders.push(cm);
