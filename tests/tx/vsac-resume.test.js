@@ -56,7 +56,6 @@ function provider(dbPath, fetchBundle) {
   p.isRefreshing = false;
   p.refreshIntervalHours = 24;
   p.stats = { addTask() {}, task() {}, taskDone() {}, taskError() {} };
-  p.log = { error() {} };
   p._startRefreshTimer = () => {};
   p._fetchBundle = fetchBundle;
   return p;
@@ -160,15 +159,85 @@ describe('VSAC sync resumes at startup', () => {
   });
 
   test('a failed startup sync is logged and does not stop initialisation', async () => {
+    // no p.log: the provider has no such member, and logging must not throw
     const p = provider(dbPath, async () => { throw new Error('Network error: No response received'); });
     open.push(p);
-    let timer = false;
-    p._startRefreshTimer = () => { timer = true; };
-    const errors = [];
-    p.log = { error: (e) => errors.push(e) };
-    await p.initialize();
-    expect(timer).toBe(true);
+    const delays = [];
+    p._startRefreshTimer = (delayMs) => { delays.push(delayMs); };
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let logged;
+    try {
+      await p.initialize();
+      logged = errors.mock.calls.length;
+    } finally {
+      errors.mockRestore();
+    }
     expect(p.initialized).toBe(true);
-    expect(errors.length).toBe(1);
+    expect(logged).toBe(1);
+    // the next try is soon, not a whole refresh interval later
+    expect(delays).toEqual([60 * 1000]);
+  });
+});
+
+describe('VSAC refresh timer', () => {
+  let dir;
+  let p;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsac-timer-'));
+    jest.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    p.stopRefreshTimer();
+    jest.useRealTimers();
+    await p.database.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function timed(outcomes) {
+    p = provider(path.join(dir, 'vsac.db'), async () => {});
+    delete p._startRefreshTimer; // the real timer
+    const runs = [];
+    p.refreshValueSets = async () => {
+      runs.push(Date.now());
+      if (outcomes.shift() === 'fail') {
+        throw new Error('connect ETIMEDOUT');
+      }
+    };
+    return runs;
+  }
+
+  test('every sync, failed or not, sets the timer for the next one', async () => {
+    const runs = timed(['fail', 'fail', 'fail', 'fail', 'ok', 'ok']);
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const start = Date.now();
+      p._startRefreshTimer(60 * 1000); // as after a failed startup sync
+      p._failedSyncs = 1;
+      const min = 60 * 1000;
+      // waits: 1 min after the startup failure, then 5, 30, 30 and 30 after the timer's
+      // failures, then the 24 hour interval after the first sync that works
+      for (const wait of [1, 5, 30, 30, 30, 24 * 60]) {
+        await jest.advanceTimersByTimeAsync(wait * min);
+      }
+      expect(runs.map(t => (t - start) / min)).toEqual([1, 6, 36, 66, 96, 96 + 24 * 60]);
+      expect(errors).toHaveBeenCalledTimes(4);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test('stopping the timer while a sync runs stops the rescheduling', async () => {
+    const runs = timed([]);
+    let release;
+    p.refreshValueSets = async () => { runs.push(Date.now()); await new Promise(r => { release = r; }); };
+    p._startRefreshTimer(1000);
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(runs.length).toBe(1);
+    p.stopRefreshTimer();
+    release();
+    await jest.advanceTimersByTimeAsync(48 * 60 * 60 * 1000);
+    expect(runs.length).toBe(1);
   });
 });

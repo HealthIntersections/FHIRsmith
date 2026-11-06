@@ -232,6 +232,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // database with no value sets is synced now rather than at the first timer
     await this._recount();
     const incomplete = firstCall ? await this._incompleteSyncReason() : null;
+    let failed = false;
     if (this.SYNC_AT_START_UP || this.database.vsCount == 0 || incomplete) {
       if (incomplete) {
         console.log(`VSAC: ${incomplete} - resuming the sync now`);
@@ -239,12 +240,14 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       try {
         await this.refreshValueSets();
       } catch (error) {
-        // already recorded by refreshValueSets; the timer below retries it
-        this.log.error(error, 'Error during VSAC sync at startup:');
+        // already recorded by refreshValueSets; the timer below retries it soon
+        console.error(`VSAC: sync at startup failed: ${error.message}`);
+        failed = true;
+        this._failedSyncs = 1;
       }
     }
-    // Start periodic refresh
-    this._startRefreshTimer();
+    // Start periodic refresh; after a failed sync, the next try comes after a short wait
+    this._startRefreshTimer(failed ? this._retryDelayMs(1) : undefined);
     this.initialized = true;
   }
 
@@ -318,31 +321,63 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Start the periodic refresh timer
+   * Waits before trying a failed sync again: 1, 5 and then every 30 minutes (never longer
+   * than the refresh interval). A failure at startup is often passing (the network is not
+   * up yet, or a connection attempt timed out while the server was busy loading), so it
+   * should not wait a whole day.
+   */
+  static RETRY_DELAYS_MS = [60 * 1000, 5 * 60 * 1000, 30 * 60 * 1000];
+
+  /**
+   * @param {number} failures - failed syncs in a row (1 or more)
+   * @returns {number} milliseconds to wait before the next try
    * @private
    */
-  _startRefreshTimer() {
+  _retryDelayMs(failures) {
+    const delays = VSACValueSetProvider.RETRY_DELAYS_MS;
+    const delay = delays[Math.min(failures, delays.length) - 1];
+    return Math.min(delay, this.refreshIntervalHours * 60 * 60 * 1000);
+  }
+
+  /**
+   * Start the refresh timer. Each sync sets the timer for the next one, whether it worked
+   * or not: the refresh interval after a sync that worked, a shorter wait after one that
+   * failed (see RETRY_DELAYS_MS).
+   * @param {number} [delayMs] - wait before the next sync (default: the refresh interval)
+   * @private
+   */
+  _startRefreshTimer(delayMs = undefined) {
+    this._stopped = false;
     if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
+      clearTimeout(this.refreshTimer);
     }
 
     const intervalMs = this.refreshIntervalHours * 60 * 60 * 1000;
-    this.refreshTimer = setInterval(async () => {
+    this.refreshTimer = setTimeout(async () => {
+      let next = intervalMs;
       try {
         await this.refreshValueSets();
+        this._failedSyncs = 0;
       } catch (error) {
         debugLog(error);
-        this.log.error(error, 'Error during scheduled refresh:');
+        this._failedSyncs = (this._failedSyncs || 0) + 1;
+        next = this._retryDelayMs(this._failedSyncs);
+        console.error(`VSAC: scheduled sync failed (next try in ${Math.round(next / 60000)} min): ${error.message}`);
+      } finally {
+        if (!this._stopped) {
+          this._startRefreshTimer(next);
+        }
       }
-    }, intervalMs);
+    }, delayMs ?? intervalMs);
   }
 
   /**
    * Stop the refresh timer (for cleanup)
    */
   stopRefreshTimer() {
+    this._stopped = true;
     if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
+      clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
   }
