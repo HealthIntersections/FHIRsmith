@@ -1020,6 +1020,8 @@ class ValueSetExpander {
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
+          // a hint: each listed code is located next (a provider may read them together)
+          await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -1306,6 +1308,8 @@ class ValueSetExpander {
           const cds = new Designations(this.worker.i18n.languageDefinitions);
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
+          // a hint: each listed code is located next (a provider may read them together)
+          await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -2196,6 +2200,9 @@ class ValueSetExpander {
     const keys = new Set();
     const expandLimit = cs.expandLimitation();
     let capCount = expandLimit > 0 && this.csCounter.has(cs.system()) ? this.csCounter.get(cs.system()).count : 0;
+    // a hint: each listed code is located next (a provider may read them together); counting
+    // builds nothing, so designations aren't wanted
+    await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
     for (const cc of cset.concept) {
       await this.worker.checkAndYield('countListedCodes');
       const cctxt = await cs.locate(cc.code, this.allAltCodes);

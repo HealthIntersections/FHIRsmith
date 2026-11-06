@@ -1641,6 +1641,8 @@ class ValueSetChecker {
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
+    // a hint: each listed code is located next (a provider may read them together)
+    await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
       this.worker.deadCheck('checkConceptSet#3');
       if (await this.sameConceptDifferentForm(cs, code, cc.code)) {

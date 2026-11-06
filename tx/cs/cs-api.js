@@ -838,6 +838,19 @@ class CodeSystemProvider {
   }
 
   /**
+   * A hint, before the worker locates each code of a list one at a time: the concepts a value set
+   * include or exclude lists ($expand), or that validate-code compares a code with. A provider
+   * that answers locate() from a database may read the codes together here, and answer the
+   * locate() calls that follow from what it read, for this request only. The default does
+   * nothing, and a provider that ignores the hint gets the same calls as before.
+   *
+   * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
+   * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations
+   */
+  // eslint-disable-next-line no-unused-vars
+  async prefetchCodes(codes, withDesignations) { }
+
+  /**
    * returns true if a filter is supported
    *
    * @param {String} prop

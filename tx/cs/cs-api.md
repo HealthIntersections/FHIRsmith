@@ -220,6 +220,7 @@ Lookup supports the `$lookup` and `$validate-code` operations.
 |---|---|
 | `locate(code)` | Look up a code by string. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
 | `locateIsA(code)` | Look up a code within the scope of a parent concept. Required only if `hasParents()` returns `true`. |
+| `prefetchCodes(codes, withDesignations)` | A hint before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and answer the `locate()` calls that follow from that read, for this request only. Default: does nothing. |
 | `extendLookup(ctxt, props, params)` | Called during `$lookup` to allow the provider to add extra properties to the response `Parameters`. The `props` array lists the property names requested by the client. |
 
 The server calls `locate()` first to confirm the code exists, then uses the returned context
