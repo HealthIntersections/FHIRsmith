@@ -131,7 +131,7 @@ function loadSettings(argv, env, config) {
     fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
     fastLaneMaxBytes: Number(cluster.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES),
     normalMinSlots: Number(cluster.normalMinSlots ?? NORMAL_MIN_SLOTS),
-    routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
+    routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true, sharedCache }
   };
 }
 
@@ -216,9 +216,9 @@ function pickTarget(route, procs, hasRoom = () => true) {
     if (owner) {
       return owner;
     }
-    // the owner is down (or the code is unknown): any tx process answers. Without the
-    // shared cache that is cache-id-unknown, which the client recovers from by starting a
-    // new cache; with it, the cache is there
+    // the owner is down (send answers that itself, without the shared cache) or the code is
+    // unknown: any tx process answers. With the shared cache, the cache is there; for an
+    // unknown code it is cache-id-unknown, and the client starts a new cache
   }
   const ready = procs.filter(p => p.servesTx && p.ready);
   if (ready.length === 0) {
@@ -295,7 +295,7 @@ function createLauncher(settings) {
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
-    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, restartTimer: null,
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
@@ -403,6 +403,7 @@ function createLauncher(settings) {
       child.on('exit', (code, signal) => {
         clearTimeout(poll);
         proc.ready = false;
+        proc.exitedAt = Date.now();
         proc.child = null;
         metrics.state(proc.code, stopping ? 'unavailable' : 'restarting');
         publishMetrics();
@@ -467,6 +468,9 @@ function createLauncher(settings) {
   // true if the request was sent (or refused), false if it must wait. The master's own
   // paths and CORS preflights don't wait
   function send(w) {
+    if (lostToRestart(w)) {
+      return true;
+    }
     const target = pickTarget(w.route, procs, p => !full(p, w.fast));
     if (!target) {
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
@@ -493,6 +497,31 @@ function createLauncher(settings) {
         }
       }
     }
+  }
+
+  // Without the shared cache, a cache lives only in the process that issued it: while that
+  // process is restarting, the cache is gone, so say so at once rather than have another
+  // process answer that the id is someone else's (the restarted process says the same)
+  function lostToRestart(w) {
+    const owner = w.route.to === 'owner' && !(settings.routing && settings.routing.sharedCache) &&
+      procs.find(p => p.code === w.route.code && p.servesTx);
+    if (!owner || owner.ready || w.req.method === 'OPTIONS') {
+      return false;
+    }
+    const id = String(w.req.headers['x-cache-id']);
+    const ago = owner.exitedAt ? ` ${Math.round((Date.now() - owner.exitedAt) / 1000)} s ago` : '';
+    const text = `The cache '${id}' was lost to a server restart${ago}: instance '${owner.code}', which issued it, is restarting. ` +
+      'Caches are not carried over a restart. Start a new cache with $cache-control?mode=start and send the resources again';
+    w.res.writeHead(404, { 'Content-Type': 'application/fhir+json', ...(stopping ? { Connection: 'close' } : {}) });
+    w.res.end(JSON.stringify({
+      resourceType: 'OperationOutcome',
+      issue: [{
+        severity: 'error', code: 'not-found',
+        details: { text, coding: [{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'cache-id-unknown' }] },
+        extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_ID_LOST_TO_RESTART' }]
+      }]
+    }));
+    return true;
   }
 
   function refuse(w, ms) {
@@ -644,6 +673,7 @@ function createLauncher(settings) {
     log(`recycling ${p.name}: ${why}`);
     p.recycling = true;
     p.ready = false;
+    p.exitedAt = 0;
     p.overSince = 0;
     metrics.state(p.code, 'restarting');
     publishMetrics();
