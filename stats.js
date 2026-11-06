@@ -58,11 +58,15 @@ class ServerStats {
   started = false;
   requestCount = 0;
   staticRequestCount = 0;
+  // on the master under the launcher: the workers' requests added by mergeCounts
+  mergedRequestCount = 0;
   requestTime = 0;
   // Collect metrics every 10 minutes
   intervalMs = 10 * 60 * 1000;
   history = [];
   requestCountSnapshot = 0;
+  refusedCount = 0;
+  refusedCountSnapshot = 0;
   startMem = 0;
   startTime = Date.now();
   timer;
@@ -134,6 +138,9 @@ class ServerStats {
         ? this.intervalMs / 60000
         : (now - this.startTime) / 60000;
       const requestsPerMin = minutesSinceStart > 0 ? requestsDelta / minutesSinceStart : 0;
+      // where this sample's interval began, so the cluster graphs can place a late sample
+      const intervalStart = this.lastTime ?? this.startTime;
+      const refused = this.refusedCount - this.refusedCountSnapshot;
 
       const loopDelay = this.eventLoopMonitor.mean / 1e6;
       // Worst single stall in the window - the mean dilutes a multi-second
@@ -146,10 +153,20 @@ class ServerStats {
       // shows its current size.)
       const clientConcepts = this._sumCachingModules('clientConceptCount');
 
-      this.history.push({time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts});
+      const point = {time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts};
+      if (this.onMetric) {
+        // under the launcher (library/cluster-metrics.js): what the cluster graphs also show
+        point.intervalStart = intervalStart;
+        point.refused = refused;
+      }
+      this.history.push(point);
+      if (this.onMetric) {
+        this.onMetric(point);
+      }
 
       this.eventLoopMonitor.reset();
       this.requestCountSnapshot = combinedCount;
+      this.refusedCountSnapshot = this.refusedCount;
       this.requestTime = 0;
       this.lastTime = now;
 
@@ -289,6 +306,66 @@ class ServerStats {
     counter.countTotal++;
     counter.timeDelta = counter.timeDelta + tat;
     counter.timeTotal = counter.timeTotal + tat;
+  }
+
+  // The memory guard runs before routing and body parsing. Keep its refusals
+  // separate from completed module work and its turnaround-time denominator.
+  countRefusedRequest() {
+    this.refusedCount++;
+  }
+
+  /**
+   * For a tx-worker under the launcher (library/cluster-counts.js): the requests counted
+   * since the last call, [{module, endpoint, operation, count, time}], and start again
+   * from zero. A worker has no statistics database; the master merges these into its
+   * own counters (mergeCounts), so the master's database and daily report count every
+   * process, each request once.
+   */
+  takeCounts() {
+    const rows = [];
+    for (const counter of this.counters.values()) {
+      if (counter.countDelta > 0) {
+        rows.push({module: counter.module, endpoint: counter.endpoint, operation: counter.operation,
+          count: counter.countDelta, time: counter.timeDelta});
+        counter.countDelta = 0;
+        counter.timeDelta = 0;
+      }
+    }
+    return rows;
+  }
+
+  /** Put back what takeCounts gave, when it couldn't be sent: it goes with the next lot. */
+  restoreCounts(rows) {
+    for (const row of rows) {
+      const counter = this.counterFor(row.module, row.endpoint, row.operation);
+      counter.countDelta = counter.countDelta + row.count;
+      counter.timeDelta = counter.timeDelta + row.time;
+    }
+  }
+
+  /**
+   * On the master: add another process's requests (from its takeCounts) to the counters,
+   * as if this process had counted them. They are written out with the next interval and
+   * are in countsSince() at once. Rows that aren't well formed are ignored.
+   * @returns {number} the requests added
+   */
+  mergeCounts(rows) {
+    let added = 0;
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!row || typeof row.module !== 'string' || typeof row.endpoint !== 'string' ||
+          typeof row.operation !== 'string' || !Number.isInteger(row.count) || row.count <= 0 ||
+          !Number.isFinite(row.time) || row.time < 0) {
+        continue;
+      }
+      const counter = this.counterFor(row.module, row.endpoint, row.operation);
+      counter.countDelta = counter.countDelta + row.count;
+      counter.countTotal = counter.countTotal + row.count;
+      counter.timeDelta = counter.timeDelta + row.time;
+      counter.timeTotal = counter.timeTotal + row.time;
+      added = added + row.count;
+    }
+    this.mergedRequestCount = this.mergedRequestCount + added;
+    return added;
   }
 
   /**

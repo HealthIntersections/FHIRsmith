@@ -202,12 +202,19 @@ class TXModule {
     // the database can't be opened, that stops startup - silently running without it
     // would be worse.
     this.closureStore = null;
-    if (config.closure && config.closure.enabled) {
-      this.closureStore = new ClosureStore(config.closure, this.log);
+    // a tx-worker (cluster.md) opens neither the closure tables nor the syndication store:
+    // the master owns them, and $closure and the feed are routed to it - unless
+    // server.cluster.sharedClosure is on (set only with a role), when every process
+    // answers $closure on the one database (see closure-store.js)
+    const worker = config.clusterRole === 'tx-worker';
+    const sharedClosure = config.sharedClosure === true;
+    if (config.closure && config.closure.enabled && (!worker || sharedClosure)) {
+      this.closureStore = new ClosureStore(config.closure, this.log, { shared: sharedClosure });
       this.closureStore.open();
-      this.log.info(`$closure enabled: tables in ${this.closureStore.path}`);
+      this.log.info(`$closure enabled: tables in ${this.closureStore.path}${sharedClosure ? ', shared with the other processes' : ''}`);
       const days = config.closure.retentionDays;
-      if (days) {
+      // with the tables shared, the master alone drops the stale ones
+      if (days && !worker) {
         const prune = async () => {
           try {
             const dropped = await this.closureStore.pruneUnused(days);
@@ -225,7 +232,7 @@ class TXModule {
 
     // Initialize metadata handler with config
     this.metadataHandler = new MetadataHandler({
-      closure: this.closureStore != null,
+      closure: this.closureStore != null || (worker && !!(config.closure && config.closure.enabled)),
       baseUrl: config.baseUrl,
       serverVersion: packageJson.version,
       txVersion: packageJson.txVersion,
@@ -244,13 +251,21 @@ class TXModule {
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
+    if (config.clusterRole) {
+      // the folder:/file: source caches are the master's, under one name every process shares
+      this.library.localSourceTag = 'master';
+      // the master builds the package caches; a worker only reads them
+      this.library.packageCachesReadOnly = config.clusterRole === 'tx-worker';
+      // the master refreshes the IANA media types registry; a worker reads its copy
+      this.library.mimeTypesReadOnly = config.clusterRole === 'tx-worker';
+    }
 
     // The syndication feed: content is recorded in the store as the library loads it, from
     // the time the administrator turns it on (see tx/syndication). One store serves every
     // endpoint, since the library is shared. If it is turned on and the store can't be
     // opened, that stops startup.
     this.syndicationStore = null;
-    if (config.syndication && config.syndication.enabled) {
+    if (config.syndication && config.syndication.enabled && !worker) {
       this.syndicationStore = new SyndicationStore(path.join(this.library.cacheFolder, 'syndication'), this.log).open();
       this.library.syndication = this.syndicationStore;
       this.log.info(`Syndication feed enabled: store in ${this.syndicationStore.folder}`);
@@ -312,7 +327,9 @@ class TXModule {
       path: endpointPath,
       fhirVersion,
       context: context || null,
-      resourceCache: new ResourceCache(this.stats),
+      // server.cluster.sharedCache (cluster.md, "Options"; set only with a role): one SQLite
+      // file that every process shares. Otherwise this process's memory, as ever
+      resourceCache: this.config.sharedCache ? this.createSharedResourceCache(endpointPath) : new ResourceCache(this.stats),
       expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold, this.expansionCacheBudget)
     };
     // Create the provider once for this endpoint
@@ -1387,6 +1404,36 @@ class TXModule {
   }
 
   /**
+   * An endpoint's $cache-control cache in the shared SQLite file (databases/resource-cache.db),
+   * for server.cluster.sharedCache. Endpoints share the file but not caches.
+   * @param {string} endpointPath - e.g. /r4
+   * @returns {SqliteResourceCache}
+   */
+  createSharedResourceCache(endpointPath) {
+    const { SqliteResourceCache } = require('./resource-cache-sqlite');
+    const { newCacheGeneration } = require('../library/cache-generation');
+    const folders = require('../library/folder-setup');
+    const file = path.join(folders.databasesDir(), 'resource-cache.db');
+    const maxBytes = this.config.sharedCacheMaxBytes || 0;
+    if (this.sharedCacheGeneration === undefined) {
+      // Caches don't survive a server restart: each time the master starts (under the
+      // launcher or by hand) it begins a new generation, and every live cache becomes a
+      // "lost to a server restart" tombstone. A tx-worker joins the current generation,
+      // so one restarting while the master carries on keeps every cache. One token for
+      // all of this process's endpoints
+      this.sharedCacheGeneration = this.config.clusterRole === 'master' ? newCacheGeneration() : null;
+    }
+    this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}` +
+      (maxBytes ? `, capped at ${maxBytes} bytes` : ''));
+    const cache = new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes,
+      generation: this.sharedCacheGeneration });
+    if (cache.lostToRestart) {
+      this.log.info(`Resource cache: ${cache.lostToRestart} cache(s) from before this start are now tombstones (lost to a server restart)`);
+    }
+    return cache;
+  }
+
+  /**
    * Shutdown the module
    */
   async shutdown() {
@@ -1395,6 +1442,13 @@ class TXModule {
       clearInterval(timer);
     }
     this.timers = [];
+    if (this.config && this.config.sharedCache) {
+      for (const ep of this.endpoints || []) {
+        if (ep.resourceCache) {
+          ep.resourceCache.close();
+        }
+      }
+    }
     if (this.syndicationStore) {
       // let an induction in progress finish, so the store isn't left with a half-copied file
       await this.syndicationStore.whenIdle();

@@ -1,0 +1,166 @@
+<style>
+  .server-metrics-row { display:flex; gap:12px; margin-bottom:8px; }
+  .server-metrics-chart { flex:1; min-width:0; }
+  .server-metrics-chart h6 { font-size:12px; margin:0 0 4px; }
+  .server-metrics-canvas { position:relative; height:200px; }
+  @media (max-width:600px) { .server-metrics-row { flex-direction:column; } }
+  .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:10px 0 8px; }
+  .server-metrics-key { display:inline-block; width:22px; text-align:center; margin-right:4px; }
+  .server-metrics-shedding { font:11px sans-serif; margin:0 0 8px; }
+  .server-metrics-shedding::before { content:''; display:inline-block; width:14px; height:10px; margin-right:5px; vertical-align:middle;
+    border-top:2px solid #333; background:repeating-linear-gradient(135deg, #555 0 1px, transparent 1px 4px); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script>
+(function() {
+  const metrics = {{ metricsJson }};
+  // Colour (by lightness, not red against green), line pattern and marker each tell the
+  // processes apart. Past eight processes only the first eight are drawn; none share a style.
+  const styles = [
+    { color:'#08306b', dash:[], point:'circle', symbol:'●' },
+    { color:'#5b9bd5', dash:[6,3], point:'rect', symbol:'■' },
+    { color:'#d98c00', dash:[2,2], point:'triangle', symbol:'▲' },
+    { color:'#6a3d9a', dash:[8,3,2,3], point:'rectRot', symbol:'◆' },
+    { color:'#9e9e9e', dash:[12,4], point:'star', symbol:'★' },
+    { color:'#8a5a00', dash:[3,5], point:'crossRot', symbol:'✕' },
+    { color:'#b4a7d6', dash:[8,2,2,2,2,2], point:'cross', symbol:'✚' },
+    { color:'#404040', dash:[4,2], point:'rectRounded', symbol:'▢' }
+  ];
+  const total = { color:'#111111', dash:[], symbol:'', width:3 };
+  const drawn = metrics.series.slice(0, styles.length);
+  const showTotal = metrics.series.length > 1;
+
+  const legend = document.getElementById('serverMetricsLegend');
+  function legendItem(style, text) {
+    const item = document.createElement('span');
+    const key = document.createElement('span');
+    key.className = 'server-metrics-key';
+    key.style.color = style.color;
+    key.style.borderBottom = (style.width || 2) + 'px ' + (style.dash.length ? 'dashed' : 'solid') + ' ' + style.color;
+    key.textContent = style.symbol;
+    item.appendChild(key);
+    item.appendChild(document.createTextNode(text));
+    legend.appendChild(item);
+  }
+  drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
+    (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
+  if (showTotal) legendItem(total, 'Total (requests per minute only)');
+  if (metrics.series.length > drawn.length) {
+    legend.appendChild(document.createTextNode((metrics.series.length - drawn.length) +
+      ' more workers are not drawn individually; the Total includes them.'));
+  }
+
+  const times = metrics.series.flatMap(series => series.history.map(point => point.time));
+  const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);
+  const earliest = times.length ? times.reduce((earliest, time) => Math.min(earliest, time), latest) : latest - 60000;
+  // Every chart uses the same numeric time axis: each sample sits at its actual time.
+  const minTime = earliest === latest ? earliest - 60000 : earliest;
+
+  // The cluster's requests per minute: every process's samples summed per sample interval,
+  // counted from the earliest sample (the processes start, and so sample, seconds apart).
+  function totalRpm() {
+    const interval = metrics.series.map(series => series.intervalMs).find(ms => ms > 0) || 600000;
+    const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point.rpm)));
+    const start = points.reduce((start, point) => Math.min(start, point.time), Infinity);
+    const sums = new Map();
+    for (const point of points) {
+      const x = start + Math.round((point.time - start) / interval) * interval;
+      sums.set(x, (sums.get(x) || 0) + point.rpm);
+    }
+    return [...sums].sort((a, b) => a[0] - b[0]).map(([x, y]) => ({ x, y }));
+  }
+
+  // A hatched interval means at least one memory-pressure 503 was counted in it, not that
+  // the guard refused all through it. Overlapping intervals of different processes merge.
+  const refusals = metrics.series.flatMap(series => series.history.filter(point =>
+    Number.isFinite(point.intervalStart) && point.intervalStart < point.time && point.refused > 0));
+  const windows = [];
+  refusals.map(point => [point.intervalStart, point.time]).sort((a, b) => a[0] - b[0]).forEach(window => {
+    const last = windows[windows.length - 1];
+    if (last && window[0] <= last[1]) last[1] = Math.max(last[1], window[1]);
+    else windows.push(window);
+  });
+  const notice = document.getElementById('serverMetricsShedding');
+  if (notice && refusals.length) {
+    notice.hidden = false;
+    notice.textContent = refusals.reduce((sum, point) => sum + point.refused, 0).toLocaleString() +
+      ' memory-pressure 503 refusals in view. Hatching marks the sample intervals with refusals; request lines count admitted work.';
+  }
+  const hatch = {
+    id:'memoryShedding',
+    beforeDraw(chart) {
+      if (!windows.length || !chart.chartArea) return;
+      const {ctx, chartArea:area, scales:{x}} = chart;
+      for (const [from, to] of windows) {
+        const left = Math.max(area.left, x.getPixelForValue(from)), right = Math.min(area.right, x.getPixelForValue(to));
+        if (right <= left) continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, area.top, right - left, area.bottom - area.top);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(60,60,60,.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let at = left - (area.bottom - area.top); at < right; at += 6) {
+          ctx.moveTo(at, area.bottom);
+          ctx.lineTo(at + area.bottom - area.top, area.top);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#333';
+        ctx.fillRect(left, area.top, right - left, 2);
+        ctx.restore();
+      }
+    }
+  };
+
+  function formatTime(time) {
+    return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
+      ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
+  }
+  function chart(id, field, unit, divisor = 1) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const datasets = drawn.map((series, i) => ({
+      label:series.label,
+      data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
+        refused:point.refused })),
+      borderColor:styles[i].color, backgroundColor:styles[i].color + '18', borderDash:styles[i].dash,
+      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:metrics.cluster ? 1.5 : 2,
+      pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
+      fill:!metrics.cluster, tension:0, spanGaps:false
+    }));
+    if (field === 'rpm' && showTotal) {
+      datasets.push({ label:'Total', data:totalRpm(), borderColor:total.color, backgroundColor:total.color,
+        borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
+    }
+    new Chart(canvas, {
+      type:'line',
+      data:{ datasets },
+      options:{
+        responsive:true, maintainAspectRatio:false, animation:false,
+        scales:{
+          x:{ type:'linear', min:minTime, max:latest, ticks:{ maxTicksLimit:4, callback:formatTime, font:{ size:10 } } },
+          y:{ beginAtZero:true, ticks:{ font:{ size:10 } }, title:{ display:true, text:unit, font:{ size:10 } } }
+        },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ callbacks:{
+            title:items => items.length ? formatTime(items[0].parsed.x) : '',
+            afterLabel:item => item.raw.refused > 0
+              ? 'Memory-pressure 503s: ' + item.raw.refused.toLocaleString() + ' in this sample'
+              : ''
+          } }
+        }
+      },
+      plugins:[hatch]
+    });
+  }
+  chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
+  chart('tatChart', 'tat', 'ms');
+  chart('requestChart', 'rpm', 'req/min');
+  chart('clientCacheChart', 'clientConcepts', 'concepts');
+  // Separate mean and max scales keep a single long stall from flattening the mean.
+  chart('blockChart', 'block', 'ms');
+  chart('blockMaxChart', 'blockMax', 'ms');
+})();
+</script>

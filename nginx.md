@@ -8,6 +8,7 @@ public servers (tx.fhir.org, packages.fhir.org and so on) use.
 * [Rate limiting](#rate-limiting) - approaches that suit terminology traffic
 * [Routing to multiple servers](#routing-to-multiple-servers) - running more than one instance behind a single front door
 * [Managing closure](#managing-closure) - where `$closure` requests go
+* [A master and tx workers on one machine](#a-master-and-tx-workers-on-one-machine) - the same rules for processes started with `--role`
 
 ## General configuration
 
@@ -324,7 +325,9 @@ Notes:
 * Routing only works on the **header**. The older `cache-id` request parameter sits in the
   request body, where nginx can't see it. Current clients (fhir-core) send the header.
 * A restarted instance loses its caches. Clients recover by starting a new one, just as
-  they do after a cache expires.
+  they do after a cache expires. A cache-id is `<code>.<start>.<uuid>`, where `<start>` is
+  when the instance started, so the restarted instance reports an id it issued before the
+  restart as "lost to a server restart", and one it never issued as never issued.
 
 ### What must be the same on every instance
 
@@ -397,3 +400,119 @@ the cache ends, and the table would silently change meaning. So `$closure` ignor
   about. An outage is better than that: clients see a failure and retry later.
 * **Moving the designated instance** means moving its closure database with it, then
   changing the upstream.
+
+## A master and tx workers on one machine
+
+On one machine, FHIRsmith can run as one master and several tx workers on the same data
+directory (see [cluster.md](cluster.md)). The master runs every module, the background jobs,
+`$closure` and the syndication feed; the workers run only the tx module. Start the master
+first, and the workers once it answers `/health`:
+
+```bash
+node --expose-gc server.js --role=master    --instance-code=m0  --port=3001
+node --expose-gc server.js --role=tx-worker --instance-code=tx1 --port=3002
+node --expose-gc server.js --role=tx-worker --instance-code=tx2 --port=3003
+```
+
+Keep each server's keepAliveTimeout (65 s with `library/keep-alive.js`) above nginx's upstream
+`keepalive_timeout` (60 s by default); on servers without that fix (Node's 5 s), set
+`keepalive_timeout 4s;` in each upstream block, or nginx reuses connections the servers are
+closing, and the resets mark the owner of a cache down.
+
+The routing is the pool above, with the master as the designated `$closure` instance and the
+home of everything that isn't a tx endpoint:
+
+```nginx
+upstream fs_master { server 127.0.0.1:3001; keepalive 16; }
+
+# every process that takes ordinary tx requests (leave the master out if it shouldn't);
+# the zone shares least_conn's counts between nginx's worker processes
+upstream fs_tx_pool {
+    zone fs_tx_pool 64k;
+    least_conn;
+    server 127.0.0.1:3001;
+    server 127.0.0.1:3002;
+    server 127.0.0.1:3003;
+    keepalive 32;
+}
+upstream fs_tx1 { server 127.0.0.1:3002; server 127.0.0.1:3003 backup; keepalive 16; }
+upstream fs_tx2 { server 127.0.0.1:3003; server 127.0.0.1:3002 backup; keepalive 16; }
+
+map $http_x_cache_id $fs_tx_backend {
+    default     fs_tx_pool;
+    ~^m0\.      fs_master;
+    ~^tx1\.     fs_tx1;
+    ~^tx2\.     fs_tx2;
+}
+
+server {
+    ...
+    # the master's parts of the tx endpoints: $closure, the syndication feed, the source
+    # info pages (the VSAC resync form writes the VSAC database)
+    location ~ ^/(r4|r5)/(\$closure|syndication(/.*)?|info/.*)$ {
+        include fhirsmith-proxy.conf;
+        proxy_set_header X-Cache-Id "";
+        proxy_pass http://fs_master;
+    }
+
+    # the tx endpoints: by cache-id, else the least busy
+    location ~ ^/(r4|r5)(/|$) {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://$fs_tx_backend;
+    }
+
+    # everything else: the master
+    location / {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://fs_master;
+    }
+}
+```
+
+List your own tx endpoint paths (`modules.tx.endpoints`) in the two regex locations. The
+optional launcher, `node cluster.js`, starts the processes in this order and applies the same
+rules without nginx (it can also sit behind nginx, as one upstream).
+
+### With the shared cache
+
+With `server.cluster.sharedCache: true` ([cluster.md](cluster.md#options)), every process
+keeps its `$cache-control` caches in one SQLite file, so any of them can answer any cache-id.
+Start the master before the workers. Caches are not carried over a server restart: each
+time the master starts, every live cache is lost, and a client that uses one gets
+`cache-id-unknown`, "lost to a server restart", and starts a new cache. A worker restarted
+while the master carries on keeps every cache, and workers that survive a master restart
+issue new caches straight away. The same holds when nginx fronts `cluster.js`.
+
+The `map` on `X-Cache-Id` and the per-worker upstreams (`fs_tx1`, `fs_tx2`) are then not
+needed: the tx location goes straight to the pool.
+
+```nginx
+    location ~ ^/(r4|r5)(/|$) {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://fs_tx_pool;
+    }
+```
+
+Keeping the `map` still works (the launcher's `cacheAffinity: true`). It keeps each client on
+one process, whose expansion cache (which is per process) already holds the expansions it
+asked for; without it, the load spreads evenly, and the first time each process expands a
+value set for a client it does the work again.
+
+### With shared closure tables
+
+With `server.cluster.sharedClosure: true` ([cluster.md](cluster.md#options)), every process
+answers `$closure` on the one closure database, so `$closure` can leave the master's location
+and go to the pool (it never uses a cache-id):
+
+```nginx
+    location ~ ^/(r4|r5)/(syndication(/.*)?|info/.*)$ {
+        include fhirsmith-proxy.conf;
+        proxy_set_header X-Cache-Id "";
+        proxy_pass http://fs_master;
+    }
+
+    location ~ ^/(r4|r5)/\$closure$ {
+        include fhirsmith-proxy.conf;
+        proxy_pass http://fs_tx_pool;
+    }
+```

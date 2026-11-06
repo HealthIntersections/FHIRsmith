@@ -18,6 +18,7 @@ const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
+const { trimNativeMemory } = require('./library/native-memory');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
@@ -30,6 +31,20 @@ try {
   config = JSON.parse(configData);
 } catch (error) {
   console.error('Failed to load configuration:', error.message);
+  process.exit(1);
+}
+
+// --role=master|tx-worker (cluster.md). With no role this is null and the configuration is
+// untouched: every `if (role)` below is skipped
+const { parseRole, applyRole, describeRole } = require('./library/role');
+let role;
+try {
+  role = parseRole(process.argv.slice(2), process.env);
+  if (role) {
+    applyRole(config, role);
+  }
+} catch (error) {
+  console.error(error.message);
   process.exit(1);
 }
 
@@ -46,6 +61,9 @@ serverLog.info(`Node.js ${process.version} on ${os.type()} ${os.release()} (${os
 serverLog.info(`Memory: ${freeMemGB} GB free / ${totalMemGB} GB total`);
 memoryGuard.configure(config.server.memory || {});
 serverLog.info(memoryGuard.describe());
+if (role) {
+  serverLog.info(describeRole(role, config));
+}
 serverLog.info(`Data directory: ${folders.dataDir()}`);
 serverLog.info(`========================================`);
 
@@ -69,6 +87,8 @@ const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
+const { connectMetrics, graphData } = require('./library/cluster-metrics');
+const { connectCounts } = require('./library/cluster-counts');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -88,12 +108,13 @@ const app = express();
 const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
-const PORT = process.env.PORT || config.server.port || 3000;
+const PORT = (role && role.port) || process.env.PORT || config.server.port || 3000;
 
 // Middleware
 // Refuse new requests (503) while memory is near the limit - first, so a refused request
 // doesn't even have its body parsed. /dashboard stays reachable so the state can be seen.
-app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'] }));
+app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'],
+  onReject: role ? () => stats?.countRefusedRequest() : undefined }));
 // The body parsers, for every module but those that read their own bodies with their own
 // limits and checks (the ips module: a document is read only once its submitter's token has
 // been checked, and no bigger than the module's maxSize)
@@ -121,6 +142,17 @@ app.use(cors(config.server.cors));
 const modules = {};
 
 let stats = null;
+let disconnectMetrics = () => {};
+let disconnectCounts = null;
+// The graphs on / and /dashboard. With a role, the cluster templates draw every process the
+// launcher reports (library/cluster-metrics.js); with none, main's templates, as before
+function metricsTemplate(page) {
+  if (!role) {
+    return [page, { historyJson: JSON.stringify(stats.history), startTime: stats.startTime }];
+  }
+  const label = `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
+  return [`cluster-${page}`, { metricsJson: graphData(stats, label) }];
+}
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
 // the daily report, emailed at midnight when "email" and "dailyReport.to" are configured - see library/daily-report.js
@@ -129,6 +161,11 @@ let dailyReport = null;
 // Initialize modules based on configuration
 async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
+  if (role) {
+    disconnectMetrics = connectMetrics(stats);
+    // a worker's request counts go to the master's statistics (library/cluster-counts.js)
+    disconnectCounts = connectCounts(stats, process, { role: role.role });
+  }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
   // Initialize SHL module
@@ -335,6 +372,26 @@ async function loadTemplates() {
   }
 }
 
+// The stats table's caption and request count (/ and /dashboard). On the master under the
+// launcher the count is every process's: its own and the workers' it has merged
+// (library/cluster-counts.js), which arrive up to a minute late. The table's other figures
+// are this process's. With no role: no caption, and the count as before
+function requestCounts() {
+  const code = role ? escape(config.modules.tx.instanceCode) : '';
+  if (role && role.role === 'master' && process.send) {
+    return {
+      caption: `<caption style="caption-side:top">Cluster: request counts for every process (the workers' up to a minute behind); uptime and the other figures are master ${code}'s</caption>`,
+      count: stats.requestCount + stats.mergedRequestCount,
+      detail: `master: ${stats.requestCount}, workers: ${stats.mergedRequestCount}, static: ${stats.staticRequestCount}`
+    };
+  }
+  return {
+    caption: role ? `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${code}: uptime and request counts for this process</caption>` : '',
+    count: stats.requestCount,
+    detail: `static: ${stats.staticRequestCount}`
+  };
+}
+
 async function buildRootPageContent() {
   stats.requestCount++;
   let content = npmAudit ? npmAudit.renderBanner() : '';
@@ -480,13 +537,15 @@ async function buildRootPageContent() {
   const sysMemPCT = ((os.totalmem() - os.freemem()) * 100) / os.totalmem();
 
   // Average requests per minute
+  const requests = requestCounts();
   const uptimeMinutesTotal = uptimeMs / 60000;
-  const avgReqPerMin = uptimeMinutesTotal > 0 ? (stats.requestCount / uptimeMinutesTotal).toFixed(1) : '0.0';
+  const avgReqPerMin = uptimeMinutesTotal > 0 ? (requests.count / uptimeMinutesTotal).toFixed(1) : '0.0';
 
   content += '<table class="grid">';
+  content += requests.caption;
   content += '<tr>';
   content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-  content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
+  content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
   content += `<td><strong>Avg Requests/min:</strong> ${avgReqPerMin}</td>`;
   content += '</tr>';
   content += '<tr>';
@@ -516,10 +575,7 @@ async function buildRootPageContent() {
     root: path.join(__dirname, 'tx', 'html'),
     extname: '.liquid'
   });
-  content += await liquid.renderFile('home-metrics', {
-    historyJson: JSON.stringify(stats.history),
-    startTime: stats.startTime
-  });
+  content += await liquid.renderFile(...metricsTemplate('home-metrics'));
   content += stats.taskDetails();
 
   content += '</div>';
@@ -663,10 +719,12 @@ app.get('/dashboard', async (req, res) => {
     const diskPCT = 100 - ((fstats.bavail * 100) / fstats.blocks);  // % of disk used
 
     let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
+    const requests = requestCounts();
     content += '<table class="grid">';
+    content += requests.caption;
     content += '<tr>';
     content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-    content += `<td><strong>Request Count:</strong> ${stats.requestCount} (static: ${stats.staticRequestCount})</td>`;
+    content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
     content += `<td style="background-color:${pctColor(memMaxPCT)}"><strong>Memory:</strong> ${v8PCT.toFixed(0)}% V8, ${processPCT.toFixed(0)}% Process, ${sysMemPCT.toFixed(0)}% System</td>`;
     content += `<td style="background-color:${pctColor(diskPCT)}"><strong>Disk:</strong> ${diskPCT.toFixed(0)}%</td>`;
     content += '</tr>';
@@ -677,10 +735,7 @@ app.get('/dashboard', async (req, res) => {
       root: path.join(__dirname, 'tx', 'html'),
       extname: '.liquid'
     });
-    content += await liquid.renderFile('dash-metrics', {
-      historyJson: JSON.stringify(stats.history),
-      startTime: stats.startTime
-    });
+    content += await liquid.renderFile(...metricsTemplate('dash-metrics'));
     content += stats.taskDetails();
     if (npmAudit) {
       content += npmAudit.renderDashboard();
@@ -836,6 +891,15 @@ async function startServer() {
       throw error;
     });
 
+    // With a role: loading the library leaves 0.6-0.7 GB free but resident in the C allocator;
+    // give it back before taking requests, since N+1 processes share one limit (cluster.md)
+    if (role && memoryGuard._state.trimAllocator) {
+      const before = process.memoryUsage.rss();
+      if (trimNativeMemory() !== null) {
+        serverLog.info(`Memory: malloc_trim after loading - RSS ${memoryGuard.gb(before)} GB -> ${memoryGuard.gb(process.memoryUsage.rss())} GB`);
+      }
+    }
+
     // Start server
     app.listen(PORT, () => {
       stats.markStarted(packageJson.version);
@@ -885,6 +949,10 @@ async function shutdown() {
   }
   shuttingDown = true;
   serverLog.info('\nShutting down server...');
+  if (disconnectCounts) {
+    // a worker's last request counts, while the launcher still listens
+    await disconnectCounts.flush();
+  }
   if (npmAudit) {
     npmAudit.stop();
   }
@@ -905,11 +973,24 @@ async function shutdown() {
     }
   }
   stats.finishStats();
+  disconnectMetrics();
+  if (disconnectCounts) {
+    disconnectCounts();
+  }
   serverLog.info('Server shutdown complete');
   process.exit(0);
 }
 process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
+// Started by the launcher (cluster.js, an IPC channel): when the launcher goes, even
+// SIGKILLed, so does this process, rather than hold its port against the next launcher's
+// workers. With no one left to SIGKILL a shutdown that hangs, exit after 30 s regardless
+if (role && process.connected) {
+  process.once('disconnect', () => {
+    setTimeout(() => process.exit(1), 30000).unref();
+    void shutdown();
+  });
+}
 
 async function serveFhirsmithHome(req, res) {
   // Check if client wants HTML response

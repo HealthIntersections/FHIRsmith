@@ -6,6 +6,12 @@ const {Issue} = require("./library/operation-outcome");
 const Logger = require("../library/logger");
 const memoryGuard = require('../library/memory-guard');
 
+// When this process started, in ms, and the compact form of it that cache-ids carry when
+// the server has an instance code ("<code>.<start>.<uuid>"): base 36, 8 characters until
+// 2059. An id with this server's code and an earlier start was issued before a restart.
+const PROCESS_START = Math.round(performance.timeOrigin);
+const PROCESS_START_TOKEN = PROCESS_START.toString(36);
+
 /**
  * Check if running under a debugger
  * @returns {boolean}
@@ -112,7 +118,8 @@ class ResourceCache {
     // to poll instead of guessing. Null = not advertised.
     this.idleTimeoutMs = null;
     // This server instance's code (modules.tx.instanceCode), prefixed onto every
-    // cache-id it issues as "<code>.<uuid>". A proxy in front of several instances
+    // cache-id it issues as "<code>.<start>.<uuid>" (the shared store's ids are
+    // "<code>.<generation>.<random>"). A proxy in front of several instances
     // routes on the prefix to get a cached request back to the one instance that
     // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
     this.instanceCode = null;
@@ -141,8 +148,9 @@ class ResourceCache {
       return null;
     }
     // At most 16 characters: the cache-id goes back to the client as a FHIR id
-    // (valueId), which is capped at 64 - and "<code>." plus a 36-character UUID
-    // has to fit.
+    // (valueId), which is capped at 64 - and "<code>." plus the 8-character start,
+    // a '.' and a 36-character UUID (or the shared store's two 22-character tokens)
+    // have to fit.
     if (typeof code !== 'string' || !/^[A-Za-z0-9]{1,16}$/.test(code)) {
       throw new Error(`tx instanceCode '${code}' is not valid: it must be 1-16 letters and digits`);
     }
@@ -150,18 +158,51 @@ class ResourceCache {
   }
 
   /**
-   * Mint a new cache-id: a UUID, prefixed with "<instanceCode>." when this server
-   * has an instance code. Minting only - the caller creates the entry with set().
+   * Mint a new cache-id: a UUID, or "<instanceCode>.<start>.<uuid>" when this server
+   * has an instance code, where <start> is when this process started (base 36), so a
+   * later process can tell an id issued before a restart from one never issued.
+   * Minting only - the caller creates the entry with set(), or uses start().
    * @returns {string}
    */
   newCacheId() {
     const uuid = crypto.randomUUID();
-    return this.instanceCode ? `${this.instanceCode}.${uuid}` : uuid;
+    return this.instanceCode ? `${this.instanceCode}.${PROCESS_START_TOKEN}.${uuid}` : uuid;
+  }
+
+  /**
+   * Create a cache ($cache-control?mode=start): mint its id, store the resources.
+   * @param {Array} resources
+   * @param {boolean} sealed
+   * @returns {string} the new cache-id
+   */
+  start(resources, sealed = false) {
+    const cacheId = this.newCacheId();
+    this.set(cacheId, resources, sealed);
+    return cacheId;
+  }
+
+  /**
+   * When the process that issued a cache-id with this server's instance code started
+   * (ms), or null if the id doesn't say (no code, another code, or the older
+   * "<code>.<uuid>" form).
+   * @param {string} cacheId
+   * @returns {number|null}
+   */
+  issuedStartOf(cacheId) {
+    if (!this.instanceCode || typeof cacheId !== 'string') {
+      return null;
+    }
+    const parts = cacheId.split('.');
+    if (parts.length !== 3 || parts[0] !== this.instanceCode || !/^[0-9a-z]{1,10}$/.test(parts[1])) {
+      return null;
+    }
+    return parseInt(parts[1], 36);
   }
 
   /**
    * The instance code in a cache-id, or null if it has none. Ids this server mints
-   * are either a bare UUID (no '.') or "<code>.<uuid>".
+   * are either a bare UUID (no '.') or "<code>.<...>": "<code>.<start>.<uuid>" from the
+   * memory store, "<code>.<generation>.<random>" from the shared one.
    * @param {string} cacheId
    * @returns {string|null}
    */
@@ -235,6 +276,15 @@ class ResourceCache {
   describeMissing(cacheId) {
     const t = this.tombstone(cacheId);
     if (!t) {
+      // Our own code: the id says when the process that issued it started. An earlier
+      // start is a cache lost to a restart; this process's start, one it never issued
+      const issuedStart = this.issuedStartOf(cacheId);
+      if (issuedStart !== null && issuedStart < PROCESS_START) {
+        return { messageId: 'CACHE_ID_LOST_TO_RESTART', params: [cacheId, formatDuration(Date.now() - PROCESS_START)] };
+      }
+      if (issuedStart !== null) {
+        return { messageId: 'CACHE_ID_NEVER_ISSUED', params: [cacheId, formatDuration(Date.now() - PROCESS_START), this.maxTombstones] };
+      }
       // No record of it here. If its prefix names a different instance, say so:
       // that's a routing problem (proxy misconfigured, or the owning instance is
       // down and the request fell through to a backup), not a lifecycle one.
@@ -1340,5 +1390,6 @@ module.exports = {
   countExpansionCodes,
   isDebugging,
   debugLog,
-  formatDuration
+  formatDuration,
+  PROCESS_START
 };
