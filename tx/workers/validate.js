@@ -26,6 +26,7 @@ const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
+const { storedList, hasConcepts } = require('../library/stored-concepts');
 
 const DEV_IGNORE_VALUESET = false; // todo: what's going on with this (ported from pascal)
 
@@ -372,7 +373,8 @@ class ValueSetChecker {
   async prepareConceptSet(desc, cc, vs) {
     this.worker.deadCheck('prepareConceptSet');
     Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc, vs.vurl);
-    for (const [ci, c] of (cc.concept || []).entries()) {
+    // (a stored list - see stored-concepts.js - isn't read here: its entries are the provider's to check)
+    for (const [ci, c] of (storedList(cc) ? [] : (cc.concept || [])).entries()) {
       Extensions.checkNoModifiers(c, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.concept[' + ci + ']', vs.vurl);
     }
     this.worker.opContext.addNote(this.valueSet, 'Prepare ' + desc + ': "' + this.worker.renderer.displayValueSetInclude(cc) + '"', this.indentCount);
@@ -1634,13 +1636,20 @@ class ValueSetChecker {
    * here, and the listed concepts are compared only when the answer is yes.
    */
   async otherFormMatch(cs, code, concepts) {
-    if (!concepts || concepts.length === 0 || concepts.some(cc => cc.code === code)) {
+    // (a function: a stored list - see stored-concepts.js - read only if the code has another form)
+    const lazy = typeof concepts === 'function';
+    if (!concepts || (!lazy && (concepts.length === 0 || concepts.some(cc => cc.code === code)))) {
       return null;
     }
     const a = await cs.locate(code);
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
+    if (lazy) {
+      concepts = concepts() || [];
+    }
+    // a hint: each listed code is located next (a provider may read them together)
+    await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
       this.worker.deadCheck('checkConceptSet#3');
       if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
@@ -1675,7 +1684,7 @@ class ValueSetChecker {
   async checkConceptSet(path, role, cs, cset, code, displays, vs, message, inactive, normalForm, vstatus, op, vcc, messages) {
     this.worker.opContext.addNote(vs, 'check code ' + role + ' ' + this.worker.renderer.displayValueSetInclude(cset) + ' at ' + path, this.indentCount);
     let result = false;
-    if (!cset.concept && !cset.filter) {
+    if (!hasConcepts(cset) && !cset.filter) {
       let loc = await cs.locate(code);
       result = false;
       if (loc.context == null) {
@@ -1758,8 +1767,22 @@ class ValueSetChecker {
     }
 
     // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
-    const altMatch = await this.otherFormMatch(cs, code, cset.concept);
-    for (let cc of cset.concept || []) {
+    // the listed concepts that can match: all of an ordinary list (as always), or just the ones
+    // with this code from a stored list, which is asked rather than read
+    const stored = storedList(cset);
+    let listed = stored ? await stored.lookup(code) : cset.concept;
+    let altMatch;
+    if (stored) {
+      // the code may be listed in its other form only if it isn't listed as itself; then the
+      // whole list is needed, and is read only if the code has another form
+      altMatch = listed.some(cc => cc.code === code) ? null : await this.otherFormMatch(cs, code, () => cset.concept);
+      if (altMatch) {
+        listed = [altMatch];
+      }
+    } else {
+      altMatch = await this.otherFormMatch(cs, code, cset.concept);
+    }
+    for (let cc of listed || []) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
       if (code === c || cc === altMatch) {

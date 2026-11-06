@@ -8,7 +8,7 @@ const { checkContained } = require('../library/canonical-resource');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
-const { keepForPinnedReference } = require('../library/tho-precedence');
+const { keepForPinnedReference, isTHOPackage } = require('../library/tho-precedence');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -467,6 +467,41 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
   async listAllValueSets() {
     const urls = await this.database.listAllValueSets();
     return this.#excludedUrls.size === 0 ? urls : urls.filter(url => !this.#excludedUrls.has(url));
+  }
+
+  /**
+   * The url -> versions of this package's value sets, when it is an hl7.terminology package
+   * (see AbstractValueSetProvider.thoVersions)
+   *
+   * @param {Map<string, Set<string>>} thoVersions - added to
+   */
+  thoVersions(thoVersions) {
+    if (!isTHOPackage(this.sourcePackage())) {
+      return;
+    }
+    for (const vs of this.valueSetMap.values()) {
+      if (!vs || !vs.url) {
+        continue;
+      }
+      if (!thoVersions.has(vs.url)) {
+        thoVersions.set(vs.url, new Set());
+      }
+      if (vs.version) {
+        thoVersions.get(vs.url).add(vs.version);
+      }
+    }
+  }
+
+  /**
+   * When this is a FHIR core package, keep only the pinned references to value sets THO also
+   * provides (see AbstractValueSetProvider.yieldToTHO and keepPinnedOnly)
+   *
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
+   */
+  yieldToTHO(thoVersions) {
+    if (VersionUtilities.isCorePackage(this.sourcePackage())) {
+      this.keepPinnedOnly(thoVersions);
+    }
   }
 
   // the value sets left out by keepPinnedOnly - by url, and by their own (unprefixed) id
