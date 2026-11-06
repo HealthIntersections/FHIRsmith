@@ -155,7 +155,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.queueSeconds` | | 3 | Seconds a tx request may wait for a process with room. 3: a client is better told the server is busy than left to its own timeout. When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
-| `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once, again 5 and 10 s later) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the 10 to 20 s it takes to start. 0: never. |
+| `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
@@ -353,7 +353,7 @@ the next look, a minute away. (With nothing to give back, a trim takes well unde
 millisecond.) The trim matters: an operation that opens thousands of SQLite connections (a 20,000-entry LOINC
 `$batch-validate-code`, which opens one per entry) leaves gigabytes that the C library's
 allocator keeps resident after the connections close, and no GC touches them. After such a
-batch was aborted, a worker held 8.0 GB, 4.8 GB of it free in malloc's arenas; `malloc_trim`
+batch was aborted, a worker held 8.0 GB, 4.7 GB of it free in malloc's arenas; `malloc_trim`
 took it to 3.9 GB in half a second, and without it the server refused everything until it was
 restarted. `server.memory.trimAllocator: false` leaves it out (for diagnosis). Where it is not
 available (macOS, Windows, musl, no `koffi`), only the GC runs.
