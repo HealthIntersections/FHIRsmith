@@ -165,9 +165,9 @@ describe('routing rules', () => {
     // the number of workers given or not (sized to memory); 2 GB left free when idle
     expect([s.workersDefault, loadSettings([], {}, { ...config, server: {} }).workersDefault, loadSettings(['--workers=2'], {}, { ...config, server: {} }).workersDefault]).toEqual([false, true, false]);
     expect([s.headroomBytes, loadSettings([], {}, { ...config, server: { cluster: { memoryHeadroomGB: 3 } } }).headroomBytes]).toEqual([2 * 2 ** 30, 3 * 2 ** 30]);
-    expect([s.fastLaneExtra, s.fastLaneMaxBytes]).toEqual([4, 0]);
-    const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 1024 } } });
-    expect([s5.fastLaneExtra, s5.fastLaneMaxBytes]).toEqual([0, 1024]);
+    expect([s.fastLaneExtra, s.fastLaneMaxBytes]).toEqual([4, 1024]);
+    const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0 } } });
+    expect([s5.fastLaneExtra, s5.fastLaneMaxBytes]).toEqual([0, 0]);
   });
 });
 
@@ -429,7 +429,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
