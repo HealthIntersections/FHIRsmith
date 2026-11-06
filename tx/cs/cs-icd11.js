@@ -22,6 +22,7 @@ const { ICD11Expression, parseExpression, axisLabel } = require('./icd11-express
 const { Issue } = require('../library/operation-outcome');
 const { DesignationUse } = require('../library/designations');
 const assert = require('assert');
+const { guarded } = require('../library/sqlite-utilities');
 
 // WHO's own vocabulary for the kinds of text an entity carries, used as designation.use.
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
@@ -116,7 +117,7 @@ class ICD11Services extends BaseCSServices {
 
   #all(sql, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || []));
+      this.db.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
     });
   }
 
@@ -1008,7 +1009,7 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
     const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY);
     try {
       const get = (sql, p) => new Promise((res, rej) =>
-        db.get(sql, p, (e, r) => e ? rej(e) : res(r)));
+        db.get(sql, p, guarded(rej, (e, r) => e ? rej(e) : res(r))));
       const sys = await get('SELECT * FROM system WHERE code = ?', [this.systemCode]);
       if (!sys) {
         throw new Error(`ICD-11 database ${this.dbPath} has no '${this.systemCode}' code system`);
@@ -1017,7 +1018,7 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
       const langs = await get("SELECT value FROM meta WHERE key = 'languages'", []);
       // per-language titles; a database built before system_title existed has none
       const all = (sql, p) => new Promise((res, rej) =>
-        db.all(sql, p, (e, r) => e ? rej(e) : res(r || [])));
+        db.all(sql, p, guarded(rej, (e, r) => e ? rej(e) : res(r || []))));
       const titles = {};
       const hasTitles = await get(
         "SELECT 1 x FROM sqlite_master WHERE type = 'table' AND name = 'system_title'", []);
@@ -1064,8 +1065,8 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
 
     const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY);
     try {
-      const get = (sql, p) => new Promise((res, rej) => db.get(sql, p, (e, r) => e ? rej(e) : res(r)));
-      const all = (sql, p) => new Promise((res, rej) => db.all(sql, p, (e, r) => e ? rej(e) : res(r || [])));
+      const get = (sql, p) => new Promise((res, rej) => db.get(sql, p, guarded(rej, (e, r) => e ? rej(e) : res(r))));
+      const all = (sql, p) => new Promise((res, rej) => db.all(sql, p, guarded(rej, (e, r) => e ? rej(e) : res(r || []))));
       const scale = await get(
         `SELECT ps.id, ps.axis, ps.axis_name, ps.required, ps.allow_multiple,
                 c.entity_id, c.code AS stem_code, c.uri AS stem_uri
@@ -1110,14 +1111,14 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
   /** Which code systems a given database holds, so the library can register one each. */
   static listSystems(dbPath) {
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, (err) => {
+      const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READONLY, guarded(reject, (err) => {
         if (err) { reject(new Error(`cannot open ICD-11 database ${dbPath}: ${err.message}`)); return; }
-        db.all('SELECT code, url, version, title FROM system ORDER BY code', (e, rows) => {
+        db.all('SELECT code, url, version, title FROM system ORDER BY code', guarded(reject, (e, rows) => {
           db.close();
           if (e) reject(new Error(`${dbPath} is not an ICD-11 database: ${e.message}`));
           else resolve(rows || []);
-        });
-      });
+        }));
+      }));
     });
   }
 }

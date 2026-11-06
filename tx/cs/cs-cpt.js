@@ -4,6 +4,7 @@ const { CodeSystem } = require('../library/codesystem');
 const { FilterExecutionContext, CodeSystemFactoryProvider } = require('./cs-api');
 const {validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
+const { guarded } = require('../library/sqlite-utilities');
 
 class CPTConceptDesignation {
   constructor(kind, value) {
@@ -654,7 +655,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
 
   async #loadVersion(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Information', (err, rows) => {
+      db.all('SELECT * FROM Information', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -665,13 +666,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadConcepts(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Concepts', (err, rows) => {
+      db.all('SELECT * FROM Concepts', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -689,13 +690,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadProperties(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Properties', (err, rows) => {
+      db.all('SELECT * FROM Properties', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -707,13 +708,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadDesignations(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Designations', (err, rows) => {
+      db.all('SELECT * FROM Designations', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -725,7 +726,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
