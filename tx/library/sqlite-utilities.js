@@ -7,13 +7,15 @@
  *
  *   db.all(sql, params, guarded(reject, (err, rows) => { ... }));
  *
- * `this` is passed through, for run() callbacks that read this.lastID.
+ * `this` is passed through, for run() callbacks that read this.lastID. What it throws
+ * is also logged, because after resolve() the reject does nothing.
  */
 function guarded(reject, callback) {
   return function (...args) {
     try {
       return callback.apply(this, args);
     } catch (e) {
+      require('../../library/logger').getInstance().child({ module: 'tx' }).warn(`sqlite callback threw: ${e.message}`);
       reject(e);
     }
   };
