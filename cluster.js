@@ -20,8 +20,8 @@
  *    requests outstanding
  *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
  *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
- *  - gives cheap requests (by method and path: the fast lane) fastLaneExtra slots of their
- *    own on each process, on top of maxOutstanding
+ *  - lets cheap requests (by method and path: the fast lane) use fastLaneExtra more slots
+ *    than maxOutstanding, ahead of the others, but never the last normalMinSlots of them
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
@@ -69,10 +69,13 @@ const AT_WORK_MS = 1000;
 // memory to leave under the refusal threshold with every process loaded and idle: about what
 // one heavy operation (a large SNOMED $expand, a big $batch-validate-code) uses
 const HEADROOM_GB = 2;
-// fast-lane requests (isFastLane) a process may have on top of MAX_OUTSTANDING; a POST takes
-// the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
+// a fast-lane request (isFastLane) may go to a process with this many more than
+// MAX_OUTSTANDING; a POST takes the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
 const FAST_LANE_EXTRA = 4;
 const FAST_LANE_MAX_BYTES = 1024;
+// while other requests wait, the fast lane leaves them this many of a process's slots, so
+// heavy work goes on during a flood of cheap requests
+const NORMAL_MIN_SLOTS = 8;
 const GB = (b) => (b / 2 ** 30).toFixed(1);
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
@@ -127,6 +130,7 @@ function loadSettings(argv, env, config) {
     memory: (config.server && config.server.memory) || {},
     fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
     fastLaneMaxBytes: Number(cluster.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES),
+    normalMinSlots: Number(cluster.normalMinSlots ?? NORMAL_MIN_SLOTS),
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
 }
@@ -198,11 +202,10 @@ function classify(url, headers, txPaths, routing = {}) {
 /**
  * The process to send a request to, or null if none is ready.
  * @param {Object} route - from classify
- * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, fastOutstanding, coolUntil}
- * @param {boolean} [fast] - a fast-lane request: the least loaded by its own lane
+ * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, coolUntil}
  */
 let rotation = 0;
-function pickTarget(route, procs, fast = false) {
+function pickTarget(route, procs) {
   if (route.to === 'master') {
     return procs.find(p => p.role === 'master' && p.ready) || null;
   }
@@ -224,12 +227,10 @@ function pickTarget(route, procs, fast = false) {
   const warm = ready.filter(p => !(p.coolUntil > now));
   const candidates = warm.length ? warm : ready;
   rotation = (rotation + 1) % candidates.length;
-  const fastOf = (p) => p.fastOutstanding || 0;
-  const load = (p) => fast ? fastOf(p) : p.outstanding - fastOf(p);
   let best = null;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[(rotation + i) % candidates.length];
-    if (!best || load(c) < load(best)) {
+    if (!best || c.outstanding < best.outstanding) {
       best = c;
     }
   }
@@ -284,6 +285,7 @@ function createLauncher(settings) {
   const headroom = settings.headroomBytes ?? HEADROOM_GB * 2 ** 30;
   const fastLaneExtra = settings.fastLaneExtra ?? FAST_LANE_EXTRA; // 0: no fast lane
   const fastLaneMaxBytes = settings.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES;
+  const normalMinSlots = Math.min(settings.normalMinSlots ?? NORMAL_MIN_SLOTS, maxOutstanding);
   const trimAllocator = !settings.memory || settings.memory.trimAllocator !== false;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
@@ -443,13 +445,25 @@ function createLauncher(settings) {
     });
   }
 
-  // the fast lane has its own slots, so it never takes a slot from the others
-  const full = (p, fast) => maxOutstanding > 0 && (fast ? p.fastOutstanding >= fastLaneExtra : p.outstanding - p.fastOutstanding >= maxOutstanding);
+  // A process has maxOutstanding + fastLaneExtra slots. The fast lane may use them all, but
+  // while others wait it leaves free what they need to have normalMinSlots running; the
+  // others use up to maxOutstanding, or more to reach normalMinSlots
+  const full = (p, fast) => {
+    const slots = maxOutstanding + fastLaneExtra;
+    const short = Math.max(0, normalMinSlots - (p.outstanding - p.fastOutstanding));
+    if (maxOutstanding <= 0) {
+      return false;
+    }
+    if (fast) {
+      return p.outstanding >= slots - (waiting.length ? short : 0);
+    }
+    return p.outstanding >= maxOutstanding && !(short > 0 && p.outstanding < slots);
+  };
 
   // true if the request was sent (or refused), false if it must wait. The master's own
   // paths and CORS preflights don't wait
   function send(w) {
-    const target = pickTarget(w.route, procs, w.fast);
+    const target = pickTarget(w.route, procs);
     if (!target) {
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
       return true;
@@ -461,7 +475,7 @@ function createLauncher(settings) {
     return true;
   }
 
-  // each queue oldest first; one waiting for its owner doesn't hold up the rest
+  // the fast lane first, then oldest first; one waiting for its owner doesn't hold up the rest
   function sendWaiting() {
     for (const queue of [fastWaiting, waiting]) {
       const fast = queue === fastWaiting;
@@ -681,7 +695,7 @@ function createLauncher(settings) {
     sizeWorkers(master);
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
-      `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
+      `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);

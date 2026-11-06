@@ -140,13 +140,6 @@ describe('routing rules', () => {
     expect(pickTarget({ to: 'owner', code: 'tx2' }, procs).code).toBe('tx2');
     procs[1].coolUntil = procs[2].coolUntil;
     expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx2');
-    // a fast-lane request: by the lane's own count; the others: by theirs
-    procs[2].fastOutstanding = 1;
-    expect(pickTarget({ to: 'tx' }, procs, true).code).toBe('tx1');
-    procs[1].outstanding = 3;
-    procs[1].fastOutstanding = 3;
-    procs[2].outstanding = 2;
-    expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx1');
   });
 
   test('the launcher\'s threshold is the memory guard\'s', () => {
@@ -181,9 +174,9 @@ describe('routing rules', () => {
     // the number of workers given or not (sized to memory); 2 GB left free when idle
     expect([s.workersDefault, loadSettings([], {}, { ...config, server: {} }).workersDefault, loadSettings(['--workers=2'], {}, { ...config, server: {} }).workersDefault]).toEqual([false, true, false]);
     expect([s.headroomBytes, loadSettings([], {}, { ...config, server: { cluster: { memoryHeadroomGB: 3 } } }).headroomBytes]).toEqual([2 * 2 ** 30, 3 * 2 ** 30]);
-    expect([s.fastLaneExtra, s.fastLaneMaxBytes]).toEqual([4, 1024]);
-    const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0 } } });
-    expect([s5.fastLaneExtra, s5.fastLaneMaxBytes]).toEqual([0, 0]);
+    expect([s.fastLaneExtra, s.fastLaneMaxBytes, s.normalMinSlots]).toEqual([4, 1024, 8]);
+    const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0, normalMinSlots: 0 } } });
+    expect([s5.fastLaneExtra, s5.fastLaneMaxBytes, s5.normalMinSlots]).toEqual([0, 0, 0]);
   });
 });
 
@@ -386,26 +379,34 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all(await busy(4))).map(x => x.status)).toEqual([200, 200, 200, 200]);
     });
 
-    test('the fast lane has fastLaneExtra slots of its own on each process, and never takes the others\'', async () => {
-      launcher = createLauncher({ ...queued(5000), fastLaneExtra: 1 });
+    test('the fast lane: fastLaneExtra more slots, ahead of the rest, but leaving the others normalMinSlots', async () => {
+      launcher = createLauncher({ ...queued(5000), fastLaneExtra: 1, normalMinSlots: 1 });
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
-      // the lane full: an $expand still goes at once, and another lookup waits for the lane
-      const lanes = [get(PORT, '/r4/CodeSystem/$lookup?delay=1000'), get(PORT, '/r4/CodeSystem/$lookup?delay=1000')];
-      await until(() => launcher.procs.filter(p => p.servesTx).every(p => p.fastOutstanding === 1));
-      let t0 = Date.now();
-      expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(200);
-      expect(Date.now() - t0).toBeLessThan(500);
-      t0 = Date.now();
-      expect((await get(PORT, '/r4/CodeSystem/$lookup')).status).toBe(200);
-      expect(Date.now() - t0).toBeGreaterThan(300);
-      expect((await Promise.all(lanes)).map(r => r.status)).toEqual([200, 200]);
-      // the others full: a lookup goes at once
+      const txProcs = launcher.procs.filter(p => p.servesTx);
       const slow = await busy(2);
-      t0 = Date.now();
+      const t0 = Date.now();
       expect((await get(PORT, '/r4/CodeSystem/$lookup?code=1')).status).toBe(200);
       expect(Date.now() - t0).toBeLessThan(500);
-      expect((await Promise.all(slow)).map(r => r.status)).toEqual([200, 200]);
+      // every slot full, each process with its one normal request: a heavy request waits, then
+      // a lookup, which takes the first slot the lane frees
+      const lanes = [get(PORT, '/r4/CodeSystem/$lookup?delay=300'), get(PORT, '/r4/CodeSystem/$lookup?delay=300')];
+      await until(() => txProcs.every(p => p.outstanding === 2));
+      const order = [];
+      const heavy = get(PORT, '/r4/ValueSet/$expand').then(r => order.push('expand') && r);
+      await sleep(50);
+      const lookup = get(PORT, '/r4/CodeSystem/$lookup').then(r => order.push('lookup') && r);
+      expect((await Promise.all([heavy, lookup, ...lanes, ...slow])).map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+      expect(order).toEqual(['lookup', 'expand']);
+      // every slot full of lookups: a heavy request waiting gets the next free slot, ahead of a lookup
+      const flood = [1, 2, 3, 4].map(() => get(PORT, '/r4/CodeSystem/$lookup?delay=1000'));
+      await until(() => txProcs.every(p => p.outstanding === 2 && p.fastOutstanding === 2));
+      const order2 = [];
+      const heavy2 = get(PORT, '/r4/ValueSet/$expand?delay=300').then(r => order2.push('expand') && r);
+      await sleep(50);
+      const lookup2 = get(PORT, '/r4/CodeSystem/$lookup?delay=300').then(r => order2.push('lookup') && r);
+      expect((await Promise.all([heavy2, lookup2, ...flood])).map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+      expect(order2).toEqual(['expand', 'lookup']);
       expect(launcher.procs.every(p => p.outstanding === 0 && p.fastOutstanding === 0)).toBe(true);
       await launcher.stop();
       // fastLaneExtra 0: no lane
@@ -449,7 +450,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 8, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
