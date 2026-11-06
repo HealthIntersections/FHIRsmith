@@ -18,6 +18,7 @@ const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
+const { countStaticResponses } = require('./library/static-response-stats');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
@@ -598,20 +599,14 @@ app.get('/', async (req, res) => {
 app.get('/fhirsmith', (req, res) => serveFhirsmithHome(req, res));
 
 // Serve static files
-// Count static file hits separately from API/page requests
-app.use((req, res, next) => {
-  res.on('finish', () => {
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      stats.staticRequestCount++;
-    }
-  });
-  next();
-});
+// Count static file hits separately from API/page requests: only responses the static
+// handlers below send themselves, not a later route's response to a request that fell through
+const staticFiles = express.Router();
 if (config.server?.webBase) {
   const overrideDir = path.resolve(config.server.webBase);
   // Anything under overrideDir may be served; nothing outside it may - see
   // library/path-safety.js for why path.join is not enough on its own.
-  app.use((req, res, next) => {
+  staticFiles.use((req, res, next) => {
     const filePath = resolveWithin(overrideDir, req.path);
     if (filePath === null) {
       return next();
@@ -628,7 +623,8 @@ if (config.server?.webBase) {
     });
   });
 }
-app.use(express.static(path.join(__dirname, 'static')));
+staticFiles.use(express.static(path.join(__dirname, 'static')));
+app.use(countStaticResponses(staticFiles, () => { stats.staticRequestCount++; }));
 
 // Dashboard endpoint - server name, stats, graphs, and background tasks (no modules list)
 app.get('/dashboard', async (req, res) => {
