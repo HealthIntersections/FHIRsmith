@@ -500,6 +500,12 @@ class TXModule {
     router.use((req, res, next) => {
       const contentType = req.get('Content-Type') || '';
 
+      // The body was bigger than the server accepts (server.maxBodyMB; see below)
+      if (req.bodyTooLarge) {
+        return res.status(413).json(buildOperationOutcome('error', 'too-costly',
+          `The request body is bigger than this server accepts (${req.bodyTooLarge.limit} bytes)`));
+      }
+
       // Only process POST/PUT
       if (req.method !== 'POST' && req.method !== 'PUT') {
         return next();
@@ -571,6 +577,17 @@ class TXModule {
       if (req.path === endpointPath) {
         return res.redirect(301, endpointPath + '/');
       }
+      next();
+    });
+
+    // A body over the size limit is refused by the body parsers, which run before this
+    // router, and Express would answer with its HTML error page. Note it and carry on, so
+    // the router answers with an OperationOutcome, in the format the client asked for
+    app.use(endpointPath, (err, req, res, next) => {
+      if (err.type !== 'entity.too.large') {
+        return next(err);
+      }
+      req.bodyTooLarge = err;
       next();
     });
 

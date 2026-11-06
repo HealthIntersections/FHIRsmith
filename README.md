@@ -144,6 +144,10 @@ Create a `config.json` file in your data directory (use `config-template.json` a
 }
 ```
 
+| Option | Default | Description |
+|---|---|---|
+| `server.maxBodyMB` | `50` | Largest request body accepted, in MB. A body is read whole into memory before it is parsed, so this bounds what one request can take. A bigger body gets a 413: an OperationOutcome (too-costly) on a tx endpoint, and the module's own handling elsewhere. The largest IG Publisher request seen on build.fhir.org was 1.39 MB, so 50 leaves plenty of room. The ips module reads its own bodies, with its own limit |
+
 ### Logging Configuration
 
 Add a `logging` section to `config.json` to control log behaviour. All fields are optional and have sensible defaults:
