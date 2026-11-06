@@ -113,6 +113,12 @@ describe('routing rules', () => {
     procs[0].outstanding = 0;
     expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx2');
     expect(pickTarget({ to: 'master' }, [procs[1]])).toBeNull();
+    // one that answered 503 lately is passed over, unless every one did; an owner is not
+    procs[2].coolUntil = Date.now() + 5000;
+    expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx1');
+    expect(pickTarget({ to: 'owner', code: 'tx2' }, procs).code).toBe('tx2');
+    procs[1].coolUntil = procs[2].coolUntil;
+    expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx2');
   });
 
   test('settings from flags, environment and config', () => {
@@ -133,6 +139,7 @@ describe('routing rules', () => {
     // 0 is 0: no limit, refuse at once
     const s4 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 0, queueSeconds: 0, ownerQueueSeconds: 0 } } });
     expect([s4.maxOutstanding, s4.queueMs, s4.ownerQueueMs]).toEqual([0, 0, 0]);
+    expect([s.cooldownMs, loadSettings([], {}, { ...config, server: { cluster: { cooldownSeconds: 0 } } }).cooldownMs]).toEqual([2000, 0]);
   });
 });
 
@@ -344,6 +351,31 @@ describe('the launcher, with fake processes', () => {
       expect((await get(PORT, '/r4/ValueSet/$expand', {}, { method: 'OPTIONS' })).status).toBe(200);
       expect(Date.now() - t0).toBeLessThan(500);
       await Promise.all(slow);
+    });
+
+    test('a process that answered 503 gets no new requests while another can take them', async () => {
+      launcher = createLauncher(settings(false));
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const refused = await get(PORT, '/r4/ValueSet/$expand?status=503');
+      expect(refused.status).toBe(503);
+      const other = refused.json.code === 'tx1' ? 'tx2' : 'tx1';
+      for (let i = 0; i < 4; i++) {
+        expect((await get(PORT, '/r4/ValueSet/$expand')).json.code).toBe(other);
+      }
+      // both refusing: they still get the requests
+      expect((await get(PORT, '/r4/ValueSet/$expand?status=503')).json.code).toBe(other);
+      expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(200);
+    });
+
+    test('cooldownSeconds 0: a process that answered 503 still gets requests; the limits are logged', async () => {
+      const lines = [];
+      launcher = createLauncher({ ...settings(false), cooldownMs: 0, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(lines.filter(l => l.startsWith('limits:'))).toEqual(['limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0']);
+      await get(PORT, '/r4/ValueSet/$expand?status=503');
+      expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
 
     test('while stopping, a new request on a kept-alive connection gets 503, not a place in the queue', async () => {
