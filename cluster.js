@@ -56,7 +56,7 @@ const HEALTHY_RUN_MS = 60000;
 const MAX_OUTSTANDING = 16;
 // a waiting tx request gets 503 after this long; one with a cache-id, which only its owner
 // can take, after OWNER_QUEUE_MS
-const QUEUE_MS = 3000;
+const QUEUE_MS = 1000;
 const OWNER_QUEUE_MS = 30000;
 // a process that answered 503 gets no new requests for this long while another can take
 // them. Short: its memory guard re-measures only when a request arrives
