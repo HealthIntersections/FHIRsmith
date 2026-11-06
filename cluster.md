@@ -126,6 +126,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 * logs these limits as it starts, in one line
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
   2 s, 4 s ... up to a minute
+* restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
+  `recycleSeconds` (30) with no request at work on it (see [Memory](#memory)). It sends it no
+  new requests, lets those it has finish, stops it as on shutdown and starts it again at once
 * on `SIGTERM` or `SIGINT`: stops taking connections, closes idle keep-alive connections,
   waits for the requests in progress (up to `drainSeconds`), then sends each process
   `SIGTERM` (each shuts down as a single server does; `SIGKILL` after 30 seconds), and exits
@@ -151,6 +154,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.queueSeconds` | | 3 | Seconds a tx request may wait for a process with room. 3: a client is better told the server is busy than left to its own timeout. When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
+| `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once, again 5 and 10 s later) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the 10 to 20 s it takes to start. 0: never. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
@@ -338,6 +342,26 @@ it when it needs the room.
   doesn't say whether it is busy, and a large idle master would otherwise leave a worker's
   runaway `$expand` to the kernel's OOM killer, which would likely kill the master.
 
+While refusing, each process looks for memory to get back, at once and then every 5 s (backing
+off to a minute while it gets back little): a forced GC, unless its JS heap is too small for
+one to help, then, on Linux with glibc and the optional `koffi` dependency, `malloc_trim`. The
+second matters: an operation that opens thousands of SQLite connections (a 20,000-entry LOINC
+`$batch-validate-code`, which opens one per entry) leaves gigabytes that the C library's
+allocator keeps resident after the connections close, and no GC touches them. After such a
+batch was aborted, a worker held 8.0 GB, 4.8 GB of it free in malloc's arenas; `malloc_trim`
+took it to 3.9 GB in half a second, and without it the server refused everything until it was
+restarted. `server.memory.trimAllocator: false` leaves it out (for diagnosis). Where it is not
+available (macOS, Windows, musl, no `koffi`), only the GC runs.
+
+If a tx-worker stays over the refusal threshold anyway, for `server.cluster.recycleSeconds`
+(30) with no request at work on it, the launcher restarts it: whatever it holds, nothing
+running will free it. With the cgroup measured, only a worker that has grown, since it was
+ready, by more than the cgroup is over the threshold is restarted (a smaller one would come
+back at the same size, and the gate would stay shut); the largest first, one at a time. Without,
+a worker over the threshold on its own. The launcher reads each worker's `RssAnon` from `/proc`,
+so this is Linux only. The master is never restarted for this: it holds what only it has. The
+launcher logs each restart and why, and its limits line says whether this is on.
+
 This needs the limit on the processes' own cgroup: `MemoryMax` on the unit that runs
 `cluster.js`, or a container limit. If the limit is only on an enclosing slice, or there is
 none, each process measures its own RSS against the limit, as a single server does. If you
@@ -351,7 +375,10 @@ use roughly N+1 times the memory of one server. Size the limit for that.
 
 * **Caches are per process** (unless [`sharedCache`](#options) is on). A `$cache-control`
   cache lives in the process that issued it; a restarted process loses its caches, and
-  clients start new ones, as after any restart.
+  clients start new ones, as after any restart. That includes a tx-worker the launcher restarts
+  because it stayed over the memory guard's refusal threshold (`recycleSeconds`): its
+  `$cache-control` caches, its expansion cache and the code systems it had loaded are gone,
+  and its first requests after the restart are slower.
 * **Without the launcher, statistics are per process.** The workers' graphs and request
   counts reach the master over the launcher's IPC channels. With processes started by hand
   behind nginx there are none: `/` and `/dashboard` on the master show only the master, and

@@ -23,6 +23,8 @@
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
+ *  - restarts a tx-worker that has held memory over the memory guard's refusal threshold for
+ *    recycleSeconds with no request at work (it would otherwise refuse everything, for good)
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
  *
@@ -36,6 +38,8 @@ const { spawn } = require('child_process');
 const { checkInstanceCode } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
+const { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon } = require('./library/cgroup-memory');
+const { DEFAULT_REJECT_FRACTION } = require('./library/memory-guard');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
@@ -55,6 +59,14 @@ const OWNER_QUEUE_MS = 30000;
 // a process that answered 503 gets no new requests for this long while another can take
 // them. Short: its memory guard re-measures only when a request arrives
 const COOLDOWN_MS = 2000;
+// a tx-worker over the memory guard's refusal threshold this long, with no request at work, is
+// restarted (cluster.md, "Memory"). 30 s: well past a forced GC's effect (the guard forces one
+// at once, then 5 s, 10 s, 20 s later), and short next to a client's retries
+const RECYCLE_MS = 30000;
+// how often the launcher measures for that
+const RECYCLE_CHECK_MS = 1000;
+// a request in flight this long is work; a refusal (503) is answered at once
+const AT_WORK_MS = 1000;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -102,6 +114,8 @@ function loadSettings(argv, env, config) {
     queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
     cooldownMs: Number(cluster.cooldownSeconds ?? COOLDOWN_MS / 1000) * 1000,
+    recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
+    memory: (config.server && config.server.memory) || {},
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
 }
@@ -182,6 +196,43 @@ function pickTarget(route, procs) {
   return best;
 }
 
+/**
+ * The launcher's view of the memory guard's refusal threshold (library/memory-guard.js), for
+ * recycling. With the limit on the processes' own cgroup, the guard measures the cgroup's
+ * private memory, so `excess` is how far that is over the threshold; without, each process
+ * measures its own RSS against the limit (`excess` null). A process's own memory is its RssAnon
+ * (Linux /proc; elsewhere nothing is read and nothing is recycled).
+ * @param {Object} memory - config.server.memory
+ * @returns {{describe: string, rejectAt: number, sample: function(Object[]): {excess: number|null, own: Map}}}
+ *   sample(procs): own maps each proc to its memory in bytes (0: not known)
+ */
+function memorySampler(memory = {}) {
+  const f = memory.rejectFraction;
+  const fraction = (typeof f === 'number' && f > 0 && f <= 1) ? f : DEFAULT_REJECT_FRACTION;
+  const cg = readCgroupMemoryLimit();
+  const limit = cg.limit || require('os').totalmem();
+  const own = ownCgroupDir();
+  const group = own && cg.source && path.dirname(cg.source) === own.dir ? own : null;
+  const rejectAt = limit * fraction;
+  const anonOf = (pid) => {
+    try {
+      const m = /^RssAnon:\s+(\d+) kB/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'));
+      return m ? Number(m[1]) * 1024 : 0;
+    } catch {
+      return 0;
+    }
+  };
+  return {
+    rejectAt,
+    describe: `over ${(rejectAt / 2 ** 30).toFixed(1)} GB (${Math.round(fraction * 100)}% of ${(limit / 2 ** 30).toFixed(1)} GB)` +
+      (group ? ' for the whole cgroup' : ' for the process'),
+    sample(procs) {
+      const excess = group ? readCgroupAnon(group) - rejectAt : null;
+      return { excess, own: new Map(procs.map(p => [p, p.child && p.child.pid ? anonOf(p.child.pid) : 0])) };
+    }
+  };
+}
+
 function isLoopback(address) {
   return address === '127.0.0.1' || address === '::1';
 }
@@ -197,11 +248,18 @@ function createLauncher(settings) {
   const queueMs = settings.queueMs ?? QUEUE_MS; // 0: refuse at once
   const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
   const cooldownMs = settings.cooldownMs ?? COOLDOWN_MS; // 0: none
+  const recycleMs = settings.recycleMs ?? RECYCLE_MS; // 0: never
+  // (tests give their own)
+  const memory = settings.memorySampler || (recycleMs > 0 ? memorySampler(settings.memory) : null);
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
     ...p, child: null, ready: false, outstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, restartTimer: null,
+    // when each request in flight was sent; since when it has been over the refusal threshold
+    // with none at work; whether it is being restarted for that
+    // and its memory when it was ready (checkMemory)
+    sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
     // timeout: a connection idle in the pool this long is closed (see UPSTREAM_IDLE_MS); a
     // request in progress is not affected
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
@@ -217,6 +275,7 @@ function createLauncher(settings) {
   const waiting = [];
   let queueRefused = 0;
   let lastQueueLog = 0;
+  let memoryTimer = null;
 
   // Only the master renders the public home/dashboard pages. Keep at most one
   // snapshot in flight, coalescing changes if its IPC channel is backpressured.
@@ -282,6 +341,7 @@ function createLauncher(settings) {
       }
       const [cmd, args] = command(proc);
       proc.startedAt = Date.now();
+      proc.readyMemory = null;
       metrics.state(proc.code, 'starting');
       const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: process.env });
       proc.child = child;
@@ -310,6 +370,13 @@ function createLauncher(settings) {
         publishMetrics();
         resolve(false);
         if (stopping) {
+          return;
+        }
+        if (proc.recycling) {
+          // the launcher stopped it (see checkMemory): at once, and not a failure
+          proc.recycling = false;
+          log(`${proc.name} exited (${signal || code}) to be recycled; restarting`);
+          void startProcess(proc);
           return;
         }
         proc.failures = Date.now() - proc.startedAt > HEALTHY_RUN_MS ? 1 : proc.failures + 1;
@@ -413,11 +480,14 @@ function createLauncher(settings) {
 
   function forward(req, res, target) {
     target.outstanding++;
+    const sent = { at: Date.now() };
+    target.sentAt.add(sent);
     let finished = false;
     const finish = () => {
       if (!finished) {
         finished = true;
         target.outstanding--;
+        target.sentAt.delete(sent);
         sendWaiting();
         if (onIdle && totalOutstanding() === 0) {
           onIdle();
@@ -468,6 +538,72 @@ function createLauncher(settings) {
     req.pipe(upstream);
   }
 
+  /**
+   * Every RECYCLE_CHECK_MS: a tx-worker that has been over the memory guard's refusal threshold
+   * (see memorySampler) for recycleMs, with no request at work all that time, is restarted, the
+   * largest first and one at a time. Its guard would refuse every request until its memory
+   * fell, and with nothing running, nothing will free it. With the cgroup measured, only a
+   * worker that has grown since it was ready by more than the cgroup is over: a restart takes
+   * it back to about that size, so restarting a smaller one would not reopen the gate. The
+   * master is not restarted: it holds what only it has (cluster.md, "What runs where").
+   */
+  function checkMemory() {
+    if (stopping || procs.some(p => p.recycling)) {
+      return;
+    }
+    const now = Date.now();
+    const workers = procs.filter(p => p.role === 'tx-worker');
+    const { excess, own } = memory.sample(workers);
+    const over = new Map();
+    let largest = null;
+    for (const p of workers) {
+      const mine = own.get(p) || 0;
+      if (p.ready && p.readyMemory === null) {
+        p.readyMemory = mine;
+      }
+      const atWork = [...p.sentAt].some(s => now - s.at >= AT_WORK_MS);
+      over.set(p, mine > 0 && (excess === null ? mine > memory.rejectAt : excess > 0 && mine - p.readyMemory > excess) ? mine : 0);
+      if (!p.ready || !over.get(p) || atWork) {
+        p.overSince = 0;
+        continue;
+      }
+      p.overSince = p.overSince || now;
+      // and none in flight at all now (a refusal is answered within milliseconds)
+      if (now - p.overSince >= recycleMs && p.outstanding === 0 && (!largest || over.get(p) > over.get(largest))) {
+        largest = p;
+      }
+    }
+    if (largest) {
+      recycle(largest, `its memory (${(over.get(largest) / 2 ** 30).toFixed(1)} GB) has been ${memory.describe}` +
+        (excess !== null ? ` (by ${(excess / 2 ** 30).toFixed(1)} GB)` : '') + ` for ${Math.round((now - largest.overSince) / 1000)} s with no request at work`);
+    }
+  }
+
+  // no new requests; those it has (refusals) finish; then it stops as on shutdown, and the
+  // exit handler starts it again at once
+  function recycle(p, why) {
+    log(`recycling ${p.name}: ${why}`);
+    p.recycling = true;
+    p.ready = false;
+    p.overSince = 0;
+    metrics.state(p.code, 'restarting');
+    publishMetrics();
+    const child = p.child;
+    const t0 = Date.now();
+    const stopWhenIdle = () => {
+      if (p.child !== child) {
+        return;
+      }
+      if (p.outstanding > 0 && Date.now() - t0 < settings.drainMs) {
+        return void setTimeout(stopWhenIdle, 100);
+      }
+      const kill = setTimeout(() => child.kill('SIGKILL'), 30000);
+      child.once('exit', () => clearTimeout(kill));
+      child.kill('SIGTERM');
+    };
+    stopWhenIdle();
+  }
+
   // close: the request body has not been read, and an overloaded server sheds the connection too
   function fail(res, status, text, close = false) {
     res.writeHead(status, { 'Content-Type': 'application/fhir+json', 'Retry-After': '5', ...(stopping || close ? { Connection: 'close' } : {}) });
@@ -502,7 +638,12 @@ function createLauncher(settings) {
       server.listen(settings.port, resolve);
     });
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
-    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}`);
+    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
+      `recycleSeconds ${recycleMs / 1000}` + (memory && recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+    if (memory && recycleMs > 0) {
+      memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
+      memoryTimer.unref();
+    }
     // one after another, each once the one before is ready (or has exited, and is being
     // restarted): a worker only reads the caches the master built, but starting them together
     // would put every worker's load (and its memory peak) at the same moment
@@ -526,6 +667,7 @@ function createLauncher(settings) {
       return;
     }
     stopping = true;
+    clearInterval(memoryTimer);
     for (const p of procs) {
       clearTimeout(p.restartTimer);
     }
@@ -609,4 +751,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadSettings, classify, pickTarget, createLauncher };
+module.exports = { loadSettings, classify, pickTarget, createLauncher, memorySampler };
