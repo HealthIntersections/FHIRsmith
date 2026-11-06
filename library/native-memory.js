@@ -6,7 +6,7 @@
  * are allocated by the C library's malloc in libuv's threads, in its per-thread arenas. When
  * they close, glibc keeps the freed memory in those arenas, resident, and gives back only a
  * free stretch at the very top of each. After a 20,000-entry LOINC $batch-validate-code was
- * aborted, a worker held 4.8 GB of such free memory: no GC can touch it, so the memory guard
+ * aborted, a worker held 4.7 GB of such free memory: no GC can touch it, so the memory guard
  * stayed shut. malloc_trim(0) releases the free pages inside the arenas as well (it took that
  * worker from 8.0 GB to 3.9 GB in half a second). It frees nothing that is in use.
  *
