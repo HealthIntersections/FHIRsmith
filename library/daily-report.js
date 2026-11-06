@@ -430,3 +430,4 @@ module.exports.describeSpan = describeSpan;
 // for modules writing their paragraph: "3 packages", "1 package"
 module.exports.plural = plural;
 module.exports.localDateTime = localDateTime;
+module.exports.formatBytes = formatBytes;

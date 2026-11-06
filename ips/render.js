@@ -27,6 +27,20 @@ const profiles = require('./profiles');
 const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem } = require('./terminology');
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
 const { jurisdiction } = require('./jurisdictions');
+const { SNOMED_LINKABLE_EDITIONS, editionName } = require('../tx/sct/editions');
+const { nationalityText } = require('./nationality');
+
+// the nations there is a flag for (static/assets/images/flags/{code}.svg); any other is the globe
+const FLAGS = new Set(['US', 'AU']);
+
+/** The nation a document is from, as a flag (a black and white globe when it isn't known, or has no flag). */
+function nationalityFlag(result) {
+  const code = result?.jurisdiction || null;
+  const title = result ? nationalityText(result) : 'The nationality has not been determined yet';
+  const src = code && FLAGS.has(code) ? `/assets/images/flags/${code.toLowerCase()}.svg` : '/assets/images/flags/unknown.svg';
+  const alt = code ? (jurisdiction(code)?.display || code) : 'Nationality unknown';
+  return `<img class="ips-flag" src="${src}" alt="${escape(alt)}" title="${escape(title)}"/>`;
+}
 const { dateText } = require('./presenter');
 const { structureTree, flatten } = require('./structure');
 const scripts = require('./scripts');
@@ -46,6 +60,8 @@ const STYLE = `
   .ips-table td, .ips-table th { vertical-align: top; }
   .ips-json { white-space: pre-wrap; word-break: break-all; font-size: 85%; background: #f8f9fa; padding: 8px; border: 1px solid #dee2e6; font-family: monospace; }
   .ips-banner { background: #ede7f6; border: 1px solid #d1c4e9; border-radius: 4px; padding: 10px 14px; margin-bottom: 10px; }
+  .ips-banner-flagged { display: flex; align-items: center; gap: 14px; }
+  .ips-flag { height: 40px; width: auto; max-width: 80px; border: 1px solid #d1c4e9; flex: none; }
   .ips-banner .ips-patient { font-size: 120%; }
   .ips-banner .ips-project-name { font-size: 130%; }
   .ips-actions-line { margin-bottom: 10px; }
@@ -87,8 +103,9 @@ const STYLE = `
   .ips-filter .ips-btn { font-size: 100%; padding: 1px 10px; line-height: 1.5; }
   .ips-date { white-space: nowrap; }
   .ips-narrative { border: 1px solid #dee2e6; padding: 12px; background: #fff; }
-  .ips-narrative h3 { font-size: 110%; margin-top: 18px; border-bottom: 1px solid #eee; }
-  .ips-narrative h4 { font-size: 100%; margin-top: 12px; }
+  .ips-narrative h3 { font-size: 130%; margin-top: 8px; }
+  .ips-narrative h4 { font-size: 110%; margin-top: 18px; border-bottom: 1px solid #eee; }
+  .ips-narrative h5 { font-size: 100%; margin-top: 12px; }
   .ips-narrative table { border-collapse: collapse; margin-bottom: 8px; }
   .ips-narrative td, .ips-narrative th { border: 1px solid #ddd; padding: 2px 6px; font-size: 90%; }
   .ips-meta { font-size: 85%; color: #555; margin-bottom: 10px; }
@@ -193,7 +210,7 @@ const STYLE = `
   .ips-translated { font-size: 80%; color: #fff; background: #6f42c1; border-radius: 3px; padding: 0 5px; cursor: help; }
   .ips-check { font-size: 130%; font-weight: bold; cursor: help; }
   .ips-check-in { color: #1e7e34; }
-  .ips-check-international { color: #fd7e14; }
+  .ips-check-international { color: #a35200; }
   .ips-check-not-in { color: #c82333; }
   .ips-check-unknown { color: #6c757d; }
   .ips-inline { display: inline; }
@@ -203,14 +220,14 @@ const STYLE = `
   .ips-an > tbody > tr.ips-an-findings > td { border-top: none; padding: 2px 8px 8px 30px; }
   .ips-an td.ips-an-path { word-break: break-all; }
   .ips-an td.ips-an-path img { vertical-align: -3px; }
-  .ips-an tr.ips-tt-seen > td { color: #868e96; }
+  .ips-an tr.ips-tt-seen > td { background-color: #EFEFEF; }
   .ips-an ul { margin: 0; padding-left: 18px; }
   .ips-an-modifier { color: #800000; font-weight: bold; }
   .ips-an-status { color: #000080; font-weight: bold; }
   .ips-an-subject { color: #006400; font-weight: bold; }
   .ips-an-attention { color: #b34700; font-weight: bold; }
   .ips-an-ok { color: #1e7e34; }
-  .ips-an-narrative { color: #6c757d; }
+  .ips-an-narrative { color: #3a4d5e; }
   .ips-tree-tools .btn { font-size: 90%; padding: 2px 10px; }
   .ips-tt { font-size: 90%; width: auto; min-width: 60%; }
   .ips-tt > thead > tr > th { background: #f0f0f0; font-weight: bold; white-space: nowrap; }
@@ -221,9 +238,9 @@ const STYLE = `
   .ips-tt-toggle { position: absolute; top: 7px; width: 11px; height: 11px; padding: 0; z-index: 2; border: 1px solid #868e96; background: white; font-size: 9px; line-height: 9px; color: #495057; cursor: pointer; }
   .ips-tt-toggle::before { content: '\\2212'; }
   .ips-tt tr.ips-tt-closed .ips-tt-toggle::before { content: '+'; }
-  .ips-tt tr.ips-tt-seen > td { color: #868e96; }
+  .ips-tt tr.ips-tt-seen > td { background-color: #EFEFEF; }
   .ips-tt tr.ips-tt-missing > td:last-child { color: #c82333; }
-  .ips-tt .ips-tt-when { color: #6c757d; margin-left: 6px; }
+  .ips-tt .ips-tt-when { color: #3a4d5e; margin-left: 6px; }
 </style>
 <script>
   // a form with data-confirm asks first: the message is an attribute (escaped as one), never script
@@ -458,7 +475,7 @@ function projectNav(project, ctx) {
 /** The documentation at the foot of a project's page: how to reach it as a FHIR endpoint. */
 function projectDocs(project, ctx) {
   const purl = projectUrl(ctx, project);
-  return '<div class="ips-explain ips-docs"><h4>Documentation</h4>' +
+  return '<div class="ips-explain ips-docs"><h3>Documentation</h3>' +
     `<p>This project is a FHIR endpoint: <code>${purl}</code> (<a href="${purl}/metadata">CapabilityStatement</a>). ` +
     'Documents are IPS Bundles (<code>type: document</code>, a Composition first, with the Patient it refers to) in JSON.</p>' +
     '<table class="table table-sm ips-table ips-api"><tr><th>Request</th><th></th></tr>' +
@@ -515,7 +532,7 @@ function renderProject(project, query, results, search, ctx, problems) {
   const columns = [
     ['_id', 'Id'], ['composition.patient.name', 'Patient'], ['composition.patient.gender', 'Gender'],
     ['composition.patient.birthdate', 'Born'], ['composition.date', 'Date'], ['composition.title', 'Title'],
-    ['processing-status', 'Status'], ['_lastUpdated', 'Received']
+    ['processing-status', 'Status'], ['_lastUpdated', 'Received'], [null, 'Nation']
   ];
   if (ctx.canManage) {
     columns.push([null, '']);
@@ -547,7 +564,8 @@ function renderProject(project, query, results, search, ctx, problems) {
       `<td class="ips-date" title="${escape(r.comp_date || '')}">${escape(dateOnly(r.comp_date))}</td>` +
       `<td>${escape(r.comp_title || '')}</td>` +
       `<td title="${escape(ctx.canManage ? r.status_message || '' : '')}">${badge(r.status)}</td>` +
-      `<td class="ips-date" title="${escape(r.received)}">${escape(dateOnly(r.received))}</td>`;
+      `<td class="ips-date" title="${escape(r.received)}">${escape(dateOnly(r.received))}</td>` +
+      `<td title="${escape(r.nationality ? (jurisdiction(r.nationality)?.display || r.nationality) : 'Not known')}">${escape(r.nationality || '??')}</td>`;
     if (ctx.canManage) {
       h += `<td><form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${r.id}?`)}">${csrfField(ctx.csrf)}` +
         '<button type="submit" class="btn btn-link" style="padding: 0; font-size: 85%">delete</button></form></td>';
@@ -683,7 +701,7 @@ function aiSettingsHtml(project, ctx, options) {
  * a live element. Serialising closes what was left open, and each narrative is wrapped in
  * its own div.
  */
-function narrativeOf(res) {
+function narrativeOf(res, level) {
   const div = res?.text?.div;
   if (typeof div !== 'string' || div.trim() === '') {
     return null;
@@ -691,18 +709,54 @@ function narrativeOf(res) {
   if (checkNarrative(div)) {
     return '<p class="ips-small"><i>(narrative not shown: it contains active content)</i></p>';
   }
-  return `<div class="ips-narrative-text">${parse5.serialize(parse5.parseFragment(div))}</div>`;
+  return `<div class="ips-narrative-text">${parse5.serialize(seatHeadings(parse5.parseFragment(div), level))}</div>`;
 }
 
+/**
+ * Sit a narrative's headings at the depth the page shows it at: shift them all by the same
+ * amount, so that the narrative's top heading is at `level` and its structure is kept.
+ * Narrative arrives with whatever heading levels its author (or the presenter) chose, and
+ * none of them know that the page is titled with an h2 - an h1 or h2 in a narrative breaks
+ * the page's heading structure (WCAG 1.3.1). Levels that would go past h6 stay at h6.
+ *
+ * @param {Object} fragment - a parse5 fragment, changed in place
+ * @param {number} level - the level the narrative's top heading should be at
+ * @returns {Object} the fragment
+ */
+function seatHeadings(fragment, level) {
+  const headings = [];
+  const walk = (node) => {
+    for (const c of node.childNodes || []) {
+      if (/^h[1-6]$/.test(c.nodeName)) {
+        headings.push(c);
+      }
+      walk(c);
+    }
+  };
+  walk(fragment);
+  if (headings.length === 0) {
+    return fragment;
+  }
+  const shift = level - Math.min(...headings.map(h => Number(h.nodeName[1])));
+  for (const h of headings) {
+    const name = `h${Math.max(1, Math.min(6, Number(h.nodeName[1]) + shift))}`;
+    h.nodeName = name;
+    h.tagName = name;
+  }
+  return fragment;
+}
+
+// The page's title is the template's h2; within the narrative view the document title is an
+// h3, its sections h4, their sections h5, and so on (down to h6)
 function sectionsHtml(sections, level) {
   let h = '';
   for (const s of Array.isArray(sections) ? sections : []) {
     if (!isObject(s)) {
       continue;
     }
-    const tag = level <= 4 ? `h${level}` : 'h5';
+    const tag = `h${Math.min(level, 6)}`;
     h += `<${tag}>${escape(text(s.title) || text(s.code?.text) || '')}</${tag}>`;
-    const n = narrativeOf(s);
+    const n = narrativeOf(s, Math.min(level + 1, 6));
     if (n) {
       h += n;
     } else if (!s.section) {
@@ -724,16 +778,16 @@ function assembledNarrative(bundle) {
   }
   let h = '<div class="ips-narrative">';
   if (text(comp.title)) {
-    h += `<h2>${escape(comp.title)}</h2>`;
+    h += `<h3>${escape(comp.title)}</h3>`;
   }
-  h += narrativeOf(comp) || '';
-  h += sectionsHtml(comp.section, 3);
+  h += narrativeOf(comp, 4) || '';
+  h += sectionsHtml(comp.section, 4);
   return h + '</div>';
 }
 
 // ---- the structure view ----
 
-/** A node's details: what it is, when, and a note (contained, shown above...). */
+/** A node's details: what it is, when, and a note (contained, shown at...). */
 function nodeDetails(node) {
   return [node.what, node.when ? `<span class="ips-tt-when">${node.when}</span>` : '', node.note ? `<i>(${escape(node.note)})</i>` : '']
     .filter(Boolean).join(' ');
@@ -743,7 +797,7 @@ function nodeDetails(node) {
  * The logical structure of a document (structure.js), as a tree table like the FHIR
  * specification's. Columns: the path (where the reference is), the type, the id, and what
  * the resource is and when. A reference that doesn't resolve in the document is shown as
- * external; a resource already shown above is shown again, greyed, and doesn't expand.
+ * external; a resource expanded elsewhere is shown again, greyed, saying where, and doesn't expand.
  */
 function renderStructure(bundle) {
   const top = structureTree(bundle);
@@ -831,11 +885,23 @@ function renderStructure(bundle) {
 function findingHtml(f) {
   if (f.url) {
     const what = f.kind === 'modifier' ? 'Modifier extension' : 'Extension';
-    const def = f.found ? [f.title ? escape(f.title) : '', f.description ? escape(f.description) : ''].filter(Boolean).join(': ') || '<i>(found, but it says nothing)</i>' :
-      '<i>(its definition could not be found)</i>';
-    return `<li class="ips-an-${escape(f.kind)}">${what} <code>${escape(f.url)}</code> on <code>${escape(f.path)}</code>: ${def}</li>`;
+    // known or not; the definition is on hover
+    const def = f.found ? [text(f.title), text(f.description)].filter(Boolean).join(': ') || 'The definition says nothing about it' : '';
+    const known = f.found ? `<span class="ips-an-known" title="${escape(def)}">known</span>` : '<i>not known</i>';
+    return `<li class="ips-an-${escape(f.kind)}">${what} <code>${escape(f.url)}</code> on <code>${escape(f.path)}</code>: ${known}</li>`;
   }
   return `<li class="ips-an-${escape(f.kind)}">${escape(f.text)}</li>`;
+}
+
+/**
+ * Whether the analysis found nothing to say about a node: All OK, and nothing else but the
+ * narrative - which doesn't matter for a resource, but a section without narrative is a problem.
+ */
+function analysisOk(findings, isSection) {
+  if (!Array.isArray(findings) || !findings.some(f => f && f.kind === 'ok')) {
+    return false;
+  }
+  return findings.every(f => f && (f.kind === 'ok' || (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
 }
 
 /**
@@ -854,6 +920,10 @@ function renderAnalysis(row, options = {}) {
   }
   const items = r.result.items;
   let rows = '';
+  let total = 0;
+  let quiet = 0;
+  const nationality = row.results?.nationality?.result || null;
+  let nationShown = false;
   for (const [node] of flatten(top)) {
     // a reference to something not in the document has no rows: there's nothing to analyse
     if (node.kind === 'missing') {
@@ -862,26 +932,63 @@ function renderAnalysis(row, options = {}) {
     const cls = node.kind === 'seen' ? ' ips-tt-seen' : '';
     const idCell = node.id ? escape(node.id) : '';
     const idTitle = node.ref ? ` title="${escape(`Reference: ${node.ref}`)}"` : '';
-    rows += `<tr class="ips-an-node${cls}"><td class="ips-an-path"><img src="/assets/images/icon_${node.icon}.png" alt="" width="16" height="16"/> ${escape(node.fullPath)}</td>` +
+    // nothing to say (or analysed elsewhere): hidden by "Only show problems"
+    const ok = node.kind === 'seen' || analysisOk(items[node.key], String(node.key || '').startsWith('s:'));
+    const okAttr = ok ? ' data-ok="1"' : '';
+    total++;
+    if (ok) {
+      quiet++;
+    }
+    rows += `<tr class="ips-an-node${cls}"${okAttr}><td class="ips-an-path"><img src="/assets/images/icon_${node.icon}.png" alt="" width="16" height="16"/> ${escape(node.fullPath)}</td>` +
       `<td>${escape(node.type)}</td><td${idTitle}>${idCell}</td><td>${nodeDetails(node)}</td></tr>`;
     let body;
     if (node.kind === 'seen') {
-      body = '<i>Analysed above</i>';
+      body = `<i>Analysed at ${escape(node.shownAt)}</i>`;
     } else if (Array.isArray(items[node.key])) {
-      body = `<ul>${items[node.key].map(findingHtml).join('')}</ul>`;
+      // the Composition's first bullet: which nation the document is from, and why
+      const nation = node.type === 'Composition' && !nationShown && nationality ? `<li class="ips-an-nation">${escape(nationalityText(nationality))}</li>` : '';
+      if (node.type === 'Composition') {
+        nationShown = true;
+      }
+      body = `<ul>${nation}${items[node.key].map(findingHtml).join('')}</ul>`;
     } else {
       body = '<i>Not analysed</i>';
     }
-    rows += `<tr class="ips-an-findings${cls}"><td colspan="4">${body}</td></tr>`;
+    rows += `<tr class="ips-an-findings${cls}"${okAttr}><td colspan="4">${body}</td></tr>`;
   }
   let h = `<p class="ips-small">Analysed ${escape(r.made)}` + (typeof r.result.ms === 'number' ? ` in ${escape(String(r.result.ms))} ms` : '') + '</p>';
+  // the choice is remembered in the browser (localStorage); without script, everything shows
+  h += '<style>.ips-an.ips-an-problems tr[data-ok] { display: none; }</style>';
+  h += '<div class="ips-filter mb-2 ips-an-filter" hidden><label><input type="checkbox" id="ips-an-problems"/> Only show problems</label> ' +
+    `<span class="ips-small ips-an-count" hidden>Showing ${total - quiet} of ${total}</span></div>`;
   h += '<table class="table table-condensed ips-an"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
-  h += '<div class="ips-explain"><p class="ips-small">What the analysis step found in each resource of the document as submitted, in the order of the structure view, and in the Composition section by section: ' +
+  h += '<div class="ips-explain"><p class="ips-small">What the analysis step found in each resource of the document as submitted, in the order of the structure view, and in the Composition section by section (the Composition\'s first bullet is which nation the document is from, and why - the nationality step): ' +
     'extensions (with their definitions, from the validator, where it knows them; textLink is left out), <span class="ips-an-modifier">modifier extensions and implicitRules</span>, ' +
     '<span class="ips-an-status">records that are inactive, entered in error, of unknown status, or missing a status they should have</span>, ' +
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
     '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), a Patient\'s links, and a Composition that is not final</span>, ' +
-    'a section\'s emptyReason or an author other than its container\'s, and whether there is narrative. A resource with nothing else to say is All OK. References to resources that are not in the document are left out.</p></div>';
+    'a section\'s emptyReason or an author other than its container\'s, and whether there is narrative. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
+    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK - and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
+  h += `<script>
+(function () {
+  var KEY = 'fhirsmith.ips.analysis.problemsOnly';
+  var box = document.getElementById('ips-an-problems');
+  var table = document.querySelector('.ips-an');
+  var count = document.querySelector('.ips-an-count');
+  if (!box || !table) { return; }
+  box.closest('.ips-an-filter').hidden = false;
+  function apply() {
+    table.classList.toggle('ips-an-problems', box.checked);
+    count.hidden = !box.checked;
+  }
+  try { box.checked = window.localStorage.getItem(KEY) === '1'; } catch (e) { /* no storage: unchecked */ }
+  apply();
+  box.addEventListener('change', function () {
+    try { window.localStorage.setItem(KEY, box.checked ? '1' : '0'); } catch (e) { /* not remembered */ }
+    apply();
+  });
+})();
+</script>`;
   return h;
 }
 
@@ -1058,7 +1165,8 @@ document.querySelectorAll('.ips-copy').forEach(function (b) {
 
 // ---- the validation view ----
 
-const SEVERITY_COLOURS = { fatal: '#c82333', error: '#c82333', warning: '#d39e00', information: '#17a2b8' };
+// badge colours carry white text: each is at least 4.5:1 against it (WCAG 1.4.3)
+const SEVERITY_COLOURS = { fatal: '#c82333', error: '#c82333', warning: '#8a6100', information: '#117a8b' };
 
 /** Where an issue is: its expression (FHIRPath), else its location. */
 function issueWhere(i) {
@@ -1104,7 +1212,7 @@ function noResultNote(row, step, what, options = {}) {
 const PROFILE_OUTCOMES = {
   conforms: ['Conforms', '#1e7e34'],
   fails: ['Does not conform', '#c82333'],
-  unknown: ['Could not be fully checked', '#d39e00']
+  unknown: ['Could not be fully checked', '#8a6100']
 };
 
 /**
@@ -1147,13 +1255,16 @@ const TRANSLATION_OUTCOMES = {
   'no-translation': ['No translation', '#c82333'],
   failed: ['Failed', '#c82333'],
   'not-needed': ['Not needed', '#6c757d'],
-  'not-checked': ['Not checked', '#fd7e14'],
+  'not-checked': ['Not checked', '#a35200'],
   'no-codings': ['No codings', '#6c757d']
 };
 
 /** A coding, briefly: system|code "display". */
 function briefCoding(c) {
-  return `<code>${escape(`${systemName(c.system) || c.system || ''}|${c.code}`)}</code>` + (typeof c.display === 'string' && c.display ? ` "${escape(c.display)}"` : '');
+  // the version too (for SNOMED CT, the edition): the same code in two editions is two codings
+  const v = describeVersion(c.version);
+  const ver = v.text ? ` <small title="${escape(v.title ? `${v.title} (${c.version})` : c.version)}">[${escape(v.text)}]</small>` : '';
+  return `<code>${escape(`${systemName(c.system) || c.system || ''}|${c.code}`)}</code>${ver}` + (typeof c.display === 'string' && c.display ? ` "${escape(c.display)}"` : '');
 }
 
 /**
@@ -1173,6 +1284,11 @@ function renderTranslation(row, options = {}) {
     (typeof v.ms === 'number' ? ` in ${escape(String(v.ms))} ms` : '') + '</p>';
   h += `<p><b>${escape(`${counts.translated || 0} of ${counts.tried || 0} concepts translated (${counts.codings || 0} codings added)`)}` +
     (counts.failed ? escape(`, ${counts.failed} failed`) : '') + '</b></p>';
+  if (v.defaultEdition && v.defaultEdition.edition) {
+    const d = v.defaultEdition;
+    h += `<p class="ips-small">SNOMED CT codes with no version were translated as codes of the ${editionHtml(d.edition)} - the SNOMED CT edition of the national profile ` +
+      `<code>${escape(`${d.packageId}#${d.version}`)}</code>, for ${escape(d.jurisdiction)}, the nation the document is from.</p>`;
+  }
   h += '<table class="table table-sm table-striped ips-table"><tr><th>Element</th><th>Codings</th><th>Value set</th><th>Outcome</th><th>Detail</th></tr>';
   for (const e of v.entries) {
     const [label, colour] = TRANSLATION_OUTCOMES[e.outcome] || [e.outcome || '?', '#6c757d'];
@@ -1212,7 +1328,8 @@ function renderGenerated(row, options = {}) {
   if (checkNarrative(v.html)) {
     return h + '<p><i>The generated narrative is not shown: it failed the active content check.</i></p>';
   }
-  h += `<div class="ips-narrative ips-generated">${parse5.serialize(parse5.parseFragment(v.html))}</div>`;
+  // the presenter's narrative is a document of its own (h1 title, h2 sections): seated under the page's h2
+  h += `<div class="ips-narrative ips-generated">${parse5.serialize(seatHeadings(parse5.parseFragment(v.html), 3))}</div>`;
   h += '<div class="ips-explain"><p class="ips-small">The narrative this server generates for the document (the IPS presenter): the Composition\'s header and the patient, ' +
     'then the sections in the IPS order, each a table of its entries with the columns that suit the resource type (the ones no entry fills are left out) and the nested parts as bullets beneath. ' +
     'Coded values show their text, else a display, else what the terminology server knows, else --. It is also written into the analysed copy as the Composition\'s and the sections\' narrative, which is what the validator sees.</p></div>';
@@ -1222,8 +1339,8 @@ function renderGenerated(row, options = {}) {
 const tokens = (n) => (typeof n === 'number' ? n.toLocaleString('en-US') : '?');
 const usd = (n) => (n < 0.01 && n > 0 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
 
-const AI_SEVERITY_COLOURS = { high: '#c82333', medium: '#d39e00', low: '#17a2b8' };
-const GRADE_COLOURS = { A: '#1e7e34', B: '#5cb85c', C: '#d39e00', D: '#fd7e14', F: '#c82333' };
+const AI_SEVERITY_COLOURS = { high: '#c82333', medium: '#8a6100', low: '#117a8b' };
+const GRADE_COLOURS = { A: '#1e7e34', B: '#4e7d0e', C: '#8a6100', D: '#a35200', F: '#c82333' };
 
 /**
  * The AI assessment view: the grade, the summary, and the findings.
@@ -1254,7 +1371,7 @@ function renderAi(row, options = {}) {
   }
   h += `<p><span class="ips-badge ips-grade" style="background-color: ${GRADE_COLOURS[a.grade] || '#6c757d'}">Grade ${escape(a.grade || '?')}</span> ${escape(a.summary || '')}</p>`;
   const sev = (x) => `<span class="ips-badge" style="background-color: ${AI_SEVERITY_COLOURS[x] || '#6c757d'}">${escape(x)}</span>`;
-  h += '<h4>Consistency and integrity</h4>';
+  h += '<h3>Consistency and integrity</h3>';
   if (a.consistency.length === 0) {
     h += '<p><i>No findings</i></p>';
   } else {
@@ -1270,15 +1387,7 @@ function renderAi(row, options = {}) {
     h += '<table class="table table-sm table-striped ips-table"><tr><th>Severity</th><th>Finding</th><th>Codes</th></tr>' +
       a.terminology.map(x => `<tr><td>${sev(x.severity)}</td><td>${escape(x.finding)}</td><td>${x.codes.map(c => `<code>${escape(c)}</code>`).join('<br/>')}</td></tr>`).join('') + '</table>';
   }
-  h += '<details class="ips-oo"><summary><button type="button" class="btn btn-default ips-btn ips-oo-toggle">Show the model\'s answer</button></summary>' +
-    `<pre class="ips-json">${escape(String(v.raw || ''))}</pre></details>`;
-  h += `<script>
-document.querySelectorAll('.ips-oo-toggle').forEach(function (b) {
-  var d = b.closest('details');
-  b.addEventListener('click', function (e) { e.preventDefault(); d.open = !d.open; });
-  d.addEventListener('toggle', function () { b.textContent = (d.open ? 'Hide' : 'Show') + " the model's answer"; });
-});
-</script>`;
+  h += showHide("the model's answer", `<pre class="ips-json">${escape(String(v.raw || ''))}</pre>`);
   h += '<div class="ips-explain"><p class="ips-small">An AI service\'s assessment of the document (the analysed copy, with the narrative as submitted or without any, as the project\'s settings say): its consistency and integrity as a whole - do its details agree with each other and the overall picture, and is anything missing; with the narrative, what it says that the data does not back up - ' +
     'and its terminology - are the codes consistent with each other and with their text. The grade runs A (consistent and complete) to F (not usable). It is the model\'s opinion, to be read as such.</p></div>';
   return h;
@@ -1305,8 +1414,9 @@ function renderValidation(row, options = {}) {
  * each national profile's page show it.
  * @param {string} made - when the validation was done
  * @param {{counts?: Object, outcome?: Object, profiles?: string[], validatorVersion?: string, ms?: number}} v
- * @param {{level?: string, docUrl?: string, hidden?: Object}} options - hidden: the fields the
- *   level form keeps (the view, and which national profile)
+ * @param {{level?: string, defaultLevel?: string, docUrl?: string, hidden?: Object}} options - hidden: the
+ *   fields the level form keeps (the view, and which national profile); defaultLevel: the level when
+ *   none is asked for ('information' - everything - unless given)
  */
 function validationOutcome(made, v, options = {}) {
   const counts = v.counts || {};
@@ -1319,7 +1429,8 @@ function validationOutcome(made, v, options = {}) {
   if (all.length === 0) {
     return h;
   }
-  const level = LEVELS.some(([l]) => l === options.level) ? options.level : 'information';
+  // as asked for; else the view's own default (everything, unless it says otherwise)
+  const level = LEVELS.some(([l]) => l === options.level) ? options.level : (options.defaultLevel || 'information');
   const min = SEVERITY_RANK[level];
   const issues = all.filter(i => (SEVERITY_RANK[text(i.severity)] ?? 3) >= min);
   // the minimum level: a form that submits itself on change (and has a button without script)
@@ -1343,24 +1454,34 @@ function validationOutcome(made, v, options = {}) {
       `<td>${escape(issueMessage(i))}</td></tr>`;
   }
   h += '</table>';
-  // the raw OperationOutcome, behind a button (a <details> for a browser without scripts)
-  h += '<details class="ips-oo"><summary><button type="button" class="btn btn-default ips-btn ips-oo-toggle">Show the OperationOutcome</button></summary>' +
-    `<pre class="ips-json">${escape(JSON.stringify(v.outcome, null, 2))}</pre></details>`;
-  h += `<script>
-document.querySelectorAll('.ips-oo-toggle').forEach(function (b) {
-  var d = b.closest('details');
-  b.addEventListener('click', function (e) { e.preventDefault(); d.open = !d.open; });
-  d.addEventListener('toggle', function () { b.textContent = (d.open ? 'Hide' : 'Show') + ' the OperationOutcome'; });
+  // the raw OperationOutcome, behind a button
+  h += showHide('the OperationOutcome', `<pre class="ips-json">${escape(JSON.stringify(v.outcome, null, 2))}</pre>`);
+  return h;
+}
+
+/**
+ * Content behind a Show / Hide button: a <details> whose summary is styled as the button.
+ * The summary itself is the control - a <button> inside it would be a control nested in a
+ * control, which assistive technology can't make sense of (WCAG 4.1.2) - and it works from
+ * the keyboard and without scripts. The script only changes its label to Hide when it's open.
+ * @param {string} what - what is shown ('the OperationOutcome'), plain text
+ * @param {string} body - the content, HTML
+ */
+function showHide(what, body) {
+  return `<details class="ips-oo" data-what="${escape(what)}"><summary class="btn btn-default ips-btn">Show ${escape(what)}</summary>${body}</details>` +
+    `<script>
+document.querySelectorAll('details.ips-oo:not([data-bound])').forEach(function (d) {
+  d.setAttribute('data-bound', 'true');
+  d.addEventListener('toggle', function () { d.querySelector('summary').textContent = (d.open ? 'Hide ' : 'Show ') + d.getAttribute('data-what'); });
 });
 </script>`;
-  return h;
 }
 
 // a national profile's outcome on the page: [label, colour]
 const NATIONAL_OUTCOMES = {
   pass: ['Passed', '#1e7e34'],
   fail: ['Failed', '#c82333'],
-  unknown: ['Not checked', '#d39e00']
+  unknown: ['Not checked', '#8a6100']
 };
 
 /**
@@ -1392,7 +1513,8 @@ function renderNational(row, options = {}) {
       return h + `<p><i>The document could not be validated against this profile${options.canManage && p.error ? `: ${escape(p.error)}` : ' (the reason is shown to the project\'s managers)'}.</i></p>`;
     }
     return h + validationOutcome(r.made, { counts: p.counts, outcome: p.outcome, profiles: [p.url], validatorVersion: v.validatorVersion, ms: p.ms },
-      { ...options, hidden: { view: 'national', np: String(index) } });
+      // a national profile's issues are mostly about the national IG's own rules: errors only, unless asked
+      { ...options, defaultLevel: 'error', hidden: { view: 'national', np: String(index) } });
   }
   let h = '<table class="table table-sm ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Outcome</th><th>Issues</th></tr>';
   v.profiles.forEach((np, i) => {
@@ -1441,9 +1563,27 @@ function jurisdictionHtml(code) {
   return `<code>${escape(code)}</code>` + (j ? ` ${escape(j.display)}` : '');
 }
 
+/** A SNOMED CT edition by name, with its module id on hover; '' for none. */
+function editionHtml(edition) {
+  if (!edition) {
+    return '';
+  }
+  return `<span title="${escape(`http://snomed.info/sct/${edition}`)}">${escape(editionName(edition) || edition)}</span>`;
+}
+
+/** The SNOMED CT edition select for a national profile: none, or one of the editions. */
+function editionSelect(form, edition) {
+  let h = `<select form="${form}" name="snomedEdition" class="form-control" style="font-size: 85%; width: 14em" title="The SNOMED CT edition the IG takes for granted, if any">` +
+    `<option value=""${edition ? '' : ' selected'}>(none)</option>`;
+  for (const ed of SNOMED_LINKABLE_EDITIONS) {
+    h += `<option value="${escape(ed)}"${ed === edition ? ' selected' : ''}>${escape(editionName(ed) || ed)}</option>`;
+  }
+  return h + '</select>';
+}
+
 /**
- * The national profiles: for each, the national IG's package (id and version) and the url of
- * its profile on Bundle. Everyone sees the list; the administrator adds, edits and deletes.
+ * The national profiles: for each, the national IG's package (id and version), the url of
+ * its profile on Bundle, and the SNOMED CT edition it takes for granted (if any). Everyone sees the list; the administrator adds, edits and deletes.
  * @param {Array} list - from store.nationalProfiles()
  */
 function renderNationalProfiles(list, ctx, message) {
@@ -1452,7 +1592,7 @@ function renderNationalProfiles(list, ctx, message) {
   let h = STYLE + userBar(ctx) + `<p class="ips-small"><a href="${base}">IPS projects</a> &raquo; National profiles</p>` + alert(message);
   h += '<div class="ips-banner"><b class="ips-project-name">National profiles</b></div>';
   h += '<p>A national profile is the profile a national implementation guide defines for an IPS document: the country or region it is for, the IG\'s package (its id and version), ' +
-    'and the canonical URL of its profile on Bundle. They apply across all projects.' + (isAdmin ? '' : ' Only the administrator can change them.') + '</p>';
+    'the canonical URL of its profile on Bundle, and the SNOMED CT edition the IG takes for granted (if it uses SNOMED CT). They apply across all projects.' + (isAdmin ? '' : ' Only the administrator can change them.') + '</p>';
   if (list.length === 0) {
     h += '<p>There are no national profiles yet.</p>';
   }
@@ -1460,9 +1600,9 @@ function renderNationalProfiles(list, ctx, message) {
     if (list.length === 0) {
       return h;
     }
-    h += '<table class="table table-sm table-striped ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th>Profile on Bundle</th></tr>';
+    h += '<table class="table table-sm table-striped ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th>Profile on Bundle</th><th>SNOMED CT Edition</th></tr>';
     for (const np of list) {
-      h += `<tr><td>${jurisdictionHtml(np.jurisdiction)}</td><td><code>${escape(np.packageId)}</code></td><td>${escape(np.version)}</td><td><code>${escape(np.url)}</code></td></tr>`;
+      h += `<tr><td>${jurisdictionHtml(np.jurisdiction)}</td><td><code>${escape(np.packageId)}</code></td><td>${escape(np.version)}</td><td><code>${escape(np.url)}</code></td><td>${editionHtml(np.snomedEdition)}</td></tr>`;
     }
     return h + '</table>';
   }
@@ -1472,9 +1612,10 @@ function renderNationalProfiles(list, ctx, message) {
     (np && np.jurisdiction && jurisdiction(np.jurisdiction) ? `<span class="ips-small">${escape(jurisdiction(np.jurisdiction).display)}</span>` : '') + '</td>' +
     `<td><input form="${form}" type="text" name="packageId" required class="form-control" style="font-size: 85%; width: 15em" placeholder="e.g. hl7.fhir.au.ips" value="${escape(np ? np.packageId : '')}"/></td>` +
     `<td><input form="${form}" type="text" name="version" required class="form-control" style="font-size: 85%; width: 8em" placeholder="version" value="${escape(np ? np.version : '')}"/></td>` +
-    `<td><input form="${form}" type="url" name="url" required class="form-control" style="font-size: 85%; width: 100%; min-width: 30em" placeholder="url of the profile on Bundle" value="${escape(np ? np.url : '')}"/></td>`;
+    `<td><input form="${form}" type="url" name="url" required class="form-control" style="font-size: 85%; width: 100%; min-width: 30em" placeholder="url of the profile on Bundle" value="${escape(np ? np.url : '')}"/></td>` +
+    `<td>${editionSelect(form, np ? np.snomedEdition : null)}</td>`;
   // the package id and version are short; the url takes the rest of the row
-  h += '<table class="table table-sm ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th style="width: 100%">Profile on Bundle</th><th></th></tr>';
+  h += '<table class="table table-sm ips-table"><tr><th>Jurisdiction</th><th>Package</th><th>Version</th><th style="width: 100%">Profile on Bundle</th><th>SNOMED CT Edition</th><th></th></tr>';
   for (const np of list) {
     const form = `np-${np.id}`;
     const action = `${base}/national-profiles/${np.id}`;
@@ -1888,6 +2029,7 @@ function stepState(row, step) {
 
 // each step as the pipeline shows it, and the view that shows its work (as a query)
 const STEP_LABELS = {
+  nationality: ['Nationality', 'view=analysis'],
   analysis: ['Analysis', 'view=analysis'],
   translate: ['Translate', 'view=translation'],
   narrative: ['Narrative', 'view=narrative&narrative=generated'],
@@ -1922,8 +2064,8 @@ function renderDocument(project, row, view, ctx) {
   const durl = `${purl}/Bundle/${row.id}`;
   let h = STYLE + userBar(ctx) + crumbs(ctx, project, `Document ${row.id}`);
 
-  // the banner: who and what
-  h += '<div class="ips-banner">';
+  // the banner: where from (a flag), who and what
+  h += '<div class="ips-banner ips-banner-flagged">' + nationalityFlag(row.results?.nationality?.result) + '<div>';
   h += `<div class="ips-patient"><b>${escape(row.patient_name || '(no name)')}</b>` +
     (row.patient_gender ? `, ${escape(row.patient_gender)}` : '') +
     (row.patient_birth ? `, born ${escape(row.patient_birth)}` : '') + '</div>';
@@ -1931,7 +2073,7 @@ function renderDocument(project, row, view, ctx) {
     (row.comp_date ? `Document date ${escape(row.comp_date)} &nbsp;|&nbsp; ` : '') +
     `Received ${escape(row.received)} (${escape(row.source)}) &nbsp;|&nbsp; ${row.size.toLocaleString()} bytes` +
     ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a> &nbsp;|&nbsp; <a href="${durl}?download=1">Download</a></div>`;
-  h += '</div>';
+  h += '</div></div>';
 
   // the steps, then (on a line of their own) what can be done
   h += '<div class="ips-steps">' + stepsHtml(row, ctx, durl) + '</div>';
@@ -1990,6 +2132,7 @@ function renderDocument(project, row, view, ctx) {
 }
 
 module.exports = {
+  analysisOk,
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
   renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, VIEWS, viewOf

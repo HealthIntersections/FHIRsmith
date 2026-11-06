@@ -1007,10 +1007,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           colour = 'green';
         } else if (row.status === 'error') {
           detail = `Failed: ${escape(row.error_message || '')} (${duration})`;
-          colour = 'red';
+          colour = 'maroon';
         } else {
           detail = `Running... (started ${fmtFull(row.ts)})`;
-          colour = 'orange';
+          colour = '#a16600';
         }
         html += `<tr style="background:#f0f0f0">`;
         html += `<td>${escape(timeOnly(row.ts))}</td>`;
