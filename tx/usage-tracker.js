@@ -1,8 +1,15 @@
 
 class ConceptUsageTracker {
 
+  // Most codes tracked, and the longest code: the scan of a full library finds
+  // about 500,000 codes, none longer than 40 characters. Codes beyond either
+  // limit aren't tracked, so validating made-up codes can't grow the map forever.
+  static MAX_CODES = 1000000;
+  static MAX_CODE_LENGTH = 100;
+
   constructor() {
     this.map = new Map();
+    this.codes = 0;
   }
 
   async scanValueSets(library) {
@@ -41,14 +48,18 @@ class ConceptUsageTracker {
 
   seeConcept(system, code) {
     let cs = this.map.get(system);
-    if (!cs) {
-      cs = new Map();
-      this.map.set(system, cs);
-    }
-    let ci = cs.get(code);
+    let ci = cs ? cs.get(code) : null;
     if (!ci) {
+      if (this.codes >= ConceptUsageTracker.MAX_CODES || code.length > ConceptUsageTracker.MAX_CODE_LENGTH) {
+        return;
+      }
+      if (!cs) {
+        cs = new Map();
+        this.map.set(system, cs);
+      }
       ci = { count : 0 }
       cs.set(code, ci);
+      this.codes++;
     }
     ci.count++;
   }
