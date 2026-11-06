@@ -1283,7 +1283,8 @@ class Library {
 
     // Load FHIR packages - these will be added to valueSetProviders first
     for (const packageId of fhirPackages) {
-      const contentLoader = await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm", false);
+      const contentLoader = await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm",
+        { readOnly: this.packageCachesReadOnly });
       // the core packages are the only version specific content in the syndication store
       this.syndicatePackage(contentLoader, { fhirVersion: VersionUtilities.getMajMin(String(fhirVersion)) });
     }
