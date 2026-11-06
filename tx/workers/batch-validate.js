@@ -129,8 +129,15 @@ class BatchValidateWorker extends TerminologyWorker {
             : p.resource.parameter;
           op.jsonObj.parameter.push(...entryParams);
 
-          let worker = new ValidateWorker(this.opContext.copy(), this.log, this.provider, this.languages, this.i18n);
+          // Each entry releases its providers (for LOINC, RxNorm etc. a sqlite
+          // connection each) when it is done, rather than holding them all until
+          // the whole batch ends.
+          const entryContext = this.opContext.copyWithOwnProviders();
+          let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
+            // a turn for the rest of the event loop between entries (small ones never yield
+            // otherwise), so a disconnect is seen, and the batch stops
+            await this.opContext.checkAndYield('batch-validate');
             let p;
             if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
               p = await worker.handleValueSetInner(op.jsonObj);
@@ -139,6 +146,10 @@ class BatchValidateWorker extends TerminologyWorker {
             }
             output.push({name: "validation", resource : p});
           } catch (error) {
+            // the client has gone, or memory is short: the whole batch stops, not this entry
+            if (error.abandoned || error.memoryAbort) {
+              throw error;
+            }
             this.log.error(error);
             debugLog(error);
             if (error instanceof Issue) {
@@ -148,6 +159,8 @@ class BatchValidateWorker extends TerminologyWorker {
             } else {
               output.push({name: "validation", resource : outcomeFromError(error) } );
             }
+          } finally {
+            await entryContext.closeProviders();
           }
         }
       }

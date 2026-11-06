@@ -79,7 +79,8 @@ class BatchWorker extends TerminologyWorker {
     const responseEntries = [];
 
     for (let i = 0; i < entries.length; i++) {
-      this.deadCheck(`batch-entry-${i}`);
+      // a turn for the event loop between entries, so a disconnect is seen
+      await this.checkAndYield(`batch-entry-${i}`);
       const entry = entries[i];
       const responseEntry = await this.processEntry(entry, i);
       responseEntries.push(responseEntry);
@@ -159,6 +160,10 @@ class BatchWorker extends TerminologyWorker {
       };
 
     } catch (error) {
+      // the client has gone, or memory is short: the whole batch stops, not this entry
+      if (error.abandoned || error.memoryAbort) {
+        throw error;
+      }
       this.log.error(error);
       debugLog(error);
       const statusCode = error.statusCode || 500;

@@ -123,10 +123,7 @@ class CPTServices extends BaseCSServices {
   }
 
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // Metadata methods

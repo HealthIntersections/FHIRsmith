@@ -1047,6 +1047,18 @@ class CodeSystemProvider {
   }
 
   /**
+   * For a provider with a sqlite connection in this.db: close it, once. The handle is kept:
+   * sqlite still runs the queries already queued (and any their callbacks issue), and fails
+   * later ones with an error. Setting it to null made such a callback throw, outside any promise.
+   */
+  closeDb() {
+    if (this.db && !this.dbClosed) {
+      this.dbClosed = true;
+      this.db.close();
+    }
+  }
+
+  /**
    * a record of observed usages of codes from this code system
    * - a map of code and object which has count, an integer count
    * of frequency of use (this server iteration, for now)

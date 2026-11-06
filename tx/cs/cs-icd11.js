@@ -100,10 +100,7 @@ class ICD11Services extends BaseCSServices {
   }
 
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // -- small promise wrappers, so no query below carries callback boilerplate -----------
