@@ -46,9 +46,9 @@
       </thead>
       <tbody id="{{ filterId }}_rows">
         <tr>
-          <td><input type="text" name="property" list="{{ filterId }}_props" size="24" autocomplete="off"/></td>
-          <td><select name="op">{{ filterOpOptions }}</select></td>
-          <td><input type="text" name="value" size="24"/></td>
+          <td><input type="text" aria-label="Property" name="property" list="{{ filterId }}_props" size="24" autocomplete="off"/></td>
+          <td><select name="op" aria-label="operator">{{ filterOpOptions }}</select></td>
+          <td><input type="text" aria-label="Value" name="value" size="24"/></td>
           <td><button type="button" class="btn btn-sm" title="Remove this filter" onclick="txFilterRemoveRow(this)">&#215;</button></td>
         </tr>
       </tbody>

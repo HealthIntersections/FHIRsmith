@@ -229,8 +229,8 @@ const YAML_STYLE = '<style>' +
   'font-family: Menlo, Consolas, monospace; font-size: 90%; line-height: 1.45; }' +
   '.yaml-source .y-k { color: #0b5394; font-weight: bold; }' +
   '.yaml-source .y-v { color: #444; }' +
-  '.yaml-source .y-p, .yaml-source .y-d { color: #999; }' +
-  '.yaml-source .y-c { color: #777; font-style: italic; }' +
+  '.yaml-source .y-p, .yaml-source .y-d { color: #444; }' +
+  '.yaml-source .y-c { color: #444; font-style: italic; }' +
   '</style>';
 
 /**
@@ -434,7 +434,7 @@ class TxHtmlRenderer {
     html += '</h3>';
 
     // List Packages
-    html += '<h6>FHIR Packages</h6>';
+    html += '<h4>FHIR Packages</h4>';
     if (provider.packageSources && provider.packageSources.length > 0) {
       const sorted = [...provider.packageSources].sort();
       html += '<ul>';
@@ -447,7 +447,7 @@ class TxHtmlRenderer {
     }
 
     // List Packages
-    html += '<h6>External Sources</h6>';
+    html += '<h4>External Sources</h4>';
     if (provider.externalSources && provider.externalSources.length > 0) {
       const sorted = [...provider.externalSources].sort();
       html += '<ul>';
@@ -468,7 +468,7 @@ class TxHtmlRenderer {
       html += '<p><em>No External Sources Configured</em></p>';
     }
 
-    html += '<h6 class="mt-4">Special CodeSystems</h6>';
+    html += '<h5 class="mt-4">Special CodeSystems</h5>';
     html += '<table class="grid">';
     html += '<thead><tr><th>Name</th><th>URI</th><th>Version</th><th>Use Count</th></tr></thead>';
     html += '<tbody>';
@@ -1722,7 +1722,7 @@ class TxHtmlRenderer {
 
       if (entry.resource) {
         const resource = entry.resource;
-        html += `<h4>${escape(resource.resourceType)}/${escape(resource.id || 'unknown')}</h4>`;
+        html += `<h3>${escape(resource.resourceType)}/${escape(resource.id || 'unknown')}</h3>`;
 
         if (entry.fullUrl) {
           html += `<p><small><a href="${escape(entry.fullUrl)}">${escape(entry.fullUrl)}</a></small></p>`;
@@ -1782,7 +1782,7 @@ class TxHtmlRenderer {
 
     // Links
     if (json.link && json.link.length > 0) {
-      html += '<h4>Links</h4>';
+      html += '<h3>Links</h3>';
       html += '<ul>';
       for (const link of json.link) {
         html += `<li><strong>${escape(link.relation)}:</strong> <a href="${escape(link.url)}">${escape(link.url)}</a></li>`;

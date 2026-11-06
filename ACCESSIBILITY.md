@@ -70,6 +70,23 @@ difficulties include:
 
 This section will be updated as pages are reviewed.
 
+## Checking Pages
+
+Setting `accessibility.checkPanel` to `true` in the server's config adds an
+accessibility check panel to the bottom of every page. Pressing its button
+checks the page as it is in the browser at that moment:
+
+* Against WCAG 2.0 A and AA, using [axe-core](https://github.com/dequelabs/axe-core)
+* For heading structure (exactly one top level heading, which comes first,
+  and no skipped levels), labels that point at nothing, accesskeys,
+  placeholder alt text, generic link text, and click handlers on elements
+  that can't be reached from the keyboard
+* For links distinguished from the surrounding text by colour alone
+
+Problems are reported by HHS Section 508 checklist item, and marked on the
+page. axe-core is only loaded when the button is pressed. Like all automated
+checks, these find only some problems.
+
 ## Reporting an Accessibility Barrier
 
 If you find part of the FHIRsmith web UI that is difficult or impossible to

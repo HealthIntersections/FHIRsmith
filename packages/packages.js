@@ -1683,14 +1683,14 @@ class PackagesModule {
 
     content += '<form method="GET" action="/packages/updates">';
 
-    content += `<input type="radio" name="dateType" id="dateType" value="relative" ${formData.dt == 'relative' ? 'checked' : ''}> `;
-    content += '<label for="relativeDays">Last</label> ';
-    content += `<input type="number" name="daysValue" value="${formData.days}" min="1" max="365" style="width: 80px; margin: 0 5px;"> `;
+    content += `<input type="radio" aria-label="Is Relative?" name="dateType" id="dateType" value="relative" ${formData.dt == 'relative' ? 'checked' : ''}> `;
+    content += '<label for="daysValue">Last</label> ';
+    content += `<input type="number" id="daysValue" aria-label="Number of Days" name="daysValue" value="${formData.days}" min="1" max="365" style="width: 80px; margin: 0 5px;"> `;
     content += '<label>days</label> &nbsp;&nbsp;';
 
-    content += `<input type="radio" name="dateType" id="dateType" value="absolute" ${formData.dt != 'relative' ? 'checked' : ''}> `;
-    content += '<label for="specificDate">Since date:</label> ';
-    content += `<input type="date" name="dateValue" value="${formData.date}" style="margin-left: 5px;"> `;
+    content += `<input type="radio" name="dateType" aria-label="Is Date?" id="dateType" value="absolute" ${formData.dt != 'relative' ? 'checked' : ''}> `;
+    content += '<label for="dateValue">Since date:</label> ';
+    content += `<input type="date" name="dateValue" id="dateValue" aria-label="Date" value="${formData.date}" style="margin-left: 5px;"> `;
     content += '<button type="submit" class="btn btn-primary btn-sm" style="margin-left: 10px;">Update Results</button>';
 
     content += '</form>';
@@ -2652,27 +2652,27 @@ class PackagesModule {
 
     content += '<tr>';
     content += '<td>Id</td>';
-    content += `<td><input type="text" name="name" value="${escape(vars.name)}"></td>`;
+    content += `<td><input type="text" aria-label="Id" name="name" value="${escape(vars.name)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Depends On</td>';
-    content += `<td><input type="text" name="dependson" value="${escape(vars.dependson)}"> <i>includes both direct and indirect dependencies</i></td>`;
+    content += `<td><input type="text" aria-label="Depends On" name="dependson" value="${escape(vars.dependson)}"> <i>includes both direct and indirect dependencies</i></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Canonical (Package)</td>';
-    content += `<td><input type="text" name="pkgcanonical" value="${escape(vars.canonicalPkg)}"></td>`;
+    content += `<td><input type="text" aria-label="Canonical (Package)" name="pkgcanonical" value="${escape(vars.canonicalPkg)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Canonical (Resource)</td>';
-    content += `<td><input type="text" name="canonical" value="${escape(vars.canonicalUrl)}"></td>`;
+    content += `<td><input type="text" aria-label="Canonical (Resource)" name="canonical" value="${escape(vars.canonicalUrl)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>FHIR Version</td>';
-    content += '<td><select name="fhirversion">';
+    content += '<td><select name="fhirversion" aria-label="FHIR Version">';
     content += '<option value=""></option>';
     content += `<option value="R2" ${vars.r2selected}>R2</option>`;
     content += `<option value="R3" ${vars.r3selected}>R3</option>`;
@@ -3058,7 +3058,7 @@ class PackagesModule {
     content += '</table>';
 
     // Help info
-    content += '<h5>About This Report</h5>';
+    content += '<h3>About This Report</h3>';
     content += '<p>This report shows packages that have dependencies which cannot be resolved. A dependency is considered broken if:</p>';
     content += '<ul>';
     content += '<li>The referenced package does not exist</li>';

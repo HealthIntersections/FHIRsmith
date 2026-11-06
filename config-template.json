@@ -50,6 +50,12 @@
     "enabled": true,
     "to": ["ops@example.org"]
   },
+  // Accessibility. checkPanel adds a button to the bottom of every page that checks the page,
+  // as it is in the browser, against WCAG 2.0 A/AA (using axe-core) and checks its heading
+  // structure. axe-core is only loaded when the button is pressed. Optional.
+  "accessibility": {
+    "checkPanel": false
+  },
   "modules": {
     "shl": {
       "enabled": false,

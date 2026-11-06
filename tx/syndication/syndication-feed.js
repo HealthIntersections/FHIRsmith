@@ -202,11 +202,11 @@ function renderHtml(params) {
     h.push('<tr><th>Title</th><th>Type</th><th>Version</th><th>Added</th><th>Download</th></tr>');
     for (const e of [...sel.entries].reverse()) {
       h.push('<tr>');
-      h.push(`<td>${esc(e.title)}${e.summary ? `<br/><span style="color: grey">${esc(e.summary)}</span>` : ''}${e.rights ? `<br/><i>${esc(e.rights)}</i>` : ''}</td>`);
+      h.push(`<td>${esc(e.title)}${e.summary ? `<br/><span style="background-color: #eeeeee">${esc(e.summary)}</span>` : ''}${e.rights ? `<br/><i>${esc(e.rights)}</i>` : ''}</td>`);
       h.push(`<td>${esc(e.category.term)}${isFhirCategory(e) ? ` (R${esc((e.fhirVersion || fhirVersion).split('.')[0])})` : ''}</td>`);
       h.push(`<td><code>${esc(e.version)}</code></td>`);
       h.push(`<td>${esc(e.inducted.substring(0, 10))}</td>`);
-      h.push(`<td><a href="${esc(linkHref(e, params.base))}">${esc(e.link.length.toLocaleString())} bytes</a><br/><span style="font-size: 0.8em; color: grey">sha256: ${esc(e.link.sha256)}</span></td>`);
+      h.push(`<td><a href="${esc(linkHref(e, params.base))}">${esc(e.link.length.toLocaleString())} bytes</a><br/><span style="font-size: 0.8em; background-color: #eeeeee">sha256: ${esc(e.link.sha256)}</span></td>`);
       h.push('</tr>');
     }
     h.push('</table>');
