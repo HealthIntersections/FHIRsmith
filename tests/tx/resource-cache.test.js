@@ -451,6 +451,14 @@ describe('ResourceCache', () => {
       expect(cache.conceptCount()).toBe(10);
     });
 
+    test('a resource sent twice in one request is counted once', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 6), sized(CS('http://a', '1'), 6)]);
+      expect(cache.get('c1')).toHaveLength(1);
+      expect(cache.conceptCountFor('c1')).toBe(6);
+      expect(cache.conceptCount()).toBe(6);
+    });
+
     test('over the total, the least recently used caches are dropped and say so', () => {
       cache.setLimits(10, 20);
       cache.set('old', [sized(CS('http://a', '1'), 10)]);

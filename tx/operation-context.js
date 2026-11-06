@@ -462,37 +462,32 @@ class ResourceCache {
     }
 
     const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
+    // Merge resources, avoiding duplicates by url+version, into a copy: a change that would
+    // take the cache over its limit is refused, and the cache kept as it was.
+    const merged = [...entry.resources];
     let concepts = entry.concepts;
     for (const resource of resources) {
-      const existing = entry.resources.find(r => this._resourceKey(r) === this._resourceKey(resource));
-      concepts += this._conceptsOf(resource) - this._conceptsOf(existing);
-    }
-    this._checkLimit(cacheId, concepts);
-
-    // Merge resources, avoiding duplicates by url+version. Keep the entry's concept
-    // subtotal and the cache-wide total in step with each insertion/replacement.
-    for (const resource of resources) {
       const key = this._resourceKey(resource);
-      const newConcepts = this._conceptsOf(resource);
-      const existingIndex = entry.resources.findIndex(r => this._resourceKey(r) === key);
+      const existingIndex = merged.findIndex(r => this._resourceKey(r) === key);
       if (existingIndex >= 0) {
-        // Replace existing: adjust by the difference
-        const delta = newConcepts - this._conceptsOf(entry.resources[existingIndex]);
-        entry.resources[existingIndex] = resource;
-        entry.concepts += delta;
-        this.totalConcepts += delta;
+        // Replace existing: count the difference
+        concepts += this._conceptsOf(resource) - this._conceptsOf(merged[existingIndex]);
+        merged[existingIndex] = resource;
         if (this.logCacheOps) {
           this.log.info(`cache-id '${cacheId}': replaced ${key}`);
         }
       } else {
-        entry.resources.push(resource);
-        entry.concepts += newConcepts;
-        this.totalConcepts += newConcepts;
+        concepts += this._conceptsOf(resource);
+        merged.push(resource);
         if (this.logCacheOps) {
           this.log.info(`cache-id '${cacheId}': added ${key}`);
         }
       }
     }
+    this._checkLimit(cacheId, concepts);
+    this.totalConcepts += concepts - entry.concepts;
+    entry.resources = merged;
+    entry.concepts = concepts;
 
     entry.lastUsed = Date.now();
     this.cache.set(cacheId, entry);
