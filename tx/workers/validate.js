@@ -2404,6 +2404,8 @@ class ValidateWorker extends TerminologyWorker {
 
       let csp = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
       if (csp) {
+        // released at the end of the operation, like the providers findCodeSystem() returns
+        this.opContext.registerProvider(csp);
         return csp;
       } else {
         let vs = await this.findValueSet(url, version, null);
