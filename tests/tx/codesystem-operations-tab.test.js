@@ -72,7 +72,7 @@ describe('CodeSystem Operations tab', () => {
   });
 
   test('every R5 filter operation is offered', () => {
-    const select = html.substring(html.indexOf('<select name="op">'));
+    const select = html.substring(html.indexOf('<select name="op"'));
     for (const op of FILTER_OPS) {
       expect(select).toContain(`<option value="${op}">`);
     }
@@ -83,7 +83,7 @@ describe('CodeSystem Operations tab', () => {
     for (const name of ['code', 'designation', 'concept', 'status', 'inactive', 'regex']) {
       expect(datalist).toContain(`<option value="${name}">`);
     }
-    expect(html).toMatch(/<input type="text" name="property" list="[^"]+"/);
+    expect(html).toMatch(/<input type="text"[^>]* name="property" list="[^"]+"/);
   });
 });
 

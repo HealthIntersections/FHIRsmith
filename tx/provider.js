@@ -478,8 +478,15 @@ class Provider {
       const targetBase = targetSystem.split('|')[0];
       let uris = new Set();
       let asked = new Set(); // a factory is registered under several keys (system, system|version...)
+      // A source version that names a version without a date (a SNOMED CT edition URI, say)
+      // matches every version of it the server holds; it means the one it resolves to, as it
+      // does everywhere else - asking each would give the same translation once per release
+      const chosen = sourceVersion ? this.codeSystemFactories.get(sourceSystem + '|' + sourceVersion) : null;
       for (let csp of this.codeSystemFactories.values()) {
         if (asked.has(csp)) {
+          continue;
+        }
+        if (chosen && csp !== chosen && csp.system() === sourceSystem) {
           continue;
         }
         if (csp.system() === sourceSystem || csp.system() === targetBase || !uris.has(csp.system())) {

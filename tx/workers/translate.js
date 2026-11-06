@@ -30,6 +30,14 @@ function elementComment(em) {
 // checkTargetConcepts leaves it alone. A symbol key, so it never reaches the JSON output
 const TRUSTED_TARGET = Symbol('trustedTarget');
 
+/** The source, for a message: quoted, unless it is already a description (see describeSourceSystem). */
+function quoteFrom(from) {
+  if (!from) {
+    return "'(unspecified)'";
+  }
+  return from.startsWith("'") ? from : `'${from}'`;
+}
+
 class TranslateWorker extends TerminologyWorker {
   /**
    * @param {OperationContext} opContext - Operation context
@@ -281,6 +289,9 @@ class TranslateWorker extends TerminologyWorker {
       }
     }
 
+    // the no-maps message names the source's version - which, for SNOMED CT, is the edition
+    this.sourceDescription = reverse ? null : await this.describeSourceSystem(coding, txp);
+
     // If no explicit concept map, we need to find one based on source/target
     if (conceptMaps.length == 0) {
       if (reverse) {
@@ -289,7 +300,24 @@ class TranslateWorker extends TerminologyWorker {
       } else {
         await this.findConceptMapsInAdditionalResources(conceptMaps, coding.system, sourceScope, targetScope, targetSystem);
         await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, coding.system, coding.version, sourceScope, targetScope, targetSystem, coding.code);
+        // targetScope with no targetSystem: the code systems (and versions) the value set draws
+        // on are the target systems - which is how implicit maps are found, since they belong
+        // to code systems, not value sets (a national SNOMED CT edition to the International
+        // Edition the value set is built on, say). What they produce is then held to the value
+        // set (see doTranslate)
+        if (targetScope && !targetSystem) {
+          for (const system of await this.systemsOfScope(targetScope)) {
+            // as the value set has it (system|version - what an implicit map into one SNOMED CT
+            // edition needs), and as the bare system (what a map's group.target usually is)
+            const targets = system.includes('|') ? [system, system.substring(0, system.indexOf('|'))] : [system];
+            for (const target of targets) {
+              await this.findConceptMapsInAdditionalResources(conceptMaps, coding.system, sourceScope, null, target);
+              await this.provider.findConceptMapForTranslation(this.opContext, conceptMaps, coding.system, coding.version, sourceScope, null, target, coding.code);
+            }
+          }
+        }
       }
+      conceptMaps = this.uniqueConceptMaps(conceptMaps);
     }
 
     // Whether the map was nominated or found, it only applies if the code is within its own
@@ -385,6 +413,7 @@ class TranslateWorker extends TerminologyWorker {
 
     let conceptMaps = [];
     conceptMaps.push(conceptMap);
+    this.sourceDescription = await this.describeSourceSystem(coding, txp);
 
     // Naming the map by id does not put an out-of-scope code into its scope, any more than
     // naming it by url does: the map either covers this code or it does not.
@@ -1033,6 +1062,138 @@ class TranslateWorker extends TerminologyWorker {
   }
 
   /**
+   * The source's code system and version, for messages: system|version as given, or - when
+   * no version was given - the system, and the version the server takes it to be (the default
+   * edition, for SNOMED CT). Which version it is decides which maps apply.
+   * @returns {Promise<string>} quoted (see quoteFrom)
+   */
+  async describeSourceSystem(coding, params) {
+    if (!coding || !coding.system) {
+      return null;
+    }
+    if (coding.version) {
+      return `'${coding.system}|${coding.version}'`;
+    }
+    let version = null;
+    try {
+      const cs = await this.findCodeSystem(coding.system, '', params, ['complete', 'fragment'], null, true);
+      version = cs ? cs.version() : null;
+    } catch (e) {
+      version = null;
+    }
+    return version
+      ? `'${coding.system}' (no version given, so '${coding.system}|${version}')`
+      : `'${coding.system}' (no version given)`;
+  }
+
+  /**
+   * The code systems a value set draws on, as system|version when the include names a version:
+   * the targets to look for maps to when targetScope is given without targetSystem. Value sets
+   * it imports are looked into too (once each).
+   * @returns {Promise<string[]>}
+   */
+  async systemsOfScope(canonical, seen = new Set()) {
+    if (seen.has(canonical)) {
+      return [];
+    }
+    seen.add(canonical);
+    const vs = await this.resolveScopeValueSet(canonical, 'targetScope parameter');
+    const systems = new Set();
+    const compose = vs.jsonObj?.compose;
+    for (const inc of Array.isArray(compose?.include) ? compose.include : []) {
+      if (inc.system) {
+        systems.add(inc.version ? `${inc.system}|${inc.version}` : inc.system);
+      }
+      for (const imported of Array.isArray(inc.valueSet) ? inc.valueSet : []) {
+        try {
+          for (const s of await this.systemsOfScope(imported, seen)) {
+            systems.add(s);
+          }
+        } catch (e) {
+          // an import that can't be found doesn't stop the others: the membership check
+          // (doTranslate) will report it, if it matters
+        }
+      }
+    }
+    if (!compose) {
+      for (const c of Array.isArray(vs.jsonObj?.expansion?.contains) ? vs.jsonObj.expansion.contains : []) {
+        if (c.system) {
+          systems.add(c.version ? `${c.system}|${c.version}` : c.system);
+        }
+      }
+    }
+    return [...systems];
+  }
+
+  /** The candidate maps, each once (the same map can be found for more than one target). */
+  uniqueConceptMaps(conceptMaps) {
+    const seen = new Set();
+    const result = [];
+    for (const cm of conceptMaps) {
+      const key = cm.url ? `${cm.url}|${cm.version || ''}` : cm;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(cm);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * targetScope "limits the scope of the $translate operation to target codes that are members
+   * of this value set": a match whose target concept isn't in it is dropped, and a message says
+   * so. A target that can't be checked against it is kept, with a note saying it wasn't checked.
+   *
+   * A target the code system produced itself can name a version the server doesn't hold: an
+   * edition to edition translation names the release of the International Edition that the
+   * national edition was built on, and the server may have another release, or none on its own.
+   * Then it is checked as a code of the edition (the version without its date - whichever
+   * release of it the server has, and what an include that names the edition means), with a
+   * note saying so; and if the server doesn't have the edition either, it is kept, unchecked.
+   */
+  async holdToTargetScope(result, targetScope, params) {
+    const dropped = [];
+    for (let i = result.length - 1; i >= 0; i--) {
+      const match = result[i];
+      if (match.name !== 'match' || !Array.isArray(match.part)) {
+        continue;
+      }
+      const concept = match.part.find(p => p.name === 'concept')?.valueCoding;
+      if (!concept || !concept.system || !concept.code) {
+        continue;
+      }
+      let coding = concept;
+      if (concept.version && !(await this.resolveCode(concept.system, concept.version, concept.code, params)).known) {
+        const edition = concept.version.includes('/version/') ? concept.version.substring(0, concept.version.indexOf('/version/')) : null;
+        if (edition && (await this.resolveCode(concept.system, edition, concept.code, params)).known) {
+          coding = { system: concept.system, version: edition, code: concept.code };
+          match.part.push({ name: 'note', valueString: `Checked against the target scope '${targetScope}' as a code of '${edition}': '${concept.version}' is not available on this server` });
+        } else {
+          match.part.push({ name: 'note', valueString: `'${concept.system}#${concept.code}' could not be checked against the target scope '${targetScope}': '${concept.version}' is not available on this server` });
+          continue;
+        }
+      }
+      let inScope;
+      try {
+        inScope = await this.codeInScope(targetScope, coding, params, 'targetScope parameter');
+      } catch (e) {
+        match.part.push({ name: 'note', valueString: `'${concept.system}#${concept.code}' could not be checked against the target scope '${targetScope}' (${e.message})` });
+        continue;
+      }
+      if (!inScope) {
+        const key = `${concept.system}#${concept.code}`;
+        if (!dropped.includes(key)) {
+          dropped.unshift(key);
+        }
+        result.splice(i, 1);
+      }
+    }
+    if (dropped.length > 0) {
+      result.push({ name: 'message', valueString: `${dropped.length === 1 ? 'A translation was' : `${dropped.length} translations were`} left out because ${dropped.length === 1 ? 'it is' : 'they are'} not in the target scope '${targetScope}': ${dropped.join(', ')}` });
+    }
+  }
+
+  /**
    * The answer when nothing can translate this code: a successful operation with a negative
    * result, not an error. Where any candidate map declared a scope, the message names the code,
    * because the code is then the reason - saying only that no map goes from this system to that
@@ -1041,11 +1202,11 @@ class TranslateWorker extends TerminologyWorker {
   noMapsResponse(coding, sourceScope, targetScope, targetSystem, reverse, message, anyScoped) {
     let text = message;
     if (!text) {
-      const from = reverse ? (targetSystem || sourceScope) : coding.system;
+      const from = reverse ? (targetSystem || sourceScope) : (this.sourceDescription || coding.system);
       const to = reverse ? coding.system : (targetSystem || targetScope);
       text = anyScoped
-        ? `No ConceptMap that translates from '${from || '(unspecified)'}' to '${to || '(unspecified)'}' has '${coding.system}#${coding.code}' in scope`
-        : `No ConceptMap is available to translate from '${from || '(unspecified)'}' to '${to || '(unspecified)'}'`;
+        ? `No ConceptMap that translates from ${quoteFrom(from)} to '${to || '(unspecified)'}' has '${coding.system}#${coding.code}' in scope`
+        : `No ConceptMap is available to translate from ${quoteFrom(from)} to '${to || '(unspecified)'}'`;
     }
     return {
       resourceType: 'Parameters',
@@ -1128,6 +1289,9 @@ class TranslateWorker extends TerminologyWorker {
       // says - but it is not a translation: "The value can only be true if at least one
       // returned match has a relationship other than 'not-related-to'" (tx-ecosystem translate-2b)
       await this.checkTargetConcepts(result, params);
+      if (targetScope && !reverse) {
+        await this.holdToTargetScope(result, targetScope, params);
+      }
       const translated = added && result.some(p => p.name === 'match' && this.isPositiveMatch(p));
       result.push({
         name: 'result',
