@@ -20,13 +20,13 @@
  *    requests outstanding
  *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
  *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
- *  - lets a cheap request (by method and path: the fast lane) go to a process with up to
- *    fastLaneExtra more than maxOutstanding, and ahead of the others waiting
+ *  - gives cheap requests (by method and path: the fast lane) fastLaneExtra slots of their
+ *    own on each process, on top of maxOutstanding
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
- *  - restarts a tx-worker that has held memory over the memory guard's refusal threshold for
- *    recycleSeconds with no request at work (it would otherwise refuse everything, for good)
+ *  - restarts a tx-worker held over the memory guard's refusal threshold for recycleSeconds
+ *    with no request at work
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
  *
@@ -40,15 +40,13 @@ const { spawn } = require('child_process');
 const { checkInstanceCode } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
-const { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon } = require('./library/cgroup-memory');
-const { DEFAULT_REJECT_FRACTION } = require('./library/memory-guard');
+const { readCgroupAnon } = require('./library/cgroup-memory');
+const { thresholds } = require('./library/memory-guard');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
-// An idle keep-alive connection to a process is closed by the launcher after this long:
-// below the processes' own keepAliveTimeout (65 s with library/keep-alive.js, Node's default
-// of 5 s on a server without it), so the launcher never sends a request down a connection the
-// process is closing at that moment (a reset, which the client would see as a 502)
+// an idle connection to a process is closed after this long: below the process's own
+// keep-alive timeout (5 s at the least), so no request goes down one it is closing (a 502)
 const UPSTREAM_IDLE_MS = 4000;
 // a process that ran this long before exiting is restarted at once
 const HEALTHY_RUN_MS = 60000;
@@ -62,22 +60,20 @@ const OWNER_QUEUE_MS = 30000;
 // them. Short: its memory guard re-measures only when a request arrives
 const COOLDOWN_MS = 2000;
 // a tx-worker over the memory guard's refusal threshold this long, with no request at work, is
-// restarted (cluster.md, "Memory"). 30 s: well past a forced GC's effect (the guard forces one
-// at once, then 5 s, 10 s, 20 s later), and short next to a client's retries
+// restarted (cluster.md, "Memory"): past the guard's own GC and trims, short next to a retry
 const RECYCLE_MS = 30000;
 // how often the launcher measures for that
 const RECYCLE_CHECK_MS = 1000;
 // a request in flight this long is work; a refusal (503) is answered at once
 const AT_WORK_MS = 1000;
-// memory to leave free under the guard's refusal threshold once every process is loaded and
-// idle (cluster.md, "Memory"): about what one heavy operation uses. 2 GB: an $expand of a large
-// SNOMED value set or a big $batch-validate-code takes 1-2 GB; with less, the first one shuts
-// the gate for everyone
+// memory to leave under the refusal threshold with every process loaded and idle: about what
+// one heavy operation (a large SNOMED $expand, a big $batch-validate-code) uses
 const HEADROOM_GB = 2;
-// a fast-lane request (isFastLane) may go to a process with this many more than
-// MAX_OUTSTANDING; a POST takes the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
+// fast-lane requests (isFastLane) a process may have on top of MAX_OUTSTANDING; a POST takes
+// the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
 const FAST_LANE_EXTRA = 4;
 const FAST_LANE_MAX_BYTES = 1024;
+const GB = (b) => (b / 2 ** 30).toFixed(1);
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -113,9 +109,7 @@ function loadSettings(argv, env, config) {
     }
     procs.push({ name: 'worker ' + code, role: 'tx-worker', code, port: internalPort + i, servesTx: true });
   }
-  // the options (cluster.md, "Options"): with the shared cache, any process can answer any
-  // cache-id, so by default a cached request goes to the least loaded; cacheAffinity: true
-  // keeps sending it to the process that issued it while that one is up
+  // with the shared cache any process can answer any cache-id (cluster.md, "Options")
   const sharedCache = cluster.sharedCache === true;
   return {
     port,
@@ -150,15 +144,11 @@ function txRest(url, txPaths) {
 }
 
 const FAST_OPS = /^(\/[A-Za-z]+(\/[A-Za-z0-9.-]{1,64})?)?\/\$(lookup|subsumes|validate-code)$/;
-const READ = /^\/[A-Za-z]+\/[A-Za-z0-9.-]{1,64}$/;
 
 /**
- * Whether a tx request takes the fast lane (cluster.md). By method, path and declared size
- * only: the launcher doesn't read bodies. A GET or HEAD of metadata, a read (/Type/id),
- * $lookup, $subsumes or $validate-code: its parameters are all in the URL, so it carries no
- * inline ValueSet or CodeSystem. A POST of those three operations only with a Content-Length
- * of at most maxBytes (0: none); one with a large inline resource, or with no length, waits
- * with the rest.
+ * Whether a tx request takes the fast lane (cluster.md), by method, path and declared size (the
+ * launcher doesn't read bodies): a GET or HEAD of metadata, $lookup, $subsumes or
+ * $validate-code, or a POST of those three with a Content-Length of at most maxBytes (0: none).
  * @param {Object} req - method, url, headers
  */
 function isFastLane(req, txPaths, maxBytes) {
@@ -168,7 +158,7 @@ function isFastLane(req, txPaths, maxBytes) {
   }
   const r = rest.replace(/\/+$/, '');
   if (req.method === 'GET' || req.method === 'HEAD') {
-    return r === '/metadata' || READ.test(r) || FAST_OPS.test(r);
+    return r === '/metadata' || FAST_OPS.test(r);
   }
   const len = req.headers['content-length'];
   return req.method === 'POST' && maxBytes > 0 && FAST_OPS.test(r) && /^\d+$/.test(len || '') && Number(len) <= maxBytes;
@@ -208,10 +198,11 @@ function classify(url, headers, txPaths, routing = {}) {
 /**
  * The process to send a request to, or null if none is ready.
  * @param {Object} route - from classify
- * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, coolUntil}
+ * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, fastOutstanding, coolUntil}
+ * @param {boolean} [fast] - a fast-lane request: the least loaded by its own lane
  */
 let rotation = 0;
-function pickTarget(route, procs) {
+function pickTarget(route, procs, fast = false) {
   if (route.to === 'master') {
     return procs.find(p => p.role === 'master' && p.ready) || null;
   }
@@ -233,10 +224,12 @@ function pickTarget(route, procs) {
   const warm = ready.filter(p => !(p.coolUntil > now));
   const candidates = warm.length ? warm : ready;
   rotation = (rotation + 1) % candidates.length;
+  const fastOf = (p) => p.fastOutstanding || 0;
+  const load = (p) => fast ? fastOf(p) : p.outstanding - fastOf(p);
   let best = null;
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[(rotation + i) % candidates.length];
-    if (!best || c.outstanding < best.outstanding) {
+    if (!best || load(c) < load(best)) {
       best = c;
     }
   }
@@ -244,23 +237,13 @@ function pickTarget(route, procs) {
 }
 
 /**
- * The launcher's view of the memory guard's refusal threshold (library/memory-guard.js), for
- * recycling. With the limit on the processes' own cgroup, the guard measures the cgroup's
- * private memory, so `excess` is how far that is over the threshold; without, each process
- * measures its own RSS against the limit (`excess` null). A process's own memory is its RssAnon
- * (Linux /proc; elsewhere nothing is read and nothing is recycled).
+ * The launcher's view of the memory guard's refusal threshold: the same limit, fraction and
+ * cgroup (thresholds in library/memory-guard.js). sample(procs) gives each proc's RssAnon (0:
+ * not known; Linux only) and, with the cgroup measured, how far it is over (`excess`; else null).
  * @param {Object} memory - config.server.memory
- * @returns {{describe: string, rejectAt: number, sample: function(Object[]): {excess: number|null, own: Map}}}
- *   sample(procs): own maps each proc to its memory in bytes (0: not known)
  */
 function memorySampler(memory = {}) {
-  const f = memory.rejectFraction;
-  const fraction = (typeof f === 'number' && f > 0 && f <= 1) ? f : DEFAULT_REJECT_FRACTION;
-  const cg = readCgroupMemoryLimit();
-  const limit = cg.limit || require('os').totalmem();
-  const own = ownCgroupDir();
-  const group = own && cg.source && path.dirname(cg.source) === own.dir ? own : null;
-  const rejectAt = limit * fraction;
+  const { limit, group, rejectFraction, rejectAt } = thresholds({ ...memory, group: true });
   const anonOf = (pid) => {
     try {
       const m = /^RssAnon:\s+(\d+) kB/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'));
@@ -271,7 +254,7 @@ function memorySampler(memory = {}) {
   };
   return {
     rejectAt,
-    describe: `over ${(rejectAt / 2 ** 30).toFixed(1)} GB (${Math.round(fraction * 100)}% of ${(limit / 2 ** 30).toFixed(1)} GB)` +
+    describe: `over ${(rejectAt / 2 ** 30).toFixed(1)} GB (${Math.round(rejectFraction * 100)}% of ${(limit / 2 ** 30).toFixed(1)} GB)` +
       (group ? ' for the whole cgroup' : ' for the process'),
     sample(procs) {
       const excess = group ? readCgroupAnon(group) - rejectAt : null;
@@ -301,17 +284,15 @@ function createLauncher(settings) {
   const headroom = settings.headroomBytes ?? HEADROOM_GB * 2 ** 30;
   const fastLaneExtra = settings.fastLaneExtra ?? FAST_LANE_EXTRA; // 0: no fast lane
   const fastLaneMaxBytes = settings.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES;
+  const trimAllocator = !settings.memory || settings.memory.trimAllocator !== false;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
-    ...p, child: null, ready: false, outstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, restartTimer: null,
-    // when each request in flight was sent; since when it has been over the refusal threshold
-    // with none at work; whether it is being restarted for that
-    // and its memory when it was ready (checkMemory)
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, restartTimer: null,
+    // for checkMemory: when each request in flight was sent, since when it has been over with
+    // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
-    // timeout: a connection idle in the pool this long is closed (see UPSTREAM_IDLE_MS); a
-    // request in progress is not affected
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
   const metrics = new ClusterMetrics(procs);
@@ -321,7 +302,7 @@ function createLauncher(settings) {
   let server = null;
   let stopping = false;
   let onIdle = null;
-  // tx requests waiting for a process with room, oldest first; fast-lane ones apart, and first
+  // tx requests waiting for a process with room, oldest first; the fast lane's apart
   const waiting = [];
   const fastWaiting = [];
   let queueRefused = 0;
@@ -462,12 +443,13 @@ function createLauncher(settings) {
     });
   }
 
-  const full = (p, fast) => maxOutstanding > 0 && p.outstanding >= maxOutstanding + (fast ? fastLaneExtra : 0);
+  // the fast lane has its own slots, so it never takes a slot from the others
+  const full = (p, fast) => maxOutstanding > 0 && (fast ? p.fastOutstanding >= fastLaneExtra : p.outstanding - p.fastOutstanding >= maxOutstanding);
 
   // true if the request was sent (or refused), false if it must wait. The master's own
   // paths and CORS preflights don't wait
   function send(w) {
-    const target = pickTarget(w.route, procs);
+    const target = pickTarget(w.route, procs, w.fast);
     if (!target) {
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
       return true;
@@ -475,11 +457,11 @@ function createLauncher(settings) {
     if (w.route.to !== 'master' && w.req.method !== 'OPTIONS' && full(target, w.fast)) {
       return false;
     }
-    forward(w.req, w.res, target);
+    forward(w.req, w.res, target, w.fast);
     return true;
   }
 
-  // the fast lane first, then oldest first; one waiting for its owner doesn't hold up the rest
+  // each queue oldest first; one waiting for its owner doesn't hold up the rest
   function sendWaiting() {
     for (const queue of [fastWaiting, waiting]) {
       const fast = queue === fastWaiting;
@@ -534,8 +516,9 @@ function createLauncher(settings) {
     }, ms);
   }
 
-  function forward(req, res, target) {
+  function forward(req, res, target, fast = false) {
     target.outstanding++;
+    target.fastOutstanding += fast ? 1 : 0;
     const sent = { at: Date.now() };
     target.sentAt.add(sent);
     let finished = false;
@@ -543,6 +526,7 @@ function createLauncher(settings) {
       if (!finished) {
         finished = true;
         target.outstanding--;
+        target.fastOutstanding -= fast ? 1 : 0;
         target.sentAt.delete(sent);
         sendWaiting();
         if (onIdle && totalOutstanding() === 0) {
@@ -595,13 +579,10 @@ function createLauncher(settings) {
   }
 
   /**
-   * Every RECYCLE_CHECK_MS: a tx-worker that has been over the memory guard's refusal threshold
-   * (see memorySampler) for recycleMs, with no request at work all that time, is restarted, the
-   * largest first and one at a time. Its guard would refuse every request until its memory
-   * fell, and with nothing running, nothing will free it. With the cgroup measured, only a
-   * worker that has grown since it was ready by more than the cgroup is over: a restart takes
-   * it back to about that size, so restarting a smaller one would not reopen the gate. The
-   * master is not restarted: it holds what only it has (cluster.md, "What runs where").
+   * Every RECYCLE_CHECK_MS: restart a tx-worker over the refusal threshold for recycleMs with no
+   * request at work, the largest first, one at a time. Only one that has grown since it was
+   * ready by more than the excess: a restart takes it back to its ready size, so restarting
+   * one that was already too big would not reopen the gate. Never the master.
    */
   function checkMemory() {
     if (stopping || procs.some(p => p.recycling)) {
@@ -616,9 +597,14 @@ function createLauncher(settings) {
       const mine = own.get(p) || 0;
       if (p.ready && p.readyMemory === null) {
         p.readyMemory = mine;
+        if (excess === null && mine > memory.rejectAt) {
+          log(`WARNING memory: ${p.name} uses ${GB(mine)} GB loaded and idle, ${memory.describe}: its memory guard refuses its requests, ` +
+            'and restarting it would not help, so it is not recycled; use a larger limit');
+        }
       }
       const atWork = [...p.sentAt].some(s => now - s.at >= AT_WORK_MS);
-      over.set(p, mine > 0 && (excess === null ? mine > memory.rejectAt : excess > 0 && mine - p.readyMemory > excess) ? mine : 0);
+      const pExcess = excess === null ? mine - memory.rejectAt : excess;
+      over.set(p, mine > 0 && pExcess > 0 && mine - p.readyMemory > pExcess ? mine : 0);
       if (!p.ready || !over.get(p) || atWork) {
         p.overSince = 0;
         continue;
@@ -635,8 +621,7 @@ function createLauncher(settings) {
     }
   }
 
-  // no new requests; those it has (refusals) finish; then it stops as on shutdown, and the
-  // exit handler starts it again at once
+  // no new requests; those it has finish; it stops as on shutdown, and exit starts it again
   function recycle(p, why) {
     log(`recycling ${p.name}: ${why}`);
     p.recycling = true;
@@ -697,15 +682,12 @@ function createLauncher(settings) {
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
-      `recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+      `trimAllocator ${trimAllocator}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
       memoryTimer.unref();
     }
-    // one after another, each once the one before is ready (or has exited, and is being
-    // restarted): a worker only reads the caches the master built, but starting them together
-    // would put every worker's load (and its memory peak) at the same moment
-    // (in the background: start() returns once the master is ready and the port is open)
+    // one after another, so their loads (and memory peaks) don't coincide; in the background
     void (async () => {
       for (const p of procs) {
         if (p !== master && !stopping) {
@@ -718,14 +700,11 @@ function createLauncher(settings) {
     })();
   }
 
-  const GB = (b) => (b / 2 ** 30).toFixed(1);
 
   /**
-   * Once the master is loaded: its memory is about what each worker will use idle. If the
-   * number of workers was not given, start no more than fit under the refusal threshold with
-   * `headroom` to spare (at least one); if it was, warn when they won't fit. The guard counts
-   * every process against the one limit, so N+1 loaded processes sitting at the threshold
-   * refuse every request, busy or not.
+   * Once the master is loaded, take its memory as each worker's. Workers not given: start only
+   * as many as fit under the refusal threshold with `headroom` to spare (at least one); given:
+   * warn if they don't fit.
    */
   function sizeWorkers(master) {
     const perProcess = memory.sample([master]).own.get(master) || 0;
@@ -733,17 +712,25 @@ function createLauncher(settings) {
       return; // not measurable here (not Linux)
     }
     const workers = procs.filter(p => p.role === 'tx-worker');
-    const fit = Math.max(1, Math.floor((memory.rejectAt - headroom - perProcess) / perProcess));
+    const fits = Math.floor((memory.rejectAt - headroom - perProcess) / perProcess);
+    const fit = Math.max(1, fits);
     const idle = (1 + workers.length) * perProcess;
     const line = `the master uses ${GB(perProcess)} GB loaded, so ${workers.length + 1} processes would use about ${GB(idle)} GB idle; ` +
       `the memory guard refuses requests ${memory.describe}, and memoryHeadroomGB is ${GB(headroom)}`;
     if (idle + headroom <= memory.rejectAt) {
       log(`memory: ${line}`);
-    } else if (settings.workersDefault && fit < workers.length) {
+      return;
+    }
+    if (settings.workersDefault) {
       for (const p of workers.slice(fit)) {
         procs.splice(procs.indexOf(p), 1);
         metrics.series.delete(p.code);
       }
+    }
+    const starting = procs.length - 1;
+    if (fits < 1) {
+      log(`WARNING memory: ${line}: even 1 worker leaves too little room; starting ${starting}: raise the limit, or run a single server`);
+    } else if (starting < workers.length) {
       log(`memory: ${line}: starting ${fit} worker(s), not ${workers.length} (set server.cluster.workers to choose)`);
     } else {
       log(`WARNING memory: ${line}: ${workers.length} worker(s) leave too little room; at most ${fit} would, or raise the limit`);

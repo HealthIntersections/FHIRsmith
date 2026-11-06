@@ -92,11 +92,12 @@ function fraction(v, dflt) {
 }
 
 /**
- * (Re)initialise. Called once at startup from server.js with config.server.memory; the module
- * also self-initialises with defaults so code that loads without server.js (tests, tools) works.
- * @param {object} [opts] - { rejectFraction, abortFraction, limit (bytes, for tests) }
+ * The limit and the two thresholds for config.server.memory, and with opts.group the cgroup to
+ * measure (one with the limit on it, else null). configure() uses it, and so does the launcher
+ * (cluster.js), so both agree on where the threshold is.
+ * @param {object} [opts] - { rejectFraction, abortFraction, group, limit and cgroup (tests) }
  */
-function configure(opts = {}) {
+function thresholds(opts = {}) {
   let limit = opts.limit;
   let source = limit ? 'configured' : null;
   let cg = null;
@@ -105,26 +106,32 @@ function configure(opts = {}) {
     limit = cg.limit;
     source = cg.source;
   }
-  state.group = null;
-  state.groupWanted = !!opts.group;
+  let group = null;
   if (opts.group) {
     // only a cgroup that is the group's own, with the limit on it
     const own = opts.cgroup !== undefined ? opts.cgroup : ownCgroupDir();
     const limitFile = opts.cgroup !== undefined ? null : (cg || readCgroupMemoryLimit()).source;
     if (own && (opts.cgroup !== undefined || (limitFile && path.dirname(limitFile) === own.dir)) && readCgroupAnon(own) > 0) {
-      state.group = own;
+      group = own;
     }
   }
   if (!limit) {
     limit = os.totalmem();
     source = 'os.totalmem()';
   }
-  state.limit = limit;
-  state.source = source;
-  state.rejectFraction = fraction(opts.rejectFraction, DEFAULT_REJECT_FRACTION);
-  state.abortFraction = fraction(opts.abortFraction, DEFAULT_ABORT_FRACTION);
-  state.rejectAt = limit * state.rejectFraction;
-  state.abortAt = limit * state.abortFraction;
+  const rejectFraction = fraction(opts.rejectFraction, DEFAULT_REJECT_FRACTION);
+  const abortFraction = fraction(opts.abortFraction, DEFAULT_ABORT_FRACTION);
+  return { limit, source, group, rejectFraction, abortFraction, rejectAt: limit * rejectFraction, abortAt: limit * abortFraction };
+}
+
+/**
+ * (Re)initialise. Called once at startup from server.js with config.server.memory; the module
+ * also self-initialises with defaults so code that loads without server.js (tests, tools) works.
+ * @param {object} [opts] - as thresholds(), and trimAllocator
+ */
+function configure(opts = {}) {
+  Object.assign(state, thresholds(opts));
+  state.groupWanted = !!opts.group;
   state.trimAllocator = opts.trimAllocator !== false;
   state.sampleTime = 0;
 }
@@ -394,4 +401,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { DEFAULT_REJECT_FRACTION, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };
+module.exports = { thresholds, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };

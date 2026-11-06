@@ -4,7 +4,8 @@
  */
 const http = require('http');
 const path = require('path');
-const { loadSettings, classify, isFastLane, pickTarget, createLauncher } = require('../../cluster');
+const { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler } = require('../../cluster');
+const memoryGuard = require('../../library/memory-guard');
 
 const FAKE = path.join(__dirname, '..', 'utils', 'fake-upstream.js');
 const TX = ['/r4', '/r5'];
@@ -49,11 +50,12 @@ describe('routing rules', () => {
     expect(classify('/r4/ValueSet/$expand', {}, TX)).toEqual({ to: 'tx' });
   });
 
-  test('the fast lane: GET of metadata, reads, $lookup, $subsumes, $validate-code; a POST of those by Content-Length', () => {
+  test('the fast lane: GET of metadata, $lookup, $subsumes, $validate-code; a POST of those by Content-Length', () => {
     const fast = (method, url, headers = {}, maxBytes = 0) => isFastLane({ method, url, headers }, TX, maxBytes);
     expect(fast('GET', '/r4/CodeSystem/$lookup?system=http://loinc.org&code=1')).toBe(true);
     expect(fast('GET', '/r5/metadata')).toBe(true);
-    expect(fast('GET', '/r4/ValueSet/abc-1')).toBe(true);
+    // a read is not: a large CodeSystem is costly to render
+    expect(fast('GET', '/r4/CodeSystem/abc-1')).toBe(false);
     expect(fast('GET', '/r4/ValueSet/abc/$validate-code?code=1')).toBe(true);
     expect(fast('GET', '/r4/CodeSystem/%24subsumes?codeA=1')).toBe(true);
     // search, $expand and anything else: not
@@ -138,6 +140,20 @@ describe('routing rules', () => {
     expect(pickTarget({ to: 'owner', code: 'tx2' }, procs).code).toBe('tx2');
     procs[1].coolUntil = procs[2].coolUntil;
     expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx2');
+    // a fast-lane request: by the lane's own count; the others: by theirs
+    procs[2].fastOutstanding = 1;
+    expect(pickTarget({ to: 'tx' }, procs, true).code).toBe('tx1');
+    procs[1].outstanding = 3;
+    procs[1].fastOutstanding = 3;
+    procs[2].outstanding = 2;
+    expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx1');
+  });
+
+  test('the launcher\'s threshold is the memory guard\'s', () => {
+    for (const memory of [{}, { rejectFraction: 0.7 }, { rejectFraction: 2 }]) {
+      expect(memorySampler(memory).rejectAt).toBe(memoryGuard.thresholds({ ...memory, group: true }).rejectAt);
+    }
+    expect(memorySampler({ rejectFraction: 0.7 }).describe).toMatch(/^over [\d.]+ GB \(70% of /);
   });
 
   test('settings from flags, environment and config', () => {
@@ -370,23 +386,27 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all(await busy(4))).map(x => x.status)).toEqual([200, 200, 200, 200]);
     });
 
-    test('a fast-lane request goes to a full process, up to fastLaneExtra more, and waits ahead of the rest', async () => {
+    test('the fast lane has fastLaneExtra slots of its own on each process, and never takes the others\'', async () => {
       launcher = createLauncher({ ...queued(5000), fastLaneExtra: 1 });
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
+      // the lane full: an $expand still goes at once, and another lookup waits for the lane
+      const lanes = [get(PORT, '/r4/CodeSystem/$lookup?delay=1000'), get(PORT, '/r4/CodeSystem/$lookup?delay=1000')];
+      await until(() => launcher.procs.filter(p => p.servesTx).every(p => p.fastOutstanding === 1));
+      let t0 = Date.now();
+      expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(500);
+      t0 = Date.now();
+      expect((await get(PORT, '/r4/CodeSystem/$lookup')).status).toBe(200);
+      expect(Date.now() - t0).toBeGreaterThan(300);
+      expect((await Promise.all(lanes)).map(r => r.status)).toEqual([200, 200]);
+      // the others full: a lookup goes at once
       const slow = await busy(2);
-      const t0 = Date.now();
+      t0 = Date.now();
       expect((await get(PORT, '/r4/CodeSystem/$lookup?code=1')).status).toBe(200);
       expect(Date.now() - t0).toBeLessThan(500);
-      // the lane full too: a heavy request waits, then a lookup, which goes first
-      const lanes = [get(PORT, '/r4/CodeSystem/$lookup?delay=1000'), get(PORT, '/r4/CodeSystem/$lookup?delay=1000')];
-      await until(() => launcher.procs.filter(p => p.servesTx).every(p => p.outstanding === 2));
-      const order = [];
-      const heavy = get(PORT, '/r4/ValueSet/$expand').then(r => order.push('expand') && r);
-      await sleep(50);
-      const lookup = get(PORT, '/r4/CodeSystem/$lookup').then(r => order.push('lookup') && r);
-      expect((await Promise.all([heavy, lookup, ...lanes, ...slow])).map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
-      expect(order).toEqual(['lookup', 'expand']);
+      expect((await Promise.all(slow)).map(r => r.status)).toEqual([200, 200]);
+      expect(launcher.procs.every(p => p.outstanding === 0 && p.fastOutstanding === 0)).toBe(true);
       await launcher.stop();
       // fastLaneExtra 0: no lane
       launcher = createLauncher({ ...queued(300), fastLaneExtra: 0 });
@@ -429,7 +449,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, memoryHeadroomGB 2, drainSeconds 10, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
@@ -545,6 +565,32 @@ describe('the launcher, with fake processes', () => {
       // once the request is done, the clock starts
       await until(() => tx1.child !== child && tx1.ready);
       expect(logs.filter(m => m.startsWith('recycling')).length).toBe(1);
+    });
+
+    test('no cgroup measure: a worker already over the threshold when ready is not recycled, with one warning', async () => {
+      mem = { m0: 1 * GiB, tx1: 6 * GiB, tx2: 1 * GiB };
+      const { settings: s, logs } = recycling({ memorySampler: {
+        describe: 'over', rejectAt: 5 * GiB, sample: (ps) => ({ excess: null, own: new Map(ps.map(p => [p, mem[p.code] || 0])) })
+      } });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const children = launcher.procs.map(p => p.child);
+      await sleep(1000);
+      expect(launcher.procs.map(p => p.child)).toEqual(children);
+      expect(logs.filter(m => m.startsWith('recycling'))).toEqual([]);
+      expect(logs.filter(m => /^WARNING memory: worker tx1 uses 6\.0 GB loaded and idle, over: .* not recycled/.test(m)).length).toBe(1);
+    });
+
+    test('sizing: even 1 worker leaving too little room is a warning, with the numbers', async () => {
+      mem = { m0: 2 * GiB, tx1: 2 * GiB, tx2: 2 * GiB };
+      excess = null;
+      const { settings: s, logs } = recycling({ workersDefault: true, headroomBytes: 2 * GiB });
+      launcher = createLauncher(s);
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(launcher.procs.map(p => p.code)).toEqual(['m0', 'tx1']);
+      expect(logs).toContain('WARNING memory: the master uses 2.0 GB loaded, so 3 processes would use about 6.0 GB idle; the memory guard refuses requests over the test threshold, and memoryHeadroomGB is 2.0: even 1 worker leaves too little room; starting 1: raise the limit, or run a single server');
     });
 
     test('sizing: with the number of workers not given, no more start than fit under the threshold with the headroom', async () => {
