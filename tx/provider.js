@@ -24,8 +24,8 @@ const { CodeSystemFactoryProvider } = require("./cs/cs-api");
 const resolveCodeProviders = new WeakMap();
 
 /**
- * The same for getCodeSystemProvider(): opContext -> Map(factory -> Map(supplements -> Promise
- * of the provider)). A value set with an include per code asks for the same code system once per
+ * The same for getCodeSystemProvider(): opContext -> Map('system|version supplements' -> Promise
+ * of the provider). A value set with an include per code asks for the same code system once per
  * include, and each build was a connection held to the end of the request.
  */
 const codeSystemProviders = new WeakMap();
@@ -235,17 +235,13 @@ class Provider {
    * The caller registers the provider for closing, as before.
    */
   buildOnce(opContext, factory, supplements) {
-    let byFactory = codeSystemProviders.get(opContext);
-    if (!byFactory) {
-      byFactory = new Map();
-      codeSystemProviders.set(opContext, byFactory);
-    }
-    let built = byFactory.get(factory);
+    let built = codeSystemProviders.get(opContext);
     if (!built) {
       built = new Map();
-      byFactory.set(factory, built);
+      codeSystemProviders.set(opContext, built);
     }
-    const key = (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
+    // system|version is the factory's own key in codeSystemFactories
+    const key = factory.system() + '|' + (factory.version() ?? '') + ' ' + (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
     let csp = built.get(key);
     if (!csp) {
       csp = Promise.resolve(factory.build(opContext, supplements));
