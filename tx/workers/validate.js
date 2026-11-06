@@ -1004,7 +1004,8 @@ class ValueSetChecker {
       let vsImpliedVersion = this.findVSVersionForSystem(c.system);
       const csd = await this.worker.findCodeSystem(c.system, vsImpliedVersion, this.params, ['complete', 'fragment'], false, true, false, false, this.worker.requiredSupplements);
       this.worker.seeSourceProvider(csd, c.system);
-      this.worker.deadCheck('check-b#1');
+      // a turn for the event loop now and then, so a client that has gone is seen
+      await this.worker.checkAndYield('check-b#1');
       let path;
       if (issuePath === 'CodeableConcept') {
         path = addToPath(issuePath, 'coding[' + i + ']');
