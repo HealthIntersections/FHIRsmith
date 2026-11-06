@@ -1,4 +1,10 @@
 
+const { setImmediate: yieldToEventLoop } = require('timers/promises');
+
+// The startup scan reads every value set (thousands with the npm packages, VSAC), about a second
+// of work: give requests a turn every YIELD_INTERVAL_MS of it.
+const YIELD_INTERVAL_MS = 10;
+
 class ConceptUsageTracker {
 
   constructor() {
@@ -7,9 +13,14 @@ class ConceptUsageTracker {
 
   async scanValueSets(library) {
     let c = 0;
+    let sliceStart = Date.now();
     for (let vsp of library.valueSetProviders) {
       let list = await vsp.listAllValueSets();
       for (let url of list) {
+        if (Date.now() - sliceStart >= YIELD_INTERVAL_MS) {
+          await yieldToEventLoop();
+          sliceStart = Date.now();
+        }
         let vs = await vsp.fetchValueSet(url);
         if (vs && vs.jsonObj.compose) {
           if (await this.scanValueSet(vs.jsonObj.compose)) {

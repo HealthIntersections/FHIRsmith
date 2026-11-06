@@ -105,6 +105,10 @@ class BatchValidateWorker extends TerminologyWorker {
 
       for (const p of params.parameter) {
         if (p.name == 'validation') {
+          // Validating an entry never yields the event loop by itself, and IG builds send batches
+          // of up to 1,000 entries (~1 s of compute): give other requests a turn between entries
+          // (checkAndYield yields only after YIELD_INTERVAL ms of compute, so small batches don't).
+          await this.opContext.checkAndYield('batch-validate');
           let op = new Parameters();
           op.jsonObj.parameter = [];
           for (const gp of globalParams) {
