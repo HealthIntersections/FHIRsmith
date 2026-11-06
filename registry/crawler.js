@@ -42,7 +42,10 @@ class RegistryCrawler {
       masterUrl: config.masterUrl || MASTER_URL,
       userAgent: config.userAgent || 'HealthIntersections/FhirServer',
       crawlInterval: config.crawlInterval || 5 * 60 * 1000, // 5 minutes default
-      apiKeys: config.apiKeys || {}, // Map of server URL or code to API key
+      apiKeys: config.apiKeys || {}, // server code -> API key (sent as Api-Key)
+      // server code -> { tokenEndpoint, clientId, clientSecret, scope }: an OAuth2
+      // client_credentials grant; the token is sent as Authorization: Bearer
+      oauth: config.oauth || {},
       allowPrivateAddresses: config.allowPrivateAddresses || false, // SSRF opt-out for local test servers
       // the most a server's response can be, once unzipped: the servers are other people's
       maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024,
@@ -61,6 +64,8 @@ class RegistryCrawler {
     this.totalBytes = 0;
     this.log = console;
     this.abortController = null;
+    // server code -> { token, expiresAt } or { pending: Promise }, for the OAuth servers
+    this.oauthTokens = new Map();
   }
 
   useLog(logv) {
@@ -302,7 +307,7 @@ class RegistryCrawler {
     const version = new ServerVersionInformation();
     version.version = versionConfig.version;
     version.address = versionConfig.url;
-    version.security = this.getApiKey(server.code) == null ? "open" : "api-key";
+    version.security = this.getOAuthConfig(server.code) ? "oauth" : this.getApiKey(server.code) == null ? "open" : "api-key";
     
     if (!version.address) {
       this.addLogEntry('error', `No URL for version ${version.version} of ${server.name}`, server.address);
@@ -338,7 +343,7 @@ class RegistryCrawler {
       version.lastTat = `${Date.now() - startTime}ms`;
       this.uptime.record(version.address, true, this.scanTime || startTime);
 
-      this.addLogEntry('info', `  Server ${version.address}: ${version.lastTat} for ${version.codeSystems.length} CodeSystems and ${version.valueSets.length} ValueSets`);
+      this.addLogEntry('info', `  Server ${version.address}: ${version.lastTat} for ${version.codeSystems.length} CodeSystems and ${version.valueSets.length} ValueSets (${version.security})`);
       
     } catch (error) {
       debugLog(error);
@@ -415,7 +420,7 @@ class RegistryCrawler {
   async processServerVersionR3(version, server, exclusions) {
     // Get capability statement
     const capabilityUrl = `${version.address}/metadata`;
-    const capability = await this.fetchJson(capabilityUrl, server.name);
+    const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
     version.version = capability.fhirVersion || '3.0.2';
     version.software = capability.software ? capability.software.name : "unknown";
@@ -425,7 +430,7 @@ class RegistryCrawler {
     // Get terminology capabilities (R3 uses Parameters resource)
     try {
       const termCapUrl = `${version.address}/metadata?mode=terminology`;
-      const termCap = await this.fetchJson(termCapUrl, server.name);
+      const termCap = await this.fetchJson(termCapUrl, server.code, version.address);
       
       if (termCap.parameter) {
         termCap.parameter.forEach(param => {
@@ -461,7 +466,7 @@ class RegistryCrawler {
   async processServerVersionR4or5(version, server, defVersion, exclusions) {
     // Get capability statement
     const capabilityUrl = `${version.address}/metadata`;
-    const capability = await this.fetchJson(capabilityUrl, server.code);
+    const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
     version.version = capability.fhirVersion || defVersion;
     version.software = capability.software ? capability.software.name : "unknown";
@@ -473,7 +478,7 @@ class RegistryCrawler {
     // Get terminology capabilities
     try {
       const termCapUrl = `${version.address}/metadata?mode=terminology`;
-      const termCap = await this.fetchJson(termCapUrl, server.code);
+      const termCap = await this.fetchJson(termCapUrl, server.code, version.address);
       
       if (termCap.codeSystem) {
         termCap.codeSystem.forEach(cs => {
@@ -530,7 +535,7 @@ class RegistryCrawler {
 
         if (this.abortController?.signal.aborted) break;
         this.log.debug(`Fetching value sets from ${searchUrl}`);
-        const bundle = await this.fetchJson(searchUrl, server.code);
+        const bundle = await this.fetchJson(searchUrl, server.code, version.address);
 
         // Process entries in this page
         if (bundle.entry) {
@@ -598,36 +603,27 @@ class RegistryCrawler {
 
   /**
    * Fetch JSON from a URL
+   * @param {string} url
+   * @param {string} serverCode - the code the server's credentials (apiKeys, oauth) are under
+   * @param {string} [credentialBase] - the server's own address. When given, credentials are
+   *   sent only to that origin: next links come from the server, and may point anywhere
    */
-  async fetchJson(url, serverName) {
+  async fetchJson(url, serverCode, credentialBase) {
     try {
       // Add timestamp to bypass cache
       const fetchUrl = url.includes('?') 
         ? `${url}&_ts=${Date.now()}`
         : `${url}?_ts=${Date.now()}`;
-      
-      // Get API key if configured
-      const apiKey = this.getApiKey(serverName);
-      const headers = {
-        'Accept': 'application/json, application/fhir+json',
-        'User-Agent': this.config.userAgent
-      };
-      
-      if (apiKey) {
-        headers['Api-Key'] = apiKey;
+
+      const sendCredentials = !credentialBase || this.sameOrigin(url, credentialBase);
+      const useOAuth = sendCredentials && !!this.getOAuthConfig(serverCode);
+
+      let response = await this.getJson(fetchUrl, await this.credentialHeaders(serverCode, sendCredentials, false));
+      if (response.status === 401 && useOAuth) {
+        // the token was revoked or expired early: get a new one, and try once more
+        response = await this.getJson(fetchUrl, await this.credentialHeaders(serverCode, sendCredentials, true));
       }
-      
-      const response = await axios.get(fetchUrl, {
-        timeout: this.config.timeout,
-        headers: headers,
-        signal: this.abortController?.signal,
-        validateStatus: (status) => status < 500, // Don't throw on 4xx
-        // counted as it is unzipped, so a small response that unzips to a lot is stopped too
-        maxContentLength: this.config.maxResponseBytes,
-        httpAgent: this.guardedAgents().httpAgent,
-        httpsAgent: this.guardedAgents().httpsAgent
-      });
-      
+
       if (response.status >= 400) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -657,16 +653,157 @@ class RegistryCrawler {
     }
   }
 
+  async getJson(fetchUrl, credentials) {
+    return axios.get(fetchUrl, {
+      timeout: this.config.timeout,
+      headers: Object.assign({
+        'Accept': 'application/json, application/fhir+json',
+        'User-Agent': this.config.userAgent
+      }, credentials),
+      signal: this.abortController?.signal,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
+      // counted as it is unzipped, so a small response that unzips to a lot is stopped too
+      maxContentLength: this.config.maxResponseBytes,
+      httpAgent: this.guardedAgents().httpAgent,
+      httpsAgent: this.guardedAgents().httpsAgent
+    });
+  }
+
+  sameOrigin(url, base) {
+    try {
+      return new URL(url).origin === new URL(base).origin;
+    } catch (e) {
+      return false;
+    }
+  }
+
   /**
-   * Get API key for a given URL
+   * The headers that carry a server's credentials: an OAuth bearer token if the server has
+   * an oauth entry, otherwise its API key, otherwise none
+   */
+  async credentialHeaders(serverCode, sendCredentials, renewToken) {
+    if (!sendCredentials) {
+      return {};
+    }
+    if (this.getOAuthConfig(serverCode)) {
+      return { 'Authorization': `Bearer ${await this.getAccessToken(serverCode, renewToken)}` };
+    }
+    const apiKey = this.getApiKey(serverCode);
+    return apiKey ? { 'Api-Key': apiKey } : {};
+  }
+
+  /**
+   * Get API key for a server code
    */
   getApiKey(name) {
-    // Check for exact URL match
-    if (this.config.apiKeys[name]) {
+    if (name && Object.prototype.hasOwnProperty.call(this.config.apiKeys, name)) {
       return this.config.apiKeys[name];
     }
-    
     return null;
+  }
+
+  /**
+   * The OAuth client credentials configured for a server code, if any
+   */
+  getOAuthConfig(name) {
+    if (name && Object.prototype.hasOwnProperty.call(this.config.oauth, name)) {
+      return this.config.oauth[name] || null;
+    }
+    return null;
+  }
+
+  /**
+   * An access token for a server, from the cache while it has more than a minute (or a tenth
+   * of its life, if less) to run, otherwise from the token endpoint. Concurrent callers share
+   * one token request.
+   * @param {string} serverCode
+   * @param {boolean} renew - discard the cached token (the server refused it)
+   * @returns {Promise<string>}
+   */
+  async getAccessToken(serverCode, renew = false) {
+    const cached = this.oauthTokens.get(serverCode);
+    if (cached) {
+      if (cached.pending) {
+        return cached.pending;
+      }
+      if (!renew && Date.now() < cached.renewAt) {
+        return cached.token;
+      }
+    }
+    const pending = this.requestAccessToken(serverCode)
+      .then(t => {
+        this.oauthTokens.set(serverCode, t);
+        return t.token;
+      })
+      .catch(err => {
+        this.oauthTokens.delete(serverCode);
+        throw err;
+      });
+    this.oauthTokens.set(serverCode, { pending });
+    return pending;
+  }
+
+  /**
+   * The client_credentials grant (RFC 6749 4.4), the client authenticating with its secret in
+   * the form body (client_secret_post). Error messages name the server and the endpoint, but
+   * never carry the secret or anything the endpoint said beyond its error code.
+   */
+  async requestAccessToken(serverCode) {
+    const cfg = this.getOAuthConfig(serverCode);
+    const endpoint = cfg.tokenEndpoint;
+    const fail = (why) => new Error(`Could not get an OAuth token for ${serverCode} from ${endpoint}: ${why}`);
+    if (!endpoint || !/^https:\/\//i.test(endpoint)) {
+      throw new Error(`The OAuth tokenEndpoint for ${serverCode} must be an https: URL`);
+    }
+    if (!cfg.clientId || !cfg.clientSecret) {
+      throw new Error(`The OAuth configuration for ${serverCode} needs a clientId and clientSecret`);
+    }
+
+    const form = new URLSearchParams();
+    form.set('grant_type', 'client_credentials');
+    form.set('client_id', cfg.clientId);
+    form.set('client_secret', cfg.clientSecret);
+    if (cfg.scope) {
+      form.set('scope', cfg.scope);
+    }
+
+    let response;
+    try {
+      response = await axios.post(endpoint, form.toString(), {
+        timeout: this.config.timeout,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json',
+          'User-Agent': this.config.userAgent
+        },
+        signal: this.abortController?.signal,
+        validateStatus: () => true,
+        maxContentLength: 1024 * 1024,
+        maxRedirects: 0, // the form carries the secret: it goes where it was configured to, or nowhere
+        httpAgent: this.guardedAgents().httpAgent,
+        httpsAgent: this.guardedAgents().httpsAgent
+      });
+    } catch (error) {
+      debugLog(error);
+      throw fail(error.response ? `HTTP ${error.response.status}` : `no response (${error.code || error.message})`);
+    }
+
+    const body = response.data && typeof response.data === 'object' ? response.data : {};
+    if (response.status !== 200) {
+      const code = typeof body.error === 'string' && /^[\w.-]{1,64}$/.test(body.error) ? ` ${body.error}` : '';
+      throw fail(`HTTP ${response.status}${code}`);
+    }
+    if (typeof body.access_token !== 'string' || !body.access_token) {
+      throw fail('the response has no access_token');
+    }
+    if (body.token_type && String(body.token_type).toLowerCase() !== 'bearer') {
+      throw fail(`unsupported token_type ${String(body.token_type).substring(0, 20)}`);
+    }
+
+    const lifetime = Number(body.expires_in) > 0 ? Number(body.expires_in) * 1000 : 5 * 60 * 1000;
+    const margin = Math.min(60 * 1000, lifetime / 10);
+    this.addLogEntry('info', `  Got an OAuth token for ${serverCode} from ${endpoint}, valid for ${Math.round(lifetime / 1000)}s`);
+    return { token: body.access_token, renewAt: Date.now() + lifetime - margin };
   }
 
   /**

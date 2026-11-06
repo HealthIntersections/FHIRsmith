@@ -12,6 +12,7 @@ The registry is configured under `modules.registry` in the server's configuratio
   "timeout": 30000,
   "userAgent": "YourServer/1.0",
   "apiKeys": {},
+  "oauth": {},
   "maxResponseMB": 100,
   "uptimeWindowDays": 30,
   "uptimeRetentionDays": 90,
@@ -25,6 +26,39 @@ The registry is configured under `modules.registry` in the server's configuratio
 |---|---|---|
 | `masterUrl` | HL7's `tx-servers.json` | The ecosystem's master registration file ([readme.md](readme.md#the-specifications)). Point this at your own file to run a registry for your own ecosystem. |
 | `apiKeys` | `{}` | API keys for servers the registry needs one to scan, by server code (as in the server's registration). Sent as an `Api-Key` header. An endpoint scanned with a key is reported as `security: api-key` in the API. |
+| `oauth` | `{}` | OAuth2 client credentials for servers the registry needs a token to scan, by server code - see [below](#oauth). An endpoint scanned with a token is reported as `security: oauth` in the API. |
+
+Credentials are only sent to the origin (scheme, host and port) of the server's registered
+address. A `next` link that points somewhere else is still followed, but without them.
+
+### OAuth
+
+For a server that issues tokens by the OAuth2 `client_credentials` grant, the registry asks
+the token endpoint for a token, sending its client id and secret in the form body
+(`client_secret_post`), and sends the token as `Authorization: Bearer`. The token is reused
+until it is about to expire (`expires_in`; 5 minutes if the endpoint doesn't say), and
+replaced early if the server answers 401. A server with an `oauth` entry is not sent its
+`apiKeys` entry.
+
+```json
+"oauth": {
+  "nzhts": {
+    "tokenEndpoint": "https://authenticate.nzhts.digital.health.nz/auth/realms/nzhts/protocol/openid-connect/token",
+    "clientId": "hl7",
+    "clientSecret": "...",
+    "scope": ""
+  }
+}
+```
+
+| Property | |
+|---|---|
+| `tokenEndpoint` | The token endpoint. Must be `https:`. Redirects are not followed. |
+| `clientId`, `clientSecret` | The client's credentials, from the server's operator. |
+| `scope` | Optional. Sent if present and not empty. |
+
+The field names are those of the HL7 Java tooling's `oauthClientCredentials` settings, so the
+same values can be copied between the two.
 
 ## Scanning
 

@@ -136,6 +136,9 @@
       "timeout": 30000,
       "userAgent": "YourServer/1.0",
       "apiKeys": {},
+      // OAuth2 client credentials for servers that need them to be scanned, by server code:
+      // "oauth": { "code": { "tokenEndpoint": "https://...", "clientId": "...", "clientSecret": "...", "scope": "" } }
+      "oauth": {},
       // the most a crawled server's response can be, once unzipped
       "maxResponseMB": 100,
       // how far back the software page reports each server's uptime, and how long scan outcomes are kept
@@ -438,8 +441,9 @@
         "port": 8082,
         "packages": ["hl7.fhir.uv.ips#1.1.0"],
         "timeout": 120000,
-        // the validator's own IPS code checks (default true)
-        "checkIpsCodes": true
+        // the analysis step looks up extension definitions in the validator: let it find, download
+        // and load the package that defines one it doesn't have (default true; validator 7.0.5)
+        "autoLoadPackages": true
         // , "profiles": ["http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips"]
       }
     }
