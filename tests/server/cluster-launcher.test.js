@@ -72,13 +72,13 @@ describe('routing rules', () => {
 
   test('with the shared cache, a cache-id goes to any tx process, unless cacheAffinity is on', () => {
     const shared = loadSettings([], {}, { server: { cluster: { sharedCache: true } }, modules: { tx: { enabled: true } } }).routing;
-    expect(shared).toEqual({ cacheAffinity: false, sharedClosure: false });
+    expect(shared).toEqual({ cacheAffinity: false, sharedClosure: false, sharedCache: true });
     expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, shared)).toEqual({ to: 'tx' });
     const affinity = loadSettings([], {}, { server: { cluster: { sharedCache: true, cacheAffinity: true } }, modules: { tx: { enabled: true } } }).routing;
     expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, affinity)).toEqual({ to: 'owner', code: 'tx2' });
     // without the shared cache, a cache-id always goes to its issuer: there is nowhere else it is
     const plain = loadSettings([], {}, { server: { cluster: { cacheAffinity: false } }, modules: { tx: { enabled: true } } }).routing;
-    expect(plain).toEqual({ cacheAffinity: true, sharedClosure: false });
+    expect(plain).toEqual({ cacheAffinity: true, sharedClosure: false, sharedCache: false });
     expect(classify('/r4/ValueSet/$validate-code', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, plain)).toEqual({ to: 'owner', code: 'tx2' });
     // the master-only paths stay the master's
     expect(classify('/r4/$closure', { 'x-cache-id': 'tx2.4f0c2d1e' }, TX, shared)).toEqual({ to: 'master' });
@@ -87,7 +87,7 @@ describe('routing rules', () => {
 
   test('with the shared closure tables, $closure goes to any tx process; the rest of the master\'s paths stay its', () => {
     const routing = loadSettings([], {}, { server: { cluster: { sharedClosure: true } }, modules: { tx: { enabled: true } } }).routing;
-    expect(routing).toEqual({ cacheAffinity: true, sharedClosure: true });
+    expect(routing).toEqual({ cacheAffinity: true, sharedClosure: true, sharedCache: false });
     for (const url of ['/r4/$closure', '/r5/%24closure', '/r4/$closure?name=x']) {
       expect(classify(url, { 'x-cache-id': 'tx1.abc' }, TX, routing)).toEqual({ to: 'tx' });
     }
@@ -247,8 +247,14 @@ describe('the launcher, with fake processes', () => {
     const old = tx1.child;
     old.kill('SIGKILL');
     await until(() => !tx1.ready);
-    // meanwhile its cache-ids go to another tx process, which says it doesn't know them
-    expect(['m0', 'tx2']).toContain((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code);
+    // meanwhile its cache-ids are answered at once: the cache was lost with the process
+    const lost = await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' });
+    expect(lost.status).toBe(404);
+    expect(lost.json.issue[0].details.coding[0].code).toBe('cache-id-unknown');
+    expect(lost.json.issue[0].extension[0].valueString).toBe('CACHE_ID_LOST_TO_RESTART');
+    expect(lost.json.issue[0].details.text).toMatch(/^The cache 'tx1\.x' was lost to a server restart \d+ s ago: instance 'tx1', which issued it, is restarting/);
+    // an unknown prefix still goes to any tx process, which says it doesn't know it
+    expect(['m0', 'tx1', 'tx2']).toContain((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'zz9.x' })).json.code);
     await until(() => tx1.ready && tx1.child !== old);
     expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
   });
@@ -711,5 +717,80 @@ describe('the launcher\'s keep-alive connections to the processes', () => {
     const slow = await get(PORT, '/r4/ValueSet/$expand?delay=6000');
     expect(slow.status).toBe(200);
     expect(slow.json.code).toBe('tx1');
-  }, 30000);
+  }, 60000);
+});
+
+describe('requests around a worker restart (#342)', () => {
+  // a 30 s hang was once seen for a plain $cache-control?mode=start sent just after a worker
+  // came back: every request sent across the restart, with or without the worker's
+  // cache-id, on new or kept-alive connections, is answered without waiting for the owner
+  const PORT = 20700;
+  let launcher;
+  afterEach(async () => {
+    if (launcher) {
+      await launcher.stop();
+      launcher = null;
+    }
+  });
+
+  test('every request across the restart is answered at once', async () => {
+    launcher = createLauncher({
+      port: PORT,
+      txPaths: TX,
+      drainMs: 10000,
+      procs: [
+        { name: 'master', role: 'master', code: 'm0', port: 20701, servesTx: true },
+        { name: 'worker tx1', role: 'tx-worker', code: 'tx1', port: 20702, servesTx: true },
+        { name: 'worker tx2', role: 'tx-worker', code: 'tx2', port: 20703, servesTx: true }
+      ],
+      command: (proc) => [process.execPath, [FAKE, proc.code, String(proc.port)]],
+      log: () => {}
+    });
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const tx1 = launcher.procs.find(p => p.code === 'tx1');
+    const keep = new http.Agent({ keepAlive: true, maxSockets: 4 });
+    const results = [];
+    const fire = (headers, agent) => {
+      const t0 = Date.now();
+      const p = get(PORT, '/r4/$cache-control?mode=start', headers, { agent })
+        .then(r => ({ owned: !!headers['X-Cache-Id'], status: r.status, code: r.json && r.json.code, ms: Date.now() - t0 }),
+          e => ({ error: e.message, ms: Date.now() - t0 }));
+      results.push(p);
+    };
+    // warm the kept-alive connections onto tx1, then kill it
+    for (let i = 0; i < 4; i++) {
+      fire({ 'X-Cache-Id': 'tx1.x' }, keep);
+    }
+    await Promise.all(results);
+    // three restarts (the backoff doubles), a request of each kind on each kind of connection every 10 ms, from
+    // the exit until 1.5 s after the worker is ready again
+    for (let round = 0; round < 3; round++) {
+      const old = tx1.child;
+      old.kill('SIGKILL');
+      await until(() => !tx1.ready);
+      let readyAt = 0;
+      const t0 = Date.now();
+      while (!readyAt || Date.now() - readyAt < 1500) {
+        if (!readyAt && tx1.ready && tx1.child !== old) {
+          readyAt = Date.now();
+        }
+        for (const agent of [false, keep]) {
+          fire({}, agent);
+          fire({ 'X-Cache-Id': 'tx1.x' }, agent);
+        }
+        await sleep(10);
+        if (Date.now() - t0 > 15000) {
+          throw new Error('tx1 did not come back');
+        }
+      }
+    }
+    const all = await Promise.all(results);
+    keep.destroy();
+    expect(all.filter(r => r.error || r.ms > 1500)).toEqual([]);
+    // without a cache-id: 200; with tx1's: 200 from tx1, or 404 (lost) while it is down
+    expect(all.filter(r => !r.owned && r.status !== 200).map(r => r.status)).toEqual([]);
+    expect(all.filter(r => r.owned && !(r.status === 200 ? r.code === 'tx1' : r.status === 404))).toEqual([]);
+    expect(all.some(r => r.owned && r.status === 404)).toBe(true);
+  }, 60000);
 });

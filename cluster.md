@@ -92,8 +92,10 @@ Whatever the front door, the rules are the same:
 2. Every path outside the tx endpoints (`/`, `/packages`, `/xig`, `/dashboard`, `/health`, ...)
    goes to the **master**.
 3. A tx request with an `X-Cache-Id` goes to the process whose code prefixes the id
-   (`tx2.4f0c...` to `tx2`). If that process is down, or the prefix is unknown, it goes to any
-   tx process, which answers `cache-id-unknown`; the client starts a new cache.
+   (`tx2.4f0c...` to `tx2`). If that process is down (restarting), its caches are gone, and the
+   launcher answers at once with `404` and `cache-id-unknown`, "lost to a server restart"
+   (with `sharedCache`, any tx process takes it instead). If the prefix is unknown, it goes to
+   any tx process, which answers `cache-id-unknown`. Either way the client starts a new cache.
 4. Any other tx request goes to the tx process with the fewest requests outstanding: the
    workers, and the master too unless it is set not to serve tx.
 
@@ -337,7 +339,7 @@ to the same table at once, some adds are worked out more than once.
 
 | `sharedCache` | `sharedClosure` | A request with a cache-id goes to | `$closure` goes to | After a worker restart | After the master starts |
 |---|---|---|---|---|---|
-| off | off | the process that issued it (if it is down: any, which answers `cache-id-unknown`) | the master | its caches are lost | its caches are lost |
+| off | off | the process that issued it (if it is down, the launcher answers `cache-id-unknown`, lost to a restart) | the master | its caches are lost | its caches are lost |
 | on | off | the least-loaded tx process (the issuer, with `cacheAffinity`) | the master | every cache is kept | every cache is lost |
 | off | on | the process that issued it | the least-loaded tx process | its caches are lost | its caches are lost |
 | on | on | the least-loaded tx process (the issuer, with `cacheAffinity`) | the least-loaded tx process | every cache is kept | every cache is lost |
