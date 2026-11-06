@@ -175,13 +175,7 @@ class LoincServices extends BaseCSServices {
   }
 
   close() {
-    // Keep the handle: sqlite runs the queries already queued (and any their
-    // callbacks issue) before it closes, and fails later ones with an error.
-    // Setting it to null made such a callback throw, outside any promise.
-    if (this.db && !this.dbClosed) {
-      this.dbClosed = true;
-      this.db.close();
-    }
+    this.closeDb();
   }
 
   // Metadata methods
