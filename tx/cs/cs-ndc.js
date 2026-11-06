@@ -31,9 +31,12 @@ class NdcServices extends CodeSystemProvider {
 
   // Clean up database connection when provider is destroyed
   close() {
-    if (this.db) {
+    // Keep the handle: sqlite runs the queries already queued (and any their
+    // callbacks issue) before it closes, and fails later ones with an error.
+    // Setting it to null made such a callback throw, outside any promise.
+    if (this.db && !this.dbClosed) {
+      this.dbClosed = true;
       this.db.close();
-      this.db = null;
     }
   }
 
