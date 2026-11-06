@@ -438,6 +438,41 @@ describe('ResourceCache', () => {
     });
   });
 
+  describe('limits', () => {
+    test('a cache can not grow past its limit: the change is refused and the cache kept', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 8)]);
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 3)])).toThrow(/more than this server allows in one cache \(10\)/);
+      expect(() => cache.set('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422, issueCode: 'too-costly' }));
+      expect(cache.get('c1')).toHaveLength(1);
+      expect(cache.has('c2')).toBe(false);
+      expect(cache.conceptCount()).toBe(8);
+      cache.add('c1', [sized(CS('http://a', '1'), 10)]); // a replacement counts the difference
+      expect(cache.conceptCount()).toBe(10);
+    });
+
+    test('over the total, the least recently used caches are dropped and say so', () => {
+      cache.setLimits(10, 20);
+      cache.set('old', [sized(CS('http://a', '1'), 10)]);
+      cache.set('used', [sized(CS('http://a', '1'), 10)]);
+      cache.cache.get('old').lastUsed = Date.now() - 2000;
+      cache.cache.get('used').lastUsed = Date.now() - 3000;
+      cache.get('used'); // now the most recently used of the two
+      cache.set('new', [sized(CS('http://a', '1'), 5)]);
+      expect(cache.has('old')).toBe(false);
+      expect(cache.has('used')).toBe(true);
+      expect(cache.has('new')).toBe(true);
+      expect(cache.conceptCount()).toBe(15);
+      expect(cache.describeMissing('old').messageId).toBe('CACHE_ID_EVICTED');
+    });
+
+    test('0 or missing limits keep the defaults', () => {
+      cache.setLimits(0, undefined);
+      expect(cache.maxConceptsPerCache).toBe(ResourceCache.MAX_CONCEPTS_PER_CACHE);
+      expect(cache.maxTotalConcepts).toBe(ResourceCache.MAX_TOTAL_CONCEPTS);
+    });
+  });
+
   describe('high-water marks (max)', () => {
     test('track the most caches and concepts ever held', () => {
       cache.add('c1', [sized(CS('http://a', '1'), 10)]);

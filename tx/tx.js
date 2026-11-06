@@ -327,6 +327,7 @@ class TXModule {
     // than guessing at a number it has no way to see.
     endpointInfo.resourceCache.setIdleTimeout(cacheTimeoutMs);
     endpointInfo.resourceCache.setInstanceCode(this.config.instanceCode);
+    endpointInfo.resourceCache.setLimits(this.config.cacheMaxConcepts, this.config.cacheMaxTotalConcepts);
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }

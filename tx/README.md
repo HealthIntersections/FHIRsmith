@@ -64,6 +64,8 @@ Add the `tx` section to your `config.json`:
 |---------------------------------|---------|----------|---------------------------------------------------------------------------------------------------------|
 | `enabled`                       | boolean | Yes      | Whether the module is enabled                                                                           |
 | `cacheTimeout`                  | integer | No       | How many minutes to keep client side caches (for cache-id parameter). Default: 30                       |
+| `cacheMaxConcepts`              | integer | No       | Most concepts one client side cache may hold; a request that would take a cache over it is refused (too-costly). Default: 250000 |
+| `cacheMaxTotalConcepts`         | integer | No       | Most concepts the client side caches of an endpoint hold between them; the least recently used caches are dropped to stay under it. Default: 1000000 |
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |

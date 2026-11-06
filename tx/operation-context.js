@@ -117,6 +117,62 @@ class ResourceCache {
     // routes on the prefix to get a cached request back to the one instance that
     // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
     this.instanceCode = null;
+    // Most concepts one cache may hold (more is refused, too-costly), and most
+    // all the caches may hold between them (the least recently used caches are
+    // dropped to stay under it). The largest IG Publisher build on build.fhir.org
+    // (Nov 2026) sent about 24,000 concepts in a session; a cached concept takes
+    // about 250 bytes of heap.
+    this.maxConceptsPerCache = ResourceCache.MAX_CONCEPTS_PER_CACHE;
+    this.maxTotalConcepts = ResourceCache.MAX_TOTAL_CONCEPTS;
+  }
+
+  static MAX_CONCEPTS_PER_CACHE = 250000;
+  static MAX_TOTAL_CONCEPTS = 1000000;
+
+  /**
+   * Set the concept limits (see the constructor); 0 or missing keeps the default.
+   * @param {number} perCache
+   * @param {number} total
+   */
+  setLimits(perCache, total) {
+    this.maxConceptsPerCache = perCache || ResourceCache.MAX_CONCEPTS_PER_CACHE;
+    this.maxTotalConcepts = total || ResourceCache.MAX_TOTAL_CONCEPTS;
+  }
+
+  /**
+   * Refuse a change that would take one cache over its limit.
+   * @param {string} cacheId
+   * @param {number} concepts - what the cache would hold
+   */
+  _checkLimit(cacheId, concepts) {
+    if (concepts > this.maxConceptsPerCache) {
+      throw new Issue('error', 'too-costly', null, null,
+        `The cache '${cacheId}' would hold ${concepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache})`, 'too-costly', 422).handleAsOO(422);
+    }
+  }
+
+  /**
+   * Drop the least recently used caches (never the one just changed) while the
+   * caches hold more concepts than allowed between them.
+   * @param {string} keep - the cache-id just changed
+   */
+  _evict(keep) {
+    while (this.totalConcepts > this.maxTotalConcepts) {
+      let oldest = null;
+      for (const [cacheId, entry] of this.cache.entries()) {
+        if (cacheId !== keep && (!oldest || entry.lastUsed < oldest[1].lastUsed)) {
+          oldest = [cacheId, entry];
+        }
+      }
+      if (!oldest) {
+        return;
+      }
+      const [cacheId, entry] = oldest;
+      this.totalConcepts -= entry.concepts || 0;
+      this._recordTombstone(cacheId, entry, 'evicted');
+      this.log.info(`cache-id '${cacheId}': dropped to make room (held ${entry.concepts} concepts; the caches may hold ${this.maxTotalConcepts} in all)`);
+      this.cache.delete(cacheId);
+    }
   }
 
   /**
@@ -186,10 +242,11 @@ class ResourceCache {
    *
    * @param {string} cacheId - The cache identifier
    * @param {Object} entry - The entry being removed (for its timings)
-   * @param {'closed'|'expired'|'cleared'} reason - How it went away:
+   * @param {'closed'|'expired'|'cleared'|'evicted'} reason - How it went away:
    *   `closed` = the client released it with $cache-control?mode=end;
    *   `expired` = it went unused for longer than the idle timeout;
-   *   `cleared` = the server dropped every cache at once.
+   *   `cleared` = the server dropped every cache at once;
+   *   `evicted` = it was dropped, least recently used, to make room for others.
    * @param {Object} [extra] - Reason-specific detail (e.g. idleMs, maxAgeMs)
    */
   _recordTombstone(cacheId, entry, reason, extra = {}) {
@@ -256,6 +313,8 @@ class ResourceCache {
           messageId: 'CACHE_ID_EXPIRED',
           params: [cacheId, formatDuration(t.idleMs), formatDuration(t.maxAgeMs), ago]
         };
+      case 'evicted':
+        return { messageId: 'CACHE_ID_EVICTED', params: [cacheId, ago] };
       default:
         return { messageId: 'CACHE_ID_CLEARED', params: [cacheId, ago] };
     }
@@ -402,6 +461,12 @@ class ResourceCache {
     }
 
     const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
+    let concepts = entry.concepts;
+    for (const resource of resources) {
+      const existing = entry.resources.find(r => this._resourceKey(r) === this._resourceKey(resource));
+      concepts += this._conceptsOf(resource) - this._conceptsOf(existing);
+    }
+    this._checkLimit(cacheId, concepts);
 
     // Merge resources, avoiding duplicates by url+version. Keep the entry's concept
     // subtotal and the cache-wide total in step with each insertion/replacement.
@@ -430,6 +495,7 @@ class ResourceCache {
 
     entry.lastUsed = Date.now();
     this.cache.set(cacheId, entry);
+    this._evict(cacheId);
     this._trackMax();
   }
 
@@ -453,14 +519,15 @@ class ResourceCache {
         Object.defineProperty(resource, 'isCached', { value: true, enumerable: false, configurable: true, writable: true });
       }
     }
+    let concepts = 0;
+    for (const resource of resources) {
+      concepts += this._conceptsOf(resource);
+    }
+    this._checkLimit(cacheId, concepts);
     // Drop the old entry's contribution, then count the replacement.
     const existing = this.cache.get(cacheId);
     if (existing) {
       this.totalConcepts -= existing.concepts || 0;
-    }
-    let concepts = 0;
-    for (const resource of resources) {
-      concepts += this._conceptsOf(resource);
     }
     this.totalConcepts += concepts;
     this.cache.set(cacheId, {
@@ -472,6 +539,7 @@ class ResourceCache {
     });
     // This id is alive again, so any record of its previous death is now wrong.
     this.tombstones.delete(cacheId);
+    this._evict(cacheId);
     this._trackMax();
   }
 
