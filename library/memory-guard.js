@@ -13,6 +13,10 @@
  *
  * Both are configurable in config.server.memory: { "rejectFraction": 0.85, "abortFraction": 0.92 }
  *
+ * While refusing, the guard looks now and then for memory it can get back: a forced GC (the JS
+ * heap), then malloc_trim (memory the C allocator holds free - closed SQLite connections, above
+ * all; library/native-memory.js). "trimAllocator": false leaves out the second.
+ *
  * A master and its tx-workers (--role, cluster.md) share one cgroup, and the kernel's limit is
  * on all of them together, so with a role (config.server.memory.group) the measure is the
  * group's: the cgroup's private memory (memory.stat anon), read by each process itself. Every
@@ -31,18 +35,21 @@ const v8 = require('v8');
 const vm = require('vm');
 const path = require('path');
 const { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon, readCgroupProcessRss } = require('./cgroup-memory');
+const { trimNativeMemory, canTrimNativeMemory } = require('./native-memory');
 
 const DEFAULT_REJECT_FRACTION = 0.85;
 const DEFAULT_ABORT_FRACTION = 0.92;
 // RSS is cheap to read, but the gate runs on every request; a sample this old is fine
 const SAMPLE_MS = 250;
-// While refusing, force a full GC at most this often. Refusing requests removes the
-// allocation activity that would otherwise trigger one, so without this RSS might never
+// While refusing, look for memory to get back (a forced GC, then malloc_trim) at most this
+// often. Refusing requests removes the allocation activity that would otherwise trigger a GC,
+// and nothing returns the C allocator's free memory by itself, so without this RSS might never
 // fall back below the threshold and the server would stay shut.
 const GC_INTERVAL_MS = 5000;
-// A forced GC that leaves the server still over the threshold doubles the wait before the
-// next, up to this: when most of RSS is outside the JS heap (the SNOMED and LOINC cache
-// buffers), collecting frees little, and every full GC stops the process
+// A look that gets back less than a tenth of the excess doubles the wait before the next, up
+// to this: when most of RSS is in use (the SNOMED and LOINC cache buffers), they free little,
+// and every full GC stops the process. One that gets back more keeps the wait: closing
+// thousands of SQLite connections takes seconds, and the next look gets back the rest
 const GC_MAX_INTERVAL_MS = 60000;
 // the group measure reads a file: the in-operation check (about ten a request) reuses one
 // at most this old
@@ -62,6 +69,7 @@ const state = {
   abortFraction: DEFAULT_ABORT_FRACTION,
   rejectAt: 0,
   abortAt: 0,
+  trimAllocator: true,
   sampleTime: 0,
   sampleRss: 0,
   // a role (master, tx-worker): the cgroup measured, from ownCgroupDir; else null
@@ -111,6 +119,7 @@ function configure(opts = {}) {
   state.abortFraction = fraction(opts.abortFraction, DEFAULT_ABORT_FRACTION);
   state.rejectAt = limit * state.rejectFraction;
   state.abortAt = limit * state.abortFraction;
+  state.trimAllocator = opts.trimAllocator !== false;
   state.sampleTime = 0;
 }
 
@@ -242,19 +251,22 @@ function describe() {
   return `Memory limit: ${gb(state.limit)} GB (from ${state.source})${group}; ` +
     (state.excludeFileBacked && !state.group ? 'measured as RSS less file-backed pages; ' : '') +
     `new requests refused above ${gb(state.rejectAt)} GB (${Math.round(state.rejectFraction * 100)}%), ` +
-    `operations aborted above ${gb(state.abortAt)} GB (${Math.round(state.abortFraction * 100)}%)`;
+    `operations aborted above ${gb(state.abortAt)} GB (${Math.round(state.abortFraction * 100)}%); ` +
+    `while refusing, a forced GC` + (!state.trimAllocator ? ' (trimAllocator false: no malloc_trim)'
+      : canTrimNativeMemory() ? ' and malloc_trim' : ' (malloc_trim not available here)');
 }
 
 /**
  * Express middleware: 503 + Retry-After while RSS is over the reject threshold. Install it
- * before the body parsers so a refused request costs nothing. While refusing, it forces a full
- * GC now and then and re-measures - every gcInterval ms, backing off to gcMaxInterval while
- * the GCs don't bring it back under, and not at all while the JS heap is too small for one to
- * help. It logs when refusing starts (then once a minute, with how long and how many) and
- * when it stops.
+ * before the body parsers so a refused request costs nothing. While refusing, it looks for
+ * memory to get back now and then and re-measures - every gcInterval ms, backing off to
+ * gcMaxInterval while the looks get back little: a forced GC (not while the JS heap is too
+ * small for one to help), then malloc_trim (unless trimAllocator is false). It logs when
+ * refusing starts (then once a minute, with how long and how many) and when it stops.
  * @param {object} [opts] - { log, exempt: [path prefixes never refused], retryAfter (seconds),
  *   gcInterval (ms), gcMaxInterval (ms), heapUsed (function returning bytes, for tests),
- *   onReject (optional observation callback, called only when sending a 503) }
+ *   trim (function, for tests: as trimNativeMemory), onReject (optional observation callback,
+ *   called only when sending a 503) }
  */
 function middleware(opts = {}) {
   const exempt = opts.exempt || [];
@@ -263,6 +275,7 @@ function middleware(opts = {}) {
   const gcInterval = opts.gcInterval || GC_INTERVAL_MS;
   const gcMaxInterval = Math.max(opts.gcMaxInterval || GC_MAX_INTERVAL_MS, gcInterval);
   const heapUsed = opts.heapUsed || (() => process.memoryUsage().heapUsed);
+  const trim = opts.trim || trimNativeMemory;
   let gcWait = gcInterval; // the current wait between forced GCs (backs off, see below)
   let refusingSince = 0; // when the current spell of refusing began (0 = not refusing)
   let refused = 0;       // refused in the current spell
@@ -279,35 +292,45 @@ function middleware(opts = {}) {
     const now = Date.now();
 
     // Refusing starves the GC of the allocation that would normally trigger it, so while
-    // refusing, force a full collection now and then and re-measure. Only when it could help:
-    // a GC frees heap and nothing else, so if the whole JS heap is smaller than the amount
-    // over the threshold, collecting can't get the server back under it. And a GC that
-    // leaves the server still over doubles the wait before the next one
+    // refusing, force a full collection now and then. Only when it could help: a GC frees heap
+    // and nothing else, so if the whole JS heap is smaller than the amount over the threshold,
+    // collecting can't get the server back under it. Then malloc_trim: the C allocator keeps
+    // what is freed outside the JS heap (closed SQLite connections) resident until asked.
+    // Re-measure; a look that got back little doubles the wait before the next
     if (over && now - lastGc >= gcWait) {
       lastGc = now;
       const before = state.sampleRss;
+      const excess = before - state.rejectAt;
       const heap = heapUsed();
       const gc = getGc();
       // a group: every process refusing does this, so each need only free its share
       const share = state.group ? Math.max(1, readCgroupProcessRss(state.group).size) : 1;
-      if (heap < (before - state.rejectAt) / share) {
-        gcWait = Math.min(gcWait * 2, gcMaxInterval);
+      const done = [];
+      if (heap < excess / share) {
         if (log) {
-          log.info(`Memory: no forced GC - the JS heap (${gb(heap)} GB) is less than the ${gb(before - state.rejectAt)} GB over the threshold; next look in ${secs(gcWait)}s`);
+          log.info(`Memory: no forced GC - the JS heap (${gb(heap)} GB) is less than the ${gb(excess)} GB over the threshold`);
         }
       } else if (gc) {
         try {
           gc();
+          done.push('forced GC');
         } catch {
           // ignore
         }
+      }
+      if (state.trimAllocator && trim() !== null) {
+        done.push('malloc_trim');
+      }
+      if (done.length) {
         const after = rss(true);
         over = after > state.rejectAt;
-        gcWait = over ? Math.min(gcWait * 2, gcMaxInterval) : gcInterval;
+        gcWait = !over ? gcInterval : before - after >= excess / 10 ? gcWait : Math.min(gcWait * 2, gcMaxInterval);
         if (log) {
-          log.info(`Memory: forced GC while refusing - ${gb(before)} GB -> ${gb(after)} GB` +
+          log.info(`Memory: ${done.join(' and ')} while refusing - ${gb(before)} GB -> ${gb(after)} GB` +
             (over ? `; next in ${secs(gcWait)}s` : ''));
         }
+      } else {
+        gcWait = Math.min(gcWait * 2, gcMaxInterval);
       }
     }
 
@@ -351,4 +374,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };
+module.exports = { DEFAULT_REJECT_FRACTION, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };

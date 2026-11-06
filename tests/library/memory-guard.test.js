@@ -133,7 +133,7 @@ describe('memory-guard', () => {
     memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB })({ path: '/r4/x' }, res, () => {});
     expect(res.statusCode).toBe(503);
     expect(log.info.mock.calls.some(c => /no forced GC - the JS heap/.test(c[0]))).toBe(true);
-    expect(log.info.mock.calls.some(c => /forced GC while refusing/.test(c[0]))).toBe(false);
+    expect(log.info.mock.calls.some(c => /forced GC.* while refusing/.test(c[0]))).toBe(false);
   });
 
   test('a forced GC that leaves memory over the threshold backs off, up to the maximum', () => {
@@ -143,7 +143,7 @@ describe('memory-guard', () => {
     try {
       setRss(8.5 * GB); // and it stays there: the GCs free nothing
       const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 4000, heapUsed: () => 2 * GB });
-      const gcs = () => log.info.mock.calls.filter(c => /forced GC while refusing/.test(c[0])).length;
+      const gcs = () => log.info.mock.calls.filter(c => /forced GC.* while refusing/.test(c[0])).length;
       const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
       at(0);      // GC, still over: next in 2s
       expect(gcs()).toBe(1);
@@ -161,6 +161,59 @@ describe('memory-guard', () => {
       setRss(8.5 * GB);
       at(11000);  // 1s after the last GC: allowed again
       expect(gcs()).toBe(5);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  test('while refusing, malloc_trim gets back the C allocator\'s free memory, even with too small a JS heap for a GC', () => {
+    // a worker after an aborted batch: 8.5 GB, of which the JS heap is 0.2 GB and most of the
+    // rest closed SQLite connections' memory, free in malloc's arenas
+    const log = { info: jest.fn(), warn: jest.fn() };
+    setRss(8.5 * GB);
+    const trim = jest.fn(() => { rssSpy.mockReturnValue(4 * GB); return true; });
+    const next = jest.fn();
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, fakeRes(), next);
+    expect(trim).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalled();
+    expect(log.info.mock.calls.some(c => /^Memory: malloc_trim while refusing - 8\.5 GB -> 4\.0 GB$/.test(c[0]))).toBe(true);
+  });
+
+  test('trimAllocator false: no malloc_trim; nor where it is not available (null)', () => {
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: false });
+    setRss(8.5 * GB);
+    const trim = jest.fn(() => true);
+    const res = fakeRes();
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, res, () => {});
+    expect(trim).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(503);
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
+    setRss(8.5 * GB);
+    const log = { info: jest.fn(), warn: jest.fn() };
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim: () => null })({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(log.info.mock.calls.some(c => /while refusing -/.test(c[0]))).toBe(false);
+  });
+
+  test('a look that gets back a good part of the excess keeps the wait; one that gets back little doubles it', () => {
+    const log = { info: jest.fn(), warn: jest.fn() };
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      // the connections close over a few seconds: each trim gets back a part
+      let rss = 9.9 * GB;
+      rssSpy.mockImplementation(() => rss);
+      const trim = jest.fn(() => { rss -= 0.5 * GB; return true; });
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 8000, heapUsed: () => 0.1 * GB, trim });
+      const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
+      at(0);     // 9.9 -> 9.4, a quarter of the excess: next in 1 s
+      at(1000);  // 9.4 -> 8.9
+      expect(trim).toHaveBeenCalledTimes(2);
+      trim.mockImplementation(() => true); // now nothing more
+      at(2000);  // 8.9 -> 8.9: next in 2 s
+      at(3000);
+      expect(trim).toHaveBeenCalledTimes(3);
+      at(4000);
+      expect(trim).toHaveBeenCalledTimes(4);
     } finally {
       nowSpy.mockRestore();
     }
