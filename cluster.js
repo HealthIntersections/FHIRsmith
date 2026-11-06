@@ -21,7 +21,7 @@
  *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
  *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
  *  - lets cheap requests (by method and path: the fast lane) use fastLaneExtra more slots
- *    than maxOutstanding, ahead of the others, but never the last normalMinSlots of them
+ *    than maxOutstanding, ahead of the others, leaving them normalMinSlots
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
@@ -75,7 +75,7 @@ const FAST_LANE_EXTRA = 4;
 const FAST_LANE_MAX_BYTES = 1024;
 // while other requests wait, the fast lane leaves them this many of a process's slots, so
 // heavy work goes on during a flood of cheap requests
-const NORMAL_MIN_SLOTS = 8;
+const NORMAL_MIN_SLOTS = 4;
 const GB = (b) => (b / 2 ** 30).toFixed(1);
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
@@ -203,9 +203,11 @@ function classify(url, headers, txPaths, routing = {}) {
  * The process to send a request to, or null if none is ready.
  * @param {Object} route - from classify
  * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, coolUntil}
+ * @param {function(Object): boolean} [hasRoom] - whether a process has room for this request:
+ *   the least loaded of those that do, if any
  */
 let rotation = 0;
-function pickTarget(route, procs) {
+function pickTarget(route, procs, hasRoom = () => true) {
   if (route.to === 'master') {
     return procs.find(p => p.role === 'master' && p.ready) || null;
   }
@@ -225,7 +227,9 @@ function pickTarget(route, procs) {
   // not one that is refusing (it answered 503), unless they all are
   const now = Date.now();
   const warm = ready.filter(p => !(p.coolUntil > now));
-  const candidates = warm.length ? warm : ready;
+  const usable = warm.length ? warm : ready;
+  const open = usable.filter(hasRoom);
+  const candidates = open.length ? open : usable;
   rotation = (rotation + 1) % candidates.length;
   let best = null;
   for (let i = 0; i < candidates.length; i++) {
@@ -463,7 +467,7 @@ function createLauncher(settings) {
   // true if the request was sent (or refused), false if it must wait. The master's own
   // paths and CORS preflights don't wait
   function send(w) {
-    const target = pickTarget(w.route, procs);
+    const target = pickTarget(w.route, procs, p => !full(p, w.fast));
     if (!target) {
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
       return true;
