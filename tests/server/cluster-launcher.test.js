@@ -140,6 +140,13 @@ describe('routing rules', () => {
     expect(pickTarget({ to: 'owner', code: 'tx2' }, procs).code).toBe('tx2');
     procs[1].coolUntil = procs[2].coolUntil;
     expect(pickTarget({ to: 'tx' }, procs).code).toBe('tx2');
+    // the least loaded of those with room for the request, whatever their counts; an owner
+    // is still the owner
+    const room = (p) => p.code !== 'tx2';
+    expect(pickTarget({ to: 'tx' }, procs, room).code).toBe('tx1');
+    expect(pickTarget({ to: 'owner', code: 'tx2' }, procs, room).code).toBe('tx2');
+    // none with room: the least loaded, where the request waits
+    expect(pickTarget({ to: 'tx' }, procs, () => false).code).toBe('tx2');
   });
 
   test('the launcher\'s threshold is the memory guard\'s', () => {
@@ -174,7 +181,7 @@ describe('routing rules', () => {
     // the number of workers given or not (sized to memory); 2 GB left free when idle
     expect([s.workersDefault, loadSettings([], {}, { ...config, server: {} }).workersDefault, loadSettings(['--workers=2'], {}, { ...config, server: {} }).workersDefault]).toEqual([false, true, false]);
     expect([s.headroomBytes, loadSettings([], {}, { ...config, server: { cluster: { memoryHeadroomGB: 3 } } }).headroomBytes]).toEqual([2 * 2 ** 30, 3 * 2 ** 30]);
-    expect([s.fastLaneExtra, s.fastLaneMaxBytes, s.normalMinSlots]).toEqual([4, 1024, 8]);
+    expect([s.fastLaneExtra, s.fastLaneMaxBytes, s.normalMinSlots]).toEqual([4, 1024, 4]);
     const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0, normalMinSlots: 0 } } });
     expect([s5.fastLaneExtra, s5.fastLaneMaxBytes, s5.normalMinSlots]).toEqual([0, 0, 0]);
   });
@@ -399,7 +406,7 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all([heavy, lookup, ...lanes, ...slow])).map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
       expect(order).toEqual(['lookup', 'expand']);
       // every slot full of lookups: a heavy request waiting gets the next free slot, ahead of a lookup
-      const flood = [1, 2, 3, 4].map(() => get(PORT, '/r4/CodeSystem/$lookup?delay=1000'));
+      const flood = [1000, 1500, 2000, 2500].map(ms => get(PORT, `/r4/CodeSystem/$lookup?delay=${ms}`));
       await until(() => txProcs.every(p => p.outstanding === 2 && p.fastOutstanding === 2));
       const order2 = [];
       const heavy2 = get(PORT, '/r4/ValueSet/$expand?delay=300').then(r => order2.push('expand') && r);
@@ -450,7 +457,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 8, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
