@@ -125,8 +125,10 @@ each resource expands into the references it makes, and so on (sections start op
 resources closed). A reference resolves as in a Bundle - by fullUrl, absolute or relative
 to the referring entry's - and `#id` is a resource contained in the referring resource (or
 in the resource that contains it). One that doesn't resolve is shown as external (not in
-document), and a resource already shown above is shown again, greyed, but doesn't expand a
-second time. Details says what the resource is - a name (a person's, an organization's),
+document). A resource is expanded once, at the shallowest place it is referred to (so one
+the Composition refers to directly expands there, not inside the subject that also refers to
+it); everywhere else it is shown again, greyed, saying where it is expanded, but doesn't
+expand a second time. Details says what the resource is - a name (a person's, an organization's),
 else its code (`code`, the medication - following `medicationReference` -, `vaccineCode`,
 `type`...), with an Observation's value - and when: the first of the clinical dates (onset,
 occurrence, performed, effective, ...), falling back to the record's own (`recorded`,
@@ -183,7 +185,7 @@ takes submitted documents in turn, marks each `processing`, runs the pipeline's 
 it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `error` with the
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
-document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: **analyse** each resource; **translate** CodeableConcepts
+document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **nationality**; **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
 **national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
 validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
@@ -193,6 +195,22 @@ adorn with extensions, so that the master document is never changed. The analyse
 rebuilt from the master on every run, so a document can always be processed again.
 Anything left `processing` when the server stopped is queued again at startup. Managers can
 queue a document again from its page, though not while it is being processed.
+
+### Nationality
+
+The first step (`ips/nationality.js`) works out which nation the document is from, as far as the document says -
+few national IGs give a way to tell, so this is a short list of signs, to grow as more are found:
+
+- **US**: the Bundle claims the US Patient Summary profile (`http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs`),
+  or a US Core extension (`http://hl7.org/fhir/us/core/StructureDefinition/...`) is used anywhere in the document;
+- **AU**: the Bundle claims the AU Patient Summary profile (`http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle`).
+
+The nation is its ISO 3166 two-letter code, or unknown when nothing points to a nation, or the signs point to more
+than one. It is kept as the step's result (with the reasons) and in `documents.nationality`, for the list: the
+project page has a Nation column (the code, or `??`), the document page shows the nation's flag to the left of the
+banner (a black and white globe when it isn't known, or there is no flag for it yet -
+`static/assets/images/flags/{code}.svg`), and the first bullet on the Composition in the analysis view says what was
+decided, and why.
 
 ### Analysis
 
@@ -205,8 +223,10 @@ Composition itself without its sections), keeps a list of findings, by the node'
 - every extension, at any depth (a primitive's extensions are at the primitive's path; an
   extension's own parts are not listed), with its definition when the module can find one
   - the validator is asked (fhir-validator-wrapper's `lookupCanonical()`, the service's
-  `/canonical`, which answers from the validator's context), and the answers are cached - or a
-  note that it couldn't be found;
+  `/canonical`, which answers from the validator's context; with `autoLoadPackages`, on by
+  default, the validator finds, downloads and loads the package that defines an extension it
+  doesn't have, as it does while validating), and the answers are cached - or a note that it
+  couldn't be found;
   modifier extensions likewise, in maroon; `textLink` extensions are left out;
 - `implicitRules`, in maroon;
 - in navy: `active` = false; a status of `entered-in-error` (and a Condition's or
@@ -244,9 +264,17 @@ terminology check (below) checks it; one that fails - no coding in the element's
 or, for an element with no value set of its own, no international coding - is sent to the
 terminology server to translate: `ConceptMap/$translate` with `sourceCodeableConcept` (the
 concept as submitted) and `targetScope` (the element's value set, or the fallback), the
-value set and what it draws on as `tx-resource`. The server chooses the concept maps. Every
+value set and what it draws on as `tx-resource`. A SNOMED CT coding with no version is sent as a code of
+the edition of the document's nation: when the [nationality](#nationality) step found one, and a national profile
+for that nation names a SNOMED CT edition, the coding goes with `version` = `http://snomed.info/sct/{edition}`
+(the document is not changed, and the translation view says which edition was used). Which edition a code is
+from decides which maps apply - a national edition's own concepts translate to the International Edition. The
+terminology check does not do this: it takes the codes as they are, so a SNOMED CT code with no version passes if
+it is fine as it is, and one whose version names another edition does not. The server chooses the concept maps. Every
 match that comes back (whatever its relationship) is added to the concept in the analysed
-copy as a Coding, unless the concept already has that system and code, with an extension
+copy as a Coding, unless the concept already has that coding - the same system and code, and the same version
+when both give one (SNOMED CT versions compared by edition: the same code in the International Edition is a
+different coding from the one in a national edition, and is what the translation is for) - with an extension
 saying where it came from:
 `http://healthintersections.com.au/fhirsmith/StructureDefinition/ips-translation`, with
 `server` (the terminology server, as configured), `conceptMap` (the match's `originMap`, when
@@ -309,15 +337,16 @@ does (`fhir-validator-wrapper`: the validator CLI jar in the data folder's `bin`
 run as a service on its own `port`, with `txServer` - tx.fhir.org, by default - and the IPS
 package loaded). `jar` names a validator jar of its own instead - a validator built locally from
 org.hl7.fhir.core, say: absolute, or relative to the data folder (`bin/local/validator_cli.jar`) - which
-is used as it is, never downloaded or updated. Keep such a jar out of `bin/validator_cli.jar`: the
-wrapper takes that jar's version from the `.version` file it wrote when it downloaded the release
-there, so a different jar in its place is started as if it were that release (and is replaced by
-the next one). It starts in the background when the module does, and the queue waits for
+is used as it is, never downloaded or updated (the wrapper reads its version from the jar, so it
+is only given the options it knows). Keep such a jar out of `bin/validator_cli.jar`: the wrapper
+keeps that one up to date, so a different jar in its place is replaced by the next release. `autoLoadPackages` (default true) starts the validator with `-autoLoadPackages`, so
+the analysis step's extension lookups can load the package that defines an extension (validator
+7.0.5 and `fhir-validator-wrapper` 1.7.0 or later; older ones just don't look further). It starts in the background when the module does, and the queue waits for
 it. Each document - its analysed copy, so the translations are seen (the validator will
 remark on the translation extension until it is given its definition) - is validated against the IPS Bundle profile
 (`http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips`; set `profiles` to validate
-against something else) with the validator's IPS code checks on (`checkIpsCodes`), and the
-OperationOutcome is stored with the document and shown on
+against something else) - validator 7.0.4 dropped its IPS code checks, so `checkIpsCodes` is no longer
+sent (the validator refuses it) - and the OperationOutcome is stored with the document and shown on
 its `validation` view: the counts, each issue's severity, code, location and message, and
 the raw OperationOutcome. Without a configured, running validator the step fails, and the
 document's status is `error`.
@@ -327,7 +356,10 @@ document's status is `error`.
 The national step runs after validation. It validates the document (the analysed copy, as validation does) against each
 [national profile](#national-profiles) in turn: the national IG's package is loaded into the validator (once - a package
 that has loaded, or has failed to, is remembered until the national profiles are changed), then the document is
-validated against the IG's profile on Bundle, with the same `checkIpsCodes` setting. For each profile the result keeps
+validated against the IG's profile on Bundle. The national profiles' packages are also loaded when the validator
+starts (and when the national profiles are changed), before any document is processed, so that the analysis step -
+which runs first - finds the extensions they define; an extension that couldn't be found is looked up again once a
+package has loaded. For each profile the result keeps
 the OperationOutcome, its counts, and whether the document passed - it passes when the validator reports no errors (or
 fatal issues). A profile whose package can't be loaded, or that the validator can't validate against, is kept with the
 reason and counts as not checked; it doesn't stop the pipeline. With no national profiles there is nothing to do, and no
@@ -506,9 +538,9 @@ As FHIR: `GET /ips/StructureDefinition` is a searchset of them all, and `GET /ip
 
 ## National profiles
 
-A national profile is the profile a national implementation guide defines for an IPS document. Each has four parts:
-the jurisdiction it is for, the IG's package id (e.g. `hl7.fhir.au.ips`), the package version, and the canonical URL
-of the IG's profile on Bundle. National profiles are shared across all projects (`/ips/national-profiles`). Everyone can see them; only the
+A national profile is the profile a national implementation guide defines for an IPS document. Each has five parts:
+the jurisdiction it is for, the IG's package id (e.g. `hl7.fhir.au.ips`), the package version, the canonical URL
+of the IG's profile on Bundle, and - optionally, since not every IG uses SNOMED CT - the SNOMED CT edition the IG takes for granted. National profiles are shared across all projects (`/ips/national-profiles`). Everyone can see them; only the
 administrator adds, edits and deletes them. There is at most one for a package id and version. Every document is
 validated against each of them by the [national profiles step](#national-profile-validation).
 
@@ -519,7 +551,12 @@ lists the terminology module holds (`tx/cs/cs-country.js`, `tx/cs/cs-areacode.js
 (`XK`, `XX`, `ZZ`...) and countries' M49 numeric codes aren't accepted. National profiles made before the jurisdiction was asked
 for show it as not given, until they are saved with one. The package id must be a FHIR package id (lower case letters, digits, `-` and `_`, in two or more parts separated by
 dots), the version a package version (`1.0.0`, `1.1.0-ballot`), and the profile an http or https URL. `GET
-/ips/national-profiles` with `Accept: application/json` returns them as `[{jurisdiction, packageId, version, url}]`.
+/ips/national-profiles` with `Accept: application/json` returns them as `[{jurisdiction, packageId, version, url, snomedEdition}]`
+(`snomedEdition` only when there is one).
+
+The SNOMED CT edition is chosen from a list - the editions in `SNOMED_LINKABLE_EDITIONS` (`tx/sct/editions.js`, the
+editions snomed.info can link to), by name - and kept as the edition's module id (`900000000000207008` for the
+International Edition, `32506021000036107` for the Australian), the id in its edition URI `http://snomed.info/sct/{id}`.
 
 ## FHIRPath functions
 
@@ -567,6 +604,7 @@ shared this way. The QR codes are made with `qrcode-generator`, error correction
 ### Validation view
 
 The view shows everything by default; its "Show" selector (`?level=warning` or
-`?level=error`) hides the lesser issues - the summary line still counts them all.
+`?level=error`) hides the lesser issues - the summary line still counts them all. A national profile's
+validation (the `national` view, one profile) shows errors only by default (`?level=information` for everything).
 `fhir-validator-wrapper` 1.5.0 or later is needed: earlier versions sent the profiles in a
 form the validator service refuses.

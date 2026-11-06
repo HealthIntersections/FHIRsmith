@@ -68,6 +68,7 @@ const SCHEMA = `
     patient_birth   TEXT,
     comp_date       TEXT,
     comp_title      TEXT,
+    nationality     TEXT,               -- the nation the document is from (nationality step), if known
     json            TEXT NOT NULL,
     -- the analysed copy: the document as the processing steps adorned it (pipeline.js)
     analysed_json   TEXT
@@ -109,6 +110,7 @@ const SCHEMA = `
     version     TEXT NOT NULL,      -- the package version
     url         TEXT NOT NULL,      -- the canonical URL of the IG's profile on Bundle
     jurisdiction TEXT,              -- the country (ISO 3166 two-letter code) or region (UN M49 three digits)
+    snomed_edition TEXT,            -- the SNOMED CT edition the IG takes for granted (its module id), if any
     updated_ms  INTEGER NOT NULL,
     UNIQUE (package_id, version)
   );
@@ -171,7 +173,7 @@ function summaryOf(bundle) {
 
 /** A national_profiles row, as the store gives it. */
 function nationalProfileOf(r) {
-  return { id: r.id, jurisdiction: r.jurisdiction || null, packageId: r.package_id, version: r.version, url: r.url, updated_ms: r.updated_ms };
+  return { id: r.id, jurisdiction: r.jurisdiction || null, packageId: r.package_id, version: r.version, url: r.url, snomedEdition: r.snomed_edition || null, updated_ms: r.updated_ms };
 }
 
 class IpsStore {
@@ -194,7 +196,7 @@ class IpsStore {
       insertIndex: this.db.prepare(`
         INSERT INTO ips_index (doc_id, res, param, type, str, str_lc, sys, code, lo, hi, ref)
         VALUES (@doc_id, @res, @param, @type, @str, @str_lc, @sys, @code, @lo, @hi, @ref)`),
-      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, json, analysed_json FROM documents WHERE id = ?'),
+      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, json, analysed_json FROM documents WHERE id = ?'),
       saveAnalysed: this.db.prepare('UPDATE documents SET analysed_json = ? WHERE id = ?'),
       deleteDoc: this.db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?'),
       countDocs: this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE project_id = ?'),
@@ -204,7 +206,7 @@ class IpsStore {
       // only a document being processed is finished: one requeued or deleted meanwhile isn't
       finish: this.db.prepare("UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ? AND status = 'processing'"),
       // a document being processed is left alone: its pipeline would finish it over the requeue
-      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL WHERE id = ? AND project_id = ? AND status <> 'processing'"),
+      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL, nationality = NULL WHERE id = ? AND project_id = ? AND status <> 'processing'"),
       saveResult: this.db.prepare('INSERT OR REPLACE INTO document_results (doc_id, step, made_ms, json) VALUES (?, ?, ?, ?)'),
       readResult: this.db.prepare('SELECT made_ms, json FROM document_results WHERE doc_id = ? AND step = ?'),
       resultSteps: this.db.prepare('SELECT step, made_ms FROM document_results WHERE doc_id = ? ORDER BY step'),
@@ -219,8 +221,14 @@ class IpsStore {
     if (!has('documents', 'analysed_json')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN analysed_json TEXT');
     }
+    if (!has('documents', 'nationality')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN nationality TEXT');
+    }
     if (!has('national_profiles', 'jurisdiction')) {
       this.db.exec('ALTER TABLE national_profiles ADD COLUMN jurisdiction TEXT');
+    }
+    if (!has('national_profiles', 'snomed_edition')) {
+      this.db.exec('ALTER TABLE national_profiles ADD COLUMN snomed_edition TEXT');
     }
     if (!has('projects', 'ai_json')) {
       // the project's AI assessment settings (JSON; the API key encrypted)
@@ -282,15 +290,15 @@ class IpsStore {
 
   // ---- national profiles ----
 
-  /** All the national profiles: {id, jurisdiction, packageId, version, url, updated_ms}, by package id and version. */
+  /** All the national profiles: {id, jurisdiction, packageId, version, url, snomedEdition, updated_ms}, by package id and version. */
   nationalProfiles() {
-    return this.db.prepare('SELECT id, package_id, version, url, jurisdiction, updated_ms FROM national_profiles ORDER BY package_id, version, id').all()
+    return this.db.prepare('SELECT id, package_id, version, url, jurisdiction, snomed_edition, updated_ms FROM national_profiles ORDER BY package_id, version, id').all()
       .map(nationalProfileOf);
   }
 
-  /** @returns {Object|null} {id, jurisdiction, packageId, version, url, updated_ms} */
+  /** @returns {Object|null} {id, jurisdiction, packageId, version, url, snomedEdition, updated_ms} */
   nationalProfile(id) {
-    const r = this.db.prepare('SELECT id, package_id, version, url, jurisdiction, updated_ms FROM national_profiles WHERE id = ?').get(id);
+    const r = this.db.prepare('SELECT id, package_id, version, url, jurisdiction, snomed_edition, updated_ms FROM national_profiles WHERE id = ?').get(id);
     return r ? nationalProfileOf(r) : null;
   }
 
@@ -301,15 +309,15 @@ class IpsStore {
   }
 
   /** @returns {number} the new national profile's id */
-  createNationalProfile(packageId, version, url, jurisdiction, nowMs = Date.now()) {
-    return Number(this.db.prepare('INSERT INTO national_profiles (package_id, version, url, jurisdiction, updated_ms) VALUES (?, ?, ?, ?, ?)')
-      .run(packageId, version, url, jurisdiction || null, nowMs).lastInsertRowid);
+  createNationalProfile(packageId, version, url, jurisdiction, snomedEdition = null, nowMs = Date.now()) {
+    return Number(this.db.prepare('INSERT INTO national_profiles (package_id, version, url, jurisdiction, snomed_edition, updated_ms) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(packageId, version, url, jurisdiction || null, snomedEdition || null, nowMs).lastInsertRowid);
   }
 
   /** @returns {boolean} whether there was such a national profile */
-  updateNationalProfile(id, packageId, version, url, jurisdiction, nowMs = Date.now()) {
-    return this.db.prepare('UPDATE national_profiles SET package_id = ?, version = ?, url = ?, jurisdiction = ?, updated_ms = ? WHERE id = ?')
-      .run(packageId, version, url, jurisdiction || null, nowMs, id).changes > 0;
+  updateNationalProfile(id, packageId, version, url, jurisdiction, snomedEdition = null, nowMs = Date.now()) {
+    return this.db.prepare('UPDATE national_profiles SET package_id = ?, version = ?, url = ?, jurisdiction = ?, snomed_edition = ?, updated_ms = ? WHERE id = ?')
+      .run(packageId, version, url, jurisdiction || null, snomedEdition || null, nowMs, id).changes > 0;
   }
 
   deleteNationalProfile(id) {
@@ -579,7 +587,7 @@ class IpsStore {
       return { total, rows: [] };
     }
     if (!options.withJson) {
-      const cols = 'd.id, d.received, d.source, d.status, d.status_message, d.size, d.patient_name, d.patient_gender, d.patient_birth, d.comp_date, d.comp_title';
+      const cols = 'd.id, d.received, d.source, d.status, d.status_message, d.size, d.patient_name, d.patient_gender, d.patient_birth, d.comp_date, d.comp_title, d.nationality';
       const rows = this.db.prepare(`SELECT ${cols} FROM documents d ${w} ORDER BY ${search.orderBy} LIMIT ? OFFSET ?`)
         .all(...args, ...search.orderArgs, search.count, search.offset);
       return { total, rows, truncated: false };
@@ -674,6 +682,11 @@ class IpsStore {
   /** Drop every step's result for a document (it is being processed again). */
   clearResults(docId) {
     this.stmts.clearResults.run(docId);
+  }
+
+  /** The nation a document is from (an ISO 3166 code), or null: the nationality step's answer, for the list. */
+  setNationality(docId, jurisdiction) {
+    this.db.prepare('UPDATE documents SET nationality = ? WHERE id = ?').run(jurisdiction || null, docId);
   }
 
   /** The steps that have results for a document. */
