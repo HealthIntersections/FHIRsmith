@@ -8,6 +8,7 @@ const { OperationContext } = require('../../tx/operation-context');
 const { Languages, LanguageDefinitions } = require('../../library/languages');
 const { I18nSupport } = require('../../library/i18nsupport');
 const { BatchValidateWorker } = require('../../tx/workers/batch-validate');
+const BatchWorker = require('../../tx/workers/batch');
 const { ValidateWorker, ValueSetChecker } = require('../../tx/workers/validate');
 const { TxParameters } = require('../../tx/params');
 const ValueSet = require('../../tx/library/valueset');
@@ -123,6 +124,48 @@ describe('$batch-validate-code', () => {
     expect(b.res.statusCode).toBe(200);
     const entries = b.res.json.mock.calls[0][0].parameter;
     expect(entries.map(e => e.resource.resourceType)).toEqual(['Parameters', 'OperationOutcome', 'OperationOutcome']);
+  });
+});
+
+describe('$batch', () => {
+  function bundleBatch(ctx, handle, count = 3) {
+    const worker = new BatchWorker(ctx, { error: jest.fn(), debug: jest.fn() }, {}, languages, i18n, { lookup: { handle } });
+    const entry = { request: { method: 'GET', url: 'CodeSystem/$lookup?code=a' } };
+    const res = fakeRes();
+    return { run: () => worker.handle({ body: { resourceType: 'Bundle', type: 'batch', entry: Array(count).fill(entry) } }, res), res };
+  }
+  const ok = async (req, res) => res.status(200).json(answer());
+
+  test.each(['abandoned', 'memoryAbort'])('%s in an entry stops the whole batch', async (kind) => {
+    const ctx = context();
+    const handle = jest.fn(ok).mockImplementationOnce(ok).mockImplementationOnce(async () => { throw abortFrom(ctx, kind); });
+    const b = bundleBatch(ctx, handle);
+    await b.run();
+    expect(handle).toHaveBeenCalledTimes(2);
+    expect(b.res.statusCode).toBe(422);
+    expect(b.res.json.mock.calls[0][0].resourceType).toBe('OperationOutcome');
+  });
+
+  test('a disconnect is seen between entries that never yield themselves', async () => {
+    const ctx = context();
+    const handle = jest.fn(async (req, res) => {
+      const until = performance.now() + 1;
+      while (performance.now() < until) { /* a small synchronous lookup */ }
+      return ok(req, res);
+    });
+    setImmediate(() => ctx.markClientGone());
+    const b = bundleBatch(ctx, handle, 500);
+    await b.run();
+    expect(handle.mock.calls.length).toBeLessThan(500);
+    expect(b.res.statusCode).toBe(422);
+  });
+
+  test('an ordinary error belongs only to its entry', async () => {
+    const handle = jest.fn(ok).mockImplementationOnce(async () => { throw new Error('boom'); });
+    const b = bundleBatch(context(), handle);
+    await b.run();
+    expect(b.res.statusCode).toBe(200);
+    expect(b.res.json.mock.calls[0][0].entry.map(e => e.response.status)).toEqual(['500', '200', '200']);
   });
 });
 
