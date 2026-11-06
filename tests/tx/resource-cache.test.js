@@ -466,10 +466,13 @@ describe('ResourceCache', () => {
       expect(cache.describeMissing('old').messageId).toBe('CACHE_ID_EVICTED');
     });
 
-    test('0 or missing limits keep the defaults', () => {
-      cache.setLimits(0, undefined);
-      expect(cache.maxConceptsPerCache).toBe(ResourceCache.MAX_CONCEPTS_PER_CACHE);
-      expect(cache.maxTotalConcepts).toBe(ResourceCache.MAX_TOTAL_CONCEPTS);
+    test('the defaults apply until limits are set; Infinity = no limit', () => {
+      expect(new ResourceCache(null).maxConceptsPerCache).toBe(ResourceCache.MAX_CONCEPTS_PER_CACHE);
+      expect(new ResourceCache(null).maxTotalConcepts).toBe(ResourceCache.MAX_TOTAL_CONCEPTS);
+      cache.setLimits(Infinity, Infinity);
+      cache.set('c1', [sized(CS('http://a', '1'), ResourceCache.MAX_TOTAL_CONCEPTS + 1)]);
+      cache.set('c2', [sized(CS('http://a', '1'), 1)]);
+      expect(cache.conceptCount()).toBe(ResourceCache.MAX_TOTAL_CONCEPTS + 2);
     });
   });
 

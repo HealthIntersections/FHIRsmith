@@ -139,6 +139,30 @@ class TXModule {
   }
 
   /**
+   * The memory limits in effect (see "Configuration Options" in tx/README.md): each from the tx setting
+   * of the same name, or its default when left out (or null); 0 = no limit (Infinity).
+   * @param {Object} config - Module configuration
+   * @returns {{cacheMaxConcepts: number, cacheMaxTotalConcepts: number, usageTrackerMaxCodes: number,
+   *   usageTrackerMaxCodeLength: number, languageTagCacheSize: number}}
+   */
+  static resourceLimits(config) {
+    const limit = (name, dflt) => {
+      let n = Number(config[name] ?? dflt);
+      if (!Number.isFinite(n) || n < 0) {
+        n = dflt; // not a number: the default, not silently no limit
+      }
+      return n === 0 ? Infinity : n;
+    };
+    return {
+      cacheMaxConcepts: limit('cacheMaxConcepts', ResourceCache.MAX_CONCEPTS_PER_CACHE),
+      cacheMaxTotalConcepts: limit('cacheMaxTotalConcepts', ResourceCache.MAX_TOTAL_CONCEPTS),
+      usageTrackerMaxCodes: limit('usageTrackerMaxCodes', ConceptUsageTracker.MAX_CODES),
+      usageTrackerMaxCodeLength: limit('usageTrackerMaxCodeLength', ConceptUsageTracker.MAX_CODE_LENGTH),
+      languageTagCacheSize: limit('languageTagCacheSize', LanguageDefinitions.MAX_PARSED)
+    };
+  }
+
+  /**
    * Initialize the TX module
    * @param {Object} config - Module configuration
    * @param {express.Application} app - Express application for registering endpoints
@@ -156,9 +180,12 @@ class TXModule {
       consoleErrors: config.consoleErrors,
       telnetErrors: config.telnetErrors
     });
-    this.usageTracker = new ConceptUsageTracker();
+    this.limits = TXModule.resourceLimits(config);
+    this.usageTracker = new ConceptUsageTracker(this.limits.usageTrackerMaxCodes, this.limits.usageTrackerMaxCodeLength);
 
     this.log.info('Initializing TX module');
+    this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
+      Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
 
     // Optional instance code, prefixed onto every cache-id this server issues so a
     // proxy in front of several instances can route by it (see nginx.md). Checked
@@ -188,6 +215,7 @@ class TXModule {
     const langPath = path.join(__dirname, 'data');
     this.log.info(`Loading language definitions from: ${langPath}`);
     this.languages = await LanguageDefinitions.fromFiles(langPath);
+    this.languages.maxParsed = this.limits.languageTagCacheSize;
     this.log.info('Language definitions loaded');
 
     // Initialize i18n support
@@ -327,7 +355,7 @@ class TXModule {
     // than guessing at a number it has no way to see.
     endpointInfo.resourceCache.setIdleTimeout(cacheTimeoutMs);
     endpointInfo.resourceCache.setInstanceCode(this.config.instanceCode);
-    endpointInfo.resourceCache.setLimits(this.config.cacheMaxConcepts, this.config.cacheMaxTotalConcepts);
+    endpointInfo.resourceCache.setLimits(this.limits.cacheMaxConcepts, this.limits.cacheMaxTotalConcepts);
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }

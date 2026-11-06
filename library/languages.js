@@ -585,6 +585,8 @@ class Languages {
 class LanguageDefinitions {
   // Private use tags of any length are valid, so the cache of parsed tags is capped
   // with a simple LRU (as RegExUtilities does), or unique tags would grow it forever.
+  // Default for languageTagCacheSize: an 8 KB tag takes about 46 KB parsed, so 1,000
+  // such tags are at most about 46 MB; real requests use far fewer distinct tags.
   static MAX_PARSED = 1000;
 
   constructor() {
@@ -600,6 +602,7 @@ class LanguageDefinitions {
     // case-insensitive, and the registry writes these in mixed case.
     this.wholeTags = new Map();
     this.parsed = new Map(); // Cache for parsed languages
+    this.maxParsed = LanguageDefinitions.MAX_PARSED; // Infinity = no limit
   }
 
   /**
@@ -963,7 +966,7 @@ class LanguageDefinitions {
 
     try {
       const lang = new Language(code, this, options);
-      if (this.parsed.size >= LanguageDefinitions.MAX_PARSED) {
+      if (this.parsed.size >= this.maxParsed) {
         // Evict the oldest entry: Map iteration order is insertion order.
         this.parsed.delete(this.parsed.keys().next().value);
       }
