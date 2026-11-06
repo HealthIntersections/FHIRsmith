@@ -129,7 +129,11 @@ class BatchValidateWorker extends TerminologyWorker {
             : p.resource.parameter;
           op.jsonObj.parameter.push(...entryParams);
 
-          let worker = new ValidateWorker(this.opContext.copy(), this.log, this.provider, this.languages, this.i18n);
+          // Each entry releases its providers (for LOINC, RxNorm etc. a sqlite
+          // connection each) when it is done, rather than holding them all until
+          // the whole batch ends.
+          const entryContext = this.opContext.copyWithOwnProviders();
+          let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
             let p;
             if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
@@ -148,6 +152,8 @@ class BatchValidateWorker extends TerminologyWorker {
             } else {
               output.push({name: "validation", resource : outcomeFromError(error) } );
             }
+          } finally {
+            await entryContext.closeProviders();
           }
         }
       }

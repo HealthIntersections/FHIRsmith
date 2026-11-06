@@ -1033,6 +1033,18 @@ class OperationContext {
   }
 
   /**
+   * A copy for one part of an operation (e.g. a batch entry) that keeps its own
+   * providers: its closeProviders() releases what that part opened as soon as
+   * the part is done, instead of holding them until the whole request ends.
+   * @returns {OperationContext}
+   */
+  copyWithOwnProviders() {
+    const newContext = this.copy();
+    newContext._openProviders = [];
+    return newContext;
+  }
+
+  /**
    * Check if operation has exceeded time limit, or is pushing is over the memory limit
    * Skipped when running under debugger
    *
