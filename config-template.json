@@ -259,6 +259,10 @@
       // version URIs or edition URIs
       // "snomed": { "load": "mmap", "prewarm": ["sct_intl_20250201.cache", "sct_us_20250901b.cache"], "read": [] },
       "cacheTimeout": 30,
+      // most concepts one client side cache may hold (more is refused), and most all of an
+      // endpoint's caches hold between them (the least recently used caches are dropped)
+      // "cacheMaxConcepts": 250000,
+      // "cacheMaxTotalConcepts": 1000000,
       // Optional. A short code (1-16 letters and digits) naming this server instance. Every
       // cache-id the server issues then starts with "<code>.", so a proxy in front of
       // several instances can route cached requests back to the instance that holds the
