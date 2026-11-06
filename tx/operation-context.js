@@ -118,24 +118,25 @@ class ResourceCache {
     this.instanceCode = null;
     // Most concepts one cache may hold (more is refused, too-costly), and most
     // all the caches may hold between them (the least recently used caches are
-    // dropped to stay under it). The largest IG Publisher build on build.fhir.org
-    // (Nov 2026) sent about 24,000 concepts in a session; a cached concept takes
-    // about 250 bytes of heap.
+    // dropped to stay under it). Set from cacheMaxConcepts / cacheMaxTotalConcepts.
     this.maxConceptsPerCache = ResourceCache.MAX_CONCEPTS_PER_CACHE;
     this.maxTotalConcepts = ResourceCache.MAX_TOTAL_CONCEPTS;
   }
 
+  // Defaults for cacheMaxConcepts and cacheMaxTotalConcepts. 250,000 is about 10x the
+  // largest IG Publisher session measured on build.fhir.org (Nov 2026: 24,048 concepts);
+  // the total is 4 such full caches, about 250 MB of heap at about 250 bytes a concept.
   static MAX_CONCEPTS_PER_CACHE = 250000;
   static MAX_TOTAL_CONCEPTS = 1000000;
 
   /**
-   * Set the concept limits (see the constructor); 0 or missing keeps the default.
+   * Set the concept limits (see the constructor). Infinity = no limit.
    * @param {number} perCache
    * @param {number} total
    */
   setLimits(perCache, total) {
-    this.maxConceptsPerCache = perCache || ResourceCache.MAX_CONCEPTS_PER_CACHE;
-    this.maxTotalConcepts = total || ResourceCache.MAX_TOTAL_CONCEPTS;
+    this.maxConceptsPerCache = perCache;
+    this.maxTotalConcepts = total;
   }
 
   /**
