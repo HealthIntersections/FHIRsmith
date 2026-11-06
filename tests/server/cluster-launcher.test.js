@@ -150,8 +150,8 @@ describe('routing rules', () => {
     const s2 = loadSettings(['--workers=1', '--port=20010', '--master-serves-tx=false'], {}, config);
     expect(s2.procs.map(p => [p.code, p.port, p.servesTx])).toEqual([['main', 20011, false], ['tx1', 20012, true]]);
     expect(() => loadSettings([], {}, { modules: { tx: { enabled: true, instanceCode: 'tx1' } } })).toThrow(/also the code of a worker/);
-    // the queue: 16 sent to a process at once, 3 s waiting for one
-    expect([s.maxOutstanding, s.queueMs]).toEqual([16, 3000]);
+    // the queue: 16 sent to a process at once, 1 s waiting for one
+    expect([s.maxOutstanding, s.queueMs]).toEqual([16, 1000]);
     const s3 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 4, queueSeconds: 1.5 } } });
     expect([s3.maxOutstanding, s3.queueMs]).toEqual([4, 1500]);
     expect(s.ownerQueueMs).toBe(30000);
@@ -429,7 +429,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });

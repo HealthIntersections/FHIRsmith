@@ -112,7 +112,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
   adds the client address to `X-Forwarded-For`, so the servers' logs and rate limits see the
   real client (its own address is a loopback one, which `server.trustProxy` trusts by default)
 * sends each process at most `maxOutstanding` tx requests at once (16); the rest wait in the
-  launcher, oldest first, and one that has waited `queueSeconds` (3) is refused with 503 and
+  launcher, oldest first, and one that has waited `queueSeconds` (1) is refused with 503 and
   `Retry-After`. Without this, a surge queues inside the processes, where everything waits
   behind everything else: a 4 ms `$lookup` waited 16 s in a 3x surge, and the first 503s came
   after 29 s. A request with a cache-id waits for the process that issued it, which no other
@@ -162,7 +162,7 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
 | `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
-| `server.cluster.queueSeconds` | | 3 | Seconds a tx request may wait for a process with room. 3: a client is better told the server is busy than left to its own timeout. When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
+| `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
