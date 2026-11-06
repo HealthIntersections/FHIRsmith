@@ -998,9 +998,6 @@ class ValueSetChecker {
     let i = 0;
     let impliedSystem = { value: '' };
     for (let c of code.coding || []) {
-      if (this.worker.opContext.usageTracker) {
-        this.worker.opContext.usageTracker.seeConcept(c.system, c.code);
-      }
       let vsImpliedVersion = this.findVSVersionForSystem(c.system);
       const csd = await this.worker.findCodeSystem(c.system, vsImpliedVersion, this.params, ['complete', 'fragment'], false, true, false, false, this.worker.requiredSupplements);
       this.worker.seeSourceProvider(csd, c.system);
@@ -1049,6 +1046,10 @@ class ValueSetChecker {
       }
       if (v === true) {
         matchedCodings.add(i);
+        // only codes that are valid: anything else is never in an expansion to count
+        if (this.worker.opContext.usageTracker) {
+          this.worker.opContext.usageTracker.seeConcept(c.system, c.code);
+        }
       }
       let ws;
       if (impliedSystem.value) {
