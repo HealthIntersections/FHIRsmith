@@ -5380,6 +5380,26 @@ describe('translate', () => {
     await runTest({"suite":"translate","test":"translate-4"}, "4.0");
   });
 
+  it("translate-scope-1" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-1"}, "5.0");
+  });
+
+  it("translate-scope-2" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-2"}, "5.0");
+  });
+
+  it("translate-scope-3" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-3"}, "5.0");
+  });
+
+  it("translate-scope-4" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-4"}, "5.0");
+  });
+
+  it("translate-scope-5" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
+  });
+
 });
 
 describe('translate2', () => {
@@ -16668,6 +16688,26 @@ describe('translate', () => {
 
   it("translate-4" + 'R5-cached', async () => {
     await runTest({"suite":"translate","test":"translate-4"}, "5.0");
+  });
+
+  it("translate-scope-1" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-1"}, "5.0");
+  });
+
+  it("translate-scope-2" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-2"}, "5.0");
+  });
+
+  it("translate-scope-3" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-3"}, "5.0");
+  });
+
+  it("translate-scope-4" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-4"}, "5.0");
+  });
+
+  it("translate-scope-5" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
 });
