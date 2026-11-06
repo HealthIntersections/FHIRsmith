@@ -1,7 +1,8 @@
 // A stand-in for a server process, for tests/server/cluster-launcher.test.js:
 //   node fake-upstream.js <code> <port> [keepAliveTimeout ms]
 // /health answers 200; anything else answers {code, url, xff, proto} as JSON, after
-// ?delay=<ms>. On SIGTERM it finishes the requests it has, then exits.
+// ?delay=<ms>, with ?status=<code> (503 with Retry-After). On SIGTERM it finishes the
+// requests it has, then exits.
 const http = require('http');
 const [code, port, keepAlive] = process.argv.slice(2);
 let metrics = null;
@@ -27,8 +28,13 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ metrics }));
     return;
   }
-  const delay = Number(new URL(req.url, 'http://x').searchParams.get('delay')) || 0;
+  const query = new URL(req.url, 'http://x').searchParams;
+  const delay = Number(query.get('delay')) || 0;
   setTimeout(() => {
+    res.statusCode = Number(query.get('status')) || 200;
+    if (res.statusCode === 503) {
+      res.setHeader('Retry-After', '2');
+    }
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ code, url: req.url, xff: req.headers['x-forwarded-for'], proto: req.headers['x-forwarded-proto'] }));
   }, delay);

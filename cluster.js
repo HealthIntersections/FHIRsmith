@@ -20,6 +20,8 @@
  *    requests outstanding
  *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
  *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
+ *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
+ *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
@@ -50,6 +52,9 @@ const MAX_OUTSTANDING = 16;
 // can take, after OWNER_QUEUE_MS
 const QUEUE_MS = 3000;
 const OWNER_QUEUE_MS = 30000;
+// a process that answered 503 gets no new requests for this long while another can take
+// them. Short: its memory guard re-measures only when a request arrives
+const COOLDOWN_MS = 2000;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -96,6 +101,7 @@ function loadSettings(argv, env, config) {
     maxOutstanding: Number(cluster.maxOutstanding ?? MAX_OUTSTANDING),
     queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
+    cooldownMs: Number(cluster.cooldownSeconds ?? COOLDOWN_MS / 1000) * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
 }
@@ -141,7 +147,7 @@ function classify(url, headers, txPaths, routing = {}) {
 /**
  * The process to send a request to, or null if none is ready.
  * @param {Object} route - from classify
- * @param {Object[]} procs - {code, role, servesTx, ready, outstanding}
+ * @param {Object[]} procs - {code, role, servesTx, ready, outstanding, coolUntil}
  */
 let rotation = 0;
 function pickTarget(route, procs) {
@@ -157,10 +163,14 @@ function pickTarget(route, procs) {
     // shared cache that is cache-id-unknown, which the client recovers from by starting a
     // new cache; with it, the cache is there
   }
-  const candidates = procs.filter(p => p.servesTx && p.ready);
-  if (candidates.length === 0) {
+  const ready = procs.filter(p => p.servesTx && p.ready);
+  if (ready.length === 0) {
     return null;
   }
+  // not one that is refusing (it answered 503), unless they all are
+  const now = Date.now();
+  const warm = ready.filter(p => !(p.coolUntil > now));
+  const candidates = warm.length ? warm : ready;
   rotation = (rotation + 1) % candidates.length;
   let best = null;
   for (let i = 0; i < candidates.length; i++) {
@@ -186,11 +196,12 @@ function createLauncher(settings) {
   const maxOutstanding = settings.maxOutstanding ?? MAX_OUTSTANDING; // 0: no limit
   const queueMs = settings.queueMs ?? QUEUE_MS; // 0: refuse at once
   const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
+  const cooldownMs = settings.cooldownMs ?? COOLDOWN_MS; // 0: none
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
-    ...p, child: null, ready: false, outstanding: 0, failures: 0, startedAt: 0, restartTimer: null,
+    ...p, child: null, ready: false, outstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, restartTimer: null,
     // timeout: a connection idle in the pool this long is closed (see UPSTREAM_IDLE_MS); a
     // request in progress is not affected
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
@@ -425,6 +436,10 @@ function createLauncher(settings) {
     const upstream = http.request({
       host: '127.0.0.1', port: target.port, method: req.method, path: req.url, headers, agent: target.agent
     }, (ures) => {
+      if (ures.statusCode === 503 && cooldownMs > 0) {
+        target.coolUntil = Date.now() + cooldownMs;
+        setTimeout(sendWaiting, cooldownMs).unref();
+      }
       const out = { ...ures.headers };
       for (const h of HOP_BY_HOP) {
         delete out[h];
@@ -487,6 +502,7 @@ function createLauncher(settings) {
       server.listen(settings.port, resolve);
     });
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
+    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}`);
     // one after another, each once the one before is ready (or has exited, and is being
     // restarted): a worker only reads the caches the master built, but starting them together
     // would put every worker's load (and its memory peak) at the same moment
