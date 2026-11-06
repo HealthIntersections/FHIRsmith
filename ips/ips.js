@@ -762,15 +762,8 @@ class IpsModule {
   }
 
   /**
-   * The definition of an extension, for the analysis step: {url, title, name, description},
-   * or null when it can't be found. It is asked of the validator (the wrapper's
-   * lookupCanonical(), the service's /canonical, which looks in the validator's context - and,
-   * with modules.ips.validator.autoLoadPackages (on by default), finds and loads the package that
-   * defines one it doesn't have).
-   * Answers are remembered (a bounded cache); a validator that isn't there, or that fails, or
-   * that predates /canonical, isn't an answer, and is asked again next time.
-   * @param {string} url
-   * @returns {Promise<Object|null>}
+   * Forget the extensions the validator couldn't find: it has loaded a package since, and may
+   * know them now. The ones it found are kept.
    */
   forgetMissingExtensions() {
     if (this.extensionCache) {
@@ -782,6 +775,17 @@ class IpsModule {
     }
   }
 
+  /**
+   * The definition of an extension, for the analysis step: {url, title, name, description},
+   * or null when it can't be found. It is asked of the validator (the wrapper's
+   * lookupCanonical(), the service's /canonical, which looks in the validator's context - and,
+   * with modules.ips.validator.autoLoadPackages (on by default), finds and loads the package that
+   * defines one it doesn't have).
+   * Answers are remembered (a bounded cache); a validator that isn't there, or that fails, or
+   * that predates /canonical, isn't an answer, and is asked again next time.
+   * @param {string} url
+   * @returns {Promise<Object|null>}
+   */
   async lookupExtension(url) {
     const v = this.validator;
     if (!v || typeof v.lookupCanonical !== 'function' || typeof v.isRunning !== 'function' || !v.isRunning()) {
