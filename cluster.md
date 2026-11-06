@@ -133,7 +133,8 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 * sends no new requests to a process that answered 503 (its memory guard is refusing) for
   `cooldownSeconds` (2), unless every process is refusing. Otherwise the refusing process,
   quick to answer and so the least busy, would draw the waiting requests
-* logs these limits (with the fast lane's) as it starts, in one line
+* logs its limits (`maxOutstanding`, the three waits, the fast lane's two, `memoryHeadroomGB`,
+  `drainSeconds`, `recycleSeconds`) as it starts, in one line
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
   2 s, 4 s ... up to a minute
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
