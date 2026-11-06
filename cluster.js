@@ -20,6 +20,8 @@
  *    requests outstanding
  *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
  *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
+ *  - lets a cheap request (by method and path: the fast lane) go to a process with up to
+ *    fastLaneExtra more than maxOutstanding, and ahead of the others waiting
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
@@ -72,6 +74,10 @@ const AT_WORK_MS = 1000;
 // SNOMED value set or a big $batch-validate-code takes 1-2 GB; with less, the first one shuts
 // the gate for everyone
 const HEADROOM_GB = 2;
+// a fast-lane request (isFastLane) may go to a process with this many more than
+// MAX_OUTSTANDING; a POST takes the lane only with a Content-Length up to FAST_LANE_MAX_BYTES
+const FAST_LANE_EXTRA = 4;
+const FAST_LANE_MAX_BYTES = 0;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
 /**
@@ -125,8 +131,47 @@ function loadSettings(argv, env, config) {
     workersDefault: !workersGiven,
     headroomBytes: Number(cluster.memoryHeadroomGB ?? HEADROOM_GB) * 2 ** 30,
     memory: (config.server && config.server.memory) || {},
+    fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
+    fastLaneMaxBytes: Number(cluster.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES),
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true }
   };
+}
+
+// the path after the tx endpoint ('' for the endpoint itself), or null if not a tx path
+function txRest(url, txPaths) {
+  let p = String(url).split('?')[0];
+  try {
+    p = decodeURIComponent(p);
+  } catch {
+    // leave it as it is
+  }
+  const ep = txPaths.find(e => p === e || p.startsWith(e + '/'));
+  return ep === undefined ? null : p.substring(ep.length);
+}
+
+const FAST_OPS = /^(\/[A-Za-z]+(\/[A-Za-z0-9.-]{1,64})?)?\/\$(lookup|subsumes|validate-code)$/;
+const READ = /^\/[A-Za-z]+\/[A-Za-z0-9.-]{1,64}$/;
+
+/**
+ * Whether a tx request takes the fast lane (cluster.md). By method, path and declared size
+ * only: the launcher doesn't read bodies. A GET or HEAD of metadata, a read (/Type/id),
+ * $lookup, $subsumes or $validate-code: its parameters are all in the URL, so it carries no
+ * inline ValueSet or CodeSystem. A POST of those three operations only with a Content-Length
+ * of at most maxBytes (0: none); one with a large inline resource, or with no length, waits
+ * with the rest.
+ * @param {Object} req - method, url, headers
+ */
+function isFastLane(req, txPaths, maxBytes) {
+  const rest = txRest(req.url, txPaths);
+  if (rest === null) {
+    return false;
+  }
+  const r = rest.replace(/\/+$/, '');
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    return r === '/metadata' || READ.test(r) || FAST_OPS.test(r);
+  }
+  const len = req.headers['content-length'];
+  return req.method === 'POST' && maxBytes > 0 && FAST_OPS.test(r) && /^\d+$/.test(len || '') && Number(len) <= maxBytes;
 }
 
 /**
@@ -140,17 +185,10 @@ function loadSettings(argv, env, config) {
  * @returns {{to: 'master'}|{to: 'owner', code: string}|{to: 'tx'}}
  */
 function classify(url, headers, txPaths, routing = {}) {
-  let p = String(url).split('?')[0];
-  try {
-    p = decodeURIComponent(p);
-  } catch {
-    // leave it as it is
-  }
-  const ep = txPaths.find(e => p === e || p.startsWith(e + '/'));
-  if (!ep) {
+  const rest = txRest(url, txPaths);
+  if (rest === null) {
     return { to: 'master' };
   }
-  const rest = p.substring(ep.length);
   // the closure tables (unless shared) and the syndication store are the master's; the
   // source info pages carry the VSAC resync form, which writes the VSAC database
   if (/^\/\$closure\/?$/.test(rest)) {
@@ -261,6 +299,8 @@ function createLauncher(settings) {
   // (tests give their own)
   const memory = settings.memorySampler || memorySampler(settings.memory);
   const headroom = settings.headroomBytes ?? HEADROOM_GB * 2 ** 30;
+  const fastLaneExtra = settings.fastLaneExtra ?? FAST_LANE_EXTRA; // 0: no fast lane
+  const fastLaneMaxBytes = settings.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
@@ -281,8 +321,9 @@ function createLauncher(settings) {
   let server = null;
   let stopping = false;
   let onIdle = null;
-  // tx requests waiting for a process with room, oldest first
+  // tx requests waiting for a process with room, oldest first; fast-lane ones apart, and first
   const waiting = [];
+  const fastWaiting = [];
   let queueRefused = 0;
   let lastQueueLog = 0;
   let memoryTimer = null;
@@ -421,7 +462,7 @@ function createLauncher(settings) {
     });
   }
 
-  const full = (p) => maxOutstanding > 0 && p.outstanding >= maxOutstanding;
+  const full = (p, fast) => maxOutstanding > 0 && p.outstanding >= maxOutstanding + (fast ? fastLaneExtra : 0);
 
   // true if the request was sent (or refused), false if it must wait. The master's own
   // paths and CORS preflights don't wait
@@ -431,22 +472,25 @@ function createLauncher(settings) {
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
       return true;
     }
-    if (w.route.to !== 'master' && w.req.method !== 'OPTIONS' && full(target)) {
+    if (w.route.to !== 'master' && w.req.method !== 'OPTIONS' && full(target, w.fast)) {
       return false;
     }
     forward(w.req, w.res, target);
     return true;
   }
 
-  // oldest first; one waiting for its owner doesn't hold up the rest
+  // the fast lane first, then oldest first; one waiting for its owner doesn't hold up the rest
   function sendWaiting() {
-    for (let i = 0; i < waiting.length && procs.some(p => p.ready && p.servesTx && !full(p));) {
-      const w = waiting[i];
-      if (send(w)) {
-        clearTimeout(w.timer);
-        waiting.splice(i, 1);
-      } else {
-        i++;
+    for (const queue of [fastWaiting, waiting]) {
+      const fast = queue === fastWaiting;
+      for (let i = 0; i < queue.length && procs.some(p => p.ready && p.servesTx && !full(p, fast));) {
+        const w = queue[i];
+        if (send(w)) {
+          clearTimeout(w.timer);
+          queue.splice(i, 1);
+        } else {
+          i++;
+        }
       }
     }
   }
@@ -463,6 +507,7 @@ function createLauncher(settings) {
 
   function proxy(req, res) {
     const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
+    w.fast = fastLaneExtra > 0 && w.route.to !== 'master' && isFastLane(req, settings.txPaths, fastLaneMaxBytes);
     if (send(w)) {
       return;
     }
@@ -473,11 +518,12 @@ function createLauncher(settings) {
     if (ms <= 0) {
       return refuse(w, 0);
     }
-    waiting.push(w);
+    const queue = w.fast ? fastWaiting : waiting;
+    queue.push(w);
     const leave = () => {
-      const i = waiting.indexOf(w);
+      const i = queue.indexOf(w);
       if (i >= 0) {
-        waiting.splice(i, 1);
+        queue.splice(i, 1);
         clearTimeout(w.timer);
       }
     };
@@ -650,6 +696,7 @@ function createLauncher(settings) {
     sizeWorkers(master);
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
+      `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, ` +
       `recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
@@ -731,7 +778,7 @@ function createLauncher(settings) {
       clearTimeout(p.restartTimer);
     }
     // those still waiting haven't started: refuse them; drain only those in progress
-    for (const w of waiting.splice(0)) {
+    for (const w of [...fastWaiting.splice(0), ...waiting.splice(0)]) {
       clearTimeout(w.timer);
       fail(w.res, 503, 'The server is stopping; try again shortly');
     }
@@ -810,4 +857,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadSettings, classify, pickTarget, createLauncher, memorySampler };
+module.exports = { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler };

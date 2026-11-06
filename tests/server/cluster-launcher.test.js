@@ -4,7 +4,7 @@
  */
 const http = require('http');
 const path = require('path');
-const { loadSettings, classify, pickTarget, createLauncher } = require('../../cluster');
+const { loadSettings, classify, isFastLane, pickTarget, createLauncher } = require('../../cluster');
 
 const FAKE = path.join(__dirname, '..', 'utils', 'fake-upstream.js');
 const TX = ['/r4', '/r5'];
@@ -47,6 +47,25 @@ describe('routing rules', () => {
     // no prefix: any tx process (it answers cache-id-unknown)
     expect(classify('/r4/ValueSet/$expand', { 'x-cache-id': '4f0c2d1e-aaaa' }, TX)).toEqual({ to: 'tx' });
     expect(classify('/r4/ValueSet/$expand', {}, TX)).toEqual({ to: 'tx' });
+  });
+
+  test('the fast lane: GET of metadata, reads, $lookup, $subsumes, $validate-code; a POST of those by Content-Length', () => {
+    const fast = (method, url, headers = {}, maxBytes = 0) => isFastLane({ method, url, headers }, TX, maxBytes);
+    expect(fast('GET', '/r4/CodeSystem/$lookup?system=http://loinc.org&code=1')).toBe(true);
+    expect(fast('GET', '/r5/metadata')).toBe(true);
+    expect(fast('GET', '/r4/ValueSet/abc-1')).toBe(true);
+    expect(fast('GET', '/r4/ValueSet/abc/$validate-code?code=1')).toBe(true);
+    expect(fast('GET', '/r4/CodeSystem/%24subsumes?codeA=1')).toBe(true);
+    // search, $expand and anything else: not
+    expect(fast('GET', '/r4/ValueSet?url=x')).toBe(false);
+    expect(fast('GET', '/r4/ValueSet/$expand?url=x')).toBe(false);
+    expect(fast('GET', '/fhir/metadata')).toBe(false);
+    // a POST: only up to fastLaneMaxBytes (0: never), and only with a Content-Length
+    expect(fast('POST', '/r4/CodeSystem/$validate-code', { 'content-length': '400' })).toBe(false);
+    expect(fast('POST', '/r4/CodeSystem/$validate-code', { 'content-length': '400' }, 1024)).toBe(true);
+    expect(fast('POST', '/r4/ValueSet/$validate-code', { 'content-length': '5000' }, 1024)).toBe(false);
+    expect(fast('POST', '/r4/ValueSet/$validate-code', { 'transfer-encoding': 'chunked' }, 1024)).toBe(false);
+    expect(fast('POST', '/r4/ValueSet/$expand', { 'content-length': '10' }, 1024)).toBe(false);
   });
 
   test('with the shared cache, a cache-id goes to any tx process, unless cacheAffinity is on', () => {
@@ -146,6 +165,9 @@ describe('routing rules', () => {
     // the number of workers given or not (sized to memory); 2 GB left free when idle
     expect([s.workersDefault, loadSettings([], {}, { ...config, server: {} }).workersDefault, loadSettings(['--workers=2'], {}, { ...config, server: {} }).workersDefault]).toEqual([false, true, false]);
     expect([s.headroomBytes, loadSettings([], {}, { ...config, server: { cluster: { memoryHeadroomGB: 3 } } }).headroomBytes]).toEqual([2 * 2 ** 30, 3 * 2 ** 30]);
+    expect([s.fastLaneExtra, s.fastLaneMaxBytes]).toEqual([4, 0]);
+    const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 1024 } } });
+    expect([s5.fastLaneExtra, s5.fastLaneMaxBytes]).toEqual([0, 1024]);
   });
 });
 
@@ -348,6 +370,33 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all(await busy(4))).map(x => x.status)).toEqual([200, 200, 200, 200]);
     });
 
+    test('a fast-lane request goes to a full process, up to fastLaneExtra more, and waits ahead of the rest', async () => {
+      launcher = createLauncher({ ...queued(5000), fastLaneExtra: 1 });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow = await busy(2);
+      const t0 = Date.now();
+      expect((await get(PORT, '/r4/CodeSystem/$lookup?code=1')).status).toBe(200);
+      expect(Date.now() - t0).toBeLessThan(500);
+      // the lane full too: a heavy request waits, then a lookup, which goes first
+      const lanes = [get(PORT, '/r4/CodeSystem/$lookup?delay=1000'), get(PORT, '/r4/CodeSystem/$lookup?delay=1000')];
+      await until(() => launcher.procs.filter(p => p.servesTx).every(p => p.outstanding === 2));
+      const order = [];
+      const heavy = get(PORT, '/r4/ValueSet/$expand').then(r => order.push('expand') && r);
+      await sleep(50);
+      const lookup = get(PORT, '/r4/CodeSystem/$lookup').then(r => order.push('lookup') && r);
+      expect((await Promise.all([heavy, lookup, ...lanes, ...slow])).map(r => r.status)).toEqual([200, 200, 200, 200, 200, 200]);
+      expect(order).toEqual(['lookup', 'expand']);
+      await launcher.stop();
+      // fastLaneExtra 0: no lane
+      launcher = createLauncher({ ...queued(300), fastLaneExtra: 0 });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const slow2 = await busy(2);
+      expect((await get(PORT, '/r4/CodeSystem/$lookup')).status).toBe(503);
+      await Promise.all(slow2);
+    });
+
     test('a CORS preflight doesn\'t wait', async () => {
       launcher = createLauncher(queued(5000));
       await launcher.start();
@@ -380,7 +429,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 3, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 0, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });

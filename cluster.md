@@ -120,10 +120,20 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
   paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) don't wait, and while
   stopping nothing does. These refusals are the launcher's, logged at most once a minute; they
   are not in the graphs' refusals
+* gives cheap requests a fast lane: they may go to a process that has up to `fastLaneExtra`
+  (4) more than `maxOutstanding`, and while they wait, they go before the others. Without it,
+  a 4 ms `$lookup` waits in line behind the surge (3 s, then 503), and after it, for the line to
+  drain. The launcher doesn't read bodies, so the rule is by method and path: a `GET` (or
+  `HEAD`) of `metadata`, a read (`/ValueSet/{id}`), `$lookup`, `$subsumes` or `$validate-code`,
+  whose parameters are all in the URL, so it carries no inline value set. A `POST` of
+  `$lookup`, `$subsumes` or `$validate-code` takes the lane only with a `Content-Length` of at
+  most `fastLaneMaxBytes` (0: never). Searches and `$expand` never do. A request in the lane
+  that turns out to be costly (a `GET $validate-code` against a value set that must be
+  expanded) costs at most `fastLaneExtra` more requests at once on a process
 * sends no new requests to a process that answered 503 (its memory guard is refusing) for
   `cooldownSeconds` (2), unless every process is refusing. Otherwise the refusing process,
   quick to answer and so the least busy, would draw the waiting requests
-* logs these limits as it starts, in one line
+* logs these limits (with the fast lane's) as it starts, in one line
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
   2 s, 4 s ... up to a minute
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
@@ -156,6 +166,8 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
+| `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
+| `server.cluster.fastLaneMaxBytes` | | 0 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 0: a `POST` never does. Most `POST CodeSystem/$validate-code` calls are under 1 KB, but they are half of a validator's calls: in the lane, a surge of them fills it. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
