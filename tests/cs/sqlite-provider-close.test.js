@@ -14,6 +14,12 @@ const os = require('os');
 const path = require('path');
 const sqlite3 = require('sqlite3');
 const { UniiServices } = require('../../tx/cs/cs-unii');
+const { LoincServices } = require('../../tx/cs/cs-loinc');
+const { RxNormServices } = require('../../tx/cs/cs-rxnorm');
+const { NdcServices } = require('../../tx/cs/cs-ndc');
+const { CPTServices } = require('../../tx/cs/cs-cpt');
+const { OMOPServices } = require('../../tx/cs/cs-omop');
+const { ICD11Services } = require('../../tx/cs/cs-icd11');
 const { OperationContext } = require('../../tx/operation-context');
 const { Languages } = require('../../library/languages');
 
@@ -68,3 +74,17 @@ describe('sqlite provider close() with a query in flight', () => {
     expect(uncaught).toEqual([]);
   });
 });
+
+describe.each(Object.entries({ LoincServices, RxNormServices, UniiServices, NdcServices, CPTServices, OMOPServices, ICD11Services }))(
+  '%s close()', (name, Services) => {
+    test('closes the connection once, and keeps the handle', () => {
+      const db = { close: jest.fn() };
+      const csp = Object.create(Services.prototype);
+      csp.db = db;
+      csp.close();
+      csp.close();
+      expect(db.close).toHaveBeenCalledTimes(1);
+      expect(csp.db).toBe(db);
+    });
+  });
+
