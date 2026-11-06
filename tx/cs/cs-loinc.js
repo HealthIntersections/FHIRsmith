@@ -8,6 +8,7 @@ const {BaseCSServices} = require("./cs-base");
 const {sqlEscapeString} = require("../../xig/xig");
 const regexUtilities = require('../../library/regex-utilities');
 const {ConceptMap} = require("../library/conceptmap");
+const { guarded } = require('../library/sqlite-utilities');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -504,7 +505,7 @@ class LoincServices extends BaseCSServices {
             AND Relationships.TargetKey = Codes.CodeKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -522,7 +523,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -536,7 +537,7 @@ class LoincServices extends BaseCSServices {
             AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -553,7 +554,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -561,7 +562,7 @@ class LoincServices extends BaseCSServices {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT StatusKey FROM Codes WHERE CodeKey = ? AND StatusKey != 0';
 
-      this.db.get(sql, [ctxt.key], (err, row) => {
+      this.db.get(sql, [ctxt.key], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -575,7 +576,7 @@ class LoincServices extends BaseCSServices {
         } else {
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -603,7 +604,7 @@ class LoincServices extends BaseCSServices {
           AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -612,7 +613,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -630,7 +631,7 @@ class LoincServices extends BaseCSServices {
           ORDER BY DescriptionTypeKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -643,7 +644,7 @@ class LoincServices extends BaseCSServices {
 
           resolve(displays);
         }
-      });
+      }));
     });
   }
 
@@ -677,7 +678,7 @@ class LoincServices extends BaseCSServices {
             AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -688,7 +689,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve(results);
         }
-      });
+      }));
     });
   }
 
@@ -702,7 +703,7 @@ class LoincServices extends BaseCSServices {
             AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -712,7 +713,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve(results);
         }
-      });
+      }));
     });
   }
 
@@ -1206,7 +1207,7 @@ class LoincServices extends BaseCSServices {
       const regex = regexUtilities.compile('^(?:' + pattern + ')$');
       const matchingKeys = [];
 
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1218,7 +1219,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve(matchingKeys);
         }
-      });
+      }));
     });
   }
 
@@ -1232,14 +1233,14 @@ class LoincServices extends BaseCSServices {
 
   async #executeSQL(sql, filter) {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           filter.keys = rows.map(row => row.Key).filter(key => key !== 0);
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -1470,7 +1471,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   async #loadLanguages(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT LanguageKey, Code FROM Languages', (err, rows) => {
+      db.all('SELECT LanguageKey, Code FROM Languages', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1479,13 +1480,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadStatusCodes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT StatusKey, Description FROM StatusCodes', (err, rows) => {
+      db.all('SELECT StatusKey, Description FROM StatusCodes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1495,13 +1496,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadRelationshipTypes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT RelationshipTypeKey, Description FROM RelationshipTypes', (err, rows) => {
+      db.all('SELECT RelationshipTypeKey, Description FROM RelationshipTypes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1510,13 +1511,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadPropertyTypes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT PropertyTypeKey, Description FROM PropertyTypes', (err, rows) => {
+      db.all('SELECT PropertyTypeKey, Description FROM PropertyTypes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1525,14 +1526,14 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadCodes(db) {
     return new Promise((resolve, reject) => {
       // First get the count to pre-allocate array
-      db.get('SELECT MAX(CodeKey) as maxKey FROM Codes', (err, row) => {
+      db.get('SELECT MAX(CodeKey) as maxKey FROM Codes', guarded(reject, (err, row) => {
         if (err) return reject(err);
 
         // Pre-allocate the array to avoid repeated resizing
@@ -1540,7 +1541,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         this._sharedData.codeList = new Array(maxKey + 1).fill(null);
 
         // Now load all codes
-        db.all('SELECT CodeKey, Code, Type, Codes.Description, StatusCodes.Description as Status FROM Codes, StatusCodes where StatusCodes.StatusKey = Codes.StatusKey order by Type Asc, CodeKey Asc', (err, rows) => {
+        db.all('SELECT CodeKey, Code, Type, Codes.Description, StatusCodes.Description as Status FROM Codes, StatusCodes where StatusCodes.StatusKey = Codes.StatusKey order by Type Asc, CodeKey Asc', guarded(reject, (err, rows) => {
           if (err) return reject(err);
 
           // Batch process rows
@@ -1562,8 +1563,8 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
             }
           }
           resolve();
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -1583,7 +1584,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           ORDER BY d.CodeKey
       `;
 
-      db.all(sql, (err, rows) => {
+      db.all(sql, guarded(reject, (err, rows) => {
         if (err) return reject(err);
 
         // Batch process by CodeKey to reduce lookups
@@ -1603,7 +1604,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
         }
         resolve();
-      });
+      }));
     });
   }
 
@@ -1620,7 +1621,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           WHERE RelationshipTypeKey = ${childRelKey}
       `;
 
-      db.all(sql, (err, rows) => {
+      db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1634,13 +1635,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadConfig(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT ConfigKey, Value FROM Config WHERE ConfigKey IN (2, 3)', (err, rows) => {
+      db.all('SELECT ConfigKey, Value FROM Config WHERE ConfigKey IN (2, 3)', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1653,7 +1654,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -1664,14 +1665,14 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
   // the mapping tables were added with the LOINC 2.83 importer; older databases don't have them
   async #loadHasMappings(db) {
     return new Promise((resolve, reject) => {
-      db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ExternalMappings'", (err, row) => {
+      db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ExternalMappings'", guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           this._sharedData.hasMappings = !!row;
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -1684,7 +1685,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
       db.all(`SELECT Codes.Code as LoincCode, ExternalCodes.System, ExternalCodes.Code
               FROM ExternalMappings, ExternalCodes, Codes
               WHERE ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
-                AND ExternalMappings.CodeKey = Codes.CodeKey`, (err, rows) => {
+                AND ExternalMappings.CodeKey = Codes.CodeKey`, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1699,7 +1700,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
