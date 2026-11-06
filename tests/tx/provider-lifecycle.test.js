@@ -68,4 +68,34 @@ describe('provider lifecycle', () => {
     await settle(20);
     expect(closed).toBe(1);
   });
+
+  test('findCodeSystem closes the provider when checkVersion throws ($validate-code)', async () => {
+    const vs = {
+      resourceType: 'ValueSet', url: 'http://example.org/fhir/ValueSet/c2', status: 'active',
+      compose: { include: [{ system: SYSTEM, version: '2018' }, { system: SYSTEM, version: '2099' }] }
+    };
+    const body = { resourceType: 'Parameters', parameter: [
+      { name: 'valueSet', resource: vs },
+      { name: 'coding', valueCoding: { system: SYSTEM, code: 'US' } },
+      { name: 'check-system-version', valueCanonical: SYSTEM + '|9.9' }
+    ] };
+    for (let i = 0; i < 5; i++) {
+      await request(app).post('/tx/r5/ValueSet/$validate-code').set('Content-Type', 'application/json').send(body);
+    }
+    await settle(50);
+    expect(factory.builds).toBeGreaterThan(0);
+    expect(factory.open).toBe(0);
+  });
+
+  test('findCodeSystem closes the provider when checkVersion throws (as $closure calls it)', async () => {
+    const tx = getTxModule();
+    const ctx = new OperationContext('en', tx.i18n, 'y', 20, null, null);
+    const w = new TerminologyWorker(ctx, tx.log, tx.endpoints[0].provider, tx.languages, tx.i18n);
+    const txp = new TxParameters(tx.i18n.languageDefinitions, tx.i18n);
+    txp.readParams({ resourceType: 'Parameters', parameter: [{ name: 'check-system-version', valueCanonical: SYSTEM + '|9.9' }] });
+    await expect(w.findCodeSystem(SYSTEM, '2018', txp, ['complete'], null, false, true)).rejects.toBeTruthy();
+    await ctx.closeProviders();
+    expect(factory.builds).toBe(1);
+    expect(factory.open).toBe(0);
+  });
 });
