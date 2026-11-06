@@ -3,6 +3,13 @@ const { assignIdSpace } = require('../library/resource-ids');
 /**
  * Abstract base class for value set providers
  * Defines the interface that all value set providers must implement
+ *
+ * Stored concept lists. A value set's include or exclude may list its concepts in a store (a
+ * database, say) rather than in memory: the provider puts a handle on the include under
+ * STORED_CONCEPTS (tx/library/stored-concepts.js), { count, lookup(code) }, and keeps `concept`
+ * readable for code that needs every entry (a getter that reads the list on first use).
+ * $validate-code then asks the handle about the one code it checks instead of reading the list.
+ * An include without the handle behaves as always.
  */
 class AbstractValueSetProvider {
   /**
