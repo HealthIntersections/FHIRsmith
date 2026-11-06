@@ -98,4 +98,17 @@ describe('provider lifecycle', () => {
     expect(factory.builds).toBe(1);
     expect(factory.open).toBe(0);
   });
+
+  test.each([
+    ['$expand', ['US', 'CA', 'GB', 'DE'], []],
+    ['$validate-code', ['CA', 'GB', 'DE', 'FR'], [{ name: 'coding', valueCoding: { system: SYSTEM, code: 'US' } }]]
+  ])('%s over 200 includes of one code system builds its provider once', async (op, codes, extra) => {
+    const vs = { resourceType: 'ValueSet', url: 'http://example.org/fhir/ValueSet/many-' + op.substring(1), status: 'active',
+      compose: { include: Array.from({ length: 200 }, (_, i) => ({ system: SYSTEM, concept: [{ code: codes[i % 4] }] })) } };
+    const res = await request(app).post('/tx/r5/ValueSet/' + op).set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [{ name: 'valueSet', resource: vs }, ...extra] });
+    expect(res.status).toBe(200);
+    expect(factory.builds).toBe(1);
+    expect(factory.open).toBe(0);
+  });
 });

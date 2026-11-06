@@ -24,6 +24,13 @@ const { CodeSystemFactoryProvider } = require("./cs/cs-api");
 const resolveCodeProviders = new WeakMap();
 
 /**
+ * The same for getCodeSystemProvider(): opContext -> Map(factory -> Map(supplements -> Promise
+ * of the provider)). A value set with an include per code asks for the same code system once per
+ * include, and each build was a connection held to the end of the request.
+ */
+const codeSystemProviders = new WeakMap();
+
+/**
  * How many codes resolveCodes() locates at once. Enough to keep a database-backed code
  * system busy without queueing a whole page's worth of queries at the same time.
  */
@@ -211,7 +218,7 @@ class Provider {
       factory = this.codeSystemFactories.get(vurlMM);
     }
     if (factory != null) {
-      return factory.build(opContext, supplements);
+      return this.buildOnce(opContext, factory, supplements);
     }
     let cs = this.codeSystems.get(vurl);
     if (cs == null && vurlMM) {
@@ -221,6 +228,32 @@ class Provider {
       return this.createCodeSystemProvider(opContext, cs, supplements);
     }
     return null;
+  }
+
+  /**
+   * factory.build(), once per operation, factory and set of supplements (see codeSystemProviders).
+   * The caller registers the provider for closing, as before.
+   */
+  buildOnce(opContext, factory, supplements) {
+    let byFactory = codeSystemProviders.get(opContext);
+    if (!byFactory) {
+      byFactory = new Map();
+      codeSystemProviders.set(opContext, byFactory);
+    }
+    let built = byFactory.get(factory);
+    if (!built) {
+      built = new Map();
+      byFactory.set(factory, built);
+    }
+    const key = (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
+    let csp = built.get(key);
+    if (!csp) {
+      csp = Promise.resolve(factory.build(opContext, supplements));
+      // A failed build is not kept, so the next call tries again.
+      csp.catch(() => built.delete(key));
+      built.set(key, csp);
+    }
+    return csp;
   }
 
   loadSupplements(url, version, statedSupplements) {

@@ -1313,7 +1313,8 @@ class OperationContext {
    * @param {Object} provider - The provider returned from factory.build()
    */
   registerProvider(provider) {
-    if (provider && typeof provider.close === 'function') {
+    // once: a provider can be shared within an operation (Provider.buildOnce)
+    if (provider && typeof provider.close === 'function' && !this._providers.open.includes(provider)) {
       this._providers.open.push(provider);
       if (this._providers.closed) {
         this.closeProviders().catch(() => {});
