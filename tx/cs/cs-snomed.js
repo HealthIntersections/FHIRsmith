@@ -1790,7 +1790,12 @@ class SnomedServices {
    */
   _eclTermMatcher = function (v) {
     if (v.kind === 'wild') {
-      const re = new RegExp('^' + v.value.split('*').map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 'i');
+      // re2js, not RegExp: with several '*'s (".*.*.*...x") a native RegExp
+      // backtracks for a time that grows as term length to the power of the
+      // number of '*'s, blocking the whole server. re2js is linear. A run of
+      // '*'s means the same as one.
+      const pattern = '^' + v.value.replace(/\*+/g, '*').split('*').map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$';
+      const re = regexUtilities.compile(pattern, 'i');
       return (term) => re.test(term);
     }
     const words = v.value.toLowerCase().split(/\s+/).filter(w => w.length > 0);
