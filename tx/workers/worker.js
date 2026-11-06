@@ -191,6 +191,10 @@ class TerminologyWorker {
       if (!provider && codeSystemResource && kinds.includes(codeSystemResource.content)) {
         provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
       }
+      // Track for lifecycle cleanup at end of request, at once: what follows can throw (a client
+      // that has gone, in loadSupplements). Providers built from a factory open a fresh sqlite
+      // connection that needs releasing; resource-built providers and others are no-ops.
+      this.opContext.registerProvider(provider);
       return provider;
     };
 
@@ -207,7 +211,6 @@ class TerminologyWorker {
       const fitting = this.loadSupplements(url, actual, statedSupplements);
       const key = (list) => list.map(cs => cs.vurl || cs.url).sort().join(' ');
       if (key(fitting) !== key(supplements)) {
-        this.opContext.registerProvider(provider); // released at the end of the request, like the rest
         provider = await build(fitting);
       }
     }
@@ -224,15 +227,8 @@ class TerminologyWorker {
         }
       }
     }
-    if (provider) {
-      // Track for lifecycle cleanup at end of request. Providers built from
-      // a factory open a fresh sqlite connection that needs releasing;
-      // resource-built providers and others without close() are no-ops.
-      // Before checkVersion, which can throw.
-      this.opContext.registerProvider(provider);
-      if (checkVer) {
-        this.checkVersion(url, provider.version(), params, provider.versionAlgorithm(), op);
-      }
+    if (provider && checkVer) {
+      this.checkVersion(url, provider.version(), params, provider.versionAlgorithm(), op);
     }
 
     return provider;

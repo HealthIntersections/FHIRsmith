@@ -100,6 +100,23 @@ describe('provider lifecycle', () => {
     expect(factory.open).toBe(0);
   });
 
+  test('findCodeSystem closes the provider when the client goes while it is built', async () => {
+    const tx = getTxModule();
+    const ctx = new OperationContext('en', tx.i18n, 'w', 20, null, null);
+    ctx.debugging = false;
+    const w = new TerminologyWorker(ctx, tx.log, tx.endpoints[0].provider, tx.languages, tx.i18n);
+    w.additionalResources = [{ resourceType: 'ValueSet', url: 'http://example.org/fhir/ValueSet/other' }];
+    const txp = new TxParameters(tx.i18n.languageDefinitions, tx.i18n);
+    factory.delayMs = 50;
+    setTimeout(() => ctx.markClientGone(), 10);
+    // no version asked for: the supplements are looked at again for the version built, which
+    // sees the client has gone
+    await expect(w.findCodeSystem(SYSTEM, '', txp, ['complete'], null, false, true)).rejects.toMatchObject({ abandoned: true });
+    await ctx.closeProviders();
+    expect(factory.builds).toBe(1);
+    expect(factory.open).toBe(0);
+  });
+
   test.each([
     ['$expand', ['US', 'CA', 'GB', 'DE'], []],
     ['$validate-code', ['CA', 'GB', 'DE', 'FR'], [{ name: 'coding', valueCoding: { system: SYSTEM, code: 'US' } }]]
