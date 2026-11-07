@@ -14,21 +14,6 @@ const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
 const { CodeSystemFactoryProvider } = require("./cs/cs-api");
 
-/**
- * The code system providers resolveCode() has built, per operation: opContext ->
- * Map(factory -> Promise of the provider). A page asks resolveCode about every code it
- * shows, and for a database-backed code system each build opens a connection that stays
- * open until the request ends, so one is built per code system and version, and reused.
- * Keyed weakly, so the entry goes when the operation does.
- */
-const resolveCodeProviders = new WeakMap();
-
-/**
- * The same for getCodeSystemProvider(): opContext -> Map('system|version supplements' -> Promise
- * of the provider). A value set with an include per code asks for the same code system once per
- * include, and each build was a connection held to the end of the request.
- */
-const codeSystemProviders = new WeakMap();
 
 /**
  * How many codes resolveCodes() locates at once. Enough to keep a database-backed code
@@ -231,25 +216,13 @@ class Provider {
   }
 
   /**
-   * factory.build(), once per operation, factory and set of supplements (see codeSystemProviders).
-   * The caller registers the provider for closing, as before.
+   * factory.build(), once per operation, factory and set of supplements (see
+   * OperationContext.buildProviderOnce). The caller registers the provider for closing.
    */
   buildOnce(opContext, factory, supplements) {
-    let built = codeSystemProviders.get(opContext);
-    if (!built) {
-      built = new Map();
-      codeSystemProviders.set(opContext, built);
-    }
     // system|version is the factory's own key in codeSystemFactories
     const key = factory.system() + '|' + (factory.version() ?? '') + ' ' + (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
-    let csp = built.get(key);
-    if (!csp) {
-      csp = Promise.resolve(factory.build(opContext, supplements));
-      // A failed build is not kept, so the next call tries again.
-      csp.catch(() => built.delete(key));
-      built.set(key, csp);
-    }
-    return csp;
+    return opContext.buildProviderOnce(key, () => factory.build(opContext, supplements));
   }
 
   loadSupplements(url, version, statedSupplements) {
@@ -697,31 +670,19 @@ class Provider {
 
   /**
    * The provider resolveCode() uses for a code system factory in this operation: built
-   * the first time it is asked for, registered for closing when the operation ends, and
-   * reused after that. The promise is kept, so calls that overlap share one build.
+   * the first time it is asked for (see buildOnce), registered for closing when the
+   * operation ends, and reused after that. A page asks resolveCode about every code it shows.
    *
    * @param {OperationContext} opContext
    * @param {CodeSystemFactoryProvider} factory
    * @returns {Promise<CodeSystemProvider|null>}
    */
   resolveCodeProvider(opContext, factory) {
-    let built = resolveCodeProviders.get(opContext);
-    if (!built) {
-      built = new Map();
-      resolveCodeProviders.set(opContext, built);
-    }
-    let csp = built.get(factory);
-    if (!csp) {
-      csp = (async () => {
-        const p = await factory.build(opContext, []);
-        opContext.registerProvider(p);
-        return p;
-      })();
-      // A failed build is not kept, so the next call tries again.
-      csp.catch(() => built.delete(factory));
-      built.set(factory, csp);
-    }
-    return csp;
+    // the same provider getCodeSystemProvider() builds for this code system with no supplements
+    return this.buildOnce(opContext, factory, []).then(p => {
+      opContext.registerProvider(p);
+      return p;
+    });
   }
 
   /**

@@ -70,6 +70,43 @@ describe('provider lifecycle', () => {
     expect(closed).toBe(1);
   });
 
+  test('a provider is built once for an operation and the copies that share its providers, not for one with its own', async () => {
+    const provider = getTxModule().endpoints[0].provider;
+    const ctx = new OperationContext('en', getTxModule().i18n, 'x', 20, null, null);
+    const a = await provider.buildOnce(ctx, factory, []);
+    expect(await provider.buildOnce(ctx, factory, [])).toBe(a);
+    // resolveCode() uses the same one
+    expect(await provider.resolveCodeProvider(ctx, factory)).toBe(a);
+    // a copy shares the providers, and closes them with its parent
+    expect(await provider.buildOnce(ctx.copy(), factory, [])).toBe(a);
+    // a copy with its own (a batch entry) builds its own, which it closes itself
+    const entry = ctx.copy({ ownProviders: true });
+    const b = await provider.buildOnce(entry, factory, []);
+    expect(b).not.toBe(a);
+    expect(factory.builds).toBe(2);
+    entry.registerProvider(b);
+    await entry.closeProviders();
+    expect(factory.open).toBe(1);
+    // once closed, nothing closed is handed out: a later build is a new provider
+    ctx.registerProvider(a);
+    await ctx.closeProviders();
+    expect(factory.open).toBe(0);
+    const c = await provider.buildOnce(ctx, factory, []);
+    expect(c).not.toBe(a);
+    ctx.registerProvider(c); // closed at once: the operation has ended
+    await settle(20);
+    expect(factory.open).toBe(0);
+  });
+
+  test('a failed build is not kept: the next call builds again', async () => {
+    const ctx = new OperationContext('en', getTxModule().i18n, 'x', 20, null, null);
+    let calls = 0;
+    const build = () => { calls++; return calls === 1 ? Promise.reject(new Error('no')) : Promise.resolve({ close() {} }); };
+    await expect(ctx.buildProviderOnce('k', build)).rejects.toThrow('no');
+    await expect(ctx.buildProviderOnce('k', build)).resolves.toBeTruthy();
+    expect(calls).toBe(2);
+  });
+
   test('findCodeSystem closes the provider when checkVersion throws ($validate-code)', async () => {
     const vs = {
       resourceType: 'ValueSet', url: 'http://example.org/fhir/ValueSet/c2', status: 'active',

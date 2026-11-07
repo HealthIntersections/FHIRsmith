@@ -1083,7 +1083,9 @@ class OperationContext {
     // providers are cleaned up by the parent request's closeProviders().
     // closed: closeProviders() has run, so one registered later (a build that
     // finished after the client went) is closed at once - nothing else will.
-    this._providers = { open: [], closed: false };
+    // built: the providers built so far (see buildProviderOnce), kept with the list that
+    // closes them, so whatever shares one shares the other.
+    this._providers = { open: [], closed: false, built: new Map() };
     // Compute-time accounting for the deadline and for yielding. One object,
     // shared by reference with copy()'d contexts, so an operation and its
     // sub-operations (e.g. batch entries) draw down a single budget:
@@ -1141,7 +1143,7 @@ class OperationContext {
     // are released when the parent operation ends - unless the caller will
     // release them itself, with a list of its own.
     if (options.ownProviders) {
-      newContext._providers = { open: [], closed: false };
+      newContext._providers = { open: [], closed: false, built: new Map() };
     } else {
       newContext._providers = this._providers;
     }
@@ -1427,6 +1429,33 @@ class OperationContext {
   }
 
   /**
+   * A provider built once for this operation (and the copies that share its providers) and
+   * reused after that: a value set with an include per code asks for the same code system
+   * once per include, and each build of a database-backed one is a connection held until
+   * the operation ends. The promise is kept, so calls that overlap share one build; a failed
+   * build is not kept, so the next call tries again. The caller registers the provider for
+   * closing (registerProvider), as for any other.
+   *
+   * @param {string} key - what identifies the provider (see Provider.buildOnce)
+   * @param {function(): Promise<Object>} build
+   * @returns {Promise<Object>}
+   */
+  buildProviderOnce(key, build) {
+    const built = this._providers.built;
+    let provider = built.get(key);
+    if (!provider) {
+      provider = Promise.resolve(build());
+      provider.catch(() => {
+        if (built.get(key) === provider) {
+          built.delete(key);
+        }
+      });
+      built.set(key, provider);
+    }
+    return provider;
+  }
+
+  /**
    * Close every provider registered during this operation, including through
    * a copy. Safe to call multiple times — the list is emptied each time. Errors
    * from individual close() calls are swallowed so one bad provider can't
@@ -1434,6 +1463,8 @@ class OperationContext {
    */
   async closeProviders() {
     this._providers.closed = true;
+    // nothing closed is handed out again
+    this._providers.built.clear();
     const providers = this._providers.open.splice(0);
     for (const p of providers) {
       try {
