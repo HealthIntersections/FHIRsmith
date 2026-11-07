@@ -176,6 +176,8 @@ describe('routing rules', () => {
     const s4 = loadSettings([], {}, { ...config, server: { cluster: { maxOutstanding: 0, queueSeconds: 0, ownerQueueSeconds: 0 } } });
     expect([s4.maxOutstanding, s4.queueMs, s4.ownerQueueMs]).toEqual([0, 0, 0]);
     expect([s.cooldownMs, loadSettings([], {}, { ...config, server: { cluster: { cooldownSeconds: 0 } } }).cooldownMs]).toEqual([2000, 0]);
+    // a process that hasn't begun its response: 504 after 60 s; 0 is none
+    expect([s.upstreamTimeoutMs, ...[0, 2.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { upstreamTimeoutSeconds: v } } }).upstreamTimeoutMs)]).toEqual([60000, 0, 2500]);
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never
     expect([s.recycleMs, loadSettings([], {}, { ...config, server: { cluster: { recycleSeconds: 0 } } }).recycleMs]).toEqual([30000, 0]);
     expect(loadSettings([], {}, { ...config, server: { memory: { rejectFraction: 0.8 } } }).memory).toEqual({ rejectFraction: 0.8 });
@@ -464,7 +466,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, upstreamTimeoutSeconds 60, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
@@ -512,6 +514,81 @@ describe('the launcher, with fake processes', () => {
       expect((await Promise.all(slow)).map(x => x.status)).toEqual([200, 200]);
       await stopped;
       launcher = null;
+    });
+  });
+
+  describe('a process that doesn\'t begin its response in upstreamTimeoutSeconds', () => {
+    const OUTCOME = /^The worker tx1 process did not begin its response in 0\.5 s \(server\.cluster\.upstreamTimeoutSeconds\)/;
+    const timed = async (urlPath) => {
+      const t0 = Date.now();
+      const r = await get(PORT, urlPath);
+      return { ...r, ms: Date.now() - t0 };
+    };
+
+    test('a wedged worker: 504 within the timeout, the others keep serving, and after 3 in a row it is routed around', async () => {
+      const lines = [];
+      launcher = createLauncher({
+        ...settings(false), upstreamTimeoutMs: 500, log: (m) => lines.push(m),
+        command: (proc) => [process.execPath, [FAKE, proc.code, String(proc.port), '', proc.code === 'tx1' ? 'hang' : '']]
+      });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const tx1 = launcher.procs.find(p => p.code === 'tx1');
+      const results = [];
+      while (results.filter(r => r.status === 504).length < 3) {
+        expect(results.length).toBeLessThan(10);
+        results.push(await timed('/r4/ValueSet/$expand'));
+      }
+      for (const r of results) {
+        if (r.status === 504) {
+          expect(r.ms).toBeGreaterThanOrEqual(450);
+          expect(r.ms).toBeLessThan(1500);
+          expect(r.json.issue[0].code).toBe('timeout');
+          expect(r.json.issue[0].details.text).toMatch(OUTCOME);
+        } else {
+          expect([r.status, r.json.code]).toEqual([200, 'tx2']);
+        }
+      }
+      // its slots are free; it cools, and the next requests all go to tx2, at once
+      expect(tx1.outstanding).toBe(0);
+      expect(tx1.coolUntil).toBeGreaterThan(Date.now());
+      for (let i = 0; i < 4; i++) {
+        const r = await timed('/r4/ValueSet/$expand');
+        expect([r.status, r.json.code]).toEqual([200, 'tx2']);
+        expect(r.ms).toBeLessThan(400);
+      }
+      const warnings = lines.filter(l => l.startsWith('WARNING worker tx1 did not begin its response'));
+      expect(warnings).toHaveLength(3);
+      expect(warnings[0]).toMatch(/to GET \/r4\/ValueSet\/\$expand in 0\.5 s: answered 504 and aborted \(1 in a row\)$/);
+      expect(warnings[2]).toMatch(/\(3 in a row; no new requests for 2 s while another can take them\)$/);
+      expect(lines.filter(l => l.startsWith('limits:'))[0]).toMatch(/ upstreamTimeoutSeconds 0\.5, /);
+    });
+
+    test('the timed-out request frees its slot: the one waiting for it is served', async () => {
+      launcher = createLauncher({
+        ...settings(false), maxOutstanding: 1, queueMs: 5000, upstreamTimeoutMs: 500,
+        procs: settings(false).procs.slice(0, 2)
+      });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const hung = timed('/r4/ValueSet/$expand?delay=600000');
+      await until(() => launcher.procs[1].outstanding === 1);
+      const next = timed('/r4/ValueSet/$expand');
+      const [h, n] = await Promise.all([hung, next]);
+      expect(h.status).toBe(504);
+      expect(h.ms).toBeLessThan(1500);
+      expect([n.status, n.json.code]).toEqual([200, 'tx1']);
+      expect(n.ms).toBeLessThan(1500);
+      expect(launcher.procs[1].outstanding).toBe(0);
+    });
+
+    test('upstreamTimeoutSeconds 0: no timeout', async () => {
+      launcher = createLauncher({ ...settings(false), upstreamTimeoutMs: 0 });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const r = await timed('/r4/ValueSet/$expand?delay=1500');
+      expect([r.status, r.json.code]).toEqual([200, expect.stringMatching(/^tx[12]$/)]);
+      expect(r.ms).toBeGreaterThanOrEqual(1450);
     });
   });
 

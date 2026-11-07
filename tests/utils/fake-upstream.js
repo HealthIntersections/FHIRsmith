@@ -1,10 +1,10 @@
 // A stand-in for a server process, for tests/server/cluster-launcher.test.js:
-//   node fake-upstream.js <code> <port> [keepAliveTimeout ms]
+//   node fake-upstream.js <code> <port> [keepAliveTimeout ms] [hang]
 // /health answers 200; anything else answers {code, url, xff, proto} as JSON, after
-// ?delay=<ms>, with ?status=<code> (503 with Retry-After). On SIGTERM it finishes the
-// requests it has, then exits.
+// ?delay=<ms>, with ?status=<code> (503 with Retry-After). With `hang` (a wedged process),
+// nothing but /health is ever answered. On SIGTERM it finishes the requests it has, then exits.
 const http = require('http');
-const [code, port, keepAlive] = process.argv.slice(2);
+const [code, port, keepAlive, hang] = process.argv.slice(2);
 let metrics = null;
 const startedAt = Date.now();
 process.on('message', message => {
@@ -26,6 +26,9 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/metrics') {
     res.end(JSON.stringify({ metrics }));
+    return;
+  }
+  if (hang === 'hang') {
     return;
   }
   const query = new URL(req.url, 'http://x').searchParams;

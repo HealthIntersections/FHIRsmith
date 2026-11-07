@@ -24,6 +24,8 @@
  *    than maxOutstanding, ahead of the others, leaving them normalMinSlots
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
+ *  - answers 504 for a process that hasn't begun its response in upstreamTimeoutSeconds, and
+ *    aborts that request; after SUSPECT_TIMEOUTS in a row, the process cools as on a 503
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
  *  - restarts a tx-worker held over the memory guard's refusal threshold for recycleSeconds
  *    with no request at work
@@ -60,6 +62,14 @@ const OWNER_QUEUE_MS = 30000;
 // a process that answered 503 gets no new requests for this long while another can take
 // them. Short: its memory guard re-measures only when a request arrives
 const COOLDOWN_MS = 2000;
+// a process that hasn't begun its response this long after the request was sent is taken to be
+// wedged: the client gets 504 and the request is aborted. The operation limit
+// (modules.tx.operationTimeLimit, 20 s) counts an operation's own compute, not the turns it
+// waits for others on its event loop, so a heavy one in a busy process takes longer by the
+// clock: three times it. Time in the launcher's queue is apart
+const UPSTREAM_TIMEOUT_MS = 60000;
+// this many timeouts in a row, and the process cools (as on a 503) while another can take them
+const SUSPECT_TIMEOUTS = 3;
 // a tx-worker over the memory guard's refusal threshold this long, with no request at work, is
 // restarted (cluster.md, "Memory"): past the guard's own GC and trims, short next to a retry
 const RECYCLE_MS = 30000;
@@ -127,6 +137,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
     cooldownMs: Number(cluster.cooldownSeconds ?? COOLDOWN_MS / 1000) * 1000,
+    upstreamTimeoutMs: Number(cluster.upstreamTimeoutSeconds ?? UPSTREAM_TIMEOUT_MS / 1000) * 1000,
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
     // the number of workers was not given: fewer if memory is short (see sizeWorkers)
     workersDefault: !workersGiven,
@@ -288,6 +299,7 @@ function createLauncher(settings) {
   const queueMs = settings.queueMs ?? QUEUE_MS; // 0: refuse at once
   const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
   const cooldownMs = settings.cooldownMs ?? COOLDOWN_MS; // 0: none
+  const upstreamTimeoutMs = settings.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS; // 0: none
   const recycleMs = settings.recycleMs ?? RECYCLE_MS; // 0: never
   // (tests give their own)
   const memory = settings.memorySampler || memorySampler(settings.memory);
@@ -300,7 +312,7 @@ function createLauncher(settings) {
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
-    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
@@ -574,7 +586,10 @@ function createLauncher(settings) {
     const sent = { at: Date.now() };
     target.sentAt.add(sent);
     let finished = false;
+    let timedOut = false;
+    let timer = null;
     const finish = () => {
+      clearTimeout(timer);
       if (!finished) {
         finished = true;
         target.outstanding--;
@@ -598,6 +613,8 @@ function createLauncher(settings) {
     const upstream = http.request({
       host: '127.0.0.1', port: target.port, method: req.method, path: req.url, headers, agent: target.agent
     }, (ures) => {
+      clearTimeout(timer);
+      target.timeouts = 0;
       if (ures.statusCode === 503 && cooldownMs > 0) {
         target.coolUntil = Date.now() + cooldownMs;
         setTimeout(sendWaiting, cooldownMs).unref();
@@ -614,6 +631,9 @@ function createLauncher(settings) {
       ures.on('error', () => res.destroy());
     });
     upstream.on('error', (err) => {
+      if (timedOut) {
+        return;
+      }
       if (!res.headersSent) {
         fail(res, 502, `The ${target.name} process did not answer (${err.code || err.message})`);
       } else {
@@ -627,6 +647,23 @@ function createLauncher(settings) {
       }
       finish();
     });
+    // until the response begins; a response already streaming is not timed
+    if (upstreamTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        target.timeouts++;
+        const suspect = target.timeouts >= SUSPECT_TIMEOUTS && cooldownMs > 0;
+        log(`WARNING ${target.name} did not begin its response to ${req.method} ${req.url} in ${upstreamTimeoutMs / 1000} s: answered 504 and aborted ` +
+          `(${target.timeouts} in a row${suspect ? `; no new requests for ${cooldownMs / 1000} s while another can take them` : ''})`);
+        if (suspect) {
+          target.coolUntil = Date.now() + cooldownMs;
+          setTimeout(sendWaiting, cooldownMs).unref();
+        }
+        upstream.destroy();
+        fail(res, 504, `The ${target.name} process did not begin its response in ${upstreamTimeoutMs / 1000} s (server.cluster.upstreamTimeoutSeconds); the request was abandoned`, false, 'timeout');
+        finish();
+      }, upstreamTimeoutMs);
+    }
     req.pipe(upstream);
   }
 
@@ -699,11 +736,11 @@ function createLauncher(settings) {
   }
 
   // close: the request body has not been read, and an overloaded server sheds the connection too
-  function fail(res, status, text, close = false) {
+  function fail(res, status, text, close = false, code = 'transient') {
     res.writeHead(status, { 'Content-Type': 'application/fhir+json', 'Retry-After': '5', ...(stopping || close ? { Connection: 'close' } : {}) });
     res.end(JSON.stringify({
       resourceType: 'OperationOutcome',
-      issue: [{ severity: 'error', code: 'transient', details: { text }, diagnostics: text }]
+      issue: [{ severity: 'error', code, details: { text }, diagnostics: text }]
     }));
   }
 
@@ -733,7 +770,7 @@ function createLauncher(settings) {
     });
     sizeWorkers(master);
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
-    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, ` +
+    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
