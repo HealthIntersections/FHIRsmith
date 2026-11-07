@@ -220,9 +220,9 @@ class Provider {
    * OperationContext.buildProviderOnce). The caller registers the provider for closing.
    */
   buildOnce(opContext, factory, supplements) {
-    // system|version is the factory's own key in codeSystemFactories
-    const key = factory.system() + '|' + (factory.version() ?? '') + ' ' + (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
-    return opContext.buildProviderOnce(key, () => factory.build(opContext, supplements));
+    // the factory is the code system and version; the supplements make a different provider
+    const variant = (supplements || []).map(cs => cs.vurl || cs.url).sort().join(' ');
+    return opContext.buildProviderOnce(factory, variant, () => factory.build(opContext, supplements));
   }
 
   loadSupplements(url, version, statedSupplements) {

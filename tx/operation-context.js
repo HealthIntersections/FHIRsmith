@@ -1083,7 +1083,8 @@ class OperationContext {
     // providers are cleaned up by the parent request's closeProviders().
     // closed: closeProviders() has run, so one registered later (a build that
     // finished after the client went) is closed at once - nothing else will.
-    // built: the providers built so far (see buildProviderOnce), kept with the list that
+    // built: the providers built so far, factory -> variant -> provider (see
+    // buildProviderOnce), kept with the list that
     // closes them, so whatever shares one shares the other.
     this._providers = { open: [], closed: false, built: new Map() };
     // Compute-time accounting for the deadline and for yielding. One object,
@@ -1436,21 +1437,28 @@ class OperationContext {
    * build is not kept, so the next call tries again. The caller registers the provider for
    * closing (registerProvider), as for any other.
    *
-   * @param {string} key - what identifies the provider (see Provider.buildOnce)
+   * @param {Object} factory - the factory that builds it (the same factory object is the same
+   *   code system and version, however it was looked up)
+   * @param {string} variant - what else makes a different provider (see Provider.buildOnce:
+   *   the supplements)
    * @param {function(): Promise<Object>} build
    * @returns {Promise<Object>}
    */
-  buildProviderOnce(key, build) {
-    const built = this._providers.built;
-    let provider = built.get(key);
+  buildProviderOnce(factory, variant, build) {
+    let built = this._providers.built.get(factory);
+    if (!built) {
+      built = new Map();
+      this._providers.built.set(factory, built);
+    }
+    let provider = built.get(variant);
     if (!provider) {
       provider = Promise.resolve(build());
       provider.catch(() => {
-        if (built.get(key) === provider) {
-          built.delete(key);
+        if (built.get(variant) === provider) {
+          built.delete(variant);
         }
       });
-      built.set(key, provider);
+      built.set(variant, provider);
     }
     return provider;
   }

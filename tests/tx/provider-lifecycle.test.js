@@ -102,8 +102,9 @@ describe('provider lifecycle', () => {
     const ctx = new OperationContext('en', getTxModule().i18n, 'x', 20, null, null);
     let calls = 0;
     const build = () => { calls++; return calls === 1 ? Promise.reject(new Error('no')) : Promise.resolve({ close() {} }); };
-    await expect(ctx.buildProviderOnce('k', build)).rejects.toThrow('no');
-    await expect(ctx.buildProviderOnce('k', build)).resolves.toBeTruthy();
+    const factory = {};
+    await expect(ctx.buildProviderOnce(factory, '', build)).rejects.toThrow('no');
+    await expect(ctx.buildProviderOnce(factory, '', build)).resolves.toBeTruthy();
     expect(calls).toBe(2);
   });
 
