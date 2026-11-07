@@ -72,6 +72,26 @@ Add the `tx` section to your `config.json`:
 | `internalLimit`                 | integer | No       | Largest number of codes in internal expansions                                                          |
 | `externalLimit`                 | integer | No       | Largest number of codes the server will return in an expansion                                          |
 | `endpoints`                     | array   | Yes      | List of endpoint configurations (at least one required)                                                 |
+| `vsacCfg`                       | object  | No       | Settings for the VSAC value set provider; required if the library loads VSAC (see below)              |
+
+### VSAC Configuration
+
+`vsacCfg` configures the VSAC provider (a `vsac` source in the library). The value sets are
+synced from VSAC into a SQLite database in the terminology cache folder, and read from it when
+they are asked for; only the recently used ones are kept parsed in memory.
+
+| Option                 | Type    | Required | Description                                                                                       |
+|------------------------|---------|----------|---------------------------------------------------------------------------------------------------|
+| `apiKey`               | string  | Yes      | UMLS API key for VSAC                                                                             |
+| `baseUrl`              | string  | No       | VSAC FHIR server. Default: `https://cts.nlm.nih.gov/fhir`                                         |
+| `refreshIntervalHours` | number  | No       | Hours between syncs. A failed sync is retried after 1, 5, then every 30 minutes. Default: 24      |
+| `timeoutMs`            | integer | No       | Timeout for requests to VSAC, in milliseconds. Default: 120000                                    |
+| `resyncPassword`       | string  | No       | If set, the /info page offers a form (gated by this password) to resync one value set now        |
+| `valueSetCacheMB`      | number  | No       | Size of the recently used value sets kept parsed, measured by their stored JSON; 0 keeps none. Default: 64 |
+
+`valueSetCacheMB` is measured in stored JSON, not memory: parsed value sets take several
+times as much heap as their JSON (so expect a few hundred MB of heap at the default), and in
+cluster mode every worker keeps its own.
 
 ### Endpoint Configuration
 
