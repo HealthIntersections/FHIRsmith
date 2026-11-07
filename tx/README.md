@@ -124,7 +124,7 @@ These are constants in the code, not settings; they are listed so their effects 
 | Memory per code, for the default of `expansionCacheMaxCodes` | 1 KB | only the derived default (`operation-context.js`) |
 | Share of the heap, for the default of `expansionCacheMaxCodes` | 0.25 | a quarter of the V8 heap limit, per process |
 | Shortest expansion that is cached | 250 ms | expansions that took less are not kept in the expansion cache |
-| Longest compute before yielding the event loop | 25 ms | how long one operation can hold up the others (`operation-context.js`, `YIELD_INTERVAL`) |
+| Longest compute before yielding the event loop | 10 ms | how long one operation can hold up the others (`operation-context.js`, `YIELD_INTERVAL`) |
 | ECL nesting depth | 100 | bracketed expressions and refinements; deeper is a parse error |
 | ECL sub-expressions | 500 | focus concepts, refinement values, ... (a long `A OR B OR ...` reaches it first); more is a parse error |
 | Resource self-nesting depth | 100 | `CodeSystem.concept` and `ValueSet.expansion.contains` (SNOMED CT is about 30 deep); deeper is a 400 |
