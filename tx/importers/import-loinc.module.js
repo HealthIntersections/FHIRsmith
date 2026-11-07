@@ -591,8 +591,15 @@ class LoincDataMigrator {
     }
 
     const db = new sqlite3.Database(destFile);
+    // Run every statement in submission order, and the whole import as one transaction:
+    // without it each INSERT autocommits and waits on its own fsync (~10 ms each), which
+    // made even the small test fixture take minutes
+    db.serialize();
+    const exec = (sql) => new Promise((resolve, reject) => db.exec(sql, (err) => err ? reject(err) : resolve()));
 
     try {
+      await exec('BEGIN');
+
       // Initialize tracking variables
       this.codeKey = 0;
       this.relKey = 0;
@@ -670,6 +677,7 @@ class LoincDataMigrator {
         }
       }
 
+      await exec('COMMIT');
       if (options.verbose) console.log('LOINC data migration completed successfully');
     } finally {
       await this.closeDatabase(db, options.verbose);
