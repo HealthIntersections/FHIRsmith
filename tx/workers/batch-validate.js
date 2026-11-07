@@ -136,8 +136,12 @@ class BatchValidateWorker extends TerminologyWorker {
           const entryContext = this.opContext.copy({ ownProviders: true });
           let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
-            // a turn for the rest of the event loop between entries (small ones never yield
-            // otherwise), so a disconnect is seen, and the batch stops
+            // Validating an entry never yields the event loop by itself, and IG builds send batches
+            // of up to 1,000 entries (~1 s of compute): give other requests a turn between entries
+            // (checkAndYield yields only after YIELD_INTERVAL ms of compute, so small batches don't),
+            // and see a disconnect. Inside the try: the time limit tripping here is this entry's
+            // too-costly, and the entries already answered keep their answers; a memory abort or
+            // a disconnect is rethrown below and stops the whole batch.
             await this.opContext.checkAndYield('batch-validate');
             let p;
             if (!codeSystemRoute && this.hasValueSet(op.jsonObj.parameter)) {
