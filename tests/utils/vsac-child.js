@@ -9,7 +9,12 @@ const stats = { addTask() {}, task() {}, taskDone() {}, taskError() {} };
 const provider = new VSACValueSetProvider({ apiKey: 'test', cluster: process.argv[2] }, stats);
 provider.log = { error() {} };
 let upstream = [];
-provider._scanLastUpdated = async () => 0;
+// the urls VSAC's _lastUpdated search reports changed (phase 1b of a sync)
+let updated = [];
+provider._scanLastUpdated = async () => {
+  provider.queue.push(...updated);
+  return updated.length;
+};
 provider._fetchBundle = async (url) => {
   const m = /[?&]url=([^&]+)/.exec(url);
   const list = m ? upstream.filter(vs => vs.url === decodeURIComponent(m[1])) : upstream;
@@ -44,6 +49,7 @@ process.on('message', async (msg) => {
         break;
       case 'sync':
         upstream = msg.valueSets;
+        updated = msg.updated || [];
         await provider.refreshValueSets();
         result = await provider.database.getGeneration();
         break;
@@ -54,9 +60,13 @@ process.on('message', async (msg) => {
         break;
       case 'fetch': {
         const vs = await provider.fetchValueSet(msg.url, msg.version || '');
-        result = vs ? vs.version : null;
+        result = vs ? (msg.field ? vs.jsonObj[msg.field] : vs.version) : null;
         break;
       }
+      case 'write':
+        // what a write to the database does in this process: null if it is allowed
+        result = await provider.database.setSetting('write-test', 'x').then(() => null, e => e.code || e.message);
+        break;
       case 'catchUpNow':
         provider.generationCheckedAt = 0;
         await provider.catchUp();

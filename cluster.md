@@ -84,6 +84,13 @@ master loads the library it rebuilds them in a temporary sibling folder and rena
 place, so a running worker never finds one half built; a worker reads the new one when it next
 starts. Only the master removes the folders of sources no longer loaded.
 
+**The VSAC, LOINC and RxNorm databases are the master's too.** The master sets them up as it
+loads: the VSAC schema and content hashes, LOINC's journal mode, and the LOINC and RxNorm
+indexes. A worker opens them read-only and writes nothing, so they can be on read-only storage
+for the workers. A worker started before the master uses LOINC and RxNorm as they are (without
+an index the master hasn't made yet, lookups are slower), and has no VSAC value sets until the
+master has made and migrated that database.
+
 **Nothing else is shared.** The workers run no module but tx, so they never read what the
 package crawler, the XIG download or the registry crawl write.
 

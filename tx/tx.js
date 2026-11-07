@@ -286,6 +286,8 @@ class TXModule {
       this.library.packageCachesReadOnly = config.clusterRole === 'tx-worker';
       // the master refreshes the IANA media types registry; a worker reads its copy
       this.library.mimeTypesReadOnly = config.clusterRole === 'tx-worker';
+      // the master sets up the LOINC and RxNorm databases; a worker opens them read-only
+      this.library.terminologyDatabasesReadOnly = config.clusterRole === 'tx-worker';
     }
 
     // The syndication feed: content is recorded in the store as the library loads it, from

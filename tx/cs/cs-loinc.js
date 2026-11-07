@@ -1369,9 +1369,14 @@ class LoincServices extends BaseCSServices {
 }
 
 class LoincServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the master
+   *   sets the journal mode and makes the indexes; this process opens the file read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -1396,7 +1401,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
   }
 
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
 
     // Enable performance optimizations
     await this.#optimizeDatabase(db);
@@ -1449,6 +1454,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
   async #optimizeDatabase(db) {
     return new Promise((resolve, reject) => {
       db.serialize(() => {
+        if (this.readOnly) {
+          // this connection's settings only; the file is the master's
+          db.run('PRAGMA cache_size = 10000');
+          db.run('PRAGMA temp_store = MEMORY');
+          db.run('PRAGMA mmap_size = 268435456', (err) => err ? reject(err) : resolve());
+          return;
+        }
         db.run('PRAGMA journal_mode = WAL');
         db.run('PRAGMA synchronous = NORMAL');
         db.run('PRAGMA cache_size = 10000');

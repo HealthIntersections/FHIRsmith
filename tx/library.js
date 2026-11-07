@@ -130,6 +130,13 @@ class Library {
   mimeTypesReadOnly = false;
 
   /**
+   * {boolean} a tx-worker (cluster.md): the LOINC and RxNorm databases are the master's,
+   * which sets them up (journal mode, indexes) before the workers start. This process opens
+   * them read-only
+   */
+  terminologyDatabasesReadOnly = false;
+
+  /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
    * syndication feed, when the server has one (see tx/syndication)
    */
@@ -661,7 +668,7 @@ class Library {
       return;
     }
 
-    const loinc = new LoincServicesFactory(this.i18n, loincFN);
+    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly });
     await loinc.load();
     this.registerProvider(loincFN, loinc, isDefault);
     this.#syndicateBinary('loinc', loincFN, loinc);
@@ -672,7 +679,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const rxn = new RxNormServicesFactory(this.i18n, rxNormFN);
+    const rxn = new RxNormServicesFactory(this.i18n, rxNormFN, { readOnly: this.terminologyDatabasesReadOnly });
     await rxn.load();
     this.registerProvider(rxNormFN, rxn, isDefault);
     this.#syndicateBinary('rxnorm', rxNormFN, rxn);

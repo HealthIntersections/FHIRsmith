@@ -783,10 +783,15 @@ class RxNormServices extends BaseCSServices {
 }
 
 class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath, isNCI = false) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the master
+   *   makes the indexes; this process opens the file read-only
+   */
+  constructor(i18n, dbPath, isNCI = false, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
     this.isNCI = isNCI;
+    this.readOnly = !!options.readOnly;
     this._loaded = false;
     this._sharedData = null;
   }
@@ -810,14 +815,19 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  #open() {
+    return this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+  }
+
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     try {
       // indexes the importer makes now, for databases imported before it did. A one-off cost
       // the first time an older database is loaded. A database that can't be written (read-only
-      // file or mount) is used as it is: the indexes only make lookups faster
-      for (const sql of RXNORM_LOAD_INDEXES) {
+      // file or mount) is used as it is: the indexes only make lookups faster. A tx-worker
+      // leaves them to the master
+      for (const sql of this.readOnly ? [] : RXNORM_LOAD_INDEXES) {
         await new Promise((resolve, reject) => {
           db.run(sql, guarded(reject, err => {
             if (err && err.code === 'SQLITE_READONLY') {
@@ -920,7 +930,7 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
     this.recordUse();
 
     // Create fresh database connection for this provider instance
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     return new RxNormServices(opContext, supplements, db, this._sharedData, this.isNCI);
   }
@@ -959,15 +969,15 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
 
 // Specific RxNorm implementation
 class RxNormServicesFactory extends RxNormTypeServicesFactory {
-  constructor(languageDefinitions, dbPath) {
-    super(languageDefinitions, dbPath, false);
+  constructor(languageDefinitions, dbPath, options = {}) {
+    super(languageDefinitions, dbPath, false, options);
   }
 }
 
 // NCI Meta implementation
 class NCIServicesFactory extends RxNormTypeServicesFactory {
-  constructor(languageDefinitions, dbPath) {
-    super(languageDefinitions, dbPath, true);
+  constructor(languageDefinitions, dbPath, options = {}) {
+    super(languageDefinitions, dbPath, true, options);
   }
 }
 

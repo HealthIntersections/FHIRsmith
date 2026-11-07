@@ -167,7 +167,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
     this.cluster = config.cluster || null;
-    this.database = new ValueSetDatabase(this.dbPath, { shared: !!this.cluster });
+    // a follower only reads: the master creates and migrates the file (a file not migrated
+    // yet fails to open, and is tried again on the next use)
+    this.database = new ValueSetDatabase(this.dbPath, { shared: !!this.cluster, readOnly: this.cluster === 'follower' });
     // The value sets aren't held in memory: each one is read from the database when it is
     // asked for (see fetchValueSet), apart from the recently used ones (see RecentValueSets).
     // This is the count of urls as of the last recount
@@ -238,7 +240,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     if (this.cluster === 'follower') {
       // the master creates the database and syncs; this process only reads
       if (await this.database.exists()) {
-        await this._followDatabase();
+        try {
+          await this._followDatabase();
+        } catch (error) {
+          // not migrated yet by the master: no value sets until a catch-up finds it done
+          console.log(`VSAC: ${error.message}; trying again on use`);
+        }
       }
       this.initialized = true;
       return;

@@ -125,6 +125,31 @@ describe('VSAC value sets, master and worker', () => {
     expect(await b.call('fetch', { url, version: '2' })).toBe('2');
   });
 
+  test('the worker opens the database read-only: its writes fail, the master\'s don\'t', async () => {
+    const a = await spawn('leader');
+    await a.call('init');
+    const b = await spawn('follower');
+    await b.call('init');
+    expect(await b.call('write')).toBe('SQLITE_READONLY');
+    expect(await a.call('write')).toBeNull();
+  });
+
+  test('a value set whose content changes but not its version reaches the worker', async () => {
+    const a = await spawn('leader');
+    await a.call('init');
+    const b = await spawn('follower');
+    await b.call('init');
+    const url = 'http://cts.nlm.nih.gov/fhir/ValueSet/one';
+    await a.call('sync', { valueSets: [{ ...vs('one', '1'), title: 'Before' }] });
+    expect(await b.call('catchUpNow')).toBe(2);
+    // held by the worker among its recently used value sets
+    expect(await b.call('fetch', { url, version: '1', field: 'title' })).toBe('Before');
+    // VSAC's _lastUpdated search reports it changed
+    expect(await a.call('sync', { valueSets: [{ ...vs('one', '1'), title: 'After' }], updated: [url] })).toBe(3);
+    expect(await b.call('catchUpNow')).toBe(3);
+    expect(await b.call('fetch', { url, version: '1', field: 'title' })).toBe('After');
+  });
+
   test('a worker started before the master has made the database leaves it alone', async () => {
     const b = await spawn('follower');
     expect(await b.call('init')).toBe('follower');
