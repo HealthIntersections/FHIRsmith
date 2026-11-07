@@ -1064,7 +1064,9 @@ class OperationContext {
     // resources (sqlite connections, etc.) released when the operation ends.
     // Shared by reference with copy()'d contexts so a sub-operation's
     // providers are cleaned up by the parent request's closeProviders().
-    this._openProviders = [];
+    // closed: closeProviders() has run, so one registered later (a build that
+    // finished after the client went) is closed at once - nothing else will.
+    this._providers = { open: [], closed: false };
     // Compute-time accounting for the deadline and for yielding. One object,
     // shared by reference with copy()'d contexts, so an operation and its
     // sub-operations (e.g. batch entries) draw down a single budget:
@@ -1120,9 +1122,11 @@ class OperationContext {
     newContext.usageTracker = this.usageTracker;
     // Share the same provider-cleanup list so providers opened by the copy
     // are released when the parent operation ends - unless the caller will
-    // release them itself.
-    if (!options.ownProviders) {
-      newContext._openProviders = this._openProviders;
+    // release them itself, with a list of its own.
+    if (options.ownProviders) {
+      newContext._providers = { open: [], closed: false };
+    } else {
+      newContext._providers = this._providers;
     }
     // Share the compute clock: sub-operations spend the parent's budget.
     newContext._clock = this._clock;
@@ -1149,6 +1153,8 @@ class OperationContext {
     if (this.debugging) {
       return false;
     }
+    // a flag, so cheap: once the client has gone, stop at the next check, not the next yield
+    this.abandonIfClientGone(place);
 
     OperationContext._checkCounter++;
     if (OperationContext._checkCounter < CHECK_FREQUENCY) {
@@ -1177,7 +1183,10 @@ class OperationContext {
       const pct = Math.round(memoryGuard._state.abortFraction * 100);
       this.log(`Memory Limit: ${usedGB} GB of ${limitGB} GB limit @ ${place}`);
       const error = new Issue("error", "too-costly", null, null,
-          `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${pct}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422);
+          `Operation aborted: server memory usage (${usedGB} GB) exceeds safe threshold (${pct}% of ${limitGB} GB limit) at ${place}`, "too-costly", 422).handleAsOO(422);
+      // the whole operation stops: as an OperationOutcome, not a validation's result, and a
+      // batch doesn't go on to its next entry
+      error.memoryAbort = true;
       error.diagnostics = this.diagnostics();
       throw error;
     }
@@ -1197,9 +1206,9 @@ class OperationContext {
 
   /**
    * Mark that the client for this operation disconnected before the response
-   * was sent. The operation is aborted at its next yield point - there is no
-   * one left to send the result to. (Wired up by the request middleware from
-   * the response 'close' event.)
+   * was sent. The operation is aborted at its next check (deadCheck,
+   * checkAndYield, waitFor) - there is no one left to send the result to.
+   * (Wired up by the request middleware from the response 'close' event.)
    */
   markClientGone() {
     this._clock.clientGone = true;
@@ -1232,14 +1241,7 @@ class OperationContext {
       const resumed = performance.now();
       this._clock.sliceStart = resumed;
       this._clock.lastYield = resumed;
-      if (this._clock.clientGone) {
-        this.log(`Operation abandoned @ ${place}: client disconnected`);
-        const error = new Issue("error", "too-costly", null, null,
-            `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
-        error.abandoned = true;
-        error.diagnostics = this.diagnostics();
-        throw error;
-      }
+      this.abandonIfClientGone(place);
     }
   }
 
@@ -1265,15 +1267,25 @@ class OperationContext {
       this._clock.sliceStart = resumed;
       this._clock.lastYield = resumed;
     }
+    this.abandonIfClientGone(place);
+    return result;
+  }
+
+  /**
+   * Throw (422, abandoned) if the client has disconnected (markClientGone). The error is
+   * handled as an OperationOutcome (Issue.handleAsOO), so a validation doesn't report it as
+   * its result, and a batch stops at it rather than carry on with the next entry.
+   * @param {string} place - Location identifier for debugging
+   */
+  abandonIfClientGone(place) {
     if (this._clock.clientGone) {
       this.log(`Operation abandoned @ ${place}: client disconnected`);
       const error = new Issue("error", "too-costly", null, null,
-          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422);
+          `Operation abandoned at ${place}: the client disconnected before the response was ready`, "too-costly", 422).handleAsOO(422);
       error.abandoned = true;
       error.diagnostics = this.diagnostics();
       throw error;
     }
-    return result;
   }
 
   unSeeAll() {
@@ -1388,21 +1400,24 @@ class OperationContext {
    * @param {Object} provider - The provider returned from factory.build()
    */
   registerProvider(provider) {
-    if (provider && typeof provider.close === 'function') {
-      this._openProviders.push(provider);
+    // once: a provider can be shared within an operation (Provider.buildOnce)
+    if (provider && typeof provider.close === 'function' && !this._providers.open.includes(provider)) {
+      this._providers.open.push(provider);
+      if (this._providers.closed) {
+        this.closeProviders().catch(() => {});
+      }
     }
   }
 
   /**
-   * Close every provider registered during this operation. Safe to call
-   * multiple times — the list is cleared after the first call. Errors
+   * Close every provider registered during this operation, including through
+   * a copy. Safe to call multiple times — the list is emptied each time. Errors
    * from individual close() calls are swallowed so one bad provider can't
    * prevent the others from releasing their resources.
    */
   async closeProviders() {
-    if (!this._openProviders || this._openProviders.length === 0) return;
-    const providers = this._openProviders;
-    this._openProviders = [];
+    this._providers.closed = true;
+    const providers = this._providers.open.splice(0);
     for (const p of providers) {
       try {
         await p.close();
