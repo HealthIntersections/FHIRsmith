@@ -16,6 +16,7 @@ const zlib = require('zlib');
 const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const { guarded } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
@@ -826,10 +827,10 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
     parts.push('</tr>');
 
     const resourceRows = await new Promise((resolve, reject) => {
-      xigDb.all(resourceQuery, qp, (err, rows) => {
+      xigDb.all(resourceQuery, qp, guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
 
     // Determine resource type prefix for links
@@ -972,10 +973,10 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
 async function fetchResourceRows(queryParams, offset = 0, limit = 200) {
   const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, limit);
   return new Promise((resolve, reject) => {
-    xigDb.all(resourceQuery, qp, (err, rows) => {
+    xigDb.all(resourceQuery, qp, guarded(reject, (err, rows) => {
       if (err) reject(err);
       else resolve(rows || []);
-    });
+    }));
   });
 }
 
@@ -1121,10 +1122,10 @@ async function buildSummaryStats(queryParams, baseUrl) {
           }
 
           const count = await new Promise((resolve, reject) => {
-            xigDb.get(sql, [], (err, row) => {
+            xigDb.get(sql, [], guarded(reject, (err, row) => {
               if (err) reject(err);
               else resolve(row ? row.count : 0);
-            });
+            }));
           });
 
           const linkUrl = buildVersionLinkUrl(baseUrl, queryParams, version);
@@ -1149,10 +1150,10 @@ async function buildSummaryStats(queryParams, baseUrl) {
       }
 
       const authorityResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], (err, rows) => {
+        xigDb.all(sql, [], guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        });
+        }));
       });
 
       authorityResults.forEach(row => {
@@ -1182,10 +1183,10 @@ async function buildSummaryStats(queryParams, baseUrl) {
       }
 
       const realmResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], (err, rows) => {
+        xigDb.all(sql, [], guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        });
+        }));
       });
 
       var c = 0;
@@ -1828,7 +1829,7 @@ function validateDatabaseFile(filePath) {
       }
 
       // Try a simple query to ensure the database is accessible
-      testDb.get("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1", (err) => {
+      testDb.get("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1", guarded(reject, (err) => {
         testDb.close();
 
         if (err) {
@@ -1836,7 +1837,7 @@ function validateDatabaseFile(filePath) {
         } else {
           resolve();
         }
-      });
+      }));
     });
   });
 }
@@ -1864,13 +1865,13 @@ async function loadConfigCache() {
     // Helper function for simple queries
     const executeQuery = (sql, params = []) => {
       return new Promise((resolve, reject) => {
-        xigDb.all(sql, params, (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) {
             reject(err);
           } else {
             resolve(rows);
           }
-        });
+        }));
       });
     };
 
@@ -2074,14 +2075,14 @@ async function updateXigDatabase(trigger = 'manual') {
     entry.status = 'validated';
 
     if (xigDb) {
-      await new Promise((resolve) => {
-        xigDb.close((err) => {
+      await new Promise((resolve, reject) => {
+        xigDb.close(guarded(reject, (err) => {
           if (err) {
             xigLog.warn(`Warning: Error closing existing database: ${err.message}`);
           }
           xigDb = null;
           resolve();
-        });
+        }));
       });
     }
 
@@ -2142,7 +2143,7 @@ router.use(trackRequest);
 
 // Statistics functions
 function getDatabaseTableCounts() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!xigDb) {
       resolve({ packages: 0, resources: 0 });
       return;
@@ -2152,7 +2153,7 @@ function getDatabaseTableCounts() {
     let completedQueries = 0;
     const totalQueries = 2;
 
-    xigDb.get('SELECT COUNT(*) as count FROM Packages', [], (err, row) => {
+    xigDb.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
       if (err) {
         counts.packages = 0;
       } else {
@@ -2163,9 +2164,9 @@ function getDatabaseTableCounts() {
       if (completedQueries === totalQueries) {
         resolve(counts);
       }
-    });
+    }));
 
-    xigDb.get('SELECT COUNT(*) as count FROM Resources', [], (err, row) => {
+    xigDb.get('SELECT COUNT(*) as count FROM Resources', [], guarded(reject, (err, row) => {
       if (err) {
         counts.resources = 0;
       } else {
@@ -2176,7 +2177,7 @@ function getDatabaseTableCounts() {
       if (completedQueries === totalQueries) {
         resolve(counts);
       }
-    });
+    }));
   });
 }
 
@@ -2398,7 +2399,7 @@ function getDatabaseInfo() {
       return;
     }
 
-    xigDb.get("SELECT COUNT(*) as tableCount FROM sqlite_master WHERE type='table'", (err, row) => {
+    xigDb.get("SELECT COUNT(*) as tableCount FROM sqlite_master WHERE type='table'", guarded(reject, (err, row) => {
       if (err) {
         reject(err);
       } else {
@@ -2409,7 +2410,7 @@ function getDatabaseInfo() {
           fileSize: fs.existsSync(XIG_DB_PATH) ? fs.statSync(XIG_DB_PATH).size : 0
         });
       }
-    });
+    }));
   });
 }
 
@@ -2514,13 +2515,13 @@ router.get('/', async (req, res) => {
         if (xigDb) {
           const {query: countQuery, params: countParams} = buildSecureResourceCountQuery(queryParams);
           resourceCount = await new Promise((resolve, reject) => {
-            xigDb.get(countQuery, countParams, (err, row) => {
+            xigDb.get(countQuery, countParams, guarded(reject, (err, row) => {
               if (err) {
                 reject(err);
               } else {
                 resolve(row ? row.total : 0);
               }
-            });
+            }));
           });
         }
       } catch (error) {
@@ -2687,10 +2688,10 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
       `;
 
       const resourceData = await new Promise((resolve, reject) => {
-        xigDb.get(resourceQuery, [packageObj.PackageKey, resourceType, resourceId], (err, row) => {
+        xigDb.get(resourceQuery, [packageObj.PackageKey, resourceType, resourceId], guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row);
-        });
+        }));
       });
 
       if (!resourceData) {
@@ -2837,10 +2838,10 @@ async function buildResourceDependencies(resourceData, secure = false) {
     `;
 
     const dependencies = await new Promise((resolve, reject) => {
-      xigDb.all(dependenciesQuery, [resourceData.ResourceKey], (err, rows) => {
+      xigDb.all(dependenciesQuery, [resourceData.ResourceKey], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
 
     if (dependencies.length === 0) {
@@ -2862,10 +2863,10 @@ async function buildResourceDependencies(resourceData, secure = false) {
     `;
 
     const uses = await new Promise((resolve, reject) => {
-      xigDb.all(usesQuery, [resourceData.ResourceKey], (err, rows) => {
+      xigDb.all(usesQuery, [resourceData.ResourceKey], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
 
     if (uses.length === 0) {
@@ -2902,10 +2903,10 @@ async function buildExtensionExamplesSection(resourceUrl) {
     `;
 
     const extensionExamples = await new Promise((resolve, reject) => {
-      xigDb.all(extensionExamplesQuery, [resourceUrl], (err, rows) => {
+      xigDb.all(extensionExamplesQuery, [resourceUrl], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
 
     if (extensionExamples.length === 0) {
@@ -3005,10 +3006,10 @@ async function buildResourceNarrative(resourceKey, packageObj) {
     const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
 
     const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], (err, row) => {
+      xigDb.get(contentsQuery, [resourceKey], guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row);
-      });
+      }));
     });
 
     if (!blobData || !blobData.Json) {
@@ -3067,10 +3068,10 @@ async function buildResourceSource(resourceKey) {
     const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
 
     const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], (err, row) => {
+      xigDb.get(contentsQuery, [resourceKey], guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row);
-      });
+      }));
     });
 
     if (!blobData || !blobData.Json) {
@@ -3377,7 +3378,7 @@ async function dailyReport({since, now}) {
   } else {
     try {
       const row = await new Promise((resolve, reject) =>
-        xigDb.get('SELECT COUNT(*) AS n FROM Resources', [], (err, row) => err ? reject(err) : resolve(row)));
+        xigDb.get('SELECT COUNT(*) AS n FROM Resources', [], guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
       sentences.push(`The database holds ${plural(row.n, 'resource')}.`);
     } catch (e) {
       sentences.push(`The database could not be accessed: ${e.message}.`);
@@ -3387,16 +3388,16 @@ async function dailyReport({since, now}) {
 }
 
 function shutdown() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (xigDb) {
-      xigDb.close((err) => {
+      xigDb.close(guarded(reject, (err) => {
         if (err) {
           xigLog.error(`Error closing XIG database: ${err.message}`);
         } else {
           xigLog.error('XIG database connection closed');
         }
         resolve();
-      });
+      }));
     } else {
       resolve();
     }

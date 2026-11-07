@@ -20,6 +20,7 @@ const lusca = require('lusca');
 const folders = require('../library/folder-setup');
 const { SqliteSessionStore } = require('../library/sqlite-session-store');
 const escape = require('escape-html');
+const { guarded } = require('../library/sqlite-utilities');
 
 
 const Logger = require('../library/logger');
@@ -74,7 +75,7 @@ class TokenModule {
         }
 
         // Create tables
-        this.db.serialize(() => {
+        this.db.serialize(guarded(reject, () => {
           // Users table - enhanced with OAuth data
           this.db.run(`
             CREATE TABLE IF NOT EXISTS users (
@@ -146,7 +147,7 @@ class TokenModule {
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_stats(date)`);
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_security_log_user ON security_log(user_id)`);
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_security_log_event ON security_log(event_type)`);
-        });
+        }));
 
         this.log.info(`Token database initialized: ${dbPath}`);
         resolve();
@@ -783,7 +784,7 @@ class TokenModule {
       this.db.get(
         'SELECT id FROM users WHERE (email = ?) OR (provider = ? AND provider_id = ?)',
         [userData.email, userData.provider, userData.provider_id],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) {
             reject(err);
             return;
@@ -794,29 +795,29 @@ class TokenModule {
             this.db.run(
               'UPDATE users SET email = ?, name = ?, profile_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
               [userData.email, userData.name, userData.profile_data, row.id],
-              (err) => {
+              guarded(reject, (err) => {
                 if (err) {
                   reject(err);
                 } else {
                   resolve(row.id);
                 }
-              }
+              })
             );
           } else {
             // Create new user
             this.db.run(
               'INSERT INTO users (email, name, provider, provider_id, profile_data) VALUES (?, ?, ?, ?, ?)',
               [userData.email, userData.name, userData.provider, userData.provider_id, userData.profile_data],
-              function(err) {
+              guarded(reject, function(err) {
                 if (err) {
                   reject(err);
                 } else {
                   resolve(this.lastID);
                 }
-              }
+              })
             );
           }
-        }
+        })
       );
     });
   }
@@ -826,10 +827,10 @@ class TokenModule {
       this.db.get(
         'SELECT * FROM users WHERE id = ? AND is_active = 1',
         [userId],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row);
-        }
+        })
       );
     });
   }
@@ -839,10 +840,10 @@ class TokenModule {
       this.db.run(
         'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?',
         [userId],
-        (err) => {
+        guarded(reject, (err) => {
           if (err) reject(err);
           else resolve();
-        }
+        })
       );
     });
   }
@@ -855,10 +856,10 @@ class TokenModule {
          WHERE user_id = ? 
          ORDER BY created_at DESC`,
         [userId],
-        (err, rows) => {
+        guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        }
+        })
       );
     });
   }
@@ -873,10 +874,10 @@ class TokenModule {
         `INSERT INTO api_keys (user_id, key_hash, key_prefix, name, scopes, expires_at, created_ip) 
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [userId, keyHash, keyPrefix, name, scopes, expiresAt, ip],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) reject(err);
           else resolve(this.lastID);
-        }
+        })
       );
     });
   }
@@ -890,7 +891,7 @@ class TokenModule {
         FROM api_keys ak 
         JOIN users u ON ak.user_id = u.id 
         WHERE ak.key_prefix = ? AND ak.is_active = 1 AND u.is_active = 1
-      `, [keyPrefix], async (err, rows) => {
+      `, [keyPrefix], guarded(reject, async (err, rows) => {
         if (err) {
           reject(err);
           return;
@@ -914,7 +915,7 @@ class TokenModule {
         } catch (error) {
           reject(error);
         }
-      });
+      }));
     });
   }
 
@@ -923,13 +924,13 @@ class TokenModule {
       this.db.run(
         'UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?',
         [keyId, userId],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) {
             reject(err);
           } else {
             resolve(this.changes > 0);
           }
-        }
+        })
       );
     });
   }
@@ -940,10 +941,10 @@ class TokenModule {
       this.db.run(
         'UPDATE api_keys SET last_used = CURRENT_TIMESTAMP WHERE id = ?',
         [keyId],
-        (err) => {
+        guarded(reject, (err) => {
           if (err) reject(err);
           else resolve();
-        }
+        })
       );
     });
   }
@@ -959,10 +960,10 @@ class TokenModule {
           request_count = request_count + ?,
           last_request_ip = ?,
           updated_at = CURRENT_TIMESTAMP
-      `, [keyId, today, count, ip, count, ip], function(err) {
+      `, [keyId, today, count, ip, count, ip], guarded(reject, function(err) {
         if (err) reject(err);
         else resolve();
-      });
+      }));
     });
   }
 
@@ -973,10 +974,10 @@ class TokenModule {
       this.db.get(
         'SELECT request_count FROM usage_stats WHERE api_key_id = ? AND date = ?',
         [keyId, today],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row ? row.request_count : 0);
-        }
+        })
       );
     });
   }
@@ -989,10 +990,10 @@ class TokenModule {
         JOIN api_keys ak ON us.api_key_id = ak.id
         WHERE ak.user_id = ? AND us.date >= date('now', '-30 days')
         ORDER BY us.date DESC
-      `, [userId], (err, rows) => {
+      `, [userId], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -1003,10 +1004,10 @@ class TokenModule {
         FROM usage_stats 
         WHERE api_key_id = ? AND date >= date('now', '-${days} days')
         ORDER BY date DESC
-      `, [keyId], (err, rows) => {
+      `, [keyId], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -1016,13 +1017,13 @@ class TokenModule {
       this.db.run(
         'INSERT INTO security_log (user_id, event_type, ip_address, user_agent, details) VALUES (?, ?, ?, ?, ?)',
         [userId, eventType, ip, userAgent, JSON.stringify(details)],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) {
             // Don't fail the main operation if logging fails
             console.error('Failed to log security event:', err);
           }
           resolve();
-        }
+        })
       );
     });
   }
@@ -1295,15 +1296,15 @@ class TokenModule {
       this.sessionStore.close();
     }
     if (this.db) {
-      await new Promise((resolve) => {
-        this.db.close((err) => {
+      await new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             this.log.error('Error closing database:', err);
           } else {
             this.log.info('Database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }

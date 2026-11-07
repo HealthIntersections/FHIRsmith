@@ -14,6 +14,7 @@ const pako = require('pako');
 const base45 = require('base45');
 const fs = require('fs');
 const folders = require('../library/folder-setup');
+const { guarded, failRequest } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
 const shlLog = Logger.getInstance().child({ module: 'shl' });
@@ -278,7 +279,7 @@ class SHLModule {
           shlLog.info('Connected to SHL SQLite database at "'+dbPath+'"');
 
           // Check if tables already exist before creating them
-          this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='SHL'", (err, row) => {
+          this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='SHL'", guarded(reject, (err, row) => {
             if (err) {
               reject(err);
             } else if (row) {
@@ -288,7 +289,7 @@ class SHLModule {
               // Tables don't exist, create them
               this.createTables().then(resolve).catch(reject);
             }
-          });
+          }));
         }
       });
     });
@@ -339,32 +340,32 @@ class SHLModule {
         }
       };
 
-      this.db.run(createSHLTable, (err) => {
+      this.db.run(createSHLTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHL table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
 
-      this.db.run(createSHLFilesTable, (err) => {
+      this.db.run(createSHLFilesTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHLFiles table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
 
-      this.db.run(createSHLViewsTable, (err) => {
+      this.db.run(createSHLViewsTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHLViews table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
     });
   }
 
@@ -430,13 +431,13 @@ class SHLModule {
   cleanupExpiredEntries() {
     const deleteSql = 'DELETE FROM SHL WHERE expires_at < datetime("now")';
 
-    this.db.run(deleteSql, function(err) {
+    this.db.run(deleteSql, guarded(null, function(err) {
       if (err) {
         shlLog.error('SHL cleanup error:', err.message);
       } else if (this.changes > 0) {
         shlLog.info(`Cleaned up ${this.changes} expired SHL entries`);
       }
-    });
+    }));
   }
 
   generateUUID() {
@@ -678,7 +679,7 @@ class SHLModule {
     });
 
     // SHL create endpoint
-    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res) => {
+    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res, next) => {
       const start = Date.now();
       try {
         const {vhl, password, days} = req.body;
@@ -718,7 +719,7 @@ class SHLModule {
 
         const insertSql = 'INSERT INTO SHL (uuid, vhl, expires_at, password) VALUES (?, ?, ?, ?)';
 
-        this.db.run(insertSql, [uuid, vhl, expiryDateString, newPassword], function (err) {
+        this.db.run(insertSql, [uuid, vhl, expiryDateString, newPassword], guarded(next, function (err) {
           if (err) {
             return res.status(500).json({error: 'Failed to create SHL entry: ' + err.message});
           }
@@ -730,14 +731,14 @@ class SHLModule {
             pword: newPassword,
             link: `https://${host}/shl/access/${uuid}`
           });
-        });
+        }));
       } finally {
         this.stats.countRequest('create', Date.now() - start);
       }
     });
 
     // SHL upload endpoint
-    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res) => {
+    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
       const start = Date.now();
       try {
         const {uuid, pword, files} = req.body;
@@ -758,7 +759,7 @@ class SHLModule {
 
         const checkSHLSql = 'SELECT vhl, password FROM SHL WHERE uuid = ?';
 
-        this.db.get(checkSHLSql, [uuid], (err, row) => {
+        this.db.get(checkSHLSql, [uuid], guarded(next, (err, row) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -773,7 +774,7 @@ class SHLModule {
 
           const deleteExistingFilesSql = 'DELETE FROM SHLFiles WHERE shl_uuid = ?';
 
-          this.db.run(deleteExistingFilesSql, [uuid], (err) => {
+          this.db.run(deleteExistingFilesSql, [uuid], guarded(next, (err) => {
             if (err) {
               return res.status(500).json({error: 'Failed to clear existing files'});
             }
@@ -783,13 +784,13 @@ class SHLModule {
                 const fileId = this.generateUUID();
                 const insertFileSql = 'INSERT INTO SHLFiles (id, shl_uuid, cnt, type) VALUES (?, ?, ?, ?)';
 
-                this.db.run(insertFileSql, [fileId, uuid, f.cnt, f.type], function (err) {
+                this.db.run(insertFileSql, [fileId, uuid, f.cnt, f.type], guarded(reject, function (err) {
                   if (err) {
                     reject(err);
                   } else {
                     resolve();
                   }
-                });
+                }));
               });
             });
 
@@ -801,8 +802,8 @@ class SHLModule {
                 shlLog.error('File upload error:', error);
                 res.status(500).json({error: 'Failed to upload files'});
               });
-          });
-        });
+          }));
+        }));
       } finally {
         this.stats.countRequest('upload', Date.now() - start);
       }
@@ -845,7 +846,7 @@ class SHLModule {
 
         const checkSHLSql = 'SELECT uuid, vhl FROM SHL WHERE uuid = ? AND expires_at > datetime("now")';
 
-        this.db.get(checkSHLSql, [uuid], (err, shlRow) => {
+        this.db.get(checkSHLSql, [uuid], guarded(failRequest(res), (err, shlRow) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -856,14 +857,14 @@ class SHLModule {
 
           const logAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
 
-          this.db.run(logAccessSql, [uuid, recipient, clientIP], (logErr) => {
+          this.db.run(logAccessSql, [uuid, recipient, clientIP], guarded(failRequest(res), (logErr) => {
             if (logErr) {
               shlLog.error('Failed to log SHL access:', logErr.message);
             }
 
             const getFilesSql = 'SELECT id, cnt, type FROM SHLFiles WHERE shl_uuid = ?';
 
-            this.db.all(getFilesSql, [uuid], (err, fileRows) => {
+            this.db.all(getFilesSql, [uuid], guarded(failRequest(res), (err, fileRows) => {
               if (err) {
                 return res.status(500).json({error: 'Failed to retrieve files'});
               }
@@ -911,9 +912,9 @@ class SHLModule {
               } else {
                 res.json(standardResponse);
               }
-            });
-          });
-        });
+            }));
+          }));
+        }));
       } finally {
         this.stats.countRequest('access', Date.now() - start);
       }
@@ -924,7 +925,7 @@ class SHLModule {
     this.router.post('/access/:uuid', this.validateJsonBody(['recipient'], ['embeddedLengthMax']), handleSHLAccess);
 
     // SHL file endpoint - serves individual files
-    this.router.get('/file/:fileId', (req, res) => {
+    this.router.get('/file/:fileId', (req, res, next) => {
       const start = Date.now();
       try {
         const {fileId} = req.params;
@@ -940,7 +941,7 @@ class SHLModule {
 
         const getFileSql = 'SELECT id, shl_uuid, cnt, type FROM SHLFiles WHERE id = ?';
 
-        this.db.get(getFileSql, [fileId], (err, fileRow) => {
+        this.db.get(getFileSql, [fileId], guarded(next, (err, fileRow) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -952,17 +953,17 @@ class SHLModule {
           const logMasterAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
           const logFileAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
 
-          this.db.run(logMasterAccessSql, [fileRow.shl_uuid, null, clientIP], function (logErr) {
+          this.db.run(logMasterAccessSql, [fileRow.shl_uuid, null, clientIP], guarded(next, function (logErr) {
             if (logErr) {
               shlLog.error('Failed to log master SHL file access:', logErr.message);
             }
-          });
+          }));
 
-          this.db.run(logFileAccessSql, [fileRow.id, null, clientIP], function (logErr) {
+          this.db.run(logFileAccessSql, [fileRow.id, null, clientIP], guarded(next, function (logErr) {
             if (logErr) {
               shlLog.error('Failed to log file-specific access:', logErr.message);
             }
-          });
+          }));
 
           try {
             const fileBuffer = Buffer.from(fileRow.cnt, 'base64');
@@ -971,7 +972,7 @@ class SHLModule {
           } catch (decodeErr) {
             res.status(500).json({error: 'Failed to decode file content'});
           }
-        });
+        }));
       } finally {
         this.stats.countRequest('file', Date.now() - start);
       }
@@ -1093,7 +1094,7 @@ class SHLModule {
       return 'The database is not open.';
     }
     const get = (sql, params) => new Promise((resolve, reject) =>
-      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
     // created_at is CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
     const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
     try {
@@ -1131,15 +1132,15 @@ class SHLModule {
     }
 
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             shlLog.error('Error closing SHL database:', err.message);
           } else {
             shlLog.info('SHL database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }
