@@ -226,6 +226,30 @@ describe('the launcher, with fake processes', () => {
     expect(r.json.proto).toBe('http');
   });
 
+  test('a chunked body on a GET goes on chunked: it can\'t be read as a second request (request smuggling)', async () => {
+    launcher = createLauncher({ ...settings(true), procs: settings(true).procs.slice(0, 1) });
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const hidden = 'GET /r4/hidden HTTP/1.1\r\nHost: x\r\n\r\n';
+    for (const method of ['GET', 'DELETE', 'OPTIONS']) {
+      const raw = await new Promise((resolve, reject) => {
+        const socket = require('net').connect(PORT, '127.0.0.1', () => {
+          socket.write(`${method} /r4/metadata HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n` +
+            `${Buffer.byteLength(hidden).toString(16)}\r\n${hidden}\r\n0\r\n\r\n`);
+        });
+        let data = '';
+        socket.on('data', d => { data += d; });
+        socket.on('end', () => resolve(data));
+        socket.on('error', reject);
+      });
+      expect(raw).toMatch(/^HTTP\/1\.1 200 /);
+      // the process read the body as a body
+      expect(JSON.parse(raw.substring(raw.indexOf('\r\n\r\n') + 4).replace(/^[0-9a-f]+\r\n|\r\n0\r\n\r\n$/g, '')).body).toBe(hidden);
+    }
+    const seen = (await get(PORT, '/r4/seen')).json.seen;
+    expect(seen).toEqual(['GET /r4/metadata', 'DELETE /r4/metadata', 'OPTIONS /r4/metadata']);
+  });
+
   test('a tx request goes to the process with the fewest outstanding', async () => {
     launcher = createLauncher(settings(false));
     await launcher.start();

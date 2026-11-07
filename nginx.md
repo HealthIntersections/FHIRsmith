@@ -473,7 +473,9 @@ server {
 
 List your own tx endpoint paths (`modules.tx.endpoints`) in the two regex locations. The
 optional launcher, `node cluster.js`, starts the processes in this order and applies the same
-rules without nginx (it can also sit behind nginx, as one upstream).
+rules itself. Run it behind nginx all the same, as one upstream on the same host, with request
+buffering on (`proxy_request_buffering on`, the default): see
+[cluster.md](cluster.md#the-launcher-clusterjs).
 
 ### With the shared cache
 

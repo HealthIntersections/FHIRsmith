@@ -8,8 +8,9 @@
 
 /**
  * An optional launcher: one master and N terminology workers on one machine, behind one port
- * (see cluster.md). It does what the nginx configuration in nginx.md does, for those who
- * don't run nginx in front:
+ * (see cluster.md). It applies the routing of nginx.md's configuration, as one upstream: always
+ * run it behind nginx on the same host, with request buffering on (proxy_request_buffering,
+ * nginx's default). It is not built to face clients itself. It:
  *
  *  - starts the master (node server.js --role=master), waits until it answers /health, then
  *    starts the workers (--role=tx-worker) one after another, each once the one before is
@@ -604,6 +605,13 @@ function createLauncher(settings) {
     const headers = { ...req.headers };
     for (const h of HOP_BY_HOP) {
       delete headers[h];
+    }
+    // a chunked body goes on chunked. Without this, Node sends a GET, HEAD, DELETE or OPTIONS
+    // body raw (no Content-Length, no chunking), and the process reads it as a second request
+    // on the kept-alive connection, past the routing (Node's server accepts only chunked as
+    // the last coding, so the body is chunked whatever the header listed)
+    if (req.headers['transfer-encoding'] !== undefined) {
+      headers['transfer-encoding'] = 'chunked';
     }
     const client = (req.socket.remoteAddress || '').replace(/^::ffff:/, '');
     headers['x-forwarded-for'] = headers['x-forwarded-for'] ? `${headers['x-forwarded-for']}, ${client}` : client;

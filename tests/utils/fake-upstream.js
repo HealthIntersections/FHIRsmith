@@ -1,8 +1,9 @@
 // A stand-in for a server process, for tests/server/cluster-launcher.test.js:
 //   node fake-upstream.js <code> <port> [keepAliveTimeout ms] [hang]
 // /health answers 200; anything else answers {code, url, xff, proto} as JSON, after
-// ?delay=<ms>, with ?status=<code> (503 with Retry-After). With `hang` (a wedged process),
-// nothing but /health is ever answered. On SIGTERM it finishes the requests it has, then exits.
+// ?delay=<ms>, with ?status=<code> (503 with Retry-After), with the request body it read
+// (`body`), and ?bytes=<n> more. /r4/seen lists the requests it was sent. With `hang` (a
+// wedged process), nothing but /health is ever answered. On SIGTERM it finishes the requests it has, then exits.
 const http = require('http');
 const [code, port, keepAlive, hang] = process.argv.slice(2);
 let metrics = null;
@@ -28,20 +29,31 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ metrics }));
     return;
   }
+  if (req.url === '/r4/seen') {
+    res.end(JSON.stringify({ code, seen }));
+    return;
+  }
+  seen.push(`${req.method} ${req.url}`);
   if (hang === 'hang') {
     return;
   }
   const query = new URL(req.url, 'http://x').searchParams;
   const delay = Number(query.get('delay')) || 0;
-  setTimeout(() => {
+  let body = '';
+  req.on('data', d => { body += d; });
+  req.on('end', () => setTimeout(() => {
     res.statusCode = Number(query.get('status')) || 200;
     if (res.statusCode === 503) {
       res.setHeader('Retry-After', '2');
     }
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ code, url: req.url, xff: req.headers['x-forwarded-for'], proto: req.headers['x-forwarded-proto'] }));
-  }, delay);
+    // ?bytes=<n>: a body of about n bytes (a large response)
+    const pad = Number(query.get('bytes')) > 0 ? 'x'.repeat(Number(query.get('bytes'))) : undefined;
+    res.end(JSON.stringify({ code, url: req.url, xff: req.headers['x-forwarded-for'], proto: req.headers['x-forwarded-proto'], body, pad }));
+  }, delay));
 });
+// every request it was sent (method and target), for the request smuggling test
+const seen = [];
 if (keepAlive) {
   server.keepAliveTimeout = Number(keepAlive);
 }

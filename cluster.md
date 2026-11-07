@@ -9,7 +9,9 @@ each request to the right process:
 node cluster.js                 # the master, workers by CPU, and a proxy on the configured port
 ```
 
-or with nginx in front of separately started processes ([below](#with-nginx)).
+with nginx in front of it, or with nginx in front of separately started processes
+([below](#with-nginx)). Either way, nginx is the front door: the launcher is not built to face
+clients itself.
 
 `node server.js` with no `--role` is unchanged: one process, every module, as before.
 
@@ -115,6 +117,23 @@ The [options](#options) change rules 1 and 3: with `sharedClosure`, `$closure` g
 with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is on).
 
 ## The launcher (cluster.js)
+
+**Always run the launcher behind nginx, on the same host, with request buffering on**
+(`proxy_request_buffering on`, nginx's default), as one upstream:
+
+```nginx
+upstream fhirsmith { server 127.0.0.1:3000; keepalive 32; }
+# in the server block, for every location:
+#   include fhirsmith-proxy.conf;   (nginx.md: the X-Forwarded-* headers)
+#   proxy_pass http://fhirsmith;
+```
+
+With buffering on, nginx reads each request body whole and sends it on with a
+`Content-Length`. The launcher passes a chunked body on chunked, but it has none of nginx's
+limits on what clients send. The same host, because the launcher believes `X-Forwarded-Proto`
+only from a loopback address: from any other it sets it to `http`, so behind an HTTPS nginx on
+another machine the servers would advertise `http://` URLs, and the publisher's `Secure` login
+cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 
 `node cluster.js` reads `config.json` from the data directory and:
 
