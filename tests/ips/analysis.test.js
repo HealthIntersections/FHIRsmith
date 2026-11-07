@@ -20,7 +20,7 @@ describe('the analysis', () => {
 
   test('nothing to say is All OK, with the narrative noted', async () => {
     const out = await analyseDocument(doc(), { now: NOW });
-    expect(out.items.e0).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'Has narrative (generated)' }]);
+    expect(out.items.e0).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'negation', text: 'Negation: none observed' }, { kind: 'narrative', text: 'Has narrative (generated)' }]);
     expect(out.items.e1).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'Has narrative (generated)' }]);
     expect(out.items.e2).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'No narrative' }]);
     expect(out.counts).toEqual({ nodes: 3, ok: 3, extensions: 0, notFound: 0 });
@@ -152,7 +152,7 @@ describe('the analysis', () => {
     const d = doc({ status: 'preliminary' }, entry({ resourceType: 'Patient', id: 'q' }));
     d.entry[1].resource.link = [{ other: { reference: 'urn:uuid:q' }, type: 'replaced-by' }, { other: { reference: 'Patient/zz' }, type: 'seealso' }];
     const out = await analyseDocument(d, { now: NOW });
-    expect(texts(out.items.e0)).toEqual(['The Composition\'s status is preliminary, not final', 'Has narrative (generated)']);
+    expect(texts(out.items.e0)).toEqual(['The Composition\'s status is preliminary, not final', 'Negation: none observed', 'Has narrative (generated)']);
     expect(kinds(out.items.e0)[0]).toBe('attention');
     expect(texts(out.items.e1)).toEqual(['Linked (replaced-by) to urn:uuid:q', 'Linked (seealso) to Patient/zz - not in the document', 'Has narrative (generated)']);
   });
@@ -171,8 +171,8 @@ describe('the analysis', () => {
     expect(texts(s('section[1]'))[1]).toBe('Has narrative (additional)');
     expect(texts(s('section[1].section[0]'))).toEqual(['The author (urn:uuid:other) is not the containing section\'s (urn:uuid:dr)', 'Has a focus: urn:uuid:p', 'No narrative']);
     expect(texts(s('section[2]'))).toEqual(['The author (urn:uuid:other) is not the Composition\'s (urn:uuid:dr)', 'No narrative']);
-    // the Composition's own analysis leaves its sections out
-    expect(kinds(out.items.e0)).toEqual(['ok', 'narrative']);
+    // the Composition's own analysis leaves its sections out (but notes the emptyReason as how it does negation)
+    expect(texts(out.items.e0)).toEqual(['All OK', 'Negation: section emptyReason (A: Nil Known)', 'Has narrative (generated)']);
   });
 
   test('each resource is analysed once, where it is first met; contained resources too', async () => {
@@ -181,5 +181,51 @@ describe('the analysis', () => {
         contained: [{ resourceType: 'Medication', id: 'med', implicitRules: 'http://x.org/r' }] })), { now: NOW });
     expect(Object.keys(out.items).sort()).toEqual(['e0', 'e1', 'e2', 'e3', 'e3#med', 's:Composition.section[0]']);
     expect(texts(out.items['e3#med'])).toEqual(['implicitRules: http://x.org/r', 'No narrative']);
+  });
+
+  describe('negation: how the document says there is nothing to report', () => {
+    const SCT = 'http://snomed.info/sct';
+    const IPS = 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips';
+    const nilKnown = { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/list-empty-reason', code: 'nilknown', display: 'Nil Known' }] };
+    const allergy = (id, system, code, display) => entry({ resourceType: 'AllergyIntolerance', id, patient: { reference: 'urn:uuid:p' },
+      code: { coding: [{ system, code, display }] }, text: { status: 'generated', div: '<div>a</div>' } });
+
+    test('more than one approach: an emptyReason in one section, and a negation code in another', async () => {
+      const out = await analyseDocument(doc({ section: [
+        { title: 'Allergies', entry: [{ reference: 'urn:uuid:a' }] },
+        { title: 'Problems', emptyReason: nilKnown }
+      ] }, allergy('a', SCT, '716186003', 'No known allergy')), { now: NOW });
+      expect(kinds(out.items.e0)).toEqual(['attention', 'narrative']);
+      expect(texts(out.items.e0)[0]).toBe('Negation: more than one approach - section emptyReason (Problems: Nil Known), and codes in entries (Allergies: No known allergy). A document should use one approach throughout');
+      // the Composition isn't All OK any more
+      expect(out.counts.ok).toBe(Object.values(out.items).filter(fs => fs[0].kind === 'ok').length);
+    });
+
+    test('the IPS absent-unknown codes - negations, and no information - and a medication by reference', async () => {
+      const out = await analyseDocument(doc({ section: [
+        { title: 'Allergies', entry: [{ reference: 'urn:uuid:a' }] },
+        { title: 'Medications', entry: [{ reference: 'urn:uuid:m' }] },
+        { title: 'Problems', emptyReason: { coding: [{ code: 'notasked', display: 'Not Asked' }] } },
+        { title: 'Procedures', emptyReason: { coding: [{ code: 'withheld', display: 'Information Withheld' }] } }
+      ] }, allergy('a', IPS, 'no-known-allergies', 'No known allergies'),
+      entry({ resourceType: 'MedicationStatement', id: 'm', status: 'active', subject: { reference: 'urn:uuid:p' }, medicationReference: { reference: 'urn:uuid:med' } }),
+      entry({ resourceType: 'Medication', id: 'med', code: { coding: [{ system: IPS, code: 'no-medication-info' }] } })), { now: NOW });
+      expect(texts(out.items.e0)[0]).toBe('Negation: more than one approach - section emptyReason (Problems: Not Asked), and codes in entries (Allergies: No known allergies; Medications: no-medication-info). A document should use one approach throughout');
+    });
+
+    test('one approach is noted, and is All OK; so is none', async () => {
+      const codes = await analyseDocument(doc({ section: [
+        { title: 'Allergies', entry: [{ reference: 'urn:uuid:a' }] },
+        { title: 'Problems', emptyReason: { coding: [{ code: 'withheld' }] } }
+      ] }, allergy('a', SCT, '409137002', 'No known drug allergy')), { now: NOW });
+      expect(codes.items.e0).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'negation', text: 'Negation: codes in entries (Allergies: No known drug allergy)' }, { kind: 'narrative', text: 'Has narrative (generated)' }]);
+      const reasons = await analyseDocument(doc({ section: [
+        { title: 'Allergies', entry: [{ reference: 'urn:uuid:a' }] },
+        { title: 'Problems', emptyReason: nilKnown }
+      ] }, allergy('a', SCT, '91936005', 'Allergy to penicillin')), { now: NOW });
+      expect(texts(reasons.items.e0)).toEqual(['All OK', 'Negation: section emptyReason (Problems: Nil Known)', 'Has narrative (generated)']);
+      const none = await analyseDocument(doc(section(['a']), allergy('a', SCT, '91936005', 'Allergy to penicillin')), { now: NOW });
+      expect(texts(none.items.e0)).toEqual(['All OK', 'Negation: none observed', 'Has narrative (generated)']);
+    });
   });
 });

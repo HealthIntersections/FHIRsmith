@@ -11,7 +11,10 @@
  * records that are inactive, entered in error or of unknown status, narrative or the lack of
  * it, a subject other than the document's or a focus, dates in the future, and for a few
  * resources, things particular to them (a Patient's links, a Composition that isn't final,
- * a section's emptyReason or author).
+ * a section's emptyReason or author). And for the document as a whole, on the Composition: how
+ * it says there's nothing to report (negation) - with a section's emptyReason (the IPS
+ * pattern), with entries whose codes say so, like No known allergy (the US Core pattern), or
+ * not at all - and a warning when it uses both.
  *
  * It walks the same tree as the structure view (structure.js), and keeps a list of findings
  * for each resource and section, by the node's key; the analysis view shows the tree with
@@ -26,7 +29,10 @@
  *   status     inactive, entered in error, unknown, or missing status (navy)
  *   subject    a subject other than the document's, or a focus (dark green)
  *   attention  a date in the future where one isn't expected, a Patient's link, a
- *              Composition that isn't final
+ *              Composition that isn't final, a document that uses more than one approach
+ *              to negation
+ *   negation   how the document does negation (on the Composition; like narrative, always
+ *              there, and doesn't count against ok)
  *   note       anything else (a section's emptyReason, a section's author)
  *
  * @module ips/analysis
@@ -345,6 +351,77 @@ async function analyseSection(node, ctx) {
   return finish(findings, narrativeOf(sec));
 }
 
+// ---- saying there's nothing to report ----
+//
+// There are two ways: the section is empty, and its emptyReason says why (nilknown - nothing
+// known - or notasked / unavailable - no information), which is the IPS pattern; or the
+// section has an entry whose code says so (No known allergy; No information about allergies),
+// which is the US Core pattern. Either is fine, but a document that uses both makes the
+// reader (and a program) look for it in two places.
+
+// the emptyReasons that say there's nothing to report (not withheld, closed or not started)
+const NOTHING_REASONS = new Set(['nilknown', 'notasked', 'unavailable']);
+// the IPS absent-unknown codes: no-known-* (a negation) and no-*-info (no information)
+const IPS_ABSENT_UNKNOWN = 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips';
+const SCT = 'http://snomed.info/sct';
+// SNOMED CT codes that say there's nothing to report: the US Core refutation codes (No known
+// allergy, ...drug, environmental, food, latex and insect allergy), No current problems or
+// disability, and Patient not asked
+const SCT_NOTHING = new Set(['716186003', '409137002', '428607008', '429625007', '716184000', '1003774007', '160245001', '1631000175102']);
+// where a resource's code that would say so is
+const CODE_ELEMENTS = ['code', 'medicationCodeableConcept', 'vaccineCode'];
+
+/** The coding in a resource that says there's nothing to report, if there is one. */
+function nothingCoding(r) {
+  for (const e of CODE_ELEMENTS) {
+    for (const c of Array.isArray(r[e]?.coding) ? r[e].coding.filter(isObject) : []) {
+      if ((c.system === IPS_ABSENT_UNKNOWN && text(c.code)) || (c.system === SCT && SCT_NOTHING.has(c.code))) {
+        return c;
+      }
+    }
+  }
+  return null;
+}
+
+/** A section node's title, as plain text. */
+const sectionTitle = (node) => text(node.section.title) ? node.section.title : text(node.section.code?.text) ? node.section.code.text :
+  (Array.isArray(node.section.code?.coding) && node.section.code.coding.find(c => text(c?.display))?.display) || node.path;
+
+/**
+ * How the document does negation: a finding - kind negation for none, or one approach, and
+ * attention for more than one.
+ * @param {Object} top - the structure tree
+ */
+function negationOf(top) {
+  const reasons = [];
+  const codes = [];
+  const sectionOf = new Map();
+  for (const [node, , parent] of flatten(top)) {
+    const section = node.kind === 'section' ? node : parent ? sectionOf.get(parent) : null;
+    sectionOf.set(node, section);
+    if (node.kind === 'section') {
+      const reason = (Array.isArray(node.section.emptyReason?.coding) ? node.section.emptyReason.coding : []).find(c => isObject(c) && NOTHING_REASONS.has(c.code));
+      if (reason) {
+        reasons.push(`${sectionTitle(node)}: ${conceptWords(node.section.emptyReason)}`);
+      }
+    } else if (node.kind === 'resource' && section && isObject(node.resource)) {
+      const c = nothingCoding(node.resource);
+      if (c) {
+        codes.push(`${sectionTitle(section)}: ${text(c.display) || c.code}`);
+      }
+    }
+  }
+  const byReason = `section emptyReason (${reasons.join('; ')})`;
+  const byCode = `codes in entries (${[...new Set(codes)].join('; ')})`;
+  if (reasons.length && codes.length) {
+    return { kind: 'attention', text: `Negation: more than one approach - ${byReason}, and ${byCode}. A document should use one approach throughout` };
+  }
+  if (reasons.length || codes.length) {
+    return { kind: 'negation', text: `Negation: ${reasons.length ? byReason : byCode}` };
+  }
+  return { kind: 'negation', text: 'Negation: none observed' };
+}
+
 /** All OK when there's nothing but the narrative to say; the narrative last. */
 function finish(findings, narrative) {
   return findings.length === 0 ? [{ kind: 'ok', text: 'All OK' }, narrative] : [...findings, narrative];
@@ -387,6 +464,14 @@ async function analyseDocument(bundle, options = {}) {
       }
     }
   }
+  // the document as a whole, on the Composition, before its narrative
+  const negation = negationOf(top);
+  const findings = items[top.key];
+  if (negation.kind === 'attention' && findings[0].kind === 'ok') {
+    findings.shift();
+    counts.ok--;
+  }
+  findings.splice(findings.length - 1, 0, negation);
   return { items, counts };
 }
 

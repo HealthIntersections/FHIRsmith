@@ -2985,6 +2985,8 @@ describe('the analysis step', () => {
     expect(analysisOk([ok, none], false)).toBe(true);
     expect(analysisOk([ok, has], true)).toBe(true);
     expect(analysisOk([ok, none], true)).toBe(false);
+    // the Composition's negation is a note, unless there's more than one approach (attention)
+    expect(analysisOk([ok, { kind: 'negation', text: 'Negation: none observed' }, has], false)).toBe(true);
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x' }, has], false)).toBe(false);
     expect(analysisOk(undefined, false)).toBe(false);
   });
