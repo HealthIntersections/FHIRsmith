@@ -314,6 +314,7 @@ class Renderer {
         span.tx(value);
         let btn = span.button();
         btn.attr("class", "btn-copy");
+        btn.attr("aria-label", "Copy");
         btn.attr("data-clipboard-text", value);
         btn.attr("data-original-title", this.translate('GENERAL_COPY'));
       }
@@ -648,15 +649,15 @@ class Renderer {
     this._requireAllowed(vs.status, VALID_PUBLICATION_STATUS, 'ValueSet.status', 'invalid status');
 
     let div_ = div();
-    div_.h2().tx("Properties");
+    div_.h4().tx("Properties");
     let tbl = div_.table("grid");
     await this.renderMetadataTable(vs, tbl);
     if (vs.compose) {
-      div_.h2().tx("Logical Definition");
+      div_.h4().tx("Logical Definition");
       await this.renderCompose(vs, div_.table("grid"));
     }
     if (vs.expansion) {
-      div_.h2().tx("Expansion");
+      div_.h4().tx("Expansion");
       await this.renderExpansion(div_, vs, tbl);
     }
 
@@ -1444,7 +1445,7 @@ class Renderer {
     let div_ = div();
     let tbl;
     if (showProps) {
-      div_.h2().tx("Expansion Properties");
+      div_.h3().tx("Expansion Properties");
       tbl = div_.table("grid");
     } else {
       tbl = div(); // dummy
@@ -1883,7 +1884,7 @@ class Renderer {
 
     // Formats
     if (cs.format && cs.format.length > 0) {
-      div_.h3().tx(this.translate('Formats') || 'Formats');
+      div_.h4().tx(this.translate('Formats') || 'Formats');
       div_.para().tx(cs.format.join(', '));
     }
 
@@ -2153,7 +2154,7 @@ class Renderer {
 
     // Code Systems
     if (tc.codeSystem && tc.codeSystem.length > 0) {
-      div_.h3().tx('Code Systems');
+      div_.h4().tx('Code Systems');
       const ul = div_.ul();
       for (const cs of tc.codeSystem) {
         if (cs.uri) {
@@ -2247,10 +2248,10 @@ class Renderer {
     let div_ = div();
 
     // Metadata table
-    div_.h3().tx("Properties");
+    div_.h4().tx("Properties");
     await this.renderMetadataTable(cm, div_.table("grid"));
 
-    div_.h3("Mapping Details");
+    div_.h4("Mapping Details");
     // Source/Target scope line (mirrors Java: CONC_MAP_FROM / CONC_MAP_TO)
     const p = div_.para();
     p.tx(this.translate('CONC_MAP_FROM') + " ");

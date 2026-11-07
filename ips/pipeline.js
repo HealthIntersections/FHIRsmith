@@ -9,6 +9,7 @@
  * One process works through the queue (ips.js: processQueue), and runs these steps over
  * each document, in this order:
  *
+ *   0. nationality   which nation the document is from, as far as it says (nationality.js)
  *   1. analysis      look at each resource and section for what a reader should know (analysis.js)
  *   2. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
  *   3. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
@@ -37,6 +38,7 @@ const ai = require('./ai-client');
 const { evaluateAsync } = require('./fhirpath-ips');
 const { checkNarrative } = require('../library/narrative-check');
 const { analysisStep } = require('./analysis');
+const { nationalityStep } = require('./nationality');
 
 const IPS_BUNDLE_PROFILE = 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips';
 const VALIDATE_TIMEOUT_MS = 120000;
@@ -102,14 +104,13 @@ const validation = {
     }
     const cfg = module.config.validator || {};
     const profiles = Array.isArray(cfg.profiles) ? cfg.profiles : [IPS_BUNDLE_PROFILE];
-    // the validator's own IPS checks (code systems and value sets the IPS expects), unless
-    // the configuration turns them off
-    const checkIpsCodes = cfg.checkIpsCodes !== false;
+    // no checkIpsCodes: validator 7.0.4 dropped its IPS code checks, and refuses the parameter
+    // ("Unable to process param checkIpsCodes"), failing every validation
     const started = Date.now();
     // fhir-validator-wrapper 1.5.0 or later: earlier versions sent the profiles in a form the
     // validator service refuses
     // the analysed copy: the translations are in it, and the validator should see them
-    const outcome = await v.validate(JSON.stringify(row.analysed || row.bundle), { profiles, checkIpsCodes, timeout: VALIDATE_TIMEOUT_MS });
+    const outcome = await v.validate(JSON.stringify(row.analysed || row.bundle), { profiles, timeout: VALIDATE_TIMEOUT_MS });
     if (!outcome || outcome.resourceType !== 'OperationOutcome') {
       throw new Error('The validator did not return an OperationOutcome');
     }
@@ -150,8 +151,6 @@ const national = {
     if (!v.isRunning()) {
       throw new Error('The validator is not running');
     }
-    const cfg = module.config.validator || {};
-    const checkIpsCodes = cfg.checkIpsCodes !== false;
     const doc = JSON.stringify(row.analysed || row.bundle);
     const profiles = [];
     for (const np of list) {
@@ -159,7 +158,7 @@ const national = {
       const t0 = Date.now();
       try {
         await module.loadNationalPackage(np.packageId, np.version);
-        const outcome = await v.validate(doc, { profiles: [np.url], checkIpsCodes, timeout: VALIDATE_TIMEOUT_MS });
+        const outcome = await v.validate(doc, { profiles: [np.url], timeout: VALIDATE_TIMEOUT_MS });
         if (!outcome || outcome.resourceType !== 'OperationOutcome') {
           throw new Error('The validator did not return an OperationOutcome');
         }
@@ -548,6 +547,56 @@ function translationOf(coding) {
   };
 }
 
+const SNOMED_CT = 'http://snomed.info/sct';
+
+/**
+ * The SNOMED CT edition a document's codes are taken to be from when they don't say: the
+ * edition of a national profile for the nation the document is from (the nationality step).
+ * Only the translate step uses it - the terminology check takes the codes as they are, so a
+ * code that is fine as it is passes whatever its edition, and one whose edition says otherwise
+ * doesn't.
+ * @returns {{edition: string, packageId: string, version: string, jurisdiction: string}|null}
+ */
+function defaultSnomedEdition(module, row) {
+  const jurisdiction = module.store.readResult(row.id, 'nationality')?.result?.jurisdiction;
+  if (!jurisdiction) {
+    return null;
+  }
+  const np = module.store.nationalProfiles().find(p => p.jurisdiction === jurisdiction && p.snomedEdition);
+  return np ? { edition: np.snomedEdition, packageId: np.packageId, version: np.version, jurisdiction } : null;
+}
+
+/** A concept with its SNOMED CT codings that have no version given the edition (a copy; the concept is unchanged). */
+function withSnomedEdition(concept, edition) {
+  if (!edition || !Array.isArray(concept.coding)) {
+    return concept;
+  }
+  return { ...concept, coding: concept.coding.map(c => (c && c.system === SNOMED_CT && !c.version ? { ...c, version: `${SNOMED_CT}/${edition}` } : c)) };
+}
+
+/** The SNOMED CT edition a version names (its module id, without the release date), or the version itself. */
+function editionOf(system, version) {
+  if (system === SNOMED_CT && typeof version === 'string') {
+    const m = version.match(/^http:\/\/snomed\.info\/x?sct\/(\d+)(?:\/version\/\d+)?$/);
+    if (m) {
+      return m[1];
+    }
+  }
+  return version;
+}
+
+/**
+ * Whether a concept already has a coding: the same system and code, and - when both say - the
+ * same version. A version that differs makes it a different coding: the same SNOMED CT code in
+ * the International Edition is what a translation from a national edition is for, even though
+ * the code is the same (SNOMED CT versions are compared by edition, not release). A coding with
+ * no version already stands for the code, whatever the translation's version.
+ */
+function hasCoding(codings, coding) {
+  return codings.some(x => x && x.system === coding.system && x.code === coding.code &&
+    (!x.version || !coding.version || editionOf(x.system, x.version) === editionOf(coding.system, coding.version)));
+}
+
 /** A CodeableConcept as the server should see it: without our extensions. */
 function withoutOurExtensions(concept) {
   const c = structuredClone(concept);
@@ -588,6 +637,8 @@ const translate = {
     const budget = { left: MAX_CHECKS_PER_DOCUMENT };
     const cache = module.txCache || (module.txCache = new Map());
     const started = Date.now();
+    // SNOMED CT codes with no version are taken to be from the edition of the document's nation
+    const defaultEdition = defaultSnomedEdition(module, row);
     // what happened to each concept, for the translation view
     const entries = [];
     // the same resource in two sections, and the same concept in two places: once
@@ -621,11 +672,11 @@ const translate = {
         } else if (budget.left <= 0) {
           translation = { matches: [], failed: true, check, message: `not translated - the document has more codes than are checked (${MAX_CHECKS_PER_DOCUMENT})` };
         } else {
-          const cacheKey = `translate|${key}`;
+          const cacheKey = `translate|${defaultEdition ? defaultEdition.edition : ''}|${key}`;
           translation = cache.get(cacheKey);
           if (!translation) {
             budget.left--;
-            translation = await translateConcept(module.tx, valueSets, withoutOurExtensions(c.concept), target);
+            translation = await translateConcept(module.tx, valueSets, withSnomedEdition(withoutOurExtensions(c.concept), defaultEdition?.edition), target);
             if (!translation.failed) {
               if (cache.size >= MAX_CACHED_ANSWERS) {
                 cache.delete(cache.keys().next().value);
@@ -655,7 +706,7 @@ const translate = {
       }
       let added = 0;
       for (const m of translation.matches) {
-        if (codings.some(x => x && x.system === m.coding.system && x.code === m.coding.code)) {
+        if (hasCoding(codings, m.coding)) {
           entry.added.push({ ...m, present: true });
           continue; // already there
         }
@@ -680,7 +731,7 @@ const translate = {
         entry.message = translation.matches.length > 0 ? 'The translation gave only codings the concept already has' : (translation.message || 'The terminology server has no translation');
       }
     }
-    module.store.saveResult(row.id, 'translate', { ms: Date.now() - started, server: module.tx.url, counts, entries });
+    module.store.saveResult(row.id, 'translate', { ms: Date.now() - started, server: module.tx.url, counts, entries, ...(defaultEdition ? { defaultEdition } : {}) });
     return `translate: ${counts.translated} of ${counts.tried} concepts translated (${counts.codings} codings added)` +
       (counts.failed ? `, ${counts.failed} not translated (see the log)` : '');
   }
@@ -1066,10 +1117,10 @@ const aiStep = {
 };
 
 /** The steps, in order. Only the ones that exist yet. */
-const STEPS = [analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep];
+const STEPS = [nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep];
 
 module.exports = {
-  STEPS, analysis: analysisStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf,
+  STEPS, analysis: analysisStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

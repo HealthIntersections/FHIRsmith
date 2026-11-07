@@ -429,10 +429,12 @@ const PAGE_STYLE = `<style>
 .openapi-ref .try-body { max-height: 30em; overflow: auto; }
 </style>`;
 
+// Headings: the page this goes into is titled by the module's template with an <h2>, so the
+// reference starts at <h3> (Endpoints, Schemas) - <h4> per operation and per schema, <h5> for
+// the parts of an operation - and the API's title is not a heading of its own
 function buildHtml(spec, BASE_PATH) {
   let html = PAGE_STYLE + '<div class="openapi-ref">';
-  html += `<h1>${escape(spec.info.title)} API</h1>`;
-  html += `<p class="lead">${escape(spec.info.summary || '')}</p>`;
+  html += `<p class="lead"><strong>${escape(spec.info.title)} API</strong>${spec.info.summary ? ': ' + escape(spec.info.summary) : ''}</p>`;
   html += `<p>Machine-readable description (OpenAPI ${escape(spec.openapi)}): ` +
     `<a href="${BASE_PATH}/openapi.json">openapi.json</a> &middot; ` +
     `<a href="${BASE_PATH}/openapi.yaml">openapi.yaml</a></p>`;
@@ -441,7 +443,7 @@ function buildHtml(spec, BASE_PATH) {
     html += `<p>See also: <a href="${escape(spec.externalDocs.url)}">${escape(spec.externalDocs.description || spec.externalDocs.url)}</a></p>`;
   }
 
-  html += '<h2>Endpoints</h2>';
+  html += '<h3>Endpoints</h3>';
   // an index, when there are enough of them to need one
   const all = Object.entries(spec.paths).flatMap(([p, item]) => METHODS.filter(m => item[m]).map(m => [p, m, item[m]]));
   if (all.length > 12) {
@@ -464,7 +466,7 @@ function buildHtml(spec, BASE_PATH) {
       }
       first = false;
       html += `<div class="panel panel-default" id="${escape(op.operationId || '')}"><div class="panel-heading">`;
-      html += `<span class="label label-primary">${method.toUpperCase()}</span> <code>${escape(BASE_PATH + p)}</code> &mdash; ${escape(op.summary || '')}`;
+      html += `<h4 class="panel-title"><span class="label label-primary">${method.toUpperCase()}</span> <code>${escape(BASE_PATH + p)}</code> &mdash; ${escape(op.summary || '')}</h4>`;
       html += '</div><div class="panel-body">';
       html += markdown(op.description);
       html += renderParameters(spec, [...(item.parameters || []), ...(op.parameters || [])]);
@@ -474,7 +476,7 @@ function buildHtml(spec, BASE_PATH) {
     }
   }
 
-  html += '<hr/><h2>Schemas</h2>';
+  html += '<hr/><h3>Schemas</h3>';
   for (const [name, schema] of Object.entries((spec.components && spec.components.schemas) || {})) {
     html += renderSchema(name, schema);
   }

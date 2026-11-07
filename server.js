@@ -76,6 +76,7 @@ const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
 
 htmlServer.useLog(serverLog);
 htmlServer.setSponsorMessage(config.sponsorMessage ? config.sponsorMessage : '');
+htmlServer.setAccessibilityPanel(config.accessibility?.checkPanel === true);
 
 const app = express();
 

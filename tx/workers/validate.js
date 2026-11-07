@@ -1030,6 +1030,15 @@ class ValueSetChecker {
         noCode = true;
         break;
       }
+      // versionNeeded = true means a version must be specified whenever the code system is
+      // referenced. That's a check on the coding itself: a version pinned by the value set or by
+      // the parameters is specific to that context, and doesn't travel with the coding, so it
+      // makes no difference here
+      if (csd && !c.version && csd.versionNeeded()) {
+        let m = this.worker.i18n.translate('CODESYSTEM_VERSION_NEEDED', this.params.HTTPLanguages, [csd.system()]);
+        msg(m);
+        op.addIssue(new Issue('warning', 'business-rule', addToPath(path, 'version'), 'CODESYSTEM_VERSION_NEEDED', m, 'invalid-data'));
+      }
       list.clear();
       let ver = { value: '' };
       let contentMode = { value: null };

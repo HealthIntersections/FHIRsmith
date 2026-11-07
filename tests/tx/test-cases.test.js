@@ -1296,7 +1296,7 @@ describe('global-lang-pack', () => {
 });
 
 describe('extension-codes', () => {
-  // Extension-codes supplements: a code system reserves a code space (codesystem-reservedCodeSpace) for users to define their own codes, and a CodeSystem supplement of type extension-codes defines codes in it, with displays. A global one (codesystem-supplement-global) is used whether or not it is referenced, as if the code system defined the codes; one that is not global is only used when it is referenced. A code in the reserved code space that nothing in scope defines is valid, with the code space's default display (default-display, or User-assigned)
+  // Extension-codes supplements: a code system reserves a code space (codesystem-reservedCodeSpace) for users to define their own codes, and a CodeSystem supplement of type extension-codes defines codes in it, with displays. A global one (codesystem-supplement-global) is used whether or not it is referenced, as if the code system defined the codes; one that is not global is only used when it is referenced. A code in the reserved code space that nothing in scope defines is valid, with the code space's default display (default-display, or User-assigned). In a value set, a reserved code is a member of an include of all of the code system (so its expansion is unclosed) and of an include that lists it; a filter never selects one
 
   it("ec-lookup-global" + 'R5', async () => {
     await runTest({"suite":"extension-codes","test":"ec-lookup-global"}, "5.0");
@@ -1480,6 +1480,110 @@ describe('extension-codes', () => {
 
   it("ec-lookup-global-referenced" + 'R4', async () => {
     await runTest({"suite":"extension-codes","test":"ec-lookup-global-referenced"}, "4.0");
+  });
+
+  it("ec-vs-validate-all-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-all-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-all-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-all-undefined"}, "4.0");
+  });
+
+  it("ec-vs-validate-listed-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-listed-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-undefined"}, "4.0");
+  });
+
+  it("ec-vs-validate-listed-a2" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-a2"}, "5.0");
+  });
+
+  it("ec-vs-validate-listed-a2" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-a2"}, "4.0");
+  });
+
+  it("ec-vs-expand-concept-in" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-in"}, "5.0");
+  });
+
+  it("ec-vs-expand-concept-in" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-in"}, "4.0");
+  });
+
+  it("ec-vs-validate-concept-in-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-concept-in-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-in-undefined"}, "4.0");
+  });
+
+  it("ec-vs-expand-concept-not-in" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-not-in"}, "5.0");
+  });
+
+  it("ec-vs-expand-concept-not-in" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-not-in"}, "4.0");
+  });
+
+  it("ec-vs-validate-concept-not-in-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-not-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-concept-not-in-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-not-in-undefined"}, "4.0");
+  });
+
+  it("ec-vs-expand-code-not-in" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-code-not-in"}, "5.0");
+  });
+
+  it("ec-vs-expand-code-not-in" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-code-not-in"}, "4.0");
+  });
+
+  it("ec-vs-validate-code-not-in-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-code-not-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-code-not-in-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-code-not-in-undefined"}, "4.0");
+  });
+
+  it("ec-vs-expand-is-not-a" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-is-not-a"}, "5.0");
+  });
+
+  it("ec-vs-expand-is-not-a" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-is-not-a"}, "4.0");
+  });
+
+  it("ec-vs-validate-is-not-a-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-is-not-a-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-is-not-a-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-is-not-a-undefined"}, "4.0");
+  });
+
+  it("ec-vs-expand-regex" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-regex"}, "5.0");
+  });
+
+  it("ec-vs-expand-regex" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-regex"}, "4.0");
+  });
+
+  it("ec-vs-validate-regex-undefined" + 'R5', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-regex-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-regex-undefined" + 'R4', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-regex-undefined"}, "4.0");
   });
 
 });
@@ -2383,6 +2487,102 @@ describe('validation', () => {
 
   it("validation-missing-vs-cc-no-system-infer" + 'R4', async () => {
     await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "4.0");
+  });
+
+  it("validation-vn-cs-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "5.0");
+  });
+
+  it("validation-vn-cs-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "4.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "5.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "4.0");
+  });
+
+  it("validation-vn-vs-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "5.0");
+  });
+
+  it("validation-vn-vs-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "4.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "5.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "4.0");
   });
 
 });
@@ -5274,6 +5474,26 @@ describe('translate', () => {
 
   it("translate-4" + 'R4', async () => {
     await runTest({"suite":"translate","test":"translate-4"}, "4.0");
+  });
+
+  it("translate-scope-1" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-1"}, "5.0");
+  });
+
+  it("translate-scope-2" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-2"}, "5.0");
+  });
+
+  it("translate-scope-3" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-3"}, "5.0");
+  });
+
+  it("translate-scope-4" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-4"}, "5.0");
+  });
+
+  it("translate-scope-5" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
 });
@@ -14482,7 +14702,7 @@ describe('global-lang-pack', () => {
 });
 
 describe('extension-codes', () => {
-  // Extension-codes supplements: a code system reserves a code space (codesystem-reservedCodeSpace) for users to define their own codes, and a CodeSystem supplement of type extension-codes defines codes in it, with displays. A global one (codesystem-supplement-global) is used whether or not it is referenced, as if the code system defined the codes; one that is not global is only used when it is referenced. A code in the reserved code space that nothing in scope defines is valid, with the code space's default display (default-display, or User-assigned)
+  // Extension-codes supplements: a code system reserves a code space (codesystem-reservedCodeSpace) for users to define their own codes, and a CodeSystem supplement of type extension-codes defines codes in it, with displays. A global one (codesystem-supplement-global) is used whether or not it is referenced, as if the code system defined the codes; one that is not global is only used when it is referenced. A code in the reserved code space that nothing in scope defines is valid, with the code space's default display (default-display, or User-assigned). In a value set, a reserved code is a member of an include of all of the code system (so its expansion is unclosed) and of an include that lists it; a filter never selects one
 
   it("ec-lookup-global" + 'R5-cached', async () => {
     await runTest({"suite":"extension-codes","test":"ec-lookup-global"}, "5.0");
@@ -14574,6 +14794,58 @@ describe('extension-codes', () => {
 
   it("ec-lookup-global-referenced" + 'R5-cached', async () => {
     await runTest({"suite":"extension-codes","test":"ec-lookup-global-referenced"}, "5.0");
+  });
+
+  it("ec-vs-validate-all-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-all-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-listed-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-undefined"}, "5.0");
+  });
+
+  it("ec-vs-validate-listed-a2" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-listed-a2"}, "5.0");
+  });
+
+  it("ec-vs-expand-concept-in" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-in"}, "5.0");
+  });
+
+  it("ec-vs-validate-concept-in-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-expand-concept-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-concept-not-in"}, "5.0");
+  });
+
+  it("ec-vs-validate-concept-not-in-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-concept-not-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-expand-code-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-code-not-in"}, "5.0");
+  });
+
+  it("ec-vs-validate-code-not-in-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-code-not-in-undefined"}, "5.0");
+  });
+
+  it("ec-vs-expand-is-not-a" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-is-not-a"}, "5.0");
+  });
+
+  it("ec-vs-validate-is-not-a-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-is-not-a-undefined"}, "5.0");
+  });
+
+  it("ec-vs-expand-regex" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-expand-regex"}, "5.0");
+  });
+
+  it("ec-vs-validate-regex-undefined" + 'R5-cached', async () => {
+    await runTest({"suite":"extension-codes","test":"ec-vs-validate-regex-undefined"}, "5.0");
   });
 
 });
@@ -15033,6 +15305,54 @@ describe('validation', () => {
 
   it("validation-missing-vs-cc-no-system-infer" + 'R5-cached', async () => {
     await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "5.0");
+  });
+
+  it("validation-vn-cs-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "5.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "5.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "5.0");
   });
 
 });
@@ -16512,6 +16832,26 @@ describe('translate', () => {
 
   it("translate-4" + 'R5-cached', async () => {
     await runTest({"suite":"translate","test":"translate-4"}, "5.0");
+  });
+
+  it("translate-scope-1" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-1"}, "5.0");
+  });
+
+  it("translate-scope-2" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-2"}, "5.0");
+  });
+
+  it("translate-scope-3" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-3"}, "5.0");
+  });
+
+  it("translate-scope-4" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-4"}, "5.0");
+  });
+
+  it("translate-scope-5" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
 });

@@ -11,13 +11,11 @@ class ProblemFinder {
         unknownVersions[vsp.sourcePackage()] = sourceUnknownVersions;
       }
 
-      let list = await vsp.listAllValueSets();
-      for (let url of list) {
-        let vs = await vsp.fetchValueSet(url);
-        if (vs && vs.jsonObj.compose) {
+      await vsp.scanAllValueSets(async (vs) => {
+        if (vs.jsonObj.compose) {
           await this.scanValueSet(vs.jsonObj.compose, sourceUnknownVersions);
         }
-      }
+      });
     }
     let result = '';
     for (let sp of provider.listValueSetSourceCodes()) {

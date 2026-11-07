@@ -117,6 +117,9 @@ class SearchWorker extends TerminologyWorker {
 
       // Sort results
       matches = this.sortResults(matches, sort);
+      if (summary !== 'count') {
+        matches = await this.loadPage(matches, offset, count);
+      }
 
       // Build and return the bundle
       const bundle = this.buildSearchBundle(
@@ -265,6 +268,44 @@ class SearchWorker extends TerminologyWorker {
     }
 
     return false;
+  }
+
+  /**
+   * A provider that doesn't hold its resources in memory can return matches that only carry
+   * what a search is sorted by, and a load() that reads the resource (see VSACValueSetProvider):
+   * read the ones on this page. One that can't be read (it was rejected when it was parsed) is
+   * dropped, and the next match moves up onto the page; the total counts the dropped ones less.
+   * A rejected match on a page not asked for is still counted: rejected rows are rare, and
+   * finding out exactly which matches are good would mean reading all of them
+   */
+  async loadPage(matches, offset, count) {
+    let start = offset;
+    let end = Math.min(matches.length, offset + count);
+    while (start < end) {
+      this.deadCheck('search-load');
+      const page = [];
+      for (let i = start; i < end; i++) {
+        if (matches[i].load) {
+          page.push(i);
+        }
+      }
+      const loaded = await Promise.all(page.map(i => matches[i].load()));
+      let dropped = 0;
+      page.forEach((i, n) => {
+        matches[i] = loaded[n] || null;
+        if (!loaded[n]) {
+          dropped++;
+        }
+      });
+      if (dropped === 0) {
+        break;
+      }
+      // the matches after the page move up to fill it: read those
+      matches = matches.filter(m => m !== null);
+      start = end - dropped;
+      end = Math.min(matches.length, offset + count);
+    }
+    return matches;
   }
 
   /**

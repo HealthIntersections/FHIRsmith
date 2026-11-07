@@ -63,8 +63,47 @@ function editionCode(edition) {
   return e ? e.code : null;
 }
 
+/**
+ * The editions snomed.info can resolve an edition-specific concept link for: the same list as
+ * SnomedUtilities.getEditionFromVersion in org.hl7.fhir.core. A code from any other edition
+ * links to http://snomed.info/id/<code>. Also the editions offered when an edition is chosen
+ * (the IPS module's national profiles), in this order.
+ */
+const SNOMED_LINKABLE_EDITIONS = new Set([
+  '900000000000207008', // International
+  '449081005', // International Spanish
+  '11000221109', // Argentinian
+  '32506021000036107', // Australian (with drug extension)
+  '11000234105', // Austrian
+  '11000172109', // Belgian
+  '20621000087109', // Canadian English
+  '20611000087101', // Canadian Canadian French
+  '21000325107', // Chilean
+  '11000279109', // Czech
+  '554471000005108', // Danish
+  '11000181102', // Estonian
+  '11000229106', // Finnish
+  '11000274103', // German
+  '1121000189102', // Indian
+  '11000220105', // Irish
+  '11000146104', // Netherlands
+  '21000210109', // New Zealand
+  '51000202101', // Norwegian
+  '11000267109', // Republic of Korea (South Korea)
+  '900000001000122104', // Spanish National
+  '45991000052106', // Swedish
+  '2011000195101', // Swiss
+  '83821000000107', // UK
+  '999000021000000109', // UK Clinical
+  '5631000179106', // Uruguay
+  '731000124108', // US
+  '5991000124107', // US (with ICD-10-CM maps)
+  '827022005' // IPS Terminology
+]);
+
 module.exports = {
   EDITIONS,
+  SNOMED_LINKABLE_EDITIONS,
   editionName,
   editionCode
 };

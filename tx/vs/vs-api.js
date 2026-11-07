@@ -120,6 +120,25 @@ class AbstractValueSetProvider {
     return [];
   }
 
+  /**
+   * Call fn once for each url in listAllValueSets(), with the latest version of it (what
+   * fetchValueSet(url) returns), for the scans that look at every value set (see
+   * usage-tracker.js, problems.js). listAllValueSets() can list a url once per stored version:
+   * older versions are not scanned, and the latest is scanned only once, so the usage counts
+   * are not inflated by how many versions there are. A provider that doesn't hold its value
+   * sets in memory can do this more cheaply than fetching each one.
+   *
+   * @param {function(ValueSet): Promise<void>} fn
+   */
+  async scanAllValueSets(fn) {
+    for (const url of new Set(await this.listAllValueSets())) {
+      const vs = await this.fetchValueSet(url);
+      if (vs) {
+        await fn(vs);
+      }
+    }
+  }
+
   async close() {
 
   }

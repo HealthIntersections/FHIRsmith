@@ -39,7 +39,6 @@
  * @module ips/ips
  */
 
-const http = require('http');
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -85,54 +84,17 @@ const FHIR_JSON = 'application/fhir+json; charset=utf-8';
 const CODE_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 // paths at the root that can't be project codes
 const { jurisdiction: jurisdictionOf } = require('./jurisdictions');
-const LOAD_IG_TIMEOUT_MS = 300000;
+const { SNOMED_LINKABLE_EDITIONS } = require('../tx/sct/editions');
 const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles']);
-
-/**
- * Ask the validator service to load a package (id#version) - POST /loadIG with {"ig": ...} as
- * the validator's LoadIGHTTPHandler takes it. fhir-validator-wrapper's own loadIG() (to 1.6.0
- * at least) sends the package id and version as query parameters with no body, which the
- * service refuses ("Error parsing JSON source: ... Eof at Line 1"), so it is only used for a
- * validator with no address of its own (as the tests' are).
- * @returns {Promise<Object>} the OperationOutcome the service answers with
- */
-function loadIG(validator, packageId, version) {
-  if (!validator.baseUrl) {
-    return validator.loadIG(packageId, version);
-  }
-  const body = JSON.stringify({ ig: `${packageId}#${version}` });
-  const url = new URL(`${validator.baseUrl}/loadIG`);
-  return new Promise((resolve, reject) => {
-    const req = http.request({
-      hostname: url.hostname, port: url.port, path: url.pathname, method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/fhir+json', 'Content-Length': Buffer.byteLength(body) }
-    }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        try {
-          resolve(JSON.parse(text));
-        } catch (e) {
-          reject(new Error(`The validator answered HTTP ${res.statusCode} with a response that is not JSON (${text.length} bytes)`));
-        }
-      });
-      res.on('error', reject);
-    });
-    req.on('error', reject);
-    // loading a package can mean downloading it, and its dependencies
-    req.setTimeout(LOAD_IG_TIMEOUT_MS, () => req.destroy(new Error('The validator took too long to load the package')));
-    req.end(body);
-  });
-}
 
 /**
  * What's wrong with a national profile's details, or null: a jurisdiction (a country's ISO 3166
  * two-letter code, or a region's UN M49 three-digit code - see jurisdictions.js), a FHIR package id (lower case, at
- * least two parts separated by dots), a version (as package versions are written), and the
- * canonical URL (http or https) of the IG's profile on Bundle.
+ * least two parts separated by dots), a version (as package versions are written), the
+ * canonical URL (http or https) of the IG's profile on Bundle, and - optionally - the SNOMED CT
+ * edition the IG takes for granted, by its module id (one of SNOMED_LINKABLE_EDITIONS).
  */
-function nationalProfileProblem(jurisdiction, packageId, version, url) {
+function nationalProfileProblem(jurisdiction, packageId, version, url, snomedEdition) {
   if (!jurisdictionOf(jurisdiction)) {
     return 'The jurisdiction must be a country, by its ISO 3166 two-letter code (e.g. AU), or a region, by its UN M49 three-digit code (e.g. 150 for Europe)';
   }
@@ -144,6 +106,9 @@ function nationalProfileProblem(jurisdiction, packageId, version, url) {
   }
   if (url.length > 1024 || !/^https?:\/\/[^\s/?#]+(?:[/?#]\S*)?$/.test(url)) {
     return 'The profile must be the canonical URL (http or https) of the IG\'s profile on Bundle';
+  }
+  if (snomedEdition && !SNOMED_LINKABLE_EDITIONS.has(snomedEdition)) {
+    return 'The SNOMED CT edition must be one of the editions offered (or none)';
   }
   return null;
 }
@@ -690,17 +655,51 @@ class IpsModule {
       txLog: cfg.txLog || folders.filePath('logs', 'ips-validator-tx.log'),
       port: cfg.port || 8082,
       igs: Array.isArray(cfg.packages) ? cfg.packages : ['hl7.fhir.uv.ips#1.1.0'],
-      timeout: cfg.timeout || 120000
+      timeout: cfg.timeout || 120000,
+      // lookupExtension(): an extension the validator doesn't have is looked for the way the
+      // validator does while validating - the package that defines it is found from the url,
+      // downloaded and loaded (validator 7.0.5 and later; fhir-validator-wrapper 1.7.0 and later)
+      autoLoadPackages: cfg.autoLoadPackages !== false
     };
     this.log.info(`IPS module: starting the FHIR validator${localJar ? ` (${localJar})` : ''} on port ${settings.port} (tx ${settings.txServer}; ${settings.igs.join(', ')})`);
     this.validatorStarting = this.validator.start(settings).then(() => {
       this.log.info('IPS module: the FHIR validator is running');
+      // documents wait for this too, so the analysis step - which looks up extensions before
+      // the national step would load the packages - finds what the national IGs define
+      return this.loadNationalPackages();
     }).catch(e => {
       this.log.error('IPS module: the FHIR validator failed to start: ' + e.message);
       this.validatorError = e.message;
     }).finally(() => {
       this.validatorStarting = null;
     });
+  }
+
+  /**
+   * Load every national profile's package into the validator (as the national step would), so
+   * that what they define is there from the start. A package that won't load is logged (and
+   * remembered) by loadNationalPackage(), and doesn't stop the others.
+   * @returns {Promise<void>}
+   */
+  async loadNationalPackages() {
+    if (!this.validator || !this.store) {
+      return;
+    }
+    const list = this.store.nationalProfiles();
+    if (list.length === 0) {
+      return;
+    }
+    const started = Date.now();
+    this.log.info(`IPS module: loading the packages of ${list.length} national profiles into the validator`);
+    // one at a time: the validator loads one package per request anyway
+    for (const np of list) {
+      try {
+        await this.loadNationalPackage(np.packageId, np.version);
+      } catch (e) {
+        // already logged
+      }
+    }
+    this.log.info(`IPS module: national profile packages loaded in ${Math.round((Date.now() - started) / 1000)}s`);
   }
 
   /**
@@ -714,13 +713,15 @@ class IpsModule {
     const key = `${packageId}#${version}`;
     let p = this.nationalPackages.get(key);
     if (!p) {
-      p = loadIG(this.validator, packageId, version).then(outcome => {
+      p = this.validator.loadIG(packageId, version).then(outcome => {
         const bad = (Array.isArray(outcome?.issue) ? outcome.issue : []).filter(i => i && (i.severity === 'error' || i.severity === 'fatal'));
         if (bad.length > 0 || outcome?.resourceType !== 'OperationOutcome') {
           const why = bad.map(i => i.details?.text || i.diagnostics || i.code).filter(Boolean).join('; ') || 'the validator did not return an OperationOutcome';
           throw new Error(`The validator could not load ${key}: ${why}`);
         }
         this.log.info(`IPS module: national profile package ${key} loaded into the validator`);
+        // the validator knows more now: extensions it couldn't find before may be there
+        this.forgetMissingExtensions();
       });
       p.catch(e => this.log.warn(`IPS module: ${e.message}`));
       this.nationalPackages.set(key, p);
@@ -761,9 +762,25 @@ class IpsModule {
   }
 
   /**
+   * Forget the extensions the validator couldn't find: it has loaded a package since, and may
+   * know them now. The ones it found are kept.
+   */
+  forgetMissingExtensions() {
+    if (this.extensionCache) {
+      for (const [url, answer] of this.extensionCache) {
+        if (answer === null) {
+          this.extensionCache.delete(url);
+        }
+      }
+    }
+  }
+
+  /**
    * The definition of an extension, for the analysis step: {url, title, name, description},
    * or null when it can't be found. It is asked of the validator (the wrapper's
-   * lookupCanonical(), the service's /canonical, which looks in the validator's context).
+   * lookupCanonical(), the service's /canonical, which looks in the validator's context - and,
+   * with modules.ips.validator.autoLoadPackages (on by default), finds and loads the package that
+   * defines one it doesn't have).
    * Answers are remembered (a bounded cache); a validator that isn't there, or that fails, or
    * that predates /canonical, isn't an answer, and is asked again next time.
    * @param {string} url
@@ -1444,12 +1461,13 @@ class IpsModule {
     const list = this.store.nationalProfiles();
     res.status(status);
     if (!wantsHtml(req) && !message) {
-      return res.json(list.map(np => ({ jurisdiction: np.jurisdiction, packageId: np.packageId, version: np.version, url: np.url })));
+      return res.json(list.map(np => ({ jurisdiction: np.jurisdiction, packageId: np.packageId, version: np.version, url: np.url,
+        ...(np.snomedEdition ? { snomedEdition: np.snomedEdition } : {}) })));
     }
     this.sendHtml(res, 'National Profiles', render.renderNationalProfiles(list, this.ctx(req, res), message), Date.now(), req);
   }
 
-  /** Add (id null) or change a national profile, from the form: packageId, version, url. */
+  /** Add (id null) or change a national profile, from the form: jurisdiction, packageId, version, url, snomedEdition (optional). */
   saveNationalProfile(req, res, id) {
     const field = (name) => (typeof req.body[name] === 'string' ? req.body[name].trim() : '');
     const packageId = field('packageId');
@@ -1457,7 +1475,9 @@ class IpsModule {
     const url = field('url');
     // a country code is upper case; a region's is digits
     const jurisdiction = field('jurisdiction').toUpperCase();
-    const problem = nationalProfileProblem(jurisdiction, packageId, version, url);
+    // the edition's module id; empty for none
+    const snomedEdition = field('snomedEdition') || null;
+    const problem = nationalProfileProblem(jurisdiction, packageId, version, url, snomedEdition);
     if (problem) {
       return this.sendNationalProfiles(req, res, problem, 400);
     }
@@ -1466,20 +1486,24 @@ class IpsModule {
       if (existing) {
         return this.sendNationalProfiles(req, res, `There is already a national profile for ${packageId}#${version}`, 409);
       }
-      this.store.createNationalProfile(packageId, version, url, jurisdiction);
-      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}) added (${url})`);
+      this.store.createNationalProfile(packageId, version, url, jurisdiction, snomedEdition);
+      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}${snomedEdition ? `, SNOMED CT ${snomedEdition}` : ''}) added (${url})`);
     } else {
       const n = /^\d{1,15}$/.test(id) ? parseInt(id, 10) : -1;
       if (existing && existing.id !== n) {
         return this.sendNationalProfiles(req, res, `There is already a national profile for ${packageId}#${version}`, 409);
       }
-      if (!this.store.updateNationalProfile(n, packageId, version, url, jurisdiction)) {
+      if (!this.store.updateNationalProfile(n, packageId, version, url, jurisdiction, snomedEdition)) {
         return this.sendNationalProfiles(req, res, 'That national profile no longer exists', 404);
       }
-      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}) saved (${url})`);
+      this.log.info(`IPS module: national profile ${packageId}#${version} (${jurisdiction}${snomedEdition ? `, SNOMED CT ${snomedEdition}` : ''}) saved (${url})`);
     }
-    // a package that failed to load is tried again
+    // a package that failed to load is tried again; the packages are loaded now (in the
+    // background), so the analysis step finds what they define
     this.nationalPackages = new Map();
+    if (this.validator && this.validator.isRunning()) {
+      this.loadNationalPackages().catch(e => this.log.warn(`IPS module: loading the national profile packages failed: ${e.message}`));
+    }
     res.redirect(req.baseUrl + '/national-profiles');
   }
 

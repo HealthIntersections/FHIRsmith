@@ -416,7 +416,7 @@ describe('the web pages', () => {
     expect(all.text).toContain('<form method="get" action="/ips/demo" class="ips-filter ips-search mb-3">');
     expect(all.text).toContain('<a href="/ips/demo/metadata">CapabilityStatement</a>');
     expect(all.text).toContain('<code>POST /ips/demo/Bundle</code></td><td>submit a document; the response');
-    expect(all.text.indexOf('<h4>Documentation</h4>')).toBeGreaterThan(all.text.indexOf('Minh Nguyen'));
+    expect(all.text.indexOf('<h3>Documentation</h3>')).toBeGreaterThan(all.text.indexOf('Minh Nguyen'));
     mod.store.setProjectToken(1, 'secret-token');
     expect((await html('/ips/demo')).text).toContain('submit a document (this project requires a token: <code>Authorization: Bearer {token}</code>)');
     mod.store.setProjectToken(1, null);
@@ -884,7 +884,7 @@ describe('the validation step', () => {
     expect(await mod.processQueue()).toBe(1);
     expect(mod.validator.calls).toHaveLength(1);
     expect(mod.validator.calls[0].resource.id).toBe('1');
-    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'], checkIpsCodes: true, timeout: 120000 });
+    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'], timeout: 120000 });
     expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'validation: 1 error, 1 warning, 1 note' });
     const r = mod.store.readResult(1, 'validation');
     expect(r.result).toMatchObject({ profiles: ['http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'], validatorVersion: '6.5.0', counts: { error: 1, warning: 1, information: 1, fatal: 0 } });
@@ -899,14 +899,14 @@ describe('the validation step', () => {
     expect(page.text).toContain('with validator 6.5.0');
     expect(page.text).toContain('<b>1 error, 1 warning, 1 note</b>');
     expect(page.text).toContain('Constraint failed: dom-6');
-    expect(page.text).toContain('<button type="button" class="btn btn-default ips-btn ips-oo-toggle">Show the OperationOutcome</button></summary><pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;OperationOutcome&quot;');
+    expect(page.text).toContain('<summary class="btn btn-default ips-btn">Show the OperationOutcome</summary><pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;OperationOutcome&quot;');
     // the severity colours the code; paths can break at the dots
     expect(page.text).toContain('<span class="ips-badge" style="background-color: #c82333" title="error">invariant</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[1].<wbr/>resource</code></td>');
     // slashes and hyphens break too
     expect(render.renderValidation({ status: 'processed', results: { validation: { made: 'now', result: { status: 'done', counts: {}, outcome: { resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', expression: ['Bundle.entry[0].resource/*Composition/ab-cd*/.identifier'] }] } } } } }))
       .toContain('<code>Bundle.<wbr/>entry[0].<wbr/>resource/<wbr/>*Composition/<wbr/>ab-<wbr/>cd*/<wbr/>.<wbr/>identifier</code>');
-    expect(page.text).toContain('<span class="ips-badge" style="background-color: #d39e00" title="warning">code-invalid</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[0].<wbr/>resource.<wbr/>type</code><br/><code>Line 12, Col 3</code>');
-    expect(page.text).toContain('<span class="ips-badge" style="background-color: #17a2b8" title="information">informational</span>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #8a6100" title="warning">code-invalid</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[0].<wbr/>resource.<wbr/>type</code><br/><code>Line 12, Col 3</code>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #117a8b" title="information">informational</span>');
     expect(page.text).toContain('Unknown code');
     expect(page.text).toContain('All OK &lt;b&gt;');
     expect(page.text).toContain('name="level"');
@@ -939,11 +939,11 @@ describe('the validation step', () => {
   });
 
   test('configured profiles are used instead', async () => {
-    mod.config.validator = { profiles: ['http://example.org/p'], checkIpsCodes: false };
+    mod.config.validator = { profiles: ['http://example.org/p'] };
     mod.validator = fakeValidator();
     await post(app, 'demo', ips());
     await mod.processQueue();
-    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://example.org/p'], checkIpsCodes: false, timeout: 120000 });
+    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://example.org/p'], timeout: 120000 });
   });
 
   test('without a validator the document fails processing, and the page says so', async () => {
@@ -1025,8 +1025,8 @@ describe('the national profiles step', () => {
     // each package is loaded once; the one that won't load isn't validated against
     expect(mod.validator.loads).toEqual(['hl7.fhir.au.ips#1.0.0', 'hl7.fhir.nz.ips#2.0.0', 'hl7.fhir.xx.ips#0.1.0']);
     expect(mod.validator.calls).toEqual([
-      { profiles: [AU], checkIpsCodes: true, timeout: 120000 }, { profiles: [NZ], checkIpsCodes: true, timeout: 120000 },
-      { profiles: [AU], checkIpsCodes: true, timeout: 120000 }, { profiles: [NZ], checkIpsCodes: true, timeout: 120000 }]);
+      { profiles: [AU], timeout: 120000 }, { profiles: [NZ], timeout: 120000 },
+      { profiles: [AU], timeout: 120000 }, { profiles: [NZ], timeout: 120000 }]);
     expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: 1 passed, 1 failed, 1 not checked' });
     const r = mod.store.readResult(1, 'national').result;
     expect(r.validatorVersion).toBe('6.5.0');
@@ -1040,7 +1040,7 @@ describe('the national profiles step', () => {
     expect(page.text).toContain('<td><code>150</code> Europe</td>');
     expect(page.text).toContain('<span class="ips-badge" style="background: #c82333">Failed</span></td><td>1 error, 1 note</td>');
     expect(page.text).toContain('<span class="ips-badge" style="background: #1e7e34">Passed</span></td><td>1 warning</td>');
-    expect(page.text).toContain('<span class="ips-badge" style="background: #d39e00">Not checked</span></td><td><span class="ips-small">(not validated)</span>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #8a6100">Not checked</span></td><td><span class="ips-small">(not validated)</span>');
 
     // one profile's validation, as the validation view shows it
     const au = await request(app).get('/ips/demo/Bundle/1?view=national&np=0').set('Accept', 'text/html');
@@ -1050,8 +1050,17 @@ describe('the national profiles step', () => {
     expect(au.text).toContain('Bundle.identifier: minimum required = 1');
     expect(au.text).toContain('<input type="hidden" name="view" value="national"/><input type="hidden" name="np" value="0"/>');
     expect(au.text).toContain('Show the OperationOutcome');
+    // errors only, unless asked for more
+    expect(au.text).toContain('<option value="error" selected>Errors only</option>');
+    expect(au.text).toContain('Showing 1 of 2 issues (errors and above)');
     const filtered = await request(app).get('/ips/demo/Bundle/1?view=national&np=0&level=error').set('Accept', 'text/html');
     expect(filtered.text).toContain('Showing 1 of 2 issues (errors and above)');
+    const everything = await request(app).get('/ips/demo/Bundle/1?view=national&np=0&level=information').set('Accept', 'text/html');
+    expect(everything.text).toContain('<option value="information" selected>Everything</option>');
+    expect(everything.text).not.toContain('Showing 1 of 2 issues');
+    // the document's own validation still shows everything by default
+    const own = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    expect(own.text).not.toContain('<option value="error" selected>');
     // the one that wasn't validated: why, for managers
     const xx = await request(app).get('/ips/demo/Bundle/1?view=national&np=2').set('Accept', 'text/html');
     expect(xx.text).toContain("could not be validated against this profile (the reason is shown to the project's managers)");
@@ -1082,7 +1091,11 @@ describe('the national profiles step', () => {
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     try {
-      mod.validator = { baseUrl: `http://127.0.0.1:${server.address().port}`, loadIG: () => { throw new Error('not this one'); } };
+      // the wrapper's own loadIG() (fhir-validator-wrapper 1.6.1 and later post the body), as start() leaves it
+      const FhirValidator = require('fhir-validator-wrapper');
+      mod.validator = new FhirValidator('validator_cli.jar', { info() {}, warn() {}, error() {}, debug() {} });
+      mod.validator.baseUrl = `http://127.0.0.1:${server.address().port}`;
+      mod.validator.isReady = true;
       await mod.loadNationalPackage('hl7.fhir.au.ps', 'current');
       expect(seen).toEqual([{ method: 'POST', url: '/loadIG', type: 'application/json', body: '{"ig":"hl7.fhir.au.ps#current"}' }]);
       // once
@@ -1091,6 +1104,18 @@ describe('the national profiles step', () => {
     } finally {
       await new Promise(r => server.close(r));
     }
+  });
+
+  test('the national profiles\' packages are loaded when the validator starts, before any document is processed', async () => {
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    mod.store.createNationalProfile('hl7.fhir.xx.ips', '0.1.0', XX, '150');
+    mod.validator = fakeValidator();
+    await mod.loadNationalPackages();
+    expect(mod.validator.loads).toEqual(['hl7.fhir.au.ips#1.0.0', 'hl7.fhir.xx.ips#0.1.0']);
+    // and not again for the document
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.validator.loads).toHaveLength(2);
   });
 
   test('without a validator, documents fail processing (when there are national profiles)', async () => {
@@ -1404,7 +1429,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -1461,6 +1486,60 @@ describe('the terminology step', () => {
     expect(mod.store.read(2).analysed.entry[4].resource.severity.coding).toHaveLength(3);
   });
 
+  test('SNOMED CT codes with no version are translated as the edition of the document\'s nation - but checked as they are', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'translate' || s.name === 'terminology');
+    const US = '731000124108';
+    mod.store.createNationalProfile('hl7.fhir.us.pcs', '1.0.0', 'http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs', 'US', US);
+    // a national profile for another nation doesn't count
+    mod.store.createNationalProfile('hl7.fhir.au.ps', '1.0.0', 'http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle', 'AU', '32506021000036107');
+    const d = withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] });
+    d.meta = { profile: ['http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs'] };
+    d.entry[4].resource.stage = [{ type: { coding: [{ system: SCT, version: 'http://snomed.info/sct/900000000000207008', code: 'staged' }, { system: SCT, code: 'other' }] } }];
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const t = calls.filter(c => c.translate);
+    // the condition's code: SNOMED CT with no version - sent as the US edition
+    expect(t.find(c => c.translate.coding[0].code === 'intl').translate).toEqual({ coding: [{ system: SCT, version: `http://snomed.info/sct/${US}`, code: 'intl' }] });
+    // a version that is there stays; other systems are left alone
+    expect(t.find(c => c.translate.coding[0].code === 'staged').translate.coding).toEqual([
+      { system: SCT, version: 'http://snomed.info/sct/900000000000207008', code: 'staged' }, { system: SCT, version: `http://snomed.info/sct/${US}`, code: 'other' }]);
+    expect(t.find(c => c.translate.coding[0].code === 'LA-mod').translate.coding[0].version).toBeUndefined();
+    // the terminology check takes the codes as they are
+    expect(calls.filter(c => !c.translate && c.coding && c.coding.code === 'intl').every(c => c.coding.version === undefined)).toBe(true);
+    // the master and the analysed copy keep the code as it was
+    expect(mod.store.read(1).analysed.entry[4].resource.code.coding[0]).toEqual({ system: SCT, code: 'intl' });
+    const rec = mod.store.readResult(1, 'translate').result;
+    expect(rec.defaultEdition).toEqual({ edition: US, packageId: 'hl7.fhir.us.pcs', version: '1.0.0', jurisdiction: 'US' });
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('SNOMED CT codes with no version were translated as codes of the <span title="http://snomed.info/sct/731000124108">US Edition</span> - the SNOMED CT edition of the national profile <code>hl7.fhir.us.pcs#1.0.0</code>, for US');
+
+    // no nation (or none with an edition): the codes go as they are
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    const before = calls.length;
+    mod.txCache = new Map();
+    await mod.processQueue();
+    const t2 = calls.slice(before).filter(c => c.translate);
+    expect(t2.find(c => c.translate.coding[0].code === 'intl').translate).toEqual({ coding: [{ system: SCT, code: 'intl' }] });
+    expect(mod.store.readResult(2, 'translate').result.defaultEdition).toBeUndefined();
+  });
+
+  test('a coding the concept already has: the same system and code, in the same edition', () => {
+    const { hasCoding } = require('../../ips/pipeline');
+    const usCoding = { system: SCT, version: 'http://snomed.info/sct/731000124108', code: '763875007' };
+    const intl = { system: SCT, version: 'http://snomed.info/sct/900000000000207008/version/20250801', code: '763875007' };
+    // the same code in the International Edition is a different coding
+    expect(hasCoding([usCoding], intl)).toBe(false);
+    // the same edition, another release: the same coding
+    expect(hasCoding([{ ...intl, version: 'http://snomed.info/sct/900000000000207008' }], intl)).toBe(true);
+    expect(hasCoding([usCoding], { ...usCoding, version: 'http://snomed.info/sct/731000124108/version/20250901' })).toBe(true);
+    // no version on either side: the same coding
+    expect(hasCoding([{ system: SCT, code: '763875007' }], intl)).toBe(true);
+    expect(hasCoding([usCoding], { system: SCT, code: '763875007' })).toBe(true);
+    // other systems compare versions as they are
+    expect(hasCoding([{ system: 'http://loinc.org', version: '2.81', code: '1-8' }], { system: 'http://loinc.org', version: '2.83', code: '1-8' })).toBe(false);
+    expect(hasCoding([{ system: 'http://loinc.org', code: '1-8' }], { system: 'http://loinc.org', code: '1-9' })).toBe(false);
+  });
+
   test('a concept with no value set of its own is translated into the fallback, a failed translation is logged, and a resubmitted copy is cleaned', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
     const logged = [];
@@ -1480,7 +1559,7 @@ describe('the terminology step', () => {
     expect(entries[3]).toMatchObject({ ownValueSet: false, target: FALLBACK });
     const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
     expect(view.text).toContain('>ips-international-codes</span> <small>(fallback)</small></td>');
-    expect(view.text).toContain('<span class="ips-badge" style="background-color: #fd7e14">Not checked</span></td><td>Could not be determined - ');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #a35200">Not checked</span></td><td>Could not be determined - ');
     // a server failure on the translation itself: logged, and the document still processed
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'tboom' }] }));
     await mod.processQueue();
@@ -1571,7 +1650,7 @@ describe('the terminology step', () => {
     expect(page.text).toContain('<a class="ips-step ips-step-done" title="narrative - done: narrative: 2 sections (1 display lookup)" href="/ips/demo/Bundle/1?view=narrative&amp;narrative=generated">');
     // the old view name still lands on it
     expect((await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html')).text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated">');
-    expect(page.text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated"><div xmlns="http://www.w3.org/1999/xhtml"><h1>Patient Summary as of 1 March 2026</h1>');
+    expect(page.text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated"><div xmlns="http://www.w3.org/1999/xhtml"><h3>Patient Summary as of 1 March 2026</h3>');
     // the Narrative tab is still the submitted narrative
     expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).toContain('Summary for <b>Jane Smith</b>');
     // the same document again: the lookups are remembered
@@ -1721,8 +1800,8 @@ describe('the AI assessment step', () => {
     expect(page).toContain("by server-model-2026 (openai, the server's account), without the narrative");
     expect(page).toContain('100 tokens in, 20 out ($0.0004)');
     expect(page).toContain('<span class="ips-badge ips-grade" style="background-color: #1e7e34">Grade A</span> Consistent (');
-    expect(page).toContain('<h4>Consistency and integrity</h4><p><i>No findings</i></p>');
-    expect(page).toContain("Show the model's answer</button>");
+    expect(page).toContain('<h3>Consistency and integrity</h3><p><i>No findings</i></p>');
+    expect(page).toContain('<summary class="btn btn-default ips-btn">Show the model&#39;s answer</summary>');
     // the cap: two a day
     await post(app, 'demo', ips());
     await mod.processQueue();
@@ -1756,10 +1835,10 @@ describe('the AI assessment step', () => {
     await mod.processQueue();
     expect(mod.store.read(1).status_message).toBe('ai: grade C, 3 findings (prose-2026)');
     const page = await aiView(1);
-    expect(page).toContain('style="background-color: #d39e00">Grade C</span> Some issues</p>');
+    expect(page).toContain('style="background-color: #8a6100">Grade C</span> Some issues</p>');
     expect(page).toContain('<tr><td><span class="ips-badge" style="background-color: #c82333">high</span></td><td>x</td><td>y</td></tr>');
     expect(page).toContain('<h4>Missing</h4><ul><li>z</li></ul>');
-    expect(page).toContain('<td><span class="ips-badge" style="background-color: #d39e00">medium</span></td><td>t</td><td><code>http://snomed.info/sct|1</code></td></tr>');
+    expect(page).toContain('<td><span class="ips-badge" style="background-color: #8a6100">medium</span></td><td>t</td><td><code>http://snomed.info/sct|1</code></td></tr>');
     mod.config.ai.model = 'bad-json';
     await post(app, 'demo', ips());
     await mod.processQueue();
@@ -2173,6 +2252,45 @@ describe('national profiles', () => {
     expect(mod.store.nationalProfiles().map(x => x.version)).toEqual(['1.0.0']);
   });
 
+  test('a national profile can say which SNOMED CT edition its IG takes for granted - or none', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    // none: the select's empty option
+    expect((await form(agent, '/ips/national-profiles', { ...AU, snomedEdition: '' })).status).toBe(302);
+    const [np] = mod.store.nationalProfiles();
+    expect(np.snomedEdition).toBeNull();
+    let page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<th>SNOMED CT Edition</th>');
+    expect(page.text).toContain(`<select form="np-${np.id}" name="snomedEdition"`);
+    expect(page.text).toContain('<option value="" selected>(none)</option>');
+    expect(page.text).toContain('<option value="32506021000036107">Australian Edition (with drug extension)</option>');
+    // an edition, by its module id
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: '32506021000036107' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).snomedEdition).toBe('32506021000036107');
+    page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<option value="32506021000036107" selected>Australian Edition (with drug extension)</option>');
+    expect((await request(app).get('/ips/national-profiles').set('Accept', 'application/json')).body).toEqual([{ ...AU, snomedEdition: '32506021000036107' }]);
+    const anon = await request(app).get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(anon.text).toContain('<td><span title="http://snomed.info/sct/32506021000036107">Australian Edition (with drug extension)</span></td>');
+    // not one of the editions offered
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: '31000003106' })).status).toBe(400);
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: 'AU' })).status).toBe(400);
+    // and back to none
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).snomedEdition).toBeNull();
+  });
+
+  test('a database made before the SNOMED CT edition was asked for gets the column', () => {
+    const before = mod.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'national_profiles'").get().sql.replace(/\n\s*snomed_edition TEXT,[^\n]*/, '');
+    expect(before).not.toContain('snomed_edition');
+    mod.store.db.exec('DROP TABLE national_profiles');
+    mod.store.db.exec(before);
+    mod.store.db.prepare("INSERT INTO national_profiles (package_id, version, url, jurisdiction, updated_ms) VALUES ('hl7.fhir.au.ips', '1.0.0', 'http://x/y', 'AU', 1)").run();
+    mod.store.migrate();
+    expect(mod.store.nationalProfiles()).toMatchObject([{ packageId: 'hl7.fhir.au.ips', snomedEdition: null }]);
+    mod.store.createNationalProfile('hl7.fhir.nz.ips', '1.0.0', 'http://x/z', 'NZ', '21000210109');
+    expect(mod.store.nationalProfileByPackage('hl7.fhir.nz.ips', '1.0.0').snomedEdition).toBe('21000210109');
+  });
+
   test('everyone can see them, only the administrator can change them', async () => {
     mod.store.createNationalProfile(AU.packageId, AU.version, AU.url, AU.jurisdiction);
     const page = await request(app).get('/ips/national-profiles').set('Accept', 'text/html');
@@ -2581,7 +2699,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
   });
 });
 
@@ -2711,7 +2829,7 @@ describe('the structure view', () => {
     const seen = row(h, 'entry[0]');
     expect(seen).toContain('class="ips-tt-seen"');
     expect(seen).not.toContain(' hidden>');
-    expect(cells(seen)[3]).toBe('<i>(shown above)</i>');
+    expect(cells(seen)[3]).toBe('<i>(shown at Composition.subject)</i>');
   });
 
   test('the tree lines: a continuing ancestor line, and the last child\'s line stops at its joint', () => {
@@ -2751,6 +2869,71 @@ describe('the structure view', () => {
   });
 });
 
+describe('the nationality step', () => {
+  const { determineNationality, nationalityText } = require('../../ips/nationality');
+  const US_PCS = 'http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs';
+  const AU_PS = 'http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle';
+  const RACE = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-race';
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('the signs of a nation: the US and AU Patient Summary profiles, and US Core extensions', () => {
+    expect(determineNationality(ips({ meta: { profile: [US_PCS] } }))).toMatchObject({ jurisdiction: 'US', reasons: [{ jurisdiction: 'US', text: `the Bundle claims the US Patient Summary profile (${US_PCS})` }] });
+    // a profile with a version is the profile
+    expect(determineNationality(ips({ meta: { profile: [AU_PS + '|1.0.0'] } })).jurisdiction).toBe('AU');
+    // a US Core extension anywhere: here on the patient
+    const us = determineNationality(ips({ patient: { extension: [{ url: RACE, extension: [{ url: 'text', valueString: 'x' }] }] } }));
+    expect(us).toMatchObject({ jurisdiction: 'US', reasons: [{ jurisdiction: 'US', text: 'US Core extension is used (us-core-race)' }] });
+    expect(nationalityText(us)).toBe('From US: US Core extension is used (us-core-race)');
+    // nothing to go on
+    const none = determineNationality(ips());
+    expect(none).toEqual({ jurisdiction: null, reasons: [] });
+    expect(nationalityText(none)).toMatch(/^Nationality unknown: nothing in the document says which nation it is from/);
+    // signs of two nations: unknown, and the reasons say which
+    const both = determineNationality(ips({ meta: { profile: [AU_PS] }, patient: { extension: [{ url: RACE }] } }));
+    expect(both.jurisdiction).toBeNull();
+    expect(both.reasons.map(r => r.jurisdiction)).toEqual(['US', 'AU']);
+    expect(nationalityText(both)).toMatch(/^Nationality unknown: the document has signs of more than one nation \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
+  });
+
+  test('the step runs first, and the nation shows on the list, the document banner and the analysis', async () => {
+    expect(STEPS[0].name).toBe('nationality');
+    mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'analysis');
+    await post(app, 'demo', ips({ meta: { profile: [US_PCS] } }));
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ nationality: 'US' });
+    expect(mod.store.read(1).status_message).toMatch(/^nationality: US; analysis:/);
+    expect(mod.store.read(2)).toMatchObject({ nationality: null });
+
+    const list = await request(app).get('/ips/demo').set('Accept', 'text/html');
+    expect(list.text).toContain('<th>Nation</th>');
+    expect(list.text).toContain('<td title="United States of America">US</td>');
+    expect(list.text).toContain('<td title="Not known">??</td>');
+
+    const page = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(page.text).toContain('<div class="ips-banner ips-banner-flagged"><img class="ips-flag" src="/assets/images/flags/us.svg"');
+    expect(page.text).toContain('title="analysis - done');
+    const unknown = await request(app).get('/ips/demo/Bundle/2').set('Accept', 'text/html');
+    expect(unknown.text).toContain('<img class="ips-flag" src="/assets/images/flags/unknown.svg" alt="Nationality unknown"');
+
+    const analysis = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(analysis.text).toContain(`<ul><li class="ips-an-nation">From US: the Bundle claims the US Patient Summary profile (${US_PCS})</li>`);
+    // only on the Composition
+    expect(analysis.text.split('ips-an-nation"').length).toBe(2);
+
+    // processing again forgets it until the step has run again
+    expect(mod.store.requeue(1, mod.store.read(1).project_id)).toBeTruthy();
+    expect(mod.store.read(1).nationality).toBeNull();
+  });
+});
+
 describe('the analysis step', () => {
   let app;
   let mod;
@@ -2777,14 +2960,33 @@ describe('the analysis step', () => {
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=analysis">Analysis</a></li>');
     expect(page.text).toContain('<a class="ips-step ips-step-done" title="analysis - done: analysis: 1 of 6 resources and sections with something to note, 2 extensions" href="/ips/demo/Bundle/1?view=analysis">');
     expect(page.text).toContain('<td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td><td>Patient</td>');
-    expect(page.text).toContain('<li class="ips-an-extension">Extension <code>http://example.org/x</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
+    expect(page.text).toContain('<li class="ips-an-extension">Extension <code>http://example.org/x</code> on <code>Patient</code>: <i>not known</i></li>');
+    // "Only show problems": the patient (extensions) is a problem; the allergy (All OK, no narrative) and the patient met again are not
+    expect(page.text).toContain('<label><input type="checkbox" id="ips-an-problems"/> Only show problems</label>');
+    expect(page.text).toContain('<tr class="ips-an-node"><td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td>');
+    expect(page.text).toMatch(/<tr class="ips-an-node" data-ok="1"><td class="ips-an-path"><img [^>]*\/> Composition\.section\[0\]\.entry\[0\]<\/td>/);
+    expect(page.text).toContain('<tr class="ips-an-findings ips-tt-seen" data-ok="1"><td colspan="4"><i>Analysed at Composition.subject</i></td></tr>');
+    expect(page.text).toContain("localStorage.getItem(KEY) === '1'");
     expect(page.text).toContain('<li class="ips-an-modifier">Modifier extension <code>http://example.org/m</code> on <code>Patient</code>');
     // the allergy's patient is the subject, met again
     expect(page.text).toContain(' Composition.section[0].entry[0].resolve().patient</td>');
-    expect(page.text).toContain('<td colspan="4"><i>Analysed above</i></td>');
+    expect(page.text).toContain('<td colspan="4"><i>Analysed at Composition.subject</i></td>');
     // a reference to something not in the document has no rows
     expect(page.text).not.toContain('not in document');
     expect(page.text).toContain('<li class="ips-an-ok">All OK</li><li class="ips-an-narrative">No narrative</li>');
+  });
+
+  test('what "Only show problems" hides: All OK, with or without narrative - but a section needs narrative', () => {
+    const { analysisOk } = require('../../ips/render');
+    const ok = { kind: 'ok', text: 'All OK' };
+    const has = { kind: 'narrative', text: 'Has narrative (generated)' };
+    const none = { kind: 'narrative', text: 'No narrative' };
+    expect(analysisOk([ok, has], false)).toBe(true);
+    expect(analysisOk([ok, none], false)).toBe(true);
+    expect(analysisOk([ok, has], true)).toBe(true);
+    expect(analysisOk([ok, none], true)).toBe(false);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x' }, has], false)).toBe(false);
+    expect(analysisOk(undefined, false)).toBe(false);
   });
 
   test('extension definitions come from the validator (lookupCanonical), and are remembered', async () => {
@@ -2808,9 +3010,9 @@ describe('the analysis step', () => {
     await post(app, 'demo', ips({ patient }));
     await mod.processQueue();
     const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
-    expect(page.text).toContain('<code>http://example.org/x</code> on <code>Patient</code>: Example &lt;ext&gt;: An example</li>');
-    expect(page.text).toContain('<code>http://example.org/unknown</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
-    expect(page.text).toContain('<code>http://example.org/broken</code> on <code>Patient</code>: <i>(its definition could not be found)</i></li>');
+    expect(page.text).toContain('<code>http://example.org/x</code> on <code>Patient</code>: <span class="ips-an-known" title="Example &lt;ext&gt;: An example">known</span></li>');
+    expect(page.text).toContain('<code>http://example.org/unknown</code> on <code>Patient</code>: <i>not known</i></li>');
+    expect(page.text).toContain('<code>http://example.org/broken</code> on <code>Patient</code>: <i>not known</i></li>');
     // textLink is not mentioned
     expect(page.text).not.toContain('<code>http://hl7.org/fhir/StructureDefinition/textLink</code>');
     expect(asked).toEqual(['http://example.org/x', 'http://example.org/unknown', 'http://example.org/broken']);
@@ -2818,6 +3020,11 @@ describe('the analysis step', () => {
     await post(app, 'demo', ips({ patient }));
     await mod.processQueue();
     expect(asked.slice(3)).toEqual(['http://example.org/broken']);
+    // once a national profile's package has loaded, what wasn't found is asked again
+    mod.validator.loadIG = async () => ({ resourceType: 'OperationOutcome', issue: [] });
+    await mod.loadNationalPackage('hl7.fhir.us.core', '6.1.0');
+    expect(await mod.lookupExtension('http://example.org/unknown')).toBeNull();
+    expect(asked.slice(4)).toEqual(['http://example.org/unknown']);
     // a validator that isn't running, or a wrapper without lookupCanonical: no definitions, and no error
     mod.validator = { isRunning: () => false, lookupCanonical: async () => { throw new Error('not this'); } };
     expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();

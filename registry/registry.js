@@ -91,6 +91,7 @@ class RegistryModule {
         timeout: config.timeout || 30000,
         userAgent: config.userAgent || 'FHIRRegistryServer/1.0',
         apiKeys: config.apiKeys || {},
+        oauth: config.oauth || {},
         maxResponseMB: config.maxResponseMB,
         uptimeWindowDays: config.uptimeWindowDays,
         uptimeRetentionDays: config.uptimeRetentionDays
@@ -1559,7 +1560,7 @@ class RegistryModule {
     // Query information section
     html += '<div class="card mb-4">';
     html += '<div class="card-header">';
-    html += '<h2 class="card-title">Query Information</h2>';
+    html += '<h3 class="card-title">Query Information</h3>';
     html += '</div>';
     html += '<div class="card-body">';
     html += `<p><strong>FHIR Version:</strong> ${escape(fhirVersion)}</p>`;
@@ -1577,7 +1578,7 @@ class RegistryModule {
     // Authoritative servers section
     html += '<div class="card mb-4">';
     html += '<div class="card-header">';
-    html += '<h2 class="card-title">Authoritative Servers</h2>';
+    html += '<h3 class="card-title">Authoritative Servers</h3>';
     html += '</div>';
     html += '<div class="card-body">';
 
@@ -1616,7 +1617,7 @@ class RegistryModule {
     // Candidate servers section
     html += '<div class="card mb-4">';
     html += '<div class="card-header">';
-    html += '<h2 class="card-title">Candidate Servers</h2>';
+    html += '<h3 class="card-title">Candidate Servers</h3>';
     html += '</div>';
     html += '<div class="card-body">';
 
@@ -1867,7 +1868,7 @@ class RegistryModule {
           case 'error': levelStyle = 'color: #d9534f; font-weight: bold;'; break;
           case 'warn': levelStyle = 'color: #f0ad4e;'; break;
           case 'debug': levelStyle = 'color: #5cb85c;'; break;
-          default: levelStyle = 'color: #0275d8;'; // info
+          default: levelStyle = 'color: #0056b3;'; // info
         }
 
         // Format: [time] [LEVEL] message

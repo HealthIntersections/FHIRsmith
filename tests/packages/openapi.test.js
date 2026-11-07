@@ -170,7 +170,7 @@ describe('page footer version', () => {
     const htmlServer = require('../../library/html-server');
     htmlServer.loadTemplate('ver-test', require('path').join(__dirname, '../../packages/packages-template.html'));
     const html = htmlServer.renderPage('ver-test', 'Test', '<p>x</p>', { version: '4.0.1' });
-    expect(html).toContain(`FHIRsmith</a> ${packageJson.version}`);
-    expect(html).not.toContain('FHIRsmith</a> 4.0.1');
+    expect(html).toMatch(new RegExp(`FHIRsmith</a>\\s+${packageJson.version.replace(/\./g, '\\.')}`));
+    expect(html).not.toMatch(/FHIRsmith<\/a>\s+4\.0\.1/);
   });
 });

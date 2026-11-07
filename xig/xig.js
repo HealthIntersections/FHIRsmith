@@ -55,6 +55,9 @@ let cacheLoadInProgress = false;
 
 // Update history - tracks every download attempt for diagnostics
 const MAX_UPDATE_HISTORY = 20;
+// The daily download runs at 02:00 local time
+const UPDATE_CRON = '0 2 * * *';
+const UPDATE_HOUR = 2;
 let updateHistory = [];
 let updateInProgress = false;
 
@@ -2031,7 +2034,11 @@ function initializeDatabase() {
   });
 }
 
-async function updateXigDatabase() {
+/**
+ * Download the database afresh and swap it in.
+ * @param trigger - 'cron' (the daily schedule), 'startup' (no database yet) or 'manual'
+ */
+async function updateXigDatabase(trigger = 'manual') {
   if (updateInProgress) {
     xigLog.warn('Update already in progress, skipping');
     return;
@@ -2040,7 +2047,7 @@ async function updateXigDatabase() {
   updateInProgress = true;
   const entry = {
     timestamp: new Date(),
-    trigger: new Error().stack.includes('cron') ? 'cron' : 'manual',
+    trigger: trigger,
     status: 'started',
     sourceUrl: XIG_DB_URL,
     error: null,
@@ -3229,18 +3236,18 @@ async function initializeXigModule(stats, xigConfig) {
     if (!fs.existsSync(XIG_DB_PATH)) {
       xigLog.info('No existing XIG database found, triggering initial download');
       setTimeout(() => {
-        updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
+        updateXigDatabase('startup').catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       }, 5000);
     }
 
     if (globalStats) {
-      globalStats.addTask('XIG Download', describeCron('0 2 * * *'));
+      globalStats.addTask('XIG Download', describeCron(UPDATE_CRON));
     }
     // Check if auto-update is enabled
     // Note: This assumes we're called only when XIG is enabled
     if (xigConfig?.autoUpdate !== false) {
-      cron.schedule('0 2 * * *', () => {
-        updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
+      cron.schedule(UPDATE_CRON, () => {
+        updateXigDatabase('cron').catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       });
     }
 
@@ -3252,9 +3259,105 @@ async function initializeXigModule(stats, xigConfig) {
 
 // Graceful shutdown
 /**
- * The paragraph for the server's daily report: pages served, and whether the
- * database can be read (it's downloaded afresh each day, and a failed download
- * or an unreadable file is what this is for).
+ * The times (ms, local 02:00) the scheduled update was due in (since, now]
+ */
+function scheduledUpdatesBetween(since, now) {
+  const result = [];
+  const d = new Date(since);
+  d.setHours(UPDATE_HOUR, 0, 0, 0);
+  if (d.getTime() <= since) {
+    d.setDate(d.getDate() + 1);
+  }
+  while (d.getTime() <= now) {
+    result.push(d.getTime());
+    d.setDate(d.getDate() + 1);
+  }
+  return result;
+}
+
+/**
+ * The sentences about database updates in the period (since, now] for the daily report:
+ * affirms the scheduled update happened, or says that it failed or did not run.
+ *
+ * @param history - update attempts, newest first (getUpdateHistory())
+ * @param autoUpdate - false if scheduled updates are turned off
+ * @param dbModified - when the database file in use was written (ms), or null if there isn't one
+ */
+function describeUpdates(history, {since, now, autoUpdate = true, dbModified = null}) {
+  const {localDateTime, formatSpan, formatBytes} = require('../library/daily-report');
+  // just the time of day, unless it's more than a day before the report
+  const time = (t) => now - t <= 24 * 60 * 60 * 1000 ? localDateTime(t).substring(11) : localDateTime(t);
+  const at = (e) => (e.timestamp instanceof Date ? e.timestamp : new Date(e.timestamp)).getTime();
+  const detail = (e) => {
+    const bits = [];
+    if (e.downloadMeta && e.downloadMeta.downloadedBytes) {
+      bits.push(formatBytes(e.downloadMeta.downloadedBytes));
+    }
+    if (e.durationMs != null) {
+      bits.push(`took ${formatSpan(e.durationMs)}`);
+    }
+    return bits.length ? ` (${bits.join(', ')})` : '';
+  };
+
+  const sentences = [];
+  const attempts = (history || []).filter(e => at(e) > since && at(e) <= now).sort((a, b) => at(a) - at(b));
+  const scheduled = attempts.filter(e => e.trigger === 'cron');
+  const others = attempts.filter(e => e.trigger !== 'cron');
+  let updated = attempts.some(e => e.status === 'success');
+
+  if (autoUpdate === false) {
+    sentences.push('Scheduled database updates are turned off.');
+  } else {
+    const due = scheduledUpdatesBetween(since, now);
+    for (const e of scheduled) {
+      if (e.status === 'success') {
+        sentences.push(`The database was updated on schedule at ${time(at(e))}${detail(e)}.`);
+      } else if (e.status === 'failed') {
+        sentences.push(`The scheduled database update at ${time(at(e))} failed${e.error ? ': ' + e.error : ''}.`);
+      } else {
+        sentences.push(`The scheduled database update that started at ${time(at(e))} has not finished.`);
+      }
+    }
+    if (scheduled.length === 0 && due.length > 0) {
+      const last = due[due.length - 1];
+      if (dbModified != null && dbModified >= due[0] && dbModified <= now) {
+        // the record went with a restart, but the file shows it happened
+        sentences.push(`The database was updated at ${time(dbModified)}.`);
+        updated = true;
+      } else {
+        sentences.push(`The database was not updated on schedule: no update ran at ${time(last)} (was the server running then?).`);
+      }
+    }
+    if (scheduled.length > 0 && scheduled.length < due.length) {
+      sentences.push(`${due.length - scheduled.length} of the ${due.length} scheduled updates in this period did not run.`);
+    }
+    if (scheduled.length === 0 && due.length === 0 && attempts.length === 0) {
+      sentences.push('No database update was due in this period.');
+    }
+  }
+  for (const e of others) {
+    const how = e.trigger === 'startup' ? 'initial download' : 'manual update';
+    if (e.status === 'success') {
+      sentences.push(`A ${how} at ${time(at(e))} succeeded${detail(e)}.`);
+    } else if (e.status === 'failed') {
+      sentences.push(`A ${how} at ${time(at(e))} failed${e.error ? ': ' + e.error : ''}.`);
+    } else {
+      sentences.push(`A ${how} started at ${time(at(e))} has not finished.`);
+    }
+  }
+  if (!updated) {
+    if (dbModified == null) {
+      sentences.push('There is no database file.');
+    } else {
+      sentences.push(`The database in use was downloaded ${localDateTime(dbModified)} (${formatSpan(now - dbModified)} ago).`);
+    }
+  }
+  return sentences;
+}
+
+/**
+ * The paragraph for the server's daily report: pages served, whether the database
+ * was updated on schedule (it's downloaded afresh each day), and whether it can be read.
  */
 async function dailyReport({since, now}) {
   const {plural} = require('../library/daily-report');
@@ -3263,6 +3366,12 @@ async function dailyReport({since, now}) {
     const counts = globalStats.countsSince(since, now);
     sentences.push(`${plural(counts.total, 'page')} ${counts.total === 1 ? 'was' : 'were'} served.`);
   }
+  const age = getDatabaseAgeInfo();
+  sentences.push(...describeUpdates(getUpdateHistory(), {
+    since, now,
+    autoUpdate: xigSettings?.autoUpdate !== false,
+    dbModified: age.lastDownloaded ? age.lastDownloaded.getTime() : null
+  }));
   if (!xigDb) {
     sentences.push('The database is not open: it could not be accessed.');
   } else {
@@ -3273,11 +3382,6 @@ async function dailyReport({since, now}) {
     } catch (e) {
       sentences.push(`The database could not be accessed: ${e.message}.`);
     }
-  }
-  const last = getLastUpdateAttempt();
-  if (last && last.status === 'failed') {
-    const when = last.timestamp instanceof Date ? last.timestamp.toISOString().substring(0, 16).replace('T', ' ') : String(last.timestamp);
-    sentences.push(`The last database update (${when}) failed${last.error ? ': ' + last.error : ''}.`);
   }
   return sentences.join(' ');
 }
@@ -3377,6 +3481,8 @@ module.exports = {
   buildStatsTable,
   getUpdateHistory,
   getLastUpdateAttempt,
+  describeUpdates,
+  scheduledUpdatesBetween,
 
   // Event emitter
   cacheEmitter

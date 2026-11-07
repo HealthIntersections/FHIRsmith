@@ -12,11 +12,24 @@ const packageJson = require('../package.json');
 
 let sponsorMessage = '';
 
+// The accessibility check panel (config accessibility.checkPanel): a button at the bottom of
+// every page that runs axe-core (WCAG 2.0 A/AA) and FHIRsmith's own structure checks on the page
+// as the browser has it. The scripts are in static/a11y/; a11y-check.js only loads axe-core when
+// the button is pressed.
+const A11Y_PANEL = `
+<div id="fhir-a11y-panel" data-axe="/a11y/axe.min.js" lang="en" style="clear: both; margin: 20px 10px; padding: 8px; border: 1px solid #888888; background-color: #f4f4f4; color: #000000; font-size: 13px; font-family: sans-serif">
+<p style="margin: 0"><b>Accessibility check</b> (checks this page as it is now against WCAG 2.0 A/AA, plus heading structure, reported by HHS 508 checklist item) <button type="button" class="fhir-a11y-run">Check this page</button> <span class="fhir-a11y-status" role="status"></span></p>
+<div class="fhir-a11y-results"></div>
+</div>
+<script type="text/javascript" src="/a11y/a11y-check.js"></script>
+`;
+
 class HtmlServer {
   log;
 
   constructor() {
     this.templates = new Map(); // templateName -> template content
+    this.accessibilityPanel = false;
   }
 
   useLog(logv) {
@@ -25,6 +38,17 @@ class HtmlServer {
 
   setSponsorMessage(msg) {
     sponsorMessage = msg;
+  }
+
+  setAccessibilityPanel(enabled) {
+    this.accessibilityPanel = !!enabled;
+  }
+
+  // put the accessibility check panel at the end of the page body (or the end of the page, if
+  // there's no </body>)
+  addAccessibilityPanel(html) {
+    const i = html.toLowerCase().lastIndexOf('</body>');
+    return i < 0 ? html + A11Y_PANEL : html.slice(0, i) + A11Y_PANEL + html.slice(i);
   }
 
   // Template Management
@@ -108,7 +132,7 @@ class HtmlServer {
     // a placeholder that isn't known is left as it is, as before
     const html = template.replace(/\[%([^%\]\s]{1,64})%\]/g, (m, name) => (values.has(name) ? values.get(name)() : m));
 
-    return html;
+    return this.accessibilityPanel ? this.addAccessibilityPanel(html) : html;
   }
 
   // Express Response Helper

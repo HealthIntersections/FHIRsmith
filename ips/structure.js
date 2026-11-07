@@ -8,7 +8,9 @@
  * The logical structure of an IPS document, as a tree: the Composition, then what it
  * refers to (other than its sections), then the sections, nested, each with what it refers
  * to (entries, author, focus...). Each resource referred to holds what it refers to in turn.
- * A resource is expanded once, where it is first met; met again, it is a 'seen' node. A
+ * A resource is expanded once, at the shallowest place it is met (breadth first, so that one
+ * referred to directly by the Composition is expanded there, not inside the collapsed subject
+ * that also refers to it); everywhere else it is a 'seen' node, which says where it is. A
  * reference that doesn't resolve in the document is a 'missing' node. References resolve as
  * in a Bundle (fullUrl, absolute or relative to the referring entry's), and #id is a
  * resource contained in the referring resource (or in the resource it is contained in).
@@ -111,7 +113,8 @@ function whenOf(r) {
 /**
  * The document as a tree. Each node is
  *   { kind: 'root'|'section'|'resource'|'seen'|'missing', key, path, fullPath, icon, type, id,
- *     ref, what, when, note, open, children, resource?, section?, entry?, container? }
+ *     ref, what, when, note, open, children, resource?, section?, entry?, container?, shownAt? }
+ * - shownAt (seen nodes) is the fullPath of the node where the resource is expanded
  * - path is where the node is in what contains it (subject, entry[0], section[1]); fullPath
  *   is the whole of it as FHIRPath from the Composition (Composition.section[0].entry[0].resolve().subject)
  * - key identifies what the node is about, the same each time the tree is made: e{n} for
@@ -129,7 +132,7 @@ function structureTree(bundle) {
   if (!isObject(comp) || comp.resourceType !== 'Composition') {
     return null;
   }
-  const shown = new Set(['e0']);
+  const shown = new Map([['e0', 'Composition']]); // key -> fullPath of the node that expands it
 
   function resolve(from, ref) {
     if (ref.startsWith('#')) {
@@ -153,19 +156,33 @@ function structureTree(bundle) {
     };
   };
 
-  function refNodes(from, refs, base) {
-    return refs.map(([path, ref]) => {
+  // The reference nodes are made breadth first: refNodes returns an array with a slot for
+  // each reference, and the slots are filled in when the queue gets to them, shallowest
+  // first (in the order met, at the same depth). So which node gets to expand a resource
+  // depends on how deep it is, not on whether some earlier reference's subtree reached it first.
+  const queue = [];
+  function refNodes(from, refs, base, depth) {
+    const slots = refs.map(() => null);
+    queue.push({ from, refs, base, depth, slots });
+    return slots;
+  }
+
+  function makeRefNodes({ from, refs, base, depth, slots }) {
+    refs.forEach(([path, ref], i) => {
       const fullPath = `${base}.${path}`;
       const target = resolve(from, ref);
       if (!target) {
         const m = /(?:^|\/)([A-Z][A-Za-z]+)\/([^/]+?)(?:\/_history\/[^/]+)?$/.exec(ref);
-        return { kind: 'missing', key: null, path, fullPath, icon: 'external', type: m ? m[1] : '', id: m ? m[2] : '', ref, what: '', when: '', note: 'not in document', children: [] };
+        slots[i] = { kind: 'missing', key: null, path, fullPath, icon: 'external', type: m ? m[1] : '', id: m ? m[2] : '', ref, what: '', when: '', note: 'not in document', children: [] };
+        return;
       }
       const contained = target.container ? 'contained' : '';
       if (shown.has(target.key)) {
-        return resourceNode(path, fullPath, target, { kind: 'seen', ref, note: [contained, 'shown above'].filter(Boolean).join(', ') });
+        const shownAt = shown.get(target.key);
+        slots[i] = resourceNode(path, fullPath, target, { kind: 'seen', ref, shownAt, note: [contained, `shown at ${shownAt}`].filter(Boolean).join(', ') });
+        return;
       }
-      shown.add(target.key);
+      shown.set(target.key, fullPath);
       const node = resourceNode(path, fullPath, target, { ref, note: contained });
       // a medication statement, request... by reference: what it is is the Medication's
       const med = target.resource.medicationReference?.reference || target.resource.medication?.reference?.reference;
@@ -173,21 +190,35 @@ function structureTree(bundle) {
         const m = resolve(target, med);
         node.what = m ? whatOf(m.resource) : '';
       }
-      node.children = refNodes(target, referencesIn(target.resource), `${fullPath}.resolve()`);
-      return node;
+      node.children = refNodes(target, referencesIn(target.resource), `${fullPath}.resolve()`, depth + 1);
+      slots[i] = node;
     });
+  }
+
+  function runQueue() {
+    while (queue.length > 0) {
+      let next = 0;
+      for (let i = 1; i < queue.length; i++) {
+        if (queue[i].depth < queue[next].depth) {
+          next = i;
+        }
+      }
+      makeRefNodes(queue.splice(next, 1)[0]);
+    }
   }
 
   const rootEntry = { key: 'e0', resource: comp, fullUrl: entries[0].fullUrl };
   const authorsOf = (x) => (Array.isArray(x?.author) ? x.author.filter(isObject) : []);
-  function sectionNodes(list, base, prefix, parentAuthors) {
+  function sectionNodes(list, base, prefix, parentAuthors, depth) {
     return (Array.isArray(list) ? list : []).map((sec, i) => [sec, i]).filter(([sec]) => isObject(sec)).map(([sec, i]) => {
       const path = `${prefix}section[${i}]`;
       const fullPath = `Composition.${path}`;
       const title = text(sec.title) ? sec.title : text(sec.code?.text) ? sec.code.text :
         (Array.isArray(sec.code?.coding) && sec.code.coding.find(c => text(c?.display))?.display) || '(untitled section)';
       const authors = authorsOf(sec).length ? authorsOf(sec) : parentAuthors;
-      const children = [...refNodes(rootEntry, referencesIn(sec, ['section']), fullPath), ...sectionNodes(sec.section, fullPath, `${path}.`, authors)];
+      // the reference slots first (filled in by the queue), then the subsections
+      const children = refNodes(rootEntry, referencesIn(sec, ['section']), fullPath, depth + 1);
+      children.push(...sectionNodes(sec.section, fullPath, `${path}.`, authors, depth + 1));
       return {
         kind: 'section', key: `s:${fullPath}`, path, fullPath, icon: 'section', type: 'Section', id: '', what: `<b>${escape(title)}</b>`, when: '',
         note: children.length ? '' : 'empty', open: true, children, section: sec, entry: rootEntry, authors, parentAuthors, nested: base !== 'Composition'
@@ -197,7 +228,9 @@ function structureTree(bundle) {
   const top = { ...resourceNode('Composition', 'Composition', rootEntry, { open: true }), kind: 'root' };
   top.what = text(comp.title) ? escape(comp.title) : top.what;
   top.icon = 'document';
-  top.children = [...refNodes(rootEntry, referencesIn(comp, ['section']), 'Composition'), ...sectionNodes(comp.section, 'Composition', '', authorsOf(comp))];
+  top.children = refNodes(rootEntry, referencesIn(comp, ['section']), 'Composition', 1);
+  top.children.push(...sectionNodes(comp.section, 'Composition', '', authorsOf(comp), 1));
+  runQueue();
   top.resolve = resolve;
   return top;
 }
