@@ -228,6 +228,8 @@ const STYLE = `
   .ips-an-attention { color: #b34700; font-weight: bold; }
   .ips-an-ok { color: #1e7e34; }
   .ips-an-narrative { color: #3a4d5e; }
+  .ips-an-negation { color: #3a4d5e; }
+  .ips-an-error { color: #c00000; font-weight: bold; }
   .ips-tree-tools .btn { font-size: 90%; padding: 2px 10px; }
   .ips-tt { font-size: 90%; width: auto; min-width: 60%; }
   .ips-tt > thead > tr > th { background: #f0f0f0; font-weight: bold; white-space: nowrap; }
@@ -895,13 +897,14 @@ function findingHtml(f) {
 
 /**
  * Whether the analysis found nothing to say about a node: All OK, and nothing else but the
- * narrative - which doesn't matter for a resource, but a section without narrative is a problem.
+ * narrative - which doesn't matter for a resource, but a section without narrative is a problem -
+ * and the Composition's negation (unless there's more than one approach: that's attention).
  */
 function analysisOk(findings, isSection) {
   if (!Array.isArray(findings) || !findings.some(f => f && f.kind === 'ok')) {
     return false;
   }
-  return findings.every(f => f && (f.kind === 'ok' || (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
+  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
 }
 
 /**
@@ -966,8 +969,8 @@ function renderAnalysis(row, options = {}) {
     'extensions (with their definitions, from the validator, where it knows them; textLink is left out), <span class="ips-an-modifier">modifier extensions and implicitRules</span>, ' +
     '<span class="ips-an-status">records that are inactive, entered in error, of unknown status, or missing a status they should have</span>, ' +
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
-    '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), a Patient\'s links, and a Composition that is not final</span>, ' +
-    'a section\'s emptyReason or an author other than its container\'s, and whether there is narrative. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
+    '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
+    'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the nationality of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
     'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK - and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
   h += `<script>
 (function () {

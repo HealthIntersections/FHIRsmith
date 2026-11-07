@@ -2951,14 +2951,17 @@ describe('the analysis step', () => {
     await mod.processQueue();
     const row = mod.store.read(1);
     expect(row.status).toBe('processed');
-    expect(row.status_message).toBe('analysis: 1 of 6 resources and sections with something to note, 2 extensions');
+    expect(row.status_message).toBe('analysis: 2 of 6 resources and sections with something to note, 2 extensions');
     const r = mod.store.readResult(1, 'analysis').result;
     expect(r.items.e1.map(f => f.kind)).toEqual(['extension', 'modifier', 'narrative']);
+    // only the analysis step ran, so the nationality is unknown, and the allergy's SNOMED CT code has no edition
+    expect(r.items.e0[0].kind).toBe('error');
+    expect(r.items.e0[0].text).toMatch(/^1 SNOMED CT code does not say which edition it is from .* The International Edition of SNOMED CT is assumed$/);
     // the allergy has no narrative, but nothing else to say
     expect(r.items.e3).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'No narrative' }]);
     const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=analysis">Analysis</a></li>');
-    expect(page.text).toContain('<a class="ips-step ips-step-done" title="analysis - done: analysis: 1 of 6 resources and sections with something to note, 2 extensions" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="analysis - done: analysis: 2 of 6 resources and sections with something to note, 2 extensions" href="/ips/demo/Bundle/1?view=analysis">');
     expect(page.text).toContain('<td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td><td>Patient</td>');
     expect(page.text).toContain('<li class="ips-an-extension">Extension <code>http://example.org/x</code> on <code>Patient</code>: <i>not known</i></li>');
     // "Only show problems": the patient (extensions) is a problem; the allergy (All OK, no narrative) and the patient met again are not
@@ -2985,6 +2988,8 @@ describe('the analysis step', () => {
     expect(analysisOk([ok, none], false)).toBe(true);
     expect(analysisOk([ok, has], true)).toBe(true);
     expect(analysisOk([ok, none], true)).toBe(false);
+    // the Composition's negation is a note, unless there's more than one approach (attention)
+    expect(analysisOk([ok, { kind: 'negation', text: 'Negation: none observed' }, has], false)).toBe(true);
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x' }, has], false)).toBe(false);
     expect(analysisOk(undefined, false)).toBe(false);
   });

@@ -22,7 +22,6 @@ const {debugLog} = require("../operation-context");
 const { splitFilters } = require('./supplement-filters');
 
 // Expansion limits (from Pascal constants)
-const EXTERNAL_DEFAULT_LIMIT = 1000;
 const EXTERNAL_TEST_DEFAULT_LIMIT = 3000;
 const INTERNAL_DEFAULT_LIMIT = 10000;
 const CACHE_WHEN_DEBUGGING = false;
@@ -208,7 +207,7 @@ class ValueSetExpander {
   usedSupplements = new Set();
   reportedSupplements = new Set();
   internalLimit = INTERNAL_DEFAULT_LIMIT;
-  externalLimit = EXTERNAL_DEFAULT_LIMIT;
+  externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT;
   noDetails = false;
   // count=0: the codes counted (see #countListedCodes) but not built, by keyS
   countedKeys = new Set();
@@ -2284,7 +2283,7 @@ class ValueSetExpander {
 
 class ExpandWorker extends TerminologyWorker {
   internalLimit = INTERNAL_DEFAULT_LIMIT;
-  externalLimit = EXTERNAL_DEFAULT_LIMIT;
+  externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT;
 
 
   /**
@@ -2295,7 +2294,7 @@ class ExpandWorker extends TerminologyWorker {
    * @param {I18nSupport} i18n - Internationalization support
    */
   constructor(opContext, log, provider, languages,
-              i18n, internalLimit = INTERNAL_DEFAULT_LIMIT, externalLimit = EXTERNAL_DEFAULT_LIMIT) {
+              i18n, internalLimit = INTERNAL_DEFAULT_LIMIT, externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT) {
     super(opContext, log, provider, languages, i18n);
     this.externalLimit = externalLimit;
     this.internalLimit = internalLimit;
@@ -2632,7 +2631,6 @@ module.exports = {
   ImportedValueSet,
   ValueSetFilterContext,
   EmptyFilterContext,
-  EXTERNAL_DEFAULT_LIMIT,
   INTERNAL_DEFAULT_LIMIT,
   EXTERNAL_TEST_DEFAULT_LIMIT,
   TotalStatus

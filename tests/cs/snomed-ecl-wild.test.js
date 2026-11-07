@@ -4,8 +4,8 @@
  * A wild: term is matched by turning its '*'s into ".*". In a native RegExp a
  * pattern with many of them backtracks for a time that grows as the term
  * length to the power of the number of '*'s; the match runs synchronously, so
- * the whole server stalled. Now it runs on re2js (linear time) and a run of
- * '*'s is treated as one.
+ * the whole server stalled. Now it is matched without a regex (see
+ * wildTermMatcher in cs-snomed.js), in linear time, and a run of '*'s is treated as one.
  */
 
 const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
@@ -54,6 +54,31 @@ describe('ECL wild: terms', () => {
     expect(matches('Structure.of*', term)).toBe(false); // '.' is literal
     expect(matches('a+b [c]', 'A+B [C]')).toBe(true); // regex characters are literal
     expect(matches('café*', 'Café au lait spots')).toBe(true);
+  });
+
+  test('wild: edge cases', () => {
+    // no '*': the whole term, ignoring case
+    expect(matches('liver structure', 'Liver structure')).toBe(true);
+    expect(matches('liver', 'Liver structure')).toBe(false);
+    // only '*'s: anything, including nothing
+    expect(matches('***', '')).toBe(true);
+    expect(matches('*', 'x')).toBe(true);
+    // a '*' at either end, or both
+    expect(matches('*structure', 'Liver structure')).toBe(true);
+    expect(matches('liver*', 'Liver structure')).toBe(true);
+    expect(matches('*ver str*', 'Liver structure')).toBe(true);
+    expect(matches('*ver str*', 'Liver')).toBe(false);
+    // the first and last pieces can't overlap
+    expect(matches('ab*ba', 'aba')).toBe(false);
+    expect(matches('ab*ba', 'abba')).toBe(true);
+    // a middle piece can't overlap the last one
+    expect(matches('*ab*ab', 'xab')).toBe(false);
+    expect(matches('*ab*ab', 'xabab')).toBe(true);
+    // the leftmost middle match is the right one
+    expect(matches('a*b*c', 'abxbc')).toBe(true);
+    expect(matches('a*b*b*c', 'abc')).toBe(false);
+    // an empty term
+    expect(matches('a*', '')).toBe(false);
 
     expect(codes('<< 10200004 {{ D term = wild:"Liver structure" }}')).toHaveLength(1);
     expect(codes('<< 10200004 {{ D term = wild:"**lobe***" }}')).toEqual(codes('<< 10200004 {{ D term = wild:"*lobe*" }}'));

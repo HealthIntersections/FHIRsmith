@@ -94,7 +94,7 @@ they are asked for; only the recently used ones are kept parsed in memory.
 times as much heap as their JSON (so expect a few hundred MB of heap at the default), and in
 cluster mode every worker keeps its own.
 
-The `x-too-costly-threshold` request header sets the `externalLimit` for that request: a number replaces the setting, lower or higher, for any client (`Tools/Java` included); `0` or a value that isn't a number means no limit at all.
+The `x-too-costly-threshold` request header sets the `externalLimit` for that request, for any client (`Tools/Java` included). It is there so test cases can ask for a lower limit: it can't be more than the `internalLimit` (a bigger value is cut down to it), and a value that isn't a positive whole number is ignored, so there is always a limit.
 
 The largest request body the server accepts is a server setting, `server.maxBodyMB` (see the main README); a tx endpoint answers a bigger one with a 413 OperationOutcome (too-costly).
 
