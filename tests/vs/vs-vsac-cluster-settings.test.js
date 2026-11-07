@@ -4,9 +4,16 @@ const path = require('path');
 const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
 
 describe('VSAC database settings follow the cluster role', () => {
-  test.each(['leader', 'follower'])('%s opens a fresh database with WAL and a busy timeout', async cluster => {
+  const pragmas = db => {
+    const get = sql => new Promise((resolve, reject) => {
+      db.get(sql, (error, row) => error ? reject(error) : resolve(row));
+    });
+    return Promise.all([get('PRAGMA journal_mode'), get('PRAGMA busy_timeout')]);
+  };
+
+  test('the leader opens a fresh database with WAL and a busy timeout', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsac-role-'));
-    const provider = new VSACValueSetProvider({ apiKey: 'test', cluster }, {});
+    const provider = new VSACValueSetProvider({ apiKey: 'test', cluster: 'leader' }, {});
     // No sync or external service: exercise the connection constructed by the provider,
     // using an empty database unique to this test. A previously WAL-enabled file could
     // otherwise hide a missing shared option in the constructor.
@@ -14,14 +21,33 @@ describe('VSAC database settings follow the cluster role', () => {
     try {
       await provider.database.create();
       const db = await provider.database._getWriteConnection();
-      const get = sql => new Promise((resolve, reject) => {
-        db.get(sql, (error, row) => error ? reject(error) : resolve(row));
-      });
-      expect(await get('PRAGMA journal_mode')).toEqual({ journal_mode: 'wal' });
-      expect(await get('PRAGMA busy_timeout')).toEqual({ timeout: 5000 });
+      expect(await pragmas(db)).toEqual([{ journal_mode: 'wal' }, { timeout: 5000 }]);
       expect(provider.database.shared).toBe(true);
     } finally {
       await provider.database.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a follower opens the leader\'s database read-only, in WAL, with a busy timeout', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsac-role-'));
+    const dbPath = path.join(dir, 'vsac.db');
+    const leader = new VSACValueSetProvider({ apiKey: 'test', cluster: 'leader' }, {});
+    const follower = new VSACValueSetProvider({ apiKey: 'test', cluster: 'follower' }, {});
+    leader.database.dbPath = dbPath;
+    follower.database.dbPath = dbPath;
+    try {
+      await leader.database.create();
+      await leader.database._getWriteConnection();
+      const db = await follower.database._getReadConnection();
+      expect(await pragmas(db)).toEqual([{ journal_mode: 'wal' }, { timeout: 5000 }]);
+      expect(follower.database.shared).toBe(true);
+      await expect(new Promise((resolve, reject) => {
+        db.run('CREATE TABLE t (x)', error => error ? reject(error) : resolve());
+      })).rejects.toMatchObject({ code: 'SQLITE_READONLY' });
+    } finally {
+      await follower.database.close();
+      await leader.database.close();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
