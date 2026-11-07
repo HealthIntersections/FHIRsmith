@@ -21,10 +21,7 @@ class UniiServices extends CodeSystemProvider {
 
   // Clean up database connection when provider is destroyed
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // Metadata methods
