@@ -28,7 +28,7 @@ Add the `tx` section to your `config.json`:
       "publishLibrarySource": false,
       "cacheTimeout": 30,
       "internalLimit" : 10000,
-      "externalLimit" : 1000,
+      "externalLimit" : 3000,
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
       "endpoints": [
@@ -69,8 +69,9 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
 | `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
-| `internalLimit`                 | integer | No       | Largest number of codes in internal expansions                                                          |
-| `externalLimit`                 | integer | No       | Largest number of codes the server will return in an expansion                                          |
+| `internalLimit`                 | integer | No       | Most codes in the expansion of a value set that an `$expand` imports (`compose.include.valueSet`). Default: 10000. Over it, the `$expand` fails with 422 too-costly. Requests from the tx-ecosystem test runner (User-Agent `Tools/Java`) always get 10000, whatever the setting, so every server gives the tests the same answer; 10000 is the default for the same reason. Other internal expansions (in `$validate-code`, for one) use 10000 and don't read the setting |
+| `externalLimit`                 | integer | No       | Most codes an `$expand` returns. Default: 3000. Over it, an expansion asked for without `count` fails with 422 too-costly (`VALUESET_TOO_COSTLY`, "... has too many codes to produce (>3000)"); a `count` bigger than it is cut down to it. As with `internalLimit`, the test runner (`Tools/Java`) always gets 3000, and 3000 is the default so an unconfigured server answers the tests as they expect. A request can change it with the `x-too-costly-threshold` header (see below) |
+| `operationTimeLimit`            | integer | No       | Seconds of compute one operation may use (sub-operations share it). Default: 20. Time spent waiting - for the event loop, or in a queue before the operation starts - doesn't count. Over it, the operation fails with 422 too-costly ("Operation exceeded time limit of 20 seconds at ..."). The default sits under common client timeouts (okhttp gives up after 10-30 s): with a limit at or over the client's, the client hangs up first and never sees the OperationOutcome |
 | `endpoints`                     | array   | Yes      | List of endpoint configurations (at least one required)                                                 |
 | `vsacCfg`                       | object  | No       | Settings for the VSAC value set provider; required if the library loads VSAC (see below)              |
 
@@ -93,6 +94,10 @@ they are asked for; only the recently used ones are kept parsed in memory.
 times as much heap as their JSON (so expect a few hundred MB of heap at the default), and in
 cluster mode every worker keeps its own.
 
+The `x-too-costly-threshold` request header sets the `externalLimit` for that request: a number replaces the setting, lower or higher, for any client (`Tools/Java` included); `0` or a value that isn't a number means no limit at all.
+
+The largest request body the server accepts is a server setting, `server.maxBodyMB` (see the main README); a tx endpoint answers a bigger one with a 413 OperationOutcome (too-costly).
+
 ### Endpoint Configuration
 
 Each endpoint in the `endpoints` array has:
@@ -104,6 +109,24 @@ Each endpoint in the `endpoints` array has:
 | `context` | string | No | Optional context string passed to the Library when creating Providers |
 
 **Note:** Endpoint paths must be unique. The module will throw an error if duplicate paths are configured or if a path conflicts with another module.
+
+### Fixed limits
+
+These are constants in the code, not settings; they are listed so their effects can be recognised.
+
+| Limit | Value | What it bounds |
+|---|---|---|
+| Memory per code, for the default of `expansionCacheMaxCodes` | 1 KB | only the derived default (`operation-context.js`) |
+| Share of the heap, for the default of `expansionCacheMaxCodes` | 0.25 | a quarter of the V8 heap limit, per process |
+| Shortest expansion that is cached | 250 ms | expansions that took less are not kept in the expansion cache |
+| Longest compute before yielding the event loop | 25 ms | how long one operation can hold up the others (`operation-context.js`, `YIELD_INTERVAL`) |
+| ECL nesting depth | 100 | bracketed expressions and refinements; deeper is a parse error |
+| ECL sub-expressions | 500 | focus concepts, refinement values, ... (a long `A OR B OR ...` reaches it first); more is a parse error |
+| Resource self-nesting depth | 100 | `CodeSystem.concept` and `ValueSet.expansion.contains` (SNOMED CT is about 30 deep); deeper is a 400 |
+| XML element depth | 1000 | a deeper XML body is an error |
+| LOINC SQLite `cache_size` | 10000 pages (about 40 MB) | page cache, per database connection |
+| LOINC SQLite `mmap_size` | 256 MB | memory-mapped reads, per database connection; file-backed pages, shared between connections |
+| Forced GC back-off | 60 s at most | while the memory guard is refusing requests, the wait between forced GCs doubles up to this (server wide, `library/memory-guard.js`) |
 
 ## Supported Operations
 

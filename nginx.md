@@ -79,9 +79,11 @@ upstream fhirsmith {
 
 ### Sizes and timeouts
 
-* **Body size.** FHIRsmith accepts request bodies up to 50 MB. Set `client_max_body_size`
-  to match: if nginx allows more, oversized requests get past nginx and then fail with an
-  unhelpful error from the server.
+* **Body size.** FHIRsmith accepts request bodies up to `server.maxBodyMB` (default 50 MB).
+  nginx's `client_max_body_size` is checked first: if it is lower, nginx refuses a bigger
+  body with its own 413 HTML page before FHIRsmith sees it, so set it at or above `maxBodyMB`
+  to get FHIRsmith's OperationOutcome; if it is higher, `maxBodyMB` applies. Requests of
+  over 100 MB have been seen, caused by client-side issues: choose both limits with that in mind.
 * **Timeouts.** Some terminology operations are slow, particularly large SNOMED CT
   expansions and batch validations. The public servers use 600s for
   `proxy_read_timeout`/`proxy_send_timeout`. If you set a shorter timeout, nginx returns
