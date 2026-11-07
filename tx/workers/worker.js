@@ -805,7 +805,7 @@ class TerminologyWorker {
       if (!this.opContext.resourceCache.isSealed(cacheId)) {
         const toCache = txResources.concat(primaryResources);
         if (toCache.length > 0) {
-          this.opContext.resourceCache.add(cacheId, toCache);
+          this.addToClientCache(cacheId, toCache);
         }
         this.additionalResources = this.opContext.resourceCache.get(cacheId);
       } else {
@@ -818,6 +818,24 @@ class TerminologyWorker {
     } else {
       // No cache-id, just use the tx-resources directly
       this.additionalResources = txResources;
+    }
+  }
+
+  /**
+   * Add resources to the client side cache cacheId. If that would take the cache over
+   * cacheMaxConcepts, the cache is dropped and this throws the 404 cache-id-unknown
+   * (CACHE_ID_DISCARDED_TOO_BIG), in the request's language: the operation is not performed.
+   * @param {string} cacheId
+   * @param {Object[]} resources
+   */
+  addToClientCache(cacheId, resources) {
+    try {
+      this.opContext.resourceCache.add(cacheId, resources);
+    } catch (e) {
+      if (e.msgId === 'CACHE_ID_DISCARDED_TOO_BIG' && e.msgParams) {
+        e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
+      }
+      throw e;
     }
   }
 

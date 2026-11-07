@@ -16,7 +16,7 @@
  */
 
 const request = require('supertest');
-const { getTestApp, shutdownTestApp } = require('./setup');
+const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
 
 const VALIDATE = '/tx/r5/ValueSet/$validate-code';
 const EXPAND = '/tx/r5/ValueSet/$expand';
@@ -209,6 +209,72 @@ describe('cache-id protocol (integration)', () => {
         ] });
       expect(res.status).toBe(404);
       expect(isUnknownCacheError(res)).toBe(true);
+    });
+
+    test('a request that would take a cache past cacheMaxConcepts drops it: 404 cache-id-unknown, one issue, not performed', async () => {
+      const cache = getTxModule().endpoints.find(e => e.path === '/tx/r5').resourceCache;
+      const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
+      try {
+        const cid = await startCache(app);
+        cache.setLimits(2, Infinity); // colorsCS has 3 concepts
+        const over = await post(app, VALIDATE, [
+          cacheIdParam(cid, 'valueId'),
+          { name: 'tx-resource', resource: colorsCS },
+          { name: 'valueSet', resource: colorsVS },
+          { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+        ]);
+        // As his client expects (org.hl7.fhir.core #2842, isCacheGone): one issue, coded
+        // tx-issue-type cache-id-unknown, as for any other cache that is gone; not performed.
+        expect(over.status).toBe(404);
+        expect(over.body.resourceType).toBe('OperationOutcome');
+        expect(over.body.issue).toHaveLength(1);
+        const issue = over.body.issue[0];
+        expect(issue.severity).toBe('error');
+        expect(issue.code).toBe('not-found');
+        expect(issue.details.coding).toEqual([{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'cache-id-unknown' }]);
+        expect(issue.extension).toEqual([{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_ID_DISCARDED_TOO_BIG' }]);
+        expect(issue.details.text).toBe(`The cache '${cid}' grew too large: this request would have taken it over 2 concepts, ` +
+          'the most this server allows in one cache (cacheMaxConcepts), so the server has dropped the cache. ' +
+          'This operation has not been performed. Start a new cache, and send the request again');
+
+        const after = await post(app, VALIDATE, [
+          cacheIdParam(cid, 'valueId'),
+          { name: 'url', valueString: colorsVS.url },
+          { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+        ]);
+        expect(after.status).toBe(404);
+        expect(isUnknownCacheError(after)).toBe(true);
+        expect(after.body.issue[0].extension[0].valueString).toBe('CACHE_ID_DISCARDED');
+        expect(after.body.issue[0].details.text).toMatch(/was dropped .* ago because it grew too large: a request would have taken it over 2 concepts.*This operation has not been performed/);
+      } finally {
+        cache.setLimits(...saved);
+      }
+    });
+
+    test('a $batch-validate-code that would take a cache past cacheMaxConcepts gets the same answer', async () => {
+      const cache = getTxModule().endpoints.find(e => e.path === '/tx/r5').resourceCache;
+      const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
+      try {
+        const cid = await startCache(app);
+        cache.setLimits(2, Infinity); // colorsCS has 3 concepts
+        // a batch takes its cache-id from the header
+        const over = await request(app).post('/tx/r5/ValueSet/$batch-validate-code')
+          .set('Accept', 'application/json').set('Content-Type', 'application/json').set('x-cache-id', cid)
+          .send({ resourceType: 'Parameters', parameter: [
+            { name: 'tx-resource', resource: colorsCS },
+            { name: 'valueSet', resource: colorsVS },
+            { name: 'validation', resource: { resourceType: 'Parameters', parameter: [
+              { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+            ] } }
+          ] });
+        expect(over.status).toBe(404);
+        expect(over.body.issue).toHaveLength(1);
+        expect(isUnknownCacheError(over)).toBe(true);
+        expect(over.body.issue[0].extension[0].valueString).toBe('CACHE_ID_DISCARDED_TOO_BIG');
+        expect(over.body.issue[0].details.text).toMatch(/grew too large: .*This operation has not been performed\. Start a new cache/);
+      } finally {
+        cache.setLimits(...saved);
+      }
     });
 
     test('by url with no cache-id and a VS not in the library fails (not a silent pass)', async () => {

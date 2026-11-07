@@ -438,6 +438,61 @@ describe('ResourceCache', () => {
     });
   });
 
+  describe('limits', () => {
+    test('a request that would take a cache past its limit drops the cache: 404 cache-id-unknown, saying why', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 8)]);
+      cache.add('c1', [sized(CS('http://a', '1'), 10)]); // a replacement counts the difference
+      expect(cache.conceptCount()).toBe(10);
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 1)])).toThrow(expect.objectContaining({
+        statusCode: 404, cause: 'not-found', issueCode: 'cache-id-unknown', msgId: 'CACHE_ID_DISCARDED_TOO_BIG', msgParams: ['c1', 10],
+        message: expect.stringMatching(/cache 'c1' grew too large: .* over 10 concepts, .* dropped the cache\. This operation has not been performed\. Start a new cache/)
+      }));
+      expect(cache.has('c1')).toBe(false);
+      expect(cache.conceptCount()).toBe(0);
+      expect(cache.describeMissing('c1')).toEqual({ messageId: 'CACHE_ID_DISCARDED', params: ['c1', expect.any(String), 10] });
+    });
+
+    test('a new cache too big to start is refused (nothing to discard)', () => {
+      cache.setLimits(10, 100);
+      expect(() => cache.set('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422, issueCode: 'too-costly' }));
+      expect(cache.has('c2')).toBe(false);
+      expect(cache.conceptCount()).toBe(0);
+    });
+
+    test('a resource sent twice in one request is counted once', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 6), sized(CS('http://a', '1'), 6)]);
+      expect(cache.get('c1')).toHaveLength(1);
+      expect(cache.conceptCountFor('c1')).toBe(6);
+      expect(cache.conceptCount()).toBe(6);
+    });
+
+    test('over the total, the least recently used caches are dropped and say so', () => {
+      cache.setLimits(10, 20);
+      cache.set('old', [sized(CS('http://a', '1'), 10)]);
+      cache.set('used', [sized(CS('http://a', '1'), 10)]);
+      cache.cache.get('old').lastUsed = Date.now() - 2000;
+      cache.cache.get('used').lastUsed = Date.now() - 3000;
+      cache.get('used'); // now the most recently used of the two
+      cache.set('new', [sized(CS('http://a', '1'), 5)]);
+      expect(cache.has('old')).toBe(false);
+      expect(cache.has('used')).toBe(true);
+      expect(cache.has('new')).toBe(true);
+      expect(cache.conceptCount()).toBe(15);
+      expect(cache.describeMissing('old').messageId).toBe('CACHE_ID_EVICTED');
+    });
+
+    test('the defaults apply until limits are set; Infinity = no limit', () => {
+      expect(new ResourceCache(null).maxConceptsPerCache).toBe(ResourceCache.MAX_CONCEPTS_PER_CACHE);
+      expect(new ResourceCache(null).maxTotalConcepts).toBe(ResourceCache.MAX_TOTAL_CONCEPTS);
+      cache.setLimits(Infinity, Infinity);
+      cache.set('c1', [sized(CS('http://a', '1'), ResourceCache.MAX_TOTAL_CONCEPTS + 1)]);
+      cache.set('c2', [sized(CS('http://a', '1'), 1)]);
+      expect(cache.conceptCount()).toBe(ResourceCache.MAX_TOTAL_CONCEPTS + 2);
+    });
+  });
+
   describe('high-water marks (max)', () => {
     test('track the most caches and concepts ever held', () => {
       cache.add('c1', [sized(CS('http://a', '1'), 10)]);
