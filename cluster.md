@@ -23,6 +23,10 @@ or with nginx in front of separately started processes ([below](#with-nginx)).
 * [Memory](#memory)
 * [Limits of this arrangement](#limits-of-this-arrangement)
 
+The settings this uses are under `server.cluster` and `server.memory` in `config.json`;
+[CONFIGURATION.md](CONFIGURATION.md#cluster) lists them with the rest of the server's
+configuration and links back to the tables here.
+
 ## Roles
 
 ```bash

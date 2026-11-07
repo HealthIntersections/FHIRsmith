@@ -33,6 +33,28 @@ Create a `config.json` file in your data directory (use `config-template.json` a
 
 Behind nginx, nginx's `client_max_body_size` is checked first. If it is lower than `maxBodyMB`, nginx refuses a bigger body with its own 413 HTML page before FHIRsmith sees it, so set it at or above `maxBodyMB` to get FHIRsmith's OperationOutcome; if it is higher, `maxBodyMB` applies. Requests of over 100 MB have been seen, caused by client-side issues: choose `maxBodyMB` (default 50) and the nginx limit with that in mind. See [nginx.md](nginx.md).
 
+### Memory
+
+`server.memory` sets the memory guard: fractions of the memory limit (the cgroup limit, such
+as `MemoryMax` on the systemd unit, or else the machine's RAM), measured against process RSS.
+
+| Option | Default | Description |
+|---|---|---|
+| `server.memory.rejectFraction` | `0.85` | Above this, new requests get 503 + `Retry-After` |
+| `server.memory.abortFraction` | `0.92` | Above this, running operations are aborted with 422 too-costly |
+| `server.memory.trimAllocator` | `true` | Whether the server returns the C allocator's free memory (`malloc_trim`, Linux) while refusing, and, with a role, once after loading. `false` is for diagnosis. See [cluster.md](cluster.md#memory) |
+
+### Cluster
+
+To use more than one CPU core for terminology on one machine, a master and several tx
+workers share the data directory and `config.json` (started by `node cluster.js`, or by hand
+with `--role`). Their settings are in `server.cluster`, documented with the arrangement in
+[cluster.md](cluster.md): the launcher's (`workers`, `maxOutstanding`, `queueSeconds`,
+`recycleSeconds`, the fast lane, ...) under
+[The launcher](cluster.md#the-launcher-clusterjs), and what the processes share
+(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`) under
+[Options](cluster.md#options). With no role, `server.cluster` is ignored.
+
 ## Logging
 
 Add a `logging` section to `config.json` to control log behaviour. All fields are optional and have sensible defaults:
@@ -121,6 +143,10 @@ counts in the statistics database for the period. The modules that report:
 |---|---|---|
 | `FHIRSMITH_DATA_DIR` | Path to the data directory | `./data` |
 | `PORT` | Server port (overrides config) | from config.json |
+| `FHIRSMITH_ROLE` | `master` or `tx-worker`, as `--role` (see [cluster.md](cluster.md#roles)). Not set: an ordinary single server | none |
+| `FHIRSMITH_INSTANCE_CODE` | This process's cache-id prefix, as `--instance-code` (see [cluster.md](cluster.md#roles)) | `modules.tx.instanceCode` |
+| `FHIRSMITH_WORKERS` | How many tx-workers `node cluster.js` starts, as `--workers` (`server.cluster.workers`) | from the CPUs and memory |
+| `FHIRSMITH_CACHE_WAIT_MS` | How long a tx-worker waits for the master to build a cache it reads (see [cluster.md](cluster.md#what-runs-where)) | `300000` (5 minutes) |
 | `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |
 
 ## Modules
