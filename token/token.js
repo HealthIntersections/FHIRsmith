@@ -166,7 +166,10 @@ class TokenModule {
       saveUninitialized: false,
       rolling: true, // Reset expiration on each request
       cookie: {
-        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+        // Secure when the request came over https: 'auto' asks req.secure, which (with
+        // server.trustProxy) follows nginx's X-Forwarded-Proto. It used to depend on NODE_ENV,
+        // which nothing sets, so the cookie was never Secure. config.cookieSecure overrides
+        secure: this.config.cookieSecure ?? 'auto',
         httpOnly: true, // Prevent XSS
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         sameSite: 'lax' // CSRF protection

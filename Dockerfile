@@ -30,6 +30,8 @@ ARG VERSION=development
 ARG REVISION=unknown
 ARG CREATED=unknown
 ENV APP_VERSION=$VERSION
+# Express (and the libraries that check it) run in production mode
+ENV NODE_ENV=production
 
 LABEL org.opencontainers.image.title="FHIRsmith" \
       org.opencontainers.image.description="A Node.js server that provides a collection of tools to serve the FHIR ecosystem" \
