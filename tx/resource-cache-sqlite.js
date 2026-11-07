@@ -384,7 +384,9 @@ class SqliteResourceCache extends ResourceCache {
       allSessions: db.prepare('SELECT * FROM sessions WHERE scope = ?'),
       scopeTotals: db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(concepts), 0) AS concepts, COALESCE(SUM(bytes), 0) AS bytes FROM sessions WHERE scope = ?'),
       fileBytes: db.prepare('SELECT COALESCE(SUM(bytes), 0) AS bytes FROM sessions'),
-      lru: db.prepare('SELECT * FROM sessions WHERE NOT (scope = ? AND cache_id = ?) ORDER BY last_used, created_at LIMIT 16')
+      lru: db.prepare('SELECT * FROM sessions WHERE NOT (scope = ? AND cache_id = ?) ORDER BY last_used, created_at LIMIT 16'),
+      // the concept caps (#350) are per endpoint, as in the memory store
+      lruScope: db.prepare('SELECT * FROM sessions WHERE scope = ? AND cache_id <> ? ORDER BY last_used, created_at LIMIT 16')
     };
   }
 
@@ -598,7 +600,7 @@ class SqliteResourceCache extends ResourceCache {
     if (t.reason === 'restart') {
       return { messageId: 'CACHE_ID_LOST_TO_RESTART', params: [cacheId, formatDuration(Date.now() - t.at)] };
     }
-    if (t.reason === 'evicted') {
+    if (t.reason === 'evicted' && t.maxBytes) {
       return {
         messageId: 'CACHE_ID_EVICTED_SIZE',
         params: [cacheId, formatDuration(Date.now() - t.at), formatBytes(t.maxBytes), formatDuration(t.idleMs)]
@@ -619,7 +621,10 @@ class SqliteResourceCache extends ResourceCache {
       lastUsed: t.last_used,
       idleMs: t.idle_ms,
       maxAgeMs: t.max_age_ms,
-      maxBytes: t.max_bytes
+      maxBytes: t.max_bytes,
+      // the tombstones table has no column for it: a discarded cache went over this
+      // process's cacheMaxConcepts, which is set by configuration for the whole run
+      limit: t.reason === 'discarded' ? this.maxConceptsPerCache : undefined
     };
   }
 
@@ -799,6 +804,7 @@ class SqliteResourceCache extends ResourceCache {
       }
     }
 
+    let discarded = null;
     this._write('add', () => {
       this._assertGeneration(cacheId);
       const now = Date.now();
@@ -818,8 +824,29 @@ class SqliteResourceCache extends ResourceCache {
         }
       }
       this.q.totals.run(now, this.scope, cacheId);
+      // As in the memory store, an add that takes a cache over cacheMaxConcepts discards
+      // it (the client can't use a cache it can't add to). The burial is committed; the
+      // error is thrown once the transaction is done, so it doesn't roll it back.
+      const after = this.q.session.get(this.scope, cacheId);
+      if (after && (after.concepts || 0) > this.maxConceptsPerCache) {
+        this._bury(after, 'discarded', now);
+        discarded = after.concepts || 0;
+        return;
+      }
+      this._enforceConceptLimitsTx(cacheId, now);
       this._enforceMaxBytesTx(cacheId, now);
     });
+    if (discarded !== null) {
+      this.log.info(`cache-id '${cacheId}': discarded (would hold ${discarded} concepts; one cache may hold ${this.maxConceptsPerCache})`);
+      // As in the memory store: answered as any cache that is gone (404, tx-issue-type
+      // cache-id-unknown); the operation is not performed.
+      const err = new Issue('error', 'not-found', null, 'CACHE_ID_DISCARDED_TOO_BIG',
+        `The cache '${cacheId}' grew too large: this request would have taken it over ${this.maxConceptsPerCache} concepts, ` +
+        'the most this server allows in one cache (cacheMaxConcepts), so the server has dropped the cache. ' +
+        'This operation has not been performed. Start a new cache, and send the request again', 'cache-id-unknown', 404).handleAsOO(404);
+      err.msgParams = [cacheId, this.maxConceptsPerCache];
+      throw err;
+    }
     this._trackMax();
   }
 
@@ -881,7 +908,36 @@ class SqliteResourceCache extends ResourceCache {
     this.q.totals.run(now, this.scope, cacheId);
     // alive again, so any record of an earlier death is now wrong
     this.q.deleteTombstone.run(this.scope, cacheId);
+    this._enforceConceptLimitsTx(cacheId, now);
     this._enforceMaxBytesTx(cacheId, now);
+  }
+
+  /**
+   * The concept limits of the memory store (ResourceCache.setLimits, cacheMaxConcepts and
+   * cacheMaxTotalConcepts), inside the write transaction: a change that takes one cache over
+   * its limit is refused (the throw rolls the transaction back, so the cache is kept as it
+   * was; add() has already discarded a cache it took over the limit); over the endpoint's
+   * total, the least recently used caches of this endpoint are dropped whole (never the one
+   * just changed), and their ids then say why (CACHE_ID_EVICTED).
+   */
+  _enforceConceptLimitsTx(cacheId, now) {
+    const session = this.q.session.get(this.scope, cacheId);
+    this._checkLimit(cacheId, session ? (session.concepts || 0) : 0);
+    let total = this.q.scopeTotals.get(this.scope).concepts;
+    while (total > this.maxTotalConcepts) {
+      const victims = this.q.lruScope.all(this.scope, cacheId);
+      if (victims.length === 0) {
+        return;
+      }
+      for (const v of victims) {
+        if (total <= this.maxTotalConcepts) {
+          break;
+        }
+        this._bury(v, 'evicted', now, { idleMs: now - v.last_used });
+        total -= v.concepts || 0;
+        this.log.info(`cache-id '${v.cache_id}': dropped to make room (held ${v.concepts} concepts; the caches may hold ${this.maxTotalConcepts} in all)`);
+      }
+    }
   }
 
   /** Move a session to the tombstones (inside a write transaction). */

@@ -8,9 +8,8 @@
  * Every test here runs against both stores - the in-process memory store and the
  * shared SQLite store (server.cluster.sharedCache) - because they are one interface with
  * one set of semantics. The two differ only where a shared store must: an id with no
- * record is CACHE_ID_UNKNOWN_SHARED whatever its prefix, only the shared store has a
- * size cap, and only the memory store has the concept limits (cacheMaxConcepts,
- * cacheMaxTotalConcepts).
+ * record is CACHE_ID_UNKNOWN_SHARED whatever its prefix, and only the shared store has a
+ * size cap.
  */
 
 const fs = require('fs');
@@ -527,8 +526,7 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
     });
   });
 
-  // the concept limits are the memory store's: the shared store does not apply them
-  (store.name === 'memory' ? describe : describe.skip)('limits', () => {
+  describe('limits', () => {
     test('a request that would take a cache past its limit drops the cache: 404 cache-id-unknown, saying why', () => {
       cache.setLimits(10, 100);
       cache.add('c1', [sized(CS('http://a', '1'), 8)]);
@@ -562,8 +560,8 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       cache.setLimits(10, 20);
       cache.set('old', [sized(CS('http://a', '1'), 10)]);
       cache.set('used', [sized(CS('http://a', '1'), 10)]);
-      cache.cache.get('old').lastUsed = Date.now() - 2000;
-      cache.cache.get('used').lastUsed = Date.now() - 3000;
+      setLastUsed('old', Date.now() - 2000);
+      setLastUsed('used', Date.now() - 3000);
       cache.get('used'); // now the most recently used of the two
       cache.set('new', [sized(CS('http://a', '1'), 5)]);
       expect(cache.has('old')).toBe(false);
@@ -583,8 +581,8 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
     });
   });
 
-  // the shared store has #356's rule for a request too big on its own, whichever merges first;
-  // the memory store's is tested in 'limits' once #356 is in
+  // #356's rule for a request too big on its own, in the shared store whichever merges first
+  // (#356's own test, in 'limits', covers both stores once #356 is in)
   (store.name === 'sqlite' ? describe : describe.skip)('a request too big for any cache', () => {
     test('is refused (422 too-costly), and the cache is kept', () => {
       cache.setLimits(10, 100);
