@@ -85,14 +85,18 @@ describe('ValueSet search with matches read only when on the page', () => {
     });
   }
 
-  test('a match that cannot be read is not a match: page and total as if the provider had left it out', async () => {
+  test('a match on the page that cannot be read is dropped: the next one moves up, and the total is one less', async () => {
     const reads = [];
-    const rejected = new Set(['b-vs003', 'b-vs100']);
     const q = { _count: '20', _offset: '40' }; // b-vs003 is on this page
-    const expected = await search([fullProvider(A), fullProvider(B.filter(vs => !rejected.has(vs.id)))], { ...q });
-    const got = await search([fullProvider(A), deferredProvider(B, reads, rejected)], { ...q });
-    expect(got).toEqual(expected);
-    expect(got.total).toBe(298);
+    const all = await search([fullProvider(A), fullProvider(B)], { ...q });
+    const got = await search([fullProvider(A), deferredProvider(B, reads, new Set(['b-vs003']))], { ...q });
+    const next = await search([fullProvider(A), fullProvider(B)], { _count: '1', _offset: '60' });
+    expect(got.total).toBe(299);
+    expect(got.entry.length).toBe(20);
+    expect(got.entry.map(e => e.resource.id)).toEqual(
+      [...all.entry.map(e => e.resource.id).filter(id => id !== 'b-vs003'), next.entry[0].resource.id]);
+    expect(got.entry.every(e => e.resource.compose)).toBe(true); // all read, including the one that moved up
+    expect(reads.length).toBeLessThanOrEqual(21); // only the page (and the one after it) is read
   });
 
   test('a match that cannot be read, and is not on the page, is still counted', async () => {

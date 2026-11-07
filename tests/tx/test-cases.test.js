@@ -2489,6 +2489,102 @@ describe('validation', () => {
     await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "4.0");
   });
 
+  it("validation-vn-cs-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "5.0");
+  });
+
+  it("validation-vn-cs-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "4.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "5.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "4.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "4.0");
+  });
+
+  it("validation-vn-vs-code" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "5.0");
+  });
+
+  it("validation-vn-vs-code" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "4.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "5.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "4.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R5', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R4', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "4.0");
+  });
+
 });
 
 describe('version', () => {
@@ -15209,6 +15305,54 @@ describe('validation', () => {
 
   it("validation-missing-vs-cc-no-system-infer" + 'R5-cached', async () => {
     await runTest({"suite":"validation","test":"validation-missing-vs-cc-no-system-infer"}, "5.0");
+  });
+
+  it("validation-vn-cs-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-code"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding"}, "5.0");
+  });
+
+  it("validation-vn-cs-cc" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-cc"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-version-param" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-version-param"}, "5.0");
+  });
+
+  it("validation-vn-cs-coding-versioned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-cs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-code" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-code"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding"}, "5.0");
+  });
+
+  it("validation-vn-vs-cc" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-cc"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-versioned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-versioned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-pinned" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-pinned"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-force" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-force"}, "5.0");
+  });
+
+  it("validation-vn-vs-coding-default" + 'R5-cached', async () => {
+    await runTest({"suite":"validation","test":"validation-vn-vs-coding-default"}, "5.0");
   });
 
 });

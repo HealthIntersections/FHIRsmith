@@ -130,7 +130,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
    * @param {number} [config.valueSetCacheMB=64] - Size (of their stored JSON) of the recently used
-   *   value sets kept parsed (see RecentValueSets); 0 for none
+   *   value sets kept parsed (see RecentValueSets); 0 for none. This is measured in stored JSON,
+   *   not memory: parsed, they take several times this much heap, and in cluster mode each
+   *   worker has its own
    */
   constructor(config, stats) {
     super();
@@ -922,21 +924,19 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async scanAllValueSets(fn) {
-    // listAllValueSets has a url for each version, and each refers to the latest version: so
-    // read the latest version of each url once (in batches), and visit it once per version
+    // the latest version of each url, once (read in batches)
     const versions = new Map();
     for (const row of await this.database.listVersions(null)) {
-      let v = versions.get(row.url);
-      if (!v) {
-        v = { map: new Map(), count: 0 };
-        versions.set(row.url, v);
+      let map = versions.get(row.url);
+      if (!map) {
+        map = new Map();
+        versions.set(row.url, map);
       }
-      this.database.addToMap(v.map, row.id, row.url, row.version, row);
-      v.count++;
+      this.database.addToMap(map, row.id, row.url, row.version, row);
     }
     const urls = [...versions.keys()].sort();
     for (let i = 0; i < urls.length; i += 500) {
-      const batch = urls.slice(i, i + 500).map(url => ({ url, count: versions.get(url).count, row: this._findVersion(versions.get(url).map, url) }));
+      const batch = urls.slice(i, i + 500).map(url => ({ url, row: this._findVersion(versions.get(url), url) }));
       const valueSets = await this.database.loadValueSets(batch.map(b => b.row.id), this.sourcePackage());
       for (const b of batch) {
         let vs = valueSets.get(b.row.id);
@@ -945,7 +945,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         } else {
           vs = await this.fetchValueSet(b.url); // the latest was rejected
         }
-        for (let n = 0; vs && n < b.count; n++) {
+        if (vs) {
           await fn(vs);
         }
       }
@@ -958,7 +958,11 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   prefixIds() {
-    // nothing is held in memory: each value set gets its prefix as it is read (see _prepare)
+    // nothing is held in memory: each value set gets its prefix as it is read (see _prepare).
+    // Anything read before the spaceId was assigned has the wrong id, so start again
+    if (this._recent) {
+      this._recent.clear();
+    }
   }
 
   // when we get a valueset from vsac via search, the compose is not

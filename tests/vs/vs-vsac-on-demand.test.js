@@ -153,7 +153,7 @@ describe('VSAC value sets read on demand', () => {
     expect(await provider.listAllValueSets()).toEqual([URL1, URL1, URL2]);
   });
 
-  test('a scan of all value sets visits the latest version of each url once per stored version, as listAllValueSets + fetchValueSet did', async () => {
+  test('a scan of all value sets visits the latest version of each url once', async () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL1, '20230101', { status: 'bogus' }), vs(URL2, '20200101')]);
     const viaFetch = [];
     for (const url of await provider.listAllValueSets()) {
@@ -165,15 +165,24 @@ describe('VSAC value sets read on demand', () => {
       expect(v.jsonObj.compose.include[0].version).toBeUndefined();
       viaScan.push(v.id);
     });
-    expect(viaScan.sort()).toEqual(viaFetch.sort());
-    expect(viaScan).toEqual(['vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.2-20200101']);
+    expect(viaScan.sort()).toEqual([...new Set(viaFetch)].sort());
+    expect(viaScan).toEqual(['vsac-2.16.840.1.113883.3.1-20250601', 'vsac-2.16.840.1.113883.3.2-20200101']);
+  });
+
+  test('the usage tracker counts the codes of the latest version of each url, once', async () => {
+    const ConceptUsageTracker = require('../../tx/usage-tracker');
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL1, '20230101'), vs(URL2, '20200101')]);
+    const tracker = new ConceptUsageTracker();
+    expect(await tracker.scanValueSets({ valueSetProviders: [provider] })).toBe(2);
+    // both urls list it: once each (it was 4, once for each stored version)
+    expect(tracker.usages('http://snomed.info/sct').get('73211009').count).toBe(2);
   });
 
   test('a scan falls back to the version before a rejected latest one', async () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601', { status: 'bogus' })]);
     const seen = [];
     await provider.scanAllValueSets(async (v) => { seen.push(v.version); });
-    expect(seen).toEqual(['20240101', '20240101']);
+    expect(seen).toEqual(['20240101']);
   });
 
   test('a sync compares against the stored hashes: unchanged is only touched, changed is updated, unknown is new', async () => {
