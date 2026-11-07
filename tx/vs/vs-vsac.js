@@ -238,10 +238,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     await this._recount();
     const incomplete = firstCall ? await this._incompleteSyncReason() : null;
     let failed = false;
+    let synced = false;
     if (this.SYNC_AT_START_UP || this.database.vsCount == 0 || incomplete) {
       if (incomplete) {
         console.log(`VSAC: ${incomplete} - resuming the sync now`);
       }
+      synced = true;
       try {
         await this.refreshValueSets();
       } catch (error) {
@@ -251,9 +253,43 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         this._failedSyncs = 1;
       }
     }
-    // Start periodic refresh; after a failed sync, the next try comes after a short wait
-    this._startRefreshTimer(failed ? this._retryDelayMs(1) : undefined);
+    // Start periodic refresh; after a failed sync, the next try comes after a short wait,
+    // and without a sync now, the next is due an interval after the last one (not after now)
+    let next;
+    if (failed) {
+      next = { delayMs: this._retryDelayMs(1), why: 'retrying the failed sync' };
+    } else if (synced) {
+      next = { delayMs: this._refreshIntervalMs(), why: 'synced at startup' };
+    } else {
+      next = await this._firstRefreshDelay();
+    }
+    console.log(`VSAC: next sync due at ${new Date(Date.now() + next.delayMs).toISOString()} (${next.why})`);
+    this._startRefreshTimer(next.delayMs);
     this.initialized = true;
+  }
+
+  /**
+   * The wait before the first scheduled sync when initialize() didn't sync: the refresh
+   * interval after the last sync, as recorded in vsac_runs, rather than after this start (a
+   * server restarted more often than the interval would otherwise never sync). The whole
+   * interval when no sync is recorded, or the last one didn't work. Sets lastRefresh to the
+   * recorded time, so getStatistics() reports when the next sync is due
+   * @returns {Promise<{delayMs: number, why: string}>}
+   * @private
+   */
+  async _firstRefreshDelay() {
+    const intervalMs = this._refreshIntervalMs();
+    const lastRun = await this.database.getLastRun();
+    if (!lastRun || lastRun.status !== 'ok' || !lastRun.finished_at) {
+      return { delayMs: intervalMs, why: 'no completed sync recorded' };
+    }
+    // finished_at is in seconds (strftime('%s'))
+    const finished = lastRun.finished_at * 1000;
+    this.lastRefresh = new Date(finished);
+    return {
+      delayMs: Math.max(0, finished + intervalMs - Date.now()),
+      why: `the last sync finished at ${this.lastRefresh.toISOString()}`
+    };
   }
 
   /**
