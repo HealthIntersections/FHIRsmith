@@ -977,8 +977,12 @@ class NdcDataMigrator {
       { table: 'NDCRoutes', map: this.routesMap }
     ];
 
-    return new Promise((resolve) => {
+    // One transaction for all of them: otherwise each row commits (and waits on a disk sync)
+    // on its own, and there are thousands of organisations. A row that fails is warned about
+    // and skipped, as before: in SQLite a failed INSERT doesn't end the transaction
+    return new Promise((resolve, reject) => {
       db.serialize(() => {
+        db.run('BEGIN TRANSACTION');
         lookups.forEach(lookup => {
           if (lookup.map) {
             for (const [name, id] of lookup.map) {
@@ -995,8 +999,15 @@ class NdcDataMigrator {
           }
         });
 
-        if (verbose) console.log('Lookup tables created');
-        resolve();
+        // resolves once the rows are in, not when they have only been queued
+        db.run('COMMIT', (err) => {
+          if (err) {
+            reject(err);
+          } else {
+            if (verbose) console.log('Lookup tables created');
+            resolve();
+          }
+        });
       });
     });
   }

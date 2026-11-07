@@ -137,7 +137,11 @@ class CacheControlWorker extends TerminologyWorker {
 
     // "<instanceCode>.<uuid>" when this server has an instance code, else a bare UUID
     const cacheId = cache.newCacheId();
-    cache.set(cacheId, resources, sealed);
+    try {
+      cache.set(cacheId, resources, sealed);
+    } catch (e) {
+      throw this.translateCacheIssue(e);
+    }
 
     // Also echoed as a response header, so that a request log at the proxy (nginx
     // $sent_http_x_cache_id) can tie each issued id to the start request that got
