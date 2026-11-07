@@ -42,6 +42,7 @@ const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics'
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 const { readCgroupAnon } = require('./library/cgroup-memory');
 const { thresholds } = require('./library/memory-guard');
+const { defaultWorkers, describeDecision } = require('./library/worker-count');
 
 const HEALTH_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
@@ -84,8 +85,9 @@ const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-en
  * @param {string[]} argv - process.argv.slice(2)
  * @param {Object} env - process.env
  * @param {Object} config - config.json
+ * @param {Object} [cpu] - for tests: the CPU inputs (library/worker-count.js, cpuInputs)
  */
-function loadSettings(argv, env, config) {
+function loadSettings(argv, env, config, cpu = {}) {
   const flags = {};
   for (const a of argv) {
     const m = /^--([a-z-]+)=(.*)$/.exec(a);
@@ -100,7 +102,9 @@ function loadSettings(argv, env, config) {
   }
   const port = Number(flags.port || env.PORT || (config.server && config.server.port) || 3000);
   const workersGiven = flags.workers || env.FHIRSMITH_WORKERS || cluster.workers;
-  const workers = Number(workersGiven || 2);
+  // not given: from the CPUs, by the engine's rule (library/worker-count.js; cluster.md)
+  const workerDecision = defaultWorkers({ ...cpu, cores: cluster.cores ?? cpu.cores, rule: cluster.workerRule });
+  const workers = Number(workersGiven || workerDecision.workers);
   const internalPort = Number(flags['internal-port'] || cluster.internalPort || port + 1);
   const masterCode = checkInstanceCode(tx.instanceCode || 'm0', 'modules.tx.instanceCode');
   const servesTx = flags['master-serves-tx'] !== undefined ? flags['master-serves-tx'] !== 'false' : cluster.masterServesTx !== false;
@@ -126,6 +130,7 @@ function loadSettings(argv, env, config) {
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
     // the number of workers was not given: fewer if memory is short (see sizeWorkers)
     workersDefault: !workersGiven,
+    workerDecision,
     headroomBytes: Number(cluster.memoryHeadroomGB ?? HEADROOM_GB) * 2 ** 30,
     memory: (config.server && config.server.memory) || {},
     fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
@@ -755,17 +760,24 @@ function createLauncher(settings) {
    * warn if they don't fit.
    */
   function sizeWorkers(master) {
+    const workers = procs.filter(p => p.role === 'tx-worker');
+    const decided = (fitText) => {
+      if (settings.workerDecision) {
+        log(describeDecision(settings.workerDecision, procs.length - 1, fitText, !settings.workersDefault));
+      }
+    };
     const perProcess = memory.sample([master]).own.get(master) || 0;
     if (!perProcess) {
+      decided('memory not measured');
       return; // not measurable here (not Linux)
     }
-    const workers = procs.filter(p => p.role === 'tx-worker');
     const fits = Math.floor((memory.rejectAt - headroom - perProcess) / perProcess);
     const fit = Math.max(1, fits);
     const idle = (1 + workers.length) * perProcess;
     const line = `the master uses ${GB(perProcess)} GB loaded, so ${workers.length + 1} processes would use about ${GB(idle)} GB idle; ` +
       `the memory guard refuses requests ${memory.describe}, and memoryHeadroomGB is ${GB(headroom)}`;
     if (idle + headroom <= memory.rejectAt) {
+      decided(`memory fits ${fits}`);
       log(`memory: ${line}`);
       return;
     }
@@ -776,6 +788,7 @@ function createLauncher(settings) {
       }
     }
     const starting = procs.length - 1;
+    decided(`memory fits ${Math.max(0, fits)}`);
     if (fits < 1) {
       log(`WARNING memory: ${line}: even 1 worker leaves too little room; starting ${starting}: raise the limit, or run a single server`);
     } else if (starting < workers.length) {
