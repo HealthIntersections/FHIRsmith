@@ -16,7 +16,7 @@
  */
 
 const request = require('supertest');
-const { getTestApp, shutdownTestApp } = require('./setup');
+const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
 
 const VALIDATE = '/tx/r5/ValueSet/$validate-code';
 const EXPAND = '/tx/r5/ValueSet/$expand';
@@ -209,6 +209,40 @@ describe('cache-id protocol (integration)', () => {
         ] });
       expect(res.status).toBe(404);
       expect(isUnknownCacheError(res)).toBe(true);
+    });
+
+    test('a request that would take a cache past cacheMaxConcepts discards it, saying the cache is why', async () => {
+      const cache = getTxModule().endpoints.find(e => e.path === '/tx/r5').resourceCache;
+      const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
+      try {
+        const cid = await startCache(app);
+        cache.setLimits(2, Infinity); // colorsCS has 3 concepts
+        const over = await post(app, VALIDATE, [
+          cacheIdParam(cid, 'valueId'),
+          { name: 'tx-resource', resource: colorsCS },
+          { name: 'valueSet', resource: colorsVS },
+          { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+        ]);
+        expect(over.status).toBe(422);
+        const issue = over.body.issue[0];
+        expect(issue.code).toBe('too-costly');
+        expect(issue.details.coding).toEqual([{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'too-costly' }]);
+        expect(issue.extension[0].valueString).toBe('CACHE_ID_DISCARDED_TOO_BIG');
+        expect(issue.details.text).toBe(`The cache for cache-id '${cid}' would exceed 2 concepts (cacheMaxConcepts), so it has been discarded. ` +
+          'This is about the cache, not this request. Start a new cache-id and send the resources again');
+
+        const after = await post(app, VALIDATE, [
+          cacheIdParam(cid, 'valueId'),
+          { name: 'url', valueString: colorsVS.url },
+          { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+        ]);
+        expect(after.status).toBe(404);
+        expect(isUnknownCacheError(after)).toBe(true);
+        expect(after.body.issue[0].extension[0].valueString).toBe('CACHE_ID_DISCARDED');
+        expect(after.body.issue[0].details.text).toMatch(/was discarded .* ago, because a request would have taken it over 2 concepts/);
+      } finally {
+        cache.setLimits(...saved);
+      }
     });
 
     test('by url with no cache-id and a VS not in the library fails (not a silent pass)', async () => {

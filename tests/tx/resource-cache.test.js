@@ -439,16 +439,25 @@ describe('ResourceCache', () => {
   });
 
   describe('limits', () => {
-    test('a cache can not grow past its limit: the change is refused and the cache kept', () => {
+    test('a request that would take a cache past its limit discards the cache, and says the cache is why', () => {
       cache.setLimits(10, 100);
       cache.add('c1', [sized(CS('http://a', '1'), 8)]);
-      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 3)])).toThrow(/more than this server allows in one cache \(10\)/);
-      expect(() => cache.set('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422, issueCode: 'too-costly' }));
-      expect(cache.get('c1')).toHaveLength(1);
-      expect(cache.has('c2')).toBe(false);
-      expect(cache.conceptCount()).toBe(8);
       cache.add('c1', [sized(CS('http://a', '1'), 10)]); // a replacement counts the difference
       expect(cache.conceptCount()).toBe(10);
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 1)])).toThrow(expect.objectContaining({
+        statusCode: 422, issueCode: 'too-costly', msgId: 'CACHE_ID_DISCARDED_TOO_BIG', msgParams: ['c1', 10],
+        message: expect.stringMatching(/cache-id 'c1' would exceed 10 concepts \(cacheMaxConcepts\), so it has been discarded/)
+      }));
+      expect(cache.has('c1')).toBe(false);
+      expect(cache.conceptCount()).toBe(0);
+      expect(cache.describeMissing('c1')).toEqual({ messageId: 'CACHE_ID_DISCARDED', params: ['c1', expect.any(String), 10] });
+    });
+
+    test('a new cache too big to start is refused (nothing to discard)', () => {
+      cache.setLimits(10, 100);
+      expect(() => cache.set('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422, issueCode: 'too-costly' }));
+      expect(cache.has('c2')).toBe(false);
+      expect(cache.conceptCount()).toBe(0);
     });
 
     test('a resource sent twice in one request is counted once', () => {

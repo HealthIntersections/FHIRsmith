@@ -243,11 +243,12 @@ class ResourceCache {
    *
    * @param {string} cacheId - The cache identifier
    * @param {Object} entry - The entry being removed (for its timings)
-   * @param {'closed'|'expired'|'cleared'|'evicted'} reason - How it went away:
+   * @param {'closed'|'expired'|'cleared'|'evicted'|'discarded'} reason - How it went away:
    *   `closed` = the client released it with $cache-control?mode=end;
    *   `expired` = it went unused for longer than the idle timeout;
    *   `cleared` = the server dropped every cache at once;
    *   `evicted` = it was dropped, least recently used, to make room for others.
+   *   `discarded` = a request would have taken it over cacheMaxConcepts.
    * @param {Object} [extra] - Reason-specific detail (e.g. idleMs, maxAgeMs)
    */
   _recordTombstone(cacheId, entry, reason, extra = {}) {
@@ -316,6 +317,8 @@ class ResourceCache {
         };
       case 'evicted':
         return { messageId: 'CACHE_ID_EVICTED', params: [cacheId, ago] };
+      case 'discarded':
+        return { messageId: 'CACHE_ID_DISCARDED', params: [cacheId, ago, t.limit] };
       default:
         return { messageId: 'CACHE_ID_CLEARED', params: [cacheId, ago] };
     }
@@ -463,7 +466,7 @@ class ResourceCache {
 
     const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
     // Merge resources, avoiding duplicates by url+version, into a copy: a change that would
-    // take the cache over its limit is refused, and the cache kept as it was.
+    // take the cache over its limit discards the cache instead.
     const merged = [...entry.resources];
     let concepts = entry.concepts;
     for (const resource of resources) {
@@ -484,7 +487,22 @@ class ResourceCache {
         }
       }
     }
-    this._checkLimit(cacheId, concepts);
+    if (concepts > this.maxConceptsPerCache) {
+      // The client can't do anything with a cache it can't add to, so drop it: the
+      // next request with this id is told it was discarded (CACHE_ID_DISCARDED).
+      if (this.cache.has(cacheId)) {
+        this.totalConcepts -= entry.concepts || 0;
+        this.cache.delete(cacheId);
+      }
+      this._recordTombstone(cacheId, entry, 'discarded', { limit: this.maxConceptsPerCache });
+      this.log.info(`cache-id '${cacheId}': discarded (would hold ${concepts} concepts; one cache may hold ${this.maxConceptsPerCache})`);
+      const params = [cacheId, this.maxConceptsPerCache];
+      const err = new Issue('error', 'too-costly', null, 'CACHE_ID_DISCARDED_TOO_BIG',
+        `The cache for cache-id '${cacheId}' would exceed ${this.maxConceptsPerCache} concepts (cacheMaxConcepts), so it has been discarded. ` +
+        'This is about the cache, not this request. Start a new cache-id and send the resources again', 'too-costly', 422).handleAsOO(422);
+      err.msgParams = params;
+      throw err;
+    }
     this.totalConcepts += concepts - entry.concepts;
     entry.resources = merged;
     entry.concepts = concepts;
