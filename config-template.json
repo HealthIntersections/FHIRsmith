@@ -268,6 +268,18 @@
       // version URIs or edition URIs
       // "snomed": { "load": "mmap", "prewarm": ["sct_intl_20250201.cache", "sct_us_20250901b.cache"], "read": [] },
       "cacheTimeout": 30,
+      // Memory limits (see tx/README.md, "Configuration Options"); these are the defaults,
+      // which apply when a limit is left out or null; 0 = no limit. Logged at startup ("Limits: ...")
+      // concepts one client side cache may hold; more is refused with 422 too-costly
+      "cacheMaxConcepts": 250000,
+      // concepts an endpoint's client side caches hold between them; the least recently used
+      // caches are dropped (their cache-id then gets a 404 cache-id-unknown)
+      "cacheMaxTotalConcepts": 1000000,
+      // distinct codes, and longest code (characters), counted for usage-count; others aren't counted
+      "usageTrackerMaxCodes": 1000000,
+      "usageTrackerMaxCodeLength": 100,
+      // parsed language tags kept (least recently used dropped)
+      "languageTagCacheSize": 1000,
       // Optional. A short code (1-16 letters and digits) naming this server instance. Every
       // cache-id the server issues then starts with "<code>.", so a proxy in front of
       // several instances can route cached requests back to the instance that holds the

@@ -344,6 +344,18 @@ Description: Test
   });
 
   describe('Language Parsing and Validation', () => {
+    test('the cache of parsed tags is capped, dropping the least recently used', () => {
+      const en = definitions.parse('en');
+      for (let i = 0; i < LanguageDefinitions.MAX_PARSED + 10; i++) {
+        definitions.parse('en-x-' + i);
+        definitions.parse('en'); // kept, being used
+      }
+      expect(definitions.parsed.size).toBe(LanguageDefinitions.MAX_PARSED);
+      expect(definitions.parse('en')).toBe(en);
+      expect(definitions.parsed.has(':en-x-0')).toBe(false);
+      expect(definitions.parse('en-x-0').privateUse).toEqual(['0']);
+    });
+
     test('should parse valid language codes', () => {
       const lang = definitions.parse('en-US');
       expect(lang).not.toBeNull();
