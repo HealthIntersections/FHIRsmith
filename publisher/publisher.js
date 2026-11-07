@@ -14,6 +14,7 @@ const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const { requireSameOrigin } = require('../library/same-origin');
 const {Utilities} = require("../library/utilities");
+const { guarded } = require('../library/sqlite-utilities');
 
 // GitHub refuses any file larger than this at the pre-receive hook, and the rejection takes down
 // the whole push rather than just the offending file.
@@ -206,14 +207,14 @@ class PublisherModule {
 
     for (const sql of tables) {
       await new Promise((resolve, reject) => {
-        this.db.run(sql, (err) => {
+        this.db.run(sql, guarded(reject, (err) => {
           if (err) {
             this.logger.error('Failed to create table:', err);
             reject(err);
           } else {
             resolve();
           }
-        });
+        }));
       });
     }
 
@@ -227,68 +228,68 @@ class PublisherModule {
   async runMigrations() {
     // Add announcement column if it doesn't exist (added after initial schema)
     const columns = await new Promise((resolve, reject) => {
-      this.db.all("PRAGMA table_info(tasks)", (err, rows) => {
+      this.db.all("PRAGMA table_info(tasks)", guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
     const columnNames = columns.map(c => c.name);
     if (!columnNames.includes('announcement')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE tasks ADD COLUMN announcement TEXT', (err) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN announcement TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added announcement column to tasks table');
             resolve();
           }
-        });
+        }));
       });
     }
     if (!columnNames.includes('publisher_version')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE tasks ADD COLUMN publisher_version TEXT', (err) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN publisher_version TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added publisher_version column to tasks table');
             resolve();
           }
-        });
+        }));
       });
     }
     if (!columnNames.includes('release_url')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE tasks ADD COLUMN release_url TEXT', (err) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN release_url TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added release_url column to tasks table');
             resolve();
           }
-        });
+        }));
       });
     }
     const websiteColumns = await new Promise((resolve, reject) => {
-      this.db.all("PRAGMA table_info(websites)", (err, rows) => {
+      this.db.all("PRAGMA table_info(websites)", guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
     const websiteColumnNames = websiteColumns.map(c => c.name);
     if (!websiteColumnNames.includes('git_root')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE websites ADD COLUMN git_root TEXT', (err) => {
+        this.db.run('ALTER TABLE websites ADD COLUMN git_root TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added git_root column to websites table');
             resolve();
           }
-        });
+        }));
       });
     }
   }
 
   async createDefaultAdmin() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1', (err, row) => {
+      this.db.get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1', guarded(reject, (err, row) => {
         if (err) {
           reject(err);
           return;
@@ -305,7 +306,7 @@ class PublisherModule {
             this.db.run(
                 'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
                 ['Administrator', 'admin', hash, 1],
-                (err) => {
+                guarded(reject, (err) => {
                   if (err) {
                     this.logger.error('Failed to create default admin:', err);
                     reject(err);
@@ -313,13 +314,13 @@ class PublisherModule {
                     this.logger.warn('Created default admin user - login: admin, password: admin123 - CHANGE THIS!');
                     resolve();
                   }
-                }
+                })
             );
           });
         } else {
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -485,10 +486,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE status = ? ORDER BY queued_at ASC LIMIT 1',
           ['queued'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -498,10 +499,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE status = ? ORDER BY publishing_at ASC LIMIT 1',
           ['publishing'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -536,10 +537,10 @@ class PublisherModule {
       this.db.run(
           'UPDATE tasks SET ' + fields.join(', ') + ' WHERE id = ?',
           values,
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
       );
     });
   }
@@ -558,20 +559,20 @@ class PublisherModule {
       this.db.run(
           'UPDATE tasks SET ' + assignments.join(', ') + ' WHERE id = ?',
           values,
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
       );
     });
   }
 
   async logTaskMessage(taskId, level, message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.db.run(
           'INSERT INTO task_logs (task_id, level, message) VALUES (?, ?, ?)',
           [taskId.toString(), level, message],
-          () => resolve() // Don't fail if logging fails
+          guarded(reject, () => resolve()) // Don't fail if logging fails
       );
     });
   }
@@ -1629,10 +1630,10 @@ class PublisherModule {
           this.db.get(
               'SELECT * FROM users WHERE login = ?',
               [login],
-              (err, row) => {
+              guarded(reject, (err, row) => {
                 if (err) reject(err);
                 else resolve(row);
-              }
+              })
           );
         });
 
@@ -1874,10 +1875,10 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
               [req.session.userId, website_id, github_org, github_repo, git_branch, npm_package_id, version],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve(this.lastID);
-              }
+              })
           );
         });
 
@@ -1924,10 +1925,10 @@ class PublisherModule {
           this.db.run(
               'UPDATE tasks SET status = ?, approved_by = ?, publishing_at = CURRENT_TIMESTAMP WHERE id = ?',
               ['publishing', req.session.userId, taskId],
-              (err) => {
+              guarded(reject, (err) => {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -1985,18 +1986,18 @@ class PublisherModule {
 
         // Delete task logs
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM task_logs WHERE task_id = ?', [taskId.toString()], (err) => {
+          this.db.run('DELETE FROM task_logs WHERE task_id = ?', [taskId.toString()], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         // Delete task record
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM tasks WHERE id = ?', [taskId], (err) => {
+          this.db.run('DELETE FROM tasks WHERE id = ?', [taskId], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         this.logUserAction(req.session.userId, 'delete_task', taskId, req.ip);
@@ -2027,7 +2028,7 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
               [req.session.userId, task.website_id, task.github_org, task.github_repo, task.git_branch, task.npm_package_id, task.version],
-              function (err) { if (err) reject(err); else resolve(this.lastID); }
+              guarded(reject, function (err) { if (err) reject(err); else resolve(this.lastID); })
           );
         });
         this.logUserAction(req.session.userId, 'retry_task', newTaskId.toString(), req.ip);
@@ -2451,7 +2452,7 @@ class PublisherModule {
         this.db.run(
             'UPDATE websites SET name=?, local_folder=?,  git_root = ?, history_templates=?, web_templates=?, server_update_script=?, is_active=? WHERE id=?',
             [name, local_folder,  git_root, history_templates, web_templates, server_update_script, is_active === '1' ? 1 : 0, websiteId],
-            (err) => err ? reject(err) : resolve()
+            guarded(reject, (err) => err ? reject(err) : resolve())
         );
       });
 
@@ -2572,10 +2573,10 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO websites (name, local_folder,  git_root, history_templates, web_templates, server_update_script) VALUES (?, ?, ?, ?, ?, ?)',
               [name, local_folder, git_root, history_templates, web_templates, server_update_script],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -2716,10 +2717,10 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
               [name, login, passwordHash, is_admin ? 1 : 0],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -2750,10 +2751,10 @@ class PublisherModule {
 
         // Clear existing permissions
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM user_website_permissions WHERE user_id = ?', [user_id], (err) => {
+          this.db.run('DELETE FROM user_website_permissions WHERE user_id = ?', [user_id], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         // Add new permissions
@@ -2766,10 +2767,10 @@ class PublisherModule {
               this.db.run(
                   'INSERT INTO user_website_permissions (user_id, website_id, can_queue, can_approve) VALUES (?, ?, ?, ?)',
                   [user_id, website.id, canQueue ? 1 : 0, canApprove ? 1 : 0],
-                  (err) => {
+                  guarded(reject, (err) => {
                     if (err) reject(err);
                     else resolve();
-                  }
+                  })
               );
             });
           }
@@ -2795,10 +2796,10 @@ class PublisherModule {
         sql += ' LIMIT ' + limit;
       }
 
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -2807,10 +2808,10 @@ class PublisherModule {
       this.db.get(
           'SELECT t.*, u.name as user_name, u.login as user_login, w.name as website_name, approver.name as approved_by_name FROM tasks t JOIN users u ON t.user_id = u.id JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id WHERE t.id = ?',
           [taskId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -2820,10 +2821,10 @@ class PublisherModule {
       this.db.all(
           'SELECT * FROM task_logs WHERE task_id = ? ORDER BY timestamp ASC',
           [taskId.toString()],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2833,10 +2834,10 @@ class PublisherModule {
       this.db.all(
           'SELECT ua.*, u.name as user_name, u.login as user_login FROM user_actions ua LEFT JOIN users u ON ua.user_id = u.id WHERE ua.target_id = ? ORDER BY ua.timestamp ASC',
           [taskId.toString()],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2846,10 +2847,10 @@ class PublisherModule {
       this.db.all(
           'SELECT w.* FROM websites w JOIN user_website_permissions p ON w.id = p.website_id WHERE p.user_id = ? AND p.can_queue = 1 AND w.is_active = 1',
           [userId],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2859,10 +2860,10 @@ class PublisherModule {
       this.db.get(
           'SELECT can_queue FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
           [userId, websiteId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row && row.can_queue);
-          }
+          })
       );
     });
   }
@@ -2872,10 +2873,10 @@ class PublisherModule {
       this.db.get(
           'SELECT can_approve FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
           [userId, websiteId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row && row.can_approve);
-          }
+          })
       );
     });
   }
@@ -2885,10 +2886,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE npm_package_id = ? AND version = ? AND status NOT IN (?, ?) ORDER BY queued_at DESC LIMIT 1',
           [packageId, version, 'complete', 'failed'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -2898,29 +2899,29 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE npm_package_id = ? AND version = ? ORDER BY queued_at DESC LIMIT 1',
           [packageId, version],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
 
   async getWebsites() {
     return new Promise((resolve, reject) => {
-      this.db.all('SELECT * FROM websites ORDER BY name', (err, rows) => {
+      this.db.all('SELECT * FROM websites ORDER BY name', guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
   async getWebsite(websiteId) {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT * FROM websites WHERE id = ?', [websiteId], (err, row) => {
+      this.db.get('SELECT * FROM websites WHERE id = ?', [websiteId], guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row);
-      });
+      }));
     });
   }
 
@@ -2967,10 +2968,10 @@ class PublisherModule {
 
   async getUsers() {
     return new Promise((resolve, reject) => {
-      this.db.all('SELECT id, name, login, is_admin, created_at FROM users ORDER BY name', (err, rows) => {
+      this.db.all('SELECT id, name, login, is_admin, created_at FROM users ORDER BY name', guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -2979,10 +2980,10 @@ class PublisherModule {
       this.db.all(
           'SELECT * FROM user_website_permissions WHERE user_id = ?',
           [userId],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2997,7 +2998,7 @@ class PublisherModule {
       return 'The database is not open.';
     }
     const get = (sql, params) => new Promise((resolve, reject) =>
-      this.db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
     // the timestamps are CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
     const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
     try {
@@ -3039,15 +3040,15 @@ class PublisherModule {
 
     // Close database
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             this.logger.error('Error closing database:', err);
           } else {
             this.logger.info('Database closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }

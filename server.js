@@ -11,13 +11,35 @@
 // the safe behaviour. `npm run dev` (node --watch) runs in development mode
 process.env.NODE_ENV ??= process.execArgv.includes('--watch') ? 'development' : 'production';
 
+// Logging starts before anything else, so that a server that fails to start (bad config.json, a
+// missing dependency, an unwritable folder) says why in the log as well as on stderr. It starts with
+// the logger defaults; config.logging is applied once config.json has been read
+const folders = require('./library/folder-setup');
+const Logger = require('./library/logger');
+let bootLog;
+try {
+  bootLog = Logger.getInstance().child({ module: 'server' });
+} catch (error) {
+  console.error('Failed to start logging:', error.message);
+  process.exit(1);
+}
+bootLog.info(`FHIRsmith starting (PID ${process.pid}, Node.js ${process.version}), data directory ${folders.dataDir()}`);
+
+// Until startup is complete, an uncaught exception is fatal: log it and exit (the logger flushes on exit).
+// Replaced by the long-running handlers once the server is set up
+function startupFailure(error) {
+  console.error('FATAL - startup failed:', error);
+  bootLog.error('FATAL - startup failed: ' + (error?.message || error), error);
+  process.exit(1);
+}
+process.on('uncaughtException', startupFailure);
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const v8 = require('v8');
-const folders = require('./library/folder-setup');  // <-- ADD: load early
 const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
@@ -31,14 +53,16 @@ const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
 const { maxBodyBytes } = require('./library/body-limit');
 
-// Load configuration BEFORE logger
+// Load configuration (from the data directory)
 let config;
+const configPath = folders.filePath('config.json');
+bootLog.info(`Reading configuration from ${configPath}`);
 try {
-  const configPath = folders.filePath('config.json');  // <-- CHANGE: config now in data dir
   const configData = fs.readFileSync(configPath, 'utf8');
   config = JSON.parse(configData);
 } catch (error) {
-  console.error('Failed to load configuration:', error.message);
+  console.error(`Failed to load configuration from ${configPath}:`, error.message);
+  bootLog.error(`Failed to load configuration from ${configPath}: ${error.message}`);
   process.exit(1);
 }
 
@@ -56,8 +80,8 @@ try {
   process.exit(1);
 }
 
-const Logger = require('./library/logger');
-const serverLog = Logger.getInstance(config.logging || {}).child({ module: 'server' });
+Logger.getInstance().configure(config.logging || {});
+const serverLog = Logger.getInstance().child({ module: 'server' });
 const packageJson = require('./package.json');
 
 // Startup banner
@@ -598,6 +622,7 @@ process.on('unhandledRejection', (reason, promise) => {
   serverLog.error('Unhandled Rejection:', reason);
 });
 
+process.off('uncaughtException', startupFailure);
 process.on('uncaughtException', (error) => {
   console.error('FATAL - Uncaught Exception:', error);
   serverLog.error('FATAL - Uncaught Exception:', error);

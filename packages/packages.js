@@ -17,6 +17,7 @@ const Logger = require('../library/logger');
 const {validateParameter, Utilities} = require("../library/utilities");
 const {describeCron} = require("../library/cron-utilities");
 const {tokenMatches, tokenConfigured} = require("../library/request-token");
+const { guarded } = require('../library/sqlite-utilities');
 const pckLog = Logger.getInstance().child({ module: 'packages' });
 const packagesOpenApi = require('./openapi');
 const rateLimit = require('express-rate-limit');
@@ -365,7 +366,7 @@ class PackagesModule {
 
         const { query, params: queryParams } = this.buildSecureQuery(baseQuery, conditions);
 
-        this.db.all(query + ' ORDER BY PubDate', queryParams, (err, rows) => {
+        this.db.all(query + ' ORDER BY PubDate', queryParams, guarded(reject, (err, rows) => {
           if (err) {
             reject(err);
             return;
@@ -399,7 +400,7 @@ class PackagesModule {
           });
 
           resolve(this.applySorting(results, sort));
-        });
+        }));
       } catch (error) {
         reject(error);
       }
@@ -577,7 +578,7 @@ class PackagesModule {
   }
 
   async getDatabaseTableCounts() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (!this.db) {
         resolve({packages: 0, packageVersions: 0});
         return;
@@ -587,7 +588,7 @@ class PackagesModule {
       let completedQueries = 0;
       const totalQueries = 2;
 
-      this.db.get('SELECT COUNT(*) as count FROM Packages', [], (err, row) => {
+      this.db.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packages = 0;
         } else {
@@ -598,9 +599,9 @@ class PackagesModule {
         if (completedQueries === totalQueries) {
           resolve(counts);
         }
-      });
+      }));
 
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], (err, row) => {
+      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packageVersions = 0;
         } else {
@@ -611,7 +612,7 @@ class PackagesModule {
         if (completedQueries === totalQueries) {
           resolve(counts);
         }
-      });
+      }));
     });
   }
 
@@ -744,14 +745,14 @@ class PackagesModule {
             this.db.run(`CREATE TABLE IF NOT EXISTS FeedPages (
               Url TEXT PRIMARY KEY,
               VisitedAt TEXT NOT NULL
-            )`, (err) => {
+            )`, guarded(reject, (err) => {
               if (err) pckLog.error('Failed to create FeedPages table:', err.message);
-            });
+            }));
             // Fails while the database still holds duplicate id#version rows (from before the
             // crawler checked for them): packages/utilities/dedupe-versions.js removes them
-            this.db.run(UNIQUE_ID_VERSION_INDEX.replace('CREATE UNIQUE INDEX', 'CREATE UNIQUE INDEX IF NOT EXISTS'), (err) => {
+            this.db.run(UNIQUE_ID_VERSION_INDEX.replace('CREATE UNIQUE INDEX', 'CREATE UNIQUE INDEX IF NOT EXISTS'), guarded(reject, (err) => {
               if (err) pckLog.warn('PackageVersions has duplicate id#version rows, so they are not yet unique; run packages/utilities/dedupe-versions.js: ' + err.message);
-            });
+            }));
             resolve();
           }
         }
@@ -884,13 +885,13 @@ class PackagesModule {
 
         // Create indexes
         indexes.forEach(sql => {
-          this.db.run(sql, (err) => {
+          this.db.run(sql, guarded(reject, (err) => {
             if (err) {
               handleIndexError(err);
             } else {
               checkIndexesComplete();
             }
-          });
+          }));
         });
       };
 
@@ -901,13 +902,13 @@ class PackagesModule {
 
       // Create tables first
       tables.forEach(sql => {
-        this.db.run(sql, (err) => {
+        this.db.run(sql, guarded(reject, (err) => {
           if (err) {
             handleTableError(err);
           } else {
             checkTablesComplete();
           }
-        });
+        }));
       });
     });
   }
@@ -1718,13 +1719,13 @@ class PackagesModule {
                    WHERE PubDate >= ?
                    ORDER BY PubDate DESC`;
 
-      this.db.all(sql, [date], (err, rows) => {
+      this.db.all(sql, [date], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           resolve(rows);
         }
-      });
+      }));
     });
   }
 
@@ -1964,13 +1965,13 @@ class PackagesModule {
         ? [id, version]
         : [id, `${version}-%`];
 
-      this.db.get(sql, params, (err, row) => {
+      this.db.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row || null);
         }
-      });
+      }));
     });
   }
 
@@ -2012,10 +2013,10 @@ class PackagesModule {
         this.db.run(
           'UPDATE PackageVersions SET DownloadCount = DownloadCount + 1 WHERE PackageVersionKey = ?',
           [packageVersionKey],
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
         );
       });
 
@@ -2024,10 +2025,10 @@ class PackagesModule {
         this.db.run(
           'UPDATE Packages SET DownloadCount = DownloadCount + 1 WHERE Id = ?',
           [packageId],
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
         );
       });
 
@@ -2092,13 +2093,13 @@ class PackagesModule {
                    WHERE Id = ?
                    ORDER BY PubDate DESC`;  // Changed from ASC to DESC for most recent first
 
-      this.db.all(sql, [id], (err, rows) => {
+      this.db.all(sql, [id], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           resolve(rows);
         }
-      });
+      }));
     });
   }
 
@@ -2111,7 +2112,7 @@ class PackagesModule {
                    FROM PackageDependencies
                    WHERE PackageVersionKey IN (${placeholders})`;
 
-      this.db.all(sql, packageVersionKeys, (err, rows) => {
+      this.db.all(sql, packageVersionKeys, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2132,7 +2133,7 @@ class PackagesModule {
           }
           resolve(deps);
         }
-      });
+      }));
     });
   }
 
@@ -2532,25 +2533,25 @@ class PackagesModule {
 
   async getTotalPackageCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], (err, row) => {
+      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row ? row.count : 0);
         }
-      });
+      }));
     });
   }
 
   async getTotalDownloadCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], (err, row) => {
+      this.db.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row ? row.total || 0 : 0);
         }
-      });
+      }));
     });
   }
 
@@ -2825,7 +2826,7 @@ class PackagesModule {
         const row = await new Promise((resolve, reject) => this.db.get(
           'SELECT COUNT(*) AS n, COUNT(DISTINCT Id) AS ids FROM PackageVersions WHERE Indexed > ?',
           [new Date(since).toISOString().replace('T', ' ').substring(0, 19)],
-          (err, row) => err ? reject(err) : resolve(row)));
+          guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
         sentences.push(row.n === 0
           ? 'No new package versions were found.'
           : `${plural(row.n, 'new package version')} ${row.n === 1 ? 'was' : 'were'} found, of ${plural(row.ids, 'package')}.`);
@@ -2843,15 +2844,15 @@ class PackagesModule {
 
     // Close database connection
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             pckLog.error('Error closing packages database:', err.message);
           } else {
             pckLog.info('Packages database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
 
@@ -2896,7 +2897,7 @@ class PackagesModule {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT Id, Version FROM PackageVersions';
 
-      this.db.all(sql, [], (err, rows) => {
+      this.db.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2911,7 +2912,7 @@ class PackagesModule {
 
           resolve(validPackages);
         }
-      });
+      }));
     });
   }
 
@@ -2923,7 +2924,7 @@ class PackagesModule {
                         PackageVersions
                    WHERE PackageDependencies.PackageVersionKey = PackageVersions.PackageVersionKey`;
 
-      this.db.all(sql, [], (err, rows) => {
+      this.db.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2959,7 +2960,7 @@ class PackagesModule {
 
           resolve(brokenDeps);
         }
-      });
+      }));
     });
   }
 
