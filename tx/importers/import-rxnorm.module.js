@@ -433,7 +433,8 @@ class RxNormModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
       'CREATE INDEX IF NOT EXISTS idx_rxnstems_stem_cui ON RXNSTEMS(stem, CUI)',
-      'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)'
+      'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnatomarchive_rxcui_sab ON RXNATOMARCHIVE(RXCUI, SAB)'
     ];
 
     return new Promise((resolve, reject) => {
