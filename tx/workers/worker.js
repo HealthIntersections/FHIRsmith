@@ -805,7 +805,14 @@ class TerminologyWorker {
       if (!this.opContext.resourceCache.isSealed(cacheId)) {
         const toCache = txResources.concat(primaryResources);
         if (toCache.length > 0) {
-          this.opContext.resourceCache.add(cacheId, toCache);
+          try {
+            this.opContext.resourceCache.add(cacheId, toCache);
+          } catch (e) {
+            if (e.msgId === 'CACHE_ID_DISCARDED_TOO_BIG') {
+              e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
+            }
+            throw e;
+          }
         }
         this.additionalResources = this.opContext.resourceCache.get(cacheId);
       } else {
