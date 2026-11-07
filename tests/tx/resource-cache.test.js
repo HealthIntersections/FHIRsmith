@@ -606,7 +606,7 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
       cache.setLimits(10, 100);
       cache.add('c1', [sized(CS('http://a', '1'), 4)]);
       expect(() => cache.add('c1', [sized(CS('http://b', '1'), 6), sized(VS('http://c', '1'), 5)])).toThrow(expect.objectContaining({
-        statusCode: 422, issueCode: 'too-costly',
+        statusCode: 422, issueCode: 'too-costly', msgId: 'CACHE_REQUEST_TOO_BIG', msgParams: [11, 10],
         message: expect.stringMatching(/This request's resources hold 11 concepts, more than this server allows in one cache \(10/)
       }));
       expect(cache.has('c1')).toBe(true);

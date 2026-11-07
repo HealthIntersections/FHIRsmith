@@ -786,8 +786,11 @@ class SqliteResourceCache extends ResourceCache {
     // cache may hold is refused as too costly (422), and the cache is kept
     const ownConcepts = rows.reduce((sum, r) => sum + r.concepts, 0);
     if (ownConcepts > this.maxConceptsPerCache) {
-      throw new Issue('error', 'too-costly', null, null,
+      // (in English: the worker translates it into the request's language - see addToClientCache)
+      const err = new Issue('error', 'too-costly', null, 'CACHE_REQUEST_TOO_BIG',
         `This request's resources hold ${ownConcepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache}, cacheMaxConcepts), so no cache can hold them`, 'too-costly', 422).handleAsOO(422);
+      err.msgParams = [ownConcepts, this.maxConceptsPerCache];
+      throw err;
     }
 
     // Most requests re-send resources the cache already has, unchanged. Check
