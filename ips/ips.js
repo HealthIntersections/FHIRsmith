@@ -988,20 +988,29 @@ class IpsModule {
   }
 
   /**
-   * The paragraph for the server's daily report: pages served, documents
-   * received in the period, and how many are stored.
+   * The paragraph for the server's daily report: pages served (and how many were about documents - a
+   * document's page, in any of its views), new documents and how many are stored, and the
+   * processing pipeline - how many times it was started, and how many of those didn't finish
+   * (it failed, or the server stopped while it ran).
    */
   dailyReport({since, now}) {
     const {plural} = require('../library/daily-report');
+    const was = (n) => n === 1 ? 'was' : 'were';
     const sentences = [];
     if (this.stats) {
       const counts = this.stats.countsSince(since, now);
-      sentences.push(`${plural(counts.total, 'page')} ${counts.total === 1 ? 'was' : 'were'} served.`);
+      const docs = counts.operations.read || 0;
+      sentences.push(`${plural(counts.total, 'page')} ${was(counts.total)} served${counts.total ? `, ${docs} of them about documents` : ''}.`);
     }
     if (this.store) {
       const received = this.store.countReceived(since, now);
       const stored = this.store.count();
-      sentences.push(`${plural(received, 'IPS document')} ${received === 1 ? 'was' : 'were'} received; ${plural(stored, 'document')} ${stored === 1 ? 'is' : 'are'} stored.`);
+      sentences.push(`${plural(received, 'new document')} ${was(received)} received; ${plural(stored, 'document')} ${stored === 1 ? 'is' : 'are'} stored.`);
+      const runs = this.store.countRuns(since, now);
+      const unfinished = runs.failed + runs.interrupted;
+      const why = [runs.failed ? `${runs.failed} failed` : '', runs.interrupted ? `${runs.interrupted} interrupted by a shutdown` : ''].filter(Boolean).join(', ');
+      sentences.push(`The processing pipeline was started ${plural(runs.started, 'time')}; ${unfinished} didn't finish${why ? ` (${why})` : ''}` +
+        `${runs.running ? `, and ${runs.running} ${runs.running === 1 ? 'is' : 'are'} still running` : ''}.`);
     } else {
       sentences.push('The document store is not open.');
     }

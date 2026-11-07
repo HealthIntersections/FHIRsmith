@@ -129,6 +129,20 @@ const SCHEMA = `
     ref      TEXT
   );
 
+  -- each time the processing pipeline was started on a document, and how it ended: running,
+  -- finished (whether or not the document was fine), failed (the pipeline threw), or
+  -- interrupted (the server stopped while it ran). For the daily report. No foreign key: a run
+  -- still happened after its document is deleted
+  CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id      INTEGER NOT NULL,
+    started_ms  INTEGER NOT NULL,
+    ended_ms    INTEGER,
+    outcome     TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_ms);
+  CREATE INDEX IF NOT EXISTS idx_pipeline_runs_running ON pipeline_runs(outcome, doc_id);
   CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id, id);
   CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status, id);
   CREATE INDEX IF NOT EXISTS idx_ips_index_doc ON ips_index(doc_id, res, param);
@@ -211,7 +225,12 @@ class IpsStore {
       readResult: this.db.prepare('SELECT made_ms, json FROM document_results WHERE doc_id = ? AND step = ?'),
       resultSteps: this.db.prepare('SELECT step, made_ms FROM document_results WHERE doc_id = ? ORDER BY step'),
       clearResults: this.db.prepare('DELETE FROM document_results WHERE doc_id = ?'),
-      resetProcessing: this.db.prepare("UPDATE documents SET status = 'submitted' WHERE status = 'processing'")
+      resetProcessing: this.db.prepare("UPDATE documents SET status = 'submitted' WHERE status = 'processing'"),
+      startRun: this.db.prepare("INSERT INTO pipeline_runs (doc_id, started_ms, outcome) VALUES (?, ?, 'running')"),
+      // the run ends whether or not the document is still there to take the outcome
+      endRun: this.db.prepare("UPDATE pipeline_runs SET outcome = ?, ended_ms = ? WHERE doc_id = ? AND outcome = 'running'"),
+      interruptRuns: this.db.prepare("UPDATE pipeline_runs SET outcome = 'interrupted', ended_ms = ? WHERE outcome = 'running'"),
+      countRuns: this.db.prepare('SELECT outcome, COUNT(*) AS n FROM pipeline_runs WHERE started_ms > ? AND started_ms <= ? GROUP BY outcome')
     };
   }
 
@@ -620,19 +639,41 @@ class IpsStore {
    * Take the oldest submitted document for processing, marking it 'processing'.
    * @returns {Object|null} the row (as read()) or null if nothing is waiting
    */
-  claimNext() {
+  claimNext(nowMs = Date.now()) {
     return this.db.transaction(() => {
       const next = this.stmts.nextSubmitted.get();
       if (!next || this.stmts.claim.run(next.id).changes === 0) {
         return null;
       }
+      this.stmts.startRun.run(next.id, nowMs);
       return this.read(next.id);
     })();
   }
 
-  /** Record the outcome of processing a document. */
-  finish(id, ok, message) {
-    this.stmts.finish.run(ok ? 'processed' : 'error', message || null, Date.now(), id);
+  /**
+   * Record the outcome of processing a document: ok, the pipeline finished (the document
+   * is processed); not ok, it failed (the document is in error).
+   */
+  finish(id, ok, message, nowMs = Date.now()) {
+    this.db.transaction(() => {
+      this.stmts.finish.run(ok ? 'processed' : 'error', message || null, nowMs, id);
+      this.stmts.endRun.run(ok ? 'finished' : 'failed', nowMs, id);
+    })();
+  }
+
+  /**
+   * The pipeline runs started in (sinceMs, nowMs], by how they ended.
+   * @returns {{started: number, finished: number, failed: number, interrupted: number, running: number}}
+   */
+  countRuns(sinceMs, nowMs) {
+    const out = { started: 0, finished: 0, failed: 0, interrupted: 0, running: 0 };
+    for (const r of this.stmts.countRuns.all(sinceMs, nowMs)) {
+      if (Object.prototype.hasOwnProperty.call(out, r.outcome)) {
+        out[r.outcome] = r.n;
+      }
+      out.started += r.n;
+    }
+    return out;
   }
 
   /**
@@ -696,10 +737,13 @@ class IpsStore {
 
   /**
    * Anything left 'processing' was being worked on when the server stopped; it goes back
-   * in the queue. Called at startup. @returns {number} how many
+   * in the queue, and its pipeline run was interrupted. Called at startup. @returns {number} how many
    */
-  resetProcessing() {
-    return this.stmts.resetProcessing.run().changes;
+  resetProcessing(nowMs = Date.now()) {
+    return this.db.transaction(() => {
+      this.stmts.interruptRuns.run(nowMs);
+      return this.stmts.resetProcessing.run().changes;
+    })();
   }
 
   /** How many documents are in each state, for the dashboard. */

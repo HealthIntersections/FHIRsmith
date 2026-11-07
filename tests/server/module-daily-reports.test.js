@@ -244,18 +244,36 @@ describe('module paragraphs', () => {
     }
   });
 
-  test('ips: pages, documents received, documents stored', () => {
+  test('ips: pages (and those about documents), documents received and stored, pipeline runs', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fhirsmith-ips-'));
     const store = new IpsStore(path.join(dir, 'ips.db'));
     try {
       const projectId = store.createProject('p', 'Project');
       const bundle = () => ({ resourceType: 'Bundle', type: 'document', entry: [{ resource: { resourceType: 'Composition', title: 'IPS' } }] });
-      store.insert(projectId, bundle(), { source: 'api', receivedMs: SINCE - HOUR });
-      store.insert(projectId, bundle(), { source: 'api', receivedMs: SINCE + HOUR });
+      for (const at of [SINCE - 2 * HOUR, SINCE - HOUR, SINCE + HOUR, SINCE + 2 * HOUR, SINCE + 3 * HOUR, SINCE + 4 * HOUR]) {
+        store.insert(projectId, bundle(), { source: 'api', receivedMs: at });
+      }
+      // before the period: one run that finished (not counted)
+      store.claimNext(SINCE - HOUR);
+      store.finish(1, true, 'done', SINCE - HOUR);
+      // in it: one finished, one failed, one interrupted by a shutdown (queued again), and one still running
+      store.claimNext(SINCE + HOUR);
+      store.finish(2, true, 'done', SINCE + HOUR);
+      store.claimNext(SINCE + HOUR);
+      store.finish(3, false, 'broke', SINCE + HOUR);
+      store.claimNext(SINCE + 2 * HOUR);
+      expect(store.resetProcessing(SINCE + 2 * HOUR)).toBe(1);
+      store.claimNext(SINCE + 3 * HOUR);
+      expect(store.countRuns(SINCE, NOW)).toEqual({ started: 4, finished: 1, failed: 1, interrupted: 1, running: 1 });
       const module = Object.create(IpsModule.prototype);
-      module.stats = statsWith({ read: 1 });
+      module.stats = statsWith({ read: 3, search: 1, create: 4 });
       module.store = store;
-      expect(module.dailyReport({ since: SINCE, now: NOW })).toBe('1 page was served. 1 IPS document was received; 2 documents are stored.');
+      expect(module.dailyReport({ since: SINCE, now: NOW })).toBe('8 pages were served, 3 of them about documents. 4 new documents were received; 6 documents are stored. ' +
+        'The processing pipeline was started 4 times; 2 didn\'t finish (1 failed, 1 interrupted by a shutdown), and 1 is still running.');
+      // a quiet day
+      module.stats = statsWith({});
+      expect(module.dailyReport({ since: NOW, now: NOW + 24 * HOUR })).toBe('0 pages were served. 0 new documents were received; 6 documents are stored. ' +
+        'The processing pipeline was started 0 times; 0 didn\'t finish.');
     } finally {
       store.close();
       fs.rmSync(dir, { recursive: true, force: true });
