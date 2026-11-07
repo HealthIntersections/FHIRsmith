@@ -5,6 +5,7 @@ const { CodeSystemFactoryProvider } = require('./cs-api');
 const { BaseCSServices } = require('./cs-base');
 const {validateArrayParameter, formatDateMMDDYYYY} = require("../../library/utilities");
 const Logger = require("../../library/logger");
+const { guarded } = require('../library/sqlite-utilities');
 
 // Context for RxNorm concepts
 class RxNormConcept {
@@ -278,7 +279,7 @@ class RxNormServices extends BaseCSServices {
     return new Promise((resolve, reject) => {
       let sql = `SELECT STR, TTY, SUPPRESS FROM rxnconso WHERE ${this.getCodeField()} = ? AND SAB = ?`;
 
-      this.db.all(sql, [code, this.getSAB()], (err, rows) => {
+      this.db.all(sql, [code, this.getSAB()], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
           return;
@@ -287,7 +288,7 @@ class RxNormServices extends BaseCSServices {
         if (rows.length === 0) {
           // Try archive
           sql = `SELECT STR, TTY FROM RXNATOMARCHIVE WHERE ${this.getCodeField()} = ? AND SAB = ?`;
-          this.db.all(sql, [code, this.getSAB()], (err, archiveRows) => {
+          this.db.all(sql, [code, this.getSAB()], guarded(reject, (err, archiveRows) => {
             if (err) {
               reject(err);
               return;
@@ -300,12 +301,12 @@ class RxNormServices extends BaseCSServices {
 
             const concept = this.#createConceptFromRows(code, archiveRows, true);
             resolve({ context: concept, message: null });
-          });
+          }));
         } else {
           const concept = this.#createConceptFromRows(code, rows, false);
           resolve({ context: concept, message: null });
         }
-      });
+      }));
     });
   }
 
@@ -821,7 +822,7 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
       // file or mount) is used as it is: the indexes only make lookups faster
       for (const sql of RXNORM_LOAD_INDEXES) {
         await new Promise((resolve, reject) => {
-          db.run(sql, err => {
+          db.run(sql, guarded(reject, err => {
             if (err && err.code === 'SQLITE_READONLY') {
               Logger.getInstance().child({module: 'tx-rxnorm'}).warn(`${this.dbPath} is read-only; lookups will be slower without: ${sql}`);
               resolve();
@@ -830,7 +831,7 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
             } else {
               resolve();
             }
-          });
+          }));
         });
       }
 
@@ -862,8 +863,8 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
   }
 
   async #readVersion(db) {
-    return new Promise((resolve) => {
-      db.get('SELECT version FROM RXNVer', (err, row) => {
+    return new Promise((resolve, reject) => {
+      db.get('SELECT version FROM RXNVer', guarded(reject, (err, row) => {
         if (err || !row) {
           // Fallback: try to extract version from database path
           const dbDetails = this.dbPath;
@@ -885,31 +886,31 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
         } else {
           resolve(row.version.toString());
         }
-      });
+      }));
     });
   }
 
   async #loadList(db, sql) {
     return new Promise((resolve, reject) => {
-      db.all(sql, (err, rows) => {
+      db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           resolve(rows.map(row => Object.values(row)[0]));
         }
-      });
+      }));
     });
   }
 
   async #getCount(db, sql, params = []) {
     return new Promise((resolve, reject) => {
-      db.get(sql, params, (err, row) => {
+      db.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row ? Object.values(row)[0] : 0);
         }
-      });
+      }));
     });
   }
 
