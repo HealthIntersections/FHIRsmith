@@ -45,4 +45,15 @@ function failRequest(res) {
   };
 }
 
-module.exports = { guarded, failRequest };
+/**
+ * A string for the inside of a '...' literal in SQLite: each ' doubled (SQLite has no backslash
+ * escapes, so that is all a literal needs). Prefer a ? parameter wherever the SQL allows one.
+ * @param {string} str
+ * @returns {string} '' for a missing value
+ */
+function sqlEscapeString(str) {
+  if (!str) return '';
+  return str.replace(/'/g, "''");
+}
+
+module.exports = { guarded, failRequest, sqlEscapeString };

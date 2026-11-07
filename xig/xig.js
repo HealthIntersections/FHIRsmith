@@ -103,11 +103,139 @@ function validateExternalUrl(url) {
   }
 }
 
-// Secure SQL query building with parameterized queries
-function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
+// The columns that say which FHIR versions a resource is for (also the values of ver)
+const VERSION_COLUMNS = ['R2', 'R2B', 'R3', 'R4', 'R4B', 'R5', 'R6'];
 
-  let baseQuery = `
+/**
+ * One request parameter as a string. Express makes a repeated parameter (?realm=a&realm=b) an
+ * array, and can make a bracketed one (?realm[x]=a) an object: the first value is used, and
+ * anything else is treated as not given.
+ */
+function queryValue(v) {
+  if (Array.isArray(v)) {
+    v = v[0];
+  }
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * The WHERE clause for the resource list filters (realm, auth, ver, type, rt, text, pkg,
+ * onlyUsed), with a ? for every value that comes from the request, and those values in order.
+ * Nothing from the request is put in the SQL itself: only fixed SQL chosen by it (ver, type).
+ * The list, its count and the summary statistics all use this, so they always agree.
+ *
+ * @param {Object} queryParams
+ * @returns {{where: string, params: Array}} where starts with WHERE (WHERE 1=1 when nothing is filtered)
+ */
+function buildResourceFilter(queryParams) {
+  const realm = queryValue(queryParams.realm);
+  const auth = queryValue(queryParams.auth);
+  const ver = queryValue(queryParams.ver);
+  const type = queryValue(queryParams.type);
+  const rt = queryValue(queryParams.rt);
+  const text = queryValue(queryParams.text);
+  const pkg = queryValue(queryParams.pkg);
+  const onlyUsed = queryValue(queryParams.onlyUsed);
+
+  const conditions = [];
+  const params = [];
+
+  if (realm) {
+    conditions.push('AND realm = ?');
+    params.push(realm);
+  }
+
+  if (auth) {
+    conditions.push('AND authority = ?');
+    params.push(auth);
+  }
+
+  // a column name, so only one of the known ones
+  if (VERSION_COLUMNS.includes(ver)) {
+    conditions.push(`AND ${ver} = 1`);
+  }
+
+  switch (type) {
+    case 'cs': // CodeSystem
+      conditions.push("AND ResourceType = 'CodeSystem'");
+      break;
+    case 'rp': // Resource Profiles
+      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
+      if (rt && hasCachedValue('profileResources', rt)) {
+        conditions.push('AND Type = ?');
+        params.push(rt);
+      }
+      break;
+    case 'dp': // Datatype Profiles
+      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
+      if (rt && hasCachedValue('profileTypes', rt)) {
+        conditions.push('AND Type = ?');
+        params.push(rt);
+      }
+      break;
+    case 'lm': // Logical Models
+      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
+      break;
+    case 'ext': // Extensions
+      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
+      if (rt && hasCachedValue('extensionContexts', rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    case 'vs': // ValueSets
+      conditions.push("AND ResourceType = 'ValueSet'");
+      if (rt && hasTerminologySource(rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    case 'cm': // ConceptMaps
+      conditions.push("AND ResourceType = 'ConceptMap'");
+      if (rt && hasTerminologySource(rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    default:
+      // No specific type selected
+      if (rt && hasCachedValue('resourceTypes', rt)) {
+        conditions.push('AND ResourceType = ?');
+        params.push(rt);
+      }
+      break;
+  }
+
+  // Text search: one FTS phrase, so the text is searched for as written (a " in it is doubled,
+  // which is how a phrase holds one, so it can't end the phrase and add query syntax)
+  if (text) {
+    const ftsText = text.replace(/"/g, '""');
+    if (type === 'cs') {
+      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
+                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
+      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
+    } else {
+      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
+      params.push(`{Description Narrative} : "${ftsText}"`);
+    }
+  }
+
+  // Package filter - packageId#version containing the text, as written (% and _ are not wildcards)
+  if (pkg) {
+    conditions.push("AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || '#' || Version) LIKE ? ESCAPE '\\')");
+    params.push(`%${pkg.replace(/[\\%_]/g, c => '\\' + c)}%`);
+  }
+
+  if (onlyUsed === 'true') {
+    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
+  }
+
+  return { where: ['WHERE 1=1', ...conditions].join(' '), params };
+}
+
+function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
+  const { where, params } = buildResourceFilter(queryParams);
+  const query = `
       SELECT
           ResourceKey, ResourceType, Type, Kind, Description, PackageKey,
           Realm, Authority, R2, R2B, R3, R4, R4B, R5, R6,
@@ -115,246 +243,14 @@ function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
           Supplements, Details, FMM, WG, StandardsStatus, Web,
           (SELECT COUNT(*) FROM DependencyList WHERE TargetKey = Resources.ResourceKey) AS UsageCount
       FROM Resources
-      WHERE 1=1
-  `;
-
-  const conditions = [];
-  const params = [];
-
-  // Realm filter
-  if (realm && realm !== '') {
-    conditions.push('AND realm = ?');
-    params.push(realm);
-  }
-
-  // Authority filter
-  if (auth && auth !== '') {
-    conditions.push('AND authority = ?');
-    params.push(auth);
-  }
-
-  // Version filter
-  if (ver) {
-    switch (ver) {
-      case 'R2':
-        conditions.push('AND R2 = 1');
-        break;
-      case 'R2B':
-        conditions.push('AND R2B = 1');
-        break;
-      case 'R3':
-        conditions.push('AND R3 = 1');
-        break;
-      case 'R4':
-        conditions.push('AND R4 = 1');
-        break;
-      case 'R4B':
-        conditions.push('AND R4B = 1');
-        break;
-      case 'R5':
-        conditions.push('AND R5 = 1');
-        break;
-      case 'R6':
-        conditions.push('AND R6 = 1');
-        break;
-    }
-  }
-
-  // Type-specific filters
-  switch (type) {
-    case 'cs': // CodeSystem
-      conditions.push("AND ResourceType = 'CodeSystem'");
-      break;
-
-    case 'rp': // Resource Profiles
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-
-    case 'dp': // Datatype Profiles
-      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-
-    case 'lm': // Logical Models
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
-      break;
-
-    case 'ext': // Extensions
-      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    case 'vs': // ValueSets
-      conditions.push("AND ResourceType = 'ValueSet'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    case 'cm': // ConceptMaps
-      conditions.push("AND ResourceType = 'ConceptMap'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    default:
-      // No specific type selected
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        conditions.push('AND ResourceType = ?');
-        params.push(rt);
-      }
-      break;
-  }
-
-  // Text search filter
-  if (text && text !== '') {
-    const ftsText = text.replace(/"/g, '""');
-    if (type === 'cs') {
-      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
-                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
-      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
-    } else {
-      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
-      params.push(`{Description Narrative} : "${ftsText}"`);
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    conditions.push('AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || \'#\' || Version) LIKE ?)');
-    params.push(`%${pkg}%`);
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
-  }
-
-  // Build final query
-  const fullQuery = baseQuery + ' ' + conditions.join(' ') + ' ORDER BY ResourceType, Type, Description LIMIT ? OFFSET ?';
-  params.push(limit, offset);
-
-  return { query: fullQuery, params };
+      ${where}
+      ORDER BY ResourceType, Type, Description LIMIT ? OFFSET ?`;
+  return { query, params: [...params, limit, offset] };
 }
 
 function buildSecureResourceCountQuery(queryParams) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
-
-  let baseQuery = 'SELECT COUNT(*) as total FROM Resources WHERE 1=1';
-  const conditions = [];
-  const params = [];
-
-  // Same conditions as main query but for counting
-  if (realm && realm !== '') {
-    conditions.push('AND realm = ?');
-    params.push(realm);
-  }
-
-  if (auth && auth !== '') {
-    conditions.push('AND authority = ?');
-    params.push(auth);
-  }
-
-  if (ver) {
-    switch (ver) {
-      case 'R2': conditions.push('AND R2 = 1'); break;
-      case 'R2B': conditions.push('AND R2B = 1'); break;
-      case 'R3': conditions.push('AND R3 = 1'); break;
-      case 'R4': conditions.push('AND R4 = 1'); break;
-      case 'R4B': conditions.push('AND R4B = 1'); break;
-      case 'R5': conditions.push('AND R5 = 1'); break;
-      case 'R6': conditions.push('AND R6 = 1'); break;
-    }
-  }
-
-  switch (type) {
-    case 'cs':
-      conditions.push("AND ResourceType = 'CodeSystem'");
-      break;
-    case 'rp':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-    case 'dp':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-    case 'lm':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
-      break;
-    case 'ext':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    case 'vs':
-      conditions.push("AND ResourceType = 'ValueSet'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    case 'cm':
-      conditions.push("AND ResourceType = 'ConceptMap'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    default:
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        conditions.push('AND ResourceType = ?');
-        params.push(rt);
-      }
-      break;
-  }
-
-  if (text && text !== '') {
-    const ftsText = text.replace(/"/g, '""');
-    if (type === 'cs') {
-      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
-                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
-      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
-    } else {
-      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
-      params.push(`{Description Narrative} : "${ftsText}"`);
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    conditions.push('AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || \'#\' || Version) LIKE ?)');
-    params.push(`%${pkg}%`);
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
-  }
-
-  const fullQuery = baseQuery + ' ' + conditions.join(' ');
-  return { query: fullQuery, params };
+  const { where, params } = buildResourceFilter(queryParams);
+  return { query: `SELECT COUNT(*) as total FROM Resources ${where}`, params };
 }
 
 // Template Functions
@@ -467,186 +363,12 @@ function buildContentHtml(contentData) {
   return html;
 }
 
-// SQL Filter Building Functions
-
-function sqlEscapeString(str) {
-  if (!str) return '';
-  // Escape single quotes for SQL
-  return str.replace(/'/g, "''");
-}
-
-function buildSqlFilter(queryParams) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
-  let filter = '';
-
-  // Realm filter
-  if (realm && realm !== '') {
-    filter += ` and realm = '${sqlEscapeString(realm)}'`;
-  }
-
-  // Authority filter
-  if (auth && auth !== '') {
-    filter += ` and authority = '${sqlEscapeString(auth)}'`;
-  }
-
-  // Version filter - check specific version columns
-  if (ver) {
-    switch (ver) {
-      case 'R2':
-        filter += ' and R2 = 1';
-        break;
-      case 'R2B':
-        filter += ' and R2B = 1';
-        break;
-      case 'R3':
-        filter += ' and R3 = 1';
-        break;
-      case 'R4':
-        filter += ' and R4 = 1';
-        break;
-      case 'R4B':
-        filter += ' and R4B = 1';
-        break;
-      case 'R5':
-        filter += ' and R5 = 1';
-        break;
-      case 'R6':
-        filter += ' and R6 = 1';
-        break;
-    }
-  }
-
-  // Type-specific filters
-  switch (type) {
-    case 'cs': // CodeSystem
-      filter += " and ResourceType = 'CodeSystem'";
-      break;
-
-    case 'rp': // Resource Profiles
-      filter += " and ResourceType = 'StructureDefinition' and kind = 'resource'";
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        filter += ` and Type = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-
-    case 'dp': // Datatype Profiles
-      filter += " and ResourceType = 'StructureDefinition' and (kind = 'complex-type' or kind = 'primitive-type')";
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        filter += ` and Type = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-
-    case 'lm': // Logical Models
-      filter += " and ResourceType = 'StructureDefinition' and kind = 'logical'";
-      break;
-
-    case 'ext': // Extensions
-      filter += " and ResourceType = 'StructureDefinition' and (Type = 'Extension')";
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 2 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    case 'vs': // ValueSets
-      filter += " and ResourceType = 'ValueSet'";
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 1 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    case 'cm': // ConceptMaps
-      filter += " and ResourceType = 'ConceptMap'";
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 1 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    default:
-      // No specific type selected - handle rt parameter for general resource filtering
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        filter += ` and ResourceType = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-  }
-
-  // Text search filter
-  if (text && text !== '') {
-    const escapedText = sqlEscapeString(text);
-    if (type === 'cs') {
-      // Special handling for CodeSystems - search both resource and CodeSystem-specific fields
-      filter += ` and (ResourceKey in (select ResourceKey from ResourceFTS where Description match '"${escapedText}"' or Narrative match '"${escapedText}"') ` +
-        `or ResourceKey in (select ResourceKey from CodeSystemFTS where Display match '"${escapedText}"' or Definition match '"${escapedText}"'))`;
-    } else {
-      // Standard resource text search
-      filter += ` and ResourceKey in (select ResourceKey from ResourceFTS where Description match '"${escapedText}"' or Narrative match '"${escapedText}"')`;
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    const escapedPkg = sqlEscapeString(pkg);
-    filter += ` and PackageKey in (select PackageKey from Packages where (Id || '#' || Version) like '%${escapedPkg}%')`;
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    filter += ` and exists (select 1 from DependencyList where TargetKey = Resources.ResourceKey)`;
-  }
-
-  // Convert to proper WHERE clause
-  if (filter !== '') {
-    // Remove the first " and " and prepend "WHERE "
-    filter = 'WHERE ' + filter.substring(4);
-  }
-
-  return filter;
-}
-
 // Helper function to check if a terminology source exists
 // This is a placeholder - you might need to implement this based on your data
 function hasTerminologySource(sourceCode) {
   // For now, return true if the source code exists in txSources cache
   // You might need to adjust this logic based on your actual requirements
   return hasCachedValue('txSources', sourceCode);
-}
-
-function buildResourceListQuery(queryParams, offset = 0, limit = 50) {
-  const whereClause = buildSqlFilter(queryParams);
-
-  // Build the complete SQL query
-  let sql = `
-      SELECT
-          ResourceKey,
-          ResourceType,
-          Type,
-          Kind,
-          Description,
-          PackageKey,
-          Realm,
-          Authority,
-          R2, R2B, R3, R4, R4B, R5, R6,
-          Id,
-          Url,
-          Version,
-          Status,
-          Date,
-          Name,
-          Title,
-          Content,
-          Supplements,
-          Details,
-          FMM,
-          WG,
-          StandardsStatus,
-          Web,
-          (SELECT COUNT(*) FROM DependencyList WHERE TargetKey = Resources.ResourceKey) AS UsageCount
-      FROM Resources
-          ${whereClause}
-      ORDER BY ResourceType, Type, Description
-          LIMIT ${limit} OFFSET ${offset}
-  `;
-
-  return sql.trim();
 }
 
 // Resource List Table Functions
@@ -1097,7 +819,7 @@ async function buildResourceCsv(queryParams) {
 
 async function buildSummaryStats(queryParams, baseUrl) {
   const { ver, auth, realm } = queryParams;
-  const currentFilter = buildSqlFilter(queryParams);
+  const { where, params } = buildResourceFilter(queryParams);
   let html = '';
 
   if (!xigDb) {
@@ -1114,15 +836,13 @@ async function buildSummaryStats(queryParams, baseUrl) {
       const versions = getCachedSet('versions');
       for (const version of versions) {
         try {
-          let sql;
-          if (currentFilter === '') {
-            sql = `SELECT COUNT(*) as count FROM Resources WHERE ${version} = 1`;
-          } else {
-            sql = `SELECT COUNT(*) as count FROM Resources ${currentFilter} AND ${version} = 1`;
+          if (!VERSION_COLUMNS.includes(version)) {
+            continue; // a column name, so only one of the known ones
           }
+          const sql = `SELECT COUNT(*) as count FROM Resources ${where} AND ${version} = 1`;
 
           const count = await new Promise((resolve, reject) => {
-            xigDb.get(sql, [], guarded(reject, (err, row) => {
+            xigDb.get(sql, params, guarded(reject, (err, row) => {
               if (err) reject(err);
               else resolve(row ? row.count : 0);
             }));
@@ -1142,15 +862,10 @@ async function buildSummaryStats(queryParams, baseUrl) {
       html += '<p><strong>By Authority</strong></p>';
       html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
 
-      let sql;
-      if (currentFilter === '') {
-        sql = 'SELECT Authority, COUNT(*) as count FROM Resources GROUP BY Authority ORDER BY Authority';
-      } else {
-        sql = `SELECT Authority, COUNT(*) as count FROM Resources ${currentFilter} GROUP BY Authority ORDER BY Authority`;
-      }
+      const sql = `SELECT Authority, COUNT(*) as count FROM Resources ${where} GROUP BY Authority ORDER BY Authority`;
 
       const authorityResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], guarded(reject, (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
         }));
@@ -1175,15 +890,10 @@ async function buildSummaryStats(queryParams, baseUrl) {
       html += '<p><strong>By Realm</strong></p>';
       html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
 
-      let sql;
-      if (currentFilter === '') {
-        sql = 'SELECT Realm, COUNT(*) as count FROM Resources GROUP BY Realm ORDER BY Realm';
-      } else {
-        sql = `SELECT Realm, COUNT(*) as count FROM Resources ${currentFilter} GROUP BY Realm ORDER BY Realm`;
-      }
+      const sql = `SELECT Realm, COUNT(*) as count FROM Resources ${where} GROUP BY Realm ORDER BY Realm`;
 
       const realmResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], guarded(reject, (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
         }));
@@ -3468,10 +3178,9 @@ module.exports = {
   buildRealmLinkUrl,
 
   // SQL filter functions
-  buildSqlFilter,
-  buildResourceListQuery,
+  buildResourceFilter,
+  buildSecureResourceQuery,
   buildSecureResourceCountQuery,
-  sqlEscapeString,
   hasTerminologySource,
   gatherPageStatistics,
 
