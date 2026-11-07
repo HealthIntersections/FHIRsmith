@@ -199,3 +199,24 @@ describe('OperationContext.waitFor', () => {
     expect(ctx.computeElapsed()).toBeLessThan(200);
   });
 });
+
+describe('OperationContext.checkAndYield: the slice length', () => {
+  // A request that arrives while a long operation runs waits up to one slice for its turn
+  test('yields once 10 ms of compute have passed since the last yield', async () => {
+    const ctx = makeContext(30);
+    const now = jest.spyOn(performance, 'now');
+    try {
+      now.mockReturnValue(1000);
+      ctx._clock.lastYield = 1000;
+      ctx._clock.sliceStart = 1000;
+      now.mockReturnValue(1009);
+      await ctx.checkAndYield('test');
+      expect(ctx._clock.lastYield).toBe(1000); // 9 ms: no yield yet
+      now.mockReturnValue(1010);
+      await ctx.checkAndYield('test');
+      expect(ctx._clock.lastYield).toBe(1010); // 10 ms: yielded, and a new slice started
+    } finally {
+      now.mockRestore();
+    }
+  });
+});
