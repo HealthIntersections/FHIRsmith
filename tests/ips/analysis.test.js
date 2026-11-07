@@ -183,6 +183,38 @@ describe('the analysis', () => {
     expect(texts(out.items['e3#med'])).toEqual(['implicitRules: http://x.org/r', 'No narrative']);
   });
 
+  describe('SNOMED CT codes with no edition, when the nationality is unknown', () => {
+    const SCT = 'http://snomed.info/sct';
+    const condition = (id, coding) => entry({ resourceType: 'Condition', id, subject: { reference: 'urn:uuid:p' }, code: { coding: [coding] },
+      text: { status: 'generated', div: '<div>c</div>' } });
+    const d = () => doc(section(['c1', 'c2', 'c3']),
+      condition('c1', { system: SCT, code: '38341003', display: 'Hypertension' }),
+      condition('c2', { system: SCT, version: 'http://snomed.info/sct/32506021000036107', code: '44054006' }),
+      condition('c3', { system: SCT, version: '20250131', code: '73211009', display: 'Diabetes mellitus' }));
+
+    test('an error on the Composition, with the International Edition assumed', async () => {
+      const out = await analyseDocument(d(), { now: NOW, jurisdiction: null });
+      expect(kinds(out.items.e0)).toEqual(['error', 'negation', 'narrative']);
+      // a version that isn't an edition (a date) doesn't say which edition
+      expect(texts(out.items.e0)[0]).toBe('2 SNOMED CT codes do not say which edition they are from (38341003 Hypertension, 73211009 Diabetes mellitus), ' +
+        'and the nationality of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed');
+      expect(out.counts.ok).toBe(Object.values(out.items).filter(fs => fs[0].kind === 'ok').length);
+    });
+
+    test('not when the nationality is known, or not given, or every code names its edition', async () => {
+      expect(kinds((await analyseDocument(d(), { now: NOW, jurisdiction: 'AU' })).items.e0)).toEqual(['ok', 'negation', 'narrative']);
+      expect(kinds((await analyseDocument(d(), { now: NOW })).items.e0)).toEqual(['ok', 'negation', 'narrative']);
+      const versioned = doc(section(['c1']), condition('c1', { system: SCT, version: 'http://snomed.info/sct/900000000000207008/version/20250201', code: '38341003' }));
+      expect(kinds((await analyseDocument(versioned, { now: NOW, jurisdiction: null })).items.e0)).toEqual(['ok', 'negation', 'narrative']);
+    });
+
+    test('named up to three, then counted', async () => {
+      const codes = ['1', '2', '3', '4', '5'].map(n => condition(`c${n}`, { system: SCT, code: `10000${n}` }));
+      const out = await analyseDocument(doc(section(codes.map(c => c.resource.id)), ...codes), { now: NOW, jurisdiction: null });
+      expect(texts(out.items.e0)[0]).toMatch(/^5 SNOMED CT codes do not say which edition they are from \(100001, 100002, 100003, and 2 more\)/);
+    });
+  });
+
   describe('negation: how the document says there is nothing to report', () => {
     const SCT = 'http://snomed.info/sct';
     const IPS = 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips';

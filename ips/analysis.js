@@ -14,7 +14,9 @@
  * a section's emptyReason or author). And for the document as a whole, on the Composition: how
  * it says there's nothing to report (negation) - with a section's emptyReason (the IPS
  * pattern), with entries whose codes say so, like No known allergy (the US Core pattern), or
- * not at all - and a warning when it uses both.
+ * not at all - and a warning when it uses both; and an error when it has SNOMED CT codes that
+ * don't say which edition they are from, and its nationality is unknown (so the edition can't
+ * be worked out: the International Edition is assumed).
  *
  * It walks the same tree as the structure view (structure.js), and keeps a list of findings
  * for each resource and section, by the node's key; the analysis view shows the tree with
@@ -22,6 +24,7 @@
  *
  * A finding is { kind, text } - or for an extension { kind, url, path, found, title?,
  * description? } - where kind is one of
+ *   error      SNOMED CT codes with no edition in a document of unknown nationality (red)
  *   ok         nothing to comment on
  *   narrative  whether there's narrative (always there; doesn't count against ok)
  *   extension  an extension (but not textLink)
@@ -422,6 +425,53 @@ function negationOf(top) {
   return { kind: 'negation', text: 'Negation: none observed' };
 }
 
+// ---- SNOMED CT codes with no edition ----
+//
+// A SNOMED CT code means what its edition says it means, and only the version says which edition
+// that is (http://snomed.info/sct/[module](/version/[date])). With none, the edition comes from the
+// nation the document is from (the nationality step, and the national profile's edition) - and
+// when that isn't known either, there's no telling: the International Edition is assumed.
+
+// a version that names an edition
+const SCT_EDITION = /^http:\/\/snomed\.info\/x?sct\/\d+(\/version\/\d+)?$/;
+// how many codes the finding names
+const MAX_NAMED_CODES = 3;
+
+/** The SNOMED CT codings (and Quantities) anywhere in a resource that don't name an edition. */
+function noEdition(node, out) {
+  if (Array.isArray(node)) {
+    for (const n of node) {
+      noEdition(n, out);
+    }
+  } else if (isObject(node)) {
+    if (node.system === SCT && text(node.code) && !(typeof node.version === 'string' && SCT_EDITION.test(node.version))) {
+      out.push(node);
+    }
+    for (const v of Object.values(node)) {
+      if (typeof v === 'object') {
+        noEdition(v, out);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The error when the document has SNOMED CT codes with no edition and its nationality is unknown,
+ * or null.
+ * @param {Object} bundle - the document
+ */
+function unknownEdition(bundle) {
+  const codes = noEdition(Array.isArray(bundle.entry) ? bundle.entry.map(e => isObject(e) ? e.resource : null) : [], []);
+  if (!codes.length) {
+    return null;
+  }
+  const named = [...new Set(codes.map(c => text(c.display) ? `${c.code} ${c.display}` : c.code))];
+  const list = named.slice(0, MAX_NAMED_CODES).join(', ') + (named.length > MAX_NAMED_CODES ? `, and ${named.length - MAX_NAMED_CODES} more` : '');
+  return { kind: 'error', text: `${codes.length} SNOMED CT code${codes.length === 1 ? ' does' : 's do'} not say which edition ${codes.length === 1 ? 'it is' : 'they are'} from (${list}), ` +
+    'and the nationality of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed' };
+}
+
 /** All OK when there's nothing but the narrative to say; the narrative last. */
 function finish(findings, narrative) {
   return findings.length === 0 ? [{ kind: 'ok', text: 'All OK' }, narrative] : [...findings, narrative];
@@ -430,8 +480,11 @@ function finish(findings, narrative) {
 /**
  * Analyse a document.
  * @param {Object} bundle - the document
- * @param {{lookupExtension?: Function, now?: number}} options - lookupExtension(url) -> a
- *   definition ({title, name, description}) or null, perhaps async; now in ms
+ * @param {{lookupExtension?: Function, now?: number, jurisdiction?: string|null}} options -
+ *   lookupExtension(url) -> a definition ({title, name, description}) or null, perhaps async;
+ *   now in ms; jurisdiction: the nation the document is from (the nationality step) - null when
+ *   it isn't known, and then SNOMED CT codes with no edition are an error. Left out, they aren't
+ *   looked at
  * @returns {Promise<{items: Object, counts: Object}|null>} the findings by node key, or
  *   null when the document has no Composition
  */
@@ -465,13 +518,20 @@ async function analyseDocument(bundle, options = {}) {
     }
   }
   // the document as a whole, on the Composition, before its narrative
-  const negation = negationOf(top);
+  const whole = [];
+  if (options.jurisdiction === null) {
+    const edition = unknownEdition(bundle);
+    if (edition) {
+      whole.push(edition);
+    }
+  }
+  whole.push(negationOf(top));
   const findings = items[top.key];
-  if (negation.kind === 'attention' && findings[0].kind === 'ok') {
+  if (whole.some(f => f.kind !== 'negation') && findings[0].kind === 'ok') {
     findings.shift();
     counts.ok--;
   }
-  findings.splice(findings.length - 1, 0, negation);
+  findings.splice(findings.length - 1, 0, ...whole);
   return { items, counts };
 }
 
@@ -484,7 +544,9 @@ const analysisStep = {
   async run(row, project, module) {
     const started = Date.now();
     const lookupExtension = typeof module.lookupExtension === 'function' ? (url) => module.lookupExtension(url) : null;
-    const out = await analyseDocument(row.bundle, { lookupExtension });
+    // the nation the document is from: the nationality step runs first (null when it isn't known)
+    const jurisdiction = module.store.readResult(row.id, 'nationality')?.result?.jurisdiction || null;
+    const out = await analyseDocument(row.bundle, { lookupExtension, jurisdiction });
     if (!out) {
       throw new Error('The document has no Composition');
     }
