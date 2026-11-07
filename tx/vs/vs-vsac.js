@@ -16,6 +16,9 @@ const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
 const VSAC_PENDING_QUEUE_KEY = 'vsac_pending_queue';
 const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 
+// The longest delay a Node timer accepts; a longer one fires after 1 ms.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
@@ -354,9 +357,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       clearTimeout(this.refreshTimer);
     }
 
-    const intervalMs = this.refreshIntervalHours * 60 * 60 * 1000;
-    this.refreshTimer = setTimeout(async () => {
-      let next = intervalMs;
+    const intervalMs = this._refreshIntervalMs();
+    this.refreshTimer = setInterval(async () => {
       try {
         await this.refreshValueSets();
         this._failedSyncs = 0;
@@ -371,6 +373,26 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         }
       }
     }, delayMs ?? intervalMs);
+  }
+
+  /**
+   * The refresh interval in ms. Node runs a timer whose delay is above 2^31-1 ms (about 596 hours)
+   * or not a positive number after 1 ms instead, so the refresh would run back to back: such a
+   * setting is clamped (or, when it isn't a positive number, replaced by the 24 hour default).
+   * @private
+   */
+  _refreshIntervalMs() {
+    const hours = Number(this.refreshIntervalHours);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      console.warn(`VSAC: refreshIntervalHours ${this.refreshIntervalHours} is not a positive number; using 24`);
+      return 24 * 60 * 60 * 1000;
+    }
+    const ms = hours * 60 * 60 * 1000;
+    if (ms > MAX_TIMER_MS) {
+      console.warn(`VSAC: refreshIntervalHours ${hours} is longer than a timer can wait; using ${Math.floor(MAX_TIMER_MS / 3600000)} hours`);
+      return MAX_TIMER_MS;
+    }
+    return ms;
   }
 
   /**

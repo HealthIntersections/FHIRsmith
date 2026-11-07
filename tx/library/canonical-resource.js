@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const {VersionUtilities, VersionPrecision} = require("../../library/version-utilities");
 const {Issue} = require("./operation-outcome");
 
@@ -78,6 +79,54 @@ class CanonicalResource {
    */
   checkContained() {
     checkContained(this.jsonObj);
+  }
+
+  /**
+   * The hash ExpansionCache.computeKey puts in an expansion's cache key for this
+   * resource: the first 16 hex characters of the sha256 of JSON.stringify(json). Computing
+   * it means serialising the whole resource, and a $cache-control cache hands every
+   * resource it holds to every $expand that carries its cache-id, so it is worked out
+   * once and remembered.
+   *
+   * @param {Object} json - the resource (R5 form)
+   * @returns {string}
+   */
+  static computeExpansionKeyHash(json) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(json))
+      .digest('hex')
+      .substring(0, 16);
+  }
+
+  /**
+   * This resource's expansion-key hash (see computeExpansionKeyHash), computed on first
+   * use and then remembered. Nothing writes to jsonObj once a resource is in use (the r4/r5 conversion
+   * happens in the constructor, before anything can ask), and the memo is tied to the
+   * jsonObj it was computed from, so replacing jsonObj gets a new hash.
+   * @returns {string}
+   */
+  expansionKeyHash() {
+    const memo = this._expansionKeyHashMemo;
+    if (memo && memo.json === this.jsonObj) {
+      return memo.hash;
+    }
+    return this.setExpansionKeyHash(CanonicalResource.computeExpansionKeyHash(this.jsonObj));
+  }
+
+  /**
+   * Record the expansion-key hash for a store that already knows it, so it is never
+   * recomputed. It must be computeExpansionKeyHash(this.jsonObj). Non-enumerable, so it never serialises
+   * into a response or log, and structuredClone/spread don't copy it onto a different
+   * resource.
+   * @param {string} hash
+   * @returns {string} the hash
+   */
+  setExpansionKeyHash(hash) {
+    Object.defineProperty(this, '_expansionKeyHashMemo', {
+      value: { json: this.jsonObj, hash },
+      enumerable: false, configurable: true, writable: true
+    });
+    return hash;
   }
 
   get resourceType() {

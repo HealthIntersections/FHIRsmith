@@ -342,7 +342,8 @@ class CodeSystemProvider {
 
   /**
    * The codes whose displays or designations in a supplement in use, in the search language,
-   * pass a text filter - a supplement's designations are searched like the code system's own
+   * pass a text filter - a supplement's designations are searched like the code system's own,
+   * so every word of the filter must match (as LOINC's and SNOMED CT's own text search need)
    *
    * @param {SearchFilterText} filter
    * @param {Language} searchLang - from searchLanguage()
@@ -353,12 +354,12 @@ class CodeSystemProvider {
     for (const supplement of this.supplements || []) {
       const suppLang = supplement.jsonObj.language || this.defLang();
       for (const concept of supplement.getAllConcepts()) {
-        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, searchLang) && filter.passes(concept.display)) {
+        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, searchLang) && filter.passesAll(concept.display)) {
           codes.add(concept.code);
           continue;
         }
         for (const d of concept.designation || []) {
-          if (d.value && CodeSystemProvider.inSearchLanguage(d.language, searchLang, suppLang) && filter.passes(d.value)) {
+          if (d.value && CodeSystemProvider.inSearchLanguage(d.language, searchLang, suppLang) && filter.passesAll(d.value)) {
             codes.add(concept.code);
             break;
           }

@@ -83,6 +83,33 @@ class SearchFilterText {
   }
 
   /**
+   * Whether every word of the filter is in the value, a word matching as in passes() (its
+   * stem starts with the filter word's stem). passes() needs only one word
+   */
+  passesAll(value) {
+    validateParameter(value, 'value', String);
+
+    if (this.isNull) {
+      return true;
+    }
+
+    const stems = [];
+    let i = 0;
+    while (i < value.length) {
+      if (this._isAlphaNumeric(value[i])) {
+        const j = i;
+        while (i < value.length && this._isAlphaNumeric(value[i])) {
+          i++;
+        }
+        stems.push(this.stemmer.stem(value.substring(j, i).toLowerCase()));
+      } else {
+        i++;
+      }
+    }
+    return this.stems.every(filterStem => stems.some(stem => stem.startsWith(filterStem)));
+  }
+
+  /**
    * Check if designations pass the filter
    */
   /**

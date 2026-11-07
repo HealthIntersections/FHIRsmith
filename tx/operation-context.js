@@ -3,6 +3,7 @@ const inspector = require("inspector");
 const crypto = require("crypto");
 const {Languages} = require("../library/languages");
 const {Issue} = require("./library/operation-outcome");
+const {CanonicalResource} = require("./library/canonical-resource");
 const Logger = require("../library/logger");
 const memoryGuard = require('../library/memory-guard');
 
@@ -741,13 +742,13 @@ class ExpansionCache {
     if (additionalResources && additionalResources.length > 0) {
       const resourceHashes = additionalResources
           .map(r => {
-            // Get the JSON object from wrapper or use directly
-            const json = r.jsonObj || r;
-            // Create a content hash for this resource
-            return crypto.createHash('sha256')
-                .update(JSON.stringify(json))
-                .digest('hex')
-                .substring(0, 16); // Use first 16 chars for brevity
+            // A wrapper remembers its hash (CanonicalResource.expansionKeyHash): a cache-id's
+            // resources come with every $expand, and serialising and hashing them all
+            // each time was most of the cost of a cached request. Raw JSON is hashed the
+            // same way, so the key is the same either way.
+            return typeof r.expansionKeyHash === 'function'
+              ? r.expansionKeyHash()
+              : CanonicalResource.computeExpansionKeyHash(r.jsonObj || r);
           })
           .sort();
       keyParts.push(`additional:${resourceHashes.join(',')}`);
@@ -1010,9 +1011,15 @@ class OperationContext {
 
   /**
    * Create a copy of this operation context
+   * @param {Object} [options]
+   * @param {boolean} [options.ownProviders=false] - give the copy its own provider
+   *   list instead of sharing this one. The caller must then call closeProviders()
+   *   on the copy when its sub-operation is done (a batch does this per entry, so
+   *   an entry's providers - and through them the entry's context and log - are
+   *   released when the entry is answered, not held until the whole batch ends).
    * @returns {OperationContext}
    */
-  copy() {
+  copy(options = {}) {
     const newContext = new OperationContext(
         this.langs, this.i18n, this.id, this.timeLimit / 1000,
         this.resourceCache, this.expansionCache
@@ -1025,8 +1032,11 @@ class OperationContext {
     newContext.cacheId = this.cacheId;
     newContext.usageTracker = this.usageTracker;
     // Share the same provider-cleanup list so providers opened by the copy
-    // are released when the parent operation ends.
-    newContext._openProviders = this._openProviders;
+    // are released when the parent operation ends - unless the caller will
+    // release them itself.
+    if (!options.ownProviders) {
+      newContext._openProviders = this._openProviders;
+    }
     // Share the compute clock: sub-operations spend the parent's budget.
     newContext._clock = this._clock;
     return newContext;

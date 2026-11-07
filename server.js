@@ -18,6 +18,7 @@ const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
 const { readCgroupMemoryLimit } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
+const { applyKeepAliveTimeouts } = require('./library/keep-alive');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
@@ -837,10 +838,12 @@ async function startServer() {
     });
 
     // Start server
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       stats.markStarted(packageJson.version);
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
     });
+    // idle connections stay open longer than nginx keeps them (see library/keep-alive.js)
+    applyKeepAliveTimeouts(server);
     npmAudit.start();
     dailyReport = new DailyReport(config.dailyReport, {
       log: Logger.getInstance().child({ module: 'daily-report' }),
