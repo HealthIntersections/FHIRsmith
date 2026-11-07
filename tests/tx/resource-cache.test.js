@@ -583,6 +583,28 @@ describe.each(STORES)('ResourceCache ($name store)', (store) => {
     });
   });
 
+  // the shared store has #356's rule for a request too big on its own, whichever merges first;
+  // the memory store's is tested in 'limits' once #356 is in
+  (store.name === 'sqlite' ? describe : describe.skip)('a request too big for any cache', () => {
+    test('is refused (422 too-costly), and the cache is kept', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 4)]);
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 6), sized(VS('http://c', '1'), 5)])).toThrow(expect.objectContaining({
+        statusCode: 422, issueCode: 'too-costly',
+        message: expect.stringMatching(/This request's resources hold 11 concepts, more than this server allows in one cache \(10/)
+      }));
+      expect(cache.has('c1')).toBe(true);
+      expect(cache.conceptCountFor('c1')).toBe(4);
+      expect(cache.conceptCount()).toBe(4);
+      // the same into a cache that doesn't exist yet
+      expect(() => cache.add('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422 }));
+      expect(cache.has('c2')).toBe(false);
+      // a resource sent twice is counted once
+      cache.add('c1', [sized(CS('http://b', '1'), 6), sized(CS('http://b', '1'), 6)]);
+      expect(cache.conceptCountFor('c1')).toBe(10);
+    });
+  });
+
   describe('high-water marks (max)', () => {
     test('track the most caches and concepts ever held', () => {
       cache.add('c1', [sized(CS('http://a', '1'), 10)]);

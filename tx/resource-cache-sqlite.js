@@ -777,6 +777,14 @@ class SqliteResourceCache extends ResourceCache {
     }
     const rows = [...byKey.values()];
 
+    // As in the memory store's add (#356): a request whose own resources hold more than one
+    // cache may hold is refused as too costly (422), and the cache is kept
+    const ownConcepts = rows.reduce((sum, r) => sum + r.concepts, 0);
+    if (ownConcepts > this.maxConceptsPerCache) {
+      throw new Issue('error', 'too-costly', null, null,
+        `This request's resources hold ${ownConcepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache}, cacheMaxConcepts), so no cache can hold them`, 'too-costly', 422).handleAsOO(422);
+    }
+
     // Most requests re-send resources the cache already has, unchanged. Check
     // that with reads first, so they don't take the write lock at all.
     const session = this.q.session.get(this.scope, cacheId);
