@@ -117,7 +117,7 @@ class ResourceCache {
     // routes on the prefix to get a cached request back to the one instance that
     // holds the cache (see nginx.md). Null = unprefixed ids (a single server).
     this.instanceCode = null;
-    // Most concepts one cache may hold (more is refused, too-costly), and most
+    // Most concepts one cache may hold (a request that would take it over drops it), and most
     // all the caches may hold between them (the least recently used caches are
     // dropped to stay under it). Set from cacheMaxConcepts / cacheMaxTotalConcepts.
     this.maxConceptsPerCache = ResourceCache.MAX_CONCEPTS_PER_CACHE;
@@ -488,18 +488,23 @@ class ResourceCache {
       }
     }
     if (concepts > this.maxConceptsPerCache) {
-      // The client can't do anything with a cache it can't add to, so drop it: the
-      // next request with this id is told it was discarded (CACHE_ID_DISCARDED).
+      // The client can't do anything with a cache it can't add to, so drop it, and don't
+      // perform this request: the next request with this id is told it was discarded
+      // (CACHE_ID_DISCARDED).
       if (this.cache.has(cacheId)) {
         this.totalConcepts -= entry.concepts || 0;
         this.cache.delete(cacheId);
       }
       this._recordTombstone(cacheId, entry, 'discarded', { limit: this.maxConceptsPerCache });
       this.log.info(`cache-id '${cacheId}': discarded (would hold ${concepts} concepts; one cache may hold ${this.maxConceptsPerCache})`);
+      // Answered as every other cache that is gone is (404, tx-issue-type cache-id-unknown), so a
+      // client needs one rule: forget what it thinks the server has, start a new cache, and send
+      // the request again (it has not been performed). The message id says why it is gone.
       const params = [cacheId, this.maxConceptsPerCache];
-      const err = new Issue('error', 'too-costly', null, 'CACHE_ID_DISCARDED_TOO_BIG',
-        `The cache for cache-id '${cacheId}' would exceed ${this.maxConceptsPerCache} concepts (cacheMaxConcepts), so it has been discarded. ` +
-        'This is about the cache, not this request. Start a new cache-id and send the resources again', 'too-costly', 422).handleAsOO(422);
+      const err = new Issue('error', 'not-found', null, 'CACHE_ID_DISCARDED_TOO_BIG',
+        `The cache '${cacheId}' grew too large: this request would have taken it over ${this.maxConceptsPerCache} concepts, ` +
+        'the most this server allows in one cache (cacheMaxConcepts), so the server has dropped the cache. ' +
+        'This operation has not been performed. Start a new cache, and send the request again', 'cache-id-unknown', 404).handleAsOO(404);
       err.msgParams = params;
       throw err;
     }

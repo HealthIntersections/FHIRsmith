@@ -439,14 +439,14 @@ describe('ResourceCache', () => {
   });
 
   describe('limits', () => {
-    test('a request that would take a cache past its limit discards the cache, and says the cache is why', () => {
+    test('a request that would take a cache past its limit drops the cache: 404 cache-id-unknown, saying why', () => {
       cache.setLimits(10, 100);
       cache.add('c1', [sized(CS('http://a', '1'), 8)]);
       cache.add('c1', [sized(CS('http://a', '1'), 10)]); // a replacement counts the difference
       expect(cache.conceptCount()).toBe(10);
       expect(() => cache.add('c1', [sized(CS('http://b', '1'), 1)])).toThrow(expect.objectContaining({
-        statusCode: 422, issueCode: 'too-costly', msgId: 'CACHE_ID_DISCARDED_TOO_BIG', msgParams: ['c1', 10],
-        message: expect.stringMatching(/cache-id 'c1' would exceed 10 concepts \(cacheMaxConcepts\), so it has been discarded/)
+        statusCode: 404, cause: 'not-found', issueCode: 'cache-id-unknown', msgId: 'CACHE_ID_DISCARDED_TOO_BIG', msgParams: ['c1', 10],
+        message: expect.stringMatching(/cache 'c1' grew too large: .* over 10 concepts, .* dropped the cache\. This operation has not been performed\. Start a new cache/)
       }));
       expect(cache.has('c1')).toBe(false);
       expect(cache.conceptCount()).toBe(0);

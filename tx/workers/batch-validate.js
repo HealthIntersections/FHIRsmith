@@ -225,7 +225,7 @@ class BatchValidateWorker extends TerminologyWorker {
     const { txResources, primaryResources } = this.collectSuppliedResources({ parameter: allParams });
     const pool = txResources.concat(primaryResources);
     if (pool.length > 0) {
-      cache.add(cacheId, pool);
+      this.addToClientCache(cacheId, pool);
     }
     return true;
   }
