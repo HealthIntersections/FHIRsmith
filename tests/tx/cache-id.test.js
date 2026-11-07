@@ -235,6 +235,7 @@ describe('cache-id protocol (integration)', () => {
         ]);
         expect(r.status).toBe(422);
         expect(isUnknownCacheError(r)).toBe(false);
+        expect(r.body.issue[0].extension).toEqual([{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_REQUEST_TOO_BIG' }]);
         expect(r.body.issue[0].details.text).toMatch(/This request's resources hold 3 concepts, more than this server allows in one cache \(2/);
         expect(cache.has(cid)).toBe(true);
       } finally {

@@ -622,12 +622,16 @@ process.on('unhandledRejection', (reason, promise) => {
   serverLog.error('Unhandled Rejection:', reason);
 });
 
-process.off('uncaughtException', startupFailure);
-process.on('uncaughtException', (error) => {
-  console.error('FATAL - Uncaught Exception:', error);
-  serverLog.error('FATAL - Uncaught Exception:', error);
-  process.exitCode = 1;
-});
+// Once the server is listening, startup is over: an uncaught exception is logged, and the
+// server carries on (startupFailure, which exits, covers everything until then - see startServer)
+function startupComplete() {
+  process.off('uncaughtException', startupFailure);
+  process.on('uncaughtException', (error) => {
+    console.error('FATAL - Uncaught Exception:', error);
+    serverLog.error('FATAL - Uncaught Exception:', error);
+    process.exitCode = 1;
+  });
+}
 
 app.get('/', async (req, res) => {
   // If an override index.html exists, serve it instead of the FHIRsmith home page
@@ -934,6 +938,7 @@ async function startServer() {
     const server = app.listen(PORT, () => {
       stats.markStarted(packageJson.version);
       serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
+      startupComplete();
     });
     // idle connections stay open longer than nginx keeps them (see library/keep-alive.js)
     applyKeepAliveTimeouts(server);

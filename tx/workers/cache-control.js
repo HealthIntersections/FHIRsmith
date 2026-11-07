@@ -136,7 +136,12 @@ class CacheControlWorker extends TerminologyWorker {
     const sealed = this.readSealed(params.jsonObj);
 
     // "<instanceCode>.<...>" when this server has an instance code, else a bare UUID
-    const cacheId = cache.start(resources, sealed);
+    let cacheId;
+    try {
+      cacheId = cache.start(resources, sealed);
+    } catch (e) {
+      throw this.translateCacheIssue(e);
+    }
 
     // Also echoed as a response header, so that a request log at the proxy (nginx
     // $sent_http_x_cache_id) can tie each issued id to the start request that got
