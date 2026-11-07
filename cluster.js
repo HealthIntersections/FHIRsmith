@@ -29,6 +29,9 @@
  *    another can take them
  *  - answers 504 for a process that hasn't begun its response in upstreamTimeoutSeconds, and
  *    aborts that request; after SUSPECT_TIMEOUTS in a row, the process cools as on a 503
+ *  - frees a tx request's slot when the process's response ends, however slowly the client
+ *    reads it, and closes the connection of a client that takes none of a response for
+ *    writeTimeoutSeconds
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
  *  - restarts a tx-worker held over the memory guard's refusal threshold for recycleSeconds
  *    with no request at work
@@ -73,6 +76,10 @@ const COOLDOWN_MS = 2000;
 const UPSTREAM_TIMEOUT_MS = 60000;
 // this many timeouts in a row, and the process cools (as on a 503) while another can take them
 const SUSPECT_TIMEOUTS = 3;
+// a client that takes none of the response waiting for it this long is cut off (cluster.md,
+// writeTimeoutSeconds): one that reads takes some within milliseconds; nginx's own
+// send_timeout is the same 60 s
+const WRITE_TIMEOUT_MS = 60000;
 // a tx-worker over the memory guard's refusal threshold this long, with no request at work, is
 // restarted (cluster.md, "Memory"): past the guard's own GC and trims, short next to a retry
 const RECYCLE_MS = 30000;
@@ -141,6 +148,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,
     cooldownMs: Number(cluster.cooldownSeconds ?? COOLDOWN_MS / 1000) * 1000,
     upstreamTimeoutMs: Number(cluster.upstreamTimeoutSeconds ?? UPSTREAM_TIMEOUT_MS / 1000) * 1000,
+    writeTimeoutMs: Number(cluster.writeTimeoutSeconds ?? WRITE_TIMEOUT_MS / 1000) * 1000,
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
     // the number of workers was not given: fewer if memory is short (see sizeWorkers)
     workersDefault: !workersGiven,
@@ -303,6 +311,7 @@ function createLauncher(settings) {
   const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
   const cooldownMs = settings.cooldownMs ?? COOLDOWN_MS; // 0: none
   const upstreamTimeoutMs = settings.upstreamTimeoutMs ?? UPSTREAM_TIMEOUT_MS; // 0: none
+  const writeTimeoutMs = settings.writeTimeoutMs ?? WRITE_TIMEOUT_MS; // 0: none
   const recycleMs = settings.recycleMs ?? RECYCLE_MS; // 0: never
   // (tests give their own)
   const memory = settings.memorySampler || memorySampler(settings.memory);
@@ -334,6 +343,10 @@ function createLauncher(settings) {
   const fastWaiting = [];
   let queueRefused = 0;
   let lastQueueLog = 0;
+  // requests the launcher has not finished answering, for the drain on stop
+  let inFlight = 0;
+  let writeTimeouts = 0;
+  let lastWriteTimeoutLog = 0;
   let memoryTimer = null;
 
   // Only the master renders the public home/dashboard pages. Keep at most one
@@ -387,10 +400,6 @@ function createLauncher(settings) {
       }
     });
     return countsInFlight;
-  }
-
-  function totalActive() {
-    return procs.reduce((n, p) => n + p.active, 0);
   }
 
   function startProcess(proc) {
@@ -556,6 +565,17 @@ function createLauncher(settings) {
     fail(w.res, 503, `The server is busy: no process was free for ${ms / 1000} s; try again shortly`, true);
   }
 
+  // a client that took none of a response for writeTimeoutMs: its connection is closed
+  function writeTimedOut(req) {
+    writeTimeouts++;
+    const now = Date.now();
+    if (now - lastWriteTimeoutLog >= 60000) {
+      lastWriteTimeoutLog = now;
+      log(`a client took none of the response to ${req.method} ${req.url} for ${writeTimeoutMs / 1000} s (writeTimeoutSeconds): ` +
+        `its connection was closed (${writeTimeouts} so far)`);
+    }
+  }
+
   function proxy(req, res) {
     const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
     w.fast = fastLaneExtra > 0 && w.route.to !== 'master' && isFastLane(req, settings.txPaths, fastLaneMaxBytes);
@@ -586,6 +606,7 @@ function createLauncher(settings) {
   }
 
   function forward(req, res, target, fast = false, counted = true) {
+    inFlight++;
     target.active++;
     if (counted) {
       target.outstanding++;
@@ -593,13 +614,17 @@ function createLauncher(settings) {
     }
     const sent = { at: Date.now() };
     target.sentAt.add(sent);
+    let released = false;
     let finished = false;
     let timedOut = false;
     let timer = null;
-    const finish = () => {
+    let stall = null;
+    // the process is done with it: its response has ended (or failed), so its slot is free,
+    // though the client may still be taking the response from the launcher
+    const release = () => {
       clearTimeout(timer);
-      if (!finished) {
-        finished = true;
+      if (!released) {
+        released = true;
         target.active--;
         if (counted) {
           target.outstanding--;
@@ -607,7 +632,16 @@ function createLauncher(settings) {
         }
         target.sentAt.delete(sent);
         sendWaiting();
-        if (onIdle && totalActive() === 0) {
+      }
+    };
+    // the launcher is done with it: the client has the whole response, or is gone
+    const finish = () => {
+      release();
+      clearTimeout(stall);
+      if (!finished) {
+        finished = true;
+        inFlight--;
+        if (onIdle && inFlight === 0) {
           onIdle();
         }
       }
@@ -645,7 +679,37 @@ function createLauncher(settings) {
         out.connection = 'close';
       }
       res.writeHead(ures.statusCode, ures.statusMessage, out);
-      ures.pipe(res);
+      // A tx request's response is read to its end as fast as the process sends it, so its
+      // slot is free once the process is done, however slowly the client reads (the process
+      // held the whole response in memory already). Any other is passed on as the client takes
+      // it (a package download can be large). Either way, a client that takes none of what is
+      // waiting for it for writeTimeoutMs is cut off
+      const stalled = () => {
+        if (writeTimeoutMs > 0 && !stall) {
+          stall = setTimeout(() => {
+            writeTimedOut(req);
+            upstream.destroy();
+            res.destroy();
+          }, writeTimeoutMs);
+        }
+      };
+      res.on('drain', () => {
+        clearTimeout(stall);
+        stall = null;
+        ures.resume();
+      });
+      ures.on('data', (chunk) => {
+        if (!res.write(chunk)) {
+          stalled();
+          if (!counted) {
+            ures.pause();
+          }
+        }
+      });
+      ures.on('end', () => {
+        release();
+        res.end();
+      });
       ures.on('error', () => res.destroy());
     });
     upstream.on('error', (err) => {
@@ -660,7 +724,7 @@ function createLauncher(settings) {
       finish();
     });
     res.on('close', () => {
-      if (!res.writableFinished) {
+      if (!res.writableFinished && !released) {
         upstream.destroy();
       }
       finish();
@@ -788,7 +852,7 @@ function createLauncher(settings) {
     });
     sizeWorkers(master);
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
-    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, ` +
+    log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, writeTimeoutSeconds ${writeTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
@@ -889,8 +953,8 @@ function createLauncher(settings) {
       server.close();
       server.closeIdleConnections();
       const idle = setInterval(() => server.closeIdleConnections(), 100);
-      if (totalActive() > 0) {
-        log(`draining: ${totalActive()} request(s) in progress`);
+      if (inFlight > 0) {
+        log(`draining: ${inFlight} request(s) in progress`);
         await new Promise(resolve => {
           const timer = setTimeout(resolve, settings.drainMs);
           onIdle = () => {

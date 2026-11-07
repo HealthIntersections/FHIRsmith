@@ -178,6 +178,8 @@ describe('routing rules', () => {
     expect([s.cooldownMs, loadSettings([], {}, { ...config, server: { cluster: { cooldownSeconds: 0 } } }).cooldownMs]).toEqual([2000, 0]);
     // a process that hasn't begun its response: 504 after 60 s; 0 is none
     expect([s.upstreamTimeoutMs, ...[0, 2.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { upstreamTimeoutSeconds: v } } }).upstreamTimeoutMs)]).toEqual([60000, 0, 2500]);
+    // a client that takes none of a response: cut off after 60 s; 0 is never
+    expect([s.writeTimeoutMs, ...[0, 1.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { writeTimeoutSeconds: v } } }).writeTimeoutMs)]).toEqual([60000, 0, 1500]);
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never
     expect([s.recycleMs, loadSettings([], {}, { ...config, server: { cluster: { recycleSeconds: 0 } } }).recycleMs]).toEqual([30000, 0]);
     expect(loadSettings([], {}, { ...config, server: { memory: { rejectFraction: 0.8 } } }).memory).toEqual({ rejectFraction: 0.8 });
@@ -490,7 +492,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, upstreamTimeoutSeconds 60, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, upstreamTimeoutSeconds 60, writeTimeoutSeconds 60, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });
@@ -636,6 +638,65 @@ describe('the launcher, with fake processes', () => {
       const r = await timed('/r4/ValueSet/$expand?delay=1500');
       expect([r.status, r.json.code]).toEqual([200, expect.stringMatching(/^tx[12]$/)]);
       expect(r.ms).toBeGreaterThanOrEqual(1450);
+    });
+  });
+
+  describe('a client that doesn\'t read its response', () => {
+    // a request on a raw socket that never reads what comes back
+    const unread = (urlPath) => new Promise((resolve, reject) => {
+      const socket = require('net').connect(PORT, '127.0.0.1', () => {
+        socket.write(`GET ${urlPath} HTTP/1.1\r\nHost: x\r\n\r\n`);
+        socket.pause();
+        resolve(socket);
+      });
+      socket.on('error', reject);
+    });
+    const BIG = 20 * 1024 * 1024;
+
+    test('a tx request frees its slot when the process\'s response ends; writeTimeoutSeconds later the client is cut off', async () => {
+      const lines = [];
+      launcher = createLauncher({ ...settings(false), procs: settings(false).procs.slice(0, 2), maxOutstanding: 1, queueMs: 5000,
+        writeTimeoutMs: 1500, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const tx1 = launcher.procs[1];
+      const socket = await unread(`/r4/ValueSet/$expand?bytes=${BIG}`);
+      await until(() => tx1.active === 1);
+      // the process's 20 MB response has ended, though the client has read none of it
+      await until(() => tx1.outstanding === 0 && tx1.active === 0, 3000);
+      const t0 = Date.now();
+      expect((await get(PORT, '/r4/ValueSet/$expand')).json.code).toBe('tx1');
+      expect(Date.now() - t0).toBeLessThan(500);
+      expect(lines.some(l => /^a client took none/.test(l))).toBe(false);
+      await until(() => socket.destroyed || lines.some(l => /^a client took none/.test(l)), 5000);
+      expect(lines.filter(l => /^a client took none/.test(l))).toEqual([
+        `a client took none of the response to GET /r4/ValueSet/$expand?bytes=${BIG} for 1.5 s (writeTimeoutSeconds): its connection was closed (1 so far)`]);
+      socket.destroy();
+    });
+
+    test('any other request is passed on as the client takes it, and is cut off too; writeTimeoutSeconds 0: never', async () => {
+      const lines = [];
+      launcher = createLauncher({ ...settings(false), procs: settings(false).procs.slice(0, 1), writeTimeoutMs: 1000, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const master = launcher.procs[0];
+      const socket = await unread(`/packages?bytes=${BIG}`);
+      await until(() => master.active === 1);
+      await sleep(500);
+      // held back: the launcher reads from the process only as fast as the client takes it
+      expect(master.active).toBe(1);
+      await until(() => master.active === 0, 3000);
+      expect(lines.some(l => /^a client took none of the response to GET \/packages\?bytes=\d+ for 1 s/.test(l))).toBe(true);
+      socket.destroy();
+      await launcher.stop();
+      launcher = createLauncher({ ...settings(false), procs: settings(false).procs.slice(0, 1), writeTimeoutMs: 0, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const kept = await unread(`/packages?bytes=${BIG}`);
+      await sleep(1500);
+      expect(launcher.procs[0].active).toBe(1);
+      kept.destroy();
+      await until(() => launcher.procs[0].active === 0);
     });
   });
 
