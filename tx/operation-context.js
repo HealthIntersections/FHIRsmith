@@ -464,6 +464,23 @@ class ResourceCache {
       }
     }
 
+    // What this request brings on its own (a resource sent twice counted once). If that alone is
+    // more than one cache may hold, no cache can take it - a new one would be dropped too, and the
+    // client would retry in vain - so the request is refused as too costly (422), and the cache,
+    // which isn't the problem, is kept
+    const own = new Map();
+    for (const resource of resources) {
+      own.set(this._resourceKey(resource), this._conceptsOf(resource));
+    }
+    let ownConcepts = 0;
+    for (const n of own.values()) {
+      ownConcepts += n;
+    }
+    if (ownConcepts > this.maxConceptsPerCache) {
+      throw new Issue('error', 'too-costly', null, null,
+        `This request's resources hold ${ownConcepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache}, cacheMaxConcepts), so no cache can hold them`, 'too-costly', 422).handleAsOO(422);
+    }
+
     const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
     // Merge resources, avoiding duplicates by url+version, into a copy: a change that would
     // take the cache over its limit discards the cache instead.
