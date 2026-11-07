@@ -933,13 +933,13 @@ class ValueSetDatabase {
   async listVersionKeys() {
     const db = await this._getReadConnection();
     return new Promise((resolve, reject) => {
-      db.all('SELECT url, version FROM valuesets WHERE version IS NOT NULL', [], (err, rows) => {
+      db.all('SELECT url, version FROM valuesets WHERE version IS NOT NULL', [], guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Failed to list value set versions: ${err.message}`));
         } else {
           resolve(new Set(rows.map(row => `${row.url}|${row.version}`)));
         }
-      });
+      }));
     });
   }
 
@@ -1089,13 +1089,13 @@ class ValueSetDatabase {
   _readRows(db, ids) {
     return new Promise((resolve, reject) => {
       db.all('SELECT id, url, version, content, content_hash FROM valuesets WHERE id IN (SELECT value FROM json_each(?))',
-        [JSON.stringify(ids)], (err, rows) => {
+        [JSON.stringify(ids)], guarded(reject, (err, rows) => {
           if (err) {
             reject(new Error(`Failed to read value sets: ${err.message}`));
           } else {
             resolve(new Map(rows.map(row => [row.id, row])));
           }
-        });
+        }));
     });
   }
 

@@ -822,7 +822,7 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
       // file or mount) is used as it is: the indexes only make lookups faster
       for (const sql of RXNORM_LOAD_INDEXES) {
         await new Promise((resolve, reject) => {
-          db.run(sql, err => {
+          db.run(sql, guarded(reject, err => {
             if (err && err.code === 'SQLITE_READONLY') {
               Logger.getInstance().child({module: 'tx-rxnorm'}).warn(`${this.dbPath} is read-only; lookups will be slower without: ${sql}`);
               resolve();
@@ -831,7 +831,7 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
             } else {
               resolve();
             }
-          });
+          }));
         });
       }
 
