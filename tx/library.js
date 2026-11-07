@@ -130,9 +130,9 @@ class Library {
   mimeTypesReadOnly = false;
 
   /**
-   * {boolean} a tx-worker (cluster.md): the LOINC and RxNorm databases are the master's,
-   * which sets them up (journal mode, indexes) before the workers start. This process opens
-   * them read-only
+   * {boolean} a tx-worker (cluster.md): the LOINC, RxNorm, NDC, UNII, CPT and OMOP databases
+   * are the master's, which sets them up (LOINC's journal mode, the LOINC and RxNorm indexes)
+   * before the workers start. This process opens them read-only
    */
   terminologyDatabasesReadOnly = false;
 
@@ -690,7 +690,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const ndc = new NdcServicesFactory(this.i18n, ndcFN);
+    const ndc = new NdcServicesFactory(this.i18n, ndcFN, { readOnly: this.terminologyDatabasesReadOnly });
     await ndc.load();
     this.registerProvider(ndcFN, ndc, isDefault);
     this.#syndicateBinary('ndc', ndcFN, ndc);
@@ -701,7 +701,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const unii = new UniiServicesFactory(this.i18n, uniFN);
+    const unii = new UniiServicesFactory(this.i18n, uniFN, { readOnly: this.terminologyDatabasesReadOnly });
     await unii.load();
     this.registerProvider(uniFN, unii, isDefault);
     this.#syndicateBinary('unii', uniFN, unii);
@@ -733,7 +733,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const cpt = new CPTServicesFactory(this.i18n, cptFN);
+    const cpt = new CPTServicesFactory(this.i18n, cptFN, { readOnly: this.terminologyDatabasesReadOnly });
     await cpt.load();
     this.registerProvider(cptFN, cpt, isDefault);
     // the store syndicates the public fragment only, never the full (licensed) database
@@ -745,7 +745,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const omop = new OMOPServicesFactory(this.i18n, omopFN);
+    const omop = new OMOPServicesFactory(this.i18n, omopFN, { readOnly: this.terminologyDatabasesReadOnly });
     await omop.load();
     this.registerProvider(omopFN, omop, isDefault);
     this.#syndicateBinary('omop', omopFN, omop);

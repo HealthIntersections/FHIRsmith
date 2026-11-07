@@ -2,7 +2,8 @@
  * In a tx-worker (cluster.md) the LOINC and RxNorm databases are the master's: the worker
  * opens them read-only ({readOnly: true}, set from the role by tx.js and the library) and
  * leaves the journal mode and the indexes to the master. Without the option (the master, or
- * no role) loading sets them up as before.
+ * no role) loading sets them up as before. The NDC, UNII, CPT and OMOP databases need no
+ * setup; a worker opens them read-only too.
  */
 const crypto = require('crypto');
 const fs = require('fs');
@@ -12,10 +13,20 @@ const sqlite3 = require('sqlite3');
 const { LoincServicesFactory } = require('../../tx/cs/cs-loinc');
 const { RxNormServicesFactory } = require('../../tx/cs/cs-rxnorm');
 const { RxNormModule } = require('../../tx/importers/import-rxnorm.module');
+const { NdcServicesFactory } = require('../../tx/cs/cs-ndc');
+const { NdcDataMigrator } = require('../../tx/importers/import-ndc.module');
+const { UniiServicesFactory } = require('../../tx/cs/cs-unii');
+const { UniiDataMigrator } = require('../../tx/importers/import-unii.module');
+const { CPTServicesFactory } = require('../../tx/cs/cs-cpt');
+const { OMOPServicesFactory } = require('../../tx/cs/cs-omop');
 const { OperationContext } = require('../../tx/operation-context');
 const { TestUtilities } = require('../test-utilities');
 
 const LOINC_SOURCE = path.resolve(__dirname, '../../data/loinc-testing.db');
+const NDC_SOURCE = path.resolve(__dirname, '../../tx/data/ndc');
+const UNII_SOURCE = path.resolve(__dirname, '../data/unii-source-testing.txt');
+const CPT_SOURCE = path.resolve(__dirname, '../../tx/data/cpt-fragment.db');
+const OMOP_SOURCE = path.resolve(__dirname, '../../tx/data/omop-fragment.db');
 const LOINC_INDEXES = ['idx_descriptions_codekey_typkey', 'idx_relationships_sourcekey', 'idx_properties_codekey'];
 
 function exec(dbPath, sql) {
@@ -151,5 +162,50 @@ describe('LOINC and RxNorm databases in a tx-worker', () => {
     } finally {
       rp.close();
     }
+  });
+});
+
+describe('NDC, UNII, CPT and OMOP databases in a tx-worker', () => {
+  let fixtures; // NDC and UNII imported from the sources their own tests use; CPT and OMOP as shipped
+  let dir;
+  let opContext;
+
+  beforeAll(async () => {
+    opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    fixtures = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-readonly-fixtures-'));
+    await new NdcDataMigrator().migrate(NDC_SOURCE, path.join(fixtures, 'ndc.db'), 'NDC-TEST', { verbose: false });
+    await new UniiDataMigrator().migrate(UNII_SOURCE, path.join(fixtures, 'unii.db'), '20250702', false);
+    fs.copyFileSync(CPT_SOURCE, path.join(fixtures, 'cpt.db'));
+    fs.copyFileSync(OMOP_SOURCE, path.join(fixtures, 'omop.db'));
+  }, 60000);
+  afterAll(() => {
+    fs.rmSync(fixtures, { recursive: true, force: true });
+  });
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'worker-readonly-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test.each([
+    ['NDC', 'ndc.db', NdcServicesFactory],
+    ['UNII', 'unii.db', UniiServicesFactory],
+    ['CPT', 'cpt.db', CPTServicesFactory],
+    ['OMOP', 'omop.db', OMOPServicesFactory]
+  ])('%s: the worker writes nothing and its connection rejects writes', async (name, file, Factory) => {
+    const dbPath = path.join(dir, file);
+    fs.copyFileSync(path.join(fixtures, file), dbPath);
+    const before = sha(dbPath);
+    const worker = new Factory(opContext.i18n, dbPath, { readOnly: true });
+    await worker.load();
+    expect(worker.version()).toBeTruthy();
+    const provider = await worker.build(opContext, []);
+    try {
+      expect(await tryWrite(provider.db)).toBe('SQLITE_READONLY');
+    } finally {
+      provider.close();
+    }
+    expect(sha(dbPath)).toBe(before);
   });
 });
