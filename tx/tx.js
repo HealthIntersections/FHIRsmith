@@ -1674,15 +1674,22 @@ class TXModule {
   }
 
   externalLimit(req) {
-    let hdr = req.headers["x-too-costly-threshold"];
-    if (hdr) {
-      return parseInt(hdr);
-    }
     // the tx-ecosystem test runner (Tools/Java) always gets the test limit, so every server
     // gives it the same answer. Otherwise the configured externalLimit - it used to be read
     // only when internalLimit was configured too, so setting it alone did nothing
     let isTest = req.header("User-Agent") == 'Tools/Java';
-    if (this.config.externalLimit && !isTest) return this.config.externalLimit; else return EXTERNAL_TEST_DEFAULT_LIMIT;
+    let limit = this.config.externalLimit && !isTest ? this.config.externalLimit : EXTERNAL_TEST_DEFAULT_LIMIT;
+    // x-too-costly-threshold sets the limit for this request - mostly so test cases can ask for
+    // a lower one. It can't be more than the internal limit, and a value that isn't a positive
+    // whole number is ignored: it never means "no limit"
+    const hdr = req.headers["x-too-costly-threshold"];
+    if (hdr !== undefined) {
+      const n = Number(hdr);
+      if (Number.isInteger(n) && n > 0) {
+        limit = Math.min(n, this.internalLimit(req));
+      }
+    }
+    return limit;
   }
 
 }
