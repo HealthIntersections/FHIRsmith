@@ -8,15 +8,13 @@ class ConceptUsageTracker {
   async scanValueSets(library) {
     let c = 0;
     for (let vsp of library.valueSetProviders) {
-      let list = await vsp.listAllValueSets();
-      for (let url of list) {
-        let vs = await vsp.fetchValueSet(url);
-        if (vs && vs.jsonObj.compose) {
+      await vsp.scanAllValueSets(async (vs) => {
+        if (vs.jsonObj.compose) {
           if (await this.scanValueSet(vs.jsonObj.compose)) {
             c++;
           }
         }
-      }
+      });
     }
     return c;
   }

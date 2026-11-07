@@ -19,6 +19,95 @@ const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
+// Default size of the cache of recently used value sets (see RecentValueSets)
+const DEFAULT_VALUESET_CACHE_MB = 64;
+
+/**
+ * The value sets most recently read from the database, parsed and prepared, by row id, with
+ * the least recently used dropped first once the stored JSON they were read from adds up to
+ * more than maxBytes.
+ *
+ * Reading a value set means parsing its JSON every time: 15ms for a list of 33,000 codes, and
+ * $batch-validate-code reads it once per entry. Most use is of a few value sets over and over,
+ * so the ones in use are kept. The sync drops a row from here when it writes it, so what is
+ * kept is never older than the database (each keeps the contentHash it was read with).
+ *
+ * What is kept is shared between requests (as the map was): it must not be changed.
+ */
+class RecentValueSets {
+  constructor(maxBytes) {
+    this.maxBytes = maxBytes;
+    this.entries = new Map(); // id -> { vs, bytes }, least recently used first
+    this.bytes = 0;
+    // changes whenever the sync drops anything (delete, deleteUrl, clear), so a read that started
+    // before is not kept (see _readValueSet). Keeping a value set or dropping one to make room
+    // doesn't change it: reads of other value sets under way at the same time are still kept.
+    this.generation = 0;
+  }
+
+  get size() {
+    return this.entries.size;
+  }
+
+  /** The value set for a row id, which is now the most recently used; undefined if it isn't kept */
+  get(id) {
+    const entry = this.entries.get(id);
+    if (!entry) {
+      return undefined;
+    }
+    this.entries.delete(id);
+    this.entries.set(id, entry);
+    return entry.vs;
+  }
+
+  /** The value set for a row id, without making it any more recently used */
+  peek(id) {
+    const entry = this.entries.get(id);
+    return entry ? entry.vs : undefined;
+  }
+
+  set(id, vs, bytes) {
+    this._drop(id);
+    if (!(bytes >= 0) || bytes > this.maxBytes) {
+      return;
+    }
+    this.entries.set(id, { vs, bytes });
+    this.bytes += bytes;
+    while (this.bytes > this.maxBytes) {
+      this._drop(this.entries.keys().next().value);
+    }
+  }
+
+  delete(id) {
+    this.generation++;
+    this._drop(id);
+  }
+
+  deleteUrl(url) {
+    this.generation++;
+    for (const [id, entry] of this.entries) {
+      if (entry.vs.url === url) {
+        this._drop(id);
+      }
+    }
+  }
+
+  clear() {
+    this.generation++;
+    this.entries.clear();
+    this.bytes = 0;
+  }
+
+  /** Removes a row without changing the generation: what the sync drops goes through delete */
+  _drop(id) {
+    const entry = this.entries.get(id);
+    if (entry) {
+      this.entries.delete(id);
+      this.bytes -= entry.bytes;
+    }
+  }
+}
+
 /**
  * VSAC (Value Set Authority Center) ValueSet provider
  * Fetches and caches ValueSets from the NLM VSAC FHIR server
@@ -40,6 +129,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {number} [config.timeoutMs=120000] - HTTP request timeout in milliseconds
    * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
+   * @param {number} [config.valueSetCacheMB=64] - Size (of their stored JSON) of the recently used
+   *   value sets kept parsed (see RecentValueSets); 0 for none
    */
   constructor(config, stats) {
     super();
@@ -60,10 +151,14 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       console.warn(`VSAC: baseUrl ${this.baseUrl} is http, so the API key is sent unencrypted - use https`);
     }
     this.refreshIntervalHours = config.refreshIntervalHours || 24;
+    this.valueSetCacheMB = config.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB;
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
     this.database = new ValueSetDatabase(this.dbPath);
-    this.valueSetMap = new Map();
+    // The value sets aren't held in memory: each one is read from the database when it is
+    // asked for (see fetchValueSet), apart from the recently used ones (see RecentValueSets).
+    // This is the count of urls as of the last recount
+    this.urlCount = 0;
     this.initialized = false;
     this.refreshTimer = null;
     this.isRefreshing = false;
@@ -84,6 +179,30 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
   code() {
     return "vsac";
+  }
+
+  // the recently used value sets were read from this database: another one starts with none
+  get database() {
+    return this._database;
+  }
+
+  set database(database) {
+    this._database = database;
+    if (this._recent) {
+      this._recent.clear();
+    }
+  }
+
+  /**
+   * The recently used value sets (made when first needed)
+   * @returns {RecentValueSets}
+   * @private
+   */
+  _recentValueSets() {
+    if (!this._recent) {
+      this._recent = new RecentValueSets((this.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB) * 1024 * 1024);
+    }
+    return this._recent;
   }
 
   sourcePackage() {
@@ -107,25 +226,28 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // Create database if it doesn't exist
     if (!(await this.database.exists())) {
       await this.database.create();
-    } else {
-      // Schema migrations are applied lazily by the database layer on first
-      // connection. Just load existing data.
-      await this._reloadMap();
     }
+    // Schema migrations are applied lazily by the database layer on first
+    // connection. Count what is there (none, for a new database), so a
+    // database with no value sets is synced now rather than at the first timer
+    await this._recount();
     const incomplete = firstCall ? await this._incompleteSyncReason() : null;
-    if (this.SYNC_AT_START_UP || this.valueSetMap.size == 0 || incomplete) {
+    let failed = false;
+    if (this.SYNC_AT_START_UP || this.database.vsCount == 0 || incomplete) {
       if (incomplete) {
         console.log(`VSAC: ${incomplete} - resuming the sync now`);
       }
       try {
         await this.refreshValueSets();
       } catch (error) {
-        // already recorded by refreshValueSets; the timer below retries it
-        this.log.error(error, 'Error during VSAC sync at startup:');
+        // already recorded by refreshValueSets; the timer below retries it soon
+        console.error(`VSAC: sync at startup failed: ${error.message}`);
+        failed = true;
+        this._failedSyncs = 1;
       }
     }
-    // Start periodic refresh
-    this._startRefreshTimer();
+    // Start periodic refresh; after a failed sync, the next try comes after a short wait
+    this._startRefreshTimer(failed ? this._retryDelayMs(1) : undefined);
     this.initialized = true;
   }
 
@@ -199,31 +321,63 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Start the periodic refresh timer
+   * Waits before trying a failed sync again: 1, 5 and then every 30 minutes (never longer
+   * than the refresh interval). A failure at startup is often passing (the network is not
+   * up yet, or a connection attempt timed out while the server was busy loading), so it
+   * should not wait a whole day.
+   */
+  static RETRY_DELAYS_MS = [60 * 1000, 5 * 60 * 1000, 30 * 60 * 1000];
+
+  /**
+   * @param {number} failures - failed syncs in a row (1 or more)
+   * @returns {number} milliseconds to wait before the next try
    * @private
    */
-  _startRefreshTimer() {
+  _retryDelayMs(failures) {
+    const delays = VSACValueSetProvider.RETRY_DELAYS_MS;
+    const delay = delays[Math.min(failures, delays.length) - 1];
+    return Math.min(delay, this.refreshIntervalHours * 60 * 60 * 1000);
+  }
+
+  /**
+   * Start the refresh timer. Each sync sets the timer for the next one, whether it worked
+   * or not: the refresh interval after a sync that worked, a shorter wait after one that
+   * failed (see RETRY_DELAYS_MS).
+   * @param {number} [delayMs] - wait before the next sync (default: the refresh interval)
+   * @private
+   */
+  _startRefreshTimer(delayMs = undefined) {
+    this._stopped = false;
     if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
+      clearTimeout(this.refreshTimer);
     }
 
     const intervalMs = this.refreshIntervalHours * 60 * 60 * 1000;
-    this.refreshTimer = setInterval(async () => {
+    this.refreshTimer = setTimeout(async () => {
+      let next = intervalMs;
       try {
         await this.refreshValueSets();
+        this._failedSyncs = 0;
       } catch (error) {
         debugLog(error);
-        this.log.error(error, 'Error during scheduled refresh:');
+        this._failedSyncs = (this._failedSyncs || 0) + 1;
+        next = this._retryDelayMs(this._failedSyncs);
+        console.error(`VSAC: scheduled sync failed (next try in ${Math.round(next / 60000)} min): ${error.message}`);
+      } finally {
+        if (!this._stopped) {
+          this._startRefreshTimer(next);
+        }
       }
-    }, intervalMs);
+    }, delayMs ?? intervalMs);
   }
 
   /**
    * Stop the refresh timer (for cleanup)
    */
   stopRefreshTimer() {
+    this._stopped = true;
     if (this.refreshTimer) {
-      clearInterval(this.refreshTimer);
+      clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
     }
   }
@@ -250,6 +404,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
       // This lists all the currently valid value sets by URL, but not the older versions
       let url = '/ValueSet?_offset=0&_count=1000&_elements=id,url,version,status';
+      const known = await this.database.listVersionKeys();
 
       let total = undefined;
       let count = 0;
@@ -269,7 +424,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           if (vs) {
             count++;
             // if we've seen this value set before, then we've got nothing new here.
-            if (!this.valueSetMap.has(vs.url+"|"+vs.version)) {
+            if (!known.has(vs.url+"|"+vs.version)) {
               this.queue.push(vs.url);
               ncount++;
             }
@@ -341,8 +496,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         await this._savePendingProgress(progress);
       }
 
-      // Reload map with fresh data
-      await this._reloadMap();
+      // Recount, with the fresh data
+      await this._recount();
 
       // Commit the _lastUpdated watermark only now that phase 2 has durably
       // written everything. Hold it back if any URL was permanently dropped, so
@@ -371,6 +526,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       throw error;
     } finally {
       this.isRefreshing = false;
+      // each row written was dropped as it was written; start again anyway after a full sync
+      this._recentValueSets().clear();
     }
   }
 
@@ -403,38 +560,40 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     // Process sequentially to avoid database locking
     for (const valueSet of valueSets) {
-      const key = valueSet.url+"|"+valueSet.version;
-      const existing = this.valueSetMap.get(key);
+      const existing = valueSet.version ? await this.database.getVersion(valueSet.url, valueSet.version) : undefined;
       const newHash = this._hashValueSet(valueSet);
 
       if (existing) {
         // We've seen this url|version before. Decide whether the content
         // has actually changed by comparing hashes.
         //
-        // Note: _reloadMap() mutates the in-memory jsonObj (strips inc.version
-        // from compose.include/exclude), so we cannot reliably recompute a
-        // hash from existing.jsonObj — it would not match the hash of the
-        // original unmutated JSON we stored. For rows predating this feature
+        // Note: the value sets served are altered after they are read (_prepare
+        // strips inc.version from compose.include/exclude), so the hash is
+        // the one stored with the original unmutated JSON. For rows predating this feature
         // (content_hash NULL), we defer update detection until the next cycle:
         // the upsert below runs only when hashes differ, so on the *next*
         // sync after migration we'll have a proper baseline.
-        if (existing.contentHash && existing.contentHash === newHash) {
+        if (existing.content_hash && existing.content_hash === newHash) {
           // No change - just touch last_seen
           await this.database.seeValueSet(valueSet);
-        } else if (!existing.contentHash) {
+        } else if (!existing.content_hash) {
           // Legacy row without a stored hash - backfill the hash silently
           // without emitting a spurious 'updated' event. We do a lightweight
           // touch + hash update rather than a full upsert+event.
           await this.database.seeValueSet(valueSet);
           await this.database.setContentHash(valueSet.id, newHash);
+          this._recentValueSets().delete(existing.id);
         } else {
           // Content has changed - treat as update
           await this.database.upsertValueSet(valueSet, newHash);
+          this._recentValueSets().delete(existing.id);
+          this._recentValueSets().delete(valueSet.id);
           await this.database.recordEvent('updated', valueSet.url, valueSet.version);
           updatedCount++;
         }
       } else {
         await this.database.upsertValueSet(valueSet, newHash);
+        this._recentValueSets().delete(valueSet.id);
         await this.database.recordEvent('new', valueSet.url, valueSet.version);
         newCount++;
       }
@@ -531,31 +690,66 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Reload the in-memory map from database (thread-safe)
+   * Refresh the counts from the database (the value sets themselves are read on demand)
    * @returns {Promise<void>}
    * @private
    */
-  async _reloadMap() {
-    const newMap = await this.database.loadAllValueSets(this.sourcePackage());
-    for (const vs of newMap.values()) {
-      if (vs.jsonObj.compose) {
-        for (const inc of vs.jsonObj.compose.include || []) {
-          if (inc.version) {
-            delete inc.version;
-          }
-        }for (const inc of vs.jsonObj.compose.exclude || []) {
-          if (inc.version) {
-            delete inc.version;
-          }
+  async _recount() {
+    const counts = await this.database.countValueSets();
+    this.urlCount = counts.urls;
+  }
+
+  /**
+   * Read a value set from the database and make it ready to serve: the compose doesn't pin
+   * code system versions, and the id is in this provider's id space
+   * @param {string} id - the value set's own id
+   * @returns {Promise<ValueSet|null>}
+   * @private
+   */
+  async _loadValueSet(id) {
+    const vs = await this.database.loadValueSet(id, this.sourcePackage());
+    if (vs) {
+      this._prepare(vs);
+    }
+    return vs;
+  }
+
+  /**
+   * A value set by row id, from the recently used ones if it is there, or else read (and kept)
+   * @param {string} id - the value set's own id
+   * @returns {Promise<ValueSet|null>} shared with other requests: not to be changed
+   * @private
+   */
+  async _readValueSet(id) {
+    const recent = this._recentValueSets();
+    let vs = recent.get(id);
+    if (vs) {
+      return vs;
+    }
+    // if the sync drops anything while this is read, what is read may be older than the database
+    const generation = recent.generation;
+    vs = await this._loadValueSet(id);
+    if (vs && recent.generation === generation) {
+      recent.set(id, vs, vs.storedLength);
+    }
+    return vs;
+  }
+
+  _prepare(vs) {
+    if (vs.jsonObj.compose) {
+      for (const inc of vs.jsonObj.compose.include || []) {
+        if (inc.version) {
+          delete inc.version;
+        }
+      }
+      for (const inc of vs.jsonObj.compose.exclude || []) {
+        if (inc.version) {
+          delete inc.version;
         }
       }
     }
     // the value sets are served in this provider's id space
-    for (const vs of new Set(newMap.values())) {
-      applyIdPrefix(vs, this.spaceId);
-    }
-    // Atomic replacement of the map
-    this.valueSetMap = newMap;
+    applyIdPrefix(vs, this.spaceId);
   }
 
   /**
@@ -568,10 +762,33 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     await this.initialize();
     this._validateFetchParams(url, version);
 
+    // which row the url (and version) refers to is worked out the way it always was, from a
+    // map keyed like the one loadAllValueSets builds - but of just this url's ids and versions
+    let rows = await this.database.listVersions(url);
+    while (rows.length > 0) {
+      const versions = new Map();
+      for (const row of rows) {
+        this.database.addToMap(versions, row.id, row.url, row.version, row);
+      }
+      const row = this._findVersion(versions, url, version);
+      if (!row) {
+        return null;
+      }
+      const vs = await this._readValueSet(row.id);
+      if (vs) {
+        return await this.checkFullVS(vs);
+      }
+      // it was rejected (and logged): as when it couldn't be loaded into the map, it's as if it isn't there
+      rows = rows.filter(r => r !== row);
+    }
+    return null;
+  }
+
+  _findVersion(versions, url, version) {
     // Try exact match first: url|version
     let key = `${url}|${version}`;
-    if (this.valueSetMap.has(key)) {
-      return await this.checkFullVS(this.valueSetMap.get(key));
+    if (versions.has(key)) {
+      return versions.get(key);
     }
 
     // If version is semver, try url|major.minor
@@ -580,8 +797,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         const majorMinor = VersionUtilities.getMajMin(version);
         if (majorMinor) {
           key = `${url}|${majorMinor}`;
-          if (this.valueSetMap.has(key)) {
-            return await this.checkFullVS(this.valueSetMap.get(key));
+          if (versions.has(key)) {
+            return versions.get(key);
           }
         }
       }
@@ -590,17 +807,16 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
 
     // Finally try just the URL - only when no version was asked for (see VERSION_FALLBACK_TO_LATEST)
-    if ((!version || VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST) && this.valueSetMap.has(url)) {
-      return await this.checkFullVS(this.valueSetMap.get(url));
+    if ((!version || VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST) && versions.has(url)) {
+      return versions.get(url);
     }
 
     return null;
   }
 
   async fetchValueSetById(id) {
-    // the map is keyed by the value set's own id (and its url); the value set itself
-    // carries the prefixed id, which is how a url key that happens to match is excluded
-    const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
+    const ownId = stripIdPrefix(id, this.spaceId);
+    const vs = ownId ? await this._readValueSet(ownId) : null;
     return vs && vs.id === id ? await this.checkFullVS(vs) : null;
   }
   /**
@@ -616,7 +832,31 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       return [];
     }
 
-    return await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+    if (elements && elements.length > 0 && elements.every(e => ValueSetDatabase.INDEXED_COLUMNS.includes(e))) {
+      // built from the indexed columns, without reading the value sets
+      return await this.database.search(this.spaceId, null, searchParams, elements);
+    }
+    // The matches carry what a search is sorted by; each value set is only read if it is on the
+    // page that is returned (see SearchWorker.loadPage)
+    return (await this.database.searchRows(searchParams)).map(row => this._searchMatch(row));
+  }
+
+  _searchMatch(row) {
+    const match = { resourceType: 'ValueSet', id: this.spaceId ? `${this.spaceId}-${row.id}` : row.id };
+    for (const name of ['url', 'version', 'date', 'name']) {
+      if (row[name] != null) {
+        match[name] = row[name];
+      }
+    }
+    // the value set as search would have returned it; null if it is rejected when it is read.
+    // A search can match thousands, so what it reads is not kept, and doesn't push out what is
+    Object.defineProperty(match, 'load', {
+      value: async () => {
+        const vs = this._recentValueSets().peek(row.id) || await this._loadValueSet(row.id);
+        return vs ? vs.jsonObj : null;
+      }
+    });
+    return match;
   }
 
   /**
@@ -642,17 +882,11 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Get the number of value sets loaded into memory
-   * @returns {number} Number of unique value sets in map
+   * Get the number of value sets available (as of the last refresh)
+   * @returns {number} Number of unique value set urls
    */
   getMapSize() {
-    const uniqueUrls = new Set();
-    for (const [key, valueSet] of this.valueSetMap.entries()) {
-      if (!key.includes('|')) { // Only count base URL keys
-        uniqueUrls.add(valueSet.url);
-      }
-    }
-    return uniqueUrls.size;
+    return this.urlCount;
   }
 
   /**
@@ -687,20 +921,44 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     return await this.database.listAllValueSets();
   }
 
+  async scanAllValueSets(fn) {
+    // listAllValueSets has a url for each version, and each refers to the latest version: so
+    // read the latest version of each url once (in batches), and visit it once per version
+    const versions = new Map();
+    for (const row of await this.database.listVersions(null)) {
+      let v = versions.get(row.url);
+      if (!v) {
+        v = { map: new Map(), count: 0 };
+        versions.set(row.url, v);
+      }
+      this.database.addToMap(v.map, row.id, row.url, row.version, row);
+      v.count++;
+    }
+    const urls = [...versions.keys()].sort();
+    for (let i = 0; i < urls.length; i += 500) {
+      const batch = urls.slice(i, i + 500).map(url => ({ url, count: versions.get(url).count, row: this._findVersion(versions.get(url).map, url) }));
+      const valueSets = await this.database.loadValueSets(batch.map(b => b.row.id), this.sourcePackage());
+      for (const b of batch) {
+        let vs = valueSets.get(b.row.id);
+        if (vs) {
+          this._prepare(vs);
+        } else {
+          vs = await this.fetchValueSet(b.url); // the latest was rejected
+        }
+        for (let n = 0; vs && n < b.count; n++) {
+          await fn(vs);
+        }
+      }
+    }
+  }
+
   async close() {
+    this._recentValueSets().clear();
     await this.database.close();
   }
 
   prefixIds() {
-    this.#applyIdPrefix();
-  }
-
-  // the map is replaced every time it's reloaded from the database (see _reloadMap), and that
-  // can happen before or after the spaceId is assigned - so both prefix whatever is there
-  #applyIdPrefix() {
-    for (const vs of new Set(this.valueSetMap.values())) {
-      applyIdPrefix(vs, this.spaceId);
-    }
+    // nothing is held in memory: each value set gets its prefix as it is read (see _prepare)
   }
 
   // when we get a valueset from vsac via search, the compose is not
@@ -717,7 +975,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // console.log('get a full copy for the ValueSet '+vs.url+'|'+vs.version);
     // let vsNew = await this._fetchValueSet(vs.id);
     // await this.database.upsertValueSet(vsNew);
-    // this.database.addToMap(this.valueSetMap, vsNew.id, vsNew.url, vsNew.version, vsNew);
     // return new ValueSet(vsNew);
     return vs;
   }
@@ -832,14 +1089,16 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
   /**
    * Immediately resync a single ValueSet URL (all versions): fetch from VSAC,
-   * upsert, and reload the in-memory map.
+   * upsert, and recount.
    * @param {string} url - the ValueSet canonical url
    * @returns {Promise<number>} number of versions fetched
    */
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
-    await this._reloadMap();
+    // the rows written were dropped as they were written; an operator asking expects none kept
+    this._recentValueSets().deleteUrl(url);
+    await this._recount();
     return tracking.totalFetched;
   }
 

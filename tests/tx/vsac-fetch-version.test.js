@@ -1,4 +1,5 @@
 const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { ValueSetDatabase } = require('../../tx/vs/vs-database');
 
 /**
  * A VSAC value set asked for at a version VSAC doesn't have is not found - the same rule as for
@@ -12,8 +13,13 @@ function provider() {
   p.initialized = true;
   const v1 = { url: URL, version: '20230101' };
   const v2 = { url: URL, version: '20240101' };
-  // keyed as _reloadMap keys them: url|version, and url for the latest
-  p.valueSetMap = new Map([[URL + '|20230101', v1], [URL + '|20240101', v2], [URL, v2]]);
+  // the rows in the database, which the provider reads a value set from when asked for it
+  const rows = { 'r1': v1, 'r2': v2 };
+  const database = Object.create(ValueSetDatabase.prototype);
+  database.listVersions = async url => Object.entries(rows).filter(([, v]) => v.url === url)
+    .map(([id, v]) => ({ id, url: v.url, version: v.version }));
+  p.database = database;
+  p._readValueSet = async id => rows[id] || null;
   return { p, v1, v2 };
 }
 

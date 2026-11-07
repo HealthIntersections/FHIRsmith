@@ -120,6 +120,23 @@ class AbstractValueSetProvider {
     return [];
   }
 
+  /**
+   * Call fn with the value set each entry of listAllValueSets() refers to - what
+   * fetchValueSet(url) returns for it - for the scans that look at every value set (see
+   * usage-tracker.js, problems.js). A provider that doesn't hold its value sets in memory can
+   * do this more cheaply than fetching each one.
+   *
+   * @param {function(ValueSet): Promise<void>} fn
+   */
+  async scanAllValueSets(fn) {
+    for (const url of await this.listAllValueSets()) {
+      const vs = await this.fetchValueSet(url);
+      if (vs) {
+        await fn(vs);
+      }
+    }
+  }
+
   async close() {
 
   }

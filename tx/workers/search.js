@@ -117,6 +117,9 @@ class SearchWorker extends TerminologyWorker {
 
       // Sort results
       matches = this.sortResults(matches, sort);
+      if (summary !== 'count') {
+        matches = await this.loadPage(matches, offset, count);
+      }
 
       // Build and return the bundle
       const bundle = this.buildSearchBundle(
@@ -265,6 +268,44 @@ class SearchWorker extends TerminologyWorker {
     }
 
     return false;
+  }
+
+  /**
+   * A provider that doesn't hold its resources in memory can return matches that only carry
+   * what a search is sorted by, and a load() that reads the resource (see VSACValueSetProvider):
+   * read the ones on this page. If one of them can't be read it isn't a match after all: then
+   * every match is read, so that the page and the total are what they would have been (one that
+   * can't be read, on no page asked for, is still counted)
+   */
+  async loadPage(matches, offset, count) {
+    this.deadCheck('search-load');
+    const page = [];
+    for (let i = offset; i < Math.min(matches.length, offset + count); i++) {
+      if (matches[i].load) {
+        page.push(i);
+      }
+    }
+    const loaded = await Promise.all(page.map(i => matches[i].load()));
+    let rejected = false;
+    page.forEach((i, n) => {
+      if (loaded[n]) {
+        matches[i] = loaded[n];
+      } else {
+        rejected = true;
+      }
+    });
+    if (!rejected) {
+      return matches;
+    }
+    const all = [];
+    for (const match of matches) {
+      this.deadCheck('search-load');
+      const resource = match.load ? await match.load() : match;
+      if (resource) {
+        all.push(resource);
+      }
+    }
+    return all;
   }
 
   /**
