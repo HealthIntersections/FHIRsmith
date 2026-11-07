@@ -19,8 +19,10 @@
  *    $closure, the syndication feed, the source info pages and everything that isn't a tx
  *    endpoint to the master; any other tx request to the tx process with the fewest
  *    requests outstanding
- *  - sends a process at most maxOutstanding tx requests at once; the rest wait, and one that
- *    has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503 + Retry-After
+ *  - sends a process at most maxOutstanding tx requests at once (those routed to a tx process,
+ *    not the master's own paths or CORS preflights, which neither wait nor count); the rest
+ *    wait, and one that has waited queueSeconds (ownerQueueSeconds with a cache-id) gets 503
+ *    + Retry-After
  *  - lets cheap requests (by method and path: the fast lane) use fastLaneExtra more slots
  *    than maxOutstanding, ahead of the others, leaving them normalMinSlots
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
@@ -313,7 +315,8 @@ function createLauncher(settings) {
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
-    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
+    // outstanding: the tx requests it has (those that wait for a slot); active: every request
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, active: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
@@ -386,8 +389,8 @@ function createLauncher(settings) {
     return countsInFlight;
   }
 
-  function totalOutstanding() {
-    return procs.reduce((n, p) => n + p.outstanding, 0);
+  function totalActive() {
+    return procs.reduce((n, p) => n + p.active, 0);
   }
 
   function startProcess(proc) {
@@ -497,7 +500,8 @@ function createLauncher(settings) {
     if (w.route.to !== 'master' && w.req.method !== 'OPTIONS' && full(target, w.fast)) {
       return false;
     }
-    forward(w.req, w.res, target, w.fast);
+    // only the tx requests, which wait for a slot, take one
+    forward(w.req, w.res, target, w.fast, w.route.to !== 'master' && w.req.method !== 'OPTIONS');
     return true;
   }
 
@@ -581,9 +585,12 @@ function createLauncher(settings) {
     }, ms);
   }
 
-  function forward(req, res, target, fast = false) {
-    target.outstanding++;
-    target.fastOutstanding += fast ? 1 : 0;
+  function forward(req, res, target, fast = false, counted = true) {
+    target.active++;
+    if (counted) {
+      target.outstanding++;
+      target.fastOutstanding += fast ? 1 : 0;
+    }
     const sent = { at: Date.now() };
     target.sentAt.add(sent);
     let finished = false;
@@ -593,11 +600,14 @@ function createLauncher(settings) {
       clearTimeout(timer);
       if (!finished) {
         finished = true;
-        target.outstanding--;
-        target.fastOutstanding -= fast ? 1 : 0;
+        target.active--;
+        if (counted) {
+          target.outstanding--;
+          target.fastOutstanding -= fast ? 1 : 0;
+        }
         target.sentAt.delete(sent);
         sendWaiting();
-        if (onIdle && totalOutstanding() === 0) {
+        if (onIdle && totalActive() === 0) {
           onIdle();
         }
       }
@@ -708,7 +718,7 @@ function createLauncher(settings) {
       }
       p.overSince = p.overSince || now;
       // and none in flight at all now (a refusal is answered within milliseconds)
-      if (now - p.overSince >= recycleMs && p.outstanding === 0 && (!largest || over.get(p) > over.get(largest))) {
+      if (now - p.overSince >= recycleMs && p.active === 0 && (!largest || over.get(p) > over.get(largest))) {
         largest = p;
       }
     }
@@ -733,7 +743,7 @@ function createLauncher(settings) {
       if (p.child !== child) {
         return;
       }
-      if (p.outstanding > 0 && Date.now() - t0 < settings.drainMs) {
+      if (p.active > 0 && Date.now() - t0 < settings.drainMs) {
         return void setTimeout(stopWhenIdle, 100);
       }
       const kill = setTimeout(() => child.kill('SIGKILL'), 30000);
@@ -879,8 +889,8 @@ function createLauncher(settings) {
       server.close();
       server.closeIdleConnections();
       const idle = setInterval(() => server.closeIdleConnections(), 100);
-      if (totalOutstanding() > 0) {
-        log(`draining: ${totalOutstanding()} request(s) in progress`);
+      if (totalActive() > 0) {
+        log(`draining: ${totalActive()} request(s) in progress`);
         await new Promise(resolve => {
           const timer = setTimeout(resolve, settings.drainMs);
           onIdle = () => {

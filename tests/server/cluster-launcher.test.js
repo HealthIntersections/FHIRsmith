@@ -525,6 +525,29 @@ describe('the launcher, with fake processes', () => {
       await Promise.all(slow);
     });
 
+    test('only tx requests take a slot: the master\'s own pages and CORS preflights don\'t use up its tx slots', async () => {
+      // the master alone, serving tx, with one slot
+      launcher = createLauncher({ ...queued(5000), procs: settings(true).procs.slice(0, 1) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const master = launcher.procs[0];
+      const pages = [get(PORT, '/packages?delay=1500'), get(PORT, '/r4/$closure?delay=1500'),
+        get(PORT, '/r4/ValueSet/$expand?delay=1500', {}, { method: 'OPTIONS' })];
+      await until(() => master.active === 3);
+      expect(master.outstanding).toBe(0);
+      const t0 = Date.now();
+      expect((await get(PORT, '/r4/ValueSet/$expand')).json.code).toBe('m0');
+      expect(Date.now() - t0).toBeLessThan(500);
+      // a tx request does take it: the next one waits for it
+      const slow = get(PORT, '/r4/ValueSet/$expand?delay=1000');
+      await until(() => master.outstanding === 1);
+      const t1 = Date.now();
+      await get(PORT, '/r4/ValueSet/$expand');
+      expect(Date.now() - t1).toBeGreaterThanOrEqual(700);
+      await Promise.all([...pages, slow]);
+      expect([master.outstanding, master.active]).toEqual([0, 0]);
+    });
+
     test('on stop, the requests still waiting are refused at once', async () => {
       launcher = createLauncher(queued(5000));
       await launcher.start();

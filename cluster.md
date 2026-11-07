@@ -150,8 +150,9 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
   behind everything else: a 4 ms `$lookup` waited 16 s in a 3x surge, and the first 503s came
   after 29 s. A request with a cache-id waits for the process that issued it, which no other
   can stand in for, so it waits longer: `ownerQueueSeconds` (30). The master's own pages and
-  paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) don't wait, and while
-  stopping nothing does. These refusals are the launcher's, logged at most once a minute; they
+  paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) neither wait nor
+  count against `maxOutstanding`, so a long page on the master leaves its tx slots free; while
+  stopping nothing waits. These refusals are the launcher's, logged at most once a minute; they
   are not in the graphs' refusals
 * gives cheap requests a fast lane. A process has `maxOutstanding` + `fastLaneExtra` (16 + 4)
   slots. Cheap requests may use any of them, and when a slot frees they get it first. Other
@@ -207,7 +208,7 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
-| `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
+| `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
 | `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
