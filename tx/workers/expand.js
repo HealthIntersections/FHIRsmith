@@ -25,7 +25,6 @@ const { splitFilters } = require('./supplement-filters');
 const EXTERNAL_DEFAULT_LIMIT = 1000;
 const EXTERNAL_TEST_DEFAULT_LIMIT = 3000;
 const INTERNAL_DEFAULT_LIMIT = 10000;
-const EXPANSION_DEAD_TIME_SECS = 30;
 const CACHE_WHEN_DEBUGGING = false;
 
 /**
@@ -2636,6 +2635,5 @@ module.exports = {
   EXTERNAL_DEFAULT_LIMIT,
   INTERNAL_DEFAULT_LIMIT,
   EXTERNAL_TEST_DEFAULT_LIMIT,
-  TotalStatus,
-  EXPANSION_DEAD_TIME_SECS
+  TotalStatus
 };

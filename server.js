@@ -22,6 +22,7 @@ const { applyKeepAliveTimeouts } = require('./library/keep-alive');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
+const { maxBodyBytes } = require('./library/body-limit');
 
 // Load configuration BEFORE logger
 let config;
@@ -101,9 +102,11 @@ app.use(memoryGuard.middleware({ log: serverLog, exempt: ['/dashboard'] }));
 const OWN_BODIES = ['/ips'];
 const ownsBody = (req) => OWN_BODIES.some(p => req.path === p || req.path.startsWith(p + '/'));
 const unlessOwnBody = (parser) => (req, res, next) => (ownsBody(req) ? next() : parser(req, res, next));
-app.use(unlessOwnBody(express.raw({ type: 'application/fhir+json', limit: '50mb' })));
-app.use(unlessOwnBody(express.raw({ type: 'application/fhir+xml', limit: '50mb' })));
-app.use(unlessOwnBody(express.json({ limit: '50mb' })));
+// Bodies up to server.maxBodyMB (default 50); a bigger one gets a 413
+const maxBody = maxBodyBytes(config.server);
+app.use(unlessOwnBody(express.raw({ type: 'application/fhir+json', limit: maxBody })));
+app.use(unlessOwnBody(express.raw({ type: 'application/fhir+xml', limit: maxBody })));
+app.use(unlessOwnBody(express.json({ limit: maxBody })));
 app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'];
   if (requestId) {
