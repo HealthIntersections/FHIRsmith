@@ -4,6 +4,7 @@ const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemFactoryProvider } = require('./cs-api');
 const { BaseCSServices } = require('./cs-base');
 const {validateArrayParameter, formatDateMMDDYYYY} = require("../../library/utilities");
+const Logger = require("../../library/logger");
 
 // Context for RxNorm concepts
 class RxNormConcept {
@@ -44,7 +45,9 @@ const RXNORM_LOAD_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
   'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
   'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
-  'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)'
+  'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)',
+  // locate() looks an unknown code up in the archive; without this, each miss scans the table
+  'CREATE INDEX IF NOT EXISTS idx_rxnatomarchive_rxcui_sab ON RXNATOMARCHIVE(RXCUI, SAB)'
 ];
 
 // Filter holder for query building and iteration
@@ -814,10 +817,20 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
 
     try {
       // indexes the importer makes now, for databases imported before it did. A one-off cost
-      // the first time an older database is loaded
+      // the first time an older database is loaded. A database that can't be written (read-only
+      // file or mount) is used as it is: the indexes only make lookups faster
       for (const sql of RXNORM_LOAD_INDEXES) {
         await new Promise((resolve, reject) => {
-          db.run(sql, err => err ? reject(err) : resolve());
+          db.run(sql, err => {
+            if (err && err.code === 'SQLITE_READONLY') {
+              Logger.getInstance().child({module: 'tx-rxnorm'}).warn(`${this.dbPath} is read-only; lookups will be slower without: ${sql}`);
+              resolve();
+            } else if (err) {
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
         });
       }
 
