@@ -26,3 +26,43 @@ describe('VSAC database settings follow the cluster role', () => {
     }
   });
 });
+
+describe('a follower catching up with the master\'s sync', () => {
+  const follower = ({ exists = true } = {}) => {
+    const provider = new VSACValueSetProvider({ apiKey: 'test', cluster: 'follower' }, {});
+    let generation = 1;
+    provider.database.getGeneration = async () => generation;
+    provider.database.exists = async () => exists;
+    return { provider, bump: () => { generation++; } };
+  };
+
+  test('the generation moving clears the recently used value sets and recounts', async () => {
+    const { provider, bump } = follower();
+    const recent = { clear: jest.fn() };
+    provider._recentValueSets = () => recent;
+    provider._recount = jest.fn(async () => {});
+    await provider._followDatabase();
+    expect(provider.loadedGeneration).toBe(1);
+    bump();
+    provider.generationCheckedAt = 0;
+    await provider.catchUp();
+    expect(recent.clear).toHaveBeenCalledTimes(2);
+    expect(provider._recount).toHaveBeenCalledTimes(2);
+    expect(provider.loadedGeneration).toBe(2);
+    // nothing moved: nothing done
+    provider.generationCheckedAt = 0;
+    await provider.catchUp();
+    expect(provider._recount).toHaveBeenCalledTimes(2);
+  });
+
+  test('before the master has made the database, nothing is read (which would create it)', async () => {
+    const { provider } = follower({ exists: false });
+    await provider.initialize();
+    const read = jest.spyOn(provider.database, 'listAllValueSets');
+    expect(await provider.fetchValueSet('http://cts.nlm.nih.gov/fhir/ValueSet/x', '')).toBeNull();
+    expect(await provider.fetchValueSetById('x')).toBeNull();
+    expect(await provider.listAllValueSets()).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+    expect(provider.loadedGeneration).toBeNull();
+  });
+});

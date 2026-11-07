@@ -22,9 +22,11 @@ provider.database.getGeneration = async () => {
   generationReads++;
   return getGeneration();
 };
+// (what a follower does at start and when the generation moves: clear the recently used
+// value sets and recount)
 let reloads = 0;
-const reload = provider._reloadMap.bind(provider);
-provider._reloadMap = async () => {
+const reload = provider._followDatabase.bind(provider);
+provider._followDatabase = async () => {
   reloads++;
   return reload();
 };
