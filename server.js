@@ -6,6 +6,11 @@
 // Licensed under BSD-3: https://opensource.org/license/bsd-3-clause
 //
 
+// Production unless told otherwise: Express and other libraries check NODE_ENV (in development
+// mode Express's error pages include stack traces), and a server where nobody set it should get
+// the safe behaviour. `npm run dev` (node --watch) runs in development mode
+process.env.NODE_ENV ??= process.execArgv.includes('--watch') ? 'development' : 'production';
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');

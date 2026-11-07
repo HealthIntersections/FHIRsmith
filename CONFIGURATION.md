@@ -121,7 +121,7 @@ counts in the statistics database for the period. The modules that report:
 |---|---|---|
 | `FHIRSMITH_DATA_DIR` | Path to the data directory | `./data` |
 | `PORT` | Server port (overrides config) | from config.json |
-| `NODE_ENV` | Node environment. Set it to `production` on a production server: Express and other libraries check it (in development mode, Express's error pages include stack traces). The Docker image sets it | unset (the Docker image: `production`) |
+| `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |
 
 ## Modules
 
