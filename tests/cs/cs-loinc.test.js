@@ -64,7 +64,7 @@ describe('LOINC Module Import', () => {
 
     // Verify database file was created
     expect(fs.existsSync(testDbPath)).toBe(true);
-  }, 120000); // 120 second timeout for import
+  });
 
   test('should have all expected tables with data', async () => {
     // Open database connection
