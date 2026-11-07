@@ -42,6 +42,27 @@ describe('server statistics', () => {
     }
   }
 
+  test('a late graph sample divides by the time that actually passed', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      stats.markStarted();
+      stats.countRequest('$expand', 10);
+      stats.countRequest('$expand', 30);
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, rpm:60, tat:20 });
+      for (let i = 0; i < 4; i++) stats.countRequest('$lookup', 10);
+      now += 4000; // the next nominal two-second sample is delayed by a stall
+      stats.recordMetrics();
+      // 4 requests in 4 s, not in the nominal 2 s (which would show 120)
+      expect(stats.history.at(-1)).toMatchObject({ time:now, rpm:60, tat:10 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test('counts are attributed by module, endpoint and operation', () => {
     const stats = newStats();
     const tx = stats.forModule('tx');

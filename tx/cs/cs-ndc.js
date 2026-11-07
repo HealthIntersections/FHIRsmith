@@ -3,6 +3,7 @@ const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemProvider, CodeSystemFactoryProvider} = require('./cs-api');
 const {validateArrayParameter} = require("../../library/utilities");
+const { guarded } = require('../library/sqlite-utilities');
 
 class NdcConcept {
   constructor(code, display, isPackage = false, key = null) {
@@ -256,7 +257,7 @@ class NdcServices extends CodeSystemProvider {
         params = [concept.key];
       }
 
-      this.db.get(sql, params, (err, row) => {
+      this.db.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (!row) {
@@ -285,7 +286,7 @@ class NdcServices extends CodeSystemProvider {
 
           resolve(result);
         }
-      });
+      }));
     });
   }
 
@@ -366,7 +367,7 @@ class NdcServices extends CodeSystemProvider {
         LIMIT 1
       `;
 
-      this.db.get(sql, [code, code], (err, row) => {
+      this.db.get(sql, [code, code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -378,7 +379,7 @@ class NdcServices extends CodeSystemProvider {
         } else {
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -391,7 +392,7 @@ class NdcServices extends CodeSystemProvider {
         LIMIT 1
       `;
 
-      this.db.get(sql, [code], (err, row) => {
+      this.db.get(sql, [code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -401,7 +402,7 @@ class NdcServices extends CodeSystemProvider {
         } else {
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -451,10 +452,10 @@ class NdcServices extends CodeSystemProvider {
           return;
       }
 
-      this.db.get(sql, (err, row) => {
+      this.db.get(sql, guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row.count);
-      });
+      }));
     });
   }
 
@@ -503,7 +504,7 @@ class NdcServices extends CodeSystemProvider {
           return;
       }
 
-      this.db.get(sql, [set._iterator.offset], (err, row) => {
+      this.db.get(sql, [set._iterator.offset], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -522,7 +523,7 @@ class NdcServices extends CodeSystemProvider {
           set._iterator.hasMore = false;
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -616,10 +617,10 @@ class NdcServicesFactory extends CodeSystemFactoryProvider {
     try {
       // Load version
       this._version = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT Version FROM NDCVersion ORDER BY Version DESC LIMIT 1', (err, row) => {
+        tempDb.get('SELECT Version FROM NDCVersion ORDER BY Version DESC LIMIT 1', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row ? row.Version : 'unknown');
-        });
+        }));
       });
 
       // Initialize lookup tables
@@ -640,30 +641,30 @@ class NdcServicesFactory extends CodeSystemFactoryProvider {
 
       for (const table of tables) {
         await new Promise((resolve, reject) => {
-          tempDb.all(table.sql, (err, rows) => {
+          tempDb.all(table.sql, guarded(reject, (err, rows) => {
             if (err) reject(err);
             else {
               const map = this._lookupTables[table.name];
               rows.forEach(row => map.set(row.NDCKey, row.Name));
               resolve();
             }
-          });
+          }));
         });
       }
 
       // Load counts
       this._packageCount = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCPackages', (err, row) => {
+        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCPackages', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row.count);
-        });
+        }));
       });
 
       this._productCount = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCProducts', (err, row) => {
+        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCProducts', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row.count);
-        });
+        }));
       });
 
     } finally {

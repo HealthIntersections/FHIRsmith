@@ -130,10 +130,10 @@ class ServerStats {
       const combinedCount = this.requestCount + this.staticRequestCount;
       const requestsDelta = combinedCount - this.requestCountSnapshot;
       const requestsTat = requestsDelta > 0 ? this.requestTime / requestsDelta : 0;
-      const minutesSinceStart = this.history.length > 1
-        ? this.intervalMs / 60000
-        : (now - this.startTime) / 60000;
-      const requestsPerMin = minutesSinceStart > 0 ? requestsDelta / minutesSinceStart : 0;
+      // Under load, the timer can run late. Use the actual time since the last sample, so
+      // an event-loop stall does not inflate the displayed request rate.
+      const intervalMinutes = (now - (this.lastTime ?? this.startTime)) / 60000;
+      const requestsPerMin = intervalMinutes > 0 ? requestsDelta / intervalMinutes : 0;
 
       const loopDelay = this.eventLoopMonitor.mean / 1e6;
       // Worst single stall in the window - the mean dilutes a multi-second

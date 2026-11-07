@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
 const { VersionUtilities } = require('../../library/version-utilities');
 const ValueSet = require("../library/valueset");
+const { guarded } = require('../library/sqlite-utilities');
 
 // Settings key written once a package cache has been fully populated (see isComplete)
 const CACHE_COMPLETE_KEY = 'cache-complete';
@@ -72,10 +73,10 @@ class ValueSetDatabase {
     // table_info` can race ahead of a `CREATE TABLE IF NOT EXISTS`, and
     // you get "no such table" errors on DDL that should have been fine.
     const run = (sql) => new Promise((res, rej) => {
-      db.run(sql, [], (err) => err ? rej(err) : res());
+      db.run(sql, [], guarded(rej, (err) => err ? rej(err) : res()));
     });
     const all = (sql) => new Promise((res, rej) => {
-      db.all(sql, [], (err, rows) => err ? rej(err) : res(rows));
+      db.all(sql, [], guarded(rej, (err, rows) => err ? rej(err) : res(rows)));
     });
 
     return (async () => {
@@ -152,7 +153,7 @@ class ValueSetDatabase {
             db.run(
                 'UPDATE valuesets SET content_hash = ? WHERE id = ?',
                 [hash, row.id],
-                (err) => err ? rej(err) : res()
+                guarded(rej, (err) => err ? rej(err) : res())
             );
           });
           done++;
@@ -202,14 +203,14 @@ class ValueSetDatabase {
         this._migrateIfNeeded(this._writeDb).then(resolve).catch(reject);
         return;
       }
-      this._writeDb = new sqlite3.Database(this.dbPath, (err) => {
+      this._writeDb = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
         if (err) {
           this._writeDb = null;
           reject(new Error(`Failed to open database for writing: ${err.message}`));
           return;
         }
         this._migrateIfNeeded(this._writeDb).then(resolve).catch(reject);
-      });
+      }));
     });
     // If migration fails, clear the cached promise so a retry can attempt again
     this._migrationPromise.catch(() => { this._migrationPromise = null; });
@@ -259,7 +260,7 @@ class ValueSetDatabase {
     await this.close();
 
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, (err) => {
+      const db = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to create database ${this.dbPath}: ${err.message}`));
           return;
@@ -381,7 +382,7 @@ class ValueSetDatabase {
             }
           });
         });
-      });
+      }));
     });
   }
 
@@ -496,10 +497,10 @@ class ValueSetDatabase {
   async getSetting(key) {
     const db = await this._getReadConnection();
     return new Promise((resolve, reject) => {
-      db.get('SELECT value FROM vsac_settings WHERE key = ?', [key], (err, row) => {
+      db.get('SELECT value FROM vsac_settings WHERE key = ?', [key], guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row ? row.value : null);
-      });
+      }));
     });
   }
 
@@ -571,19 +572,19 @@ class ValueSetDatabase {
 
     return new Promise((resolve, reject) => {
       // Step 1: Delete existing related records
-      db.run('DELETE FROM valueset_identifiers WHERE valueset_id = ?', [valueSet.id], (err) => {
+      db.run('DELETE FROM valueset_identifiers WHERE valueset_id = ?', [valueSet.id], guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to delete identifiers: ${err.message}`));
           return;
         }
 
-        db.run('DELETE FROM valueset_jurisdictions WHERE valueset_id = ?', [valueSet.id], (err) => {
+        db.run('DELETE FROM valueset_jurisdictions WHERE valueset_id = ?', [valueSet.id], guarded(reject, (err) => {
           if (err) {
             reject(new Error(`Failed to delete jurisdictions: ${err.message}`));
             return;
           }
 
-          db.run('DELETE FROM valueset_systems WHERE valueset_id = ?', [valueSet.id], (err) => {
+          db.run('DELETE FROM valueset_systems WHERE valueset_id = ?', [valueSet.id], guarded(reject, (err) => {
             if (err) {
               reject(new Error(`Failed to delete systems: ${err.message}`));
               return;
@@ -630,7 +631,7 @@ class ValueSetDatabase {
               valueSet.title || null,
               JSON.stringify(valueSet),
               contentHash
-            ], (err) => {
+            ], guarded(reject, (err) => {
               if (err) {
                 reject(new Error(`Failed to insert main record: ${err.message}`));
                 return;
@@ -638,10 +639,10 @@ class ValueSetDatabase {
 
               // Step 3: Insert related records
               this._insertRelatedRecords(db, valueSet, resolve, reject);
-            });
-          });
-        });
-      });
+            }));
+          }));
+        }));
+      }));
     });
   }
 
@@ -803,7 +804,7 @@ class ValueSetDatabase {
     const db = await this._getReadConnection();
 
     return new Promise((resolve, reject) => {
-      db.all('SELECT id, url, version, content, content_hash FROM valuesets', [], (err, rows) => {
+      db.all('SELECT id, url, version, content, content_hash FROM valuesets', [], guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Failed to load value sets: ${err.message}`));
           return;
@@ -827,7 +828,7 @@ class ValueSetDatabase {
         } catch (error) {
           reject(new Error(`Failed to parse value set content: ${error.message}`));
         }
-      });
+      }));
     });
   }
 
@@ -932,13 +933,13 @@ class ValueSetDatabase {
   async listVersionKeys() {
     const db = await this._getReadConnection();
     return new Promise((resolve, reject) => {
-      db.all('SELECT url, version FROM valuesets WHERE version IS NOT NULL', [], (err, rows) => {
+      db.all('SELECT url, version FROM valuesets WHERE version IS NOT NULL', [], guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Failed to list value set versions: ${err.message}`));
         } else {
           resolve(new Set(rows.map(row => `${row.url}|${row.version}`)));
         }
-      });
+      }));
     });
   }
 
@@ -1015,7 +1016,7 @@ class ValueSetDatabase {
     return new Promise((resolve, reject) => {
       const { query, params } = this._buildSearchQuery(searchParams, columnsToSelect);
 
-      db.all(query, params, (err, rows) => {
+      db.all(query, params, guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Search query failed: ${err.message}`));
           return;
@@ -1055,7 +1056,7 @@ class ValueSetDatabase {
         } catch (error) {
           reject(new Error(`Failed to parse search results: ${error.message}`));
         }
-      });
+      }));
     });
   }
 
@@ -1088,13 +1089,13 @@ class ValueSetDatabase {
   _readRows(db, ids) {
     return new Promise((resolve, reject) => {
       db.all('SELECT id, url, version, content, content_hash FROM valuesets WHERE id IN (SELECT value FROM json_each(?))',
-        [JSON.stringify(ids)], (err, rows) => {
+        [JSON.stringify(ids)], guarded(reject, (err, rows) => {
           if (err) {
             reject(new Error(`Failed to read value sets: ${err.message}`));
           } else {
             resolve(new Map(rows.map(row => [row.id, row])));
           }
-        });
+        }));
     });
   }
 
@@ -1108,7 +1109,7 @@ class ValueSetDatabase {
 
     return new Promise((resolve, reject) => {
       // Get URLs to delete first
-      db.all('SELECT url FROM valuesets WHERE last_seen < ?', [cutoffTimestamp], (err, rows) => {
+      db.all('SELECT url FROM valuesets WHERE last_seen < ?', [cutoffTimestamp], guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Failed to find old records: ${err.message}`));
           return;
@@ -1151,21 +1152,21 @@ class ValueSetDatabase {
 
         pendingDeletes = 3; // identifiers, jurisdictions, systems
 
-        db.run(`DELETE FROM valueset_identifiers WHERE valueset_id IN (${placeholders})`, idsToDelete, (err) => {
+        db.run(`DELETE FROM valueset_identifiers WHERE valueset_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
           if (err) deleteError(new Error(`Failed to delete identifier records: ${err.message}`));
           else deleteComplete();
-        });
+        }));
 
-        db.run(`DELETE FROM valueset_jurisdictions WHERE valueset_id IN (${placeholders})`, idsToDelete, (err) => {
+        db.run(`DELETE FROM valueset_jurisdictions WHERE valueset_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
           if (err) deleteError(new Error(`Failed to delete jurisdiction records: ${err.message}`));
           else deleteComplete();
-        });
+        }));
 
-        db.run(`DELETE FROM valueset_systems WHERE valueset_id IN (${placeholders})`, idsToDelete, (err) => {
+        db.run(`DELETE FROM valueset_systems WHERE valueset_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
           if (err) deleteError(new Error(`Failed to delete system records: ${err.message}`));
           else deleteComplete();
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -1202,17 +1203,17 @@ class ValueSetDatabase {
       };
 
       // Total count
-      db.get(queries[0], [], (err, row) => {
+      db.get(queries[0], [], guarded(reject, (err, row) => {
         if (err) {
           handleError(err);
           return;
         }
         results.totalValueSets = row.total;
         checkComplete();
-      });
+      }));
 
       // Status breakdown
-      db.all(queries[1], [], (err, rows) => {
+      db.all(queries[1], [], guarded(reject, (err, rows) => {
         if (err) {
           handleError(err);
           return;
@@ -1222,17 +1223,17 @@ class ValueSetDatabase {
           results.byStatus[row.status || 'null'] = row.count;
         }
         checkComplete();
-      });
+      }));
 
       // System count
-      db.get(queries[2], [], (err, row) => {
+      db.get(queries[2], [], guarded(reject, (err, row) => {
         if (err) {
           handleError(err);
           return;
         }
         results.totalSystems = row.systems;
         checkComplete();
-      });
+      }));
     });
   }
 
@@ -1362,7 +1363,7 @@ class ValueSetDatabase {
     const db = await this._getReadConnection();
 
     return new Promise((resolve, reject) => {
-      db.all('SELECT url FROM valuesets ORDER BY url', [], (err, rows) => {
+      db.all('SELECT url FROM valuesets ORDER BY url', [], guarded(reject, (err, rows) => {
         if (err) {
           reject(new Error(`Failed to list value sets: ${err.message}`));
           return;
@@ -1370,7 +1371,7 @@ class ValueSetDatabase {
 
         const urls = rows.map(row => row.url);
         resolve(urls);
-      });
+      }));
     });
   }
 }
