@@ -5,6 +5,7 @@
 const http = require('http');
 const path = require('path');
 const { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler } = require('../../cluster');
+const { defaultWorkers } = require('../../library/worker-count');
 const memoryGuard = require('../../library/memory-guard');
 
 const FAKE = path.join(__dirname, '..', 'utils', 'fake-upstream.js');
@@ -611,11 +612,14 @@ describe('the launcher, with fake processes', () => {
       // 5 GiB threshold, 2 GiB headroom, a 1.4 GiB master: 1 worker fits, not 2
       mem = { m0: 1.4 * GiB, tx1: 1.4 * GiB, tx2: 1.4 * GiB };
       excess = null; // each process on its own: the idle total is theirs added up
-      const { settings: s, logs } = recycling({ workersDefault: true, headroomBytes: 2 * GiB });
+      // the CPU rule gave 2 (4 cores, 4 vCPU); memory lowers it to 1
+      const workerDecision = defaultWorkers({ vcpu: 4, topology: { cpus: 4, cores: 4 }, quota: null, rule: 'classic' });
+      const { settings: s, logs } = recycling({ workersDefault: true, headroomBytes: 2 * GiB, workerDecision });
       launcher = createLauncher(s);
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(launcher.procs.map(p => p.code)).toEqual(['m0', 'tx1']);
+      expect(logs).toContain('workers 1: 4 physical cores (4 vCPU, SMT 1), quota none, memory fits 1 → classic rule min(4, round(0.6×4)) = 2, lowered to fit memory');
       expect(logs).toContain('memory: the master uses 1.4 GB loaded, so 3 processes would use about 4.2 GB idle; the memory guard refuses requests over the test threshold, and memoryHeadroomGB is 2.0: starting 1 worker(s), not 2 (set server.cluster.workers to choose)');
       await until(() => logs.some(m => /all processes loaded and idle/.test(m)));
       expect(logs.find(m => /all processes loaded and idle/.test(m))).toBe('memory: all processes loaded and idle use 2.8 GB, 2.2 GB under the threshold (memoryHeadroomGB 2.0)');

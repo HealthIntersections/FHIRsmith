@@ -6,7 +6,7 @@ several **tx-workers** on the same machine and data directory, with a front door
 each request to the right process:
 
 ```bash
-node cluster.js                 # the master, 2 workers, and a proxy on the configured port
+node cluster.js                 # the master, workers by CPU, and a proxy on the configured port
 ```
 
 or with nginx in front of separately started processes ([below](#with-nginx)).
@@ -163,7 +163,9 @@ with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is
 | Setting | Flag | Default | Meaning |
 |---|---|---|---|
 | `server.port` | `--port`, `PORT` | 3000 | The port clients use. |
-| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | 2, or fewer if memory is short | How many tx-workers. Not given: 2, or as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, with a warning if they don't fit. |
+| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | from the CPUs, or fewer if memory is short | How many tx-workers. Not given: by the engine's rule from the physical cores and vCPUs (see [How many workers](#how-many-workers)), then lowered to as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, always, with a warning if they don't fit. |
+| `server.cluster.cores` | | detected | The physical cores the rule uses, instead of the detected ones: for a machine whose topology the launcher can't see or reports wrongly. |
+| `server.cluster.workerRule` | | the engine's | The rule by name (`classic`, or one an engine adds). |
 | `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
@@ -415,6 +417,48 @@ checks: once the master is loaded, it takes the master's memory as each worker's
 threshold with `memoryHeadroomGB` (2) to spare, at least one. If it is given, they all start, with
 a `WARNING` line. If even one worker doesn't fit, that is a `WARNING` too, with the numbers. Once every worker is ready it logs what they all use idle, with a `WARNING` if
 less than the headroom is left.
+
+## How many workers
+
+With `server.cluster.workers` not given, the launcher derives it from the CPUs and logs the
+inputs and the decision in one line as the master is loaded:
+
+```
+workers 4: 4 physical cores (8 vCPU, SMT 2), quota none, memory fits 11 → classic rule min(4, round(0.6×8))
+```
+
+* **vCPU**: `os.availableParallelism()`, the CPUs this process may run on.
+* **physical cores**: the distinct cores among those CPUs, from
+  `/sys/devices/system/cpu/cpuN/topology/core_cpus_list` (`thread_siblings_list` on older
+  kernels). Where that can't be read (macOS, Windows, some hypervisors), the vCPUs.
+  `server.cluster.cores` overrides it.
+* **quota**: a cgroup v2 `cpu.max` on the launcher's cgroup or one enclosing it caps the cores
+  at `ceil(quota)`.
+
+| Engine | Rule | 4 vCPU, 4 cores | 8 vCPU, 4 cores (SMT) | 8 vCPU, 8 cores | 16 vCPU, 8 cores (SMT) |
+|---|---|---|---|---|---|
+| classic | `min(cores, round(0.6 × vCPU))` | 2 | 4 | 5 | 8 |
+
+Then at least 1, then lowered if the processes won't fit in memory (above). The master serves tx
+too, so there is one more tx process than workers. Physical cores, not vCPUs: a second
+hyperthread adds little to a process that is CPU-bound, and more processes than that only take
+turns on the same cores while each holds its own copy of the library in memory.
+
+What it rests on (classic engine; surge goodput in req/s, the same load generator and library;
+`w3` = 3 workers):
+
+| Machine | Measured | Rule |
+|---|---|---|
+| local, 4 vCPU = 4 cores | w2 1,678; w3 1,539 (cheap probe 918 ms, timeouts) | 2 |
+| local, 8 vCPU = 4 cores SMT | w3 1,592; w4 1,630; w5 1,615 | 4 |
+| GCP n2-standard-8, 8 vCPU = 4 cores SMT | about 1,550, flat from w3 to w6 | 4 |
+| GCP n2-standard-16, 1 thread per core: 8 vCPU = 8 cores | about 2,430, flat from w4 to w6 | 5 |
+
+The classic engine is flat past its rule's number: a process uses about 1.4-1.9 cores under load
+(its libuv pool), so more add memory, not throughput. An engine whose processes use the CPU
+differently adds its own rule (`registerWorkerRule` in `library/worker-count.js`). Machines of
+16 cores and more were not measured: the rule there is extrapolation, and `server.cluster.workers`
+is the way to choose.
 
 ## Limits of this arrangement
 
