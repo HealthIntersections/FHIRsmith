@@ -341,7 +341,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   _retryDelayMs(failures) {
     const delays = VSACValueSetProvider.RETRY_DELAYS_MS;
     const delay = delays[Math.min(failures, delays.length) - 1];
-    return Math.min(delay, this.refreshIntervalHours * 60 * 60 * 1000);
+    return Math.min(delay, this._refreshIntervalMs());
   }
 
   /**
@@ -358,7 +358,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
 
     const intervalMs = this._refreshIntervalMs();
-    this.refreshTimer = setInterval(async () => {
+    this.refreshTimer = setTimeout(async () => {
+      let next = intervalMs;
       try {
         await this.refreshValueSets();
         this._failedSyncs = 0;
@@ -899,7 +900,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         isRefreshing: this.isRefreshing,
         refreshIntervalHours: this.refreshIntervalHours,
         nextRefresh: this.refreshTimer && this.lastRefresh
-            ? new Date(this.lastRefresh.getTime() + (this.refreshIntervalHours * 60 * 60 * 1000))
+            ? new Date(this.lastRefresh.getTime() + this._refreshIntervalMs())
             : null
       }
     };

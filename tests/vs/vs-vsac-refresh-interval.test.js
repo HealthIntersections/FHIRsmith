@@ -35,14 +35,14 @@ describe('VSAC refresh interval', () => {
   });
 
   test('the timer is started with the clamped delay', () => {
-    const spy = jest.spyOn(global, 'setInterval');
+    const spy = jest.spyOn(global, 'setTimeout');
     const p = provider(100000);
     try {
       p._startRefreshTimer();
       expect(spy).toHaveBeenCalledTimes(1);
       expect(spy.mock.calls[0][1]).toBe(2 ** 31 - 1);
     } finally {
-      clearInterval(p.refreshTimer);
+      clearTimeout(p.refreshTimer);
       spy.mockRestore();
     }
   });
