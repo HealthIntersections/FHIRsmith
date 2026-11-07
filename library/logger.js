@@ -299,6 +299,37 @@ class Logger {
     };
   }
 
+  // Apply config.logging to a logger that is already running (the server starts logging with the
+  // defaults before config.json is read). Same options as the constructor; anything not given keeps
+  // its default
+  configure(options = {}) {
+    this._flushSync();
+    this.level = options.level || DEFAULTS.level;
+    this.maxFiles = options.maxFiles ?? DEFAULTS.maxFiles;
+    this.maxSize = Logger._parseSize(options.maxSize) || DEFAULTS.maxSize;
+    this.showConsole = options.console ?? DEFAULTS.console;
+    this.consoleErrors = options.consoleErrors ?? DEFAULTS.consoleErrors;
+    this._flushSize = options.flushSize ?? DEFAULTS.flushSize;
+
+    clearInterval(this._flushTimer);
+    this._flushTimer = setInterval(() => this._flush(), options.flushInterval ?? DEFAULTS.flushInterval);
+    if (this._flushTimer.unref) this._flushTimer.unref();
+
+    if (options.logDir && path.resolve(options.logDir) !== path.resolve(this.logDir)) {
+      if (this._fd !== null) {
+        try { fs.closeSync(this._fd); } catch (_) { /* intentional */ }
+      }
+      this._fd = null;
+      this._currentDate = null;
+      this._currentFileSize = 0;
+      this.logDir = options.logDir;
+      if (!fs.existsSync(this.logDir)) {
+        fs.mkdirSync(this.logDir, { recursive: true });
+      }
+    }
+    this.info('Logger configured @ ' + this.logDir + ', level ' + this.level, {});
+  }
+
   setLevel(level) {
     this.level = level;
     this.info(`Log level changed to ${level}`);

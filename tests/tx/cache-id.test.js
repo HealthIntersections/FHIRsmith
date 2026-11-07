@@ -211,12 +211,45 @@ describe('cache-id protocol (integration)', () => {
       expect(isUnknownCacheError(res)).toBe(true);
     });
 
+    // another 3-concept code system, put in the cache first, so that a request with colorsCS
+    // goes over a limit of 4 only together with what the cache already holds
+    const shadesCS = { ...colorsCS, id: 'shades', url: 'http://example.org/fhir/CodeSystem/shades' };
+    const seedCache = (cid) => post(app, VALIDATE, [
+      cacheIdParam(cid, 'valueId'),
+      { name: 'tx-resource', resource: shadesCS },
+      { name: 'valueSet', resource: colorsVS },
+      { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+    ]);
+
+    test('a request too big for any cache on its own is refused (422 too-costly), and the cache is kept', async () => {
+      const cache = getTxModule().endpoints.find(e => e.path === '/tx/r5').resourceCache;
+      const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
+      try {
+        const cid = await startCache(app);
+        cache.setLimits(2, Infinity); // colorsCS has 3 concepts: no cache can take it
+        const r = await post(app, VALIDATE, [
+          cacheIdParam(cid, 'valueId'),
+          { name: 'tx-resource', resource: colorsCS },
+          { name: 'valueSet', resource: colorsVS },
+          { name: 'coding', valueCoding: { system: colorsCS.url, code: 'red' } }
+        ]);
+        expect(r.status).toBe(422);
+        expect(isUnknownCacheError(r)).toBe(false);
+        expect(r.body.issue[0].extension).toEqual([{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_REQUEST_TOO_BIG' }]);
+        expect(r.body.issue[0].details.text).toMatch(/This request's resources hold 3 concepts, more than this server allows in one cache \(2/);
+        expect(cache.has(cid)).toBe(true);
+      } finally {
+        cache.setLimits(...saved);
+      }
+    });
+
     test('a request that would take a cache past cacheMaxConcepts drops it: 404 cache-id-unknown, one issue, not performed', async () => {
       const cache = getTxModule().endpoints.find(e => e.path === '/tx/r5').resourceCache;
       const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
       try {
         const cid = await startCache(app);
-        cache.setLimits(2, Infinity); // colorsCS has 3 concepts
+        cache.setLimits(4, Infinity); // colorsCS has 3 concepts: one fits, two don't
+        await seedCache(cid); // the cache holds 3 concepts, so colorsCS fits on its own, but not with them
         const over = await post(app, VALIDATE, [
           cacheIdParam(cid, 'valueId'),
           { name: 'tx-resource', resource: colorsCS },
@@ -233,7 +266,7 @@ describe('cache-id protocol (integration)', () => {
         expect(issue.code).toBe('not-found');
         expect(issue.details.coding).toEqual([{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'cache-id-unknown' }]);
         expect(issue.extension).toEqual([{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_ID_DISCARDED_TOO_BIG' }]);
-        expect(issue.details.text).toBe(`The cache '${cid}' grew too large: this request would have taken it over 2 concepts, ` +
+        expect(issue.details.text).toBe(`The cache '${cid}' grew too large: this request would have taken it over 4 concepts, ` +
           'the most this server allows in one cache (cacheMaxConcepts), so the server has dropped the cache. ' +
           'This operation has not been performed. Start a new cache, and send the request again');
 
@@ -245,7 +278,7 @@ describe('cache-id protocol (integration)', () => {
         expect(after.status).toBe(404);
         expect(isUnknownCacheError(after)).toBe(true);
         expect(after.body.issue[0].extension[0].valueString).toBe('CACHE_ID_DISCARDED');
-        expect(after.body.issue[0].details.text).toMatch(/was dropped .* ago because it grew too large: a request would have taken it over 2 concepts.*This operation has not been performed/);
+        expect(after.body.issue[0].details.text).toMatch(/was dropped .* ago because it grew too large: a request would have taken it over 4 concepts.*This operation has not been performed/);
       } finally {
         cache.setLimits(...saved);
       }
@@ -256,7 +289,8 @@ describe('cache-id protocol (integration)', () => {
       const saved = [cache.maxConceptsPerCache, cache.maxTotalConcepts];
       try {
         const cid = await startCache(app);
-        cache.setLimits(2, Infinity); // colorsCS has 3 concepts
+        cache.setLimits(4, Infinity); // colorsCS has 3 concepts: one fits, two don't
+        await seedCache(cid); // the cache holds 3 concepts, so colorsCS fits on its own, but not with them
         // a batch takes its cache-id from the header
         const over = await request(app).post('/tx/r5/ValueSet/$batch-validate-code')
           .set('Accept', 'application/json').set('Content-Type', 'application/json').set('x-cache-id', cid)

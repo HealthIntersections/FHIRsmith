@@ -829,11 +829,21 @@ class TerminologyWorker {
     try {
       this.opContext.resourceCache.add(cacheId, resources);
     } catch (e) {
-      if (e.msgId === 'CACHE_ID_DISCARDED_TOO_BIG' && e.msgParams) {
-        e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
-      }
-      throw e;
+      throw this.translateCacheIssue(e);
     }
+  }
+
+  /**
+   * The resource cache raises its limits (CACHE_ID_DISCARDED_TOO_BIG, CACHE_REQUEST_TOO_BIG,
+   * CACHE_START_TOO_BIG) in English, with their parameters: put the message in the request's language
+   * @param {Error} e
+   * @returns {Error} e
+   */
+  translateCacheIssue(e) {
+    if (e && e.msgId && e.msgParams) {
+      e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
+    }
+    return e;
   }
 
   /**

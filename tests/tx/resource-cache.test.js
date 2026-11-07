@@ -453,6 +453,24 @@ describe('ResourceCache', () => {
       expect(cache.describeMissing('c1')).toEqual({ messageId: 'CACHE_ID_DISCARDED', params: ['c1', expect.any(String), 10] });
     });
 
+    test('a request too big for any cache is refused (422), and the cache is kept', () => {
+      cache.setLimits(10, 100);
+      cache.add('c1', [sized(CS('http://a', '1'), 4)]);
+      // on its own, more than one cache may hold: a new cache couldn't take it either
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 6), sized(VS('http://c', '1'), 5)])).toThrow(expect.objectContaining({
+        statusCode: 422, issueCode: 'too-costly',
+        message: expect.stringMatching(/This request's resources hold 11 concepts, more than this server allows in one cache \(10/)
+      }));
+      expect(cache.has('c1')).toBe(true);
+      expect(cache.conceptCountFor('c1')).toBe(4);
+      expect(cache.conceptCount()).toBe(4);
+      // the same into a cache that doesn't exist yet
+      expect(() => cache.add('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422 }));
+      expect(cache.has('c2')).toBe(false);
+      // a resource sent twice is counted once, so this fits on its own, and only the cache plus it goes over
+      expect(() => cache.add('c1', [sized(CS('http://b', '1'), 7), sized(CS('http://b', '1'), 7)])).toThrow(expect.objectContaining({ statusCode: 404, msgId: 'CACHE_ID_DISCARDED_TOO_BIG' }));
+    });
+
     test('a new cache too big to start is refused (nothing to discard)', () => {
       cache.setLimits(10, 100);
       expect(() => cache.set('c2', [sized(CS('http://b', '1'), 11)])).toThrow(expect.objectContaining({ statusCode: 422, issueCode: 'too-costly' }));

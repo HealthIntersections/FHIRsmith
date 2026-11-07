@@ -147,8 +147,11 @@ class ResourceCache {
    */
   _checkLimit(cacheId, concepts) {
     if (concepts > this.maxConceptsPerCache) {
-      throw new Issue('error', 'too-costly', null, null,
-        `The cache '${cacheId}' would hold ${concepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache})`, 'too-costly', 422).handleAsOO(422);
+      // (in English: the worker translates it into the request's language)
+      const err = new Issue('error', 'too-costly', null, 'CACHE_START_TOO_BIG',
+        `The cache '${cacheId}' would hold ${concepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache}, cacheMaxConcepts)`, 'too-costly', 422).handleAsOO(422);
+      err.msgParams = [cacheId, concepts, this.maxConceptsPerCache];
+      throw err;
     }
   }
 
@@ -462,6 +465,26 @@ class ResourceCache {
         // response or be copied by structuredClone/spread when a VS is cloned.
         Object.defineProperty(resource, 'isCached', { value: true, enumerable: false, configurable: true, writable: true });
       }
+    }
+
+    // What this request brings on its own (a resource sent twice counted once). If that alone is
+    // more than one cache may hold, no cache can take it - a new one would be dropped too, and the
+    // client would retry in vain - so the request is refused as too costly (422), and the cache,
+    // which isn't the problem, is kept
+    const own = new Map();
+    for (const resource of resources) {
+      own.set(this._resourceKey(resource), this._conceptsOf(resource));
+    }
+    let ownConcepts = 0;
+    for (const n of own.values()) {
+      ownConcepts += n;
+    }
+    if (ownConcepts > this.maxConceptsPerCache) {
+      // (in English: the worker translates it into the request's language - see addToClientCache)
+      const err = new Issue('error', 'too-costly', null, 'CACHE_REQUEST_TOO_BIG',
+        `This request's resources hold ${ownConcepts} concepts, more than this server allows in one cache (${this.maxConceptsPerCache}, cacheMaxConcepts), so no cache can hold them`, 'too-costly', 422).handleAsOO(422);
+      err.msgParams = [ownConcepts, this.maxConceptsPerCache];
+      throw err;
     }
 
     const entry = this.cache.get(cacheId) || { resources: [], createdAt: Date.now(), lastUsed: Date.now(), concepts: 0 };
@@ -1066,7 +1089,10 @@ class OperationContext {
     // providers are cleaned up by the parent request's closeProviders().
     // closed: closeProviders() has run, so one registered later (a build that
     // finished after the client went) is closed at once - nothing else will.
-    this._providers = { open: [], closed: false };
+    // built: the providers built so far, factory -> variant -> provider (see
+    // buildProviderOnce), kept with the list that
+    // closes them, so whatever shares one shares the other.
+    this._providers = { open: [], closed: false, built: new Map() };
     // Compute-time accounting for the deadline and for yielding. One object,
     // shared by reference with copy()'d contexts, so an operation and its
     // sub-operations (e.g. batch entries) draw down a single budget:
@@ -1124,7 +1150,7 @@ class OperationContext {
     // are released when the parent operation ends - unless the caller will
     // release them itself, with a list of its own.
     if (options.ownProviders) {
-      newContext._providers = { open: [], closed: false };
+      newContext._providers = { open: [], closed: false, built: new Map() };
     } else {
       newContext._providers = this._providers;
     }
@@ -1410,6 +1436,40 @@ class OperationContext {
   }
 
   /**
+   * A provider built once for this operation (and the copies that share its providers) and
+   * reused after that: a value set with an include per code asks for the same code system
+   * once per include, and each build of a database-backed one is a connection held until
+   * the operation ends. The promise is kept, so calls that overlap share one build; a failed
+   * build is not kept, so the next call tries again. The caller registers the provider for
+   * closing (registerProvider), as for any other.
+   *
+   * @param {Object} factory - the factory that builds it (the same factory object is the same
+   *   code system and version, however it was looked up)
+   * @param {string} variant - what else makes a different provider (see Provider.buildOnce:
+   *   the supplements)
+   * @param {function(): Promise<Object>} build
+   * @returns {Promise<Object>}
+   */
+  buildProviderOnce(factory, variant, build) {
+    let built = this._providers.built.get(factory);
+    if (!built) {
+      built = new Map();
+      this._providers.built.set(factory, built);
+    }
+    let provider = built.get(variant);
+    if (!provider) {
+      provider = Promise.resolve(build());
+      provider.catch(() => {
+        if (built.get(variant) === provider) {
+          built.delete(variant);
+        }
+      });
+      built.set(variant, provider);
+    }
+    return provider;
+  }
+
+  /**
    * Close every provider registered during this operation, including through
    * a copy. Safe to call multiple times — the list is emptied each time. Errors
    * from individual close() calls are swallowed so one bad provider can't
@@ -1417,6 +1477,8 @@ class OperationContext {
    */
   async closeProviders() {
     this._providers.closed = true;
+    // nothing closed is handed out again
+    this._providers.built.clear();
     const providers = this._providers.open.splice(0);
     for (const p of providers) {
       try {
