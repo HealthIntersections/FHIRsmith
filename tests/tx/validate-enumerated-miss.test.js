@@ -81,7 +81,7 @@ describe('otherFormMatch gives what the old loop gave', () => {
     locate: jest.fn(async (code) => ({ context: byForm.get(code) || null })),
     classificationCode: async (ctxt) => ctxt.short,
     code: async (ctxt) => ctxt.id,
-    prefetchCodes: async () => {} // (CodeSystemProvider's default: a hint, nothing to do)
+    prefetchCodes: async () => null // (CodeSystemProvider's default: no prefetching)
   });
   const checker = Object.create(ValueSetChecker.prototype);
   checker.worker = { deadCheck: () => {} };

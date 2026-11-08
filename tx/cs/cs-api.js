@@ -727,9 +727,12 @@ class CodeSystemProvider {
   /**
    
    * @param {string } code
+   * @param {*} [prefetched] - a handle that prefetchCodes() returned for a list holding this code, or
+   *   null. A provider uses it only if it is one of its own; otherwise it looks the code up as usual
    * @returns {{context : CodeSystemProviderContext, message : String} the result of looking for the code
    */
-  async locate(code) { throw new Error("Must override"); }
+  // eslint-disable-next-line no-unused-vars
+  async locate(code, prefetched = null) { throw new Error("Must override"); }
 
   /**
    
@@ -872,17 +875,19 @@ class CodeSystemProvider {
   }
 
   /**
-   * A hint, before the worker locates each code of a list one at a time: the concepts a value set
-   * include or exclude lists ($expand), or that validate-code compares a code with. A provider
-   * that answers locate() from a database may read the codes together here, and answer the
-   * locate() calls that follow from what it read, for this request only. The default does
-   * nothing, and a provider that ignores the hint gets the same calls as before.
+   * Before the worker locates each code of a list one at a time: the concepts a value set include
+   * or exclude lists ($expand), or that validate-code compares a code with. A provider that
+   * answers locate() from a database may read the codes together here and return a handle to
+   * what it read: an object of its own, opaque to the worker. The worker passes the handle back
+   * as locate(code, prefetched) for each code of that list, and drops it when the loop ends. The
+   * provider keeps no state of its own for this: two lists in progress have two handles.
    *
    * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
    * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations
+   * @returns {Promise<*>} the handle, or null: this provider does no prefetching (the default)
    */
   // eslint-disable-next-line no-unused-vars
-  async prefetchCodes(codes, withDesignations) { }
+  async prefetchCodes(codes, withDesignations) { return null; }
 
   /**
    * returns true if a filter is supported

@@ -1031,13 +1031,13 @@ class ValueSetExpander {
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
-          // a hint: each listed code is located next (a provider may read them together)
-          await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
+          // each listed code is located next: a provider may read them together, and hand back what it read
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
-            const cctxt = await cs.locate(cc.code, this.allAltCodes);
+            const cctxt = await cs.locate(cc.code, prefetched);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
               const ecode = await cs.expansionCode(cctxt.context, cc.code);
@@ -1319,13 +1319,13 @@ class ValueSetExpander {
           const cds = new Designations(this.worker.i18n.languageDefinitions);
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
-          // a hint: each listed code is located next (a provider may read them together)
-          await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
+          // each listed code is located next: a provider may read them together, and hand back what it read
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
-            const cctxt = await cs.locate(cc.code, this.allAltCodes);
+            const cctxt = await cs.locate(cc.code, prefetched);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
                 let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
@@ -2211,12 +2211,12 @@ class ValueSetExpander {
     const keys = new Set();
     const expandLimit = cs.expandLimitation();
     let capCount = expandLimit > 0 && this.csCounter.has(cs.system()) ? this.csCounter.get(cs.system()).count : 0;
-    // a hint: each listed code is located next (a provider may read them together); counting
-    // builds nothing, so designations aren't wanted
-    await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
+    // each listed code is located next: a provider may read them together, and hand back what it
+    // read; counting builds nothing, so designations aren't wanted
+    const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
     for (const cc of cset.concept) {
       await this.worker.checkAndYield('countListedCodes');
-      const cctxt = await cs.locate(cc.code, this.allAltCodes);
+      const cctxt = await cs.locate(cc.code, prefetched);
       if (!cctxt || !cctxt.context) {
         continue;
       }

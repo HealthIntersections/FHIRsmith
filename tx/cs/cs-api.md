@@ -197,7 +197,7 @@ Override `handlesSelecting()` to return `true` and then implement
 
 - **When it is called.** `$expand` hands over a compose that selects from this code system
   alone (one system|version), imports no value sets, has no text filter and lists no concepts.
-  Value sets that list concepts take the usual path (see `prefetchCodes` under Lookup).
+  Value sets that list concepts take the usual path: `locate`, with a `prefetchCodes` handle (see Lookup).
 - **Declining.** Return `null` for anything the provider doesn't support (an unknown filter,
   say). The compose then goes through the filter workflow above, as for any other provider.
 - **Paging.** The provider applies `offset` (-1: none given, start at 0) and `count`
@@ -238,9 +238,9 @@ Lookup supports the `$lookup` and `$validate-code` operations.
 
 | Method | Description |
 |---|---|
-| `locate(code)` | Look up a code by string. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
+| `locate(code, prefetched)` | Look up a code by string. `prefetched` is a handle from `prefetchCodes` for a list holding the code, or `null`; ignore it unless it is one of yours. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
 | `locateIsA(code)` | Look up a code within the scope of a parent concept. Required only if `hasParents()` returns `true`. |
-| `prefetchCodes(codes, withDesignations)` | A hint before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and answer the `locate()` calls that follow from that read, for this request only. Default: does nothing. |
+| `prefetchCodes(codes, withDesignations)` | Called before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and return a handle to what it read; the worker passes it back as `locate(code, prefetched)` for each code of that list, then drops it. No state on the provider. Default: returns `null` (no prefetching). |
 | `extendLookup(ctxt, props, params)` | Called during `$lookup` to allow the provider to add extra properties to the response `Parameters`. The `props` array lists the property names requested by the client. |
 
 The server calls `locate()` first to confirm the code exists, then uses the returned context
