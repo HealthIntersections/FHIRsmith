@@ -1,33 +1,40 @@
 # A master and terminology workers on one machine
 
-One Node.js process runs JavaScript on one CPU core. A terminology server under load from
-several IG Publisher builds at once can use more. FHIRsmith can run as one **master** and
-several **tx-workers** on the same machine and data directory, with a front door that sends
-each request to the right process:
+By default, FHIRsmith runs as a simple server, where one Node.js process runs JavaScript on one CPU core.
+A terminology server under load from many clients can use more than one CPU core. To support such usage,
+FHIRsmith can run as one **master** and several **tx-workers** on the same machine and data directory, with
+a front door that sends each request to the right process:
 
 ```bash
 node cluster.js                 # the master, workers by CPU, and a proxy on the configured port
 ```
 
-with nginx in front of it, or with nginx in front of separately started processes
-([below](#with-nginx)). Either way, nginx is the front door: the launcher is not built to face
-clients itself.
+Note that nginx is the front door in either simple server or cluster mode: the launcher is not built to face clients itself.
 
-`node server.js` with no `--role` is unchanged: one process, every module, as before. One
-difference: `--port` or `--instance-code` without `--role` now stops it with an error, where
-before they were ignored.
+The cluster runs behind a reverse proxy to manage security etc. Note that the reverse proxy can 
+also be used to manage a virtual cluster of servers, but under such an arrangement, the servers 
+are not tightly connected the way they are when FHIRsmith is run as a single cluster; we do not 
+recommend mixing these two approaches together.
 
-* [Roles](#roles)
-* [What runs where](#what-runs-where)
-* [Routing](#routing)
-* [The launcher (cluster.js)](#the-launcher-clusterjs)
+Also note that if you run `node server.js` directly, the cluster settings are ignored, and you get 
+a normal single process server. 
+
+* [How the Cluster works](#how-the-cluster-works)
 * [Graphs](#graphs)
-  * [Request counts](#request-counts)
-* [With nginx](#with-nginx)
+* [Configuration](#configuration)
 * [Options](#options)
 * [Memory](#memory)
 * [How many workers](#how-many-workers)
 * [Limits of this arrangement](#limits-of-this-arrangement)
+
+## How the Cluster works
+
+If you are looking to configure a cluster, see [below](#configuration). You don't need to concern yourself with roles etc.;
+this section just explains how the cluster works.
+
+`node server.js` with no `--role` is unchanged: one process, every module, as before. One
+difference: `--port` or `--instance-code` without `--role` now stops it with an error, where
+before they were ignored.
 
 The settings this uses are under `server.cluster` and `server.memory` in `config.json`;
 [CONFIGURATION.md](CONFIGURATION.md#cluster) lists them with the rest of the server's
@@ -128,7 +135,7 @@ Whatever the front door, the rules are the same:
 The [options](#options) change rules 1 and 3: with `sharedClosure`, `$closure` goes by rule 4;
 with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is on).
 
-## The launcher (cluster.js)
+## Nginx note about clusters
 
 **Always run the launcher behind nginx, on the same host, with request buffering on**
 (`proxy_request_buffering on`, nginx's default), as one upstream:
@@ -146,6 +153,8 @@ limits on what clients send. The same host, because the launcher believes `X-For
 only from a loopback address: from any other it sets it to `http`, so behind an HTTPS nginx on
 another machine the servers would advertise `http://` URLs, and the publisher's `Secure` login
 cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
+
+## The launcher (cluster.js)
 
 `node cluster.js` reads `config.json` from the data directory and:
 
@@ -223,59 +232,6 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 * if the launcher itself dies (even by `SIGKILL`), each process it started sees its IPC channel
   close and shuts down, so none is left holding its port against the next launcher. A
   process started by hand has no channel, and this doesn't apply to it
-
-```json
-"server": {
-  "port": 3000,
-  "cluster": { "workers": 4, "masterServesTx": true, "internalPort": 3001, "drainSeconds": 30 }
-}
-```
-
-| Setting | Flag | Default | Meaning |
-|---|---|---|---|
-| `server.port` | `--port`, `PORT` | 3000 | The port clients use. |
-| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | from the CPUs, or fewer if memory is short | How many tx-workers. Not given: by the engine's rule from the physical cores and vCPUs (see [How many workers](#how-many-workers)), then lowered to as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, always, with a warning if they don't fit. A whole number (anything else stops the launcher with an error); 0: the master alone. |
-| `server.cluster.cores` | | detected | The physical cores the rule uses, instead of the detected ones: for a machine whose topology the launcher can't see or reports wrongly. |
-| `server.cluster.workerRule` | | the engine's | The rule by name (`classic`, or one an engine adds). |
-| `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
-| `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
-| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. A range that includes `server.port` stops the launcher with an error. |
-| `server.cluster.bindAddress` | | `127.0.0.1` | The address the master and the workers listen on (see [Roles](#roles)), and the launcher reaches them at (loopback for `"0.0.0.0"` or `"::"`). Not the launcher's own port, which is `server.port` on every interface. |
-| `server.cluster.drainSeconds` | | 30 | How long the requests in progress get to finish when the launcher stops, and on a tx-worker before a memory recycle stops it; a request still running then is cut short. 30: half again the operation limit (`modules.tx.operationTimeLimit`, 20 s), so an operation in progress finishes or reaches its limit. 0: no wait. |
-| `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
-| `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
-| `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
-| `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
-| `server.cluster.upstreamTimeoutSeconds` | | 60 | Seconds from sending a request to a process until its response begins, after which the client gets 504 (an OperationOutcome naming the process) and the request is aborted. 60: an operation stops at its limit (`modules.tx.operationTimeLimit`, 20 s), but that limit counts the operation's own compute, not the turns it waits while the others on its event loop run (up to `maxOutstanding` of them), so a heavy operation in a busy process takes longer than 20 s by the clock. Three times the limit leaves room for that; a process silent for longer is taken to be wedged (a stuck event loop, a hung native call), not working. The time a request waits in the launcher's queue is not counted. Raise it with the operation limit. 0: no timeout. |
-| `server.cluster.writeTimeoutSeconds` | | 60 | Seconds a client may take none of the response waiting for it in the launcher before its connection is closed (the client sees the response cut short). It bounds how long a client that doesn't read holds the launcher's memory (a tx response) or a process's request (any other). 60: a client that reads takes some within milliseconds, so this is about a thousand times what a reading client needs; it is nginx's own `send_timeout`, and behind nginx with buffering on (the default), nginx takes the response at once and this never fires. 0: no timeout. |
-| `server.cluster.maxStartFailures` | | 6 | Times in a row the master may exit without ever having been ready before the launcher gives up and exits 1. Without it, a master that can't start left a launcher that ran but never listened, which systemd counts as up. 6: the waits between starts (1, 2, 4, 8, 16 s) put the sixth start 31 s after the first failure, past the 30 s an old process still shutting down may hold the port for. Once the master has been ready, it is started again however often it exits, as a worker always is. Clients see no difference: nothing listens either way. Logged with the master's first start. 0: never give up. |
-| `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
-| `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
-| `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |
-| `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
-| `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
-| `modules.tx.instanceCode` | | `m0` under the launcher | The master's instance code. The workers are `tx1`, `tx2`, ... The `m0` default is the launcher's: a master started by hand needs this, `--instance-code` or `FHIRSMITH_INSTANCE_CODE` (see [Roles](#roles)). |
-
-Under systemd, the launcher and its processes are one unit and one cgroup:
-
-```ini
-[Service]
-WorkingDirectory=/opt/fhirsmith
-Environment=FHIRSMITH_DATA_DIR=/var/lib/fhirsmith
-ExecStart=/usr/bin/node cluster.js
-KillMode=mixed
-MemoryMax=16G
-TimeoutStopSec=2min
-```
-
-A stop can take `drainSeconds` (30), then up to 30 s for the workers to shut down, 5 s for
-their last request counts, and up to 30 s for the master: 95 s at the most, usually a few
-seconds. So give the service manager longer than that before it kills everything. systemd's
-default `TimeoutStopSec` is 90 s. Docker's default stop timeout is 10 s, shorter than the drain
-alone, after which it kills the launcher and every process with it, mid-request; set
-`stop_grace_period: 2m` (Compose) or `docker stop -t 120`, and run the launcher as the
-container's main process (`CMD ["node", "cluster.js"]` in place of the image's `server.js`,
-not under a shell) so it gets the `SIGTERM`.
 
 ## Graphs
 
@@ -360,11 +316,60 @@ is ready again. So:
   stability paragraph;
 * **without the launcher** (roles behind nginx), there is no Cluster paragraph.
 
-## With nginx
+## Configuration
 
-nginx can be the front door instead: start the processes yourself (master first, workers once
-it answers `/health`), and use the configuration in
-[nginx.md](nginx.md#a-master-and-tx-workers-on-one-machine), which applies the same rules.
+```json
+"server": {
+  "port": 3000,
+  "cluster": { "workers": 4, "masterServesTx": true, "internalPort": 3001, "drainSeconds": 30 }
+}
+```
+
+| Setting | Flag | Default | Meaning |
+|---|---|---|---|
+| `server.port` | `--port`, `PORT` | 3000 | The port clients use. |
+| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | from the CPUs, or fewer if memory is short | How many tx-workers. Not given: by the engine's rule from the physical cores and vCPUs (see [How many workers](#how-many-workers)), then lowered to as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, always, with a warning if they don't fit. A whole number (anything else stops the launcher with an error); 0: the master alone. |
+| `server.cluster.cores` | | detected | The physical cores the rule uses, instead of the detected ones: for a machine whose topology the launcher can't see or reports wrongly. |
+| `server.cluster.workerRule` | | the engine's | The rule by name (`classic`, or one an engine adds). |
+| `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
+| `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
+| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. A range that includes `server.port` stops the launcher with an error. |
+| `server.cluster.bindAddress` | | `127.0.0.1` | The address the master and the workers listen on (see [Roles](#roles)), and the launcher reaches them at (loopback for `"0.0.0.0"` or `"::"`). Not the launcher's own port, which is `server.port` on every interface. |
+| `server.cluster.drainSeconds` | | 30 | How long the requests in progress get to finish when the launcher stops, and on a tx-worker before a memory recycle stops it; a request still running then is cut short. 30: half again the operation limit (`modules.tx.operationTimeLimit`, 20 s), so an operation in progress finishes or reaches its limit. 0: no wait. |
+| `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
+| `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
+| `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
+| `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
+| `server.cluster.upstreamTimeoutSeconds` | | 60 | Seconds from sending a request to a process until its response begins, after which the client gets 504 (an OperationOutcome naming the process) and the request is aborted. 60: an operation stops at its limit (`modules.tx.operationTimeLimit`, 20 s), but that limit counts the operation's own compute, not the turns it waits while the others on its event loop run (up to `maxOutstanding` of them), so a heavy operation in a busy process takes longer than 20 s by the clock. Three times the limit leaves room for that; a process silent for longer is taken to be wedged (a stuck event loop, a hung native call), not working. The time a request waits in the launcher's queue is not counted. Raise it with the operation limit. 0: no timeout. |
+| `server.cluster.writeTimeoutSeconds` | | 60 | Seconds a client may take none of the response waiting for it in the launcher before its connection is closed (the client sees the response cut short). It bounds how long a client that doesn't read holds the launcher's memory (a tx response) or a process's request (any other). 60: a client that reads takes some within milliseconds, so this is about a thousand times what a reading client needs; it is nginx's own `send_timeout`, and behind nginx with buffering on (the default), nginx takes the response at once and this never fires. 0: no timeout. |
+| `server.cluster.maxStartFailures` | | 6 | Times in a row the master may exit without ever having been ready before the launcher gives up and exits 1. Without it, a master that can't start left a launcher that ran but never listened, which systemd counts as up. 6: the waits between starts (1, 2, 4, 8, 16 s) put the sixth start 31 s after the first failure, past the 30 s an old process still shutting down may hold the port for. Once the master has been ready, it is started again however often it exits, as a worker always is. Clients see no difference: nothing listens either way. Logged with the master's first start. 0: never give up. |
+| `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
+| `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
+| `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |
+| `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
+| `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
+| `modules.tx.instanceCode` | | `m0` under the launcher | The master's instance code. The workers are `tx1`, `tx2`, ... The `m0` default is the launcher's: a master started by hand needs this, `--instance-code` or `FHIRSMITH_INSTANCE_CODE` (see [Roles](#roles)). |
+
+Under systemd, the launcher and its processes are one unit and one cgroup:
+
+```ini
+[Service]
+WorkingDirectory=/opt/fhirsmith
+Environment=FHIRSMITH_DATA_DIR=/var/lib/fhirsmith
+ExecStart=/usr/bin/node cluster.js
+KillMode=mixed
+MemoryMax=16G
+TimeoutStopSec=2min
+```
+
+A stop can take `drainSeconds` (30), then up to 30 s for the workers to shut down, 5 s for
+their last request counts, and up to 30 s for the master: 95 s at the most, usually a few
+seconds. So give the service manager longer than that before it kills everything. systemd's
+default `TimeoutStopSec` is 90 s. Docker's default stop timeout is 10 s, shorter than the drain
+alone, after which it kills the launcher and every process with it, mid-request; set
+`stop_grace_period: 2m` (Compose) or `docker stop -t 120`, and run the launcher as the
+container's main process (`CMD ["node", "cluster.js"]` in place of the image's `server.js`,
+not under a shell) so it gets the `SIGTERM`.
 
 ## Options
 
