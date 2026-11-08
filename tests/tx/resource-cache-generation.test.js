@@ -28,6 +28,10 @@ describe('shared client cache lifecycle', () => {
     let error;
     try { fn(); } catch (e) { error = e; }
     expect(error).toMatchObject({ statusCode:404, issueCode:'cache-id-unknown', msgId });
+    if (msgId === 'CACHE_ID_LOST_TO_RESTART') {
+      // Messages.properties' text
+      expect(error.message).toMatch(/^The cache '.+' was lost to a server restart (\d+ seconds?|an unknown time) ago\. Caches are not carried over a restart/);
+    }
   }
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cache-generation-'));

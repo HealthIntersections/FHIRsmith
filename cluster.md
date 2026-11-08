@@ -366,8 +366,10 @@ given its id inside the transaction that creates it. A lazy read that comes afte
 start also gets `404` and `cache-id-unknown`.
 
 If another request replaces a resource after its index was read but before its content is
-loaded, the request returns `409` (`CACHE_ID_CHANGED_DURING_REQUEST`). Retry the whole
-request to read the new contents together. This prevents using new content under an old
+loaded, the request returns `409` (`CACHE_ID_CHANGED_DURING_REQUEST`, tx-issue-type
+`cannot-determine`). If the cache ends meanwhile (closed, expired, dropped), it returns `404`
+`cache-id-unknown` (`CACHE_ID_GONE_DURING_REQUEST`), and the client starts a new cache. After
+a `409`, retry the whole request to read the new contents together. This prevents using new content under an old
 expansion-cache key; unchanged resources and additions of unrelated resources still work.
 
 `cacheAffinity: true` keeps the prefix routing on top. The expansion cache is still per

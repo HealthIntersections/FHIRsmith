@@ -47,6 +47,15 @@ const { newCacheGeneration, TOKEN } = require('../library/cache-generation');
 const Database = require('better-sqlite3');
 const { ResourceCache, formatDuration } = require('./operation-context');
 const { Issue } = require('./library/operation-outcome');
+const { englishMessage } = require('../library/i18nsupport');
+
+// An Issue with its message id and parameters, in English (the worker puts it in the
+// request's language where it can: msgParams, translateCacheIssue)
+function cacheIssue(level, cause, messageId, params, txIssueType, status) {
+  const issue = new Issue(level, cause, null, messageId, englishMessage(messageId, params), txIssueType, status);
+  issue.msgParams = params;
+  return issue;
+}
 
 const SCHEMA_VERSION = 2;
 const DEFAULT_TOUCH_INTERVAL_MS = 30 * 1000;
@@ -453,9 +462,10 @@ class SqliteResourceCache extends ResourceCache {
   _assertGeneration(cacheId) {
     if (!this._isCurrentGeneration(cacheId)) {
       // has() said it was here: the master restarted while this request was using it
-      throw new Issue('error', 'not-found', null, 'CACHE_ID_LOST_TO_RESTART',
-        `The cache '${cacheId}' was lost to a server restart while this request was using it. Start a new cache with $cache-control?mode=start`,
-        'cache-id-unknown', 404);
+      const generation = SqliteResourceCache.generationOf(cacheId);
+      const past = generation ? this.q.pastGeneration.get(generation) : null;
+      throw cacheIssue('error', 'not-found', 'CACHE_ID_LOST_TO_RESTART',
+        [cacheId, formatDuration(past ? Date.now() - past.ended : null)], 'cache-id-unknown', 404);
     }
   }
 
@@ -547,14 +557,13 @@ class SqliteResourceCache extends ResourceCache {
     const c = this.q.content.get(this.scope, cacheId, row.key);
     if (!c) {
       const t = this.tombstone(cacheId);
-      throw new Issue('error', 'not-found', null, 'CACHE_ID_GONE_DURING_REQUEST',
-        `The cache '${cacheId}' ${t ? 'was ' + t.reason : 'went away'} while this request was using it, so ${row.key.replace(/\|/g, ' ')} is no longer available`,
-        'cache-id-unknown', 404);
+      throw cacheIssue('error', 'not-found', 'CACHE_ID_GONE_DURING_REQUEST',
+        [cacheId, t ? t.reason : 'gone', row.key.replace(/\|/g, ' ')], 'cache-id-unknown', 404);
     }
     if (c.hash !== row.hash || c.fhir_version !== row.fhir_version) {
-      throw new Issue('error', 'conflict', null, 'CACHE_ID_CHANGED_DURING_REQUEST',
-        `The cache '${cacheId}' changed while this request was using it. Retry the request`,
-        null, 409);
+      // cannot-determine: an answer from a mix of the old and new contents could be wrong
+      throw cacheIssue('error', 'conflict', 'CACHE_ID_CHANGED_DURING_REQUEST',
+        [cacheId, row.key.replace(/\|/g, ' ')], 'cannot-determine', 409);
     }
     return this._build({ kind: 'wrapper', resource_type: row.resource_type, fhir_version: c.fhir_version, json: c.json, hash: c.hash });
   }

@@ -926,7 +926,8 @@ describe('SqliteResourceCache', () => {
         }
       };
       await expect(ExpandWorker.prototype.doExpand.call(worker, vs, null))
-        .rejects.toMatchObject({ statusCode: 409, cause: 'conflict', msgId: 'CACHE_ID_CHANGED_DURING_REQUEST' });
+        .rejects.toMatchObject({ statusCode: 409, cause: 'conflict', msgId: 'CACHE_ID_CHANGED_DURING_REQUEST', issueCode: 'cannot-determine',
+          message: expect.stringMatching(/^The cache 'c1' changed while this request was using it: another request replaced .*http:\/\/x\/a/) });
       expect(ec.get(oldKey)).toBeNull();
       expect(resources[0].expansionKeyHash()).toBe(original.expansionKeyHash());
 
@@ -970,7 +971,10 @@ describe('SqliteResourceCache', () => {
       expect(err).not.toBeNull();
       expect(err.statusCode).toBe(404);
       expect(err.issueCode).toBe('cache-id-unknown');
-      expect(err.message).toMatch(/was closed while this request was using it/);
+      // Messages.properties' text, with the message id and its parameters
+      expect(err.msgId).toBe('CACHE_ID_GONE_DURING_REQUEST');
+      expect(err.message).toMatch(/^The cache 'c1' ended \(closed\) while this request was using it, so .*http:\/\/x\/a.* is no longer available\. This operation has not been performed/);
+      expect(err.msgParams[0]).toBe('c1');
     });
   });
 

@@ -52,6 +52,11 @@ const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 const { readCgroupAnon } = require('./library/cgroup-memory');
 const { thresholds } = require('./library/memory-guard');
 const { defaultWorkers, describeDecision } = require('./library/worker-count');
+const { englishMessage } = require('./library/i18nsupport');
+const { formatDuration } = require('./tx/operation-context');
+
+const TX_ISSUE_TYPE = 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type';
+const MESSAGE_ID_EXTENSION = 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id';
 
 // how often start() looks whether the master is ready (an in-memory flag)
 const WAIT_POLL_MS = 250;
@@ -592,16 +597,16 @@ function createLauncher(settings) {
       return false;
     }
     const id = String(w.req.headers['x-cache-id']);
-    const ago = owner.exitedAt ? ` ${Math.round((Date.now() - owner.exitedAt) / 1000)} s ago` : '';
-    const text = `The cache '${id}' was lost to a server restart${ago}: instance '${owner.code}', which issued it, is restarting. ` +
-      'Caches are not carried over a restart. Start a new cache with $cache-control?mode=start and send the resources again';
+    const messageId = 'CACHE_ID_LOST_TO_RESTART';
+    const text = englishMessage(messageId, [id, formatDuration(Date.now() - (owner.exitedAt || Date.now()))]);
     w.res.writeHead(404, { 'Content-Type': 'application/fhir+json', ...(stopping ? { Connection: 'close' } : {}) });
     w.res.end(JSON.stringify({
       resourceType: 'OperationOutcome',
       issue: [{
         severity: 'error', code: 'not-found',
-        details: { text, coding: [{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'cache-id-unknown' }] },
-        extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id', valueString: 'CACHE_ID_LOST_TO_RESTART' }]
+        details: { text, coding: [{ system: TX_ISSUE_TYPE, code: 'cache-id-unknown' }] },
+        diagnostics: `instance '${owner.code}', which issued it, is restarting`,
+        extension: [{ url: MESSAGE_ID_EXTENSION, valueString: messageId }]
       }]
     }));
     return true;
@@ -869,12 +874,16 @@ function createLauncher(settings) {
     stopWhenIdle();
   }
 
-  // close: the request body has not been read, and an overloaded server sheds the connection too
+  // close: the request body has not been read, and an overloaded server sheds the connection too.
+  // The launcher's own refusals (503: busy, stopping, no process ready; 504: no response in
+  // time) are tx-issue-type too-costly, as CLOSURE_TABLE_BUSY is: the code system has none for
+  // a server that can't take the request now. A 502 (the process failed) has none that fits
   function fail(res, status, text, close = false, code = 'transient') {
     res.writeHead(status, { 'Content-Type': 'application/fhir+json', 'Retry-After': '5', ...(stopping || close ? { Connection: 'close' } : {}) });
+    const details = status === 503 || status === 504 ? { text, coding: [{ system: TX_ISSUE_TYPE, code: 'too-costly' }] } : { text };
     res.end(JSON.stringify({
       resourceType: 'OperationOutcome',
-      issue: [{ severity: 'error', code, details: { text }, diagnostics: text }]
+      issue: [{ severity: 'error', code, details, diagnostics: text }]
     }));
   }
 

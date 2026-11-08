@@ -311,7 +311,9 @@ describe('the launcher, with fake processes', () => {
     expect(lost.status).toBe(404);
     expect(lost.json.issue[0].details.coding[0].code).toBe('cache-id-unknown');
     expect(lost.json.issue[0].extension[0].valueString).toBe('CACHE_ID_LOST_TO_RESTART');
-    expect(lost.json.issue[0].details.text).toMatch(/^The cache 'tx1\.x' was lost to a server restart \d+ s ago: instance 'tx1', which issued it, is restarting/);
+    // Messages.properties' text; which instance, in the diagnostics
+    expect(lost.json.issue[0].details.text).toMatch(/^The cache 'tx1\.x' was lost to a server restart \d+ seconds? ago\. Caches are not carried over a restart/);
+    expect(lost.json.issue[0].diagnostics).toBe('instance \'tx1\', which issued it, is restarting');
     // an unknown prefix still goes to any tx process, which says it doesn't know it
     expect(['m0', 'tx1', 'tx2']).toContain((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'zz9.x' })).json.code);
     await until(() => tx1.ready && tx1.child !== old);
@@ -472,6 +474,8 @@ describe('the launcher, with fake processes', () => {
       expect(r.headers['retry-after']).toBe('5');
       expect(r.headers.connection).toBe('close');
       expect(r.json.issue[0].code).toBe('transient');
+      // the launcher's own refusals carry a tx-issue-type coding
+      expect(r.json.issue[0].details.coding).toEqual([{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'too-costly' }]);
       expect(waited).toBeGreaterThanOrEqual(250);
       expect(waited).toBeLessThan(900);
       await Promise.all(slow);
@@ -689,6 +693,7 @@ describe('the launcher, with fake processes', () => {
           expect(r.ms).toBeGreaterThanOrEqual(450);
           expect(r.ms).toBeLessThan(1500);
           expect(r.json.issue[0].code).toBe('timeout');
+          expect(r.json.issue[0].details.coding[0].code).toBe('too-costly');
           expect(r.json.issue[0].details.text).toMatch(OUTCOME);
         } else {
           expect([r.status, r.json.code]).toEqual([200, 'tx2']);
