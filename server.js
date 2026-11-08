@@ -121,6 +121,7 @@ const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
 const { connectMetrics, graphData } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
+const { connectClusterEvents } = require('./library/cluster-events');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -181,6 +182,7 @@ const modules = {};
 let stats = null;
 let disconnectMetrics = () => {};
 let disconnectCounts = null;
+let disconnectClusterEvents = () => {};
 // The graphs on / and /dashboard. With a role, the cluster templates draw every process the
 // launcher reports (library/cluster-metrics.js); with none, main's templates, as before
 function metricsTemplate(page) {
@@ -202,6 +204,8 @@ async function initializeModules() {
     disconnectMetrics = connectMetrics(stats);
     // a worker's request counts go to the master's statistics (library/cluster-counts.js)
     disconnectCounts = connectCounts(stats, process, { role: role.role });
+    // and on the master, what the launcher saw, for the daily report (library/cluster-events.js)
+    disconnectClusterEvents = connectClusterEvents(stats, process, { role: role.role });
   }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
@@ -963,7 +967,9 @@ async function startServer() {
       mailer: new Mailer(config.email, Logger.getInstance().child({ module: 'email' })),
       npmAudit: npmAudit,
       version: packageJson.version,
-      serverId: config.hostName
+      serverId: config.hostName,
+      // under the launcher: the report has a paragraph on the cluster
+      cluster: Boolean(role && role.role === 'master' && process.send)
     });
     dailyReport.start();
     if (modules.packages && config.modules?.packages?.enabled) {
@@ -1027,6 +1033,7 @@ async function shutdown() {
   if (disconnectCounts) {
     disconnectCounts();
   }
+  disconnectClusterEvents();
   serverLog.info('Server shutdown complete');
   process.exit(0);
 }

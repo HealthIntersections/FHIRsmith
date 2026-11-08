@@ -331,6 +331,35 @@ A standalone server, or roles started separately behind nginx, shows only its ow
 data. Combining process histories requires the launcher's IPC connection; no separate
 metrics service or HTTP polling is used.
 
+### The daily report
+
+The daily report (see [CONFIGURATION.md](CONFIGURATION.md#email-and-the-daily-report)) is the
+master's. Its stability paragraph is about the master's own runs. Only the launcher knows what
+happened to the workers, and what it answered itself, so it sends the master what it saw, the
+same way it passes on the workers' request counts, and the master keeps it in `stats.db`
+(table `cluster_events`). The report has a **Cluster** paragraph after the stability one:
+
+* when the launcher started (a launcher restart restarts every process);
+* for each process that exited or was recycled: how many times and how (the exit code or
+  signal, or why it was recycled), how long it was unavailable in all (from its exit, or the
+  start of its recycle, until it was ready again), and the requests that were lost to it (504:
+  no response in `upstreamTimeoutSeconds`; 502: it didn't answer; a cache-id that came while
+  it was restarting);
+* the requests the launcher refused itself (503: no process free in `queueSeconds`, no process
+  ready, or stopping), and the connections it closed because the client took none of a
+  response in `writeTimeoutSeconds`.
+
+Events go to the master as they happen, and what was counted every minute; while the master is
+down they wait in the launcher (up to 5,000 events, the oldest dropped first) and go when it
+is ready again. So:
+
+* **a process still unavailable at midnight** has that time in the next day's report, when it
+  is ready again;
+* **what the launcher saw is lost if the launcher stops while the master is down**, including
+  when it gives up starting the master (`maxStartFailures`). That shows as an outage in the
+  stability paragraph;
+* **without the launcher** (roles behind nginx), there is no Cluster paragraph.
+
 ## With nginx
 
 nginx can be the front door instead: start the processes yourself (master first, workers once

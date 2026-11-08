@@ -2,6 +2,7 @@ const { monitorEventLoopDelay } = require('perf_hooks');
 const {Utilities} = require("./library/utilities");
 const escape = require('escape-html');
 const StatsDatabase = require('./stats-db');
+const { validRow: validClusterEvent } = require('./library/cluster-events');
 
 // Requests that aren't counted by a module (the root page, the dashboard) are
 // attributed here, and requests that have no endpoint dimension (everything
@@ -366,6 +367,41 @@ class ServerStats {
     }
     this.mergedRequestCount = this.mergedRequestCount + added;
     return added;
+  }
+
+  /**
+   * On the master under the launcher: what the launcher saw (library/cluster-events.js),
+   * written straight to the database - there are few, and the daily report reads them from
+   * there. Rows that aren't well formed are ignored; without a database, all of them are.
+   * @returns {number} the rows written
+   */
+  recordClusterEvents(rows) {
+    if (!this.db) {
+      return 0;
+    }
+    const valid = (Array.isArray(rows) ? rows : []).map(validClusterEvent).filter(Boolean);
+    try {
+      this.db.writeClusterEvents(valid);
+      return valid.length;
+    } catch (e) {
+      this.log.error(`Unable to record the launcher's events: ${e.message}`);
+      return 0;
+    }
+  }
+
+  /**
+   * What the launcher saw in (since, now], oldest first, or null without a database.
+   */
+  clusterEventsSince(since, now = Date.now()) {
+    if (!this.db) {
+      return null;
+    }
+    try {
+      return this.db.clusterEventsSince(since, now);
+    } catch (e) {
+      this.log.error(`Unable to read the launcher's events: ${e.message}`);
+      return null;
+    }
   }
 
   /**

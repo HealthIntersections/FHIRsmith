@@ -48,7 +48,8 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
-const { PendingCounts, COUNTS } = require('./library/cluster-counts');
+const { PendingCounts, COUNTS, COUNTS_INTERVAL_MS } = require('./library/cluster-counts');
+const { PendingClusterEvents, CLUSTER_EVENTS, KINDS } = require('./library/cluster-events');
 const { readCgroupAnon } = require('./library/cgroup-memory');
 const { thresholds } = require('./library/memory-guard');
 const { defaultWorkers, describeDecision } = require('./library/worker-count');
@@ -385,12 +386,16 @@ function createLauncher(settings) {
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
+    // since when it has been unavailable after an exit or recycle (0: it hasn't), for the daily report
+    downSince: 0,
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
   const metrics = new ClusterMetrics(procs);
   // the workers' request counts, on their way to the master's statistics
   const pendingCounts = new PendingCounts();
-  let countsInFlight = null;
+  // what the launcher saw, on its way to the master's daily report (library/cluster-events.js)
+  const pendingEvents = new PendingClusterEvents();
+  let eventsTimer = null;
   let server = null;
   let stopping = false;
   // why the launcher gave up starting (see maxStartFailures), or null
@@ -430,35 +435,48 @@ function createLauncher(settings) {
     }
   }
 
-  // Pass the workers' request counts on to the master (library/cluster-counts.js), once it is
-  // ready: it is listening by then. One lot at a time; a lot that can't be
-  // delivered is kept for the next try (more counts arriving, or the master becoming ready)
-  function deliverCounts() {
-    const master = procs.find(p => p.role === 'master');
-    const child = master && master.child;
-    if (countsInFlight || pendingCounts.size === 0 || !child || !child.connected || !master.ready) {
-      return countsInFlight || Promise.resolve();
-    }
-    const rows = pendingCounts.take();
-    countsInFlight = new Promise(resolve => {
-      const done = error => {
-        countsInFlight = null;
-        if (error) {
-          pendingCounts.add(rows);
-        }
-        resolve();
-        if (!error && pendingCounts.size > 0) {
-          void deliverCounts();
-        }
-      };
-      try {
-        child.send({ type: COUNTS, rows }, done);
-      } catch (error) {
-        done(error);
+  // Pass the workers' request counts (library/cluster-counts.js) and what the launcher saw
+  // (library/cluster-events.js) on to the master, once it is ready: it is listening by then.
+  // One lot at a time; a lot that can't be delivered is kept for the next try (more arriving,
+  // or the master becoming ready)
+  function delivery(pending, type) {
+    let inFlight = null;
+    const deliver = () => {
+      const master = procs.find(p => p.role === 'master');
+      const child = master && master.child;
+      if (inFlight || pending.size === 0 || !child || !child.connected || !master.ready) {
+        return inFlight || Promise.resolve();
       }
-    });
-    return countsInFlight;
+      const rows = pending.take();
+      inFlight = new Promise(resolve => {
+        const done = error => {
+          inFlight = null;
+          if (error) {
+            pending.add(rows);
+          }
+          resolve();
+          if (!error && pending.size > 0) {
+            void deliver();
+          }
+        };
+        try {
+          child.send({ type, rows }, done);
+        } catch (error) {
+          done(error);
+        }
+      });
+      return inFlight;
+    };
+    return deliver;
   }
+  const deliverCounts = delivery(pendingCounts, COUNTS);
+  const deliverEvents = delivery(pendingEvents, CLUSTER_EVENTS);
+  // an event goes at once; what is counted goes every minute (eventsTimer)
+  function clusterEvent(kind, proc, options) {
+    pendingEvents.event(kind, proc ? proc.name : null, options);
+    void deliverEvents();
+  }
+  const countEvent = (kind, proc = null) => pendingEvents.count(kind, proc ? proc.name : null);
 
   function startProcess(proc) {
     return new Promise((resolve) => {
@@ -497,6 +515,11 @@ function createLauncher(settings) {
         if (stopping) {
           return;
         }
+        proc.downSince = proc.downSince || proc.exitedAt;
+        if (!proc.recycling) {
+          // (a recycle is its own event)
+          clusterEvent(KINDS.exited, proc, { detail: signal || code });
+        }
         if (proc.recycling) {
           // the launcher stopped it (see checkMemory): at once, and not a failure
           proc.recycling = false;
@@ -531,8 +554,13 @@ function createLauncher(settings) {
         sendWaiting();
         metrics.state(proc.code, 'ready');
         publishMetrics();
+        if (proc.downSince) {
+          clusterEvent(KINDS.ready, proc, { ms: proc.readyAt - proc.downSince });
+          proc.downSince = 0;
+        }
         if (proc.role === 'master') {
           void deliverCounts();
+          void deliverEvents();
         }
         log(`${proc.name} (${proc.code}) ready on port ${proc.port}`);
         resolve(true);
@@ -563,6 +591,7 @@ function createLauncher(settings) {
     }
     const target = pickTarget(w.route, procs, p => !full(p, w.fast));
     if (!target) {
+      countEvent(KINDS.notReady);
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
       return true;
     }
@@ -599,6 +628,7 @@ function createLauncher(settings) {
     if (!owner || owner.ready || w.req.method === 'OPTIONS') {
       return false;
     }
+    countEvent(KINDS.lostToRestart, owner);
     const id = String(w.req.headers['x-cache-id']);
     const messageId = 'CACHE_ID_LOST_TO_RESTART';
     const text = englishMessage(messageId, [id, formatDuration(Date.now() - (owner.exitedAt || Date.now()))]);
@@ -617,6 +647,7 @@ function createLauncher(settings) {
 
   function refuse(w, ms) {
     queueRefused++;
+    countEvent(KINDS.busy);
     const now = Date.now();
     if (now - lastQueueLog >= 60000) {
       lastQueueLog = now;
@@ -628,6 +659,7 @@ function createLauncher(settings) {
   // a client that took none of a response for writeTimeoutMs: its connection is closed
   function writeTimedOut(req) {
     writeTimeouts++;
+    countEvent(KINDS.writeTimeout);
     const now = Date.now();
     if (now - lastWriteTimeoutLog >= 60000) {
       lastWriteTimeoutLog = now;
@@ -643,6 +675,7 @@ function createLauncher(settings) {
       return;
     }
     if (stopping) {
+      countEvent(KINDS.stopping);
       return fail(res, 503, 'The server is stopping; try again shortly');
     }
     const ms = w.route.to === 'owner' ? ownerQueueMs : queueMs;
@@ -777,6 +810,7 @@ function createLauncher(settings) {
         return;
       }
       if (!res.headersSent) {
+        countEvent(KINDS.failed, target);
         fail(res, 502, `The ${target.name} process did not answer (${err.code || err.message})`);
       } else {
         res.destroy();
@@ -802,6 +836,7 @@ function createLauncher(settings) {
           setTimeout(sendWaiting, cooldownMs).unref();
         }
         upstream.destroy();
+        countEvent(KINDS.timeout, target);
         fail(res, 504, `The ${target.name} process did not begin its response in ${upstreamTimeoutMs / 1000} s (server.cluster.upstreamTimeoutSeconds); the request was abandoned`, false, 'timeout');
         finish();
       }, upstreamTimeoutMs);
@@ -855,6 +890,8 @@ function createLauncher(settings) {
   // no new requests; those it has finish; it stops as on shutdown, and exit starts it again
   function recycle(p, why) {
     log(`recycling ${p.name}: ${why}`);
+    clusterEvent(KINDS.recycled, p, { detail: why });
+    p.downSince = Date.now();
     p.recycling = true;
     p.ready = false;
     p.exitedAt = 0;
@@ -895,6 +932,9 @@ function createLauncher(settings) {
     // the master first, and on its own: on a new data directory it builds the package
     // caches and creates the VSAC database, which processes starting together would corrupt.
     // (If it exits before it is ready, it is started again, as any process is.)
+    clusterEvent(KINDS.launcherStarted, null);
+    eventsTimer = setInterval(deliverEvents, settings.eventsIntervalMs || COUNTS_INTERVAL_MS);
+    eventsTimer.unref();
     log(`starting the master (${master.code}) on port ${master.port}` + (maxStartFailures > 0
       ? `; if it exits ${maxStartFailures} times without being ready, the launcher exits (maxStartFailures)` : ''));
     void startProcess(master);
@@ -1009,12 +1049,14 @@ function createLauncher(settings) {
     }
     stopping = true;
     clearInterval(memoryTimer);
+    clearInterval(eventsTimer);
     for (const p of procs) {
       clearTimeout(p.restartTimer);
     }
     // those still waiting haven't started: refuse them; drain only those in progress
     for (const w of [...fastWaiting.splice(0), ...waiting.splice(0)]) {
       clearTimeout(w.timer);
+      countEvent(KINDS.stopping);
       fail(w.res, 503, 'The server is stopping; try again shortly');
     }
     if (server) {
@@ -1058,7 +1100,7 @@ function createLauncher(settings) {
     });
     await Promise.all(procs.filter(p => p.role !== 'master').map(stopChild));
     const deliverWait = new Promise(resolve => setTimeout(resolve, 5000).unref());
-    await Promise.race([deliverCounts(), deliverWait]);
+    await Promise.race([Promise.all([deliverCounts(), deliverEvents()]), deliverWait]);
     await Promise.all(procs.filter(p => p.role === 'master').map(stopChild));
     for (const p of procs) {
       p.agent.destroy();
