@@ -1,6 +1,6 @@
 // A stand-in for a server process, for tests/server/cluster-launcher.test.js:
 //   node fake-upstream.js <code> <port> [keepAliveTimeout ms] [hang | no-ready | fail-after:<ms>]
-// /health answers 200; anything else answers {code, url, xff, proto} as JSON, after
+// /health answers 200; /cluster-events lists the launcher's events it was sent; anything else answers {code, url, xff, proto} as JSON, after
 // ?delay=<ms>, with ?status=<code> (503 with Retry-After), with the request body it read
 // (`body`), and ?bytes=<n> more. /r4/seen lists the requests it was sent. With `hang` (a
 // wedged process), nothing but /health is ever answered. Once listening it sends the launcher
@@ -8,9 +8,12 @@
 const http = require('http');
 const [code, port, keepAlive, hang] = process.argv.slice(2);
 let metrics = null;
+// what the launcher saw, as the master is sent it (library/cluster-events.js)
+const clusterEvents = [];
 const startedAt = Date.now();
 process.on('message', message => {
   if (message.type === 'fhirsmith:metrics') metrics = message;
+  if (message.type === 'fhirsmith:cluster-events') clusterEvents.push(...message.rows);
 });
 const samples = setInterval(() => {
   if (process.connected) process.send({ type:'fhirsmith:metric', startedAt, intervalMs:100,
@@ -24,6 +27,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.url === '/r4/connections') {
     res.end(JSON.stringify({ code, connections }));
+    return;
+  }
+  if (req.url === '/cluster-events') {
+    res.end(JSON.stringify({ code, clusterEvents }));
     return;
   }
   if (req.url === '/metrics') {

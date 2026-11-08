@@ -12,6 +12,9 @@
 // The report is:
 //  - a paragraph on the server's own stability since the last report: how much of the
 //    time it was up, restarts, and any upgrade (from the run history ServerStats keeps)
+//  - under the launcher (cluster.js), a paragraph on the cluster: processes that exited or
+//    were recycled and how long they were unavailable, and what the launcher refused or
+//    abandoned itself (library/cluster-events.js)
 //  - a paragraph from each running module that has something to say. A module takes part
 //    by having `dailyReport({since, now})` return markdown (a string, or a promise of one);
 //    an empty return means no paragraph. By default modules have nothing to say
@@ -94,6 +97,11 @@ function describeSpan(ms) {
   return plural(Math.round(hours / 24), 'day');
 }
 
+/** "once", "twice", "3 times" */
+function times(n) {
+  return n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`;
+}
+
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
@@ -112,9 +120,10 @@ class DailyReport {
 
   /**
    * @param config - the "dailyReport" block
-   * @param deps - {log, stats, modules, mailer, npmAudit, version, serverId, stateFile}
+   * @param deps - {log, stats, modules, mailer, npmAudit, version, serverId, stateFile, cluster}
    *   modules is the server's {name: instance} map; npmAudit the server's NpmAudit (optional);
-   *   version the server's version; serverId the name the report goes out under (config.hostName)
+   *   version the server's version; serverId the name the report goes out under (config.hostName);
+   *   cluster true for the master under the launcher (the cluster paragraph is always there)
    */
   constructor(config, deps) {
     this.config = config || {};
@@ -125,6 +134,7 @@ class DailyReport {
     this.npmAudit = deps.npmAudit || null;
     this.version = deps.version;
     this.serverId = deps.serverId || os.hostname();
+    this.cluster = Boolean(deps.cluster);
     this.stateFile = deps.stateFile || folders.filePath(STATE_FILE);
     this.timer = null;
     this.running = false;
@@ -255,6 +265,11 @@ class DailyReport {
     parts.push(`# ${this.serverId} daily report for ${localDateTime(now)} covering the last ${describeSpan(now - since)}`);
     parts.push('## Stability');
     parts.push(this.stabilityParagraph(since, now));
+    const cluster = this.clusterParagraph(since, now);
+    if (cluster) {
+      parts.push('## Cluster');
+      parts.push(cluster);
+    }
     for (const [name, module] of Object.entries(this.modules)) {
       const text = await this.moduleParagraph(name, module, since, now);
       if (text) {
@@ -331,6 +346,88 @@ class DailyReport {
       sentences.push(`It was not upgraded (v${this.version}).`);
     }
     return sentences.join(' ');
+  }
+
+  /**
+   * Under the launcher: what it saw (library/cluster-events.js) - processes that exited or
+   * were recycled, how long each was unavailable, and what it answered itself. Null for a
+   * single server (no role, and no events recorded).
+   */
+  clusterParagraph(since, now) {
+    const events = this.stats && typeof this.stats.clusterEventsSince === 'function' ? this.stats.clusterEventsSince(since, now) : null;
+    if (!this.cluster && !(events && events.length > 0)) {
+      return null;
+    }
+    if (!events) {
+      return 'No record of the launcher\'s events is available (the statistics database is not in use).';
+    }
+    const sum = (rows) => rows.reduce((n, r) => n + r.count, 0);
+    const of = (kind, process) => events.filter(e => e.kind === kind && (process === undefined || e.process === process));
+    const sentences = [];
+    const started = of('launcher-started');
+    if (started.length > 0) {
+      sentences.push(`The launcher started ${times(started.length)} (${started.map(e => localDateTime(e.time)).join(', ')}).`);
+    }
+
+    const names = [...new Set(events.filter(e => e.process).map(e => e.process))]
+      .sort((a, b) => (a === 'master' ? -1 : b === 'master' ? 1 : a.localeCompare(b)));
+    const lines = [];
+    for (const name of names) {
+      const said = [];
+      const exited = of('exited', name);
+      if (exited.length > 0) {
+        const how = new Map();
+        for (const e of exited) {
+          const d = e.detail == null ? 'unknown' : /^-?\d+$/.test(e.detail) ? `exit code ${e.detail}` : e.detail;
+          how.set(d, (how.get(d) || 0) + 1);
+        }
+        said.push(`exited ${times(exited.length)} (${[...how].map(([d, n]) => n > 1 ? `${n} × ${d}` : d).join(', ')})`);
+      }
+      const recycled = of('recycled', name);
+      if (recycled.length > 0) {
+        said.push(`was recycled ${times(recycled.length)} (the last because ${recycled[recycled.length - 1].detail || 'of its memory'})`);
+      }
+      const down = of('ready', name).reduce((n, e) => n + e.ms, 0);
+      if (down > 0) {
+        said.push(`was unavailable for ${formatSpan(down)} in all`);
+      }
+      const timedOut = sum(of('upstream-timeout', name));
+      if (timedOut > 0) {
+        said.push(`did not begin ${plural(timedOut, 'response')} in time (504)`);
+      }
+      const failed = sum(of('upstream-failed', name));
+      if (failed > 0) {
+        said.push(`failed to answer ${plural(failed, 'request')} (502)`);
+      }
+      const lost = sum(of('lost-to-restart', name));
+      if (lost > 0) {
+        said.push(`was restarting when ${plural(lost, 'request')} came for a cache-id it had issued`);
+      }
+      if (said.length > 0) {
+        lines.push(`- ${name}: ${said.join('; ')}`);
+      }
+    }
+    if (of('exited').length === 0 && of('recycled').length === 0) {
+      sentences.push('No process exited or was recycled.');
+    }
+
+    const refused = [
+      [sum(of('refused-busy')), 'because no process was free in time'],
+      [sum(of('refused-not-ready')), 'because no process was ready'],
+      [sum(of('refused-stopping')), 'while it was stopping']
+    ].filter(([n]) => n > 0);
+    if (refused.length > 0) {
+      const total = refused.reduce((n, [c]) => n + c, 0);
+      sentences.push(`The launcher refused ${plural(total, 'request')} itself (503): ${refused.map(([n, why]) => `${n} ${why}`).join(', ')}.`);
+    } else {
+      sentences.push('The launcher refused no requests itself.');
+    }
+    const cut = sum(of('write-timeout'));
+    if (cut > 0) {
+      sentences.push(`It closed ${plural(cut, 'connection')} whose client took none of a response in time (writeTimeoutSeconds).`);
+    }
+    const text = sentences.join(' ');
+    return lines.length > 0 ? `${text}\n\n${lines.join('\n')}` : text;
   }
 
   /**

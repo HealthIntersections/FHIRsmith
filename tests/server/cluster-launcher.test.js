@@ -322,11 +322,42 @@ describe('the launcher, with fake processes', () => {
     expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
   });
 
+  test('what the launcher saw reaches the master: the launcher starting, an exit, the time unavailable, its own refusals', async () => {
+    launcher = createLauncher({ ...settings(false), eventsIntervalMs: 100, queueMs: 0, maxOutstanding: 1 });
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    const tx1 = launcher.procs.find(p => p.code === 'tx1');
+    const old = tx1.child;
+    old.kill('SIGKILL');
+    await until(() => !tx1.ready);
+    expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).status).toBe(404);
+    await until(() => tx1.ready && tx1.child !== old);
+    // every tx process busy, and no queue: 503 from the launcher
+    const slow = [1, 2].map(() => get(PORT, '/r4/ValueSet/$expand?delay=800'));
+    await until(() => launcher.procs.filter(p => p.outstanding === 1).length === 2);
+    expect((await get(PORT, '/r4/ValueSet/$expand')).status).toBe(503);
+    await Promise.all(slow);
+    let rows = [];
+    for (const t0 = Date.now(); !rows.some(r => r.kind === 'refused-busy') && Date.now() - t0 < 5000; await sleep(100)) {
+      rows = (await get(PORT, '/cluster-events')).json.clusterEvents;
+    }
+    const kinds = rows.map(r => `${r.kind} ${r.process}`);
+    expect(kinds).toEqual(expect.arrayContaining(['launcher-started null', 'exited worker tx1', 'ready worker tx1',
+      'lost-to-restart worker tx1', 'refused-busy null']));
+    expect(rows.find(r => r.kind === 'exited').detail).toBe('SIGKILL');
+    expect(rows.find(r => r.kind === 'ready').ms).toBeGreaterThan(0);
+    expect(rows.find(r => r.kind === 'refused-busy').count).toBe(1);
+    // the first start of each process is not an outage
+    expect(rows.filter(r => r.kind === 'ready').length).toBe(1);
+  });
+
   describe('start-up: ready is the process\'s own word, over IPC', () => {
     test('another process answering /health on the master\'s port is not the master: the launcher gives up after maxStartFailures', async () => {
-      // an old master still shutting down, say: it holds the port and answers /health
+      // an old master still shutting down, say: it holds the port and answers /health. On every
+      // address, as a master does: held only on 127.0.0.1, macOS (BSD) lets the new process
+      // bind the wildcard address beside it, so it starts and says it is ready
       const old = http.createServer((req, res) => res.end('ok'));
-      await new Promise(resolve => old.listen(20010, '127.0.0.1', resolve));
+      await new Promise(resolve => old.listen(20010, resolve));
       const lines = [];
       try {
         launcher = createLauncher({ ...settings(true), maxStartFailures: 2, log: (m) => lines.push(m) });
@@ -764,7 +795,13 @@ describe('the launcher, with fake processes', () => {
       await until(() => launcher.procs.every(p => p.ready));
       const tx1 = launcher.procs[1];
       const socket = await unread(`/r4/ValueSet/$expand?bytes=${BIG}`);
-      await until(() => tx1.active === 1);
+      // tx1 has the request. (Not tx1.active === 1: where loopback is fast, as on macOS, the whole
+      // response can reach the launcher, and the slot be freed, between two looks)
+      for (const t0 = Date.now(); !(await get(tx1.port, '/r4/seen')).json.seen.some(r => r.includes('bytes=')); await sleep(50)) {
+        if (Date.now() - t0 > 10000) {
+          throw new Error('tx1 never got the request');
+        }
+      }
       // the process's 20 MB response has ended, though the client has read none of it
       await until(() => tx1.outstanding === 0 && tx1.active === 0, 3000);
       const t0 = Date.now();

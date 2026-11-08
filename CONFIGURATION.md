@@ -114,7 +114,10 @@ The report, titled "`{hostName}` daily report", goes out at midnight (the server
 time), or as soon as the server is up again if it was down at midnight. It has a paragraph
 on the server's stability since the last report - how much of the time it was up, restarts,
 the longest outage, and any upgrade (from the run history in the statistics database, so
-`stats.enabled: false` leaves the uptime unknown); a paragraph from each running module that
+`stats.enabled: false` leaves the uptime unknown); under the launcher (`cluster.js`), a
+paragraph on the cluster - processes that exited or were recycled, how long they were
+unavailable, and the requests the launcher refused or abandoned itself (see
+[cluster.md](cluster.md#the-daily-report)); a paragraph from each running module that
 has something to report (by default, none do); and a paragraph on the system - version,
 Node.js and OS, how long this run has been up, the log files and the free disk space they're
 drawing on, plus anything the npm audit check has found (packages with known vulnerabilities and

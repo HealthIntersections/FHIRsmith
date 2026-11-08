@@ -226,14 +226,36 @@ async function stopServer() {
 // starts empty, so this always gets the current release anyway. Locally nothing changes.
 const LATEST_VALIDATOR_URL = 'https://github.com/hapifhir/org.hl7.fhir.core/releases/latest/download/validator_cli.jar';
 
-async function ensureValidatorJar(jarPath) {
+// GitHub's release downloads sometimes fail for a moment (a 502, 503 or 504 from its CDN, or a
+// dropped connection): try again a few times, waiting longer each time, before failing the run
+const VALIDATOR_DOWNLOAD_ATTEMPTS = 4;
+
+async function ensureValidatorJar(jarPath, { url = LATEST_VALIDATOR_URL, attempts = VALIDATOR_DOWNLOAD_ATTEMPTS, delayMs = 5000 } = {}) {
     if (fs.existsSync(jarPath)) {
         return;
     }
     const tmp = jarPath + '.download';
-    const res = await axios.get(LATEST_VALIDATOR_URL, { responseType: 'stream', maxRedirects: 10, timeout: 300000 });
-    await pipeline(res.data, fs.createWriteStream(tmp));
-    fs.renameSync(tmp, jarPath);
+    for (let attempt = 1; ; attempt++) {
+        try {
+            const res = await axios.get(url, { responseType: 'stream', maxRedirects: 10, timeout: 300000 });
+            await pipeline(res.data, fs.createWriteStream(tmp));
+            fs.renameSync(tmp, jarPath);
+            return;
+        } catch (e) {
+            fs.rmSync(tmp, { force: true });
+            const status = e.response && e.response.status;
+            // after redirects: which host failed (github.com, or the release-asset CDN)
+            const at = (e.request && e.request.res && e.request.res.responseUrl) || (e.request && e.request._currentUrl) || url;
+            // a 4xx other than 429 won't change by asking again
+            const retry = attempt < attempts && !(status >= 400 && status < 500 && status !== 429);
+            console.log(`Downloading the validator (${url}) failed (attempt ${attempt} of ${attempts}): ${status ? 'HTTP ' + status : e.message} from ${String(at).split('?')[0]}` +
+              (retry ? `; trying again in ${delayMs * attempt / 1000} s` : ''));
+            if (!retry) {
+                throw e;
+            }
+            await new Promise(resolve => setTimeout(resolve, delayMs * attempt));
+        }
+    }
 }
 
 async function loadValidator() {

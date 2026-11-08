@@ -20,18 +20,18 @@ sources:
   - internal:hgvs
   - ucum:tx/data/ucum-essence.xml
   - loinc:loinc-2.77-a.db
-  - loinc!:Loinc_2.83b.db
+  - loinc!:Loinc_2.83c.db
   - rxnorm:rxnorm_20261005.cache
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
   - snomed:sct_intl_20250201.cache
-  - snomed!:Snomed_Intl_20260701.cache
-  - snomed:snomed-nl-20260930.cache
+  - snomed!:Snomed_Intl_20260701-a.cache
+  - snomed:snomed-nl-20260930-a.cache
   - snomed:sct_uk_20230412.cache
   - snomed:sct_us_20230301.cache
   - snomed:sct_us_20240301.cache
-  - snomed:sct_us_20250901b.cache
-  - snomed:Snomed_loinc_20261021.cache
+  - snomed:sct_us_20250901-c.cache
+  - snomed:Snomed_loinc_20261021-a.cache
   - snomed:sct_test_20250909i.cache
   - cpt:CodeSystem-cpt.db|cpt-2023-fragment-0.1.db
   - omop:omop_v20250227.db

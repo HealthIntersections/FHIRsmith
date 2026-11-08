@@ -93,6 +93,29 @@ class StatsDatabase {
     }
     this.touchRunStatement = this.db.prepare(`UPDATE server_runs SET last_seen = ? WHERE id = ?`);
 
+    // Under the launcher (cluster.js): what it saw - processes exiting, being recycled and
+    // coming back, and what it answered itself. See library/cluster-events.js
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS cluster_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        time INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        process TEXT,
+        detail TEXT,
+        count INTEGER NOT NULL,
+        ms INTEGER NOT NULL
+      )
+    `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_cluster_events_time ON cluster_events(time)`);
+    this.insertClusterEvent = this.db.prepare(`
+      INSERT INTO cluster_events (time, kind, process, detail, count, ms) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    this.insertClusterEvents = this.db.transaction((rows) => {
+      for (const row of rows) {
+        this.insertClusterEvent.run(row.time, row.kind, row.process, row.detail, row.count, row.ms);
+      }
+    });
+
     this.insertStatement = this.db.prepare(`
       INSERT INTO request_counts
         (time, interval_ms, module, endpoint, operation, count_delta, count_total, time_delta, time_total)
@@ -197,6 +220,28 @@ class StatsDatabase {
       WHERE module = ? AND time > ? AND time <= ?
       GROUP BY endpoint, operation
     `).all(module, since, now);
+  }
+
+  /**
+   * Record what the launcher saw (rows as library/cluster-events.js validRow gives them).
+   */
+  writeClusterEvents(rows) {
+    if (this.db && rows && rows.length > 0) {
+      this.insertClusterEvents(rows);
+    }
+  }
+
+  /**
+   * What the launcher saw in (since, now], oldest first: [{time, kind, process, detail, count, ms}].
+   */
+  clusterEventsSince(since, now) {
+    if (!this.db) {
+      return [];
+    }
+    return this.db.prepare(`
+      SELECT time, kind, process, detail, count, ms FROM cluster_events
+      WHERE time > ? AND time <= ? ORDER BY time, id
+    `).all(since, now);
   }
 
   /**
