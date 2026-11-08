@@ -1,9 +1,9 @@
 # A master and terminology workers on one machine
 
-One Node.js process runs JavaScript on one CPU core. A terminology server under load from
-several IG Publisher builds at once can use more. FHIRsmith can run as one **master** and
-several **tx-workers** on the same machine and data directory, with a front door that sends
-each request to the right process:
+By default, FHIRsmith runs as simple server, where one Node.js process runs JavaScript on one CPU core.
+A terminology server under load from many clients can use more than one CPU core. To support such usage,
+FHIRsmith can run as one **master** and several **tx-workers** on the same machine and data directory, with
+a front door that sends  each request to the right process:
 
 ```bash
 node cluster.js                 # the master, workers by CPU, and a proxy on the configured port
@@ -12,6 +12,19 @@ node cluster.js                 # the master, workers by CPU, and a proxy on the
 with nginx in front of it, or with nginx in front of separately started processes
 ([below](#with-nginx)). Either way, nginx is the front door: the launcher is not built to face
 clients itself.
+
+The cluster runs behind a reverse proxy to manage security etc. Note that the reverse proxy can 
+also be used to manage a virtual cluster of servers, but under such an arrangement, the servers 
+are not tighly connected the way they are when FHIRsmith is run as a single cluster; we do not 
+recommend mixing these two approaches together.
+
+Also note that if you run `node server.js` directly, the cluster settings are ignored, and you get 
+a normal single process server. 
+
+## How the Cluster works
+
+If you are looking to configure a cluster, see [below](#Configuration). You don't need to concern yourself with roles etc;
+this section just explains how the cluster works.
 
 `node server.js` with no `--role` is unchanged: one process, every module, as before. One
 difference: `--port` or `--instance-code` without `--role` now stops it with an error, where
@@ -128,7 +141,7 @@ Whatever the front door, the rules are the same:
 The [options](#options) change rules 1 and 3: with `sharedClosure`, `$closure` goes by rule 4;
 with `sharedCache`, so does a request with a cache-id (unless `cacheAffinity` is on).
 
-## The launcher (cluster.js)
+## Nginx note about clusters
 
 **Always run the launcher behind nginx, on the same host, with request buffering on**
 (`proxy_request_buffering on`, nginx's default), as one upstream:
@@ -146,6 +159,8 @@ limits on what clients send. The same host, because the launcher believes `X-For
 only from a loopback address: from any other it sets it to `http`, so behind an HTTPS nginx on
 another machine the servers would advertise `http://` URLs, and the publisher's `Secure` login
 cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
+
+## The launcher (cluster.js)
 
 `node cluster.js` reads `config.json` from the data directory and:
 
@@ -223,6 +238,8 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 * if the launcher itself dies (even by `SIGKILL`), each process it started sees its IPC channel
   close and shuts down, so none is left holding its port against the next launcher. A
   process started by hand has no channel, and this doesn't apply to it
+
+## Configuration
 
 ```json
 "server": {

@@ -2,7 +2,8 @@
 
 FHIRsmith has no built-in TLS, rate limiting or access control. In production it always runs
 behind a reverse proxy, which handles those things. This page covers nginx, which is what the
-public servers (tx.fhir.org, packages.fhir.org and so on) use.
+public servers (tx.fhir.org, packages.fhir.org and so on) use, and is what all the documentation is based
+on. We haev no experience with any other reverse proxy..
 
 * [General configuration](#general-configuration) - what nginx should hand across to the server
 * [Rate limiting](#rate-limiting) - approaches that suit terminology traffic
@@ -48,6 +49,8 @@ them:
 * `Accept-Language` - the display language and the language of error messages
 * `X-Cache-Id` - the terminology cache protocol (see [Routing to multiple servers](#routing-to-multiple-servers))
 
+There are other X headers needed for the test cases.
+
 ### Trusting the proxy
 
 By default FHIRsmith believes the `X-Forwarded-*` headers only when the request comes from
@@ -81,7 +84,7 @@ upstream fhirsmith {
 ### Sizes and timeouts
 
 * **Body size.** FHIRsmith accepts request bodies up to `server.maxBodyMB` (default 50 MB).
-  nginx's `client_max_body_size` is checked first: if it is lower, nginx refuses a bigger
+  nginx's `client_max_body_size` is applied first: if it is lower, nginx refuses a bigger
   body with its own 413 HTML page before FHIRsmith sees it, so set it at or above `maxBodyMB`
   to get FHIRsmith's OperationOutcome; if it is higher, `maxBodyMB` applies. Requests of
   over 100 MB have been seen, caused by client-side issues: choose both limits with that in mind.
@@ -240,6 +243,14 @@ limit_conn_zone $limit_key zone=perip:10m;
 
 ## Routing to multiple servers
 
+The instructions here are for using multiple independent FHIRsmith instances. Alternatively, 
+you can use a single instance with multiple servers in a [cluster](cluster.md). If you're doing that, 
+you can skip this section, and just set up the cluster as a single server from the point of view of nginx.
+
+Note: Only the terminology module should run in the pool. Modules that keep their own state
+(`publisher`, `packages`, `shl`, `token`) belong on a single instance, with their own
+location or server name routed to it.
+
 Most terminology operations keep no state between requests, so a pool of identical
 FHIRsmith instances could share traffic in any order. The exception is the **terminology
 cache** (`$cache-control`). A client starts a cache on one server, loads resources into it,
@@ -341,10 +352,6 @@ are kept per instance, which is fine:
 * expansion caches (each instance warms its own)
 * usage statistics (each instance reports its own share)
 
-Only the terminology module should run in the pool. Modules that keep their own state
-(`publisher`, `packages`, `shl`, `token`) belong on a single instance, with their own
-location or server name routed to it.
-
 ## Managing closure
 
 `$closure` stores state on the server between client sessions. (It is defined on ConceptMap,
@@ -352,6 +359,8 @@ but it is a system-level operation: the URL is `[base]/$closure`.) A client crea
 a named closure table, adds concepts to it over days or months, and asks for the changes
 since the version it last saw. The table lives in the database of the instance that holds
 it.
+
+### Closure on multiple servers 
 
 **Route every `$closure` request to one designated instance.**
 
@@ -380,7 +389,7 @@ server {
 
 `$closure` traffic is light, so a single instance is not a bottleneck.
 
-### Why this doesn't conflict with cache routing
+#### Why this doesn't conflict with cache routing
 
 It might look as if a `$closure` request could carry an `X-Cache-Id` that belongs to a
 different instance. That doesn't cause a problem, because closure can't depend on the
@@ -403,125 +412,8 @@ the cache ends, and the table would silently change meaning. So `$closure` ignor
 * **Moving the designated instance** means moving its closure database with it, then
   changing the upstream.
 
-## A master and tx workers on one machine
+### A master and tx workers on one machine
 
-On one machine, FHIRsmith can run as one master and several tx workers on the same data
-directory (see [cluster.md](cluster.md)). The master runs every module, the background jobs,
-`$closure` and the syndication feed; the workers run only the tx module. Start the master
-first, and the workers once it answers `/health`:
+When the server is running as a [cluster](cluster.md), the nginx configuration says nothing 
+about closure.
 
-```bash
-node --expose-gc server.js --role=master    --instance-code=m0  --port=3001
-node --expose-gc server.js --role=tx-worker --instance-code=tx1 --port=3002
-node --expose-gc server.js --role=tx-worker --instance-code=tx2 --port=3003
-```
-
-Started with a role, each process listens on `127.0.0.1` only (`server.cluster.bindAddress`,
-[cluster.md](cluster.md#roles)), which is what the configuration below uses. For an nginx on
-another machine, set `bindAddress` to the address nginx reaches them at, and firewall the
-ports.
-
-Keep each server's keepAliveTimeout (65 s with `library/keep-alive.js`) above nginx's upstream
-`keepalive_timeout` (60 s by default); on servers without that fix (Node's 5 s), set
-`keepalive_timeout 4s;` in each upstream block, or nginx reuses connections the servers are
-closing, and the resets mark the owner of a cache down.
-
-The routing is the pool above, with the master as the designated `$closure` instance and the
-home of everything that isn't a tx endpoint:
-
-```nginx
-upstream fs_master { server 127.0.0.1:3001; keepalive 16; }
-
-# every process that takes ordinary tx requests (leave the master out if it shouldn't);
-# the zone shares least_conn's counts between nginx's worker processes
-upstream fs_tx_pool {
-    zone fs_tx_pool 64k;
-    least_conn;
-    server 127.0.0.1:3001;
-    server 127.0.0.1:3002;
-    server 127.0.0.1:3003;
-    keepalive 32;
-}
-upstream fs_tx1 { server 127.0.0.1:3002; server 127.0.0.1:3003 backup; keepalive 16; }
-upstream fs_tx2 { server 127.0.0.1:3003; server 127.0.0.1:3002 backup; keepalive 16; }
-
-map $http_x_cache_id $fs_tx_backend {
-    default     fs_tx_pool;
-    ~^m0\.      fs_master;
-    ~^tx1\.     fs_tx1;
-    ~^tx2\.     fs_tx2;
-}
-
-server {
-    ...
-    # the master's parts of the tx endpoints: $closure, the syndication feed, the source
-    # info pages (the VSAC resync form writes the VSAC database)
-    location ~ ^/(r4|r5)/(\$closure|syndication(/.*)?|info/.*)$ {
-        include fhirsmith-proxy.conf;
-        proxy_set_header X-Cache-Id "";
-        proxy_pass http://fs_master;
-    }
-
-    # the tx endpoints: by cache-id, else the least busy
-    location ~ ^/(r4|r5)(/|$) {
-        include fhirsmith-proxy.conf;
-        proxy_pass http://$fs_tx_backend;
-    }
-
-    # everything else: the master
-    location / {
-        include fhirsmith-proxy.conf;
-        proxy_pass http://fs_master;
-    }
-}
-```
-
-List your own tx endpoint paths (`modules.tx.endpoints`) in the two regex locations. The
-optional launcher, `node cluster.js`, starts the processes in this order and applies the same
-rules itself. Run it behind nginx all the same, as one upstream on the same host, with request
-buffering on (`proxy_request_buffering on`, the default): see
-[cluster.md](cluster.md#the-launcher-clusterjs).
-
-### With the shared cache
-
-With `server.cluster.sharedCache: true` ([cluster.md](cluster.md#options)), every process
-keeps its `$cache-control` caches in one SQLite file, so any of them can answer any cache-id.
-Start the master before the workers. Caches are not carried over a server restart: each
-time the master starts, every live cache is lost, and a client that uses one gets
-`cache-id-unknown`, "lost to a server restart", and starts a new cache. A worker restarted
-while the master carries on keeps every cache, and workers that survive a master restart
-issue new caches straight away. The same holds when nginx fronts `cluster.js`.
-
-The `map` on `X-Cache-Id` and the per-worker upstreams (`fs_tx1`, `fs_tx2`) are then not
-needed: the tx location goes straight to the pool.
-
-```nginx
-    location ~ ^/(r4|r5)(/|$) {
-        include fhirsmith-proxy.conf;
-        proxy_pass http://fs_tx_pool;
-    }
-```
-
-Keeping the `map` still works (the launcher's `cacheAffinity: true`). It keeps each client on
-one process, whose expansion cache (which is per process) already holds the expansions it
-asked for; without it, the load spreads evenly, and the first time each process expands a
-value set for a client it does the work again.
-
-### With shared closure tables
-
-With `server.cluster.sharedClosure: true` ([cluster.md](cluster.md#options)), every process
-answers `$closure` on the one closure database, so `$closure` can leave the master's location
-and go to the pool (it never uses a cache-id):
-
-```nginx
-    location ~ ^/(r4|r5)/(syndication(/.*)?|info/.*)$ {
-        include fhirsmith-proxy.conf;
-        proxy_set_header X-Cache-Id "";
-        proxy_pass http://fs_master;
-    }
-
-    location ~ ^/(r4|r5)/\$closure$ {
-        include fhirsmith-proxy.conf;
-        proxy_pass http://fs_tx_pool;
-    }
-```

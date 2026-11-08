@@ -51,13 +51,14 @@ in-build support for SSL, rate limiting etc. See [nginx.md](nginx.md) for how to
 
 ## Quick Start
 
-There are 4 executable programs:
+There are 5 executable programs:
 * the server (`node server`)
+* the cluster server (`node cluster`) - for high performance uses (see [cluster.md])
 * the terminology importer (`node --max-old-space-size=8192 tx/importers/tx-import XXX`) - see [Doco](tx/importers/readme.md)
 * the test cases (`npm test`)
 * the test cases generater (`node tx/tests/testcases-generator.js`)
 
-Unless you're developing, you only need the first two
+Unless you're developing, you only need the first three
 
 FHIRsmith is open source - see below, and you're welcome to use it for any kind of use. Note,
 though, that if you support FHIRsmith commercially as part of a managed service or product, you
@@ -139,11 +140,10 @@ npm start
 ```
 
 The server will be available at `http://localhost:{port}` using the port specified in the config.
-In the production servers listed above, the server always sits behind an NGINX server which manages
+In the production servers listed above, the server should alway sits behind an NGINX server which manages
 SSL, security, rate limiting etc. See [nginx.md](nginx.md) for configuration advice, including
 running several servers behind one front door. To use more than one CPU core for terminology on
-one machine, see [cluster.md](cluster.md): a master and several tx workers, behind nginx or
-`node cluster.js`.
+one machine, see [cluster.md](cluster.md): a master and several tx workers, behind nginx.
 
 ## Testing
 
