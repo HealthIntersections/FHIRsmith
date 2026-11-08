@@ -37,7 +37,7 @@
  *  - restarts a tx-worker held over the memory guard's refusal threshold for recycleSeconds
  *    with no request at work
  *  - every statusSeconds, passes the master a snapshot of every process's memory, caches and
- *    work, for its status table (library/cluster-status.js)
+ *    work, for its status panel (library/cluster-status.js)
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
  *

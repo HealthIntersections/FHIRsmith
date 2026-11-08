@@ -236,49 +236,63 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 
 ## Status
 
-The table above the graphs on the master's `/` and `/dashboard` is the whole cluster's, under
-the launcher. Every `statusSeconds` (15) each process sends the launcher a few figures of its
-own over its IPC channel: its JS heap, its client caches and their concepts, its expansion
-cache, the requests it has in flight and whether its memory guard is refusing. The launcher
-adds what it reads itself, merges them, and passes the snapshot to the master. Each figure
-says what it covers, and the caption how old the snapshot is.
+Under the launcher, the master's `/` and `/dashboard` show the whole cluster. Every
+`statusSeconds` (15) each process sends the launcher a few figures of its own over its IPC
+channel: its JS heap, its client caches and their concepts, its expansion cache, the requests
+it has in flight and whether its memory guard is refusing. The launcher adds what it reads
+itself, merges them, and passes the snapshot to the master. The panel shows, top to bottom:
 
-| Figure | Scope | From |
-|---|---|---|
-| Request Count, Avg Requests/min | every process | the master's statistics (see [Request counts](#request-counts)) |
-| Memory (cgroup, private) | the cgroup: every process and the launcher | `memory.stat` `anon` (cgroup v1 `total_rss`), against the limit, with the memory guard's thresholds: what the guard measures (see [Memory](#memory)) |
-| Page cache (cgroup, shared, counted once) | the cgroup | `memory.stat` `file` (v1 `total_cache`): the terminology files, mapped or read. Pages that several processes map are counted once. The kernel charges a page to the cgroup that first read it, so after a restart the pages still cached from the last run are charged elsewhere and are not in this figure, though the processes map them (their Mapped file column). The kernel takes it back as it needs the room, so it is not in the guard's measure |
-| System Memory | the host | as before |
-| Expansion Cache | summed; each process has its own | each process |
-| Client Cache | summed over the processes; with `sharedCache`, the one store, read once (the master's count) | each process |
-| In flight, refusing | every process | each process: requests it is working on, and whether its guard refuses now |
+* **Cluster** · the number of processes · how long ago the snapshot was taken.
+* **Tiles**:
+  * Requests: those the processes served, each its own count since it started, summed; the
+    sub-label is the average per minute.
+  * Client caches: summed, with their concepts; with `sharedCache`, the one store, counted once
+    (the master's count).
+  * Expansion cache: summed; each process has its own.
+  * In flight: summed, and which processes are refusing.
+  * Restarts: since the launcher started.
+  * Uptime: the master's.
+* **Memory** · cgroup private: the cgroup's `memory.stat` `anon` (cgroup v1 `total_rss`), what
+  the memory guard measures (see [Memory](#memory)), as a bar against the limit. It has a
+  segment per process (its `RssAnon`), in the graph lines' colours, and ticks at the refuse
+  and abort thresholds. The host's memory in use is under it.
+* **A row per process and the launcher**: status, uptime, restarts, requests, private and
+  mapped memory in MB (`RssAnon` and `RssFile` from `/proc/<pid>/status`), heap in MB (with
+  the limit in the header when every process has the same), client caches and concepts,
+  requests in flight, and the age of its figures. The launcher's requests are left out: what
+  it passes on includes static files and pages, so it would not add up. `—` means a figure
+  doesn't apply or isn't known. A process whose figures are more than three intervals old is
+  `stale` and left out of the totals; one that is restarting has none until its replacement
+  sends some.
+* **Footnotes**: mapped pages, and anything that couldn't be read. A page several processes
+  map counts in each process's mapped figure. The kernel charges a page to the cgroup that
+  first read it, so after a restart pages still cached from the last run are charged
+  elsewhere. That is why mapped memory is not in the meter.
+* The graphs, then **Storage**: closure tables and entries, the closure database, the logs
+  and the free disk.
 
-Below it, a row for each process (the master, each worker) and the launcher: status, uptime,
-restarts, requests since it started (the launcher's: the requests it passed on), private memory
-(`RssAnon`) and mapped file pages (`RssFile`, from `/proc/<pid>/status`: a page several
-processes map counts in each, so these don't add up to the page cache), heap used of its limit,
-client caches, in flight, refusing, and how old its figures are. A process whose figures are
-more than three intervals old is marked stale and left out of the totals; one that is
-restarting has none until its replacement sends some.
-
-Nothing is made up: where a figure can't be read it is shown as `-`, and the table says what
-is missing and why. Without `/proc` (macOS) there is no per-process memory. Without a cgroup
+Nothing is made up. Without `/proc` (macOS) there is no per-process memory. Without a cgroup
 with a memory limit of the service's own (no `MemoryMax`, or the limit only on an enclosing
-slice), the memory line is the processes' private memory summed, the guard's limit is the one
-each process measures itself against, and the page cache is not known.
+slice), the meter is the processes' private memory summed, against the limit each process's
+guard measures itself against. A footnote says what is missing and why.
 
 The same snapshot is at **`/dashboard/status.json`**: `scope: "cluster"`, `sampledAt`,
 `intervalMs`, `memory` (`cgroup` `{anon, file}` or null, `processAnon`, `limit`, `limitSource`,
 `rejectAt`, `abortAt`, `rejectFraction`, `abortFraction`, `group`), `caches` (`scope`:
 `summed` or `shared`, `clientCaches`, `clientConcepts`, `expansionItems`), `inFlight`,
 `refusing` (instance codes), `processes` (one object per process, with the columns above, in
-bytes and milliseconds; null where not known), `launcher`, `missing` and `requests`. Under
-`/dashboard`, the memory guard never refuses it. A worker, a server with no role, or a master
-before its first snapshot answers with its own figures: `scope: "process"`, `process`, `memory`
-(its guard's limit and thresholds) and `requests`.
+bytes and milliseconds; null where not known), `launcher`, `missing`, and `requests`: the
+master's statistics, its own count and the workers' it has merged (see
+[Request counts](#request-counts)). Under `/dashboard`, the memory guard never refuses it. A
+worker, a server with no role, or a master before its first snapshot answers with its own
+figures: `scope: "process"`, `process`, `memory` (its guard's limit and thresholds) and
+`requests`.
 
-A worker's own page shows its own figures, captioned with its code. A server with no role
-shows the table as before, each figure labelled with its scope (this process, or the host).
+A worker's own page, a master before the launcher's first snapshot, and a server with no role
+show the same tiles and meter for the one process, headed **Worker tx1** · this process only,
+**Master m0** · waiting for the launcher's first snapshot, or **Server** · one process. Their
+meter is what their memory guard measures: the cgroup's private memory with a role (this
+process's segment, the rest hatched as "other"), or the process's own RSS without.
 
 ## Graphs
 
@@ -288,7 +302,9 @@ marker each tell the processes apart; up to eight are drawn, and past eight the 
 how many are left out. Each process takes a sample every `stats.sampleSeconds`: with a role,
 a minute unless set.
 
-The memory panel is each process's private memory (`RssAnon`), with a thick dark Total: the
+The panels sit on the tiles' grid, two tiles' width each. Until a panel has two samples to draw
+a line between, it says it is waiting for them. The memory panel is each process's private
+memory (`RssAnon`), with a thick dark Total: the
 cgroup's private memory, what the memory guard measures, which the launcher reads when the
 master's sample arrives (without a cgroup of the service's own, the processes' summed), and a
 grey dash-dot line, labelled with its value, at the guard's refusal threshold. Where the
@@ -331,9 +347,10 @@ each request once. The counting has these limits:
 * **Workers started by hand behind nginx have no IPC channel**, so their requests never reach
   the master's `stats.db` or daily report (see [Limits](#limits-of-this-arrangement)).
 
-The master's `/` and `/dashboard` show the same total: Request Count (with the master's and
-the workers' parts) and Avg Requests/min count every process, the workers' up to a minute
-behind. A worker's own page shows only its own.
+`/dashboard/status.json` gives this total (`requests`: the master's and the workers' parts),
+the workers' up to a minute behind. The status panel's Requests tile counts differently: the
+sum of what each process reports every `statusSeconds`, since each started (see
+[Status](#status)). A worker's own page shows only its own.
 
 A standalone server, or roles started separately behind nginx, shows only its own graph
 data. Combining process histories requires the launcher's IPC connection; no separate
@@ -401,7 +418,7 @@ is ready again. So:
 | `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
 | `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
 | `modules.tx.instanceCode` | | `m0` under the launcher | The master's instance code. The workers are `tx1`, `tx2`, ... The `m0` default is the launcher's: a master started by hand needs this, `--instance-code` or `FHIRSMITH_INSTANCE_CODE` (see [Roles](#roles)). |
-| `server.cluster.statusSeconds` | | 15 | How often each process sends the launcher its figures, and the launcher sends the master its snapshot of them all, for the status table and `/dashboard/status.json` (see [Status](#status)). 15: the table is never more than half a minute behind, and each send is a few hundred bytes. A number above 0. |
+| `server.cluster.statusSeconds` | | 15 | How often each process sends the launcher its figures, and the launcher sends the master its snapshot of them all, for the status panel and `/dashboard/status.json` (see [Status](#status)). 15: the panel is never more than half a minute behind, and each send is a few hundred bytes. A number above 0. |
 | `stats.sampleSeconds` | | 60, with a role | How often each process takes a graph sample (see [Graphs](#graphs)). Not set: a minute with a role (or `stats.intervalMinutes`, if shorter), which with the launcher's 1,440 points a process keeps 24 hours of history; with no role, `stats.intervalMinutes` (10) as before. Shorter shows a short session in more detail, and keeps less history. The request counters are still written every `intervalMinutes`. |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:

@@ -1,5 +1,5 @@
 /**
- * The cluster's state now, for the master's status table (/ and /dashboard) and
+ * The cluster's state now, for the master's status panel (/ and /dashboard) and
  * /dashboard/status.json (cluster.md, "Status").
  *
  * Under the launcher (cluster.js), every process sends a few figures of its own over its IPC
@@ -13,9 +13,11 @@
  *
  * A worker's own page shows its own figures; a process without the launcher (no role, or roles
  * started by hand behind nginx) has no IPC channel, and shows only its own.
+ *
+ * clusterView, processView and storageView shape the figures for tx/html/status-panel.liquid:
+ * a header, tiles, the memory meter, a row per process and footnotes.
  */
 const v8 = require('v8');
-const escape = require('escape-html');
 
 // a process's own figures, to the launcher; the launcher's snapshot, to the master
 const STATUS = 'fhirsmith:status';
@@ -26,8 +28,6 @@ const STATUS_INTERVAL_MS = 15000;
 // figures this many intervals old are shown with their age, and left out of the totals
 const STALE_INTERVALS = 3;
 
-const MB = (b) => `${Math.round(b / 2 ** 20).toLocaleString('en-US')} MB`;
-const GB = (b) => `${(b / 2 ** 30).toFixed(1)} GB`;
 const n = (v) => Number(v).toLocaleString('en-US');
 
 /**
@@ -196,101 +196,187 @@ function buildSnapshot({ now, intervalMs, procs, launcher, guard, cgroup, shared
 }
 
 function ago(ms) {
-  if (ms === null || ms === undefined) return 'never';
-  return ms < 1000 ? 'just now' : `${Math.round(ms / 1000)} s ago`;
+  if (ms === null || ms === undefined) return '—';
+  return ms < 1000 ? 'now' : `${Math.round(ms / 1000)} s`;
 }
 
 function duration(ms) {
-  if (ms === null) return '-';
+  if (ms === null || ms === undefined) return '—';
   const s = Math.floor(ms / 1000);
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
 }
 
-const dash = (v, f = String) => (v === null || v === undefined ? '-' : f(v));
+// "—" where a figure doesn't apply or isn't known
+const dash = (v, f = String) => (v === null || v === undefined ? '—' : f(v));
+const mb = (b) => Math.round(b / 2 ** 20).toLocaleString('en-US');
+const gb = (b) => (b / 2 ** 30).toFixed(1);
+// a rate: whole numbers from 100 up, one decimal below
+const rate = (v) => (v >= 100 ? n(Math.round(v)) : n(Number(v.toFixed(1))));
+const pct = (part, whole) => (whole > 0 ? Math.max(0, Math.min(100, (part * 100) / whole)) : 0);
+
+// The graph lines' colours, in their order (tx/html/cluster-metrics-script.liquid): told apart
+// by lightness, and every other segment of the memory meter is also striped
+const PALETTE = ['#08306b', '#5b9bd5', '#d98c00', '#6a3d9a', '#9e9e9e', '#8a5a00', '#b4a7d6', '#404040'];
+const SYMBOLS = ['●', '■', '▲', '◆', '★', '✕', '✚', '▢'];
+// the launcher, and the rest of a cgroup the processes don't account for: light, hatched
+const NEUTRAL = '#d9d9d9';
+const swatch = (i) => ({ color: PALETTE[i % PALETTE.length], symbol: SYMBOLS[i % SYMBOLS.length], striped: i % 2 === 1 });
+
+function pill(status, refusing) {
+  const pills = [{ text: status, quiet: status === 'ready' || status === 'running' }];
+  if (refusing) pills.push({ text: 'refusing', quiet: false });
+  return pills;
+}
 
 /**
- * The master's status table under the launcher: the cluster's totals first, then a row for
- * each process. Every figure says what it covers.
- * @param {Object} snapshot - from buildSnapshot
- * @param {Object} opts
- * @param {number} [opts.now]
- * @param {Object} opts.requests - the request count row (server.js requestCounts)
- * @param {string} opts.uptime - the master's uptime text
- * @param {string} [opts.system] - the host's memory cell, as before
- * @param {boolean} [opts.compact] - the dashboard: no cache row
- * @param {function(number): string} [opts.pctColor] - a cell's background for a percentage
- * @returns {string} HTML
+ * The memory meter: what the memory guard measures against its limit, in a segment per process,
+ * with ticks at the refuse and abort thresholds.
+ * @param {Object} m - used, limit, rejectAt, abortAt, rejectFraction, abortFraction, scope (the
+ *   bar's label), segments ({label, bytes, swatch}), notes
  */
-function renderClusterTable(snapshot, { now = Date.now(), requests, uptime, system = '', compact = false, pctColor = () => 'transparent' }) {
+function meter({ used, limit, rejectAt, abortAt, rejectFraction, abortFraction, scope, segments, notes = [] }) {
+  if (!(limit > 0) || used === null || used === undefined) {
+    return { scope, unknown: true, notes };
+  }
+  const shown = segments.filter(s => s.bytes > 0);
+  const accounted = shown.reduce((a, s) => a + s.bytes, 0);
+  // what the processes' own figures don't account for (the measure is the cgroup's, or newer)
+  if (used - accounted > limit / 200) {
+    shown.push({ label: 'other', bytes: used - accounted, swatch: { color: NEUTRAL, striped: true } });
+  }
+  const scale = Math.max(used, accounted) > 0 ? used / Math.max(used, accounted) : 1;
+  return {
+    scope,
+    value: `${gb(used)} GB of ${gb(limit)} GB (${Math.round(pct(used, limit))}%)`,
+    segments: shown.map(s => ({ label: s.label, width: pct(s.bytes * scale, limit).toFixed(2), ...s.swatch,
+      title: `${s.label}: ${mb(s.bytes)} MB` })),
+    ticks: [
+      { label: `refuse ${Math.round(rejectFraction * 100)}% · ${gb(rejectAt)} GB`, at: pct(rejectAt, limit).toFixed(2) },
+      { label: `abort ${Math.round(abortFraction * 100)}% · ${gb(abortAt)} GB`, at: pct(abortAt, limit).toFixed(2) }
+    ],
+    notes
+  };
+}
+
+// the table's columns; the heap's limit goes in its header when every process has the same
+const tableColumns = (heapLimit) => [
+  { label: 'Process' }, { label: 'Status' }, { label: 'Uptime', num: true }, { label: 'Restarts', num: true },
+  { label: 'Requests', num: true }, { label: 'Private MB', num: true }, { label: 'Mapped MB', num: true },
+  { label: heapLimit ? `Heap MB of ${mb(heapLimit)}` : 'Heap MB used / limit', num: true },
+  { label: 'Caches', num: true }, { label: 'Concepts', num: true }, { label: 'In flight', num: true }, { label: 'Age', num: true }
+];
+
+/**
+ * The master's status panel under the launcher (tx/html/status-panel.liquid): a header, the
+ * cluster's tiles, the memory meter, a row per process, and footnotes. Requests are those each
+ * process served (its own count since it started), and the tile is their sum.
+ * @param {Object} snapshot - from buildSnapshot
+ * @param {Object} opts - now, uptime (the master's, text), uptimeSub, host ({used, total} bytes)
+ */
+function clusterView(snapshot, { now = Date.now(), uptime = '—', uptimeSub = null, host = null } = {}) {
   const m = snapshot.memory;
-  const age = ago(now - snapshot.sampledAt);
-  // on a phone the totals' cells stack, one under another, rather than run past the page
-  let html = '<style>@media (max-width:600px){table.cluster-status,table.cluster-status tbody,table.cluster-status tr,' +
-    'table.cluster-status td,table.cluster-status caption{display:block;width:auto}}</style>';
-  html += '<table class="grid cluster-status">';
-  html += `<caption style="caption-side:top">Cluster: every process together, as of ${escape(age)} (each reports every ${Math.round(snapshot.intervalMs / 1000)} s)</caption>`;
-  html += '<tr>';
-  html += `<td><strong>Uptime (master):</strong> ${escape(uptime)}</td>`;
-  html += `<td><strong>Request Count (every process):</strong> ${requests.count} (${escape(requests.detail)})</td>`;
-  // (the dashboard has no average: its third cell is `system`, the disk)
-  html += requests.avg !== undefined ? `<td><strong>Avg Requests/min (every process):</strong> ${requests.avg}</td>` : system;
-  html += '</tr><tr>';
-  const thresholds = `refused above ${GB(m.rejectAt)} (${Math.round(m.rejectFraction * 100)}%), aborted above ${GB(m.abortAt)} (${Math.round(m.abortFraction * 100)}%)`;
-  if (m.cgroup) {
-    const pct = (m.cgroup.anon * 100) / m.limit;
-    html += `<td style="background-color:${pctColor(pct)}"><strong>Memory (cgroup, private):</strong> ${GB(m.cgroup.anon)} of ${GB(m.limit)} (${pct.toFixed(0)}%); ` +
-      `new requests ${thresholds}</td>`;
-    html += `<td><strong>Page cache (cgroup, shared, counted once):</strong> ${m.cgroup.file === null ? 'not known' : GB(m.cgroup.file)}; ` +
-      'the terminology files, mapped or read, that the kernel charges to this cgroup (a page goes to the cgroup that first read it, so ' +
-      'pages still cached from before a restart are not here); it takes them back as it needs to</td>';
-  } else {
-    html += `<td><strong>Memory (sum of the processes' private):</strong> ${m.processAnon === null ? 'not known' : GB(m.processAnon)}; ` +
-      `each process's memory guard measures itself against ${GB(m.limit)} (${escape(m.limitSource || '')}): ${thresholds}</td>`;
-    html += '<td><strong>Page cache (shared):</strong> not known without a cgroup of the service\'s own</td>';
-  }
-  const refusing = snapshot.refusing.length ? `refusing: ${snapshot.refusing.map(escape).join(', ')}` : 'none refusing';
-  html += requests.avg !== undefined ? system || '<td></td>' : `<td><strong>In flight (every process):</strong> ${dash(snapshot.inFlight, n)} requests; ${refusing}</td>`;
-  html += '</tr>';
-  if (!compact) {
-    const c = snapshot.caches;
-    html += '<tr>';
-    html += `<td><strong>Expansion Cache (each process its own):</strong> ${dash(c.expansionItems, n)} items in all</td>`;
-    html += c.scope === 'shared'
-      ? `<td><strong>Client Cache (shared store, counted once):</strong> ${dash(c.clientCaches, n)} caches / ${dash(c.clientConcepts, n)} concepts</td>`
-      : `<td><strong>Client Cache (summed over the processes):</strong> ${dash(c.clientCaches, n)} caches / ${dash(c.clientConcepts, n)} concepts</td>`;
-    html += `<td><strong>In flight (every process):</strong> ${dash(snapshot.inFlight, n)} requests; ${refusing}</td>`;
-    html += '</tr>';
-  }
-  if (snapshot.missing.length) {
-    html += `<tr><td colspan="3"><strong>Not shown:</strong> ${snapshot.missing.map(escape).join('; ')}</td></tr>`;
-  }
-  html += '</table>';
-  return html + renderProcessTable(snapshot, compact);
-}
-
-/** A row for each process, and the launcher. */
-function renderProcessTable(snapshot, compact = false) {
-  const cols = ['Process', 'Status', 'Uptime', 'Restarts', 'Requests', 'Private (anon)', 'Mapped file', 'Heap',
-    ...(compact ? [] : ['Client caches']), 'In flight', 'Refusing', 'Figures'];
-  // a phone scrolls the table, not the page; the note above it stays in view
-  let html = '<div class="cluster-processes"><p style="margin:10px 0 4px">Each process: memory from /proc (a mapped page shared by several counts in each); ' +
-    'the launcher\'s requests are those it passed on</p><div style="max-width:100%;overflow-x:auto"><table class="grid">';
-  html += '<tr>' + cols.map(c => `<th>${c}</th>`).join('') + '</tr>';
-  const heap = p => p.heapUsed === null ? '-' : `${MB(p.heapUsed)}${p.heapLimit ? ` of ${MB(p.heapLimit)}` : ''}`;
-  for (const p of snapshot.processes) {
-    const cells = [escape(p.label), escape(p.status), duration(p.uptimeMs), n(p.restarts), dash(p.requests, n),
-      dash(p.anon, MB), dash(p.file, MB), heap(p),
-      ...(compact ? [] : [p.clientCaches === null ? '-' : `${n(p.clientCaches)} / ${n(p.clientConcepts)} concepts`]),
-      dash(p.inFlight, n), p.refusing === null ? '-' : p.refusing ? '<strong>yes</strong>' : 'no',
-      p.figuresAgeMs === null ? 'none yet' : `${ago(p.figuresAgeMs)}${p.fresh ? '' : ' (stale)'}`];
-    html += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
-  }
+  const procs = snapshot.processes;
+  const fresh = procs.filter(p => p.fresh);
+  const requests = fresh.reduce((a, p) => a + (p.requests || 0), 0);
+  const longest = Math.max(0, ...procs.map(p => p.uptimeMs || 0));
+  const restarts = procs.reduce((a, p) => a + p.restarts, 0);
+  const c = snapshot.caches;
+  const tiles = [
+    { label: 'Requests', value: n(requests), sub: longest > 60000 ? `${rate(requests / (longest / 60000))} /min avg` : null },
+    { label: 'Client caches', value: dash(c.clientCaches, n), sub: c.clientConcepts === null ? null
+      : `${n(c.clientConcepts)} concepts${c.scope === 'shared' ? ' · shared' : ''}` },
+    { label: 'Expansion cache', value: dash(c.expansionItems, n), unit: 'items' },
+    { label: 'In flight', value: dash(snapshot.inFlight, n), sub: snapshot.refusing.length ? `refusing: ${snapshot.refusing.join(', ')}` : 'none refusing' },
+    { label: 'Restarts', value: n(restarts), sub: 'since launch' },
+    { label: 'Uptime', value: uptime, sub: uptimeSub }
+  ];
+  const segments = procs.map((p, i) => ({ label: p.label, bytes: p.anon || 0, swatch: swatch(i) }));
+  segments.push({ label: 'Launcher', bytes: snapshot.launcher.anon || 0, swatch: { color: NEUTRAL, striped: false } });
+  const notes = host ? [`Host: ${gb(host.used)} of ${gb(host.total)} GB in use`] : [];
+  const memory = m.cgroup
+    ? meter({ ...m, used: m.cgroup.anon, scope: 'cgroup private', segments, notes })
+    : meter({ ...m, used: m.processAnon, scope: 'processes\' private, summed', segments, notes });
+  const limits = new Set([...procs, snapshot.launcher].map(p => p.heapLimit).filter(Number.isFinite));
+  const heapLimit = limits.size === 1 ? [...limits][0] : null;
+  const heap = (p) => (p.heapUsed === null ? '—' : heapLimit ? mb(p.heapUsed) : `${mb(p.heapUsed)} / ${mb(p.heapLimit)}`);
+  const rows = procs.map((p, i) => ({
+    swatch: swatch(i),
+    cells: [{ text: p.label }, { pills: pill(p.fresh || p.figuresAgeMs === null ? p.status : 'stale', p.refusing === true) },
+      { text: duration(p.uptimeMs), num: true }, { text: n(p.restarts), num: true }, { text: dash(p.requests, n), num: true },
+      { text: dash(p.anon, mb), num: true }, { text: dash(p.file, mb), num: true },
+      { text: heap(p), num: true },
+      { text: dash(p.clientCaches, n), num: true }, { text: dash(p.clientConcepts, n), num: true },
+      { text: dash(p.inFlight, n), num: true }, { text: ago(p.figuresAgeMs), num: true }]
+  }));
   const l = snapshot.launcher;
-  const cells = [l.label, l.status, duration(l.uptimeMs), '-', dash(l.requests, n), dash(l.anon, MB), dash(l.file, MB), heap(l),
-    ...(compact ? [] : ['-']), '-', '-', ago(0)];
-  html += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
-  return html + '</table></div></div>';
+  rows.push({ swatch: { color: NEUTRAL, symbol: '' }, cells: [{ text: 'Launcher' }, { pills: pill('running') },
+    { text: duration(l.uptimeMs), num: true }, { text: '—', num: true }, { text: '—', num: true },
+    { text: dash(l.anon, mb), num: true }, { text: dash(l.file, mb), num: true },
+    { text: heap(l), num: true },
+    { text: '—', num: true }, { text: '—', num: true }, { text: '—', num: true }, { text: 'now', num: true }] });
+  const footnotes = [
+    'Mapped: file pages a process has mapped (the terminology files). A page several processes map counts in each; ' +
+      'the kernel charges it to the cgroup that first read it, so it is not in the memory above.',
+    ...snapshot.missing.map(text => `Not shown: ${text}.`)
+  ];
+  return {
+    heading: 'Cluster', meta: [`${procs.length} processes`, `updated ${ago(now - snapshot.sampledAt) === 'now' ? 'just now' : ago(now - snapshot.sampledAt) + ' ago'}`],
+    tiles, memory, table: { columns: tableColumns(heapLimit), rows }, footnotes
+  };
 }
 
-module.exports = { ownFigures, connectStatus, buildSnapshot, renderClusterTable, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };
+/**
+ * The status panel of one process: a server with no role, a worker's own page, or a master
+ * before the launcher's first snapshot. Tiles and the meter, no per-process table.
+ * @param {Object} own - figures (ownFigures), uptime (text), uptimeSub, static (count), avgPerMin,
+ *   guard ({measure, limit, rejectAt, abortAt, rejectFraction, abortFraction, group, fileBacked}),
+ *   anon (this process's RssAnon, or null), host
+ * @param {Object} opts - heading, meta
+ */
+function processView(own, { heading = 'Server', meta = ['this process'] } = {}) {
+  const f = own.figures;
+  const g = own.guard;
+  const tiles = [
+    { label: 'Requests', value: n(f.requests), sub: [Number.isFinite(own.avgPerMin) ? `${rate(own.avgPerMin)} /min avg` : null,
+      own.static ? `${n(own.static)} static` : null].filter(Boolean).join(' · ') || null },
+    { label: 'Client caches', value: n(f.clientCaches), sub: `${n(f.clientConcepts)} concepts` },
+    { label: 'Expansion cache', value: n(f.expansionItems), unit: 'items' },
+    { label: 'In flight', value: dash(f.inFlight, n), sub: f.refusing ? 'refusing' : 'not refusing' },
+    { label: 'Heap', value: mb(f.heapUsed), unit: 'MB', sub: `of ${mb(f.heapLimit)} MB` },
+    { label: 'Uptime', value: own.uptime, sub: own.uptimeSub }
+  ];
+  const scope = g.group ? 'cgroup private, every process' : g.fileBacked ? 'this process, RSS less mapped files' : 'this process, RSS';
+  const segments = [{ label: 'this process', bytes: g.group ? own.anon || 0 : g.measure, swatch: swatch(0) }];
+  const notes = own.host ? [`Host: ${gb(own.host.used)} of ${gb(own.host.total)} GB in use`] : [];
+  return {
+    heading, meta, tiles,
+    memory: meter({ ...g, used: g.measure, scope, segments, notes }),
+    table: null, footnotes: []
+  };
+}
+
+/**
+ * The storage tiles below the graphs: closure tables, logs and disk, where there are any.
+ * @param {Object} s - heading, closure (closureStats() or null), logs ({files, bytes, kept}
+ *   or null), disk ({free, total} bytes, or null)
+ */
+function storageView({ heading = 'Storage', closure = null, logs = null, disk = null }) {
+  const tiles = [];
+  if (closure) {
+    tiles.push({ label: 'Closure tables', value: n(closure.tables) });
+    tiles.push({ label: 'Closure entries', value: n(closure.entries), sub: `${n(closure.concepts)} concepts` });
+    const small = closure.bytes !== null && closure.bytes < 2 ** 20;
+    tiles.push({ label: 'Closure database', value: closure.bytes === null ? 'in memory' : small ? n(Math.ceil(closure.bytes / 1024)) : mb(closure.bytes),
+      unit: closure.bytes === null ? null : small ? 'KB' : 'MB', sub: closure.retentionDays ? `kept ${closure.retentionDays} days unused` : null });
+  }
+  if (logs) {
+    tiles.push({ label: 'Logs', value: n(logs.files), unit: 'files', sub: `${mb(logs.bytes)} MB · ${logs.kept} kept` });
+  }
+  if (disk) {
+    tiles.push({ label: 'Disk free', value: gb(disk.free), unit: 'GB', sub: `of ${gb(disk.total)} GB` });
+  }
+  return { heading, meta: [], tiles, memory: null, table: null, footnotes: [] };
+}
+
+module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };

@@ -47,16 +47,17 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   ] };
   const { html, charts, elements } = await render(name, metrics);
   expect(charts).toHaveLength(count);
-  expect(html).toContain('Private memory (anon), with the cluster');
+  expect(html).toContain('Private memory, with the total');
   // no private memory in the samples (not Linux): the heap change, and the title says so
-  expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since process start (private memory not readable here)');
+  expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since start (no private memory here)');
   for (const chart of charts) {
     const total = [elements.get('requestChart'), elements.get('clientCacheChart')].includes(chart.canvas) ? ['Total'] : [];
     expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2', ...total]);
     expect(chart.data.datasets[1].data.map(d => d.x)).toEqual([now + 3000, now + 12000]);
     expect(chart.data.datasets[1].data[1].y).toBeNull();
     expect(chart.data.datasets[2].data).toEqual([]);
-    expect(chart.options.scales.x).toMatchObject({ type:'linear', min:now, max:now + 20000 });
+    // at least a minute's axis, ending at the snapshot
+    expect(chart.options.scales.x).toMatchObject({ type:'linear', min:now - 40000, max:now + 20000 });
     expect(chart.data.datasets.every(d => d.fill === false && d.spanGaps === false)).toBe(true);
     expect(new Set(chart.data.datasets.slice(0, 3).map(d => d.pointStyle)).size).toBe(3);
   }
@@ -177,6 +178,12 @@ test('an empty cluster snapshot still renders without an invented process', asyn
   const { charts } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now, series:[] });
   expect(charts).toHaveLength(3);
   expect(charts.every(c => c.data.datasets.length === 0)).toBe(true);
+  // and says it is waiting for samples, rather than showing empty axes alone
+  const texts = [];
+  const ctx = new Proxy({}, { get:(_t, name) => name === 'fillText' ? (...args) => texts.push(args[0]) : () => {}, set:() => true });
+  charts[0].plugins.find(p => p.id === 'waitingForSamples').afterDatasetsDraw({ ctx, data:charts[0].data,
+    chartArea:{ left:0, right:100, top:0, bottom:100 } });
+  expect(texts).toEqual(['Waiting for samples']);
 });
 
 test.each(['home-metrics', 'dash-metrics'])('with no role, %s is main\'s template, drawn from the local history', async (name) => {

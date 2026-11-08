@@ -1,8 +1,8 @@
 <div id="serverMetricsLegend" class="server-metrics-legend"></div>
 <div id="serverMetricsShedding" class="server-metrics-shedding" hidden></div>
-<div class="server-metrics-row">
+<div class="server-metrics-grid">
   <div class="server-metrics-chart">
-    <h6 id="memoryChartTitle">Private memory (anon), with the cluster's total</h6>
+    <h6 id="memoryChartTitle">Private memory, with the total</h6>
     <div class="server-metrics-canvas"><canvas id="memoryChart" aria-label="Private memory per process, the cluster's total and the refusal threshold"></canvas></div>
   </div>
   <div class="server-metrics-chart">
@@ -13,8 +13,6 @@
     <h6>Turnaround Time</h6>
     <div class="server-metrics-canvas"><canvas id="tatChart" aria-label="Turnaround Time"></canvas></div>
   </div>
-</div>
-<div class="server-metrics-row">
   <div class="server-metrics-chart">
     <h6>Client Cache</h6>
     <div class="server-metrics-canvas"><canvas id="clientCacheChart" aria-label="Client Cache"></canvas></div>

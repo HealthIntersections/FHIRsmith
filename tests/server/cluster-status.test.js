@@ -3,7 +3,7 @@
  * and the master's status table.
  */
 const { EventEmitter } = require('events');
-const { connectStatus, buildSnapshot, renderClusterTable, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
+const { connectStatus, buildSnapshot, clusterView, processView, storageView, PALETTE, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
 
 const GiB = 2 ** 30;
 const MiB = 2 ** 20;
@@ -74,51 +74,126 @@ describe('the launcher\'s snapshot', () => {
   });
 });
 
-describe('the status table', () => {
-  const requests = { count: 5000, detail: 'master: 1000, workers: 4000, static: 12', avg: '83.3' };
-  const render = (s, extra = {}) => renderClusterTable(s, { now: now + 2000, requests, uptime: '1h 0m 0s', ...extra });
+describe('the status panel', () => {
+  const path = require('path');
+  const { Liquid } = require('liquidjs');
+  const liquid = new Liquid({ root: path.join(__dirname, '../../tx/html'), extname: '.liquid' });
+  const host = { used: 30 * GiB, total: 64 * GiB };
+  const view = (s = snapshot()) => clusterView(s, { now: now + 2000, uptime: '1h 0m 0s', uptimeSub: '99.5% overall', host });
+  const cellsOf = (v, row) => v.table.rows[row].cells.map(c => c.pills ? c.pills.map(p => p.text).join('+') : c.text);
 
-  test('totals first, each labelled with its scope and the data\'s age; then a row per process and the launcher', () => {
-    const html = render(snapshot());
-    expect(html).toContain('Cluster: every process together, as of 2 s ago (each reports every 15 s)');
-    expect(html).toContain('<strong>Memory (cgroup, private):</strong> 7.6 GB of 12.0 GB (63%); new requests refused above 10.2 GB (85%), aborted above 11.0 GB (92%)');
-    expect(html).toContain('<strong>Page cache (cgroup, shared, counted once):</strong> 3.1 GB');
-    expect(html).toContain('<strong>Expansion Cache (each process its own):</strong> 120 items in all');
-    expect(html).toContain('<strong>Client Cache (summed over the processes):</strong> 9 caches / 7,000 concepts');
-    expect(html).toContain('<strong>In flight (every process):</strong> 6 requests; refusing: tx1');
-    expect(html).toContain('<strong>Request Count (every process):</strong> 5000 (master: 1000, workers: 4000, static: 12)');
-    expect(html.indexOf('Memory (cgroup, private)')).toBeLessThan(html.indexOf('<th>Process</th>'));
-    const rows = [...html.matchAll(/<tr><td>([^<]+)<\/td><td>([^<]+)<\/td>/g)].map(m => [m[1], m[2]]);
-    expect(rows).toEqual([['Master m0', 'ready'], ['Worker tx1', 'ready'], ['Worker tx2', 'ready'], ['Launcher', 'running']]);
-    expect(html).toContain('<td>Worker tx1</td><td>ready</td><td>10m 0s</td><td>1</td><td>10</td><td>2,048 MB</td><td>2,048 MB</td><td>300 MB of 4,096 MB</td>' +
-      '<td>2 / 1,000 concepts</td><td>4</td><td><strong>yes</strong></td><td>9 s ago</td>');
-    expect(html).not.toContain('Not shown');
+  test('a header, then tiles: requests are the sum of what each process served', () => {
+    const v = view();
+    expect([v.heading, ...v.meta]).toEqual(['Cluster', '3 processes', 'updated 2 s ago']);
+    expect(v.tiles.map(t => [t.label, t.value, t.unit || null, t.sub])).toEqual([
+      ['Requests', '30', null, '0.5 /min avg'],
+      ['Client caches', '9', null, '7,000 concepts'],
+      ['Expansion cache', '120', 'items', undefined],
+      ['In flight', '6', null, 'refusing: tx1'],
+      ['Restarts', '1', null, 'since launch'],
+      ['Uptime', '1h 0m 0s', null, '99.5% overall']
+    ]);
+    // the rows' requests add up to the tile
+    expect(v.table.rows.slice(0, 3).map(r => Number(r.cells[4].text))).toEqual([10, 10, 10]);
   });
 
-  test('the shared store is counted once, and what is missing is said', () => {
-    const html = render(buildSnapshot({ now, intervalMs: 15000, procs: procs(), launcher, sharedCache: true,
+  test('the meter: the cgroup\'s private memory, a segment per process, ticks at the thresholds', () => {
+    const m = view().memory;
+    expect(m.scope).toBe('cgroup private');
+    expect(m.value).toBe('7.6 GB of 12.0 GB (63%)');
+    expect(m.segments.map(s => [s.label, s.color])).toEqual([['Master m0', PALETTE[0]], ['Worker tx1', PALETTE[1]],
+      ['Worker tx2', PALETTE[2]], ['Launcher', '#d9d9d9']]);
+    expect(m.segments.map(s => s.striped)).toEqual([false, true, false, false]);
+    expect(m.ticks).toEqual([{ label: 'refuse 85% · 10.2 GB', at: '85.00' }, { label: 'abort 92% · 11.0 GB', at: '92.00' }]);
+    expect(m.notes).toEqual(['Host: 30.0 of 64.0 GB in use']);
+    // what the processes don't account for is its own, hatched segment
+    const more = view(buildSnapshot({ now, intervalMs: 15000, procs: procs(), launcher, guard, cgroup: { anon: 9 * GiB, file: 0 } })).memory;
+    expect(more.segments.at(-1)).toMatchObject({ label: 'other', striped: true });
+    // nothing to measure: said so, no bar
+    expect(view(buildSnapshot({ now, intervalMs: 15000, procs: procs().map(p => ({ ...p, memory: null })),
+      launcher: { ...launcher, memory: null }, guard, cgroup: null })).memory).toMatchObject({ unknown: true });
+  });
+
+  test('a row per process and the launcher, with one unit a column and "—" where nothing applies', () => {
+    const v = view();
+    // every process has the same heap limit: it goes in the header
+    expect(v.table.columns.map(c => c.label)).toEqual(['Process', 'Status', 'Uptime', 'Restarts', 'Requests', 'Private MB',
+      'Mapped MB', 'Heap MB of 4,096', 'Caches', 'Concepts', 'In flight', 'Age']);
+    expect(cellsOf(v, 1)).toEqual(['Worker tx1', 'ready+refusing', '10m 0s', '1', '10', '2,048', '2,048', '300', '2', '1,000', '4', '9 s']);
+    expect(cellsOf(v, 3)).toEqual(['Launcher', 'running', '1h 1m', '—', '—', '80', '40', '20', '—', '—', '—', 'now']);
+    expect(v.table.rows.every(r => r.cells.length === v.table.columns.length)).toBe(true);
+    // limits that differ: in each cell
+    const p = procs();
+    p[1].figures.heapLimit = 2048 * MiB;
+    const mixed = view(buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, guard, cgroup: null }));
+    expect(mixed.table.columns[7].label).toBe('Heap MB used / limit');
+    expect(cellsOf(mixed, 1)[7]).toBe('300 / 2,048');
+    expect(v.footnotes).toHaveLength(1);
+    expect(v.footnotes[0]).toMatch(/^Mapped: file pages a process has mapped/);
+  });
+
+  test('stale figures, the shared store and what is missing', () => {
+    const p = procs();
+    p[2].figures.time = now - 46000;
+    const v = view(buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, sharedCache: true,
       guard: { ...guard, group: null, source: 'os.totalmem()' }, cgroup: null }));
-    expect(html).toContain('<strong>Client Cache (shared store, counted once):</strong> 5 caches / 5,000 concepts');
-    expect(html).toContain('<strong>Memory (sum of the processes\' private):</strong> 7.6 GB; each process\'s memory guard measures itself against 12.0 GB (os.totalmem())');
-    expect(html).toContain('<strong>Page cache (shared):</strong> not known without a cgroup of the service\'s own');
-    expect(html).toMatch(/<strong>Not shown:<\/strong> the cgroup&#39;s memory: there is no cgroup/);
+    expect(cellsOf(v, 2)[1]).toBe('stale');
+    expect(v.tiles[1]).toMatchObject({ value: '5', sub: '5,000 concepts · shared' });
+    expect(v.memory.scope).toBe('processes\' private, summed');
+    expect(v.footnotes.slice(1)).toEqual([
+      'Not shown: 1 running process(es) have sent no figures in the last 45 s: the totals leave them out.',
+      expect.stringMatching(/^Not shown: the cgroup's memory: there is no cgroup/)
+    ]);
   });
 
-  test('the dashboard\'s compact form leaves out the cache row and column', () => {
-    const html = render(snapshot(), { compact: true, system: '<td>Disk</td>', requests: { ...requests, avg: undefined } });
-    expect(html).not.toContain('Client Cache');
-    // no empty cell: the disk in the first row, in flight in the second
-    expect(html).not.toContain('<td></td>');
-    expect(html).toMatch(/5000 \(master: 1000, workers: 4000, static: 12\)<\/td><td>Disk<\/td><\/tr>/);
-    expect(html).toContain('<strong>In flight (every process):</strong> 6 requests; refusing: tx1</td></tr>');
-    expect(html).not.toContain('<th>Client caches</th>');
-    expect(html).toContain('<td>Disk</td>');
+  test('one process: a server with no role, or a worker measured as the cgroup', () => {
+    const own = { figures: figures(now), uptime: '5m 0s', uptimeSub: null, static: 3, avgPerMin: 2.04,
+      anon: 2 * GiB, host,
+      guard: { measure: 3 * GiB, limit: 12 * GiB, rejectAt: guard.rejectAt, abortAt: guard.abortAt, rejectFraction: 0.85, abortFraction: 0.92, group: false } };
+    const single = processView(own);
+    expect([single.heading, ...single.meta]).toEqual(['Server', 'this process']);
+    expect(single.tiles.map(t => t.label)).toEqual(['Requests', 'Client caches', 'Expansion cache', 'In flight', 'Heap', 'Uptime']);
+    expect(single.tiles[0].sub).toBe('2 /min avg · 3 static');
+    expect(single.tiles[1].sub).toBe('1,000 concepts');
+    expect(single.memory).toMatchObject({ scope: 'this process, RSS', value: '3.0 GB of 12.0 GB (25%)' });
+    expect(single.table).toBeNull();
+    const worker = processView({ ...own, guard: { ...own.guard, group: true, measure: 7 * GiB } },
+      { heading: 'Worker tx1', meta: ['this process only'] });
+    expect(worker.memory.scope).toBe('cgroup private, every process');
+    expect(worker.memory.segments.map(s => s.label)).toEqual(['this process', 'other']);
   });
 
-  test('labels are escaped', () => {
+  test('storage tiles: only what there is', () => {
+    expect(storageView({ disk: { free: 15 * GiB, total: 900 * GiB } }).tiles).toEqual([
+      { label: 'Disk free', value: '15.0', unit: 'GB', sub: 'of 900.0 GB' }]);
+    const tiles = storageView({ closure: { tables: 2, entries: 10, concepts: 30, bytes: null, retentionDays: 7 },
+      logs: { files: 2, bytes: 5 * MiB, kept: 14 } }).tiles;
+    expect(tiles.map(t => t.label)).toEqual(['Closure tables', 'Closure entries', 'Closure database', 'Logs']);
+    expect(tiles.map(t => t.sub)).toEqual([undefined, '30 concepts', 'kept 7 days unused', '5 MB · 14 kept']);
+    expect(storageView({ closure: { tables: 0, entries: 0, concepts: 0, bytes: 40960 } }).tiles[2]).toMatchObject({ value: '40', unit: 'KB' });
+  });
+
+  test('the template: tiles, meter, an aligned table, everything escaped; the palette is the graphs\'', async () => {
     const p = procs();
     p[0].status = '<b>';
-    expect(render(buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, guard, cgroup: null }))).toContain('&lt;b&gt;');
+    const html = await liquid.renderFile('status-panel', { view: view(buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, guard,
+      cgroup: { anon: 7.6 * GiB, file: GiB } })) });
+    expect(html).toContain('&lt;b&gt;');
+    expect(html).not.toContain('<b>');
+    expect(html.match(/class="fs-status-tile"/g)).toHaveLength(6);
+    expect(html.match(/class="fs-status-seg/g)).toHaveLength(4);
+    expect(html.match(/class="fs-status-tick"/g)).toHaveLength(2);
+    expect(html).toContain('<th class="fs-num">Private MB</th>');
+    expect(html).toMatch(/<td class="fs-num">2,048<\/td>/);
+    expect(html).toContain('<th class="fs-num">Heap MB of 4,096</th>');
+    expect(html).not.toMatch(/<td[^>]*><\/td>/);
+    // every style is the panel's own: each selector, inside a media query or not, starts .fs-status
+    const css = /<style>([\s\S]*?)<\/style>/.exec(html)[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/@media[^{]*\{/g, '');
+    const selectors = [...css.matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap(m => m[1].split(',')).map(x => x.trim()).filter(Boolean);
+    expect(selectors.length).toBeGreaterThan(20);
+    expect(selectors.filter(x => !x.startsWith('.fs-status'))).toEqual([]);
+    const script = require('fs').readFileSync(path.join(__dirname, '../../tx/html/cluster-metrics-script.liquid'), 'utf8');
+    expect([...script.matchAll(/color:'(#[0-9a-f]{6})', dash/g)].map(m => m[1]).slice(0, 8)).toEqual(PALETTE);
   });
 });
 

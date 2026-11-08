@@ -39,11 +39,10 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const v8 = require('v8');
 const { statSync, readdirSync } = require('fs');
 const escape = require('escape-html');
 const { resolveWithin } = require('./library/path-safety');
-const { readCgroupMemoryLimit, readProcessMemory } = require('./library/cgroup-memory');
+const { readProcessMemory } = require('./library/cgroup-memory');
 const memoryGuard = require('./library/memory-guard');
 const { applyKeepAliveTimeouts } = require('./library/keep-alive');
 const { countStaticResponses } = require('./library/static-response-stats');
@@ -122,7 +121,7 @@ const ServerStats = require("./stats");
 const { connectMetrics, graphData } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
 const { connectClusterEvents } = require('./library/cluster-events');
-const { connectStatus, ownFigures, renderClusterTable, STATUS_INTERVAL_MS } = require('./library/cluster-status');
+const { connectStatus, ownFigures, clusterView, processView, storageView, STATUS_INTERVAL_MS } = require('./library/cluster-status');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -148,7 +147,7 @@ const PORT = (role && role.port) || process.env.PORT || config.server.port || 30
 const HOST = role ? require('./library/role').bindAddress(config) : null;
 
 // Middleware
-// The requests this process has in flight, for the status table (library/cluster-status.js)
+// The requests this process has in flight, for the status panel (library/cluster-status.js)
 let inFlight = 0;
 app.use((req, res, next) => {
   inFlight++;
@@ -223,7 +222,7 @@ async function initializeModules() {
     disconnectCounts = connectCounts(stats, process, { role: role.role });
     // and on the master, what the launcher saw, for the daily report (library/cluster-events.js)
     disconnectClusterEvents = connectClusterEvents(stats, process, { role: role.role });
-    // this process's figures for the status table, and on the master the launcher's snapshot
+    // this process's figures for the status panel, and on the master the launcher's snapshot
     // of them all (library/cluster-status.js)
     disconnectStatus = connectStatus(stats, process, { role: role.role,
       intervalMs: Number(config.server.cluster?.statusSeconds ?? STATUS_INTERVAL_MS / 1000) * 1000,
@@ -435,47 +434,55 @@ async function loadTemplates() {
   }
 }
 
-// The stats table's caption and request count (/ and /dashboard). On the master under the
-// launcher the count is every process's: its own and the workers' it has merged
-// (library/cluster-counts.js), which arrive up to a minute late. The table's other figures
-// are this process's. With no role: no caption, and the count as before
+// The request count in /dashboard/status.json: on the master under the launcher, what its
+// statistics hold, its own and the workers' it has merged (library/cluster-counts.js), which
+// arrive up to a minute late; otherwise this process's
 function requestCounts() {
-  const code = role ? escape(config.modules.tx.instanceCode) : '';
   if (role && role.role === 'master' && process.send) {
     return {
-      caption: `<caption style="caption-side:top">Cluster: request counts for every process (the workers' up to a minute behind); uptime and the other figures are master ${code}'s</caption>`,
       count: stats.requestCount + stats.mergedRequestCount,
       detail: `master: ${stats.requestCount}, workers: ${stats.mergedRequestCount}, static: ${stats.staticRequestCount}`
     };
   }
-  return {
-    caption: role ? `<caption style="caption-side:top">${role.role === 'master' ? 'Master' : 'Worker'} ${code}: every figure is this process's</caption>` : '',
-    count: stats.requestCount,
-    detail: `static: ${stats.staticRequestCount}`
-  };
+  return { count: stats.requestCount, detail: `static: ${stats.staticRequestCount}` };
 }
 
-// This process's own memory, for the table of a server without the launcher's snapshot
-function ownMemory() {
-  const memUsage = process.memoryUsage();
-  const heapStats = v8.getHeapStatistics();
-  // Process RSS vs cgroup limit (or system total)
-  const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
-  return {
-    v8UsedMB: (memUsage.heapUsed / 1024 / 1024).toFixed(0),
-    v8LimitMB: (heapStats.heap_size_limit / 1024 / 1024).toFixed(0),
-    v8PCT: (memUsage.heapUsed * 100) / heapStats.heap_size_limit,
-    rssMB: (memUsage.rss / 1024 / 1024).toFixed(0),
-    memLimitMB: (memLimit / 1024 / 1024).toFixed(0),
-    processPCT: (memUsage.rss * 100) / memLimit
-  };
+// The status panel's view (library/cluster-status.js, tx/html/status-panel.liquid): the
+// cluster's on the master under the launcher, once its first snapshot has come; else this
+// process's own, labelled as what it is
+function statusView() {
+  const [uptime, uptimeSub] = uptimeParts(Date.now() - stats.startTime);
+  const host = { used: os.totalmem() - os.freemem(), total: os.totalmem() };
+  const cluster = clusterStatus();
+  if (cluster) {
+    return clusterView(cluster, { uptime, uptimeSub, host });
+  }
+  // a fresh enough measure, as the guard takes it
+  memoryGuard.shouldReject();
+  const g = memoryGuard._state;
+  const own = readProcessMemory('self');
+  const minutes = (Date.now() - stats.startTime) / 60000;
+  const code = role ? config.modules.tx.instanceCode : null;
+  return processView({
+    figures: ownFigures(stats, { inFlight: () => inFlight, refusing: () => memoryGuard.shouldReject() }),
+    uptime, uptimeSub, host, static: stats.staticRequestCount,
+    avgPerMin: minutes >= 1 ? stats.requestCount / minutes : null,
+    anon: own ? own.anon : null,
+    guard: { measure: g.sampleRss, limit: g.limit, rejectAt: g.rejectAt, abortAt: g.abortAt, rejectFraction: g.rejectFraction,
+      abortFraction: g.abortFraction, group: Boolean(g.group), fileBacked: g.excludeFileBacked }
+  }, !role ? { heading: 'Server', meta: ['one process'] } : {
+    heading: `${role.role === 'master' ? 'Master' : 'Worker'} ${code}`,
+    meta: role.role === 'master' && process.send ? ['this process', 'waiting for the launcher\'s first snapshot'] : ['this process only']
+  });
 }
 
-function systemMemory() {
-  const totalMemMB = (os.totalmem() / 1024 / 1024).toFixed(0);
-  const usedMemMB = ((os.totalmem() - os.freemem()) / 1024 / 1024).toFixed(0);
-  const pct = ((os.totalmem() - os.freemem()) * 100) / os.totalmem();
-  return { pct, text: `${usedMemMB} MB of ${totalMemMB} MB (${pct.toFixed(0)}%)` };
+// The storage tiles below the graphs: closure tables, logs, disk
+function storageStatusView() {
+  const logs = logFigures();
+  const closure = stats.closureStats();
+  return storageView({
+    heading: 'Storage', closure, logs: logs && logs.files !== null ? logs : null, disk: logs && logs.disk
+  });
 }
 
 // The launcher's snapshot of every process (library/cluster-status.js), on the master under
@@ -604,62 +611,15 @@ async function buildRootPageContent() {
 
   content += '<hr/>';
 
-  // Calculate uptime
-  const uptimeMs = Date.now() - stats.startTime;
-  const uptimeStr = uptimeText(uptimeMs);
-
-  // Average requests per minute
-  const requests = requestCounts();
-  const uptimeMinutesTotal = uptimeMs / 60000;
-  const avgReqPerMin = uptimeMinutesTotal > 0 ? (requests.count / uptimeMinutesTotal).toFixed(1) : '0.0';
-
-  const system = systemMemory();
-  const cluster = clusterStatus();
-  if (cluster) {
-    // the master under the launcher: the cluster's totals, then each process (library/cluster-status.js)
-    content += renderClusterTable(cluster, { requests: { ...requests, avg: avgReqPerMin }, uptime: uptimeStr, pctColor,
-      system: `<td style="background-color:${pctColor(system.pct)}"><strong>System Memory (the host):</strong> ${system.text}</td>` });
-    content += '<table class="grid">';
-    content += `<caption style="caption-side:top">Master ${escape(config.modules.tx.instanceCode)}: its own</caption>`;
-  } else {
-    const own = ownMemory();
-    content += '<table class="grid">';
-    content += requests.caption;
-    content += '<tr>';
-    content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-    content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
-    content += `<td><strong>Avg Requests/min:</strong> ${avgReqPerMin}</td>`;
-    content += '</tr>';
-    content += '<tr>';
-    content += `<td style="background-color:${pctColor(own.v8PCT)}"><strong>V8 Memory (this process's heap):</strong> ${own.v8UsedMB} MB of ${own.v8LimitMB} MB (${own.v8PCT.toFixed(0)}%)</td>`;
-    content += `<td style="background-color:${pctColor(own.processPCT)}"><strong>Process Memory (this process's RSS):</strong> ${own.rssMB} MB of ${own.memLimitMB} MB (${own.processPCT.toFixed(0)}%)</td>`;
-    content += `<td style="background-color:${pctColor(system.pct)}"><strong>System Memory (the host):</strong> ${system.text}</td>`;
-    content += '</tr>';
-    content += '<tr>';
-    content += `<td><strong>Expansion Cache (this process):</strong> ${stats.expansionItems()} items</td>`;
-    content += `<td><strong>Client Cache (${config.modules?.tx?.sharedCache ? 'the shared store' : 'this process'}):</strong> ${stats.clientCaches()} caches / ${stats.clientConcepts()} concepts</td>`;
-    content += `<td><strong>Max Client Cache (this process):</strong> ${stats.maxClientCaches()} caches / ${stats.maxClientConcepts()} concepts</td>`;
-    content += '</tr>';
-  }
-  const closure = stats.closureStats();
-  if (closure) {
-    content += '<tr>';
-    content += `<td><strong>Closure Tables${role ? ` (${config.modules.tx.sharedClosure ? 'shared' : 'the master\'s'})` : ''}:</strong> ${closure.tables} tables` +
-      (closure.retentionDays ? ` (unused for ${closure.retentionDays} days = deleted)` : '') + `</td>`;
-    content += `<td><strong>Closure Entries:</strong> ${closure.entries} entries / ${closure.concepts} concepts</td>`;
-    content += `<td><strong>Closure Database:</strong> ${closure.bytes === null ? 'in memory' : formatBytes(closure.bytes)}</td>`;
-    content += '</tr>';
-  }
-  content += getLogStats();
-  content += '</table>';
-
-  // ===== Metrics Graphs =====
+  // the status panel, the graphs, then storage (library/cluster-status.js)
   const liquid = new Liquid({
     root: path.join(__dirname, 'tx', 'html'),
     extname: '.liquid'
   });
+  content += await liquid.renderFile('status-panel', { view: statusView() });
   content += await liquid.renderFile(...metricsTemplate('home-metrics'));
-  content += stats.taskDetails();
+  content += await liquid.renderFile('status-panel', { view: storageStatusView() });
+  content += `<div style="max-width:100%;overflow-x:auto">${stats.taskDetails()}</div>`;
 
   content += '</div>';
   return content;
@@ -769,7 +729,7 @@ if (config.server?.webBase) {
 staticFiles.use(express.static(path.join(__dirname, 'static')));
 app.use(countStaticResponses(staticFiles, () => { stats.staticRequestCount++; }));
 
-// The status table's figures, machine-readable (cluster.md, "Status"). Under /dashboard, so the
+// The status panel's figures, machine-readable (cluster.md, "Status"). Under /dashboard, so the
 // memory guard never refuses it. On the master under the launcher: the launcher's snapshot of
 // every process (library/cluster-status.js); otherwise this process's own figures
 app.get('/dashboard/status.json', (req, res) => {
@@ -807,54 +767,17 @@ app.get('/dashboard', async (req, res) => {
     }
 
     const startTime = Date.now();
-    // Calculate uptime
-    const uptimeMs = Date.now() - stats.startTime;
-    const uptimeStr = uptimeText(uptimeMs);
-
-    // Memory usage
-    const memUsage = process.memoryUsage();
-    const heapStats = v8.getHeapStatistics();
-    const v8PCT = (memUsage.heapUsed * 100) / heapStats.heap_size_limit;  // % of V8 heap limit used
-
-    // Process RSS as % of cgroup memory limit (or system total as fallback)
-    const memLimit = readCgroupMemoryLimit().limit || os.totalmem();
-    const processPCT = (memUsage.rss * 100) / memLimit;
-
-    const totalMemBytes = os.totalmem();
-    const freeMemBytes = os.freemem();
-    const sysMemPCT = ((totalMemBytes - freeMemBytes) * 100) / totalMemBytes;  // % of system memory used
-
-    const memMaxPCT = Math.max(v8PCT, processPCT, sysMemPCT);
-
-    const fstats = fs.statfsSync(folders.logsDir());
-    const diskPCT = 100 - ((fstats.bavail * 100) / fstats.blocks);  // % of disk used
-
-    let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
-    const requests = requestCounts();
-    const cluster = clusterStatus();
-    const disk = `<td style="background-color:${pctColor(diskPCT)}"><strong>Disk (the logs'):</strong> ${diskPCT.toFixed(0)}%</td>`;
-    if (cluster) {
-      // the master under the launcher: the cluster's totals, then each process (library/cluster-status.js)
-      content += renderClusterTable(cluster, { requests, uptime: uptimeStr, pctColor, compact: true, system: disk });
-    } else {
-      content += '<table class="grid">';
-      content += requests.caption;
-      content += '<tr>';
-      content += `<td><strong>Uptime:</strong> ${escape(uptimeStr)}</td>`;
-      content += `<td><strong>Request Count:</strong> ${requests.count} (${requests.detail})</td>`;
-      content += `<td style="background-color:${pctColor(memMaxPCT)}"><strong>Memory:</strong> ${v8PCT.toFixed(0)}% V8 (this process), ${processPCT.toFixed(0)}% Process (this process's RSS), ${sysMemPCT.toFixed(0)}% System (the host)</td>`;
-      content += disk;
-      content += '</tr>';
-      content += '</table>';
-    }
-
-    // ===== Metrics Graphs =====
+    // the status panel, the graphs, then storage (library/cluster-status.js)
     const liquid = new Liquid({
       root: path.join(__dirname, 'tx', 'html'),
       extname: '.liquid'
     });
+    // the background tasks' table (the bare template has no fhir.css)
+    let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
+    content += await liquid.renderFile('status-panel', { view: statusView() });
     content += await liquid.renderFile(...metricsTemplate('dash-metrics'));
-    content += stats.taskDetails();
+    content += await liquid.renderFile('status-panel', { view: storageStatusView() });
+    content += `<div style="max-width:100%;overflow-x:auto">${stats.taskDetails()}</div>`;
     if (npmAudit) {
       content += npmAudit.renderDashboard();
     }
@@ -878,23 +801,17 @@ app.get('/dashboard', async (req, res) => {
   }
 });
 
-function formatBytes(bytes) {
-  if (bytes < 1024) {
-    return `${bytes} bytes`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  }
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
 /**
  * "3d 4h 5m 6s" for this run, followed by the proportion of time the server has
  * been up over all its recorded runs, when the statistics database is keeping that.
  */
+// [the uptime, "97.3% overall" or null], for the Uptime tile
+function uptimeParts(uptimeMs) {
+  const text = uptimeText(uptimeMs);
+  const m = / \((.*)\)$/.exec(text);
+  return m ? [text.substring(0, m.index), m[1]] : [text, null];
+}
+
 function uptimeText(uptimeMs) {
   const uptimeSeconds = Math.floor(uptimeMs / 1000);
   const uptimeDays = Math.floor(uptimeSeconds / 86400);
@@ -913,15 +830,6 @@ function uptimeText(uptimeMs) {
     uptimeStr += ` (${pct}% overall)`;
   }
   return uptimeStr;
-}
-
-function pctColor(pct) {
-  // Gradient from green (#deffe0) at 0% to red (#ffd3d1) at 100%
-  const t = Math.max(0, Math.min(100, pct)) / 100;
-  const r = Math.round(222 + 33 * t);   // 222 -> 255
-  const g = Math.round(255 - 44 * t);   // 255 -> 211
-  const b = Math.round(224 - 15 * t);   // 224 -> 209
-  return `rgb(${r}, ${g}, ${b})`;
 }
 
 // Health check endpoint
@@ -955,45 +863,29 @@ app.get('/health', async (req, res) => {
  * Get log directory statistics: file count, total size, and disk space info
  * @returns {string} HTML table row(s) with log stats
  */
-function getLogStats() {
+// The logs and the disk they are on, for the storage tiles: files and bytes null if the logs
+// can't be read, disk null if the disk can't
+function logFigures() {
   const logDir = folders.logsDir();
-
+  let disk = null;
+  try {
+    // statfs available in Node 18.15+
+    const fstats = fs.statfsSync(logDir);
+    disk = { free: fstats.bavail * fstats.bsize, total: fstats.blocks * fstats.bsize };
+  } catch {
+    // unavailable
+  }
   try {
     const files = readdirSync(logDir).filter(f => f.endsWith('.log'));
-    let totalSize = 0;
+    let bytes = 0;
     for (const file of files) {
-      totalSize += statSync(path.join(logDir, file)).size;
+      bytes += statSync(path.join(logDir, file)).size;
     }
-
-    const sizeMB = (totalSize / 1024 / 1024).toFixed(2);
-
-    let diskInfo = '';
-    try {
-      // statfs available in Node 18.15+
-      const fstats = fs.statfsSync(logDir);
-      const blockSize = fstats.bsize;
-      const freeSpace = fstats.bavail * blockSize;
-      const totalSpace = fstats.blocks * blockSize;
-      const freeGB = (freeSpace / 1024 / 1024 / 1024).toFixed(2);
-      const totalGB = (totalSpace / 1024 / 1024 / 1024).toFixed(2);
-      diskInfo = `<td><strong>Disk Space:</strong> ${freeGB} GB of ${totalGB} GB</td>`;
-    } catch {
-      diskInfo = '<td><strong>Disk Space:</strong> unavailable</td>';
-    }
-
-    // Log rotation limit from logger config
+    // how many files the logger keeps (its rotation)
     const loggerOpts = Logger.getInstance().options;
-    const maxFiles = loggerOpts.file.maxFiles;
-    const maxSize = loggerOpts.file.maxSize;
-    const limitInfo = `${maxFiles} files × ${maxSize} each`;
-
-    return '<tr>'
-        + `<td><strong>Existing Logs:</strong> ${files.length} (${sizeMB} MB)</td>`
-        + `<td><strong>Retention Policy:</strong> ${limitInfo}</td>`
-        + diskInfo
-        + '</tr>';
-  } catch (e) {
-    return `<tr><td colspan="3"><strong>Logs:</strong> unable to read (${e.message})</td></tr>`;
+    return { files: files.length, bytes, kept: loggerOpts.file.maxFiles, disk };
+  } catch {
+    return { files: null, bytes: null, kept: null, disk };
   }
 }
 

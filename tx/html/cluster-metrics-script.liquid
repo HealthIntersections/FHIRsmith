@@ -1,9 +1,10 @@
 <style>
-  .server-metrics-row { display:flex; gap:12px; margin-bottom:8px; }
-  .server-metrics-chart { flex:1; min-width:0; }
-  .server-metrics-chart h6 { font-size:12px; margin:0 0 4px; }
+  /* the status panel's grid (tx/html/status-panel.liquid): its six columns, two a chart */
+  .server-metrics-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; margin-bottom:16px; }
+  .server-metrics-chart { min-width:0; }
+  .server-metrics-chart h6 { font-size:12px; font-weight:600; margin:0 0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .server-metrics-canvas { position:relative; height:200px; }
-  @media (max-width:600px) { .server-metrics-row { flex-direction:column; } }
+  @media (max-width:600px) { .server-metrics-grid { grid-template-columns:minmax(0, 1fr); } }
   .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:10px 0 8px; }
   .server-metrics-key { display:inline-block; width:22px; text-align:center; margin-right:4px; }
   .server-metrics-shedding { font:11px sans-serif; margin:0 0 8px; }
@@ -36,7 +37,7 @@
   const memoryTotal = hasAnon && metrics.total && metrics.total.history.some(point => Number.isFinite(point.anon)) ? metrics.total : null;
   const rejectAt = hasAnon && metrics.total && Number.isFinite(metrics.total.rejectAt) && metrics.total.rejectAt > 0 ? metrics.total.rejectAt : null;
   const memoryTitle = document.getElementById('memoryChartTitle');
-  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since process start (private memory not readable here)';
+  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since start (no private memory here)';
 
   const legend = document.getElementById('serverMetricsLegend');
   function legendItem(style, text) {
@@ -69,7 +70,8 @@
   const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);
   const earliest = times.length ? times.reduce((earliest, time) => Math.min(earliest, time), latest) : latest - 60000;
   // Every chart uses the same numeric time axis: each sample sits at its actual time.
-  const minTime = earliest === latest ? earliest - 60000 : earliest;
+  // (at least a minute, so a new cluster's first samples don't make an axis of one instant)
+  const minTime = Math.min(earliest, latest - 60000);
 
   // The cluster's total of a field: every process's samples summed per sample interval,
   // counted from the earliest sample (the processes start, and so sample, seconds apart).
@@ -138,6 +140,21 @@
     }
   };
 
+  // until there are two samples to draw a line between, the chart says so
+  const waiting = {
+    id:'waitingForSamples',
+    afterDatasetsDraw(chart) {
+      if (!chart.chartArea || chart.data.datasets.some(d => !d.threshold && d.data.filter(p => Number.isFinite(p.y)).length > 1)) return;
+      const {ctx, chartArea:area} = chart;
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = '#5f6368';
+      ctx.textAlign = 'center';
+      ctx.fillText('Waiting for samples', (area.left + area.right) / 2, (area.top + area.bottom) / 2);
+      ctx.restore();
+    }
+  };
+
   // the threshold's value, written at the right end of its line
   const thresholdLabel = {
     id:'thresholdLabel',
@@ -202,7 +219,7 @@
           } }
         }
       },
-      plugins:[hatch, thresholdLabel]
+      plugins:[hatch, thresholdLabel, waiting]
     });
   }
   if (hasAnon) chart('memoryChart', 'anon', 'MB private (anon)', 1024 * 1024);

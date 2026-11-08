@@ -55,7 +55,7 @@ with `--role`). Their settings are in `server.cluster`, documented with the arra
 [The launcher](cluster.md#the-launcher-clusterjs), and what the processes share
 (`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`) under
 [Options](cluster.md#options). With no role, `server.cluster` is ignored.
-The status table's snapshot of every process (`statusSeconds`) is under
+The status panel's snapshot of every process (`statusSeconds`) is under
 [Status](cluster.md#status).
 
 ### Statistics
