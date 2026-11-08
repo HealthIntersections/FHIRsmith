@@ -143,10 +143,12 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 
 `node cluster.js` reads `config.json` from the data directory and:
 
-* starts the master and waits until it answers `/health`. On a new data directory the master
-  builds the package caches and creates the VSAC database
+* starts the master and waits until it is ready: each process the launcher starts says so on
+  its IPC channel as it begins to listen, so neither a process still shutting down on the same
+  port nor the memory guard (which may refuse `/health`) can mislead it. On a new data
+  directory the master builds the package caches and creates the VSAC database
 * listens on the configured port, and starts the workers one after another, each once the one
-  before answers `/health`
+  before is ready
 * proxies each request by the rules above, over keep-alive connections to each process. It
   adds the client address to `X-Forwarded-For`, so the servers' logs and rate limits see the
   real client (its own address is a loopback one, which `server.trustProxy` trusts by default)
@@ -194,7 +196,10 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 * logs its limits (`maxOutstanding`, the three waits, `upstreamTimeoutSeconds`, `writeTimeoutSeconds`, the fast lane's two, `memoryHeadroomGB`,
   `normalMinSlots`, `drainSeconds`, `trimAllocator`, `recycleSeconds`) as it starts, in one line
 * starts again a process that exits. One that keeps failing waits longer each time: 1 s,
-  2 s, 4 s ... up to a minute
+  2 s, 4 s ... up to a minute. A process that exits before it is ready, or within a minute of
+  being ready, counts as failing; one that ran longer is restarted after 1 s. If the master
+  exits `maxStartFailures` (6) times in a row without ever having been ready, the launcher
+  logs an `ERROR` and exits 1, so the service manager sees the failure
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
   `recycleSeconds` (30) with no request at work on it (see [Memory](#memory)). It sends it no
   new requests, lets those it has finish, stops it as on shutdown and starts it again at once
@@ -229,6 +234,7 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.cooldownSeconds` | | 2 | Seconds a process that answered 503 (its memory guard refusing) gets no new requests while another can take them. 2: the guard re-measures only when a request arrives, so a longer pause holds its recovery back. Clients see nothing; their requests go to another process. 0: no pause. |
 | `server.cluster.upstreamTimeoutSeconds` | | 60 | Seconds from sending a request to a process until its response begins, after which the client gets 504 (an OperationOutcome naming the process) and the request is aborted. 60: an operation stops at its limit (`modules.tx.operationTimeLimit`, 20 s), but that limit counts the operation's own compute, not the turns it waits while the others on its event loop run (up to `maxOutstanding` of them), so a heavy operation in a busy process takes longer than 20 s by the clock. Three times the limit leaves room for that; a process silent for longer is taken to be wedged (a stuck event loop, a hung native call), not working. The time a request waits in the launcher's queue is not counted. Raise it with the operation limit. 0: no timeout. |
 | `server.cluster.writeTimeoutSeconds` | | 60 | Seconds a client may take none of the response waiting for it in the launcher before its connection is closed (the client sees the response cut short). It bounds how long a client that doesn't read holds the launcher's memory (a tx response) or a process's request (any other). 60: a client that reads takes some within milliseconds, so this is about a thousand times what a reading client needs; it is nginx's own `send_timeout`, and behind nginx with buffering on (the default), nginx takes the response at once and this never fires. 0: no timeout. |
+| `server.cluster.maxStartFailures` | | 6 | Times in a row the master may exit without ever having been ready before the launcher gives up and exits 1. Without it, a master that can't start left a launcher that ran but never listened, which systemd counts as up. 6: the waits between starts (1, 2, 4, 8, 16 s) put the sixth start 31 s after the first failure, past the 30 s an old process still shutting down may hold the port for. Once the master has been ready, it is started again however often it exits, as a worker always is. Clients see no difference: nothing listens either way. Logged with the master's first start. 0: never give up. |
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
 | `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
 | `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |

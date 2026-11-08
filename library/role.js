@@ -39,6 +39,10 @@ function checkInstanceCode(code, where = 'instance code') {
 }
 const FLAGS = ['role', 'instance-code', 'port'];
 
+// the IPC message a process started by the launcher sends from its listen callback: the
+// launcher marks it ready on this, from this child, rather than on whoever answers its port
+const READY = 'fhirsmith:ready';
+
 // The address a process with a role listens on (server.cluster.bindAddress): loopback, since
 // only the front door (cluster.js, or nginx on the same host) should reach the master and
 // the workers. "0.0.0.0" or "::" for every interface; a specific address for one
@@ -180,4 +184,4 @@ function describeRole(role, config) {
 }
 
 module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
-  DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, ROLES };
+  DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, READY, ROLES };

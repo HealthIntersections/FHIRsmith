@@ -943,6 +943,14 @@ async function startServer() {
       serverLog.info(HOST ? `=== Server running on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT} (server.cluster.bindAddress) ===`
         : `=== Server running on http://localhost:${PORT} ===`);
       startupComplete();
+      if (role && process.send) {
+        // to the launcher (cluster.js): ready, from this process itself
+        try {
+          process.send({ type: require('./library/role').READY, pid: process.pid });
+        } catch {
+          // the launcher has gone; the disconnect handler below shuts this process down
+        }
+      }
     };
     const server = HOST ? app.listen(PORT, HOST, listening) : app.listen(PORT, listening);
     // idle connections stay open longer than nginx keeps them (see library/keep-alive.js)

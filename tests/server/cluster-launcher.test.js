@@ -184,6 +184,8 @@ describe('routing rules', () => {
     expect([s.upstreamTimeoutMs, ...[0, 2.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { upstreamTimeoutSeconds: v } } }).upstreamTimeoutMs)]).toEqual([60000, 0, 2500]);
     // a client that takes none of a response: cut off after 60 s; 0 is never
     expect([s.writeTimeoutMs, ...[0, 1.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { writeTimeoutSeconds: v } } }).writeTimeoutMs)]).toEqual([60000, 0, 1500]);
+    // a master that exits 6 times without being ready: the launcher gives up; 0 is never
+    expect([s.maxStartFailures, loadSettings([], {}, { ...config, server: { cluster: { maxStartFailures: 0 } } }).maxStartFailures]).toEqual([6, 0]);
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never
     expect([s.recycleMs, loadSettings([], {}, { ...config, server: { cluster: { recycleSeconds: 0 } } }).recycleMs]).toEqual([30000, 0]);
     expect(loadSettings([], {}, { ...config, server: { memory: { rejectFraction: 0.8 } } }).memory).toEqual({ rejectFraction: 0.8 });
@@ -292,13 +294,79 @@ describe('the launcher, with fake processes', () => {
     expect((await get(PORT, '/r4/metadata', { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
   });
 
+  describe('start-up: ready is the process\'s own word, over IPC', () => {
+    test('another process answering /health on the master\'s port is not the master: the launcher gives up after maxStartFailures', async () => {
+      // an old master still shutting down, say: it holds the port and answers /health
+      const old = http.createServer((req, res) => res.end('ok'));
+      await new Promise(resolve => old.listen(20010, '127.0.0.1', resolve));
+      const lines = [];
+      try {
+        launcher = createLauncher({ ...settings(true), maxStartFailures: 2, log: (m) => lines.push(m) });
+        const t0 = Date.now();
+        await expect(launcher.start()).rejects.toThrow(/^the master exited 2 time\(s\) \(the last: 1\) and was never ready \(server\.cluster\.maxStartFailures 2\)$/);
+        expect(Date.now() - t0).toBeLessThan(5000);
+        expect(launcher.procs[0].ready).toBe(false);
+        expect(launcher.server).toBeNull();
+        expect(lines.filter(l => /exited|giving up|starting the master/.test(l))).toEqual([
+          'starting the master (m0) on port 20010; if it exits 2 times without being ready, the launcher exits (maxStartFailures)',
+          'master exited (1); restarting in 1 s',
+          'ERROR the master exited 2 time(s) (the last: 1) and was never ready (server.cluster.maxStartFailures 2): giving up']);
+      } finally {
+        await new Promise(resolve => old.close(resolve));
+      }
+    });
+
+    test('a process listening that hasn\'t said it is ready gets no requests', async () => {
+      launcher = createLauncher({ ...settings(false),
+        command: (proc) => [process.execPath, [FAKE, proc.code, String(proc.port), '', proc.code === 'tx2' ? 'no-ready' : '']] });
+      await launcher.start();
+      await until(() => launcher.procs[1].ready);
+      await sleep(500);
+      expect(launcher.procs[2].ready).toBe(false);
+      for (let i = 0; i < 4; i++) {
+        expect((await get(PORT, '/r4/ValueSet/$expand')).json.code).toBe('tx1');
+      }
+    });
+
+    test('failures count from ready, not from spawn: one that fails late in its load backs off, and the master gives up', async () => {
+      const lines = [];
+      // each fails 600 ms after it starts, never ready: past healthyRunMs from spawn
+      launcher = createLauncher({ ...settings(true), healthyRunMs: 300, maxStartFailures: 3, log: (m) => lines.push(m),
+        command: (proc) => [process.execPath, [FAKE, proc.code, String(proc.port), '', 'fail-after:600']] });
+      await expect(launcher.start()).rejects.toThrow(/^the master exited 3 time\(s\)/);
+      expect(lines.filter(l => /^master exited/.test(l))).toEqual(['master exited (1); restarting in 1 s', 'master exited (1); restarting in 2 s']);
+    });
+
+    test('a process that ran healthyRunMs after it was ready is restarted at once; one that dies soon after, after longer', async () => {
+      const lines = [];
+      launcher = createLauncher({ ...settings(true), healthyRunMs: 300, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      const tx1 = launcher.procs.find(p => p.code === 'tx1');
+      await sleep(400);
+      let old = tx1.child;
+      old.kill('SIGKILL');
+      await until(() => tx1.ready && tx1.child !== old);
+      old = tx1.child;
+      old.kill('SIGKILL');
+      await until(() => tx1.ready && tx1.child !== old, 5000);
+      expect(lines.filter(l => /^worker tx1 exited/.test(l))).toEqual(['worker tx1 exited (SIGKILL); restarting in 1 s', 'worker tx1 exited (SIGKILL); restarting in 2 s']);
+    });
+  });
+
   test('the master receives every process history, with a gap across a child restart', async () => {
     launcher = createLauncher(settings(true));
     await launcher.start();
     await until(() => launcher.procs.every(p => p.ready));
     const tx1 = launcher.procs.find(p => p.code === 'tx1');
     const old = tx1.child;
-    const before = (await get(PORT, '/metrics')).json;
+    // ready comes at once (on listening), before the first samples: wait for one from each
+    let before;
+    const t0 = Date.now();
+    do {
+      await sleep(100);
+      before = (await get(PORT, '/metrics')).json;
+    } while (!(before.metrics && before.metrics.series.length === 3 && before.metrics.series.every(s => s.history.length)) && Date.now() - t0 < 5000);
     expect(before.metrics.series.map(s => s.id)).toEqual(['m0', 'tx1', 'tx2']);
     expect(before.metrics.series.every(s => s.history.length)).toBe(true);
     const first = before.metrics.series[1].history[0];

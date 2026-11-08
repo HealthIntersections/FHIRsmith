@@ -12,9 +12,10 @@
  * run it behind nginx on the same host, with request buffering on (proxy_request_buffering,
  * nginx's default). It is not built to face clients itself. It:
  *
- *  - starts the master (node server.js --role=master), waits until it answers /health, then
- *    starts the workers (--role=tx-worker) one after another, each once the one before is
- *    ready, each with its own instance code and port
+ *  - starts the master (node server.js --role=master), waits until it is ready (it says so
+ *    on its IPC channel once it listens), then starts the workers (--role=tx-worker) one
+ *    after another, each once the one before is ready, each with its own instance code and
+ *    port; exits 1 if the master exits maxStartFailures times without ever being ready
  *  - routes: a request with X-Cache-Id to the process that issued it (by the id's prefix);
  *    $closure, the syndication feed, the source info pages and everything that isn't a tx
  *    endpoint to the master; any other tx request to the tx process with the fewest
@@ -45,20 +46,26 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR } = require('./library/role');
+const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 const { readCgroupAnon } = require('./library/cgroup-memory');
 const { thresholds } = require('./library/memory-guard');
 const { defaultWorkers, describeDecision } = require('./library/worker-count');
 
-const HEALTH_POLL_MS = 250;
+// how often start() looks whether the master is ready (an in-memory flag)
+const WAIT_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
 // an idle connection to a process is closed after this long: below the process's own
 // keep-alive timeout (5 s at the least), so no request goes down one it is closing (a 502)
 const UPSTREAM_IDLE_MS = 4000;
-// a process that ran this long before exiting is restarted at once
+// a process that ran this long after it was ready, before exiting, is restarted at once
 const HEALTHY_RUN_MS = 60000;
+// a master that exits this many times in a row without ever having been ready: the launcher
+// exits 1 (cluster.md, maxStartFailures). With the waits between (1, 2, 4, 8, 16 s), the
+// sixth start is 31 s after the first failure, past the 30 s an old process still shutting
+// down may hold the port for (each process's SIGKILL deadline)
+const MAX_START_FAILURES = 6;
 // tx requests sent to one process at once; the rest wait in the launcher (cluster.md)
 const MAX_OUTSTANDING = 16;
 // a waiting tx request gets 503 after this long; one with a cache-id, which only its owner
@@ -152,6 +159,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     upstreamTimeoutMs: Number(cluster.upstreamTimeoutSeconds ?? UPSTREAM_TIMEOUT_MS / 1000) * 1000,
     writeTimeoutMs: Number(cluster.writeTimeoutSeconds ?? WRITE_TIMEOUT_MS / 1000) * 1000,
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
+    maxStartFailures: Number(cluster.maxStartFailures ?? MAX_START_FAILURES),
     // the number of workers was not given: fewer if memory is short (see sizeWorkers)
     workersDefault: !workersGiven,
     workerDecision,
@@ -303,11 +311,12 @@ function isLoopback(address) {
 
 /**
  * @param {Object} settings - from loadSettings, plus optionally
- *   command(proc): [executable, args] to start a process (tests), healthPath, log
+ *   command(proc): [executable, args] to start a process (tests), healthyRunMs (tests), log
  */
 function createLauncher(settings) {
   const log = settings.log || ((msg) => console.log(`[cluster] ${msg}`));
-  const healthPath = settings.healthPath || '/health';
+  const healthyRunMs = settings.healthyRunMs ?? HEALTHY_RUN_MS;
+  const maxStartFailures = settings.maxStartFailures ?? MAX_START_FAILURES; // 0: never give up
   const maxOutstanding = settings.maxOutstanding ?? MAX_OUTSTANDING; // 0: no limit
   const queueMs = settings.queueMs ?? QUEUE_MS; // 0: refuse at once
   const ownerQueueMs = settings.ownerQueueMs ?? OWNER_QUEUE_MS;
@@ -328,7 +337,7 @@ function createLauncher(settings) {
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
     // outstanding: the tx requests it has (those that wait for a slot); active: every request
-    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, active: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, exitedAt: 0, restartTimer: null,
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, active: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, readyAt: 0, everReady: false, exitedAt: 0, restartTimer: null,
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
@@ -340,6 +349,8 @@ function createLauncher(settings) {
   let countsInFlight = null;
   let server = null;
   let stopping = false;
+  // why the launcher gave up starting (see maxStartFailures), or null
+  let gaveUp = null;
   let onIdle = null;
   // tx requests waiting for a process with room, oldest first; the fast lane's apart
   const waiting = [];
@@ -376,7 +387,7 @@ function createLauncher(settings) {
   }
 
   // Pass the workers' request counts on to the master (library/cluster-counts.js), once it is
-  // ready: it listens before it answers /health. One lot at a time; a lot that can't be
+  // ready: it is listening by then. One lot at a time; a lot that can't be
   // delivered is kept for the next try (more counts arriving, or the master becoming ready)
   function deliverCounts() {
     const master = procs.find(p => p.role === 'master');
@@ -432,9 +443,7 @@ function createLauncher(settings) {
         }
       });
       publishMetrics();
-      let poll = null;
       child.on('exit', (code, signal) => {
-        clearTimeout(poll);
         proc.ready = false;
         proc.exitedAt = Date.now();
         proc.child = null;
@@ -447,39 +456,43 @@ function createLauncher(settings) {
         if (proc.recycling) {
           // the launcher stopped it (see checkMemory): at once, and not a failure
           proc.recycling = false;
+          proc.readyAt = 0;
           log(`${proc.name} exited (${signal || code}) to be recycled; restarting`);
           void startProcess(proc);
           return;
         }
-        proc.failures = Date.now() - proc.startedAt > HEALTHY_RUN_MS ? 1 : proc.failures + 1;
+        // counted from when it was ready: one that fails late in a long load is still failing
+        const ran = proc.readyAt ? Date.now() - proc.readyAt : 0;
+        proc.readyAt = 0;
+        proc.failures = ran > healthyRunMs ? 1 : proc.failures + 1;
+        if (proc.role === 'master' && !proc.everReady && maxStartFailures > 0 && proc.failures >= maxStartFailures) {
+          // nothing would be served: exit, so the service manager sees the failure
+          gaveUp = `the master exited ${proc.failures} time(s) (the last: ${signal || code}) and was never ready (server.cluster.maxStartFailures ${maxStartFailures})`;
+          log(`ERROR ${gaveUp}: giving up`);
+          return;
+        }
         const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** (proc.failures - 1));
         log(`${proc.name} exited (${signal || code}); restarting in ${delay / 1000} s`);
         proc.restartTimer = setTimeout(() => startProcess(proc), delay);
       });
-      const check = () => {
-        const req = http.get({ host: proc.host || '127.0.0.1', port: proc.port, path: healthPath, agent: false }, (res) => {
-          res.resume();
-          if (res.statusCode === 200 && proc.child === child) {
-            proc.ready = true;
-            sendWaiting();
-            metrics.state(proc.code, 'ready');
-            publishMetrics();
-            if (proc.role === 'master') {
-              void deliverCounts();
-            }
-            log(`${proc.name} (${proc.code}) ready on port ${proc.port}`);
-            resolve(true);
-          } else {
-            poll = setTimeout(check, HEALTH_POLL_MS);
-          }
-        });
-        req.on('error', () => {
-          if (proc.child === child) {
-            poll = setTimeout(check, HEALTH_POLL_MS);
-          }
-        });
-      };
-      poll = setTimeout(check, HEALTH_POLL_MS);
+      // ready: the process says so from its listen callback (server.js), on its own channel,
+      // so an old process still shutting down on the same port can't answer for it
+      child.on('message', message => {
+        if (!message || message.type !== READY || proc.child !== child || proc.ready) {
+          return;
+        }
+        proc.ready = true;
+        proc.everReady = true;
+        proc.readyAt = Date.now();
+        sendWaiting();
+        metrics.state(proc.code, 'ready');
+        publishMetrics();
+        if (proc.role === 'master') {
+          void deliverCounts();
+        }
+        log(`${proc.name} (${proc.code}) ready on port ${proc.port}`);
+        resolve(true);
+      });
     });
   }
 
@@ -834,15 +847,19 @@ function createLauncher(settings) {
     // the master first, and on its own: on a new data directory it builds the package
     // caches and creates the VSAC database, which processes starting together would corrupt.
     // (If it exits before it is ready, it is started again, as any process is.)
-    log(`starting the master (${master.code}) on port ${master.port}`);
+    log(`starting the master (${master.code}) on port ${master.port}` + (maxStartFailures > 0
+      ? `; if it exits ${maxStartFailures} times without being ready, the launcher exits (maxStartFailures)` : ''));
     void startProcess(master);
-    await new Promise(resolve => {
+    await new Promise((resolve, reject) => {
       const t = setInterval(() => {
         if (master.ready || stopping) {
           clearInterval(t);
           resolve();
+        } else if (gaveUp) {
+          clearInterval(t);
+          reject(new Error(gaveUp));
         }
-      }, HEALTH_POLL_MS);
+      }, WAIT_POLL_MS);
     });
     if (stopping) {
       return;

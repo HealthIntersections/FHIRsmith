@@ -1,9 +1,10 @@
 // A stand-in for a server process, for tests/server/cluster-launcher.test.js:
-//   node fake-upstream.js <code> <port> [keepAliveTimeout ms] [hang]
+//   node fake-upstream.js <code> <port> [keepAliveTimeout ms] [hang | no-ready | fail-after:<ms>]
 // /health answers 200; anything else answers {code, url, xff, proto} as JSON, after
 // ?delay=<ms>, with ?status=<code> (503 with Retry-After), with the request body it read
 // (`body`), and ?bytes=<n> more. /r4/seen lists the requests it was sent. With `hang` (a
-// wedged process), nothing but /health is ever answered. On SIGTERM it finishes the requests it has, then exits.
+// wedged process), nothing but /health is ever answered. Once listening it sends the launcher
+// "ready" over IPC (no-ready: never; fail-after:<ms>: never, and exits 1 after so long). On SIGTERM it finishes the requests it has, then exits.
 const http = require('http');
 const [code, port, keepAlive, hang] = process.argv.slice(2);
 let metrics = null;
@@ -60,7 +61,17 @@ if (keepAlive) {
 // the connections it accepted, for the test of idle keep-alive connections
 let connections = 0;
 server.on('connection', () => { connections++; });
-server.listen(Number(port));
+// ready, as server.js says it (cluster.js waits for this), once listening. A port already in
+// use: the 'error' is not handled, so it exits 1, as server.js does
+const failAfter = /^fail-after:(\d+)$/.exec(hang || '');
+server.listen(Number(port), () => {
+  if (failAfter) {
+    // a load that fails late: never ready, and exits after so long
+    setTimeout(() => process.exit(1), Number(failAfter[1]));
+  } else if (process.send && hang !== 'no-ready') {
+    process.send({ type: 'fhirsmith:ready' });
+  }
+});
 process.on('SIGTERM', () => {
   clearInterval(samples);
   server.close(() => process.exit(0));
