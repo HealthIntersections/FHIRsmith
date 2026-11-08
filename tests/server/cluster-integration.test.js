@@ -143,6 +143,21 @@ describe('master and two tx-workers behind cluster.js', () => {
     }
   });
 
+  test('the master and the workers listen on loopback only (server.cluster.bindAddress)', async () => {
+    const outside = Object.values(os.networkInterfaces()).flat().find(a => a && a.family === 'IPv4' && !a.internal);
+    for (const port of [MASTER, ...WORKERS]) {
+      expect(await isUp(port)).toBe(true);
+      if (outside) {
+        // the same port on this machine's own non-loopback address: nothing listens there
+        const r = await new Promise(resolve => http.get({ host: outside.address, port, path: '/health', agent: false }, res => {
+          res.resume();
+          resolve(res.statusCode);
+        }).on('error', e => resolve(e.code)));
+        expect(r).toBe('ECONNREFUSED');
+      }
+    }
+  });
+
   test('each process runs what its role says', async () => {
     // non-tx paths reach the master: it alone has the vcl module
     const viaFront = await request(FRONT, 'GET', '/health');

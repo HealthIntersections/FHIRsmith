@@ -46,6 +46,12 @@ node server.js --role=tx-worker --instance-code=tx2 --port=3003
 All the processes use the same data directory and the same `config.json`. The role decides
 which parts of the configuration each one acts on.
 
+With a role, a process listens on `127.0.0.1` only, so only a front door on the same host
+(the launcher, or nginx) reaches it. `server.cluster.bindAddress` changes that: `"0.0.0.0"`
+(or `"::"`) for every interface, or one address, for an nginx on another machine. Each
+process logs the address as it starts. With no role, a server listens on every interface,
+as before.
+
 ## What runs where
 
 | | master | tx-worker |
@@ -214,7 +220,8 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.workerRule` | | the engine's | The rule by name (`classic`, or one an engine adds). |
 | `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
-| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. Firewall them. |
+| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. |
+| `server.cluster.bindAddress` | | `127.0.0.1` | The address the master and the workers listen on (see [Roles](#roles)), and the launcher reaches them at (loopback for `"0.0.0.0"` or `"::"`). Not the launcher's own port, which is `server.port` on every interface. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
 | `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
 | `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |

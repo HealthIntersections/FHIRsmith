@@ -164,6 +164,10 @@ describe('routing rules', () => {
     expect(s.txPaths).toEqual(['/r4']);
     expect(s.procs.map(p => [p.code, p.role, p.port, p.servesTx])).toEqual([
       ['main', 'master', 20001, true], ['tx1', 'tx-worker', 20002, true], ['tx2', 'tx-worker', 20003, true], ['tx3', 'tx-worker', 20004, true]]);
+    // the processes listen on loopback (server.cluster.bindAddress), and are reached there
+    expect(new Set(s.procs.map(p => p.host))).toEqual(new Set(['127.0.0.1']));
+    expect(loadSettings([], {}, { ...config, server: { cluster: { bindAddress: '10.0.0.11' } } }).procs[0].host).toBe('10.0.0.11');
+    expect(loadSettings([], {}, { ...config, server: { cluster: { bindAddress: '0.0.0.0' } } }).procs[0].host).toBe('127.0.0.1');
     const s2 = loadSettings(['--workers=1', '--port=20010', '--master-serves-tx=false'], {}, config);
     expect(s2.procs.map(p => [p.code, p.port, p.servesTx])).toEqual([['main', 20011, false], ['tx1', 20012, true]]);
     expect(() => loadSettings([], {}, { modules: { tx: { enabled: true, instanceCode: 'tx1' } } })).toThrow(/also the code of a worker/);

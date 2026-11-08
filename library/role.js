@@ -39,6 +39,28 @@ function checkInstanceCode(code, where = 'instance code') {
 }
 const FLAGS = ['role', 'instance-code', 'port'];
 
+// The address a process with a role listens on (server.cluster.bindAddress): loopback, since
+// only the front door (cluster.js, or nginx on the same host) should reach the master and
+// the workers. "0.0.0.0" or "::" for every interface; a specific address for one
+const DEFAULT_BIND_ADDRESS = '127.0.0.1';
+
+/**
+ * The address a process with a role listens on; with no role (null), none: every interface,
+ * as before.
+ * @param {Object} config - config.json
+ */
+function bindAddress(config) {
+  return (config.server && config.server.cluster && config.server.cluster.bindAddress) ?? DEFAULT_BIND_ADDRESS;
+}
+
+/**
+ * The address to reach a process listening on `bind` at: loopback for every interface.
+ * @param {string} bind
+ */
+function connectAddress(bind) {
+  return bind === '0.0.0.0' ? '127.0.0.1' : bind === '::' ? '::1' : bind;
+}
+
 /**
  * The role this process was started with, or null for none.
  * @param {string[]} argv - process.argv.slice(2)
@@ -102,6 +124,9 @@ function applyRole(config, role) {
       throw new Error(`server.cluster.${name} must be true or false`);
     }
   }
+  if (options.bindAddress != null && (typeof options.bindAddress !== 'string' || !options.bindAddress)) {
+    throw new Error('server.cluster.bindAddress must be an address to listen on, e.g. "127.0.0.1" (the default) or "0.0.0.0"');
+  }
   if (options.sharedCache === true) {
     tx.sharedCache = true;
     const mb = options.sharedCacheMaxMB === undefined ? 0 : Number(options.sharedCacheMaxMB);
@@ -140,4 +165,4 @@ function describeRole(role, config) {
     : `Role: tx-worker (instance code ${code}): the tx module only, no background jobs`;
 }
 
-module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, ROLES };
+module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS, ROLES };

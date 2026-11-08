@@ -45,7 +45,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { checkInstanceCode } = require('./library/role');
+const { checkInstanceCode, bindAddress, connectAddress } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 const { readCgroupAnon } = require('./library/cgroup-memory');
@@ -128,13 +128,15 @@ function loadSettings(argv, env, config, cpu = {}) {
   const internalPort = Number(flags['internal-port'] || cluster.internalPort || port + 1);
   const masterCode = checkInstanceCode(tx.instanceCode || 'm0', 'modules.tx.instanceCode');
   const servesTx = flags['master-serves-tx'] !== undefined ? flags['master-serves-tx'] !== 'false' : cluster.masterServesTx !== false;
-  const procs = [{ name: 'master', role: 'master', code: masterCode, port: internalPort, servesTx }];
+  // where the processes listen (server.cluster.bindAddress: loopback by default)
+  const host = connectAddress(bindAddress(config));
+  const procs = [{ name: 'master', role: 'master', code: masterCode, host, port: internalPort, servesTx }];
   for (let i = 1; i <= workers; i++) {
     const code = 'tx' + i;
     if (code === masterCode) {
       throw new Error(`modules.tx.instanceCode '${masterCode}' is also the code of a worker: choose another`);
     }
-    procs.push({ name: 'worker ' + code, role: 'tx-worker', code, port: internalPort + i, servesTx: true });
+    procs.push({ name: 'worker ' + code, role: 'tx-worker', code, host, port: internalPort + i, servesTx: true });
   }
   // with the shared cache any process can answer any cache-id (cluster.md, "Options")
   const sharedCache = cluster.sharedCache === true;
@@ -454,7 +456,7 @@ function createLauncher(settings) {
         proc.restartTimer = setTimeout(() => startProcess(proc), delay);
       });
       const check = () => {
-        const req = http.get({ host: '127.0.0.1', port: proc.port, path: healthPath, agent: false }, (res) => {
+        const req = http.get({ host: proc.host || '127.0.0.1', port: proc.port, path: healthPath, agent: false }, (res) => {
           res.resume();
           if (res.statusCode === 200 && proc.child === child) {
             proc.ready = true;
@@ -663,7 +665,7 @@ function createLauncher(settings) {
       headers['x-forwarded-proto'] = 'http';
     }
     const upstream = http.request({
-      host: '127.0.0.1', port: target.port, method: req.method, path: req.url, headers, agent: target.agent
+      host: target.host || '127.0.0.1', port: target.port, method: req.method, path: req.url, headers, agent: target.agent
     }, (ures) => {
       clearTimeout(timer);
       target.timeouts = 0;

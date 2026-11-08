@@ -1,4 +1,4 @@
-const { parseRole, applyRole } = require('../../library/role');
+const { parseRole, applyRole, bindAddress, connectAddress } = require('../../library/role');
 
 const baseConfig = () => ({
   server: { port: 3000, memory: { rejectFraction: 0.8 } },
@@ -125,5 +125,19 @@ describe('applyRole', () => {
     longMaster.modules.tx.instanceCode = 'm'.repeat(17);
     expect(() => applyRole(longMaster, { role: 'master', instanceCode: null })).toThrow(/1-16 letters and digits/);
     expect(applyRole(baseConfig(), { role: 'tx-worker', instanceCode: 'a'.repeat(16) }).modules.tx.instanceCode).toHaveLength(16);
+  });
+
+  test('with a role, a process listens on loopback unless server.cluster.bindAddress says otherwise', () => {
+    expect(bindAddress(baseConfig())).toBe('127.0.0.1');
+    const config = (bind) => ({ ...baseConfig(), server: { cluster: { bindAddress: bind } } });
+    expect(bindAddress(config(null))).toBe('127.0.0.1');
+    expect(bindAddress(config('0.0.0.0'))).toBe('0.0.0.0');
+    expect(bindAddress(config('10.0.0.11'))).toBe('10.0.0.11');
+    // the launcher reaches every interface on loopback, a specific address at itself
+    expect(['0.0.0.0', '::', '127.0.0.1', '10.0.0.11'].map(connectAddress)).toEqual(['127.0.0.1', '::1', '127.0.0.1', '10.0.0.11']);
+    for (const bad of ['', 3001, true]) {
+      expect(() => applyRole(config(bad), { role: 'master', instanceCode: null })).toThrow(/bindAddress must be an address/);
+    }
+    expect(() => applyRole(config('0.0.0.0'), { role: 'master', instanceCode: null })).not.toThrow();
   });
 });

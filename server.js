@@ -141,6 +141,9 @@ const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
 
 const PORT = (role && role.port) || process.env.PORT || config.server.port || 3000;
+// with a role, loopback unless server.cluster.bindAddress says otherwise (cluster.md); with
+// none, every interface, as before
+const HOST = role ? require('./library/role').bindAddress(config) : null;
 
 // Middleware
 // Refuse new requests (503) while memory is near the limit - first, so a refused request
@@ -935,11 +938,13 @@ async function startServer() {
     }
 
     // Start server
-    const server = app.listen(PORT, () => {
+    const listening = () => {
       stats.markStarted(packageJson.version);
-      serverLog.info(`=== Server running on http://localhost:${PORT} ===`);
+      serverLog.info(HOST ? `=== Server running on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT} (server.cluster.bindAddress) ===`
+        : `=== Server running on http://localhost:${PORT} ===`);
       startupComplete();
-    });
+    };
+    const server = HOST ? app.listen(PORT, HOST, listening) : app.listen(PORT, listening);
     // idle connections stay open longer than nginx keeps them (see library/keep-alive.js)
     applyKeepAliveTimeouts(server);
     npmAudit.start();

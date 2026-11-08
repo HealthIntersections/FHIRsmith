@@ -416,6 +416,11 @@ node --expose-gc server.js --role=tx-worker --instance-code=tx1 --port=3002
 node --expose-gc server.js --role=tx-worker --instance-code=tx2 --port=3003
 ```
 
+Started with a role, each process listens on `127.0.0.1` only (`server.cluster.bindAddress`,
+[cluster.md](cluster.md#roles)), which is what the configuration below uses. For an nginx on
+another machine, set `bindAddress` to the address nginx reaches them at, and firewall the
+ports.
+
 Keep each server's keepAliveTimeout (65 s with `library/keep-alive.js`) above nginx's upstream
 `keepalive_timeout` (60 s by default); on servers without that fix (Node's 5 s), set
 `keepalive_timeout 4s;` in each upstream block, or nginx reuses connections the servers are
