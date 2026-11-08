@@ -199,14 +199,13 @@ let disconnectMetrics = () => {};
 let disconnectCounts = null;
 let disconnectClusterEvents = () => {};
 let disconnectStatus = () => {};
-// The graphs on / and /dashboard. With a role, the cluster templates draw every process the
-// launcher reports (library/cluster-metrics.js); with none, main's templates, as before
+// The graphs on / and /dashboard, one component for every server (library/cluster-metrics.js):
+// on the master under the launcher, every process it reports; otherwise this process's own
+// samples as one series, with its memory guard's refusal threshold
 function metricsTemplate(page) {
-  if (!role) {
-    return [page, { historyJson: JSON.stringify(stats.history), startTime: stats.startTime }];
-  }
-  const label = `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
-  return [`cluster-${page}`, { metricsJson: graphData(stats, label) }];
+  const label = !role ? 'This process' : `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
+  const guard = memoryGuard._state;
+  return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }) }];
 }
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;

@@ -66,7 +66,7 @@ The status panel's snapshot of every process (`statusSeconds`) is under
 |---|---|---|
 | `stats.enabled` | `true` | `false`: the counters are kept in memory only |
 | `stats.database` | `stats.db` | The counters' SQLite file, under the data folder's `databases` directory |
-| `stats.intervalMinutes` | `10` | How often the counters are written to the database; also the graphs' sample interval, unless `sampleSeconds` is set |
+| `stats.intervalMinutes` | `10` | How often the counters are written to the database; also the graphs' sample interval, unless `sampleSeconds` is set (a server with no role, as before) |
 | `stats.sampleSeconds` | `intervalMinutes`; with a role, 60 at most | How often the graphs take a sample. With a role (cluster.md), at most a minute unless set, so the graphs of a short session can be read. The graphs show 24 hours; under the launcher at most 1,440 samples a process, so with less than a minute they show less. The counters are still written every `intervalMinutes` |
 
 ## Logging

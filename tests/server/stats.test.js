@@ -88,7 +88,11 @@ describe('server statistics', () => {
       stats.onMetric = null;
       now += 2000;
       stats.recordMetrics();
-      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['block', 'blockMax', 'clientConcepts', 'mem', 'rpm', 'tat', 'time']);
+      // without the launcher: no refusals counted, but where the interval began and the private memory
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['anon', 'block', 'blockMax', 'clientConcepts', 'intervalStart', 'mem', 'rpm', 'tat', 'time']);
+      if (process.platform === 'linux') {
+        expect(stats.history.at(-1).anon).toBeGreaterThan(0);
+      }
     } finally {
       clock.mockRestore();
     }

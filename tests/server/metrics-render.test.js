@@ -66,12 +66,12 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   expect(legend).toContain('Worker tx2 · starting');
 });
 
-test('one series alone is drawn as one labeled filled series', async () => {
+test('one series alone is drawn in the same style as the cluster\'s', async () => {
   const { charts } = await render('cluster-dash-metrics', { cluster:false, sampledAt:now,
     series:[{ label:'Server', status:'ready', history:[point(now, 1)] }] });
   for (const chart of charts) {
     expect(chart.data.datasets).toHaveLength(1);
-    expect(chart.data.datasets[0]).toMatchObject({ label:'Server', fill:true });
+    expect(chart.data.datasets[0]).toMatchObject({ label:'Server', fill:false, pointRadius:1.5, borderColor:'#08306b' });
     expect(chart.options.scales.x.min).toBeLessThan(chart.options.scales.x.max);
   }
 });
@@ -186,8 +186,25 @@ test('an empty cluster snapshot still renders without an invented process', asyn
   expect(texts).toEqual(['Waiting for samples']);
 });
 
-test.each(['home-metrics', 'dash-metrics'])('with no role, %s is main\'s template, drawn from the local history', async (name) => {
-  const html = await liquid.renderFile(name, { historyJson:JSON.stringify([point(now, 1)]), startTime:now });
-  expect(html).toContain('const historyData = [');
-  expect(html).not.toContain('serverMetricsLegend');
+test.each([[false, 'this process'], [true, 'the cgroup, every process']])('a server without the launcher\'s snapshot: one series of its private memory, and its guard\'s threshold (group %s)', async (group, scope) => {
+  const { graphData } = require('../../library/cluster-metrics');
+  const GiB = 2 ** 30;
+  const history = [{ ...point(now, 1), anon:GiB, intervalStart:now - 600000 }, { ...point(now + 600000, 2), anon:1.5 * GiB, intervalStart:now }];
+  const data = JSON.parse(graphData({ startTime:now - 1000, intervalMs:600000, history }, 'This process', now + 600000,
+    { rejectAt:10.2 * GiB, group }));
+  const { charts, elements } = await render('cluster-home-metrics', data);
+  expect(charts).toHaveLength(6);
+  const memory = charts.find(c => c.canvas === elements.get('memoryChart'));
+  // private memory, not the heap's change, with the threshold and no Total
+  expect(memory.data.datasets.map(d => d.label)).toEqual(['This process', 'Refusal threshold']);
+  expect(memory.data.datasets[0].data.map(d => d.y)).toEqual([1024, 1536]);
+  expect(memory.options.scales.y.title.text).toBe('MB private (anon)');
+  expect(charts.every(c => !c.data.datasets.some(d => d.label === 'Total'))).toBe(true);
+  const legend = legendText(elements);
+  expect(legend).toContain('This process');
+  expect(legend).toContain(`Memory guard refuses above 10.2 GB (${scope})`);
+  expect(legend).not.toContain('Total');
+  // no threshold to draw: none
+  const plain = JSON.parse(graphData({ startTime:now - 1000, intervalMs:600000, history }, 'This process', now + 600000));
+  expect(plain.total).toBeNull();
 });

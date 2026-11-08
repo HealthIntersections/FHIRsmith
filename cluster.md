@@ -357,7 +357,10 @@ sum of what each process reports every `statusSeconds`, since each started (see
 
 A standalone server, or roles started separately behind nginx, shows only its own graph
 data. Combining process histories requires the launcher's IPC connection; no separate
-metrics service or HTTP polling is used.
+metrics service or HTTP polling is used. Its page draws the same panels on the same grid, with
+one series ("This process", or the worker's code on a worker's own page): its private memory
+with its memory guard's refusal threshold, and no Total. A server with no role samples every
+`stats.intervalMinutes` (10), as before, unless `stats.sampleSeconds` is set.
 
 ### The daily report
 

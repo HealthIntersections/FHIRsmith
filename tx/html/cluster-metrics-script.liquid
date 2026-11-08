@@ -60,7 +60,8 @@
       .filter(Boolean).join(', '));
   }
   if (rejectAt) legendItem(threshold, 'Memory guard refuses above ' + (rejectAt / 2 ** 30).toFixed(1) + ' GB' +
-    (metrics.total.group ? ' (the cgroup)' : ' (each process)'));
+    (metrics.total.local ? (metrics.total.group ? ' (the cgroup, every process)' : ' (this process)')
+      : metrics.total.group ? ' (the cgroup)' : ' (each process)'));
   if (metrics.series.length > drawn.length) {
     legend.appendChild(document.createTextNode((metrics.series.length - drawn.length) +
       ' more workers are not drawn individually; the Total includes them.'));
@@ -186,9 +187,9 @@
       data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
         refused:point.refused })),
       borderColor:styles[i].color, backgroundColor:styles[i].color + '18', borderDash:styles[i].dash,
-      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:metrics.cluster ? 1.5 : 2,
+      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:1.5,
       pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
-      fill:!metrics.cluster, tension:0, spanGaps:false
+      fill:false, tension:0, spanGaps:false
     }));
     if (field === 'rpm' && showTotal) datasets.push(totalLine(totalOf('rpm')));
     if (field === 'clientConcepts' && showTotal) datasets.push(totalLine(totalOf('clientConcepts', metrics.sharedCache)));

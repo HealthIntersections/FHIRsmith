@@ -136,10 +136,17 @@ function connectMetrics(stats, channel = process) {
   };
 }
 
-/** Serialize only graph data, safely inside an inline script in either page. */
-function graphData(stats, label = 'Server', now = Date.now()) {
+/**
+ * Serialize only graph data, safely inside an inline script in either page. Without the
+ * launcher's snapshot (no role, a worker's own page, a master before its first), this process's
+ * own samples as one series, with its memory guard's refusal threshold (guard: rejectAt, group:
+ * whether the guard measures the cgroup) and no Total.
+ */
+function graphData(stats, label = 'Server', now = Date.now(), guard = {}) {
   const data = stats.clusterMetrics || {
     cluster: false, sampledAt: now,
+    total: Number.isFinite(guard.rejectAt) && guard.rejectAt > 0
+      ? { group: Boolean(guard.group), rejectAt: guard.rejectAt, history: [], local: true } : null,
     series: [{ id: 'local', label, status: 'ready', restarts: 0, startedAt: stats.startTime,
       intervalMs: stats.intervalMs, history: stats.history }]
   };

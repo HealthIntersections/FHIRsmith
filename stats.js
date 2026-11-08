@@ -164,13 +164,14 @@ class ServerStats {
       const clientConcepts = this._sumCachingModules('clientConceptCount');
 
       const point = {time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts};
+      // where the interval began, and this process's private memory (RssAnon: RSS less mapped
+      // files; null where /proc can't be read), for the graphs (library/cluster-metrics.js)
+      point.intervalStart = intervalStart;
+      const own = readProcessMemory('self');
+      point.anon = own ? own.anon : null;
       if (this.onMetric) {
-        // under the launcher (library/cluster-metrics.js): what the cluster graphs also show,
-        // with this process's private memory (RssAnon; null where /proc can't be read)
-        point.intervalStart = intervalStart;
+        // under the launcher: the memory guard's refusals, which only a role counts
         point.refused = refused;
-        const own = readProcessMemory('self');
-        point.anon = own ? own.anon : null;
       }
       this.history.push(point);
       if (this.onMetric) {
