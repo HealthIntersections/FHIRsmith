@@ -23,9 +23,12 @@ describe('memory-guard', () => {
     memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
   });
 
+  const lastResortGc = memoryGuard._state.lastResortGc;
+
   afterEach(() => {
     rssSpy.mockRestore();
     memoryGuard.configure();
+    memoryGuard._state.lastResortGc = lastResortGc;
   });
 
   test('defaults: 85% reject, 92% abort, limit falls back to machine RAM', () => {
@@ -124,14 +127,54 @@ describe('memory-guard', () => {
     expect(onReject).not.toHaveBeenCalled();
   });
 
-  test('no forced GC when the JS heap is smaller than the amount over the threshold', () => {
-    // 8.5 GB of RSS against an 8 GB threshold, but only 0.2 GB of it is JS heap: collecting
+  test('the forced GC is a last-resort one on this runtime (V8 12 on), which gives back the pages V8 keeps', () => {
+    expect(memoryGuard._state.lastResortGc).toBe(Number(process.versions.v8.split('.')[0]) >= 12);
+    expect(memoryGuard._state.lastResortGc).toBe(true); // Node 24, package.json engines
+    expect(memoryGuard.describe()).toMatch(/while refusing, a forced last-resort GC/);
+    setRss(8.5 * GB);
+    const gc = jest.fn(() => setRss(7 * GB));
+    const next = jest.fn();
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 2 * GB, gc })({ path: '/r4/x' }, fakeRes(), next);
+    expect(gc).toHaveBeenCalledTimes(1);
+    expect(gc).toHaveBeenCalledWith({ type: 'major', execution: 'sync', flavor: 'last-resort' });
+    expect(next).toHaveBeenCalled();
+  });
+
+  test('where the runtime has only a plain GC, gc() is called with no argument', () => {
+    memoryGuard._state.lastResortGc = false;
+    expect(memoryGuard.describe()).toMatch(/while refusing, a forced GC/);
+    setRss(8.5 * GB);
+    const gc = jest.fn();
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 2 * GB, gc })({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(gc).toHaveBeenCalledTimes(1);
+    expect(gc.mock.calls[0]).toEqual([]);
+  });
+
+  test('a last-resort GC runs even when the JS heap is smaller than the amount over the threshold', () => {
+    // 8.5 GB against an 8 GB threshold and 0.2 GB of JS heap in use, but the pages a plain GC
+    // freed and V8 kept count in RSS and in no heap figure: the last-resort GC gives them back
+    const log = { info: jest.fn(), warn: jest.fn() };
+    setRss(8.5 * GB);
+    const gc = jest.fn(() => setRss(7.8 * GB));
+    const next = jest.fn();
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, gc })({ path: '/r4/x' }, fakeRes(), next);
+    expect(gc).toHaveBeenCalledTimes(1);
+    expect(next).toHaveBeenCalled();
+    expect(log.info.mock.calls.some(c => /no forced GC/.test(c[0]))).toBe(false);
+    expect(log.info.mock.calls.some(c => /^Memory: forced last-resort GC while refusing - 8\.5 GB -> 7\.8 GB$/.test(c[0]))).toBe(true);
+  });
+
+  test('with a plain GC only, no forced GC when the JS heap is smaller than the amount over the threshold', () => {
+    // 8.5 GB of RSS against an 8 GB threshold, but only 0.2 GB of it is JS heap: a plain GC
     // can't get under the threshold, so don't stop the process to try
+    memoryGuard._state.lastResortGc = false;
     const log = { info: jest.fn(), warn: jest.fn() };
     setRss(8.5 * GB);
     const res = fakeRes();
-    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB })({ path: '/r4/x' }, res, () => {});
+    const gc = jest.fn();
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, gc })({ path: '/r4/x' }, res, () => {});
     expect(res.statusCode).toBe(503);
+    expect(gc).not.toHaveBeenCalled();
     expect(log.info.mock.calls.some(c => /no forced GC - the JS heap/.test(c[0]))).toBe(true);
     expect(log.info.mock.calls.some(c => /forced GC.* while refusing/.test(c[0]))).toBe(false);
   });
@@ -142,8 +185,8 @@ describe('memory-guard', () => {
     const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
     try {
       setRss(8.5 * GB); // and it stays there: the GCs free nothing
-      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 4000, heapUsed: () => 2 * GB });
-      const gcs = () => log.info.mock.calls.filter(c => /forced GC.* while refusing/.test(c[0])).length;
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 4000, heapUsed: () => 2 * GB, gc: () => {} });
+      const gcs = () => log.info.mock.calls.filter(c => /forced last-resort GC while refusing/.test(c[0])).length;
       const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
       at(0);      // GC, still over: next in 2s
       expect(gcs()).toBe(1);
@@ -166,7 +209,7 @@ describe('memory-guard', () => {
     }
   });
 
-  test('while refusing, malloc_trim gets back the C allocator\'s free memory, even with too small a JS heap for a GC', () => {
+  test('while refusing, malloc_trim gets back the C allocator\'s free memory, which no GC touches', () => {
     memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     // a worker after an aborted batch: 8.5 GB, of which the JS heap is 0.2 GB and most of the
     // rest closed SQLite connections' memory, free in malloc's arenas
@@ -174,23 +217,23 @@ describe('memory-guard', () => {
     setRss(8.5 * GB);
     const trim = jest.fn(() => { rssSpy.mockReturnValue(4 * GB); return true; });
     const next = jest.fn();
-    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, fakeRes(), next);
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim, gc: () => {} })({ path: '/r4/x' }, fakeRes(), next);
     expect(trim).toHaveBeenCalledTimes(1);
     expect(next).toHaveBeenCalled();
-    expect(log.info.mock.calls.some(c => /^Memory: malloc_trim while refusing - 8\.5 GB -> 4\.0 GB$/.test(c[0]))).toBe(true);
+    expect(log.info.mock.calls.some(c => /^Memory: forced last-resort GC and malloc_trim while refusing - 8\.5 GB -> 4\.0 GB$/.test(c[0]))).toBe(true);
   });
 
   test('trimAllocator: off unless given (a server with no role), on with true', () => {
     for (const [opts, on] of [[{}, false], [{ trimAllocator: null }, false], [{ trimAllocator: false }, false], [{ trimAllocator: true }, true]]) {
       memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, ...opts });
       expect(memoryGuard._state.trimAllocator).toBe(on);
-      expect(memoryGuard.describe()).toMatch(on ? /forced GC (and malloc_trim|\(malloc_trim not available here\))$/ : /forced GC \(no malloc_trim: trimAllocator is off\)$/);
+      expect(memoryGuard.describe()).toMatch(on ? /forced last-resort GC (and malloc_trim|\(malloc_trim not available here\))$/ : /forced last-resort GC \(no malloc_trim: trimAllocator is off\)$/);
     }
     // off: a refusal doesn't trim
     memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
     setRss(8.5 * GB);
     const trim = jest.fn(() => true);
-    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, fakeRes(), () => {});
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim, gc: () => {} })({ path: '/r4/x' }, fakeRes(), () => {});
     expect(trim).not.toHaveBeenCalled();
   });
 
@@ -199,14 +242,14 @@ describe('memory-guard', () => {
     setRss(8.5 * GB);
     const trim = jest.fn(() => true);
     const res = fakeRes();
-    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, res, () => {});
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim, gc: () => {} })({ path: '/r4/x' }, res, () => {});
     expect(trim).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(503);
     memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     setRss(8.5 * GB);
     const log = { info: jest.fn(), warn: jest.fn() };
-    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim: () => null })({ path: '/r4/x' }, fakeRes(), () => {});
-    expect(log.info.mock.calls.some(c => /while refusing -/.test(c[0]))).toBe(false);
+    memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim: () => null, gc: () => {} })({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(log.info.mock.calls.some(c => /malloc_trim/.test(c[0]))).toBe(false);
   });
 
   test('a look that gets back a good part of the excess keeps the wait; one that gets back little doubles it', () => {
@@ -220,7 +263,7 @@ describe('memory-guard', () => {
       rssSpy.mockImplementation(() => rss);
       const trim = jest.fn(() => { rss -= 0.5 * GB; return true; });
       // (the trim alone between the looks is the next test's)
-      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 8000, heapUsed: () => 0.1 * GB, trim, trimInterval: 100000 });
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 8000, heapUsed: () => 0.1 * GB, trim, trimInterval: 100000, gc: () => {} });
       const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; mw({ path: '/r4/x' }, fakeRes(), () => {}); };
       at(0);     // 9.9 -> 9.4, a quarter of the excess: next in 1 s
       at(1000);  // 9.4 -> 8.9
@@ -246,7 +289,7 @@ describe('memory-guard', () => {
       let rss = 8.5 * GB;
       rssSpy.mockImplementation(() => rss);
       const trim = jest.fn(() => true);
-      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 60000, heapUsed: () => 0.1 * GB, trim });
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, gcMaxInterval: 60000, heapUsed: () => 0.1 * GB, trim, gc: () => {} });
       const at = (t) => { now = 1000000 + t; memoryGuard._state.sampleTime = 0; const next = jest.fn(); mw({ path: '/r4/x' }, fakeRes(), next); return next; };
       at(0);                    // a look: nothing back, next look in 2 s
       at(500);                  // too soon for anything
