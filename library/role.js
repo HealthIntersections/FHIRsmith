@@ -55,6 +55,11 @@ const DEFAULT_BIND_ADDRESS = '127.0.0.1';
 // largest session's concepts), for two busy endpoints. 0: no cap
 const DEFAULT_SHARED_CACHE_MAX_MB = 256;
 
+// stats.sampleSeconds with a role, when not given: the graphs' sample interval, at most this,
+// so a short session on a cluster can be read (cluster.md, "Graphs"). The counters are still
+// written every stats.intervalMinutes
+const ROLE_SAMPLE_SECONDS = 60;
+
 // server.memory.trimAllocator with a role: on, unless the config says false. N+1 processes
 // share one limit, and malloc_trim gives back what loading the library leaves resident
 // (0.6-0.7 GB a process) and what a burst leaves (cluster.md, "Memory"). With no role the
@@ -162,6 +167,11 @@ function applyRole(config, role) {
   // the memory limit is the whole group's (master and workers in one cgroup)
   const memory = config.server.memory || {};
   config.server.memory = { ...memory, group: true, trimAllocator: memory.trimAllocator ?? ROLE_TRIM_ALLOCATOR };
+  const stats = config.stats || {};
+  if (stats.sampleSeconds === undefined) {
+    const interval = stats.intervalMinutes > 0 ? stats.intervalMinutes * 60 : 600;
+    config.stats = { ...stats, sampleSeconds: Math.min(ROLE_SAMPLE_SECONDS, interval) };
+  }
   if (role.role === 'tx-worker') {
     for (const [name, mod] of Object.entries(config.modules)) {
       if (name !== 'tx' && mod) {
@@ -184,4 +194,4 @@ function describeRole(role, config) {
 }
 
 module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
-  DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, READY, ROLES };
+  DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, ROLE_SAMPLE_SECONDS, READY, ROLES };

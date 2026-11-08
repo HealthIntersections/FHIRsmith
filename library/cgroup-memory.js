@@ -145,18 +145,19 @@ function ownCgroupDir(opts = {}) {
 }
 
 /**
- * The private memory of everything in a cgroup: what the kernel can't take back without
- * killing a process. The page cache (the terminology and SQLite files) isn't counted: the
- * kernel drops it when it needs the room. v2: memory.stat 'anon'; v1: 'total_rss', else 'rss'.
+ * What memory.stat says a cgroup holds: its private memory (`anon`: what the kernel can't take
+ * back without killing a process) and its page cache (`file`: the terminology and SQLite files,
+ * mapped or read, which the kernel drops when it needs the room; shared pages counted once).
+ * v2: 'anon' and 'file'; v1: 'total_rss' (else 'rss') and 'total_cache' (else 'cache').
  * @param {{dir: string, version: 2|1}} cg - from ownCgroupDir
- * @returns {number} bytes, or 0 if it can't be read
+ * @returns {{anon: number, file: number|null}|null} bytes, or null if it can't be read
  */
-function readCgroupAnon(cg) {
+function readCgroupStat(cg) {
   let text;
   try {
     text = fs.readFileSync(path.join(cg.dir, 'memory.stat'), 'utf8');
   } catch {
-    return 0;
+    return null;
   }
   const values = new Map();
   for (const line of text.split('\n')) {
@@ -165,13 +166,52 @@ function readCgroupAnon(cg) {
       values.set(line.substring(0, i), Number(line.substring(i + 1)));
     }
   }
-  for (const key of cg.version === 2 ? ['anon'] : ['total_rss', 'rss']) {
-    const v = values.get(key);
-    if (Number.isFinite(v) && v >= 0) {
-      return v;
+  const first = keys => {
+    for (const key of keys) {
+      const v = values.get(key);
+      if (Number.isFinite(v) && v >= 0) {
+        return v;
+      }
     }
+    return null;
+  };
+  const v2 = cg.version === 2;
+  const anon = first(v2 ? ['anon'] : ['total_rss', 'rss']);
+  return anon === null ? null : { anon, file: first(v2 ? ['file'] : ['total_cache', 'cache']) };
+}
+
+/**
+ * The private memory of everything in a cgroup (memory.stat 'anon'; see readCgroupStat). The
+ * page cache isn't counted: the kernel drops it when it needs the room.
+ * @param {{dir: string, version: 2|1}} cg - from ownCgroupDir
+ * @returns {number} bytes, or 0 if it can't be read
+ */
+function readCgroupAnon(cg) {
+  const stat = readCgroupStat(cg);
+  return stat ? stat.anon : 0;
+}
+
+/**
+ * A process's resident memory by kind, from /proc/<pid>/status: RssAnon (its private memory)
+ * and RssFile (the file pages it has mapped and touched, such as the SNOMED CT cache files;
+ * pages shared with other processes are counted in each). Linux only.
+ * @param {number|string} pid - or 'self'
+ * @param {string} [procRoot='/proc'] - (tests)
+ * @returns {{anon: number, file: number}|null} bytes, or null if it can't be read
+ */
+function readProcessMemory(pid, procRoot = '/proc') {
+  let status;
+  try {
+    status = fs.readFileSync(path.join(procRoot, String(pid), 'status'), 'utf8');
+  } catch {
+    return null;
   }
-  return 0;
+  const kb = name => {
+    const m = new RegExp(`^${name}:\\s+(\\d+) kB`, 'm').exec(status);
+    return m ? Number(m[1]) * 1024 : null;
+  };
+  const anon = kb('RssAnon');
+  return anon === null ? null : { anon, file: kb('RssFile') ?? 0 };
 }
 
 /**
@@ -202,4 +242,4 @@ function readCgroupProcessRss(cg) {
   return result;
 }
 
-module.exports = { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon, readCgroupProcessRss };
+module.exports = { readCgroupMemoryLimit, ownCgroupDir, readCgroupStat, readCgroupAnon, readProcessMemory, readCgroupProcessRss };

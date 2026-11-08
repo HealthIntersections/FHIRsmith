@@ -47,9 +47,11 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   ] };
   const { html, charts, elements } = await render(name, metrics);
   expect(charts).toHaveLength(count);
-  expect(html).toContain('Heap change since process start');
+  expect(html).toContain('Private memory (anon), with the cluster');
+  // no private memory in the samples (not Linux): the heap change, and the title says so
+  expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since process start (private memory not readable here)');
   for (const chart of charts) {
-    const total = chart.canvas === elements.get('requestChart') ? ['Total'] : [];
+    const total = [elements.get('requestChart'), elements.get('clientCacheChart')].includes(chart.canvas) ? ['Total'] : [];
     expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2', ...total]);
     expect(chart.data.datasets[1].data.map(d => d.x)).toEqual([now + 3000, now + 12000]);
     expect(chart.data.datasets[1].data[1].y).toBeNull();
@@ -109,6 +111,52 @@ test('requests per minute adds a Total, summing each sample interval across proc
   expect(total.borderWidth).toBeGreaterThan(rpm.data.datasets[0].borderWidth);
   expect(charts.filter(c => c.data.datasets.some(d => d.label === 'Total'))).toEqual([rpm]);
   expect(legendText(elements)).toContain('Total');
+});
+
+test('the memory graph: private memory per process, the cgroup\'s Total and the refusal threshold, labelled', async () => {
+  const GiB = 2 ** 30;
+  const anon = (time, gib) => ({ ...point(time, 1), anon:gib * GiB });
+  const { charts, elements } = await render('cluster-home-metrics', { cluster:true, sampledAt:now + 120000, sharedCache:false,
+    total:{ group:true, rejectAt:10.2 * GiB, history:[{ time:now, anon:5 * GiB }, { time:now + 60000, anon:null }, { time:now + 120000, anon:6 * GiB }] },
+    series:[
+      { label:'Master m0', status:'ready', intervalMs:60000, history:[anon(now, 3), anon(now + 60000, 3.5)] },
+      { label:'Worker tx1', status:'ready', intervalMs:60000, history:[anon(now + 1000, 2), anon(now + 61000, 2.5)] }
+    ] });
+  const memory = charts.find(c => c.canvas === elements.get('memoryChart'));
+  expect(memory.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Total', 'Refusal threshold']);
+  expect(memory.data.datasets[0].data.map(d => d.y)).toEqual([3072, 3584]);
+  // the cgroup's own figure, with its gap; not the processes summed
+  expect(memory.data.datasets[2].data).toEqual([{ x:now, y:5120 }, { x:now + 60000, y:null }, { x:now + 120000, y:6144 }]);
+  const threshold = memory.data.datasets[3];
+  expect(threshold.data.map(d => d.y)).toEqual([10.2 * 1024, 10.2 * 1024]);
+  expect(threshold.borderDash.length).toBeGreaterThan(0);
+  expect(threshold.borderColor).not.toBe(memory.data.datasets[2].borderColor);
+  expect(memory.options.scales.y.title.text).toBe('MB private (anon)');
+  expect(elements.get('memoryChartTitle').textContent).toBeUndefined();
+  const legend = legendText(elements);
+  expect(legend).toContain('Total: requests per minute, client concepts, memory (the cgroup\'s private)');
+  expect(legend).toContain('Memory guard refuses above 10.2 GB (the cgroup)');
+  // the threshold's value is written on its line
+  const texts = [];
+  const ctx = new Proxy({}, { get:(_t, name) => name === 'fillText' ? (...args) => texts.push(args[0]) : () => {}, set:() => true });
+  memory.plugins[1].afterDatasetsDraw({ ctx, data:memory.data, chartArea:{ left:0, right:100, top:0, bottom:100 },
+    scales:{ y:{ getPixelForValue:() => 50 } } });
+  expect(texts).toEqual(['refuses above 10.2 GB']);
+});
+
+test('client concepts add a Total: summed, or with the shared cache taken once', async () => {
+  const minute = 60000;
+  const concepts = (time, n) => ({ ...point(time, 1), clientConcepts:n });
+  const series = [
+    { label:'Master', status:'ready', intervalMs:minute, history:[concepts(now, 100), concepts(now + minute, 300)] },
+    { label:'Worker', status:'ready', intervalMs:minute, history:[concepts(now + 2000, 100), concepts(now + minute + 2000, 300)] }
+  ];
+  const totalOf = async (sharedCache) => {
+    const { charts, elements } = await render('cluster-home-metrics', { cluster:true, sampledAt:now + minute, sharedCache, series });
+    return charts.find(c => c.canvas === elements.get('clientCacheChart')).data.datasets.find(d => d.label === 'Total').data;
+  };
+  expect(await totalOf(false)).toEqual([{ x:now, y:200 }, { x:now + minute, y:600 }]);
+  expect(await totalOf(true)).toEqual([{ x:now, y:100 }, { x:now + minute, y:300 }]);
 });
 
 test('past eight processes, no style repeats: the rest are only in the Total and the note', async () => {

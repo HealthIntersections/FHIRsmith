@@ -27,6 +27,8 @@
     "database": "stats.db",
     // how often the counters are written out
     "intervalMinutes": 10
+    // how often the graphs take a sample: intervalMinutes unless set; with a role, at most 60
+    // "sampleSeconds": 60
   },
   // Once a day the server checks its installed npm packages against the npm advisory
   // database (what `npm audit` does - report only, nothing is changed). Problems show on

@@ -275,7 +275,7 @@ describe('master and two tx-workers behind cluster.js', () => {
       await sleep(250);
     }
     await sleep(500);
-    expect(await requestText(WORKERS[1], '/', { Accept: 'text/html' })).toContain('Worker tx2: uptime and request counts for this process');
+    expect(await requestText(WORKERS[1], '/', { Accept: 'text/html' })).toContain("Worker tx2: every figure is this process's");
   }, 60000);
 
   test('SIGTERM: requests in progress finish, then every process stops', async () => {

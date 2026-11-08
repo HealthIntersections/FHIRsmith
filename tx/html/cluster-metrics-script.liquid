@@ -27,8 +27,16 @@
     { color:'#404040', dash:[4,2], point:'rectRounded', symbol:'▢' }
   ];
   const total = { color:'#111111', dash:[], symbol:'', width:3 };
+  // the memory guard's refusal threshold: mid grey, long dash and dot, no markers, and labelled
+  const threshold = { color:'#666666', dash:[10,3,2,3], symbol:'', width:2 };
   const drawn = metrics.series.slice(0, styles.length);
   const showTotal = metrics.series.length > 1;
+  // private memory (RssAnon) where the processes could read it, else (not Linux) heap change
+  const hasAnon = metrics.series.some(series => series.history.some(point => Number.isFinite(point.anon)));
+  const memoryTotal = hasAnon && metrics.total && metrics.total.history.some(point => Number.isFinite(point.anon)) ? metrics.total : null;
+  const rejectAt = hasAnon && metrics.total && Number.isFinite(metrics.total.rejectAt) && metrics.total.rejectAt > 0 ? metrics.total.rejectAt : null;
+  const memoryTitle = document.getElementById('memoryChartTitle');
+  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since process start (private memory not readable here)';
 
   const legend = document.getElementById('serverMetricsLegend');
   function legendItem(style, text) {
@@ -44,7 +52,14 @@
   }
   drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
     (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
-  if (showTotal) legendItem(total, 'Total (requests per minute only)');
+  if (showTotal || memoryTotal) {
+    legendItem(total, 'Total: ' + [showTotal ? 'requests per minute' : null,
+      showTotal ? (metrics.sharedCache ? 'client concepts (one shared store, counted once)' : 'client concepts') : null,
+      memoryTotal ? (memoryTotal.group ? 'memory (the cgroup\'s private)' : 'memory (the processes\' private, summed)') : null]
+      .filter(Boolean).join(', '));
+  }
+  if (rejectAt) legendItem(threshold, 'Memory guard refuses above ' + (rejectAt / 2 ** 30).toFixed(1) + ' GB' +
+    (metrics.total.group ? ' (the cgroup)' : ' (each process)'));
   if (metrics.series.length > drawn.length) {
     legend.appendChild(document.createTextNode((metrics.series.length - drawn.length) +
       ' more workers are not drawn individually; the Total includes them.'));
@@ -56,19 +71,29 @@
   // Every chart uses the same numeric time axis: each sample sits at its actual time.
   const minTime = earliest === latest ? earliest - 60000 : earliest;
 
-  // The cluster's requests per minute: every process's samples summed per sample interval,
+  // The cluster's total of a field: every process's samples summed per sample interval,
   // counted from the earliest sample (the processes start, and so sample, seconds apart).
-  function totalRpm() {
+  // once: the processes all report the same figure (the shared client cache), so it is taken
+  // once (the largest, the latest seen) rather than summed
+  function totalOf(field, once = false) {
     const interval = metrics.series.map(series => series.intervalMs).find(ms => ms > 0) || 600000;
-    const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point.rpm)));
+    const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point[field])));
     const start = points.reduce((start, point) => Math.min(start, point.time), Infinity);
     const sums = new Map();
+    const counts = new Map();
     for (const point of points) {
       const x = start + Math.round((point.time - start) / interval) * interval;
-      sums.set(x, (sums.get(x) || 0) + point.rpm);
+      sums.set(x, once ? Math.max(sums.get(x) || 0, point[field]) : (sums.get(x) || 0) + point[field]);
+      counts.set(x, (counts.get(x) || 0) + 1);
     }
-    return [...sums].sort((a, b) => a[0] - b[0]).map(([x, y]) => ({ x, y }));
+    const rows = [...sums].sort((a, b) => a[0] - b[0]);
+    // the newest interval, while some processes have yet to send their sample for it, would
+    // show a fall that isn't there: left off until they have
+    while (rows.length > 1 && counts.get(rows[rows.length - 1][0]) < counts.get(rows[rows.length - 2][0])) rows.pop();
+    return rows.map(([x, y]) => ({ x, y }));
   }
+  const totalLine = data => ({ label:'Total', data, borderColor:total.color, backgroundColor:total.color,
+    borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
 
   // A hatched interval means at least one memory-pressure 503 was counted in it, not that
   // the guard refused all through it. Overlapping intervals of different processes merge.
@@ -113,6 +138,25 @@
     }
   };
 
+  // the threshold's value, written at the right end of its line
+  const thresholdLabel = {
+    id:'thresholdLabel',
+    afterDatasetsDraw(chart) {
+      const dataset = chart.data.datasets.find(d => d.threshold);
+      if (!dataset || !chart.chartArea) return;
+      const {ctx, chartArea:area, scales:{y}} = chart;
+      const at = y.getPixelForValue(dataset.data[0].y);
+      if (at < area.top || at > area.bottom) return;
+      ctx.save();
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = '#333';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('refuses above ' + (dataset.data[0].y / 1024).toFixed(1) + ' GB', area.right - 2, at - 2);
+      ctx.restore();
+    }
+  };
+
   function formatTime(time) {
     return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
       ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
@@ -129,9 +173,15 @@
       pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
       fill:!metrics.cluster, tension:0, spanGaps:false
     }));
-    if (field === 'rpm' && showTotal) {
-      datasets.push({ label:'Total', data:totalRpm(), borderColor:total.color, backgroundColor:total.color,
-        borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
+    if (field === 'rpm' && showTotal) datasets.push(totalLine(totalOf('rpm')));
+    if (field === 'clientConcepts' && showTotal) datasets.push(totalLine(totalOf('clientConcepts', metrics.sharedCache)));
+    if (field === 'anon' && memoryTotal) {
+      datasets.push(totalLine(memoryTotal.history.map(point => ({ x:point.time, y:Number.isFinite(point.anon) ? point.anon / divisor : null }))));
+    }
+    if (field === 'anon' && rejectAt) {
+      datasets.push({ label:'Refusal threshold', threshold:true, data:[{ x:minTime, y:rejectAt / divisor }, { x:latest, y:rejectAt / divisor }],
+        borderColor:threshold.color, backgroundColor:threshold.color, borderDash:threshold.dash, borderWidth:threshold.width,
+        pointRadius:0, pointHitRadius:5, fill:false, tension:0 });
     }
     new Chart(canvas, {
       type:'line',
@@ -152,10 +202,11 @@
           } }
         }
       },
-      plugins:[hatch]
+      plugins:[hatch, thresholdLabel]
     });
   }
-  chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
+  if (hasAnon) chart('memoryChart', 'anon', 'MB private (anon)', 1024 * 1024);
+  else chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
   chart('tatChart', 'tat', 'ms');
   chart('requestChart', 'rpm', 'req/min');
   chart('clientCacheChart', 'clientConcepts', 'concepts');
