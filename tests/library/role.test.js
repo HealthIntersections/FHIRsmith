@@ -60,7 +60,7 @@ describe('applyRole', () => {
     expect(config.modules.packages.enabled).toBe(true);
     expect(config.modules.xig.enabled).toBe(true);
     expect(config.stats.enabled).toBeUndefined();
-    expect(config.server.memory).toEqual({ rejectFraction: 0.8, group: true });
+    expect(config.server.memory).toEqual({ rejectFraction: 0.8, group: true, trimAllocator: true });
   });
 
   test('tx-worker: the tx module only, no background jobs, its own instance code', () => {
@@ -132,6 +132,18 @@ describe('applyRole', () => {
     longMaster.modules.tx.instanceCode = 'm'.repeat(17);
     expect(() => applyRole(longMaster, { role: 'master', instanceCode: null })).toThrow(/1-16 letters and digits/);
     expect(applyRole(baseConfig(), { role: 'tx-worker', instanceCode: 'a'.repeat(16) }).modules.tx.instanceCode).toHaveLength(16);
+  });
+
+  test('with a role, trimAllocator is on unless the config says false', () => {
+    const trim = (value) => {
+      const c = baseConfig();
+      if (value !== undefined) {
+        c.server.memory.trimAllocator = value;
+      }
+      return applyRole(c, { role: 'tx-worker', instanceCode: 'tx1' }).server.memory;
+    };
+    expect(trim(undefined)).toEqual({ rejectFraction: 0.8, group: true, trimAllocator: true });
+    expect([trim(null).trimAllocator, trim(false).trimAllocator, trim(true).trimAllocator]).toEqual([true, false, true]);
   });
 
   test('with a role, a process listens on loopback unless server.cluster.bindAddress says otherwise', () => {

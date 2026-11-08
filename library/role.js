@@ -51,6 +51,12 @@ const DEFAULT_BIND_ADDRESS = '127.0.0.1';
 // largest session's concepts), for two busy endpoints. 0: no cap
 const DEFAULT_SHARED_CACHE_MAX_MB = 256;
 
+// server.memory.trimAllocator with a role: on, unless the config says false. N+1 processes
+// share one limit, and malloc_trim gives back what loading the library leaves resident
+// (0.6-0.7 GB a process) and what a burst leaves (cluster.md, "Memory"). With no role the
+// memory guard's own default (off) applies
+const ROLE_TRIM_ALLOCATOR = true;
+
 /**
  * The address a process with a role listens on; with no role (null), none: every interface,
  * as before.
@@ -150,7 +156,8 @@ function applyRole(config, role) {
   }
   config.server = config.server || {};
   // the memory limit is the whole group's (master and workers in one cgroup)
-  config.server.memory = { ...(config.server.memory || {}), group: true };
+  const memory = config.server.memory || {};
+  config.server.memory = { ...memory, group: true, trimAllocator: memory.trimAllocator ?? ROLE_TRIM_ALLOCATOR };
   if (role.role === 'tx-worker') {
     for (const [name, mod] of Object.entries(config.modules)) {
       if (name !== 'tx' && mod) {
@@ -173,4 +180,4 @@ function describeRole(role, config) {
 }
 
 module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
-  DEFAULT_SHARED_CACHE_MAX_MB, ROLES };
+  DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, ROLES };

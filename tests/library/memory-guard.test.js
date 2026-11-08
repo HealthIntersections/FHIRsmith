@@ -167,6 +167,7 @@ describe('memory-guard', () => {
   });
 
   test('while refusing, malloc_trim gets back the C allocator\'s free memory, even with too small a JS heap for a GC', () => {
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     // a worker after an aborted batch: 8.5 GB, of which the JS heap is 0.2 GB and most of the
     // rest closed SQLite connections' memory, free in malloc's arenas
     const log = { info: jest.fn(), warn: jest.fn() };
@@ -179,6 +180,20 @@ describe('memory-guard', () => {
     expect(log.info.mock.calls.some(c => /^Memory: malloc_trim while refusing - 8\.5 GB -> 4\.0 GB$/.test(c[0]))).toBe(true);
   });
 
+  test('trimAllocator: off unless given (a server with no role), on with true', () => {
+    for (const [opts, on] of [[{}, false], [{ trimAllocator: null }, false], [{ trimAllocator: false }, false], [{ trimAllocator: true }, true]]) {
+      memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, ...opts });
+      expect(memoryGuard._state.trimAllocator).toBe(on);
+      expect(memoryGuard.describe()).toMatch(on ? /forced GC (and malloc_trim|\(malloc_trim not available here\))$/ : /forced GC \(no malloc_trim: trimAllocator is off\)$/);
+    }
+    // off: a refusal doesn't trim
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
+    setRss(8.5 * GB);
+    const trim = jest.fn(() => true);
+    memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, fakeRes(), () => {});
+    expect(trim).not.toHaveBeenCalled();
+  });
+
   test('trimAllocator false: no malloc_trim; nor where it is not available (null)', () => {
     memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: false });
     setRss(8.5 * GB);
@@ -187,7 +202,7 @@ describe('memory-guard', () => {
     memoryGuard.middleware({ gcInterval: 1000, heapUsed: () => 0.2 * GB, trim })({ path: '/r4/x' }, res, () => {});
     expect(trim).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(503);
-    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9 });
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     setRss(8.5 * GB);
     const log = { info: jest.fn(), warn: jest.fn() };
     memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 0.2 * GB, trim: () => null })({ path: '/r4/x' }, fakeRes(), () => {});
@@ -195,6 +210,7 @@ describe('memory-guard', () => {
   });
 
   test('a look that gets back a good part of the excess keeps the wait; one that gets back little doubles it', () => {
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     const log = { info: jest.fn(), warn: jest.fn() };
     let now = 1000000;
     const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -221,6 +237,7 @@ describe('memory-guard', () => {
   });
 
   test('between the looks, malloc_trim alone before refusing, once a second, with no back-off', () => {
+    memoryGuard.configure({ limit: 10 * GB, rejectFraction: 0.8, abortFraction: 0.9, trimAllocator: true });
     // a burst has backed the looks off; it ends, and what it used is free but resident
     const log = { info: jest.fn(), warn: jest.fn() };
     let now = 1000000;

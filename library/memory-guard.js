@@ -15,7 +15,8 @@
  *
  * While refusing, the guard looks now and then for memory it can get back: a forced GC (the JS
  * heap), then malloc_trim (memory the C allocator holds free - closed SQLite connections, above
- * all; library/native-memory.js). "trimAllocator": false leaves out the second.
+ * all; library/native-memory.js), if "trimAllocator" is true: by default only with a role
+ * (library/role.js), so a server with no role only forces the GC, as before.
  *
  * A master and its tx-workers (--role, cluster.md) share one cgroup, and the kernel's limit is
  * on all of them together, so with a role (config.server.memory.group) the measure is the
@@ -38,6 +39,9 @@ const { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon, readCgroupProcessRs
 const { trimNativeMemory, canTrimNativeMemory } = require('./native-memory');
 
 const DEFAULT_REJECT_FRACTION = 0.85;
+// malloc_trim (trimAllocator): off unless asked for, so a plain server is as it was. With a
+// role, library/role.js turns it on (ROLE_TRIM_ALLOCATOR) unless the config says false
+const DEFAULT_TRIM_ALLOCATOR = false;
 const DEFAULT_ABORT_FRACTION = 0.92;
 // RSS is cheap to read, but the gate runs on every request; a sample this old is fine
 const SAMPLE_MS = 250;
@@ -75,7 +79,7 @@ const state = {
   abortFraction: DEFAULT_ABORT_FRACTION,
   rejectAt: 0,
   abortAt: 0,
-  trimAllocator: true,
+  trimAllocator: DEFAULT_TRIM_ALLOCATOR,
   sampleTime: 0,
   sampleRss: 0,
   // a role (master, tx-worker): the cgroup measured, from ownCgroupDir; else null
@@ -132,7 +136,7 @@ function thresholds(opts = {}) {
 function configure(opts = {}) {
   Object.assign(state, thresholds(opts));
   state.groupWanted = !!opts.group;
-  state.trimAllocator = opts.trimAllocator !== false;
+  state.trimAllocator = (opts.trimAllocator ?? DEFAULT_TRIM_ALLOCATOR) === true;
   state.sampleTime = 0;
 }
 
@@ -265,7 +269,7 @@ function describe() {
     (state.excludeFileBacked && !state.group ? 'measured as RSS less file-backed pages; ' : '') +
     `new requests refused above ${gb(state.rejectAt)} GB (${Math.round(state.rejectFraction * 100)}%), ` +
     `operations aborted above ${gb(state.abortAt)} GB (${Math.round(state.abortFraction * 100)}%); ` +
-    `while refusing, a forced GC` + (!state.trimAllocator ? ' (trimAllocator false: no malloc_trim)'
+    `while refusing, a forced GC` + (!state.trimAllocator ? ' (no malloc_trim: trimAllocator is off)'
       : canTrimNativeMemory() ? ' and malloc_trim' : ' (malloc_trim not available here)');
 }
 

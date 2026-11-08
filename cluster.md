@@ -233,7 +233,7 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
 | `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |
 | `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
-| `server.memory.trimAllocator` | | true | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and in every process while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false: for diagnosis. |
+| `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
 | `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
@@ -436,10 +436,12 @@ took it to 3.9 GB in half a second, and without it the server refused everything
 restarted. Setting `MALLOC_ARENA_MAX=2` in the environment was tried instead and did not give
 the memory back (the worker was still refusing 90 s after the abort); `malloc_trim` did (back
 in 6 s), so the trim is a call through `koffi`, not an environment setting.
-`server.memory.trimAllocator: false` leaves it out (for diagnosis). Where it is not available
-(macOS, Windows, musl, no `koffi`), only the GC runs. With a role, each process also trims
-once after loading the library, before it takes requests: the load leaves 0.6-0.7 GB free but
-resident, and N+1 processes share the one limit. With no role, a server doesn't.
+This is on with a role (`server.memory.trimAllocator`, true unless set false, for diagnosis).
+With no role it is off unless set true, so a single server only forces the GC, as before: the
+trim is synchronous native code, not yet run on a single server's 20 GB process. Where it is
+not available (macOS, Windows, musl, no `koffi`), only the GC runs. With a role, each process
+also trims once after loading the library, before it takes requests: the load leaves 0.6-0.7
+GB free but resident, and N+1 processes share the one limit.
 
 If a tx-worker stays over the refusal threshold anyway, for `server.cluster.recycleSeconds`
 (30) with no request at work on it, the launcher restarts it: whatever it holds, nothing

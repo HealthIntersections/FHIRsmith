@@ -45,7 +45,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { checkInstanceCode, bindAddress, connectAddress } = require('./library/role');
+const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS } = require('./library/cluster-counts');
 const { readCgroupAnon } = require('./library/cgroup-memory');
@@ -321,7 +321,8 @@ function createLauncher(settings) {
   const fastLaneExtra = settings.fastLaneExtra ?? FAST_LANE_EXTRA; // 0: no fast lane
   const fastLaneMaxBytes = settings.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES;
   const normalMinSlots = Math.min(settings.normalMinSlots ?? NORMAL_MIN_SLOTS, maxOutstanding);
-  const trimAllocator = !settings.memory || settings.memory.trimAllocator !== false;
+  // what each process does: every one has a role (library/role.js)
+  const trimAllocator = (settings.memory && settings.memory.trimAllocator) ?? ROLE_TRIM_ALLOCATOR;
   const command = settings.command || ((proc) => [process.execPath, [
     ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);

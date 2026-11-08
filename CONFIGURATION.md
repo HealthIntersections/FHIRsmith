@@ -42,7 +42,7 @@ as `MemoryMax` on the systemd unit, or else the machine's RAM), measured against
 |---|---|---|
 | `server.memory.rejectFraction` | `0.85` | Above this, new requests get 503 + `Retry-After` |
 | `server.memory.abortFraction` | `0.92` | Above this, running operations are aborted with 422 too-costly |
-| `server.memory.trimAllocator` | `true` | Whether the server returns the C allocator's free memory (`malloc_trim`, Linux) while refusing, and, with a role, once after loading. `false` is for diagnosis. See [cluster.md](cluster.md#memory) |
+| `server.memory.trimAllocator` | `false`; `true` with a role | Whether the server returns the C allocator's free memory (`malloc_trim`, Linux) while refusing, and, with a role, once after loading. Without a role it is off unless set `true`; with one, `false` is for diagnosis. See [cluster.md](cluster.md#memory) |
 
 ### Cluster
 
