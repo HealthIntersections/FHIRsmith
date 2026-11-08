@@ -353,9 +353,11 @@ describe('the launcher, with fake processes', () => {
 
   describe('start-up: ready is the process\'s own word, over IPC', () => {
     test('another process answering /health on the master\'s port is not the master: the launcher gives up after maxStartFailures', async () => {
-      // an old master still shutting down, say: it holds the port and answers /health
+      // an old master still shutting down, say: it holds the port and answers /health. On every
+      // address, as a master does: held only on 127.0.0.1, macOS (BSD) lets the new process
+      // bind the wildcard address beside it, so it starts and says it is ready
       const old = http.createServer((req, res) => res.end('ok'));
-      await new Promise(resolve => old.listen(20010, '127.0.0.1', resolve));
+      await new Promise(resolve => old.listen(20010, resolve));
       const lines = [];
       try {
         launcher = createLauncher({ ...settings(true), maxStartFailures: 2, log: (m) => lines.push(m) });
@@ -793,7 +795,13 @@ describe('the launcher, with fake processes', () => {
       await until(() => launcher.procs.every(p => p.ready));
       const tx1 = launcher.procs[1];
       const socket = await unread(`/r4/ValueSet/$expand?bytes=${BIG}`);
-      await until(() => tx1.active === 1);
+      // tx1 has the request. (Not tx1.active === 1: where loopback is fast, as on macOS, the whole
+      // response can reach the launcher, and the slot be freed, between two looks)
+      for (const t0 = Date.now(); !(await get(tx1.port, '/r4/seen')).json.seen.some(r => r.includes('bytes=')); await sleep(50)) {
+        if (Date.now() - t0 > 10000) {
+          throw new Error('tx1 never got the request');
+        }
+      }
       // the process's 20 MB response has ended, though the client has read none of it
       await until(() => tx1.outstanding === 0 && tx1.active === 0, 3000);
       const t0 = Date.now();
