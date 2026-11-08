@@ -104,7 +104,7 @@ describe('the status panel', () => {
     expect(m.segments.map(s => [s.label, s.color])).toEqual([['Master m0', PALETTE[0]], ['Worker tx1', PALETTE[1]],
       ['Worker tx2', PALETTE[2]], ['Launcher', '#d9d9d9']]);
     expect(m.segments.map(s => s.striped)).toEqual([false, true, false, false]);
-    expect(m.ticks).toEqual([{ label: 'refuse 85% · 10.2 GB', at: '85.00' }, { label: 'abort 92% · 11.0 GB', at: '92.00' }]);
+    expect(m.ticks).toEqual([{ label: 'refuse 85% · 10.2 GB', at: '85.00', right: '15.00' }, { label: 'abort 92% · 11.0 GB', at: '92.00', right: '8.00' }]);
     expect(m.notes).toEqual(['Host: 30.0 of 64.0 GB in use']);
     // what the processes don't account for is its own, hatched segment
     const more = view(buildSnapshot({ now, intervalMs: 15000, procs: procs(), launcher, guard, cgroup: { anon: 9 * GiB, file: 0 } })).memory;
@@ -128,8 +128,7 @@ describe('the status panel', () => {
     const mixed = view(buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, guard, cgroup: null }));
     expect(mixed.table.columns[7].label).toBe('Heap MB used / limit');
     expect(cellsOf(mixed, 1)[7]).toBe('300 / 2,048');
-    expect(v.footnotes).toHaveLength(1);
-    expect(v.footnotes[0]).toMatch(/^Mapped: file pages a process has mapped/);
+    expect(v.footnotes).toEqual(['Mapped: terminology files a process has mapped; shared pages count in each process and are not in the memory above.']);
   });
 
   test('stale figures, the shared store and what is missing', () => {
@@ -167,10 +166,14 @@ describe('the status panel', () => {
     expect(storageView({ disk: { free: 15 * GiB, total: 900 * GiB } }).tiles).toEqual([
       { label: 'Disk free', value: '15.0', unit: 'GB', sub: 'of 900.0 GB' }]);
     const tiles = storageView({ closure: { tables: 2, entries: 10, concepts: 30, bytes: null, retentionDays: 7 },
-      logs: { files: 2, bytes: 5 * MiB, kept: 14 } }).tiles;
-    expect(tiles.map(t => t.label)).toEqual(['Closure tables', 'Closure entries', 'Closure database', 'Logs']);
-    expect(tiles.map(t => t.sub)).toEqual([undefined, '30 concepts', 'kept 7 days unused', '5 MB · 14 kept']);
-    expect(storageView({ closure: { tables: 0, entries: 0, concepts: 0, bytes: 40960 } }).tiles[2]).toMatchObject({ value: '40', unit: 'KB' });
+      logs: { files: 2, bytes: 5 * MiB, kept: 14 }, disk: { free: GiB, total: 2 * GiB } });
+    expect(tiles.tiles.map(t => [t.label, t.value])).toEqual([['Closure tables', '2'], ['Closure entries', '10'], ['Closure concepts', '30'],
+      ['Closure database', 'in memory'], ['Logs', '5'], ['Disk free', '1.0']]);
+    expect(tiles.tiles.map(t => t.sub)).toEqual([undefined, undefined, undefined, 'kept 7 days unused', '2 files · 14 kept', 'of 2.0 GB']);
+    // as many columns as tiles: six fill the grid, and two fill the width
+    expect(tiles.columns).toBe(6);
+    expect(storageView({ logs: { files: 1, bytes: 0, kept: 14 }, disk: { free: 1, total: 2 } }).columns).toBe(2);
+    expect(storageView({ closure: { tables: 0, entries: 0, concepts: 0, bytes: 40960 } }).tiles[3]).toMatchObject({ value: '40', unit: 'KB' });
   });
 
   test('the template: tiles, meter, an aligned table, everything escaped; the palette is the graphs\'', async () => {
@@ -183,6 +186,9 @@ describe('the status panel', () => {
     expect(html.match(/class="fs-status-tile"/g)).toHaveLength(6);
     expect(html.match(/class="fs-status-seg/g)).toHaveLength(4);
     expect(html.match(/class="fs-status-tick"/g)).toHaveLength(2);
+    // each label ends at its own tick, on one line
+    expect(html).toContain('<span class="fs-status-tick-1" style="right:15.00%">refuse 85% · 10.2 GB</span>');
+    expect(html).toContain('<span class="fs-status-tick-2" style="right:8.00%">abort 92% · 11.0 GB</span>');
     expect(html).toContain('<th class="fs-num">Private MB</th>');
     expect(html).toMatch(/<td class="fs-num">2,048<\/td>/);
     expect(html).toContain('<th class="fs-num">Heap MB of 4,096</th>');

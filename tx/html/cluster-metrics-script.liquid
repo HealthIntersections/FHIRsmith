@@ -37,7 +37,7 @@
   const memoryTotal = hasAnon && metrics.total && metrics.total.history.some(point => Number.isFinite(point.anon)) ? metrics.total : null;
   const rejectAt = hasAnon && metrics.total && Number.isFinite(metrics.total.rejectAt) && metrics.total.rejectAt > 0 ? metrics.total.rejectAt : null;
   const memoryTitle = document.getElementById('memoryChartTitle');
-  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since start (no private memory here)';
+  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since start';
 
   const legend = document.getElementById('serverMetricsLegend');
   function legendItem(style, text) {

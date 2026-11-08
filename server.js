@@ -476,6 +476,14 @@ function statusView() {
   });
 }
 
+// The background tasks, in the status panel's table style (tx/html/status-panel.liquid), in a
+// box of their own that scrolls rather than the page
+function backgroundTasks() {
+  const table = stats.taskDetails();
+  return table ? `<section class="fs-status fs-status-tasks"><h3 class="fs-status-head">Background tasks</h3>` +
+    `<div class="fs-status-scroll">${table}</div></section>` : '';
+}
+
 // The storage tiles below the graphs: closure tables, logs, disk
 function storageStatusView() {
   const logs = logFigures();
@@ -619,7 +627,7 @@ async function buildRootPageContent() {
   content += await liquid.renderFile('status-panel', { view: statusView() });
   content += await liquid.renderFile(...metricsTemplate('home-metrics'));
   content += await liquid.renderFile('status-panel', { view: storageStatusView() });
-  content += `<div style="max-width:100%;overflow-x:auto">${stats.taskDetails()}</div>`;
+  content += backgroundTasks();
 
   content += '</div>';
   return content;
@@ -777,7 +785,7 @@ app.get('/dashboard', async (req, res) => {
     content += await liquid.renderFile('status-panel', { view: statusView() });
     content += await liquid.renderFile(...metricsTemplate('dash-metrics'));
     content += await liquid.renderFile('status-panel', { view: storageStatusView() });
-    content += `<div style="max-width:100%;overflow-x:auto">${stats.taskDetails()}</div>`;
+    content += backgroundTasks();
     if (npmAudit) {
       content += npmAudit.renderDashboard();
     }

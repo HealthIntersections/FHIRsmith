@@ -251,9 +251,10 @@ function meter({ used, limit, rejectAt, abortAt, rejectFraction, abortFraction, 
     value: `${gb(used)} GB of ${gb(limit)} GB (${Math.round(pct(used, limit))}%)`,
     segments: shown.map(s => ({ label: s.label, width: pct(s.bytes * scale, limit).toFixed(2), ...s.swatch,
       title: `${s.label}: ${mb(s.bytes)} MB` })),
+    // at: the tick, from the left; right: where its label ends, from the right
     ticks: [
-      { label: `refuse ${Math.round(rejectFraction * 100)}% · ${gb(rejectAt)} GB`, at: pct(rejectAt, limit).toFixed(2) },
-      { label: `abort ${Math.round(abortFraction * 100)}% · ${gb(abortAt)} GB`, at: pct(abortAt, limit).toFixed(2) }
+      { label: `refuse ${Math.round(rejectFraction * 100)}% · ${gb(rejectAt)} GB`, at: pct(rejectAt, limit).toFixed(2), right: (100 - pct(rejectAt, limit)).toFixed(2) },
+      { label: `abort ${Math.round(abortFraction * 100)}% · ${gb(abortAt)} GB`, at: pct(abortAt, limit).toFixed(2), right: (100 - pct(abortAt, limit)).toFixed(2) }
     ],
     notes
   };
@@ -316,8 +317,7 @@ function clusterView(snapshot, { now = Date.now(), uptime = '—', uptimeSub = n
     { text: heap(l), num: true },
     { text: '—', num: true }, { text: '—', num: true }, { text: '—', num: true }, { text: 'now', num: true }] });
   const footnotes = [
-    'Mapped: file pages a process has mapped (the terminology files). A page several processes map counts in each; ' +
-      'the kernel charges it to the cgroup that first read it, so it is not in the memory above.',
+    'Mapped: terminology files a process has mapped; shared pages count in each process and are not in the memory above.',
     ...snapshot.missing.map(text => `Not shown: ${text}.`)
   ];
   return {
@@ -365,18 +365,20 @@ function storageView({ heading = 'Storage', closure = null, logs = null, disk = 
   const tiles = [];
   if (closure) {
     tiles.push({ label: 'Closure tables', value: n(closure.tables) });
-    tiles.push({ label: 'Closure entries', value: n(closure.entries), sub: `${n(closure.concepts)} concepts` });
+    tiles.push({ label: 'Closure entries', value: n(closure.entries) });
+    tiles.push({ label: 'Closure concepts', value: n(closure.concepts) });
     const small = closure.bytes !== null && closure.bytes < 2 ** 20;
     tiles.push({ label: 'Closure database', value: closure.bytes === null ? 'in memory' : small ? n(Math.ceil(closure.bytes / 1024)) : mb(closure.bytes),
       unit: closure.bytes === null ? null : small ? 'KB' : 'MB', sub: closure.retentionDays ? `kept ${closure.retentionDays} days unused` : null });
   }
   if (logs) {
-    tiles.push({ label: 'Logs', value: n(logs.files), unit: 'files', sub: `${mb(logs.bytes)} MB · ${logs.kept} kept` });
+    tiles.push({ label: 'Logs', value: mb(logs.bytes), unit: 'MB', sub: `${n(logs.files)} files · ${logs.kept} kept` });
   }
   if (disk) {
     tiles.push({ label: 'Disk free', value: gb(disk.free), unit: 'GB', sub: `of ${gb(disk.total)} GB` });
   }
-  return { heading, meta: [], tiles, memory: null, table: null, footnotes: [] };
+  // as many columns as tiles, up to six: the row is never short
+  return { heading, meta: [], tiles, columns: Math.min(6, Math.max(1, tiles.length)), memory: null, table: null, footnotes: [] };
 }
 
 module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };

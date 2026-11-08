@@ -47,9 +47,9 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   ] };
   const { html, charts, elements } = await render(name, metrics);
   expect(charts).toHaveLength(count);
-  expect(html).toContain('Private memory, with the total');
+  expect(html).toContain('Private memory</h6>');
   // no private memory in the samples (not Linux): the heap change, and the title says so
-  expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since start (no private memory here)');
+  expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since start');
   for (const chart of charts) {
     const total = [elements.get('requestChart'), elements.get('clientCacheChart')].includes(chart.canvas) ? ['Total'] : [];
     expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2', ...total]);

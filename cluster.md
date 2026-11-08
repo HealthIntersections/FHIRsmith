@@ -255,7 +255,9 @@ itself, merges them, and passes the snapshot to the master. The panel shows, top
 * **Memory** · cgroup private: the cgroup's `memory.stat` `anon` (cgroup v1 `total_rss`), what
   the memory guard measures (see [Memory](#memory)), as a bar against the limit. It has a
   segment per process (its `RssAnon`), in the graph lines' colours, and ticks at the refuse
-  and abort thresholds. The host's memory in use is under it.
+  and abort thresholds, each labelled on one line under its tick (the refuse label moves left
+  of the abort label when they would meet, and to a second line only when there is no room).
+  The host's memory in use is under it.
 * **A row per process and the launcher**: status, uptime, restarts, requests, private and
   mapped memory in MB (`RssAnon` and `RssFile` from `/proc/<pid>/status`), heap in MB (with
   the limit in the header when every process has the same), client caches and concepts,
@@ -264,12 +266,13 @@ itself, merges them, and passes the snapshot to the master. The panel shows, top
   doesn't apply or isn't known. A process whose figures are more than three intervals old is
   `stale` and left out of the totals; one that is restarting has none until its replacement
   sends some.
-* **Footnotes**: mapped pages, and anything that couldn't be read. A page several processes
-  map counts in each process's mapped figure. The kernel charges a page to the cgroup that
-  first read it, so after a restart pages still cached from the last run are charged
-  elsewhere. That is why mapped memory is not in the meter.
-* The graphs, then **Storage**: closure tables and entries, the closure database, the logs
-  and the free disk.
+* **Footnotes**: one line on mapped memory, and anything that couldn't be read. A page
+  several processes map counts in each process's mapped figure, and the kernel charges a page
+  to the cgroup that first read it, so after a restart pages still cached from the last run are
+  charged elsewhere: mapped memory is not in the meter.
+* The graphs, then **Storage** (closure tables, entries and concepts, the closure database,
+  the logs and the free disk, as many columns as there are tiles), then **Background tasks**
+  in the table's style.
 
 Nothing is made up. Without `/proc` (macOS) there is no per-process memory. Without a cgroup
 with a memory limit of the service's own (no `MemoryMax`, or the limit only on an enclosing

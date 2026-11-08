@@ -187,7 +187,7 @@ describe('cluster.js with server.cluster.sharedCache', () => {
       expect(r.status).toBe(200);
       // the cluster's panel, or the master's own until the launcher's first snapshot
       expect(r.text).toMatch(/<h3 class="fs-status-head">(Cluster|Master m0) /);
-      expect(r.text).toContain('Private memory, with the total');
+      expect(r.text).toContain('Private memory</h6>');
       const match = /const metrics = (.+);/.exec(r.text);
       expect(match).not.toBeNull();
       const data = JSON.parse(match[1]);
