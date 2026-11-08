@@ -39,7 +39,7 @@
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
  *
- *   node cluster.js [--workers=N] [--port=P] [--master-serves-tx=false]
+ *   node cluster.js [--workers=N] [--port=P] [--internal-port=P] [--master-serves-tx=false]
  */
 
 const http = require('http');
@@ -128,11 +128,23 @@ function loadSettings(argv, env, config, cpu = {}) {
     throw new Error('cluster.js runs terminology workers: the tx module must be enabled in config.json');
   }
   const port = Number(flags.port || env.PORT || (config.server && config.server.port) || 3000);
-  const workersGiven = flags.workers || env.FHIRSMITH_WORKERS || cluster.workers;
+  // not given: absent, null, or an empty FHIRSMITH_WORKERS; 0: the master alone
+  const workersGiven = flags.workers ?? (env.FHIRSMITH_WORKERS || undefined) ?? cluster.workers ?? undefined;
+  if (workersGiven !== undefined && !/^\d+$/.test(String(workersGiven))) {
+    throw new Error(`the number of workers (--workers, FHIRSMITH_WORKERS or server.cluster.workers) must be a whole number, not '${workersGiven}'`);
+  }
   // not given: from the CPUs, by the engine's rule (library/worker-count.js; cluster.md)
   const workerDecision = defaultWorkers({ ...cpu, cores: cluster.cores ?? cpu.cores, rule: cluster.workerRule });
-  const workers = Number(workersGiven || workerDecision.workers);
+  const workers = Number(workersGiven ?? workerDecision.workers);
   const internalPort = Number(flags['internal-port'] || cluster.internalPort || port + 1);
+  // the master is on internalPort, worker n on internalPort + n
+  if (!Number.isInteger(internalPort) || internalPort < 1 || internalPort + workers > 65535) {
+    throw new Error(`the internal ports (--internal-port or server.cluster.internalPort ${internalPort}, to + ${workers} for the workers) must be port numbers`);
+  }
+  if (port >= internalPort && port <= internalPort + workers) {
+    throw new Error(`the public port ${port} is one of the internal ports ${internalPort}-${internalPort + workers} (the master's, and one per worker): ` +
+      'choose server.cluster.internalPort (--internal-port) outside it');
+  }
   const masterCode = checkInstanceCode(tx.instanceCode || 'm0', 'modules.tx.instanceCode');
   const servesTx = flags['master-serves-tx'] !== undefined ? flags['master-serves-tx'] !== 'false' : cluster.masterServesTx !== false;
   // where the processes listen (server.cluster.bindAddress: loopback by default)
@@ -161,7 +173,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     recycleMs: Number(cluster.recycleSeconds ?? RECYCLE_MS / 1000) * 1000,
     maxStartFailures: Number(cluster.maxStartFailures ?? MAX_START_FAILURES),
     // the number of workers was not given: fewer if memory is short (see sizeWorkers)
-    workersDefault: !workersGiven,
+    workersDefault: workersGiven === undefined,
     workerDecision,
     headroomBytes: Number(cluster.memoryHeadroomGB ?? HEADROOM_GB) * 2 ** 30,
     memory: (config.server && config.server.memory) || {},
@@ -305,6 +317,30 @@ function memorySampler(memory = {}) {
   };
 }
 
+// Node flags for the launcher itself, not its children: a debugger port each child would fight
+// over (--inspect...), or a watcher that restarts a child behind the launcher's back (--watch...)
+const OWN_FLAGS = /^--(inspect(-brk|-wait|-port|-publish-uid)?|debug-port|watch(-path|-preserve-output|-kill-signal)?)(=|$)/;
+// those of them that take their value as the next argument when written without '='
+const OWN_FLAGS_WITH_VALUE = ['--inspect-port', '--debug-port', '--inspect-publish-uid', '--watch-path', '--watch-kill-signal'];
+
+/**
+ * The launcher's Node flags (process.execArgv) that its children get: all but OWN_FLAGS.
+ * @param {string[]} execArgv
+ */
+function childExecArgv(execArgv) {
+  const out = [];
+  for (let i = 0; i < execArgv.length; i++) {
+    if (OWN_FLAGS.test(execArgv[i])) {
+      if (OWN_FLAGS_WITH_VALUE.includes(execArgv[i])) {
+        i++;
+      }
+      continue;
+    }
+    out.push(execArgv[i]);
+  }
+  return out;
+}
+
 function isLoopback(address) {
   return address === '127.0.0.1' || address === '::1';
 }
@@ -333,7 +369,7 @@ function createLauncher(settings) {
   // what each process does: every one has a role (library/role.js)
   const trimAllocator = (settings.memory && settings.memory.trimAllocator) ?? ROLE_TRIM_ALLOCATOR;
   const command = settings.command || ((proc) => [process.execPath, [
-    ...new Set(['--expose-gc', ...process.execArgv]), path.join(__dirname, 'server.js'),
+    ...new Set(['--expose-gc', ...childExecArgv(process.execArgv)]), path.join(__dirname, 'server.js'),
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
     // outstanding: the tx requests it has (those that wait for a slot); active: every request
@@ -1044,4 +1080,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler };
+module.exports = { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler, childExecArgv };

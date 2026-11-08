@@ -4,7 +4,7 @@
  */
 const http = require('http');
 const path = require('path');
-const { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler } = require('../../cluster');
+const { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler, childExecArgv } = require('../../cluster');
 const { defaultWorkers } = require('../../library/worker-count');
 const memoryGuard = require('../../library/memory-guard');
 
@@ -150,6 +150,13 @@ describe('routing rules', () => {
     expect(pickTarget({ to: 'tx' }, procs, () => false).code).toBe('tx2');
   });
 
+  test('the children get the launcher\'s Node flags, but not a debugger\'s or a watcher\'s', () => {
+    expect(childExecArgv(['--inspect', '--max-old-space-size=8192', '--inspect-brk=0.0.0.0:9229', '--watch', '--watch-path=./x',
+      '--watch-path', './y', '--inspect-port', '9230', '--inspect-wait', '--debug-port=1', '--expose-gc', '--watch-preserve-output',
+      '--enable-source-maps'])).toEqual(['--max-old-space-size=8192', '--expose-gc', '--enable-source-maps']);
+    expect(childExecArgv([])).toEqual([]);
+  });
+
   test('the launcher\'s threshold is the memory guard\'s', () => {
     for (const memory of [{}, { rejectFraction: 0.7 }, { rejectFraction: 2 }]) {
       expect(memorySampler(memory).rejectAt).toBe(memoryGuard.thresholds({ ...memory, group: true }).rejectAt);
@@ -184,6 +191,23 @@ describe('routing rules', () => {
     expect([s.upstreamTimeoutMs, ...[0, 2.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { upstreamTimeoutSeconds: v } } }).upstreamTimeoutMs)]).toEqual([60000, 0, 2500]);
     // a client that takes none of a response: cut off after 60 s; 0 is never
     expect([s.writeTimeoutMs, ...[0, 1.5].map(v => loadSettings([], {}, { ...config, server: { cluster: { writeTimeoutSeconds: v } } }).writeTimeoutMs)]).toEqual([60000, 0, 1500]);
+    // the number of workers must be a whole number; 0 is the master alone, and given
+    for (const bad of [['--workers=abc'], ['--workers=-1'], ['--workers=1.5'], ['--workers=']]) {
+      expect(() => loadSettings(bad, {}, config)).toThrow(/must be a whole number, not '/);
+    }
+    expect(() => loadSettings([], { FHIRSMITH_WORKERS: 'two' }, config)).toThrow(/not 'two'/);
+    expect(() => loadSettings([], {}, { ...config, server: { cluster: { workers: 'x' } } })).toThrow(/not 'x'/);
+    const none = loadSettings([], {}, { ...config, server: { cluster: { workers: 0 } } });
+    expect([none.procs.length, none.workersDefault]).toEqual([1, false]);
+    expect(loadSettings([], { FHIRSMITH_WORKERS: '' }, { ...config, server: {} }).workersDefault).toBe(true);
+    // the public port can't be one of the internal ones (the master's, and one per worker)
+    const ports = (port, internalPort, workers) => loadSettings([], {}, { ...config, server: { port, cluster: { internalPort, workers } } });
+    expect(() => ports(3000, 2999, 2)).toThrow(/^the public port 3000 is one of the internal ports 2999-3001 /);
+    expect(() => ports(3000, 3000, 2)).toThrow(/public port 3000 is one of/);
+    expect(() => ports(3002, 3000, 2)).toThrow(/public port 3002 is one of/);
+    expect(ports(3003, 3000, 2).procs.map(p => p.port)).toEqual([3000, 3001, 3002]);
+    expect(ports(2999, 3000, 2).port).toBe(2999);
+    expect(() => ports(3000, 65535, 2)).toThrow(/must be port numbers/);
     // a master that exits 6 times without being ready: the launcher gives up; 0 is never
     expect([s.maxStartFailures, loadSettings([], {}, { ...config, server: { cluster: { maxStartFailures: 0 } } }).maxStartFailures]).toEqual([6, 0]);
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never

@@ -203,6 +203,9 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
   `recycleSeconds` (30) with no request at work on it (see [Memory](#memory)). It sends it no
   new requests, lets those it has finish, stops it as on shutdown and starts it again at once
+* starts each process with its own Node flags (`node --max-old-space-size=... cluster.js`
+  passes them on, with `--expose-gc` added), except a debugger's (`--inspect...`) and a
+  watcher's (`--watch...`), which are the launcher's own
 * on `SIGTERM` or `SIGINT`: stops taking connections, closes idle keep-alive connections,
   waits for the requests in progress (up to `drainSeconds`), then sends each process
   `SIGTERM` (each shuts down as a single server does; `SIGKILL` after 30 seconds), and exits
@@ -220,12 +223,12 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | Setting | Flag | Default | Meaning |
 |---|---|---|---|
 | `server.port` | `--port`, `PORT` | 3000 | The port clients use. |
-| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | from the CPUs, or fewer if memory is short | How many tx-workers. Not given: by the engine's rule from the physical cores and vCPUs (see [How many workers](#how-many-workers)), then lowered to as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, always, with a warning if they don't fit. |
+| `server.cluster.workers` | `--workers`, `FHIRSMITH_WORKERS` | from the CPUs, or fewer if memory is short | How many tx-workers. Not given: by the engine's rule from the physical cores and vCPUs (see [How many workers](#how-many-workers)), then lowered to as many as fit under the memory guard's refusal threshold with `memoryHeadroomGB` to spare once loaded (at least 1; see [Memory](#memory)). Given: that many, always, with a warning if they don't fit. A whole number (anything else stops the launcher with an error); 0: the master alone. |
 | `server.cluster.cores` | | detected | The physical cores the rule uses, instead of the detected ones: for a machine whose topology the launcher can't see or reports wrongly. |
 | `server.cluster.workerRule` | | the engine's | The rule by name (`classic`, or one an engine adds). |
 | `server.cluster.memoryHeadroomGB` | | 2 | Memory to leave free under the refusal threshold once every process is loaded and idle. 2: about what one heavy operation uses (a large SNOMED `$expand`, a big `$batch-validate-code`); with less, the first one shuts the gate for everyone. |
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
-| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. |
+| `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. A range that includes `server.port` stops the launcher with an error. |
 | `server.cluster.bindAddress` | | `127.0.0.1` | The address the master and the workers listen on (see [Roles](#roles)), and the launcher reaches them at (loopback for `"0.0.0.0"` or `"::"`). Not the launcher's own port, which is `server.port` on every interface. |
 | `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
 | `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
