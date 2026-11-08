@@ -4,7 +4,8 @@
  *
  * The limit is the cgroup limit the kernel will enforce (MemoryMax on the systemd unit, or
  * the container limit); with none, the machine's total RAM. Two thresholds, as fractions of
- * the limit, both measured against process RSS:
+ * the limit, both measured against process RSS (with a role, the cgroup's private memory: see
+ * below):
  *
  *  - rejectFraction: new requests get 503 + Retry-After before any work (or body parsing)
  *    is done. Shedding load early is what gives in-flight work and the GC room to recover.
@@ -59,7 +60,7 @@ const GC_MAX_INTERVAL_MS = 60000;
 // with no back-off: memory used in a burst is freed when the burst ends, and the C allocator
 // keeps it resident until asked, so a quiet server could sit just over the threshold and
 // refuse everything until the next look, up to GC_MAX_INTERVAL_MS away. With nothing to give
-// back, a trim takes milliseconds
+// back, a trim takes well under a millisecond (about 20 us measured, on a 3.3 GB heap)
 const TRIM_INTERVAL_MS = 1000;
 // the group measure reads a file: the in-operation check (about ten a request) reuses one
 // at most this old

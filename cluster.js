@@ -58,6 +58,9 @@ const { formatDuration } = require('./tx/operation-context');
 const TX_ISSUE_TYPE = 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type';
 const MESSAGE_ID_EXTENSION = 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id';
 
+// how long the requests in progress get on stop, and on a worker before a memory recycle
+// (drainSeconds): half again the operation limit (operationTimeLimit, 20 s)
+const DRAIN_MS = 30000;
 // how often start() looks whether the master is ready (an in-memory flag)
 const WAIT_POLL_MS = 250;
 const MAX_BACKOFF_MS = 60000;
@@ -168,7 +171,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     port,
     procs,
     txPaths: (tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')),
-    drainMs: Number(cluster.drainSeconds || 30) * 1000,
+    drainMs: Number(cluster.drainSeconds ?? DRAIN_MS / 1000) * 1000,
     maxOutstanding: Number(cluster.maxOutstanding ?? MAX_OUTSTANDING),
     queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
     ownerQueueMs: Number(cluster.ownerQueueSeconds ?? OWNER_QUEUE_MS / 1000) * 1000,

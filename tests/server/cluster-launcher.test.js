@@ -208,6 +208,8 @@ describe('routing rules', () => {
     expect(ports(3003, 3000, 2).procs.map(p => p.port)).toEqual([3000, 3001, 3002]);
     expect(ports(2999, 3000, 2).port).toBe(2999);
     expect(() => ports(3000, 65535, 2)).toThrow(/must be port numbers/);
+    // the drain on stop and before a recycle: 30 s; 0 is 0 (no wait), not the default
+    expect([s.drainMs, loadSettings([], {}, { ...config, server: { cluster: { drainSeconds: 0 } } }).drainMs]).toEqual([30000, 0]);
     // a master that exits 6 times without being ready: the launcher gives up; 0 is never
     expect([s.maxStartFailures, loadSettings([], {}, { ...config, server: { cluster: { maxStartFailures: 0 } } }).maxStartFailures]).toEqual([6, 0]);
     // a tx-worker stuck over the refusal threshold: restarted after 30 s; 0 is never

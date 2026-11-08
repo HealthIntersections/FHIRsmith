@@ -13,16 +13,20 @@ with nginx in front of it, or with nginx in front of separately started processe
 ([below](#with-nginx)). Either way, nginx is the front door: the launcher is not built to face
 clients itself.
 
-`node server.js` with no `--role` is unchanged: one process, every module, as before.
+`node server.js` with no `--role` is unchanged: one process, every module, as before. One
+difference: `--port` or `--instance-code` without `--role` now stops it with an error, where
+before they were ignored.
 
 * [Roles](#roles)
 * [What runs where](#what-runs-where)
 * [Routing](#routing)
 * [The launcher (cluster.js)](#the-launcher-clusterjs)
 * [Graphs](#graphs)
+  * [Request counts](#request-counts)
 * [With nginx](#with-nginx)
 * [Options](#options)
 * [Memory](#memory)
+* [How many workers](#how-many-workers)
 * [Limits of this arrangement](#limits-of-this-arrangement)
 
 The settings this uses are under `server.cluster` and `server.memory` in `config.json`;
@@ -32,15 +36,17 @@ configuration and links back to the tables here.
 ## Roles
 
 ```bash
-node server.js --role=master    --instance-code=m0  --port=3001
-node server.js --role=tx-worker --instance-code=tx1 --port=3002
-node server.js --role=tx-worker --instance-code=tx2 --port=3003
+node --expose-gc server.js --role=master    --instance-code=m0  --port=3001
+node --expose-gc server.js --role=tx-worker --instance-code=tx1 --port=3002
+node --expose-gc server.js --role=tx-worker --instance-code=tx2 --port=3003
 ```
+
+(`--expose-gc` lets the memory guard force a GC; the launcher adds it.)
 
 | Flag | Environment | Config | Meaning |
 |---|---|---|---|
 | `--role` | `FHIRSMITH_ROLE` | | `master` or `tx-worker`. None: an ordinary single server. |
-| `--instance-code` | `FHIRSMITH_INSTANCE_CODE` | `modules.tx.instanceCode` (master only) | Prefixed onto every cache-id the process issues (see [nginx.md](nginx.md#instance-codes)). Each process needs its own, 1-16 letters and digits. A worker must be given one, since the config's is shared with the master. |
+| `--instance-code` | `FHIRSMITH_INSTANCE_CODE` | `modules.tx.instanceCode` (master only) | Prefixed onto every cache-id the process issues (see [nginx.md](nginx.md#instance-codes)). Each process needs its own, 1-16 letters and digits. A worker must be given one, since the config's is shared with the master. Started by hand, a process without one stops with an error: a master with none here nor in `modules.tx.instanceCode`, or any worker. The launcher gives them `m0` (or `modules.tx.instanceCode`), `tx1`, `tx2`, ... |
 | `--port` | `PORT` | `server.port` | The port the process listens on. |
 
 All the processes use the same data directory and the same `config.json`. The role decides
@@ -112,7 +118,7 @@ Whatever the front door, the rules are the same:
 2. Every path outside the tx endpoints (`/`, `/packages`, `/xig`, `/dashboard`, `/health`, ...)
    goes to the **master**.
 3. A tx request with an `X-Cache-Id` goes to the process whose code prefixes the id
-   (`tx2.4f0c...` to `tx2`). If that process is down (restarting), its caches are gone, and the
+   (`tx2.mhp4x2k9.4f0c...` to `tx2`). If that process is down (restarting), its caches are gone, and the
    launcher answers at once with `404` and `cache-id-unknown`, "lost to a server restart"
    (with `sharedCache`, any tx process takes it instead). If the prefix is unknown, it goes to
    any tx process, which answers `cache-id-unknown`. Either way the client starts a new cache.
@@ -157,15 +163,19 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
   `Retry-After`. Without this, a surge queues inside the processes, where everything waits
   behind everything else: a 4 ms `$lookup` waited 16 s in a 3x surge, and the first 503s came
   after 29 s. A request with a cache-id waits for the process that issued it, which no other
-  can stand in for, so it waits longer: `ownerQueueSeconds` (30). The master's own pages and
-  paths (`$closure`, the dashboard, ...) and CORS preflights (`OPTIONS`) neither wait nor
-  count against `maxOutstanding`, so a long page on the master leaves its tx slots free; while
+  can stand in for, so it waits longer: `ownerQueueSeconds` (30). So does any request routed
+  by its cache-id's prefix (rule 3): one whose prefix no process has (any tx process may take
+  it, but it waits as long), and, with `sharedCache` and `cacheAffinity`, one whose issuer is
+  full. The master's own pages and paths (the dashboard, the syndication feed, `$closure`
+  unless `sharedClosure` sends it to the tx processes, where it waits like any tx request,
+  ...) and CORS preflights (`OPTIONS`) neither wait nor count against `maxOutstanding`, so a long page on the master leaves its tx slots free; while
   stopping nothing waits. These refusals are the launcher's, logged at most once a minute; they
   are not in the graphs' refusals
 * gives cheap requests a fast lane. A process has `maxOutstanding` + `fastLaneExtra` (16 + 4)
   slots. Cheap requests may use any of them, and when a slot frees they get it first. Other
-  requests use up to `maxOutstanding`. While they wait, the lane leaves them enough slots to
-  have `normalMinSlots` (4) running on each process, so heavy work goes on during a flood of
+  requests use up to `maxOutstanding`, or more (up to `maxOutstanding` + `fastLaneExtra`)
+  while fewer than `normalMinSlots` of them are running on the process. While they wait, the
+  lane leaves them enough slots to have `normalMinSlots` (4) running on each process, so heavy work goes on during a flood of
   cheap requests. Without the lane, a 4 ms `$lookup` waits in line behind the surge (3 s, then
   503), and after it, for the line to drain. The launcher
   doesn't read bodies, so the rule is by method and path: a `GET` (or `HEAD`) of `metadata`,
@@ -202,7 +212,8 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
   logs an `ERROR` and exits 1, so the service manager sees the failure
 * restarts a tx-worker whose memory has stayed over the memory guard's refusal threshold for
   `recycleSeconds` (30) with no request at work on it (see [Memory](#memory)). It sends it no
-  new requests, lets those it has finish, stops it as on shutdown and starts it again at once
+  new requests, lets those it has finish (up to `drainSeconds`), stops it as on shutdown and
+  starts it again at once
 * starts each process with its own Node flags (`node --max-old-space-size=... cluster.js`
   passes them on, with `--expose-gc` added), except a debugger's (`--inspect...`) and a
   watcher's (`--watch...`), which are the launcher's own
@@ -230,7 +241,7 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.masterServesTx` | `--master-serves-tx=false` | true | Whether the master also takes ordinary tx requests. |
 | `server.cluster.internalPort` | `--internal-port` | port + 1 | The master's port; worker *n* gets this + *n*. A range that includes `server.port` stops the launcher with an error. |
 | `server.cluster.bindAddress` | | `127.0.0.1` | The address the master and the workers listen on (see [Roles](#roles)), and the launcher reaches them at (loopback for `"0.0.0.0"` or `"::"`). Not the launcher's own port, which is `server.port` on every interface. |
-| `server.cluster.drainSeconds` | | 30 | How long the requests in progress get on shutdown. |
+| `server.cluster.drainSeconds` | | 30 | How long the requests in progress get to finish when the launcher stops, and on a tx-worker before a memory recycle stops it; a request still running then is cut short. 30: half again the operation limit (`modules.tx.operationTimeLimit`, 20 s), so an operation in progress finishes or reaches its limit. 0: no wait. |
 | `server.cluster.maxOutstanding` | | 16 | Tx requests sent to one process at once; the rest wait in the launcher. The master's own paths and CORS preflights don't count. 16: a process is one event loop whose operations take turns every 25 ms, so a cheap request waits a turn behind each heavy one, and 16 keeps that under half a second. More cores don't change it. 0: no limit (nothing waits). |
 | `server.cluster.queueSeconds` | | 1 | Seconds a tx request may wait for a process with room. 1: a client is better told the server is busy than left to its own timeout, and when a surge ends, the line it left drains within this long (with 3, the line took 3 s to clear and the requests just after the surge waited behind it: a `$lookup` took 1.4 s for 5 s; with 1, under 10 ms after 2 s, at the same goodput). When hit, the client gets 503, `Retry-After: 5` and `Connection: close`. 0: that 503 comes at once. |
 | `server.cluster.ownerQueueSeconds` | | 30 | The same, for a request with a cache-id, which only the process that issued the id can take. 30: the request has nowhere else to go, so it waits about as long as a client's own timeout. 0: 503 at once. |
@@ -243,7 +254,7 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 | `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |
 | `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
 | `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
-| `modules.tx.instanceCode` | | `m0` | The master's instance code. The workers are `tx1`, `tx2`, ... |
+| `modules.tx.instanceCode` | | `m0` under the launcher | The master's instance code. The workers are `tx1`, `tx2`, ... The `m0` default is the launcher's: a master started by hand needs this, `--instance-code` or `FHIRSMITH_INSTANCE_CODE` (see [Roles](#roles)). |
 
 Under systemd, the launcher and its processes are one unit and one cgroup:
 
@@ -254,7 +265,17 @@ Environment=FHIRSMITH_DATA_DIR=/var/lib/fhirsmith
 ExecStart=/usr/bin/node cluster.js
 KillMode=mixed
 MemoryMax=16G
+TimeoutStopSec=2min
 ```
+
+A stop can take `drainSeconds` (30), then up to 30 s for the workers to shut down, 5 s for
+their last request counts, and up to 30 s for the master: 95 s at the most, usually a few
+seconds. So give the service manager longer than that before it kills everything. systemd's
+default `TimeoutStopSec` is 90 s. Docker's default stop timeout is 10 s, shorter than the drain
+alone, after which it kills the launcher and every process with it, mid-request; set
+`stop_grace_period: 2m` (Compose) or `docker stop -t 120`, and run the launcher as the
+container's main process (`CMD ["node", "cluster.js"]` in place of the image's `server.js`,
+not under a shell) so it gets the `SIGTERM`.
 
 ## Graphs
 
@@ -388,7 +409,8 @@ call works out its add against the table as it read it (its version *n*). It wri
 `BEGIN IMMEDIATE` transaction that first checks the table is still at version *n*, and was
 not reset meanwhile. If it isn't, nothing is written: the call reads the table again and works
 the add out again, with the code lookups and subsumption tests it already did remembered. It
-waits a few milliseconds, with jitter, between tries. After `writeRetries` tries it answers
+waits a few milliseconds, with jitter, between tries. After the first try and `writeRetries`
+retries (`writeRetries` + 1 tries in all) it answers
 `429` (`CLOSURE_TABLE_BUSY`), as a full queue does. Creating a table checks for one of the
 same name, and for the table limit, in the same transaction as the insert. A resync reports
 only entries up to the version it read. The master alone drops stale tables
@@ -414,13 +436,17 @@ to the same table at once, some adds are worked out more than once.
 
 The syndication feed, the `/info` pages and everything outside the tx endpoints go to the
 master in every combination. For nginx, see
-[nginx.md](nginx.md#with-the-shared-cache). A lost cache is reported as "lost to a server
-restart" in every combination. Closure tables are kept across restarts, as on a single
-server.
+[nginx.md](nginx.md#with-the-shared-cache). Under the launcher, a lost cache is reported as
+"lost to a server restart" in every combination. Behind nginx.md's configuration, without the
+shared cache, that is so only once the restarted process answers: while a worker is down its
+cache-ids go to its `backup` worker, which answers `cache-id-unknown` saying the id is another
+instance's (`CACHE_ID_OTHER_INSTANCE`), and while the master is down nginx answers its
+cache-ids (`m0.`) with a `502`, since `fs_master` has no backup. Either way the client starts a
+new cache. Closure tables are kept across restarts, as on a single server.
 
 ## Memory
 
-With a role, the memory guard measures the whole cgroup, since the kernel's limit is on all the
+With a role, the memory guard measures the whole cgroup, not the process's RSS, since the kernel's limit is on all the
 processes in it together: the cgroup's private memory (`memory.stat` `anon`; cgroup v1
 `total_rss`). The page cache (the terminology and SQLite files) isn't counted: the kernel drops
 it when it needs the room.

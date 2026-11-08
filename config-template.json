@@ -8,7 +8,8 @@
     // The largest request body accepted, in MB (bigger: 413). Optional; this is the default.
     // "maxBodyMB": 50,
     // Memory protection, as fractions of the memory limit (the cgroup limit - MemoryMax on the
-    // systemd unit - or else the machine's RAM), measured against process RSS. Above
+    // systemd unit - or else the machine's RAM), measured against process RSS (with a role,
+    // the whole cgroup's private memory: cluster.md). Above
     // rejectFraction new requests get 503 + Retry-After; above abortFraction running operations
     // are aborted with 422 too-costly. While refusing, the server forces a GC now and then;
     // with trimAllocator it also returns the C allocator's free memory (malloc_trim, Linux):

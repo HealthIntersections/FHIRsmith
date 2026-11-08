@@ -36,7 +36,8 @@ Behind nginx, nginx's `client_max_body_size` is checked first. If it is lower th
 ### Memory
 
 `server.memory` sets the memory guard: fractions of the memory limit (the cgroup limit, such
-as `MemoryMax` on the systemd unit, or else the machine's RAM), measured against process RSS.
+as `MemoryMax` on the systemd unit, or else the machine's RAM), measured against process RSS;
+with a role, against the whole cgroup's private memory (see [cluster.md](cluster.md#memory)).
 
 | Option | Default | Description |
 |---|---|---|
@@ -144,7 +145,7 @@ counts in the statistics database for the period. The modules that report:
 | `FHIRSMITH_DATA_DIR` | Path to the data directory | `./data` |
 | `PORT` | Server port (overrides config) | from config.json |
 | `FHIRSMITH_ROLE` | `master` or `tx-worker`, as `--role` (see [cluster.md](cluster.md#roles)). Not set: an ordinary single server | none |
-| `FHIRSMITH_INSTANCE_CODE` | This process's cache-id prefix, as `--instance-code` (see [cluster.md](cluster.md#roles)) | `modules.tx.instanceCode` |
+| `FHIRSMITH_INSTANCE_CODE` | This process's cache-id prefix, as `--instance-code` (see [cluster.md](cluster.md#roles)) | a master: `modules.tx.instanceCode`, and with none it stops with an error; a worker: none, and it stops with an error. The launcher gives `m0`, `tx1`, ... |
 | `FHIRSMITH_WORKERS` | How many tx-workers `node cluster.js` starts, as `--workers` (`server.cluster.workers`) | from the CPUs and memory |
 | `FHIRSMITH_CACHE_WAIT_MS` | How long a tx-worker waits for the master to build a cache it reads (see [cluster.md](cluster.md#what-runs-where)) | `300000` (5 minutes) |
 | `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |

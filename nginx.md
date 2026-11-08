@@ -265,7 +265,7 @@ Give each instance a short code in its config.json:
 ```
 
 The server prefixes every cache-id it issues with its code and a dot, e.g.
-`tx1.4f0c2d1e-…`. Codes must be unique within the pool, and 1-16 letters and digits.
+`tx1.mhp4x2k9.4f0c2d1e-…` (`<code>.<start>.<uuid>`, below). Codes must be unique within the pool, and 1-16 letters and digits.
 A client never has to understand the prefix: to the client, the cache-id stays an opaque
 string.
 
