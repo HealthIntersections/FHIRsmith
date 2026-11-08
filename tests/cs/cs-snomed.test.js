@@ -1450,6 +1450,53 @@ describe('SNOMED CT code filter property', () => {
   });
 });
 
+// A filter naming a concept the test edition does not have is an invalid value set: a 400
+// OperationOutcome (invalid / vs-invalid), as an unknown concept in ECL is, not a 500.
+describe('SNOMED CT filter naming an unknown concept', () => {
+  let factory;
+  let provider;
+
+  beforeAll(async () => {
+    const cacheFilePath = globalCacheFilePath || findAvailableCacheFile();
+    const opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
+    factory = new SnomedServicesFactory(opContext.i18n, cacheFilePath);
+    provider = await factory.build(opContext, []);
+  });
+
+  afterAll(() => {
+    if (provider) {
+      provider.sct.close();
+    }
+  });
+
+  test.each([
+    ['concept', 'in', '41000147108', '41000147108'],             // an unknown reference set
+    ['concept', 'in', '51292008,61231000210108', '61231000210108'], // a known concept, then an unknown one
+    ['concept', 'is-a', '584021000052104', '584021000052104'],
+    ['concept', '=', '584021000052104', '584021000052104'],
+    ['concept', 'descendent-of', '584021000052104', '584021000052104'],
+    ['code', 'child-of', '584021000052104', '584021000052104'],
+    ['concept', 'generalizes', '584021000052104', '584021000052104'],
+    ['concept', 'descendent-leaf', '584021000052104', '584021000052104'],
+    ['concept', 'is-not-a', '584021000052104', '584021000052104']
+  ])('%s %s %s is a 400 invalid', async (prop, op, value, unknown) => {
+    const fc = await provider.getPrepContext(true);
+    const err = await provider.filter(fc, true, prop, op, value).then(() => null, e => e);
+    expect(err).toBeTruthy();
+    expect(err.isSetForhandleAsOO).toBe(true);
+    expect(err.statusCode).toBe(400);
+    expect(err.message).toBe(`The SNOMED CT Concept ${unknown} is not known`);
+    expect(err.asIssue()).toMatchObject({
+      severity: 'error',
+      code: 'invalid',
+      details: {
+        text: `The SNOMED CT Concept ${unknown} is not known`,
+        coding: [{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'vs-invalid' }]
+      }
+    });
+  });
+});
+
 // The R5 hierarchy filters descendent-leaf (S4) and is-not-a (S5); both used to fail with
 // "Unsupported filter operation". 16763008 |Hemorrhage of liver| has 12 descendants, 8 of
 // them leaves; 78171005 |Traumatic hemorrhage of liver| is one of them, with 3 descendants.

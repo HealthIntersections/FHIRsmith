@@ -34,6 +34,12 @@ const regexUtilities = require("../../library/regex-utilities");
 const SNOMED_FILTER_ANALYSIS = Symbol('snomedFilterAnalysis');
 const SNOMED_DISPLAY_REGEX = Symbol('snomedDisplayRegex');
 
+// A filter (concept is-a / in / = ...) naming a concept the edition does not have makes the
+// value set invalid: 400 invalid / vs-invalid, as an unknown concept in ECL is.
+function unknownFilterConcept(id) {
+  return new Issue('error', 'invalid', null, null, `The SNOMED CT Concept ${id} is not known`, 'vs-invalid').handleAsOO(400);
+}
+
 /**
  * Alternate identifier schemes (sct2_Identifier) that FHIRsmith knows how to present:
  * the code system the identifiers are codes in, and the $lookup property they are
@@ -862,7 +868,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     result.descendants = [conceptResult.index];
@@ -874,7 +880,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     const descendants = this.getConceptDescendants(conceptResult.index);
@@ -894,7 +900,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     result.descendants = this.getConceptDescendants(conceptResult.index)
@@ -909,7 +915,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     const excluded = new Set([conceptResult.index, ...this.getConceptDescendants(conceptResult.index)]);
@@ -922,7 +928,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     const descendants = this.getConceptChildren(conceptResult.index);
@@ -938,7 +944,7 @@ class SnomedServices {
     const conceptResult = this.concepts.findConcept(id);
 
     if (!conceptResult.found) {
-      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+      throw unknownFilterConcept(id);
     }
 
     let ancestors = new Set();
@@ -986,7 +992,7 @@ class SnomedServices {
       const conceptResult = this.concepts.findConcept(id);
 
       if (!conceptResult.found) {
-        throw new Error(`The SNOMED CT Concept ${id} is not known`);
+        throw unknownFilterConcept(id);
       }
 
       const refSetIndex = this.getConceptRefSet(conceptResult.index, false);
