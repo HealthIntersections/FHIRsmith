@@ -3,13 +3,12 @@
 FHIRsmith has no built-in TLS, rate limiting or access control. In production it always runs
 behind a reverse proxy, which handles those things. This page covers nginx, which is what the
 public servers (tx.fhir.org, packages.fhir.org and so on) use, and is what all the documentation is based
-on. We haev no experience with any other reverse proxy..
+on. We have no experience with any other reverse proxy.
 
 * [General configuration](#general-configuration) - what nginx should hand across to the server
 * [Rate limiting](#rate-limiting) - approaches that suit terminology traffic
 * [Routing to multiple servers](#routing-to-multiple-servers) - running more than one instance behind a single front door
 * [Managing closure](#managing-closure) - where `$closure` requests go
-* [A master and tx workers on one machine](#a-master-and-tx-workers-on-one-machine) - the same rules for processes started with `--role`
 
 ## General configuration
 
@@ -49,7 +48,7 @@ them:
 * `Accept-Language` - the display language and the language of error messages
 * `X-Cache-Id` - the terminology cache protocol (see [Routing to multiple servers](#routing-to-multiple-servers))
 
-There are other X headers needed for the test cases.
+Note: the terminology ecosystem test cases also use the custom header `X-TOO-COSTLY-THRESHOLD` for a few tests.
 
 ### Trusting the proxy
 
@@ -415,5 +414,5 @@ the cache ends, and the table would silently change meaning. So `$closure` ignor
 ### A master and tx workers on one machine
 
 When the server is running as a [cluster](cluster.md), the nginx configuration says nothing 
-about closure.
+about closure, nor about the cluster generally.
 

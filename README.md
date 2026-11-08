@@ -53,7 +53,7 @@ in-build support for SSL, rate limiting etc. See [nginx.md](nginx.md) for how to
 
 There are 5 executable programs:
 * the server (`node server`)
-* the cluster server (`node cluster`) - for high performance uses (see [cluster.md])
+* the cluster server (`node cluster`) - for high performance uses (see [cluster.md](cluster.md))
 * the terminology importer (`node --max-old-space-size=8192 tx/importers/tx-import XXX`) - see [Doco](tx/importers/readme.md)
 * the test cases (`npm test`)
 * the test cases generater (`node tx/tests/testcases-generator.js`)
@@ -140,7 +140,7 @@ npm start
 ```
 
 The server will be available at `http://localhost:{port}` using the port specified in the config.
-In the production servers listed above, the server should alway sits behind an NGINX server which manages
+In the production servers listed above, the server should always sit behind an NGINX server which manages
 SSL, security, rate limiting etc. See [nginx.md](nginx.md) for configuration advice, including
 running several servers behind one front door. To use more than one CPU core for terminology on
 one machine, see [cluster.md](cluster.md): a master and several tx workers, behind nginx.
