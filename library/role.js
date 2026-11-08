@@ -44,6 +44,13 @@ const FLAGS = ['role', 'instance-code', 'port'];
 // the workers. "0.0.0.0" or "::" for every interface; a specific address for one
 const DEFAULT_BIND_ADDRESS = '127.0.0.1';
 
+// server.cluster.sharedCacheMaxMB: the most client resource JSON the shared cache file holds,
+// all endpoints together, in MB. The largest IG Publisher cache session in our corpus of
+// builds against tx.fhir.org (2,817 sessions) held 3.5 MB (p99 2.8 MB, median 55 KB), so 256
+// is about 70x the largest: the room cacheMaxTotalConcepts gives one endpoint (about 40x the
+// largest session's concepts), for two busy endpoints. 0: no cap
+const DEFAULT_SHARED_CACHE_MAX_MB = 256;
+
 /**
  * The address a process with a role listens on; with no role (null), none: every interface,
  * as before.
@@ -129,7 +136,7 @@ function applyRole(config, role) {
   }
   if (options.sharedCache === true) {
     tx.sharedCache = true;
-    const mb = options.sharedCacheMaxMB === undefined ? 0 : Number(options.sharedCacheMaxMB);
+    const mb = Number(options.sharedCacheMaxMB ?? DEFAULT_SHARED_CACHE_MAX_MB);
     if (!Number.isFinite(mb) || mb < 0) {
       throw new Error('server.cluster.sharedCacheMaxMB must be a number of megabytes (0: no cap)');
     }
@@ -165,4 +172,5 @@ function describeRole(role, config) {
     : `Role: tx-worker (instance code ${code}): the tx module only, no background jobs`;
 }
 
-module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS, ROLES };
+module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
+  DEFAULT_SHARED_CACHE_MAX_MB, ROLES };

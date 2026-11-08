@@ -322,7 +322,7 @@ both only apply with a role: `node server.js` with no role ignores them.
 |---|---|---|
 | `server.cluster.sharedCache` | false | The `$cache-control` caches go in one SQLite file, `databases/resource-cache.db`, that every process reads and writes. |
 | `server.cluster.cacheAffinity` | false | With `sharedCache`: still send a request with a cache-id to the process that issued it, while it is up. |
-| `server.cluster.sharedCacheMaxMB` | 0 (none) | With `sharedCache`: the most the file holds. Past it, the caches least recently used are dropped whole. |
+| `server.cluster.sharedCacheMaxMB` | 256 | With `sharedCache`: the most client resources (their JSON, in MB) the file holds, every endpoint's caches together. Past it, the caches least recently used are dropped whole, and a request with a dropped cache-id gets `404` `cache-id-unknown` (`CACHE_ID_EVICTED_SIZE`, which names the cap), so the client starts a new cache. 256: the largest IG Publisher cache session in a corpus of 2,817 from builds against tx.fhir.org held 3.5 MB of resources (p99 2.8 MB, median 55 KB), so this is about 70 times the largest; `cacheMaxTotalConcepts` gives one endpoint about 40 times the largest session's concepts, and this is that room for two busy endpoints. The file on disk is larger than what it holds (indexes, and the pages SQLite keeps for reuse). Each process logs the cap as it starts. 0: no cap. |
 | `server.cluster.sharedClosure` | false | Every tx process answers `$closure`, on the one closure database. |
 | `modules.tx.closure.writeRetries` | 10 | With `sharedClosure`: how many times an add is worked out again when another process changed the table first. |
 

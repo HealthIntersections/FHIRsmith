@@ -1464,7 +1464,9 @@ class TXModule {
     const { newCacheGeneration } = require('../library/cache-generation');
     const folders = require('../library/folder-setup');
     const file = path.join(folders.databasesDir(), 'resource-cache.db');
-    const maxBytes = this.config.sharedCacheMaxBytes || 0;
+    // from server.cluster.sharedCacheMaxMB, by applyRole (library/role.js, where the default
+    // is); 0: no cap
+    const maxBytes = this.config.sharedCacheMaxBytes ?? 0;
     if (this.sharedCacheGeneration === undefined) {
       // Caches don't survive a server restart: each time the master starts (under the
       // launcher or by hand) it begins a new generation, and every live cache becomes a
@@ -1473,8 +1475,9 @@ class TXModule {
       // all of this process's endpoints
       this.sharedCacheGeneration = this.config.clusterRole === 'master' ? newCacheGeneration() : null;
     }
-    this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}` +
-      (maxBytes ? `, capped at ${maxBytes} bytes` : ''));
+    this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}, ` +
+      (maxBytes ? `client resources capped at ${+(maxBytes / 2 ** 20).toFixed(1)} MB for every endpoint together` : 'no size cap') +
+      ' (server.cluster.sharedCacheMaxMB)');
     const cache = new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes,
       generation: this.sharedCacheGeneration });
     if (cache.lostToRestart) {

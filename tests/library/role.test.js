@@ -86,6 +86,13 @@ describe('applyRole', () => {
     applyRole(on, { role: 'master', instanceCode: null });
     expect(on.modules.tx.sharedCache).toBe(true);
     expect(on.modules.tx.sharedCacheMaxBytes).toBe(2 * 1024 * 1024);
+    // not given (or null): 256 MB; 0: no cap
+    const cap = (mb) => {
+      const c = baseConfig();
+      c.server.cluster = mb === undefined ? { sharedCache: true } : { sharedCache: true, sharedCacheMaxMB: mb };
+      return applyRole(c, { role: 'master', instanceCode: null }).modules.tx.sharedCacheMaxBytes;
+    };
+    expect([cap(undefined), cap(null), cap(0)]).toEqual([256 * 1024 * 1024, 256 * 1024 * 1024, 0]);
     const bad = baseConfig();
     bad.server.cluster = { sharedCache: 'yes' };
     expect(() => applyRole(bad, { role: 'master', instanceCode: null })).toThrow(/true or false/);
