@@ -11,8 +11,8 @@ sources:
   - internal:hgvs
   - internal:urls
   - ucum:tx/data/ucum-essence.xml
-  - loinc!:Loinc_2.83b.db
-  - snomed!:Snomed_Intl_20260701.cache
+  - loinc!:Loinc_2.83c.db
+  - snomed!:Snomed_Intl_20260701-a.cache
   - snomed:sct_test_20250909i.cache
   - omop:omop_v20250227.db
   - icd11:icd11-2026-01-b.db
