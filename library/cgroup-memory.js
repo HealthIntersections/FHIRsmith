@@ -110,4 +110,96 @@ function readCgroupMemoryLimit(opts = {}) {
   return { limit: 0, source: null };
 }
 
-module.exports = { readCgroupMemoryLimit };
+/**
+ * The directory of this process's own cgroup (memory controller), and whether it is v2 or
+ * v1. null when there is none to be found (not Linux, or no /proc).
+ * @param {Object} [opts] - procFile, cgroupRoot (tests)
+ * @returns {{dir: string, version: 2|1}|null}
+ */
+function ownCgroupDir(opts = {}) {
+  const procFile = opts.procFile || '/proc/self/cgroup';
+  const cgroupRoot = opts.cgroupRoot || '/sys/fs/cgroup';
+  let lines;
+  try {
+    lines = fs.readFileSync(procFile, 'utf8').split('\n').filter(l => l.trim() !== '');
+  } catch {
+    return null;
+  }
+  const v2 = lines.find(l => l.startsWith('0::'));
+  if (v2) {
+    const dir = path.join(cgroupRoot, path.posix.normalize(v2.substring(3) || '/'));
+    if (fs.existsSync(path.join(dir, 'memory.stat'))) {
+      return { dir, version: 2 };
+    }
+  }
+  for (const l of lines) {
+    const parts = l.split(':');
+    if (parts.length >= 3 && parts[1].split(',').includes('memory')) {
+      const dir = path.join(cgroupRoot, 'memory', path.posix.normalize(parts.slice(2).join(':') || '/'));
+      if (fs.existsSync(path.join(dir, 'memory.stat'))) {
+        return { dir, version: 1 };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The private memory of everything in a cgroup: what the kernel can't take back without
+ * killing a process. The page cache (the terminology and SQLite files) isn't counted: the
+ * kernel drops it when it needs the room. v2: memory.stat 'anon'; v1: 'total_rss', else 'rss'.
+ * @param {{dir: string, version: 2|1}} cg - from ownCgroupDir
+ * @returns {number} bytes, or 0 if it can't be read
+ */
+function readCgroupAnon(cg) {
+  let text;
+  try {
+    text = fs.readFileSync(path.join(cg.dir, 'memory.stat'), 'utf8');
+  } catch {
+    return 0;
+  }
+  const values = new Map();
+  for (const line of text.split('\n')) {
+    const i = line.indexOf(' ');
+    if (i > 0) {
+      values.set(line.substring(0, i), Number(line.substring(i + 1)));
+    }
+  }
+  for (const key of cg.version === 2 ? ['anon'] : ['total_rss', 'rss']) {
+    const v = values.get(key);
+    if (Number.isFinite(v) && v >= 0) {
+      return v;
+    }
+  }
+  return 0;
+}
+
+/**
+ * The RSS of each process in a cgroup, from /proc/<pid>/status. Processes that have gone,
+ * or can't be read, are left out.
+ * @param {{dir: string}} cg - from ownCgroupDir
+ * @returns {Map<number, number>} pid -> bytes
+ */
+function readCgroupProcessRss(cg) {
+  const result = new Map();
+  let pids;
+  try {
+    pids = fs.readFileSync(path.join(cg.dir, 'cgroup.procs'), 'utf8').split('\n').filter(Boolean).map(Number);
+  } catch {
+    return result;
+  }
+  for (const pid of pids) {
+    try {
+      const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+      const m = /^VmRSS:\s+(\d+) kB/m.exec(status);
+      if (m) {
+        result.set(pid, Number(m[1]) * 1024);
+      }
+    } catch {
+      // gone
+    }
+  }
+  return result;
+}
+
+module.exports = { readCgroupMemoryLimit, ownCgroupDir, readCgroupAnon, readCgroupProcessRss };

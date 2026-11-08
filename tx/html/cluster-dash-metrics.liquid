@@ -1,0 +1,24 @@
+<style>
+  /* The dashboard wraps its content in the bare template's .row/.col-12: the row's -15px margins
+     and the column's padding outside its 100% width put a full-width chart row 45px past the page.
+     Here only, keep the row at the page's width and count the padding inside the column. */
+  .row:has(> .col-12 > .server-metrics-row) { margin-left:0; margin-right:0; }
+  .col-12:has(> .server-metrics-row) { box-sizing:border-box; }
+</style>
+<div id="serverMetricsLegend" class="server-metrics-legend"></div>
+<div id="serverMetricsShedding" class="server-metrics-shedding" hidden></div>
+<div class="server-metrics-row">
+  <div class="server-metrics-chart">
+    <h6>Heap change since process start</h6>
+    <div class="server-metrics-canvas"><canvas id="memoryChart" aria-label="Heap change since process start"></canvas></div>
+  </div>
+  <div class="server-metrics-chart">
+    <h6>Turnaround Time</h6>
+    <div class="server-metrics-canvas"><canvas id="tatChart" aria-label="Turnaround Time"></canvas></div>
+  </div>
+  <div class="server-metrics-chart">
+    <h6>Requests per Minute</h6>
+    <div class="server-metrics-canvas"><canvas id="requestChart" aria-label="Requests per Minute"></canvas></div>
+  </div>
+</div>
+{% render 'cluster-metrics-script', metricsJson: metricsJson %}

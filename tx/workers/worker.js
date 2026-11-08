@@ -351,7 +351,9 @@ class TerminologyWorker {
       if (resource.resourceType === 'CodeSystem' && resource instanceof CodeSystem) {
         const cs = resource;
         // Check if this code system supplements the target URL
-        const supplementsUrl = cs.jsonObj.supplements;
+        // (supplementsUrl rather than jsonObj.supplements: a resource from the shared
+        // resource cache answers it without being loaded - see resource-cache-sqlite.js)
+        const supplementsUrl = cs.supplementsUrl;
 
         if (!supplementsUrl) {
           continue;

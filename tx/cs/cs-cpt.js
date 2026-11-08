@@ -592,9 +592,14 @@ class CPTServices extends BaseCSServices {
 }
 
 class CPTServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the file is
+   *   the master's; this process opens it read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -620,8 +625,12 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  #open() {
+    return this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+  }
+
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     try {
       this._sharedData = {
@@ -736,7 +745,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
     this.recordUse();
 
     // Create fresh database connection for this provider instance
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     return new CPTServices(opContext, supplements, db, this._sharedData);
   }

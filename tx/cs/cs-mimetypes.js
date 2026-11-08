@@ -741,12 +741,16 @@ class MimeTypeServicesFactory extends CodeSystemFactoryProvider {
    * @param {I18nSupport} i18n
    * @param {string} cacheFolder - where the downloaded copy of the IANA registry is kept
    * @param {Logger} log
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - only read the cached copy: never download or write
+   *   it (a tx-worker, cluster.md: the master refreshes it before the workers start)
    */
-  constructor(i18n, cacheFolder = null, log = null) {
+  constructor(i18n, cacheFolder = null, log = null, options = {}) {
     super(i18n);
     this.uses = 0;
     this.cacheFolder = cacheFolder;
     this.log = log;
+    this.readOnly = options.readOnly === true;
     this.registeredTypes = null;
   }
 
@@ -761,7 +765,13 @@ class MimeTypeServicesFactory extends CodeSystemFactoryProvider {
       return; // no cache configured: the registered filter is unavailable
     }
     const target = path.join(this.cacheFolder, IANA_MEDIA_TYPES_FILE);
-    await this.#refresh(target);
+    if (this.readOnly) {
+      if (!fs.existsSync(target)) {
+        this.log?.warn(`Mime types: no cached copy of the IANA registry at ${target} (a tx-worker reads the one the master downloads, and never downloads it)`);
+      }
+    } else {
+      await this.#refresh(target);
+    }
 
     if (fs.existsSync(target)) {
       try {

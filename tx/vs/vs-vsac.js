@@ -19,6 +19,10 @@ const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 // The longest delay a Node timer accepts; a longer one fires after 1 ms.
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+// A follower (cluster.md) compares its generation with the database's at most this often,
+// when a request uses the value sets
+const GENERATION_CHECK_MS = 1000;
+
 // Canonical URL prefix for VSAC value sets, so operators can enter a bare OID.
 const VSAC_VALUESET_URL_PREFIX = 'http://cts.nlm.nih.gov/fhir/ValueSet/';
 
@@ -136,6 +140,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    *   value sets kept parsed (see RecentValueSets); 0 for none. This is measured in stored JSON,
    *   not memory: parsed, they take several times this much heap, and in cluster mode each
    *   worker has its own
+   * @param {string} [config.cluster] - set by --role (library/role.js), else absent: 'leader'
+   *   (the master) syncs, and bumps the database's generation after each sync; 'follower' (a
+   *   tx-worker) never syncs, and catches up when the generation moves (catchUp)
    */
   constructor(config, stats) {
     super();
@@ -159,11 +166,19 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     this.valueSetCacheMB = config.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB;
 
     this.dbPath = path.join(this.cacheFolder, 'vsac-valuesets.db');
-    this.database = new ValueSetDatabase(this.dbPath);
+    this.cluster = config.cluster || null;
+    // a follower only reads: the master creates and migrates the file (a file not migrated
+    // yet fails to open, and is tried again on the next use)
+    this.database = new ValueSetDatabase(this.dbPath, { shared: !!this.cluster, readOnly: this.cluster === 'follower' });
     // The value sets aren't held in memory: each one is read from the database when it is
     // asked for (see fetchValueSet), apart from the recently used ones (see RecentValueSets).
     // This is the count of urls as of the last recount
     this.urlCount = 0;
+    // a follower: the generation it last caught up with (null: not yet - the master hasn't
+    // made the database), and when it last compared
+    this.loadedGeneration = null;
+    this.generationCheckedAt = 0;
+    this.catchingUp = null;
     this.initialized = false;
     this.refreshTimer = null;
     this.isRefreshing = false;
@@ -220,6 +235,19 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    */
   async initialize() {
     if (this.initialized) {
+      return;
+    }
+    if (this.cluster === 'follower') {
+      // the master creates the database and syncs; this process only reads
+      if (await this.database.exists()) {
+        try {
+          await this._followDatabase();
+        } catch (error) {
+          // not migrated yet by the master: no value sets until a catch-up finds it done
+          console.log(`VSAC: ${error.message}; trying again on use`);
+        }
+      }
+      this.initialized = true;
       return;
     }
     // initialize() is re-entered by lookups while the first call is still syncing; only
@@ -557,6 +585,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         await this._savePendingProgress(progress);
       }
 
+      // the followers catch up when they see the generation move
+      if (this.cluster) {
+        await this.database.bumpGeneration();
+      }
       // Recount, with the fresh data
       await this._recount();
 
@@ -584,6 +616,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       debugLog(error, 'Error during VSAC refresh:');
       this.stats.taskError('VSAC Sync', `Error (${error.message})`);
       await this.database.failRun(runId, error.message);
+      if (this.cluster) {
+        // what the run wrote before it failed is in the database
+        await this.database.bumpGeneration();
+      }
       throw error;
     } finally {
       this.isRefreshing = false;
@@ -814,6 +850,67 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
+   * A follower (cluster.md): bring what this process holds up to date with the database, and
+   * remember the generation it is now at. Only the recently used value sets are held, so they
+   * are dropped (they may be older than the database now), and the urls recounted. The
+   * generation is read first: a sync that finishes meanwhile makes the next check catch up
+   * again, never the reverse.
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _followDatabase() {
+    const generation = await this.database.getGeneration();
+    this._recentValueSets().clear();
+    await this._recount();
+    this.loadedGeneration = generation;
+  }
+
+  /**
+   * A follower: pick up what the master's sync wrote. At most every GENERATION_CHECK_MS,
+   * read the database's generation; if it isn't the one this process last caught up with,
+   * catch up (_followDatabase). Runs in the background (requests meanwhile use what they
+   * have) and never rejects. Returns the promise of the check, for tests.
+   * @returns {Promise<void>}
+   */
+  catchUp() {
+    const now = Date.now();
+    if (this.catchingUp || now - this.generationCheckedAt < GENERATION_CHECK_MS) {
+      return this.catchingUp || Promise.resolve();
+    }
+    this.generationCheckedAt = now;
+    this.catchingUp = (async () => {
+      // not before the master has made it: opening it would create an empty file
+      if (this.loadedGeneration === null && !(await this.database.exists())) {
+        return;
+      }
+      const generation = await this.database.getGeneration();
+      if (generation !== this.loadedGeneration) {
+        console.log(`VSAC: the database is at generation ${generation}, this process at ${this.loadedGeneration}; catching up`);
+        await this._followDatabase();
+      }
+    })().catch((error) => {
+      debugLog(error, 'VSAC: catching up with the database failed');
+    }).finally(() => {
+      this.catchingUp = null;
+    });
+    return this.catchingUp;
+  }
+
+  /**
+   * A follower whose master hasn't made the database yet has no value sets; reading would
+   * open the file, and so create an empty one. Starts a catch-up check either way.
+   * @returns {boolean} true if there is nothing to read yet
+   * @private
+   */
+  _followerHasNoDatabase() {
+    if (this.cluster !== 'follower') {
+      return false;
+    }
+    void this.catchUp();
+    return this.loadedGeneration === null;
+  }
+
+  /**
    * Fetches a value set by URL and version
    * @param {string} url - The canonical URL of the value set
    * @param {string} version - The version of the value set
@@ -822,6 +919,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async fetchValueSet(url, version) {
     await this.initialize();
     this._validateFetchParams(url, version);
+    if (this._followerHasNoDatabase()) {
+      return null;
+    }
 
     // which row the url (and version) refers to is worked out the way it always was, from a
     // map keyed like the one loadAllValueSets builds - but of just this url's ids and versions
@@ -876,6 +976,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
+    if (this._followerHasNoDatabase()) {
+      return null;
+    }
     const ownId = stripIdPrefix(id, this.spaceId);
     const vs = ownId ? await this._readValueSet(ownId) : null;
     return vs && vs.id === id ? await this.checkFullVS(vs) : null;
@@ -888,6 +991,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async searchValueSets(searchParams, elements) {
     await this.initialize();
     this._validateSearchParams(searchParams);
+    if (this._followerHasNoDatabase()) {
+      return [];
+    }
 
     if (searchParams.length === 0) {
       return [];
@@ -979,10 +1085,16 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   async listAllValueSets() {
+    if (this._followerHasNoDatabase()) {
+      return [];
+    }
     return await this.database.listAllValueSets();
   }
 
   async scanAllValueSets(fn) {
+    if (this._followerHasNoDatabase()) {
+      return;
+    }
     // the latest version of each url, once (read in batches)
     const versions = new Map();
     for (const row of await this.database.listVersions(null)) {
@@ -1131,7 +1243,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * Whether the on-demand resync form is enabled (a resyncPassword is configured).
    */
   _resyncEnabled() {
-    return !!this.resyncPassword;
+    // a follower doesn't write: the info pages are routed to the master
+    return !!this.resyncPassword && this.cluster !== 'follower';
   }
 
   /**
@@ -1159,6 +1272,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async resyncValueSet(url) {
     const tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount: 0 };
     await this.processContentAndHistory(url, tracking, 1);
+    if (this.cluster) {
+      await this.database.bumpGeneration();
+    }
     // the rows written were dropped as they were written; an operator asking expects none kept
     this._recentValueSets().deleteUrl(url);
     await this._recount();

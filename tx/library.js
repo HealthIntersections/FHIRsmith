@@ -106,6 +106,35 @@ class Library {
   lastTime = null;
   totalDownloaded = 0;
   vsacCfg = undefined;
+  /**
+   * {string|null} with several processes on one data directory (cluster.md), a name every
+   * process in the cluster shares (the master's role): the folder-source-* caches are the
+   * master's, named folder-source-<tag>-<hash>. The master builds each in a temporary sibling
+   * and renames it into place, so a worker never sees one half built; a worker
+   * (packageCachesReadOnly) only reads them, waiting for the master as for package caches,
+   * and never prunes
+   */
+  localSourceTag = null;
+
+  /**
+   * {boolean} a tx-worker (cluster.md): the package value set and concept map caches are the
+   * master's. This process opens them read-only, waits for the master to have finished one,
+   * and never builds, rebuilds or migrates one
+   */
+  packageCachesReadOnly = false;
+
+  /**
+   * {boolean} a tx-worker (cluster.md): the cached IANA media types registry is the master's.
+   * This process reads it and never downloads or writes it
+   */
+  mimeTypesReadOnly = false;
+
+  /**
+   * {boolean} a tx-worker (cluster.md): the LOINC, RxNorm, NDC, UNII, CPT and OMOP databases
+   * are the master's, which sets them up (LOINC's journal mode, the LOINC and RxNorm indexes)
+   * before the workers start. This process opens them read-only
+   */
+  terminologyDatabasesReadOnly = false;
 
   /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
@@ -262,7 +291,10 @@ class Library {
       external: endMemory.external - this.startMemory.external
     };
 
-    await this.#pruneLocalSourceCaches();
+    if (!this.packageCachesReadOnly) {
+      // the master, or no role: a worker leaves the master's caches alone
+      await this.#pruneLocalSourceCaches();
+    }
 
     this.log.info(`Loading Time: ${(totalTime / 1000).toLocaleString()}s`);
     this.log.info(`Memory Used: ${(memoryIncrease.rss / 1024 / 1024).toFixed(2)} MB`);
@@ -567,7 +599,7 @@ class Library {
         break;
       }
       case "mimetypes" : {
-        const mime = new MimeTypeServicesFactory(this.i18n, this.cacheFolder, this.log);
+        const mime = new MimeTypeServicesFactory(this.i18n, this.cacheFolder, this.log, { readOnly: this.mimeTypesReadOnly });
         await mime.load();
         this.registerProvider('internal', mime);
         break;
@@ -636,7 +668,7 @@ class Library {
       return;
     }
 
-    const loinc = new LoincServicesFactory(this.i18n, loincFN);
+    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly });
     await loinc.load();
     this.registerProvider(loincFN, loinc, isDefault);
     this.#syndicateBinary('loinc', loincFN, loinc);
@@ -647,7 +679,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const rxn = new RxNormServicesFactory(this.i18n, rxNormFN);
+    const rxn = new RxNormServicesFactory(this.i18n, rxNormFN, { readOnly: this.terminologyDatabasesReadOnly });
     await rxn.load();
     this.registerProvider(rxNormFN, rxn, isDefault);
     this.#syndicateBinary('rxnorm', rxNormFN, rxn);
@@ -658,7 +690,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const ndc = new NdcServicesFactory(this.i18n, ndcFN);
+    const ndc = new NdcServicesFactory(this.i18n, ndcFN, { readOnly: this.terminologyDatabasesReadOnly });
     await ndc.load();
     this.registerProvider(ndcFN, ndc, isDefault);
     this.#syndicateBinary('ndc', ndcFN, ndc);
@@ -669,7 +701,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const unii = new UniiServicesFactory(this.i18n, uniFN);
+    const unii = new UniiServicesFactory(this.i18n, uniFN, { readOnly: this.terminologyDatabasesReadOnly });
     await unii.load();
     this.registerProvider(uniFN, unii, isDefault);
     this.#syndicateBinary('unii', uniFN, unii);
@@ -701,7 +733,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const cpt = new CPTServicesFactory(this.i18n, cptFN);
+    const cpt = new CPTServicesFactory(this.i18n, cptFN, { readOnly: this.terminologyDatabasesReadOnly });
     await cpt.load();
     this.registerProvider(cptFN, cpt, isDefault);
     // the store syndicates the public fragment only, never the full (licensed) database
@@ -713,7 +745,7 @@ class Library {
     if (mode === "fetch" || mode === "npm") {
       return;
     }
-    const omop = new OMOPServicesFactory(this.i18n, omopFN);
+    const omop = new OMOPServicesFactory(this.i18n, omopFN, { readOnly: this.terminologyDatabasesReadOnly });
     await omop.load();
     this.registerProvider(omopFN, omop, isDefault);
     this.#syndicateBinary('omop', omopFN, omop);
@@ -867,10 +899,10 @@ class Library {
     this.codeSystemProviders.push(cp);
     let vs = null;
     if (!csOnly) {
-      vs = new PackageValueSetProvider(contentLoader);
+      vs = new PackageValueSetProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
       await vs.initialize();
       this.valueSetProviders.push(vs);
-      const cm = new PackageConceptMapProvider(contentLoader);
+      const cm = new PackageConceptMapProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
       await cm.initialize();
       this.conceptMapProviders.push(cm);
     }
@@ -897,7 +929,7 @@ class Library {
     }
 
     const folderPath = this.#resolveLocalSourcePath(details);
-    const cacheSubdir = await this.#prepareLocalSourceCache(folderPath);
+    const cacheSubdir = await this.#prepareLocalSourceCache(folderPath, dir => new FolderContentLoader(folderPath, dir));
     await this.#loadLocalSource(new FolderContentLoader(folderPath, cacheSubdir));
   }
 
@@ -922,7 +954,7 @@ class Library {
     }
 
     const filePath = this.#resolveLocalSourcePath(details);
-    const cacheSubdir = await this.#prepareLocalSourceCache(filePath);
+    const cacheSubdir = await this.#prepareLocalSourceCache(filePath, dir => new FileContentLoader(filePath, dir));
     await this.#loadLocalSource(new FileContentLoader(filePath, cacheSubdir));
   }
 
@@ -942,15 +974,54 @@ class Library {
    * Parks the Package*Provider SQLite caches under the terminology cache rather
    * than polluting the user's source folder, and wipes between runs so edits to
    * the source are reliably picked up.
+   *
+   * In a cluster (localSourceTag set) every process uses the master's folder:
+   * - a worker (packageCachesReadOnly) touches nothing; its providers open the caches
+   *   read-only, waiting for the master to have built them
+   * - the master builds the caches in a temporary sibling, then renames it into place, so a
+   *   running worker never finds the folder half built
+   *
+   * @param {string} sourcePath
+   * @param {function(string): FolderContentLoader} makeLoader - a loader with its caches in a folder
+   * @returns {Promise<string>} the cache folder
    * @private
    */
-  async #prepareLocalSourceCache(sourcePath) {
+  async #prepareLocalSourceCache(sourcePath, makeLoader) {
     const hash = crypto.createHash('sha1').update(sourcePath).digest('hex').substring(0, 16);
-    const name = LOCAL_SOURCE_CACHE_PREFIX + hash;
+    const name = LOCAL_SOURCE_CACHE_PREFIX + (this.localSourceTag ? this.localSourceTag + '-' : '') + hash;
     const cacheSubdir = path.join(this.cacheFolder, name);
     this.#localSourceCaches.add(name);
-    await fs.rm(cacheSubdir, { recursive: true, force: true });
-    await fs.mkdir(cacheSubdir, { recursive: true });
+    if (this.packageCachesReadOnly) {
+      return cacheSubdir;
+    }
+    if (!this.localSourceTag) {
+      await fs.rm(cacheSubdir, { recursive: true, force: true });
+      await fs.mkdir(cacheSubdir, { recursive: true });
+      return cacheSubdir;
+    }
+    const building = `${cacheSubdir}.building-${process.pid}`;
+    const old = `${cacheSubdir}.old-${process.pid}`;
+    await fs.rm(building, { recursive: true, force: true });
+    await fs.rm(old, { recursive: true, force: true });
+    await fs.mkdir(building, { recursive: true });
+    const loader = makeLoader(building);
+    await loader.initialize();
+    const vs = new PackageValueSetProvider(loader);
+    await vs.initialize();
+    await vs.close();
+    const cm = new PackageConceptMapProvider(loader);
+    await cm.initialize();
+    // a directory can't be renamed over a non-empty one: move the old one aside first. A
+    // worker that looks in between finds no folder, and waits for it
+    try {
+      await fs.rename(cacheSubdir, old);
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        throw e;
+      }
+    }
+    await fs.rename(building, cacheSubdir);
+    await fs.rm(old, { recursive: true, force: true });
     return cacheSubdir;
   }
 
@@ -1049,10 +1120,10 @@ class Library {
     }
     this.codeSystemProviders.push(cp);
 
-    const vs = new PackageValueSetProvider(contentLoader);
+    const vs = new PackageValueSetProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
     await vs.initialize();
     this.valueSetProviders.push(vs);
-    const cm = new PackageConceptMapProvider(contentLoader);
+    const cm = new PackageConceptMapProvider(contentLoader, { readOnly: this.packageCachesReadOnly });
     await cm.initialize();
     this.conceptMapProviders.push(cm);
 
@@ -1219,7 +1290,8 @@ class Library {
 
     // Load FHIR packages - these will be added to valueSetProviders first
     for (const packageId of fhirPackages) {
-      const contentLoader = await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm", false);
+      const contentLoader = await provider.loadNpm(this.packageManager, this.cacheFolder, packageId, false, "npm",
+        { readOnly: this.packageCachesReadOnly });
       // the core packages are the only version specific content in the syndication store
       this.syndicatePackage(contentLoader, { fhirVersion: VersionUtilities.getMajMin(String(fhirVersion)) });
     }

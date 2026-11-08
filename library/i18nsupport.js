@@ -254,6 +254,28 @@ class I18nSupport {
   }
 }
 
+let english = null;
+
+/**
+ * A message from translations/Messages.properties, in English, with its parameters, as
+ * I18nSupport.translate gives it: for code with no request languages to hand (the shared
+ * cache store's lazy reads, the launcher). The message id goes with it, so a client (or a
+ * caller that has the languages: msgParams) can render it in another language.
+ * @param {string} messageId
+ * @param {Array} [parameters]
+ */
+function englishMessage(messageId, parameters = []) {
+  if (!english) {
+    english = getProperties(fs.readFileSync(path.join(__dirname, '..', 'translations', 'Messages.properties'), 'utf8'));
+  }
+  const message = english[messageId];
+  if (!message) {
+    return messageId;
+  }
+  return I18nSupport.prototype._substituteParameters(message.trim(), parameters).replaceAll("''", "'");
+}
+
 module.exports = {
-  I18nSupport
+  I18nSupport,
+  englishMessage
 };

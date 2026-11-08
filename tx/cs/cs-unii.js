@@ -200,9 +200,14 @@ class UniiServices extends CodeSystemProvider {
 }
 
 class UniiServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the file is
+   *   the master's; this process opens it read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._version = null;
   }
@@ -237,7 +242,8 @@ class UniiServicesFactory extends CodeSystemFactoryProvider {
   build(opContext, supplements) {
     this.uses++;
 
-    return new UniiServices(opContext, supplements, new sqlite3.Database(this.dbPath), this._version);
+    const db = this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+    return new UniiServices(opContext, supplements, db, this._version);
   }
 
   // eslint-disable-next-line no-unused-vars

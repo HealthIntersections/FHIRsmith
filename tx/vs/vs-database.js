@@ -7,6 +7,9 @@ const { guarded } = require('../library/sqlite-utilities');
 
 // Settings key written once a package cache has been fully populated (see isComplete)
 const CACHE_COMPLETE_KEY = 'cache-complete';
+// A counter in vsac_settings that the VSAC sync bumps when it has written (cluster.md):
+// a process that loaded the value set list at generation n is up to date while it says n
+const GENERATION_KEY = 'generation';
 
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
@@ -47,9 +50,17 @@ class ValueSetDatabase {
 
   /**
    * @param {string} dbPath - Path to the SQLite database file
+   * @param {Object} [options] - {shared: true} when several processes use the file (one
+   *   writing, the others reading - cluster.md): WAL, so the readers don't block the writer,
+   *   and a wait of up to 5 s for another process's lock instead of failing at once.
+   *   {readOnly: true} for a cache another process builds (a tx-worker's package caches,
+   *   cluster.md): opened read-only, never created or migrated - a file that still needs a
+   *   migration fails to open (see _checkFinal), to be tried again once its builder is done
    */
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     this.dbPath = dbPath;
+    this.shared = !!options.shared;
+    this.readOnly = !!options.readOnly;
     // Single read-write connection used for everything. Using a separate
     // OPEN_READONLY connection for reads can miss WAL-based schema changes
     // made through the write connection (because read-only opens can't fully
@@ -80,6 +91,10 @@ class ValueSetDatabase {
     });
 
     return (async () => {
+      if (this.shared) {
+        db.configure('busyTimeout', 5000);
+        await all('PRAGMA journal_mode = WAL');
+      }
       const cols = await all("PRAGMA table_info(valuesets)");
       const hasDateFirstSeen = cols.some(c => c.name === 'date_first_seen');
       const hasContentHash = cols.some(c => c.name === 'content_hash');
@@ -198,6 +213,9 @@ class ValueSetDatabase {
     if (this._migrationPromise) {
       return this._migrationPromise;
     }
+    if (this.readOnly) {
+      return this._openReadOnly();
+    }
     this._migrationPromise = new Promise((resolve, reject) => {
       if (this._writeDb) {
         this._migrateIfNeeded(this._writeDb).then(resolve).catch(reject);
@@ -215,6 +233,70 @@ class ValueSetDatabase {
     // If migration fails, clear the cached promise so a retry can attempt again
     this._migrationPromise.catch(() => { this._migrationPromise = null; });
     return this._migrationPromise;
+  }
+
+  /**
+   * readOnly: open the file read-only, and check it needs no migration. On failure the
+   * connection is closed (the next use opens it again: the builder may have replaced it)
+   * @returns {Promise<void>}
+   * @private
+   */
+  _openReadOnly() {
+    this._migrationPromise = new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+        if (err) {
+          reject(new Error(`Failed to open database ${this.dbPath} read-only: ${err.message}`));
+          return;
+        }
+        db.configure('busyTimeout', 5000);
+        this._checkFinal(db).then(() => {
+          this._writeDb = db;
+          resolve();
+        }, (error) => {
+          db.close(() => reject(error));
+        });
+      });
+    });
+    this._migrationPromise.catch(() => { this._migrationPromise = null; });
+    return this._migrationPromise;
+  }
+
+  /**
+   * Reject unless the file is as _migrateIfNeeded leaves it: every column and table there,
+   * and no row without its content_hash
+   * @param {sqlite3.Database} db
+   * @returns {Promise<void>}
+   * @private
+   */
+  async _checkFinal(db) {
+    const all = (sql) => new Promise((res, rej) => {
+      db.all(sql, [], (err, rows) => err ? rej(err) : res(rows));
+    });
+    const columns = async (table) => (await all(`PRAGMA table_info(${table})`)).map(c => c.name);
+    const vsCols = await columns('valuesets');
+    const pending = [];
+    for (const col of ['date_first_seen', 'content_hash']) {
+      if (!vsCols.includes(col)) {
+        pending.push(`valuesets.${col}`);
+      }
+    }
+    if (!(await columns('vsac_runs')).includes('total_updated')) {
+      pending.push('vsac_runs.total_updated');
+    }
+    for (const table of ['vsac_settings', 'vsac_events']) {
+      if ((await columns(table)).length === 0) {
+        pending.push(table);
+      }
+    }
+    if (pending.length === 0) {
+      const rows = await all('SELECT COUNT(*) AS n FROM valuesets WHERE content_hash IS NULL');
+      if (rows[0] && rows[0].n > 0) {
+        pending.push(`content_hash of ${rows[0].n} value sets`);
+      }
+    }
+    if (pending.length > 0) {
+      throw new Error(`Database ${this.dbPath} is not migrated yet (${pending.join(', ')}), and is opened read-only`);
+    }
   }
 
   /**
@@ -505,6 +587,28 @@ class ValueSetDatabase {
   }
 
   /**
+   * The generation (see GENERATION_KEY): 0 until a sync has bumped it. One read by key.
+   * @returns {Promise<number>}
+   */
+  async getGeneration() {
+    const value = await this.getSetting(GENERATION_KEY);
+    return value === null ? 0 : Number(value);
+  }
+
+  /**
+   * Add one to the generation, in one statement.
+   * @returns {Promise<void>}
+   */
+  async bumpGeneration() {
+    const db = await this._getWriteConnection();
+    return new Promise((resolve, reject) => {
+      db.run(`INSERT INTO vsac_settings (key, value) VALUES (?, '1')
+                ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1`,
+          [GENERATION_KEY], err => err ? reject(err) : resolve());
+    });
+  }
+
+  /**
    * Set a setting value in the vsac_settings table
    * @param {string} key - The setting key
    * @param {string} value - The setting value
@@ -560,13 +664,17 @@ class ValueSetDatabase {
   /**
    * Insert or update a single ValueSet in the database
    * @param {Object} valueSet - The ValueSet resource
-   * @param {string} [contentHash] - Optional pre-computed content hash to store
+   * @param {string} [contentHash] - Optional pre-computed content hash to store; by default the
+   *   hash of the content stored, as the backfill in _migrateIfNeeded computes it, so no row is
+   *   written without one (a row without one is backfilled by the next process to open the file)
    * @returns {Promise<void>}
    */
   async upsertValueSet(valueSet, contentHash = null) {
     if (!valueSet.url) {
       throw new Error('ValueSet must have a url property');
     }
+    const content = JSON.stringify(valueSet);
+    contentHash = contentHash || crypto.createHash('sha256').update(content).digest('hex');
 
     const db = await this._getWriteConnection();
 
@@ -629,7 +737,7 @@ class ValueSetDatabase {
               valueSet.publisher || null,
               valueSet.status || null,
               valueSet.title || null,
-              JSON.stringify(valueSet),
+              content,
               contentHash
             ], guarded(reject, (err) => {
               if (err) {

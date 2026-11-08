@@ -35,6 +35,13 @@
 // name can read, add to, or reset that table. On a public server, require UUID names
 // (requireUuidNames) so that a name is effectively a secret held by the client that made it.
 //
+// Shared (server.cluster.sharedClosure): other processes answer $closure on the same tables.
+// The per-table lock still orders this process's calls, but a write may find the table has
+// moved on since it was read: then nothing is written, and the call is worked out again
+// from the table as it is now (see add, and the header of closure-store.js). After
+// writeRetries such goes, the call gets the same 429 as a busy queue. The code lookups and
+// subsumption tests done before are remembered for the retries, so a retry costs reads.
+//
 // Cost: everything a client can make this do is bounded (see LIMITS) - the tables, the
 // concepts and entries in a table, what one call can add, what a table's configuration
 // can store, and how many calls can queue for one table and for how long. The work itself
@@ -67,6 +74,11 @@ const LIMITS = {
 };
 
 const RESYNC_PAGE = 2000; // rows read from the store at a time
+
+// shared: how many times an add is worked out again when another process changed the table
+// first, and the most it waits (with jitter) before a retry
+const WRITE_RETRIES = 10;
+const RETRY_WAIT_MS = 50;
 
 class ClosureWorker extends TerminologyWorker {
   /**
@@ -219,7 +231,19 @@ class ClosureWorker extends TerminologyWorker {
         if (!table && this.store.tableCount() >= max) {
           throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
         }
-        table = this.store.createTable(name, config);
+        if (this.store.shared) {
+          // the checks above again, in the same transaction as the write
+          const made = this.store.createTableChecked(name, config, { reset, maxTables: max });
+          if (made.refused === 'exists') {
+            throw this.closureIssue('duplicate', 'CLOSURE_TABLE_EXISTS', [name], 'business-rule', 409);
+          }
+          if (made.refused === 'limit') {
+            throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
+          }
+          table = made.table;
+        } else {
+          table = this.store.createTable(name, config);
+        }
         this.log.info(`closure table '${name}' ${reset ? 'reset' : 'created'}`);
         if (concepts.length === 0) {
           return await this.buildConceptMap(name, table.version, [], fhirVersion);
@@ -297,7 +321,9 @@ class ClosureWorker extends TerminologyWorker {
     let after = 0;
     for (;;) {
       await this.checkAndYield('closure-resync');
-      const page = this.store.entriesPage(table.id, v, after, RESYNC_PAGE);
+      const page = this.store.shared
+        ? this.store.entriesPage(table.id, v, after, RESYNC_PAGE, table.version)
+        : this.store.entriesPage(table.id, v, after, RESYNC_PAGE);
       for (const r of page) {
         entries.push({
           source: { system: r.source_system, code: r.source_code, display: r.source_display },
@@ -310,6 +336,17 @@ class ClosureWorker extends TerminologyWorker {
       }
       after = page[page.length - 1].rowid;
     }
+    if (this.store.shared) {
+      // Reset/dispose deletes the old pages. Never return a truncated snapshot, or
+      // entries from a replacement, as though they belonged to the version we read.
+      const current = this.store.getTable(name);
+      if (!current) {
+        throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+      }
+      if (current.id !== table.id) {
+        throw this.closureIssue('conflict', 'CLOSURE_TABLE_CHANGED', [name], 'business-rule', 409);
+      }
+    }
     return await this.buildConceptMap(name, table.version, entries, fhirVersion);
   }
 
@@ -320,6 +357,66 @@ class ClosureWorker extends TerminologyWorker {
    * system or code, or going over a limit, fails the whole call.
    */
   async add(table, name, conceptParams, fhirVersion) {
+    if (this.store.shared) {
+      return await this.addShared(table, name, conceptParams, fhirVersion);
+    }
+    const { fresh, entries, out } = await this.workOutAdd(table, name, conceptParams, null);
+    const version = this.store.recordAdd(table, fresh, entries);
+    return await this.addResult(name, version, fresh, entries, out, fhirVersion);
+  }
+
+  /**
+   * Shared: add, with the write checked against the table as it was read
+   * (recordAddChecked). If another process changed the table first, nothing was written:
+   * read the table again and work the add out again, up to writeRetries times, waiting a
+   * little (with jitter) in between; then 429, as for a busy queue. A table that is gone
+   * by then is unknown (404), as it would be to a call that came after the one that
+   * dropped it.
+   */
+  async addShared(table, name, conceptParams, fhirVersion) {
+    const configured = this.closureConfig.writeRetries;
+    const retries = Number.isInteger(configured) && configured >= 0 ? configured : WRITE_RETRIES;
+    let memo = null;
+    for (let attempt = 0; ; attempt++) {
+      if (!memo || memo.tableId !== table.id) {
+        // what's remembered holds for one table's configuration: a reset starts again
+        memo = { tableId: table.id, providers: new Map(), codes: new Map(), subsumes: new Map() };
+      }
+      const { fresh, entries, out } = await this.workOutAdd(table, name, conceptParams, memo);
+      let version = null;
+      try {
+        version = this.store.recordAddChecked(table, fresh, entries);
+      } catch (error) {
+        // the busy timeout ran out: another process held the write lock throughout
+        if (!String(error.code || '').startsWith('SQLITE_BUSY')) {
+          throw error;
+        }
+      }
+      if (version !== null) {
+        return await this.addResult(name, version, fresh, entries, out, fhirVersion);
+      }
+      if (attempt >= retries) {
+        this.log.info(`closure table '${name}': changed by another process on each of ${attempt + 1} tries; answering busy`);
+        throw this.closureIssue('too-costly', 'CLOSURE_TABLE_BUSY', [name], 'too-costly', 429);
+      }
+      this.log.info(`closure table '${name}': changed by another process since it was read; working the add out again (retry ${attempt + 1} of ${retries})`);
+      const wait = Math.random() * Math.min(RETRY_WAIT_MS, 5 * 2 ** attempt);
+      await this.opContext.waitFor(new Promise(resolve => setTimeout(resolve, wait)), 'closure-retry');
+      table = this.store.getTable(name);
+      if (!table) {
+        throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+      }
+    }
+  }
+
+  /**
+   * Work out what adding the concepts to the table, as read, would write: the new
+   * concepts and the entries they make. Writes nothing.
+   * @param {Object} memo - shared only (else null): code lookups and subsumption tests
+   *   already done for this table, kept across retries
+   * @returns {{fresh: Array, entries: Array, out: Array}}
+   */
+  async workOutAdd(table, name, conceptParams, memo) {
     // replay the table's configuration: its code systems, and its version rules
     const stored = { resourceType: 'Parameters', parameter: this.store.getParams(table.id) };
     this.setupAdditionalResources(stored);
@@ -331,7 +428,7 @@ class ClosureWorker extends TerminologyWorker {
     for (const c of existing) {
       known.add(c.system + '|' + c.code);
     }
-    const providers = new Map();
+    const providers = memo ? memo.providers : new Map();
     const fresh = [];
 
     for (const p of conceptParams) {
@@ -346,20 +443,31 @@ class ClosureWorker extends TerminologyWorker {
         this.seeSourceProvider(cs, coding.system);
         providers.set(coding.system, cs);
       }
-      const loc = await cs.locate(coding.code);
-      if (!loc || !loc.context) {
-        throw this.unknownCodeIssue(cs, coding.code, loc ? loc.message : null, txp);
+      const memoKey = memo ? coding.system + '|' + (coding.version || '') + '|' + coding.code : null;
+      let found = memo ? memo.codes.get(memoKey) : null;
+      if (!found) {
+        const loc = await cs.locate(coding.code);
+        if (!loc || !loc.context) {
+          throw this.unknownCodeIssue(cs, coding.code, loc ? loc.message : null, txp);
+        }
+        // the code system's own spelling of the code, so a case-insensitive code system
+        // doesn't end up with the same concept in the table twice
+        found = { context: loc.context, code: (await cs.code(loc.context)) || coding.code };
+        if (memo) {
+          memo.codes.set(memoKey, found);
+        }
       }
-      // the code system's own spelling of the code, so a case-insensitive code system
-      // doesn't end up with the same concept in the table twice
-      const code = (await cs.code(loc.context)) || coding.code;
+      const code = found.code;
       const key = coding.system + '|' + code;
       if (known.has(key)) {
         continue;
       }
       known.add(key);
+      if (found.display === undefined) {
+        found.display = await cs.display(found.context);
+      }
       // ref: how the store refers to it until it has an id (see ClosureStore.recordAdd)
-      fresh.push({ key, ref: key, system: coding.system, code, display: await cs.display(loc.context), cs });
+      fresh.push({ key, ref: key, system: coding.system, code, display: found.display, cs });
     }
 
     const maxConcepts = this.limit('maxConceptsPerTable');
@@ -381,7 +489,7 @@ class ClosureWorker extends TerminologyWorker {
           continue;
         }
         await this.checkAndYield('closure-subsumes');
-        const outcome = await n.cs.subsumesTest(n.code, o.code);
+        const outcome = memo ? await this.memoSubsumes(memo, n, o) : await n.cs.subsumesTest(n.code, o.code);
         let source, target, relationship;
         if (outcome === 'subsumes') {          // the new concept is the broader one
           source = o; target = n; relationship = NARROWER;
@@ -401,7 +509,20 @@ class ClosureWorker extends TerminologyWorker {
       before.push(n);
     }
 
-    const version = this.store.recordAdd(table, fresh, entries);
+    return { fresh, entries, out };
+  }
+
+  /** n.cs.subsumesTest(n.code, o.code), remembered in the memo (shared retries). */
+  async memoSubsumes(memo, n, o) {
+    const key = n.system + '|' + n.code + '|' + o.code;
+    if (!memo.subsumes.has(key)) {
+      memo.subsumes.set(key, await n.cs.subsumesTest(n.code, o.code));
+    }
+    return memo.subsumes.get(key);
+  }
+
+  /** The response to an add, once it is written. */
+  async addResult(name, version, fresh, entries, out, fhirVersion) {
     if (fresh.length > 0) {
       this.log.info(`closure table '${name}': added ${fresh.length} concept(s), ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, now version ${version}`);
     }

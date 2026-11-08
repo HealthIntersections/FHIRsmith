@@ -63,6 +63,37 @@ describe('server statistics', () => {
     }
   });
 
+  test('graph samples record their interval and keep refusals out of work and latency counts', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      // under the launcher (with no launcher, the samples are main's: no interval or refusals)
+      const sent = [];
+      stats.onMetric = point => sent.push(point);
+      stats.markStarted();
+      stats.countRequest('$expand', 10);
+      stats.countRequest('$expand', 30);
+      for (let i = 0; i < 3; i++) stats.countRefusedRequest();
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 2000, refused:3, rpm:60, tat:20 });
+      for (let i = 0; i < 4; i++) stats.countRequest('$lookup', 10);
+      now += 4000; // The next nominal two-second sample is delayed by a stall.
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 4000, refused:0, tat:10 });
+      expect(stats.requestCount).toBe(6);
+      expect(stats.refusedCount).toBe(3);
+      expect(sent).toHaveLength(3);
+      stats.onMetric = null;
+      now += 2000;
+      stats.recordMetrics();
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['block', 'blockMax', 'clientConcepts', 'mem', 'rpm', 'tat', 'time']);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test('counts are attributed by module, endpoint and operation', () => {
     const stats = newStats();
     const tx = stats.forModule('tx');
@@ -94,6 +125,62 @@ describe('server statistics', () => {
     // the server-wide counters still see every request
     expect(stats.requestCount).toBe(9);
     expect(rows.every(r => r.interval_ms === 600000)).toBe(true);
+  });
+
+  test('a worker\'s counts, merged on the master, are in its database and its daily report, once each', () => {
+    // a tx-worker: no database (library/role.js turns it off)
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    const workerTx = worker.forModule('tx');
+    for (let i = 0; i < 4; i++) {
+      workerTx.countRequest('$expand', 10, '/r4');
+    }
+    workerTx.countRequest('$lookup', 2, '/r4');
+
+    const master = newStats();
+    const masterTx = master.forModule('tx');
+    masterTx.countRequest('$expand', 5, '/r4');
+
+    const sent = worker.takeCounts();
+    expect(sent).toEqual(expect.arrayContaining([
+      { module: 'tx', endpoint: '/r4', operation: '$expand', count: 4, time: 40 },
+      { module: 'tx', endpoint: '/r4', operation: '$lookup', count: 1, time: 2 }
+    ]));
+    // taken: nothing is sent twice
+    expect(worker.takeCounts()).toEqual([]);
+    expect(master.mergeCounts(sent)).toBe(5);
+    // malformed rows are ignored
+    expect(master.mergeCounts([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: -1, time: 0 }, null, 'x'])).toBe(0);
+
+    // before any flush: the daily report's numbers already include the worker
+    const now = Date.now();
+    expect(masterTx.countsSince(0, now)).toMatchObject({ total: 6, operations: { '$expand': 5, '$lookup': 1 } });
+    // the master's own figures for its graphs are unchanged; the page's total adds the worker's
+    expect(master.requestCount).toBe(1);
+    expect(master.mergedRequestCount).toBe(5);
+
+    // written out with the master's next interval
+    expect(master.flushCounters(now, 600000)).toBe(2);
+    const rows = readRows();
+    expect(rows.find(r => r.operation === '$expand')).toMatchObject({ module: 'tx', count_delta: 5, time_delta: 45 });
+    expect(rows.find(r => r.operation === '$lookup')).toMatchObject({ module: 'tx', count_delta: 1 });
+    expect(masterTx.countsSince(0, now + 1)).toMatchObject({ total: 6, persisted: true });
+
+    // the tx module's paragraph of the daily report
+    const TXModule = require('../../tx/tx');
+    const paragraph = TXModule.prototype.dailyReport.call({ stats: masterTx }, { since: 0, now: now + 1 });
+    expect(paragraph).toContain('$expand 5');
+    expect(paragraph).toContain('$lookup 1');
+  });
+
+  test('counts a worker could not send are sent with the next lot', () => {
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    worker.forModule('tx').countRequest('$expand', 10, '/r4');
+    const lot = worker.takeCounts();
+    worker.forModule('tx').countRequest('$expand', 5, '/r4');
+    worker.restoreCounts(lot);
+    expect(worker.takeCounts()).toEqual([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: 2, time: 15 }]);
   });
 
   test('only keys with traffic in the interval are written', () => {
