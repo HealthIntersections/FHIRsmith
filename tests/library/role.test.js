@@ -72,9 +72,17 @@ describe('applyRole', () => {
     expect(config.modules.packages.enabled).toBe(false);
     expect(config.modules.xig.enabled).toBe(false);
     expect(config.modules.registry.enabled).toBe(false);
-    expect(config.stats).toEqual({ intervalMinutes: 5, enabled: false });
+    expect(config.stats).toEqual({ intervalMinutes: 5, sampleSeconds: 60, enabled: false });
     expect(config.npmAudit.enabled).toBe(false);
     expect(config.dailyReport.enabled).toBe(false);
+  });
+
+  test('with a role the graphs sample at most every minute, unless stats.sampleSeconds says otherwise', () => {
+    const sample = stats => applyRole({ ...baseConfig(), stats }, { role: 'master', instanceCode: 'm0' }).stats.sampleSeconds;
+    expect(sample(undefined)).toBe(60);
+    expect(sample({ intervalMinutes: 5 })).toBe(60);
+    expect(sample({ intervalMinutes: 0.5 })).toBe(30);
+    expect(sample({ sampleSeconds: 300 })).toBe(300);
   });
 
   test('server.cluster.sharedCache reaches tx (with a role), and nothing is set when it is off', () => {

@@ -1,0 +1,136 @@
+{%- comment -%}
+  The status panel on / and /dashboard (library/cluster-status.js builds `view`): a header, a row of
+  tiles, the memory meter, a row per process, footnotes. Every style is under .fs-status, and
+  the graphs below share its grid (.fs-status-grid: six columns, 16 px apart).
+{%- endcomment -%}
+<style>
+  .fs-status { --fs-muted:#5f6368; --fs-rule:#e3e3e3; --fs-card:#f7f7f7; margin:24px 0 16px; color:#202124; container-type:inline-size; }
+  /* the site's body font throughout (fhir.css gives p and td their own) */
+  .fs-status, .fs-status p, .fs-status td, .fs-status th { font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .fs-status h3.fs-status-head { font-size:18px; margin:0 0 8px; font-weight:600; }
+  .fs-status-head .fs-status-meta { font-size:13px; font-weight:400; color:var(--fs-muted); }
+  /* six columns, or as many as there are tiles (storage), so a row is never short */
+  .fs-status-grid { display:grid; grid-template-columns:repeat(var(--fs-cols, 6), minmax(0, 1fr)); gap:16px; }
+  .fs-status-tile { background:var(--fs-card); border:1px solid var(--fs-rule); border-radius:4px; padding:8px; min-width:0; }
+  .fs-status-label { font-size:12px; color:var(--fs-muted); line-height:1.3; }
+  .fs-status-value { font-size:22px; font-weight:600; line-height:1.25; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .fs-status-unit { font-size:13px; font-weight:400; color:var(--fs-muted); margin-left:4px; }
+  .fs-status-sub { font-size:12px; color:var(--fs-muted); line-height:1.3; }
+  .fs-status-meter { margin-top:16px; }
+  .fs-status-meter-head { display:flex; flex-wrap:wrap; justify-content:space-between; gap:0 16px; font-size:13px; margin-bottom:4px; }
+  .fs-status-meter-head strong { font-weight:600; }
+  .fs-status-meter-head .fs-status-meter-value { font-variant-numeric:tabular-nums; }
+  .fs-status-bar { position:relative; height:16px; background:#fff; border:1px solid #9e9e9e; border-radius:2px; display:flex; }
+  .fs-status-seg { height:100%; }
+  .fs-status-striped { background-image:repeating-linear-gradient(135deg, rgba(255,255,255,.55) 0 2px, transparent 2px 5px); }
+  .fs-status-tick { position:absolute; top:-4px; bottom:-4px; width:2px; margin-left:-1px; background:#202124; }
+  /* each label on one line, ending at its tick; placeTicks() moves the refuse label left of the
+     abort label if they would overlap, and only if it can't fit there puts the abort label on a
+     second line */
+  .fs-status-ticks { position:relative; height:1.6em; margin-top:2px; font-size:11px; color:var(--fs-muted); }
+  .fs-status-ticks.fs-status-stacked { height:3em; }
+  .fs-status-ticks span { position:absolute; top:0; white-space:nowrap; }
+  .fs-status-ticks.fs-status-stacked span.fs-status-tick-2 { top:1.4em; }
+  .fs-status-notes { font-size:12px; color:var(--fs-muted); margin:0; line-height:1.4; }
+  .fs-status-scroll { max-width:100%; overflow-x:auto; margin-top:16px; }
+  .fs-status table.fs-status-table { border-collapse:collapse; font-size:12px; width:100%; }
+  .fs-status-table th { font-size:12px; font-weight:600; color:var(--fs-muted); text-align:left; padding:4px 6px;
+    border-bottom:1px solid #9e9e9e; vertical-align:bottom; white-space:nowrap; }
+  .fs-status-table td { padding:4px 6px; border-bottom:1px solid var(--fs-rule); white-space:nowrap; }
+  .fs-status-table th:first-child, .fs-status-table td:first-child { padding-left:0; }
+  .fs-status-table th:last-child, .fs-status-table td:last-child { padding-right:0; }
+  .fs-status-table .fs-num { text-align:right; font-variant-numeric:tabular-nums; }
+  .fs-status-swatch { display:inline-block; width:12px; height:12px; margin-right:8px; vertical-align:-1px; border-radius:2px; }
+  .fs-status-pill { display:inline-block; font-size:11px; line-height:16px; padding:0 8px; border-radius:8px; margin-right:4px;
+    border:1px solid #202124; background:#202124; color:#fff; }
+  .fs-status-pill.fs-quiet { background:#fff; color:#202124; border-color:#9e9e9e; }
+  .fs-status-foot { font-size:12px; color:var(--fs-muted); margin:8px 0 0; line-height:1.4; }
+  /* the background tasks (stats.taskDetails), in the table's style; its State says what the
+     row colour did */
+  .fs-status-tasks table.grid { border:0; border-collapse:collapse; margin:0; font-size:12px; }
+  .fs-status-tasks table.grid th, .fs-status-tasks table.grid td { border:0; border-bottom:1px solid var(--fs-rule);
+    padding:4px 12px 4px 0; font-size:12px; line-height:1.4; background:transparent; vertical-align:top;
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+  .fs-status-tasks table.grid th { font-weight:600; color:var(--fs-muted); text-align:left; border-bottom-color:#9e9e9e; }
+  .fs-status-tasks table.grid tr { background:transparent !important; }
+  /* by the panel's own width (the page's column, not the window): six tiles a row, then 3, 2, 1 */
+  @container (max-width:700px) { .fs-status-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); } }
+  @container (max-width:460px) { .fs-status-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  @container (max-width:280px) { .fs-status-grid { grid-template-columns:minmax(0, 1fr); } }
+</style>
+<section class="fs-status">
+  <h3 class="fs-status-head">{{ view.heading | escape }}{% for m in view.meta %} <span class="fs-status-meta">· {{ m | escape }}</span>{% endfor %}</h3>
+  {%- if view.tiles.size > 0 %}
+  <div class="fs-status-grid"{% if view.columns %} style="--fs-cols:{{ view.columns }}"{% endif %}>
+    {%- for t in view.tiles %}
+    <div class="fs-status-tile">
+      <div class="fs-status-label">{{ t.label | escape }}</div>
+      <div class="fs-status-value">{{ t.value | escape }}{% if t.unit %}<span class="fs-status-unit">{{ t.unit | escape }}</span>{% endif %}</div>
+      {%- if t.sub %}<div class="fs-status-sub">{{ t.sub | escape }}</div>{% endif %}
+    </div>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+  {%- if view.memory %}
+  <div class="fs-status-meter">
+    <div class="fs-status-meter-head"><span><strong>Memory</strong> · {{ view.memory.scope | escape }}</span>
+      <span class="fs-status-meter-value">{% if view.memory.unknown %}not known{% else %}{{ view.memory.value | escape }}{% endif %}</span></div>
+    {%- unless view.memory.unknown %}
+    <div class="fs-status-bar" role="img" aria-label="Memory {{ view.memory.value | escape }}">
+      {%- for s in view.memory.segments %}<div class="fs-status-seg{% if s.striped %} fs-status-striped{% endif %}" style="width:{{ s.width }}%;background-color:{{ s.color }}" title="{{ s.title | escape }}"></div>{% endfor %}
+      {%- for t in view.memory.ticks %}<div class="fs-status-tick" style="left:{{ t.at }}%"></div>{% endfor %}
+    </div>
+    <div class="fs-status-ticks">
+      {%- for t in view.memory.ticks %}<span class="fs-status-tick-{{ forloop.index }}" style="right:{{ t.right }}%">{{ t.label | escape }}</span>{% endfor %}
+    </div>
+    {%- endunless %}
+    {%- for note in view.memory.notes %}<p class="fs-status-notes">{{ note | escape }}</p>{% endfor %}
+  </div>
+  {%- endif %}
+  {%- if view.table %}
+  <div class="fs-status-scroll">
+    <table class="fs-status-table">
+      <thead><tr>{% for c in view.table.columns %}<th{% if c.num %} class="fs-num"{% endif %}>{{ c.label | escape }}</th>{% endfor %}</tr></thead>
+      <tbody>
+      {%- for r in view.table.rows %}
+        <tr>{% for c in r.cells %}<td{% if c.num %} class="fs-num"{% endif %}>
+          {%- if forloop.first %}<span class="fs-status-swatch{% if r.swatch.striped %} fs-status-striped{% endif %}" style="background-color:{{ r.swatch.color }}"></span>{% endif -%}
+          {%- if c.pills %}{% for p in c.pills %}<span class="fs-status-pill{% if p.quiet %} fs-quiet{% endif %}">{{ p.text | escape }}</span>{% endfor %}{% else %}{{ c.text | escape }}{% endif -%}
+        </td>{% endfor %}</tr>
+      {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+  {%- endif %}
+  {%- for f in view.footnotes %}<p class="fs-status-foot">{{ f | escape }}</p>{% endfor %}
+</section>
+{%- if view.memory and view.memory.ticks %}
+<script>
+  // Each threshold label ends at its own tick. When the refuse label would run into the abort
+  // label, it ends just left of it instead; if there isn't room for that, the abort label takes
+  // a second line, each under its own tick again. Done on load and whenever the panel's width changes.
+  (function() {
+    const panel = document.currentScript.previousElementSibling;
+    const line = panel && panel.querySelector('.fs-status-ticks');
+    if (!line || line.children.length !== 2) return;
+    const [refuse, abort] = line.children;
+    const atRefuse = refuse.style.right;
+    function placeTicks() {
+      line.classList.remove('fs-status-stacked');
+      refuse.style.right = atRefuse;
+      const gap = 8;
+      const overlap = refuse.getBoundingClientRect().right + gap - abort.getBoundingClientRect().left;
+      if (overlap <= 0) return;
+      const width = line.getBoundingClientRect().width;
+      const right = width - (abort.getBoundingClientRect().left - line.getBoundingClientRect().left) + gap;
+      if (right + refuse.getBoundingClientRect().width <= width) {
+        refuse.style.right = right + 'px';
+      } else {
+        line.classList.add('fs-status-stacked');
+      }
+    }
+    placeTicks();
+    if (window.ResizeObserver) new ResizeObserver(placeTicks).observe(line);
+  })();
+</script>
+{%- endif %}

@@ -88,7 +88,42 @@ describe('server statistics', () => {
       stats.onMetric = null;
       now += 2000;
       stats.recordMetrics();
-      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['block', 'blockMax', 'clientConcepts', 'mem', 'rpm', 'tat', 'time']);
+      // without the launcher: no refusals counted, but where the interval began and the private memory
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['anon', 'block', 'blockMax', 'clientConcepts', 'intervalStart', 'mem', 'rpm', 'tat', 'time']);
+      if (process.platform === 'linux') {
+        expect(stats.history.at(-1).anon).toBeGreaterThan(0);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('graphs sample every sampleSeconds, the counters are written every intervalMinutes; under the launcher each sample has the private memory', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ intervalMinutes:10, sampleSeconds:60 });
+      expect([stats.intervalMs, stats.flushMs]).toEqual([60000, 600000]);
+      const sent = [];
+      stats.onMetric = point => sent.push(point);
+      const writes = jest.spyOn(stats, 'flushCounters');
+      stats.markStarted(); // a sample at once
+      for (let i = 0; i < 25; i++) {
+        stats.countRequest('$expand', 10);
+        now += 60000;
+        stats.recordMetrics();
+      }
+      expect(stats.history).toHaveLength(26);
+      // at the first sample, then every ten minutes
+      expect(writes.mock.calls.map(c => (c[0] - 1800000000000) / 60000)).toEqual([0, 10, 20]);
+      expect(writes.mock.calls.every(c => c[1] === 600000)).toBe(true);
+      expect(readRows().reduce((a, r) => a + r.count_delta, 0)).toBe(20);
+      if (process.platform === 'linux') {
+        expect(sent.every(p => p.anon > 0)).toBe(true);
+      }
+      // no sampleSeconds: one interval for both, as before
+      const plain = newStats({ intervalMinutes:5, enabled:false });
+      expect([plain.intervalMs, plain.flushMs]).toEqual([300000, 300000]);
     } finally {
       clock.mockRestore();
     }

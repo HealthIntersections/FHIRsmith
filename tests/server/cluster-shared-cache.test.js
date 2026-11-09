@@ -185,8 +185,9 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     for (const page of ['/', '/dashboard']) {
       const r = await request(FRONT, 'GET', page, { headers:{ Accept:'text/html' } });
       expect(r.status).toBe(200);
-      expect(r.text).toContain('Cluster: request counts for every process');
-      expect(r.text).toContain('Heap change since process start');
+      // the cluster's panel, or the master's own until the launcher's first snapshot
+      expect(r.text).toMatch(/<h3 class="fs-status-head">(Cluster|Master m0) /);
+      expect(r.text).toContain('Private memory</h6>');
       const match = /const metrics = (.+);/.exec(r.text);
       expect(match).not.toBeNull();
       const data = JSON.parse(match[1]);

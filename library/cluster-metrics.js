@@ -2,16 +2,27 @@
  * The launcher's small, in-memory view of each server's existing graph samples.
  * No request counters are collected by the proxy and no averages are combined.
  * Histories live until the launcher stops, so a child restart leaves a visible
- * gap instead of erasing the worker's earlier samples.
+ * gap instead of erasing the worker's earlier samples. The one figure the launcher
+ * adds is the memory graph's Total: the cgroup's private memory (or, without a cgroup
+ * of the service's own, the processes' summed), read when the master's sample arrives.
  */
 const METRIC = 'fhirsmith:metric';
 const SNAPSHOT = 'fhirsmith:metrics';
 const HISTORY_MS = 24 * 60 * 60 * 1000;
 const MAX_POINTS = 1440;
-const FIELDS = ['mem', 'rpm', 'tat', 'block', 'blockMax', 'clientConcepts', 'refused', 'intervalStart'];
+const FIELDS = ['mem', 'anon', 'rpm', 'tat', 'block', 'blockMax', 'clientConcepts', 'refused', 'intervalStart'];
 
 class ClusterMetrics {
-  constructor(procs) {
+  /**
+   * @param {Object[]} procs - code, role, servesTx
+   * @param {Object} [options] - rejectAt (the memory guard's refusal threshold, bytes), group
+   *   (whether the guard measures the cgroup, which the Total then is), sharedCache
+   */
+  constructor(procs, { rejectAt = null, group = false, sharedCache = false } = {}) {
+    this.rejectAt = rejectAt;
+    this.group = group;
+    this.sharedCache = sharedCache;
+    this.total = [];
     this.series = new Map(procs.map(p => [p.code, {
       id: p.code, label: `${p.role === 'master' ? 'Master' : 'Worker'} ${p.code}`,
       role: p.role, servesTx: p.servesTx, status: 'starting', restarts: 0,
@@ -19,9 +30,19 @@ class ClusterMetrics {
     }]));
   }
 
-  prune(series, now) {
+  /** The memory graph's Total at a time (null: not known, a gap). */
+  recordTotal(time, anon, now = Date.now()) {
+    const last = this.total[this.total.length - 1];
+    if (!Number.isFinite(time) || (last && time <= last.time)) {
+      return;
+    }
+    this.total.push({ time, anon: Number.isFinite(anon) ? anon : null });
+    this.prune(this, now, 'total');
+  }
+
+  prune(series, now, field = 'history') {
     const cutoff = now - HISTORY_MS;
-    series.history = series.history.filter(point => point.time > cutoff).slice(-MAX_POINTS);
+    series[field] = series[field].filter(point => point.time > cutoff).slice(-MAX_POINTS);
   }
 
   state(code, status, now = Date.now()) {
@@ -66,8 +87,10 @@ class ClusterMetrics {
   }
 
   snapshot(now = Date.now()) {
+    this.prune(this, now, 'total');
     return {
-      cluster: true, sampledAt: now,
+      cluster: true, sampledAt: now, sharedCache: this.sharedCache,
+      total: { group: this.group, rejectAt: this.rejectAt, history: this.total.map(point => ({ ...point })) },
       series: [...this.series.values()].map(series => {
         this.prune(series, now);
         const last = series.history[series.history.length - 1];
@@ -97,7 +120,8 @@ function connectMetrics(stats, channel = process) {
   };
   const receive = message => {
     if (message && message.type === SNAPSHOT && Array.isArray(message.series)) {
-      stats.clusterMetrics = { cluster: true, sampledAt: message.sampledAt, series: message.series };
+      stats.clusterMetrics = { cluster: true, sampledAt: message.sampledAt, sharedCache: message.sharedCache === true,
+        total: message.total || null, series: message.series };
       stats.clusterMetricsUnavailable = false;
     }
   };
@@ -112,10 +136,17 @@ function connectMetrics(stats, channel = process) {
   };
 }
 
-/** Serialize only graph data, safely inside an inline script in either page. */
-function graphData(stats, label = 'Server', now = Date.now()) {
+/**
+ * Serialize only graph data, safely inside an inline script in either page. Without the
+ * launcher's snapshot (no role, a worker's own page, a master before its first), this process's
+ * own samples as one series, with its memory guard's refusal threshold (guard: rejectAt, group:
+ * whether the guard measures the cgroup) and no Total.
+ */
+function graphData(stats, label = 'Server', now = Date.now(), guard = {}) {
   const data = stats.clusterMetrics || {
     cluster: false, sampledAt: now,
+    total: Number.isFinite(guard.rejectAt) && guard.rejectAt > 0
+      ? { group: Boolean(guard.group), rejectAt: guard.rejectAt, history: [], local: true } : null,
     series: [{ id: 'local', label, status: 'ready', restarts: 0, startedAt: stats.startTime,
       intervalMs: stats.intervalMs, history: stats.history }]
   };

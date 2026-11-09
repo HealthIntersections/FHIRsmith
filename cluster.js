@@ -36,6 +36,8 @@
  *  - restarts a process that exits, waiting longer each time it fails quickly (up to a minute)
  *  - restarts a tx-worker held over the memory guard's refusal threshold for recycleSeconds
  *    with no request at work
+ *  - every statusSeconds, passes the master a snapshot of every process's memory, caches and
+ *    work, for its status panel (library/cluster-status.js)
  *  - on SIGTERM or SIGINT, stops taking connections, lets the requests in progress finish,
  *    then stops the processes (each shuts down as a single server does)
  *
@@ -50,7 +52,8 @@ const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, REA
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS, COUNTS_INTERVAL_MS } = require('./library/cluster-counts');
 const { PendingClusterEvents, CLUSTER_EVENTS, KINDS } = require('./library/cluster-events');
-const { readCgroupAnon } = require('./library/cgroup-memory');
+const { readCgroupAnon, readCgroupStat, readProcessMemory } = require('./library/cgroup-memory');
+const { buildSnapshot, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS } = require('./library/cluster-status');
 const { thresholds } = require('./library/memory-guard');
 const { defaultWorkers, describeDecision } = require('./library/worker-count');
 const { englishMessage } = require('./library/i18nsupport');
@@ -168,6 +171,10 @@ function loadSettings(argv, env, config, cpu = {}) {
   }
   // with the shared cache any process can answer any cache-id (cluster.md, "Options")
   const sharedCache = cluster.sharedCache === true;
+  const statusSeconds = Number(cluster.statusSeconds ?? STATUS_INTERVAL_MS / 1000);
+  if (!(statusSeconds > 0)) {
+    throw new Error(`server.cluster.statusSeconds must be a number of seconds above 0, not '${cluster.statusSeconds}'`);
+  }
   return {
     port,
     procs,
@@ -189,6 +196,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
     fastLaneMaxBytes: Number(cluster.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES),
     normalMinSlots: Number(cluster.normalMinSlots ?? NORMAL_MIN_SLOTS),
+    statusMs: statusSeconds * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true, sharedCache }
   };
 }
@@ -306,17 +314,18 @@ function pickTarget(route, procs, hasRoom = () => true) {
  * @param {Object} memory - config.server.memory
  */
 function memorySampler(memory = {}) {
-  const { limit, group, rejectFraction, rejectAt } = thresholds({ ...memory, group: true });
+  const guard = thresholds({ ...memory, group: true });
+  const { limit, group, rejectFraction, rejectAt } = guard;
   const anonOf = (pid) => {
-    try {
-      const m = /^RssAnon:\s+(\d+) kB/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'));
-      return m ? Number(m[1]) * 1024 : 0;
-    } catch {
-      return 0;
-    }
+    const m = readProcessMemory(pid);
+    return m ? m.anon : 0;
   };
   return {
     rejectAt,
+    // for the status snapshot (library/cluster-status.js): the guard's limit and thresholds,
+    // and the cgroup's memory.stat when the guard measures the cgroup (else null)
+    guard,
+    cgroupStat: () => (group ? readCgroupStat(group) : null),
     describe: `over ${(rejectAt / 2 ** 30).toFixed(1)} GB (${Math.round(rejectFraction * 100)}% of ${(limit / 2 ** 30).toFixed(1)} GB)` +
       (group ? ' for the whole cgroup' : ' for the process'),
     sample(procs) {
@@ -386,11 +395,17 @@ function createLauncher(settings) {
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
+    // the figures it last sent for the status snapshot (library/cluster-status.js)
+    statusFigures: null,
     // since when it has been unavailable after an exit or recycle (0: it hasn't), for the daily report
     downSince: 0,
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
-  const metrics = new ClusterMetrics(procs);
+  const metrics = new ClusterMetrics(procs, {
+    // the memory graph's Total and threshold lines: the cgroup when the guard measures it
+    rejectAt: memory.rejectAt, group: Boolean(memory.guard && memory.guard.group),
+    sharedCache: Boolean(settings.routing && settings.routing.sharedCache)
+  });
   // the workers' request counts, on their way to the master's statistics
   const pendingCounts = new PendingCounts();
   // what the launcher saw, on its way to the master's daily report (library/cluster-events.js)
@@ -411,6 +426,11 @@ function createLauncher(settings) {
   let writeTimeouts = 0;
   let lastWriteTimeoutLog = 0;
   let memoryTimer = null;
+  let statusTimer = null;
+  // requests the launcher has passed on, for the status snapshot
+  let proxied = 0;
+  const launcherStartedAt = Date.now();
+  const statusMs = settings.statusMs || STATUS_INTERVAL_MS;
 
   // Only the master renders the public home/dashboard pages. Keep at most one
   // snapshot in flight, coalescing changes if its IPC channel is backpressured.
@@ -432,6 +452,58 @@ function createLauncher(settings) {
       });
     } catch {
       master.metricsSending = null;
+    }
+  }
+
+  // The cluster's memory in all, for the graphs' Total line: the cgroup's private memory
+  // when the guard measures it, else what the processes hold privately, summed
+  function memoryTotal() {
+    const cg = memory.cgroupStat ? memory.cgroupStat() : null;
+    if (cg) {
+      return cg.anon;
+    }
+    const own = procs.map(p => (p.child && p.child.pid ? readProcessMemory(p.child.pid) : null)).filter(Boolean);
+    return own.length ? own.reduce((a, m) => a + m.anon, 0) : null;
+  }
+
+  // The status snapshot (library/cluster-status.js): what each process last sent, and what the
+  // launcher reads itself
+  function statusSnapshot(now = Date.now()) {
+    const self = readProcessMemory('self');
+    const heap = process.memoryUsage();
+    return buildSnapshot({
+      now, intervalMs: statusMs,
+      procs: procs.map(p => {
+        const series = metrics.series.get(p.code) || {};
+        return {
+          code: p.code, role: p.role, status: series.status || (p.ready ? 'ready' : 'starting'), restarts: series.restarts || 0,
+          startedAt: p.child ? p.startedAt : 0,
+          figures: p.child ? p.statusFigures : null,
+          memory: p.child && p.child.pid ? readProcessMemory(p.child.pid) : null
+        };
+      }),
+      launcher: { startedAt: launcherStartedAt, requests: proxied, memory: self, heapUsed: heap.heapUsed,
+        heapLimit: require('v8').getHeapStatistics().heap_size_limit },
+      guard: memory.guard || { limit: 0, rejectAt: memory.rejectAt, abortAt: 0, rejectFraction: 0, abortFraction: 0, group: null },
+      cgroup: memory.cgroupStat ? memory.cgroupStat() : null,
+      sharedCache: Boolean(settings.routing && settings.routing.sharedCache),
+      procAvailable: self !== null
+    });
+  }
+
+  // to the master, one at a time; one that can't go is replaced by the next
+  let statusSending = false;
+  function sendStatus() {
+    const master = procs.find(p => p.role === 'master');
+    const child = master && master.child;
+    if (statusSending || !child || !child.connected || !master.ready) {
+      return;
+    }
+    statusSending = true;
+    try {
+      child.send({ type: CLUSTER_STATUS, snapshot: statusSnapshot() }, () => { statusSending = false; });
+    } catch {
+      statusSending = false;
     }
   }
 
@@ -486,12 +558,19 @@ function createLauncher(settings) {
       const [cmd, args] = command(proc);
       proc.startedAt = Date.now();
       proc.readyMemory = null;
+      proc.statusFigures = null;
       metrics.state(proc.code, 'starting');
       const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: process.env });
       proc.child = child;
       child.on('message', message => {
         if (proc.child === child && message && message.type === METRIC && metrics.record(proc.code, message)) {
+          if (proc.role === 'master') {
+            // the cluster's total, at the master's sample times
+            metrics.recordTotal(message.point.time, memoryTotal());
+          }
           publishMetrics();
+        } else if (proc.child === child && message && message.type === STATUS && message.figures) {
+          proc.statusFigures = message.figures;
         } else if (message && message.type === COUNTS && proc.role !== 'master') {
           // real requests, even from a child that is going away
           pendingCounts.add(message.rows);
@@ -509,6 +588,7 @@ function createLauncher(settings) {
         proc.ready = false;
         proc.exitedAt = Date.now();
         proc.child = null;
+        proc.statusFigures = null;
         metrics.state(proc.code, stopping ? 'unavailable' : 'restarting');
         publishMetrics();
         resolve(false);
@@ -669,6 +749,7 @@ function createLauncher(settings) {
   }
 
   function proxy(req, res) {
+    proxied++;
     const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
     w.fast = fastLaneExtra > 0 && w.route.to !== 'master' && isFastLane(req, settings.txPaths, fastLaneMaxBytes);
     if (send(w)) {
@@ -962,11 +1043,13 @@ function createLauncher(settings) {
     log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, writeTimeoutSeconds ${writeTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
-      `trimAllocator ${trimAllocator}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+      `trimAllocator ${trimAllocator}, statusSeconds ${statusMs / 1000}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
       memoryTimer.unref();
     }
+    statusTimer = setInterval(sendStatus, statusMs);
+    statusTimer.unref();
     // one after another, so their loads (and memory peaks) don't coincide; in the background
     void (async () => {
       for (const p of procs) {
@@ -1049,6 +1132,7 @@ function createLauncher(settings) {
     }
     stopping = true;
     clearInterval(memoryTimer);
+    clearInterval(statusTimer);
     clearInterval(eventsTimer);
     for (const p of procs) {
       clearTimeout(p.restartTimer);
@@ -1108,7 +1192,7 @@ function createLauncher(settings) {
     log('stopped');
   }
 
-  return { start, stop, procs, metrics, get server() { return server; } };
+  return { start, stop, procs, metrics, statusSnapshot, get server() { return server; } };
 }
 
 async function main() {

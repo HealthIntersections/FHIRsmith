@@ -3,6 +3,7 @@ const {Utilities} = require("./library/utilities");
 const escape = require('escape-html');
 const StatsDatabase = require('./stats-db');
 const { validRow: validClusterEvent } = require('./library/cluster-events');
+const { readProcessMemory } = require('./library/cgroup-memory');
 
 // Requests that aren't counted by a module (the root page, the dashboard) are
 // attributed here, and requests that have no endpoint dimension (everything
@@ -62,8 +63,10 @@ class ServerStats {
   // on the master under the launcher: the workers' requests added by mergeCounts
   mergedRequestCount = 0;
   requestTime = 0;
-  // Collect metrics every 10 minutes
+  // Collect metrics every 10 minutes (stats.sampleSeconds, else stats.intervalMinutes)
   intervalMs = 10 * 60 * 1000;
+  // and write the counters to the database every 10 minutes (stats.intervalMinutes)
+  flushMs = 10 * 60 * 1000;
   history = [];
   requestCountSnapshot = 0;
   refusedCount = 0;
@@ -89,6 +92,12 @@ class ServerStats {
     this.log = log || console;
     if (this.config.intervalMinutes) {
       this.intervalMs = this.config.intervalMinutes * 60 * 1000;
+      this.flushMs = this.intervalMs;
+    }
+    // the graphs' sample interval, when it isn't the counters' (with a role, a minute at most:
+    // library/role.js)
+    if (this.config.sampleSeconds > 0) {
+      this.intervalMs = this.config.sampleSeconds * 1000;
     }
     this.openDatabase();
     this.timer = setInterval(() => {
@@ -155,9 +164,13 @@ class ServerStats {
       const clientConcepts = this._sumCachingModules('clientConceptCount');
 
       const point = {time: now, mem: currentMem - this.startMem, rpm: requestsPerMin, tat: requestsTat, block: loopDelay, blockMax: loopMax, clientConcepts: clientConcepts};
+      // where the interval began, and this process's private memory (RssAnon: RSS less mapped
+      // files; null where /proc can't be read), for the graphs (library/cluster-metrics.js)
+      point.intervalStart = intervalStart;
+      const own = readProcessMemory('self');
+      point.anon = own ? own.anon : null;
       if (this.onMetric) {
-        // under the launcher (library/cluster-metrics.js): what the cluster graphs also show
-        point.intervalStart = intervalStart;
+        // under the launcher: the memory guard's refusals, which only a role counts
         point.refused = refused;
       }
       this.history.push(point);
@@ -176,7 +189,11 @@ class ServerStats {
       const cutoff = now - (24 * 60 * 60 * 1000); // 24 hours ago
       this.history = this.history.filter(m => m.time > cutoff);
 
-      this.flushCounters(now, this.intervalMs);
+      // the counters every flushMs: at each sample when the two intervals are the same, as
+      // before, else at the first sample after (half a sample's grace for a timer that fires early)
+      if (this.lastFlush === undefined || now - this.lastFlush >= this.flushMs - this.intervalMs / 2) {
+        this.flushCounters(now, this.flushMs);
+      }
     }
   }
 
@@ -562,7 +579,7 @@ class ServerStats {
     this.touchRun();
     // Synchronous, so the last partial interval is on disk before server.js
     // calls process.exit().
-    this.flushCounters(Date.now(), Date.now() - (this.lastTime || this.startTime));
+    this.flushCounters(Date.now(), Date.now() - (this.lastFlush || this.lastTime || this.startTime));
     if (this.db) {
       try {
         this.db.close();

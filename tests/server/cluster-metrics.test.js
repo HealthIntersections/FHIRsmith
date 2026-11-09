@@ -97,7 +97,7 @@ describe('child metrics IPC', () => {
     expect(channel.send).toHaveBeenCalledTimes(2);
     channel.emit('message', { type:SNAPSHOT, sampledAt:now, series:[] });
     expect(stats.clusterMetricsUnavailable).toBe(false);
-    expect(stats.clusterMetrics).toEqual({ cluster:true, sampledAt:now, series:[] });
+    expect(stats.clusterMetrics).toEqual({ cluster:true, sampledAt:now, sharedCache:false, total:null, series:[] });
     close();
     expect(stats.onMetric).toBeNull();
     expect(channel.listenerCount('message')).toBe(0);

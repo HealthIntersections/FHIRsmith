@@ -86,6 +86,15 @@ describe('routing rules', () => {
     expect(classify('/', {}, TX, shared)).toEqual({ to: 'master' });
   });
 
+  test('statusSeconds: 15 by default, as configured, and a number above 0', () => {
+    const settingsFor = cluster => loadSettings([], {}, { server: { cluster }, modules: { tx: { enabled: true } } });
+    expect(settingsFor({}).statusMs).toBe(15000);
+    expect(settingsFor({ statusSeconds: 5 }).statusMs).toBe(5000);
+    for (const bad of [0, -1, 'soon']) {
+      expect(() => settingsFor({ statusSeconds: bad })).toThrow(/server.cluster.statusSeconds must be a number of seconds above 0/);
+    }
+  });
+
   test('with the shared closure tables, $closure goes to any tx process; the rest of the master\'s paths stay its', () => {
     const routing = loadSettings([], {}, { server: { cluster: { sharedClosure: true } }, modules: { tx: { enabled: true } } }).routing;
     expect(routing).toEqual({ cacheAffinity: true, sharedClosure: true, sharedCache: false });
@@ -447,6 +456,41 @@ describe('the launcher, with fake processes', () => {
     expect((await get(tx1.port, '/r4/metadata')).status).toBe(200);
   });
 
+  test('the master receives the status snapshot: each process\'s own figures, the launcher\'s, and the cgroup\'s', async () => {
+    const GiB = 2 ** 30;
+    launcher = createLauncher({ ...settings(true), statusMs: 100, memorySampler: {
+      describe: 'over', rejectAt: 8.5 * GiB, sample: (ps) => ({ excess: null, own: new Map(ps.map(p => [p, 0])) }),
+      guard: { limit: 10 * GiB, source: 'test', rejectFraction: 0.85, abortFraction: 0.92, rejectAt: 8.5 * GiB, abortAt: 9.2 * GiB, group: { dir: 'x', version: 2 } },
+      cgroupStat: () => ({ anon: 6 * GiB, file: 2 * GiB })
+    } });
+    await launcher.start();
+    await until(() => launcher.procs.every(p => p.ready));
+    let status;
+    const t0 = Date.now();
+    do {
+      await sleep(100);
+      status = (await get(20010, '/cluster-status')).json.clusterStatus;
+    } while (!(status && status.processes.every(p => p.fresh)) && Date.now() - t0 < 5000);
+    expect(status.processes.map(p => [p.code, p.status, p.clientCaches])).toEqual([['m0', 'ready', 3], ['tx1', 'ready', 2], ['tx2', 'ready', 2]]);
+    expect(status.memory.cgroup).toEqual({ anon: 6 * GiB, file: 2 * GiB });
+    expect(status.memory).toMatchObject({ limit: 10 * GiB, rejectAt: 8.5 * GiB, abortAt: 9.2 * GiB, group: true });
+    // each process its own caches, so summed
+    expect(status.caches).toMatchObject({ scope: 'summed', clientCaches: 7, clientConcepts: 700, expansionItems: 15 });
+    // the launcher reads /proc itself, here as on any Linux host
+    if (process.platform === 'linux') {
+      expect(status.processes.every(p => p.anon > 0)).toBe(true);
+      expect(status.launcher.anon).toBeGreaterThan(0);
+    }
+    await get(PORT, '/r4/metadata');
+    expect(launcher.statusSnapshot().launcher.requests).toBeGreaterThanOrEqual(1);
+    // a process that exits has no figures until its replacement sends some
+    const tx2 = launcher.procs[2];
+    const old = tx2.child;
+    old.kill('SIGKILL');
+    await until(() => tx2.child !== old);
+    expect(launcher.statusSnapshot().processes[2].figuresAgeMs).toBeNull();
+  });
+
   test('coalesces backpressured snapshots and survives send failures', async () => {
     launcher = createLauncher(settings(true));
     await launcher.start();
@@ -625,7 +669,7 @@ describe('the launcher, with fake processes', () => {
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
       expect(lines.filter(l => l.startsWith('limits:'))).toEqual([expect.stringMatching(
-        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, upstreamTimeoutSeconds 60, writeTimeoutSeconds 60, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
+        /^limits: maxOutstanding 16, queueSeconds 1, ownerQueueSeconds 30, cooldownSeconds 0, upstreamTimeoutSeconds 60, writeTimeoutSeconds 60, fastLaneExtra 4, fastLaneMaxBytes 1024, normalMinSlots 4, memoryHeadroomGB 2, drainSeconds 10, trimAllocator true, statusSeconds 15, recycleSeconds 30 \(a tx-worker over [\d.]+ GB \(85% of [\d.]+ GB\) for the (whole cgroup|process) that long, with no request at work, is restarted\)$/)]);
       await get(PORT, '/r4/ValueSet/$expand?status=503');
       expect(launcher.procs.every(p => !p.coolUntil)).toBe(true);
     });

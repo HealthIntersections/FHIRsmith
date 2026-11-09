@@ -254,16 +254,16 @@ describe('master and two tx-workers behind cluster.js', () => {
     }
   });
 
-  test('the master\'s home page counts every process\'s requests', async () => {
+  test('the master\'s statistics count every process\'s requests', async () => {
     // a worker stopped sends its last counts; the launcher passes them on and restarts it
     process.kill(pidOn(WORKERS[0]), 'SIGTERM');
     const t0 = Date.now();
     let m = null;
     while (Date.now() - t0 < 30000) {
-      const page = await requestText(MASTER, '/', { Accept: 'text/html' });
-      m = /Request Count:<\/strong> (\d+) \(master: (\d+), workers: (\d+)/.exec(page);
+      // the master's statistics, as /dashboard/status.json gives them
+      const { requests } = JSON.parse(await requestText(MASTER, '/dashboard/status.json'));
+      m = /^(\d+) master: (\d+), workers: (\d+)/.exec(`${requests.count} ${requests.detail}`);
       if (m && Number(m[3]) >= DIRECT_LOOKUPS[WORKERS[0]]) {
-        expect(page).toContain('Cluster: request counts for every process');
         break;
       }
       await sleep(250);
@@ -275,7 +275,7 @@ describe('master and two tx-workers behind cluster.js', () => {
       await sleep(250);
     }
     await sleep(500);
-    expect(await requestText(WORKERS[1], '/', { Accept: 'text/html' })).toContain('Worker tx2: uptime and request counts for this process');
+    expect(await requestText(WORKERS[1], '/', { Accept: 'text/html' })).toMatch(/Worker tx2 <span class="fs-status-meta">· this process only<\/span>/);
   }, 60000);
 
   test('SIGTERM: requests in progress finish, then every process stops', async () => {

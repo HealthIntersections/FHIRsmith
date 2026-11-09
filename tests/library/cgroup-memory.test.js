@@ -1,7 +1,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { readCgroupMemoryLimit } = require('../../library/cgroup-memory');
+const { readCgroupMemoryLimit, readCgroupStat, readCgroupAnon, readProcessMemory } = require('../../library/cgroup-memory');
+
+const FIXTURES = path.join(__dirname, 'fixtures', 'cluster-status');
 
 describe('readCgroupMemoryLimit', () => {
   let dir;
@@ -64,5 +66,66 @@ describe('readCgroupMemoryLimit', () => {
 
   test('no proc file and nothing mounted gives 0', () => {
     expect(read()).toEqual({ limit: 0, source: null });
+  });
+});
+
+describe('readCgroupStat and readProcessMemory (fixtures from a Linux host)', () => {
+  let dir;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgroup-stat-test-'));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const cgroupWith = (fixture) => {
+    if (fixture) {
+      fs.copyFileSync(path.join(FIXTURES, fixture), path.join(dir, 'memory.stat'));
+    }
+    return { dir, version: fixture === 'memory.stat.v1' ? 1 : 2 };
+  };
+
+  test('cgroup v2: anon and file from memory.stat', () => {
+    const cg = cgroupWith('memory.stat.v2');
+    expect(readCgroupStat(cg)).toEqual({ anon: 8053063680, file: 3221225472 });
+    expect(readCgroupAnon(cg)).toBe(8053063680);
+  });
+
+  test('cgroup v1: total_rss and total_cache (the hierarchy\'s), not the cgroup\'s own rss and cache', () => {
+    const cg = cgroupWith('memory.stat.v1');
+    expect(readCgroupStat(cg)).toEqual({ anon: 6442450944, file: 3221225472 });
+  });
+
+  test('cgroup v1 without the totals: rss and cache', () => {
+    fs.writeFileSync(path.join(dir, 'memory.stat'), 'cache 100\nrss 200\nmapped_file 50\n');
+    expect(readCgroupStat({ dir, version: 1 })).toEqual({ anon: 200, file: 100 });
+  });
+
+  test('no memory.stat, or no anon in it: null (readCgroupAnon 0)', () => {
+    expect(readCgroupStat(cgroupWith(null))).toBeNull();
+    expect(readCgroupAnon(cgroupWith(null))).toBe(0);
+    fs.writeFileSync(path.join(dir, 'memory.stat'), 'file 100\n');
+    expect(readCgroupStat({ dir, version: 2 })).toBeNull();
+    fs.writeFileSync(path.join(dir, 'memory.stat'), 'anon 100\n');
+    expect(readCgroupStat({ dir, version: 2 })).toEqual({ anon: 100, file: null });
+  });
+
+  test('/proc/<pid>/status: RssAnon and RssFile, in bytes', () => {
+    fs.mkdirSync(path.join(dir, '4242'));
+    fs.copyFileSync(path.join(FIXTURES, 'proc-status'), path.join(dir, '4242', 'status'));
+    expect(readProcessMemory(4242, dir)).toEqual({ anon: 2621440 * 1024, file: 2539940 * 1024 });
+    // gone, or not Linux
+    expect(readProcessMemory(4243, dir)).toBeNull();
+    fs.writeFileSync(path.join(dir, '4242', 'status'), 'Name:\tnode\nVmRSS:\t100 kB\n');
+    expect(readProcessMemory(4242, dir)).toBeNull();
+  });
+
+  test('this process, on Linux', () => {
+    const own = readProcessMemory('self');
+    if (process.platform === 'linux') {
+      expect(own.anon).toBeGreaterThan(0);
+      expect(own.file).toBeGreaterThanOrEqual(0);
+    } else {
+      expect(own).toBeNull();
+    }
   });
 });
