@@ -882,9 +882,12 @@ class ExpansionCache {
    * @param {Object|ValueSet} valueSet - The ValueSet to expand (wrapper or JSON)
    * @param {Object} params - Parameters resource (tx-resource and valueSet params excluded)
    * @param {Array} additionalResources - Additional resources in scope (CodeSystem/ValueSet wrappers)
+   * @param {number} [limit] - the most codes the response may hold (the request's
+   *   x-too-costly-threshold, else the configured externalLimit): the same request under a lower
+   *   limit can be a 422, or lose its total, so it is a different answer
    * @returns {string} Hash key
    */
-  computeKey(valueSet, params, additionalResources) {
+  computeKey(valueSet, params, additionalResources, limit = null) {
     const keyParts = [];
 
     // ValueSet content - always hash the full JSON content
@@ -895,6 +898,9 @@ class ExpansionCache {
     // Parameters - filter out tx-resource and valueSet params, sort for consistency
     if (params) {
       keyParts.push(`params:`+params.hashSource());
+    }
+    if (limit != null) {
+      keyParts.push(`limit:${limit}`);
     }
 
     // Additional resources - hash the full content of each resource

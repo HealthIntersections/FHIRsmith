@@ -2878,7 +2878,9 @@ class ExpandWorker extends TerminologyWorker {
     // Compute cache key (only if caching is available and not debugging)
     let cacheKey = null;
     if (expansionCache && (CACHE_WHEN_DEBUGGING || !this.opContext.debugging)) {
-      cacheKey = expansionCache.computeKey(valueSet, params, this.additionalResources);
+      // (the response limit is in the key: a request with a lower x-too-costly-threshold mustn't
+      // be answered with an expansion made under a higher one)
+      cacheKey = expansionCache.computeKey(valueSet, params, this.additionalResources, this.externalLimit);
 
       // Check for cached expansion
       const cached = expansionCache.get(cacheKey);
