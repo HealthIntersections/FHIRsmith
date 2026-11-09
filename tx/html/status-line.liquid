@@ -1,0 +1,58 @@
+{%- comment -%}
+  The top of / and /dashboard (library/cluster-status.js, clusterSummary and processSummary):
+  one line of requests, uptime and heap, then the problems, only when there are any, each with an
+  icon and a sentence (status-tasks.liquid has the background tasks). The page's own space is what it had before the status panel: the rest is under "More".
+  Every style is under .fs-status.
+{%- endcomment -%}
+<style>
+  /* .fs-status twice: status-panel.liquid's .fs-status rules come later in the page */
+  .fs-status.fs-status-line { --fs-muted:#5f6368; --fs-rule:#e3e3e3; margin:0 0 8px; color:#202124; container-type:inline-size; }
+  .fs-status-line, .fs-status-line dt, .fs-status-line dd, .fs-status-line li, .fs-status-jobs, .fs-status-more summary {
+    font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
+  /* headings that only name a section for screen readers take no space */
+  .fs-status-sr { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0, 0, 0, 0); white-space:nowrap; border:0; }
+  .fs-status-strip { display:flex; flex-wrap:wrap; align-items:baseline; margin:0; padding:0; row-gap:4px; }
+  .fs-status-item { display:flex; align-items:baseline; gap:6px; padding:0 16px; border-left:1px solid #9e9e9e; line-height:24px; white-space:nowrap; }
+  .fs-status-item:first-child { padding-left:0; border-left:0; }
+  .fs-status-item dt { font-size:12px; font-weight:400; color:var(--fs-muted); margin:0; }
+  .fs-status-item dd { margin:0; font-size:13px; color:var(--fs-muted); }
+  .fs-status-item .fs-status-v { font-size:18px; font-weight:600; color:#202124; font-variant-numeric:tabular-nums; }
+  .fs-status-item .fs-status-u { margin-left:3px; }
+  .fs-status-item .fs-status-s { margin-left:6px; }
+  /* narrow, the line wraps: no rule at the start of a line */
+  @container (max-width:600px) { .fs-status-item, .fs-status-item:first-child { border-left:0; padding:0 16px 0 0; } }
+  .fs-status-problems { list-style:none; margin:6px 0 0; padding:0; }
+  .fs-status-problems li { width:fit-content; max-width:100%; box-sizing:border-box; font-size:13px; line-height:18px; padding:1px 12px 1px 8px; margin:0 0 2px;
+    border-left:4px solid #202124; background:#fff3d6; }
+  .fs-status-problems .fs-status-icon { font-weight:700; margin-right:6px; }
+  .fs-status.fs-status-jobs { --fs-muted:#5f6368; --fs-rule:#e3e3e3; margin:0 0 8px; font-size:12px; color:#202124; }
+  .fs-status-jobs-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; }
+  .fs-status-jobs-head > :first-child { font-size:13px; font-weight:600; margin:0; line-height:20px; }
+  .fs-status-jobs .fs-status-idle { color:var(--fs-muted); }
+  .fs-status-jobs table { border-collapse:collapse; margin:4px 0 0; }
+  .fs-status-jobs th, .fs-status-jobs td { text-align:left; padding:2px 12px 2px 0; border-bottom:1px solid var(--fs-rule); font-size:12px; line-height:1.4; vertical-align:top; }
+  .fs-status-jobs th { font-weight:600; color:var(--fs-muted); border-bottom-color:#9e9e9e; }
+  .fs-status-more { margin:0 0 8px; }
+  /* list-item: the site's CSS makes summary a block, which loses the triangle */
+  .fs-status-more > summary { display:list-item; font-size:12px; color:var(--fs-muted); cursor:pointer; line-height:20px; }
+  .fs-status-more > summary > :first-child { display:inline; font:inherit; margin:0; color:#202124; font-weight:600; }
+  .fs-status-more[open] > summary { margin-bottom:4px; }
+</style>
+<section class="fs-status fs-status-line" aria-labelledby="fs-status-line-title">
+  <h{{ level }} id="fs-status-line-title" class="fs-status-sr">Status</h{{ level }}>
+  <dl class="fs-status-strip">
+    {%- for i in line.items %}
+    <div class="fs-status-item"><dt>{{ i.label | escape }}</dt><dd><span class="fs-status-v">{{ i.value | escape }}</span>
+      {%- if i.unit %}<span class="fs-status-u">{{ i.unit | escape }}</span>{% endif %}
+      {%- if i.sub %}<span class="fs-status-s">{{ i.sub | escape }}</span>{% endif %}</dd></div>
+    {%- endfor %}
+    {%- if line.problems.size > 0 %}
+    <div class="fs-status-item"><dt>Problems</dt><dd><span class="fs-status-v"><span aria-hidden="true">⚠ </span>{{ line.problems.size }}</span></dd></div>
+    {%- endif %}
+  </dl>
+  {%- if line.problems.size > 0 %}
+  <ul class="fs-status-problems">
+    {%- for p in line.problems %}<li><span class="fs-status-icon" aria-hidden="true">⚠</span>{{ p | escape }}</li>{% endfor %}
+  </ul>
+  {%- endif %}
+</section>

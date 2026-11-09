@@ -344,6 +344,23 @@ describe('server statistics', () => {
     expect(stats.failedTasks()).toEqual([]);
   });
 
+  test('taskSummary: the tasks at work in full, the names of those that failed and of the rest', () => {
+    const stats = newStats();
+    stats.addTask('crawl', '1 hr');
+    stats.addTask('audit', '24 hr');
+    stats.addTask('cleanup', '1 hr');
+    stats.addTask('sync', '6 hours');
+    stats.taskDone('crawl', 'ok');
+    stats.taskError('audit', 'registry unreachable');
+    stats.task('sync', 'Sync: 10 of 20');
+    const summary = stats.taskSummary();
+    expect(summary.working.map(t => [t.name, t.state, t.frequency])).toEqual([['sync', 'Sync: 10 of 20', '6 hours']]);
+    expect(summary.working[0].ago.length).toBeGreaterThan(0);
+    expect(summary.failed).toEqual(['audit']);
+    // resting, and not run yet
+    expect(summary.idle).toEqual(['crawl', 'cleanup']);
+  });
+
   test('statistics never take the server down', () => {
     // a database that cannot be opened is logged and then ignored. A plain
     // file where a directory should be is a portable way to make that happen
