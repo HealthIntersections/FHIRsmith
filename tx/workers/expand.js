@@ -1039,8 +1039,11 @@ class ValueSetExpander {
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
-          // each listed code is located next: a provider may read them together, and hand back what it read
-          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
+          // each listed code is located next: a provider may read them together, and hand back what it read.
+          // Designations are wanted only if every code will be built: a code outside the page is not
+          // (a text filter matches designations, so then they are wanted for every code)
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code),
+            !this.noDetails && (!filter.isNull || this.#pageHolds(cset.concept.length)));
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -2210,6 +2213,21 @@ class ValueSetExpander {
     const start = Math.max(this.offset, 0);
     const i = this.fullList.length;
     return i < start || (this.count > -1 && i >= start + this.count);
+  }
+
+  /**
+   * True when the next n codes added to the expansion all fall inside the requested page (or the
+   * request isn't paged), so every one of them will be built
+   * @param {number} n
+   * @returns {boolean}
+   */
+  #pageHolds(n) {
+    if (!(this.offset > 0 || this.count > -1)) {
+      return true;
+    }
+    const start = Math.max(this.offset, 0);
+    const i = this.fullList.length;
+    return i >= start && (this.count < 0 || i + n <= start + this.count);
   }
 
   addToTotal(t = 1) {
