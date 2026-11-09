@@ -25,7 +25,7 @@ const packageJson = require("../package.json");
 // Import workers
 const ReadWorker = require('./workers/read');
 const SearchWorker = require('./workers/search');
-const { ExpandWorker, INTERNAL_DEFAULT_LIMIT, EXTERNAL_TEST_DEFAULT_LIMIT} = require('./workers/expand');
+const { ExpandWorker, INTERNAL_DEFAULT_LIMIT, EXTERNAL_DEFAULT_LIMIT, WALK_LIMIT_FACTOR } = require('./workers/expand');
 const { ValidateWorker } = require('./workers/validate');
 const TranslateWorker = require('./workers/translate');
 const LookupWorker = require('./workers/lookup');
@@ -163,6 +163,38 @@ class TXModule {
   }
 
   /**
+   * The expansion limits, from the configuration or the defaults: external (the most codes an
+   * $expand returns; externalLimit, default 10000), internal (the most an expansion builds, an
+   * imported value set's for one; internalLimit, default 100000) and walk (the furthest a paged
+   * $expand walks to reach its page; walkLimit, default 10 x internal). Each, when set, must be a
+   * positive whole number, and external <= internal <= walk: anything else stops startup
+   * @returns {{external: number, internal: number, walk: number}}
+   */
+  static expansionLimits(config = {}) {
+    const read = (name, dflt) => {
+      const v = config[name];
+      if (v === undefined || v === null) {
+        return dflt;
+      }
+      const n = typeof v === 'number' || (typeof v === 'string' && /^\s*\d+\s*$/.test(v)) ? Number(v) : NaN;
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`modules.tx.${name} must be a whole number above 0, not '${v}'`);
+      }
+      return n;
+    };
+    const internal = read('internalLimit', INTERNAL_DEFAULT_LIMIT);
+    const external = read('externalLimit', Math.min(EXTERNAL_DEFAULT_LIMIT, internal));
+    const walk = read('walkLimit', internal * WALK_LIMIT_FACTOR);
+    if (external > internal) {
+      throw new Error(`modules.tx.externalLimit (${external}) can't be more than internalLimit (${internal}): an expansion can't return more codes than it builds`);
+    }
+    if (internal > walk) {
+      throw new Error(`modules.tx.walkLimit (${walk}) can't be less than internalLimit (${internal})`);
+    }
+    return { external, internal, walk };
+  }
+
+  /**
    * Initialize the TX module
    * @param {Object} config - Module configuration
    * @param {express.Application} app - Express application for registering endpoints
@@ -181,11 +213,14 @@ class TXModule {
       telnetErrors: config.telnetErrors
     });
     this.limits = TXModule.resourceLimits(config);
+    this.expansionLimitValues = TXModule.expansionLimits(config);
     this.usageTracker = new ConceptUsageTracker(this.limits.usageTrackerMaxCodes, this.limits.usageTrackerMaxCodeLength);
 
     this.log.info('Initializing TX module');
     this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
       Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
+    this.log.info(`Expansion limits: externalLimit=${this.expansionLimitValues.external}, internalLimit=${this.expansionLimitValues.internal}, ` +
+      `walkLimit=${this.expansionLimitValues.walk}`);
 
     // Optional instance code, prefixed onto every cache-id this server issues so a
     // proxy in front of several instances can route by it (see nginx.md). Checked
@@ -279,6 +314,12 @@ class TXModule {
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
+    if (config.pruneTerminologyCache !== undefined && typeof config.pruneTerminologyCache !== 'boolean') {
+      throw new Error(`modules.tx.pruneTerminologyCache must be true or false, not '${config.pruneTerminologyCache}'`);
+    }
+    // delete the .db and .cache files and package folders in terminology-cache that aren't used
+    // (once the endpoints are set up: see below)
+    this.library.pruneTerminologyCacheFiles = config.pruneTerminologyCache === true;
     if (config.clusterRole) {
       // the folder:/file: source caches are the master's, under one name every process shares
       this.library.localSourceTag = 'master';
@@ -309,6 +350,9 @@ class TXModule {
     for (const endpoint of config.endpoints) {
       await this.setupEndpoint(endpoint, app);
     }
+    // everything the library and the endpoints use is loaded: with pruneTerminologyCache, the
+    // rest of terminology-cache can go
+    await this.library.pruneUnusedCaches();
 
     this.log.info(`TX module initialized with ${config.endpoints.length} endpoint(s)`);
 
@@ -854,7 +898,7 @@ class TXModule {
     router.get('/ValueSet/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start);
@@ -863,7 +907,7 @@ class TXModule {
     router.post('/ValueSet/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start);
@@ -1039,7 +1083,7 @@ class TXModule {
     router.get('/ValueSet/:id/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start);
@@ -1048,7 +1092,7 @@ class TXModule {
     router.post('/ValueSet/:id/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start);
@@ -1757,17 +1801,27 @@ class TXModule {
     }
   }
 
+  // the configured expansion limits, checked at startup (see expansionLimits). Every client gets
+  // the same: the tx-ecosystem test runner (User-Agent Tools/Java) used to be held to the
+  // defaults, and now asks for a lower limit where a test depends on one (x-too-costly-threshold)
+  currentExpansionLimits() {
+    return this.expansionLimitValues || TXModule.expansionLimits(this.config || {});
+  }
+
+  // eslint-disable-next-line no-unused-vars
   internalLimit(req) {
-    let isTest = req.header("User-Agent") == 'Tools/Java';
-    if (this.config.internalLimit && !isTest) return this.config.internalLimit; else return INTERNAL_DEFAULT_LIMIT;
+    return this.currentExpansionLimits().internal;
+  }
+
+  // How far a paged expansion (count and offset) may walk to reach its page: offset + count. Only
+  // the page is built, the codes before it are counted, so this can be well past internalLimit
+  // eslint-disable-next-line no-unused-vars
+  walkLimit(req) {
+    return this.currentExpansionLimits().walk;
   }
 
   externalLimit(req) {
-    // the tx-ecosystem test runner (Tools/Java) always gets the test limit, so every server
-    // gives it the same answer. Otherwise the configured externalLimit - it used to be read
-    // only when internalLimit was configured too, so setting it alone did nothing
-    let isTest = req.header("User-Agent") == 'Tools/Java';
-    let limit = this.config.externalLimit && !isTest ? this.config.externalLimit : EXTERNAL_TEST_DEFAULT_LIMIT;
+    let limit = this.currentExpansionLimits().external;
     // x-too-costly-threshold sets the limit for this request - mostly so test cases can ask for
     // a lower one. It can't be more than the internal limit, and a value that isn't a positive
     // whole number is ignored: it never means "no limit"
