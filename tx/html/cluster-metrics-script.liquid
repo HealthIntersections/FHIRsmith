@@ -39,7 +39,9 @@
   const memoryTitle = document.getElementById('memoryChartTitle');
   if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since start';
 
-  const legend = document.getElementById('serverMetricsLegend');
+  // the key's items: put in #serverMetricsLegend, which can be further down the page than this
+  // script (under "More" on / and /dashboard), so once the page has loaded
+  const legendItems = [];
   function legendItem(style, text) {
     const item = document.createElement('span');
     const key = document.createElement('span');
@@ -49,7 +51,7 @@
     key.textContent = style.symbol;
     item.appendChild(key);
     item.appendChild(document.createTextNode(text));
-    legend.appendChild(item);
+    legendItems.push(item);
   }
   drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
     (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
@@ -63,9 +65,15 @@
     (metrics.total.local ? (metrics.total.group ? ' (the cgroup, every process)' : ' (this process)')
       : metrics.total.group ? ' (the cgroup)' : ' (each process)'));
   if (metrics.series.length > drawn.length) {
-    legend.appendChild(document.createTextNode((metrics.series.length - drawn.length) +
+    legendItems.push(document.createTextNode((metrics.series.length - drawn.length) +
       ' more workers are not drawn individually; the Total includes them.'));
   }
+  function placeLegend() {
+    const legend = document.getElementById('serverMetricsLegend');
+    if (legend) legendItems.forEach(item => legend.appendChild(item));
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', placeLegend);
+  else placeLegend();
 
   const times = metrics.series.flatMap(series => series.history.map(point => point.time));
   const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);

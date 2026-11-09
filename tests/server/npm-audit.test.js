@@ -209,6 +209,21 @@ describe('advice', () => {
     expect(dash).toContain('FHIRsmith 0.16.0 is available');
   });
 
+  test('the dashboard\'s line: the release and the audit on one line; the findings only when there are any', async () => {
+    axios.post.mockResolvedValue({ data: {} });
+    axios.get.mockResolvedValue({ data: { version: '0.13.4' } });
+    const audit = new NpmAudit({}, null, appDir(LOCK));
+    await audit.run();
+    const line = audit.renderLine();
+    expect(line).toMatch(/^<strong>FHIRsmith release:<\/strong> this server runs 0\.13\.4, the latest release · <strong>npm audit:<\/strong> /);
+    expect(line).not.toContain('<p>');
+    expect(audit.renderFindings()).toBe('');
+
+    axios.post.mockResolvedValue({ data: { tar: [{ severity: 'critical', title: 't', url: 'https://github.com/advisories/GHSA-2' }] } });
+    await audit.run();
+    expect(audit.renderFindings()).toContain('<table class="grid">');
+  });
+
   test('the dashboard says when this server is on the latest release', async () => {
     axios.post.mockResolvedValue({ data: {} });
     axios.get.mockResolvedValue({ data: { version: '0.13.4' } });
