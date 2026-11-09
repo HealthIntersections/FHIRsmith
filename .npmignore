@@ -56,3 +56,24 @@ azure-pipelines.yml
 
 # Documentation source (keep compiled)
 docs/
+
+# Release and development scripts, and test reports
+release.sh
+changelog-template.md
+tsconfig.eslint.json
+test-scripts/
+test-cases-report.json
+test-cases-summary.txt
+
+# What git ignores: with a .npmignore, npm doesn't read .gitignore, so these are repeated
+# here (a local `npm publish` would otherwise include them)
+private/
+.claude/
+locator/
+package-cache/
+test-cache/
+xig/data/
+registry/registry-data.json
+tx/data/CodeSystem-cpt.db
+validator_cli.jar
+*.jar.version

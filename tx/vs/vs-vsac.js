@@ -7,6 +7,8 @@ const { VersionUtilities } = require('../../library/version-utilities');
 const folders = require('../../library/folder-setup');
 const {debugLog} = require("../operation-context");
 const { applyIdPrefix, stripIdPrefix } = require("../library/resource-ids");
+// the server log ({vsac}): sync progress for each value set and page is at debug level
+const vsacLog = require('../../library/logger').getInstance().child({ module: 'vsac' });
 
 // Persisted watermark for the phase-1b _lastUpdated scan.
 const VSAC_LAST_UPDATED_KEY = 'vsac_last_updated_date';
@@ -160,7 +162,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // the key has been sent in the clear)
     this.baseUrl = (config.baseUrl || 'https://cts.nlm.nih.gov/fhir').replace(/\/+$/, '');
     if (this.baseUrl.startsWith('http://')) {
-      console.warn(`VSAC: baseUrl ${this.baseUrl} is http, so the API key is sent unencrypted - use https`);
+      vsacLog.warn(`baseUrl ${this.baseUrl} is http, so the API key is sent unencrypted - use https`);
     }
     this.refreshIntervalHours = config.refreshIntervalHours || 24;
     this.valueSetCacheMB = config.valueSetCacheMB ?? DEFAULT_VALUESET_CACHE_MB;
@@ -244,7 +246,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
           await this._followDatabase();
         } catch (error) {
           // not migrated yet by the master: no value sets until a catch-up finds it done
-          console.log(`VSAC: ${error.message}; trying again on use`);
+          vsacLog.info(`${error.message}; trying again on use`);
         }
       }
       this.initialized = true;
@@ -269,14 +271,14 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     let synced = false;
     if (this.SYNC_AT_START_UP || this.database.vsCount == 0 || incomplete) {
       if (incomplete) {
-        console.log(`VSAC: ${incomplete} - resuming the sync now`);
+        vsacLog.info(`${incomplete} - resuming the sync now`);
       }
       synced = true;
       try {
         await this.refreshValueSets();
       } catch (error) {
         // already recorded by refreshValueSets; the timer below retries it soon
-        console.error(`VSAC: sync at startup failed: ${error.message}`);
+        vsacLog.error(`sync at startup failed: ${error.message}`);
         failed = true;
         this._failedSyncs = 1;
       }
@@ -291,7 +293,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     } else {
       next = await this._firstRefreshDelay();
     }
-    console.log(`VSAC: next sync due at ${new Date(Date.now() + next.delayMs).toISOString()} (${next.why})`);
+    vsacLog.info(`next sync due at ${new Date(Date.now() + next.delayMs).toISOString()} (${next.why})`);
     this._startRefreshTimer(next.delayMs);
     this.initialized = true;
   }
@@ -431,7 +433,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         debugLog(error);
         this._failedSyncs = (this._failedSyncs || 0) + 1;
         next = this._retryDelayMs(this._failedSyncs);
-        console.error(`VSAC: scheduled sync failed (next try in ${Math.round(next / 60000)} min): ${error.message}`);
+        vsacLog.error(`scheduled sync failed (next try in ${Math.round(next / 60000)} min): ${error.message}`);
       } finally {
         if (!this._stopped) {
           this._startRefreshTimer(next);
@@ -449,12 +451,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   _refreshIntervalMs() {
     const hours = Number(this.refreshIntervalHours);
     if (!Number.isFinite(hours) || hours <= 0) {
-      console.warn(`VSAC: refreshIntervalHours ${this.refreshIntervalHours} is not a positive number; using 24`);
+      vsacLog.warn(`refreshIntervalHours ${this.refreshIntervalHours} is not a positive number; using 24`);
       return 24 * 60 * 60 * 1000;
     }
     const ms = hours * 60 * 60 * 1000;
     if (ms > MAX_TIMER_MS) {
-      console.warn(`VSAC: refreshIntervalHours ${hours} is longer than a timer can wait; using ${Math.floor(MAX_TIMER_MS / 3600000)} hours`);
+      vsacLog.warn(`refreshIntervalHours ${hours} is longer than a timer can wait; using ${Math.floor(MAX_TIMER_MS / 3600000)} hours`);
       return MAX_TIMER_MS;
     }
     return ms;
@@ -478,7 +480,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   async refreshValueSets() {
     this.stats.task('VSAC Sync', 'running');
     if (this.isRefreshing) {
-      console.log('Refresh already in progress, skipping');
+      vsacLog.info('Refresh already in progress, skipping');
       return;
     }
     this.queue = [];
@@ -489,7 +491,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     try {
       // phase 1: list all value sets
-      console.log('Starting VSAC ValueSet refresh...');
+      vsacLog.info('Starting VSAC ValueSet refresh...');
 
       // This lists all the currently valid value sets by URL, but not the older versions
       let url = '/ValueSet?_offset=0&_count=1000&_elements=id,url,version,status';
@@ -500,7 +502,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       let ncount = 0;
 
       while (url) {
-        console.log(`Sync: ${count} of ${total} - ${ncount} new`);
+        vsacLog.debug(`Sync: ${count} of ${total} - ${ncount} new`);
         this.stats.task('VSAC Sync', `Sync: ${count} of ${total} - ${ncount} new`);
 
         const bundle = await this._fetchBundle(url);
@@ -524,18 +526,18 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
         // Safety check against infinite loops
         if (count > total) {
-          console.log(`Reached total count (${total}), stopping`);
+          vsacLog.info(`Reached total count (${total}), stopping`);
           break;
         }
       }
 
       this.lastRefresh = new Date();
-      console.log(`VSAC refresh phase 1 done. Total: ${count} with ${ncount} new items`);
+      vsacLog.info(`VSAC refresh phase 1 done. Total: ${count} with ${ncount} new items`);
       this.stats.task('VSAC Sync', `VSAC refresh phase 1 done. Total: ${count} with ${ncount} new items`);
 
       // phase 1b: query for recently updated value sets via _lastUpdated
       let lastUpdatedCount = await this._scanLastUpdated();
-      console.log(`VSAC refresh phase 1b done. ${lastUpdatedCount} additional items from _lastUpdated`);
+      vsacLog.info(`VSAC refresh phase 1b done. ${lastUpdatedCount} additional items from _lastUpdated`);
       this.stats.task('VSAC Sync', `Phase 1b: ${lastUpdatedCount} from _lastUpdated`);
 
       // Pick up what an interrupted or failed run didn't finish. Phase 1 only queues a
@@ -544,7 +546,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       // queue is saved so that a restart can carry on from here.
       const leftover = await this._loadPendingQueue();
       if (leftover.length > 0) {
-        console.log(`VSAC: resuming ${leftover.length} value set(s) left over from the last sync`);
+        vsacLog.info(`resuming ${leftover.length} value set(s) left over from the last sync`);
         this.stats.task('VSAC Sync', `Resuming ${leftover.length} left over from the last sync`);
       }
       this.queue = [...new Set([...leftover, ...this.queue])];
@@ -570,7 +572,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         progress.done++;
         await this._savePendingProgress(progress);
       }
-      console.log("Requeue");
+      vsacLog.debug("Requeue");
       for (let q of this.requeue) {
         this.stats.task('VSAC History for '+q, `running (${tracking.totalFetched} fetched, ${tracking.totalNew} new, ${tracking.totalUpdated} updated)`);
         try {
@@ -601,7 +603,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         await this.database.setSetting(VSAC_LAST_UPDATED_KEY, this._pendingLastUpdated);
       } else if (permanentFailures > 0) {
         const holdMsg = `Holding _lastUpdated watermark: ${permanentFailures} URL(s) failed after retry; will re-scan next run`;
-        console.log(holdMsg);
+        vsacLog.info(holdMsg);
         this.stats.task('VSAC Sync', holdMsg);
       }
       // the work list is done (URLs that failed twice are re-found through the held watermark)
@@ -609,7 +611,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
       let msg = `VSAC refresh completed. Total: ${tracking.totalFetched} ValueSets, New: ${tracking.totalNew}, Updated: ${tracking.totalUpdated}`;
       this.stats.taskDone('VSAC Sync', msg);
-      console.log(msg);
+      vsacLog.info(msg);
 
       await this.database.finishRun(runId, tracking.totalFetched, tracking.totalNew, tracking.totalUpdated);
     } catch (error) {
@@ -775,12 +777,12 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       base = new URL(this.baseUrl);
       next = new URL(nextLink.url, this.baseUrl + '/');
     } catch (e) {
-      console.warn(`VSAC: ignoring next link ${String(nextLink.url).substring(0, 200)}: ${e.message}`);
+      vsacLog.warn(`ignoring next link ${String(nextLink.url).substring(0, 200)}: ${e.message}`);
       return null;
     }
     const basePath = base.pathname.replace(/\/+$/, '');
     if (next.host !== base.host || !(next.pathname === basePath || next.pathname.startsWith(basePath + '/'))) {
-      console.warn(`VSAC: ignoring next link ${String(nextLink.url).substring(0, 200)}: it is not on ${this.baseUrl}`);
+      vsacLog.warn(`ignoring next link ${String(nextLink.url).substring(0, 200)}: it is not on ${this.baseUrl}`);
       return null;
     }
     return next.pathname.substring(basePath.length) + next.search;
@@ -885,7 +887,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       }
       const generation = await this.database.getGeneration();
       if (generation !== this.loadedGeneration) {
-        console.log(`VSAC: the database is at generation ${generation}, this process at ${this.loadedGeneration}; catching up`);
+        vsacLog.info(`the database is at generation ${generation}, this process at ${this.loadedGeneration}; catching up`);
         await this._followDatabase();
       }
     })().catch((error) => {
@@ -1147,7 +1149,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     // if (vs.jsonObj?.compose) {
     //   return vs;
     // }
-    // console.log('get a full copy for the ValueSet '+vs.url+'|'+vs.version);
     // let vsNew = await this._fetchValueSet(vs.id);
     // await this.database.upsertValueSet(vsNew);
     // return new ValueSet(vsNew);
@@ -1174,7 +1175,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       }
     }
     let logMsg = `VSAC (${tracking.count} of ${length}) ${q}: ${vcount} versions (${perRun.newCount} new, ${perRun.updatedCount} updated)`;
-    console.log(logMsg);
+    vsacLog.debug(logMsg);
     this.stats.task('VSAC Sync', logMsg);
   }
 
@@ -1199,7 +1200,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     let serverDate = null;
 
     while (url) {
-      console.log(`_lastUpdated scan: ${count} found so far`);
+      vsacLog.debug(`_lastUpdated scan: ${count} found so far`);
       this.stats.task('VSAC Sync', `_lastUpdated scan: ${count} found`);
 
       const bundle = await this._fetchBundle(url);
@@ -1308,7 +1309,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     }
     try {
       const n = await this.resyncValueSet(url);
-      console.log(`Manual resync of ${url}: ${n} version(s)`);
+      vsacLog.info(`Manual resync of ${url}: ${n} version(s)`);
       this.stats.task('VSAC Sync', `Manual resync of ${url}: ${n} version(s)`);
       return `<p style="color:#070"><strong>Resynced ${escape(url)}: ${n} version(s).</strong></p>`;
     } catch (error) {
@@ -1498,5 +1499,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
 // Usage examples:
 module.exports = {
-  VSACValueSetProvider
+  VSACValueSetProvider,
+  vsacLog
 };

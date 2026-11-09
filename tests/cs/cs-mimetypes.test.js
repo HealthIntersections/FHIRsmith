@@ -96,7 +96,6 @@ describe('MimeTypeServices', () => {
       ];
 
       for (const invalidType of invalidMimeTypes) {
-        console.log('Mimetype: '+invalidType);
         const result = await provider.locate(invalidType);
         expect(result.context).toBeNull();
         expect(result.message).toBeUndefined();

@@ -191,7 +191,7 @@
   }
 
   function inTextBlock(link, block) {
-    var other = surroundingText(block).replace(/[\s.,;:()\[\]|\-]+/g, '');
+    var other = surroundingText(block).replace(/[\s.,;:()[\]|-]+/g, '');
     return other.length >= 3;
   }
 

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const terminal = require('./terminal');
 
 /**
  * Manages persistent configuration for terminology import tools
@@ -31,7 +32,7 @@ class ConfigManager {
         this.config = JSON.parse(fs.readFileSync(this.configFile, 'utf8'));
       }
     } catch (error) {
-      console.warn(`Warning: Could not load config: ${error.message}`);
+      terminal.warn(`Warning: Could not load config: ${error.message}`);
       this.config = {};
     }
   }
@@ -42,7 +43,7 @@ class ConfigManager {
         this.history = JSON.parse(fs.readFileSync(this.historyFile, 'utf8'));
       }
     } catch (error) {
-      console.warn(`Warning: Could not load history: ${error.message}`);
+      terminal.warn(`Warning: Could not load history: ${error.message}`);
       this.history = {};
     }
   }
@@ -51,7 +52,7 @@ class ConfigManager {
     try {
       fs.writeFileSync(this.configFile, JSON.stringify(this.config, null, 2));
     } catch (error) {
-      console.warn(`Warning: Could not save config: ${error.message}`);
+      terminal.warn(`Warning: Could not save config: ${error.message}`);
     }
   }
 
@@ -59,7 +60,7 @@ class ConfigManager {
     try {
       fs.writeFileSync(this.historyFile, JSON.stringify(this.history, null, 2));
     } catch (error) {
-      console.warn(`Warning: Could not save history: ${error.message}`);
+      terminal.warn(`Warning: Could not save history: ${error.message}`);
     }
   }
 

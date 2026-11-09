@@ -26,7 +26,7 @@ const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 
 const {SnomedImporter} = require("../../tx/importers/import-sct.module");
 const { OperationContext } = require('../../tx/operation-context');
-const {Designations} = require("../../tx/library/designations");
+const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
 const { Languages } = require('../../library/languages');
 const folders = require('../../library/folder-setup');
@@ -97,7 +97,6 @@ describe('SNOMED CT Module Import', () => {
       const filePath = path.join(testSourceDir, file);
       if (fs.existsSync(filePath)) {
         foundFiles++;
-        // console.log(`âœ" Found: ${file}`);
       } else {
         // Try to find similar files with glob-like pattern
         const dir = path.dirname(path.join(testSourceDir, file));
@@ -113,9 +112,6 @@ describe('SNOMED CT Module Import', () => {
 
           if (similar.length > 0) {
             foundFiles++;
-            // console.log(`âœ" Found similar: ${similar[0]} (instead of ${file})`);
-          } else {
-            // console.log(`âœ— Missing: ${file}`);
           }
         }
       }
@@ -304,10 +300,6 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
   test('should have loaded root concepts', () => {
     expect(Array.isArray(snomedData.activeRoots)).toBe(true);
     expect(Array.isArray(snomedData.inactiveRoots)).toBe(true);
-
-    if (snomedData.activeRoots.length > 0) {
-      // console.log('First active root:', snomedData.activeRoots[0].toString());
-    }
   });
 
   test('should be able to find concepts by ID', () => {
@@ -315,11 +307,10 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
     const rootConceptId = BigInt('138875005');
     const result = structures.concepts.findConcept(rootConceptId);
 
+    // a subset dataset may not carry the root concept
     if (result.found) {
       const concept = structures.concepts.getConcept(result.index);
       expect(concept.identity).toBe(rootConceptId);
-    } else {
-      // console.log('SNOMED CT root concept not found (this might be normal depending on the dataset)');
     }
   });
 
@@ -339,15 +330,10 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
         const result = structures.concepts.findConcept(BigInt(conceptId));
         if (result.found) {
           // Test parsing with this real concept
-          const expression = conceptId;
-          try {
-            const parsed = expressionServices.parseExpression(expression);
-            expect(parsed.concepts).toHaveLength(1);
-            expect(parsed.concepts[0].code).toBe(conceptId);
-            break; // Exit after first successful test
-          } catch (error) {
-            // console.log(`âš  Failed to validate expression ${expression}: ${error.message}`);
-          }
+          const parsed = expressionServices.parseExpression(conceptId);
+          expect(parsed.concepts).toHaveLength(1);
+          expect(parsed.concepts[0].code).toBe(conceptId);
+          break; // Exit after first successful test
         }
       }
     });
@@ -597,7 +583,6 @@ describe('SNOMED CT Subset Validation', () => {
   describe('Known Concepts Validation', () => {
     test('should find all concepts from subset data', async () => {
       let foundCount = 0;
-      let notFoundCodes = [];
 
       for (const concept of subsetData.concepts) {
         const result = await provider.locate(concept.code);
@@ -614,18 +599,7 @@ describe('SNOMED CT Subset Validation', () => {
           const display = await provider.display(result.context);
           expect(display).toBeDefined();
           expect(display.length).toBeGreaterThan(0);
-
-          console.log(`✅ Found: ${concept.code} - ${display}`);
-        } else {
-          notFoundCodes.push(concept.code);
-          console.log(`❌ Not found: ${concept.code} - ${concept.description}`);
         }
-      }
-
-      console.log(`\nSummary: Found ${foundCount}/${subsetData.concepts.length} concepts`);
-
-      if (notFoundCodes.length > 0) {
-        console.log(`Missing codes: ${notFoundCodes.join(', ')}`);
       }
 
       // We expect to find at least some of the concepts (allowing for incomplete test data)
@@ -656,8 +630,6 @@ describe('SNOMED CT Subset Validation', () => {
           // Get status
           const status = await provider.getStatus(result.context);
           expect(status).toBe('active');
-
-          console.log(`✅ ${testCase.code} (${testCase.expectedType}): active, non-abstract`);
         }
       }
     });
@@ -679,8 +651,6 @@ describe('SNOMED CT Subset Validation', () => {
           expect(firstDesignation.language).toBeDefined();
           expect(firstDesignation.value).toBeDefined();
           expect(firstDesignation.value.length).toBeGreaterThan(0);
-
-          console.log(`✅ ${code}: ${designations.length} designations, primary: "${firstDesignation.value}"`);
         }
       }
     });
@@ -711,6 +681,7 @@ describe('SNOMED CT Subset Validation', () => {
         const parentResult = await provider.locate(test.parent);
         const childResult = await provider.locate(test.child);
 
+        // concepts absent from the loaded dataset are skipped
         if (parentResult.context && childResult.context) {
           // Test subsumption
           const subsumptionResult = await provider.subsumesTest(test.parent, test.child);
@@ -722,10 +693,6 @@ describe('SNOMED CT Subset Validation', () => {
           const locateIsAResult = await provider.locateIsA(test.child, test.parent, false);
           expect(locateIsAResult.context).toBeDefined();
           expect(locateIsAResult.message).toBeNull();
-
-          console.log(`✅ ${test.description}: ${test.child} is-a ${test.parent} (${subsumptionResult})`);
-        } else {
-          console.log(`! Skipping hierarchy test: ${test.description} (concepts not found)`);
         }
       }
     });
@@ -739,13 +706,7 @@ describe('SNOMED CT Subset Validation', () => {
         if (result.context && !result.context.isComplex()) {
           const reference = result.context.getReference();
 
-          // Get parents
-          const parents = provider.sct.getConceptParents(reference);
-          console.log(`✅ ${code} has ${parents.length} parent(s)`);
-
-          // Get children
           const children = provider.sct.getConceptChildren(reference);
-          console.log(`✅ ${code} has ${children.length} child(ren)`);
 
           // Disease should have children
           if (code === '64572001') {
@@ -781,26 +742,17 @@ describe('SNOMED CT Subset Validation', () => {
       ];
 
       for (const test of testExpressions) {
-        try {
-          const result = await provider.locate(test.expression);
+        const result = await provider.locate(test.expression);
 
-          if (test.expectedValid) {
-            expect(result.context).toBeDefined();
-            expect(result.context.isComplex()).toBe(true);
-            expect(result.message).toBeNull();
+        if (test.expectedValid) {
+          expect(result.context).toBeDefined();
+          expect(result.context.isComplex()).toBe(true);
+          expect(result.message).toBeNull();
 
-            // Get display for complex expression
-            const display = await provider.display(result.context);
-            expect(display).toBeDefined();
-            expect(display.length).toBeGreaterThan(0);
-
-            console.log(`✅ Expression: ${test.expression}`);
-            console.log(`  Display: ${display}`);
-          }
-        } catch (error) {
-          if (test.expectedValid) {
-            console.log(`! Expression failed: ${test.expression} - ${error.message}`);
-          }
+          // Get display for complex expression
+          const display = await provider.display(result.context);
+          expect(display).toBeDefined();
+          expect(display.length).toBeGreaterThan(0);
         }
       }
     });
@@ -812,7 +764,7 @@ describe('SNOMED CT Subset Validation', () => {
       const filterTests = [
         {
           property: 'concept',
-          operator: 'equal',
+          operator: '=',
           value: '64572001',
           description: 'Exact match for Disease'
         },
@@ -825,36 +777,27 @@ describe('SNOMED CT Subset Validation', () => {
       ];
 
       for (const test of filterTests) {
-        try {
-          const supports = await provider.doesFilter(test.property, test.operator, test.value);
-          expect(supports).toBe(true);
+        const supports = await provider.doesFilter(test.property, test.operator, test.value);
+        expect(supports).toBe(true);
 
-          const filterContext = await provider.getPrepContext(true);
-          await provider.filter(filterContext, test.property, test.operator, test.value);
+        const filterContext = await provider.getPrepContext(true);
+        await provider.filter(filterContext, true, test.property, test.operator, test.value);
 
-          const filters = await provider.executeFilters(filterContext);
-          const filter = filters[0];
+        const filters = await provider.executeFilters(filterContext);
+        const filter = filters[0];
 
-          const size = await provider.filterSize(filterContext, filter);
-          expect(size).toBeGreaterThan(0);
+        const size = await provider.filterSize(filterContext, filter);
+        expect(size).toBeGreaterThan(0);
 
-          console.log(`✅ Filter "${test.description}": ${size} results`);
+        // Test iteration
+        let count = 0;
+        const maxCheck = Math.min(5, size); // Check first 5 results
 
-          // Test iteration
-          let count = 0;
-          const maxCheck = Math.min(5, size); // Check first 5 results
-
-          while (await provider.filterMore(filterContext, filter) && count < maxCheck) {
-            const concept = await provider.filterConcept(filterContext, filter);
-            expect(concept.constructor.name).toBe('SnomedExpressionContext');
-            expect(concept.getCode()).toBeDefined();
-            count++;
-          }
-
-          console.log(`  Verified ${count} results`);
-
-        } catch (error) {
-          console.log(`! Filter test failed for ${test.description}: ${error.message}`);
+        while (await provider.filterMore(filterContext, filter) && count < maxCheck) {
+          const concept = await provider.filterConcept(filterContext, filter);
+          expect(concept.constructor.name).toBe('SnomedExpressionContext');
+          expect(concept.getCode()).toBeDefined();
+          count++;
         }
       }
     });
@@ -869,37 +812,33 @@ describe('SNOMED CT Subset Validation', () => {
         { term: 'liver', expectedCodes: [] } // Will find if liver concepts are in dataset
       ];
 
+      const missing = [];
       for (const test of searchTests) {
-        try {
-          const filterContext = await provider.getPrepContext(true);
-          const searchResult = await provider.searchFilter(filterContext, test.term, null);
+        const filterContext = await provider.getPrepContext(true);
+        const searchResult = await provider.searchFilter(filterContext, new SearchFilterText(test.term), null);
 
-          expect(searchResult).toBeDefined();
-          expect(searchResult.matches).toBeDefined();
+        expect(searchResult).toBeDefined();
+        expect(searchResult.matches).toBeDefined();
 
-          const foundCodes = searchResult.matches.map(match => {
-            try {
-              const concept = provider.sct.concepts.getConcept(match.index);
-              return concept.identity.toString();
-            } catch (error) {
-              return null;
-            }
-          }).filter(code => code !== null);
-
-          console.log(`✅ Search "${test.term}": ${foundCodes.length} results`);
-
-          // Check if expected codes are found (if any exist in dataset)
-          for (const expectedCode of test.expectedCodes) {
-            const codeExists = await provider.locate(expectedCode);
-            if (codeExists.context && !foundCodes.includes(expectedCode)) {
-              console.log(`  ! Expected code ${expectedCode} not found in search results`);
-            }
+        const foundCodes = searchResult.matches.map(match => {
+          try {
+            const concept = provider.sct.concepts.getConcept(match.index);
+            return concept.identity.toString();
+          } catch (error) {
+            return null;
           }
+        }).filter(code => code !== null);
 
-        } catch (error) {
-          console.log(`! Search test failed for "${test.term}": ${error.message}`);
+        // Expected codes must be found if they exist in the dataset and are active
+        // (text search excludes inactive concepts)
+        for (const expectedCode of test.expectedCodes) {
+          const codeExists = await provider.locate(expectedCode);
+          if (codeExists.context && !(await provider.isInactive(codeExists.context)) && !foundCodes.includes(expectedCode)) {
+            missing.push(`${test.term}: ${expectedCode}`);
+          }
         }
       }
+      expect(missing).toEqual([]);
     });
   });
 
@@ -911,8 +850,6 @@ describe('SNOMED CT Subset Validation', () => {
       expect(iterator.keys).toBeDefined();
       expect(iterator.total).toBeGreaterThan(0);
 
-      console.log(`✅ Found ${iterator.total} root concepts`);
-
       // Test iterating through first few roots
       let count = 0;
       const maxIterations = Math.min(3, iterator.total);
@@ -923,10 +860,6 @@ describe('SNOMED CT Subset Validation', () => {
 
         expect(context.constructor.name).toBe('SnomedExpressionContext');
         expect(context.getReference()).toBeDefined();
-
-        // Get display for root concept
-        const display = await provider.display(context);
-        console.log(`  Root ${count + 1}: ${context.getCode()} - ${display}`);
 
         count++;
       }
@@ -943,7 +876,6 @@ describe('SNOMED CT Subset Validation', () => {
         const iterator = await provider.iterator(result.context);
 
         expect(iterator).toBeDefined();
-        console.log(`✅ Disease has ${iterator.total} direct children`);
 
         // Iterate through first few children
         let count = 0;
@@ -954,9 +886,6 @@ describe('SNOMED CT Subset Validation', () => {
           if (!context) break;
 
           expect(context.constructor.name).toBe('SnomedExpressionContext');
-
-          const display = await provider.display(context);
-          console.log(`  Child ${count + 1}: ${context.getCode()} - ${display}`);
 
           count++;
         }
@@ -981,8 +910,6 @@ describe('SNOMED CT Subset Validation', () => {
           const parentChildren = provider.sct.getConceptChildren(parentRef);
           expect(parentChildren).toContain(reference);
         }
-
-        console.log(`✅ Hierarchy consistency verified for ${testCode}`);
       }
     });
 
@@ -1005,8 +932,6 @@ describe('SNOMED CT Subset Validation', () => {
           const concept = provider.sct.concepts.getConcept(reference);
           expect(concept).toBeDefined();
           expect(concept.identity.toString()).toBe(code);
-
-          console.log(`✅ Reference integrity verified for ${code} (ref: ${reference})`);
         }
       }
     });
@@ -1067,183 +992,6 @@ describe('SNOMED CT display language selection', () => {
   });
 });
 
-/**
- * SNOMED CT Test Prerequisites Check
- *
- * Simple script to verify all test prerequisites are in place
- * Run this before running the full test suite to identify missing files
- */
-
-console.log('🔍 SNOMED CT Test Prerequisites Check\n');
-
-// Check source data directory
-const testSourceDir = path.resolve(__dirname, '../../tx/data/snomed');
-console.log(`📁 Checking source directory: ${testSourceDir}`);
-
-if (!fs.existsSync(testSourceDir)) {
-  console.log('❌ Source directory does not exist');
-  console.log('   Create directory and place SNOMED CT RF2 files');
-  process.exit(1);
-} else {
-  console.log('✅ Source directory exists');
-}
-
-// Check for required SNOMED files
-const requiredFiles = [
-  'Terminology/sct2_Concept_Snapshot_INT_20250814.txt',
-  'Terminology/sct2_Description_Snapshot-en_INT_20250814.txt',
-  'Terminology/sct2_Relationship_Snapshot_INT_20250814.txt'
-];
-
-console.log('\n📋 Checking for required SNOMED CT files:');
-
-let foundFiles = 0;
-const foundFilesList = [];
-const missingFilesList = [];
-
-for (const file of requiredFiles) {
-  const filePath = path.join(testSourceDir, file);
-
-  if (fs.existsSync(filePath)) {
-    foundFiles++;
-    foundFilesList.push(file);
-    console.log(`✅ ${file}`);
-  } else {
-    // Try to find similar files with glob-like pattern
-    const dir = path.dirname(path.join(testSourceDir, file));
-    const filename = path.basename(file);
-    const pattern = filename.replace('20250814', '*').replace('INT', '*');
-
-    if (fs.existsSync(dir)) {
-      const files = fs.readdirSync(dir);
-      const similar = files.filter(f => {
-        const basePattern = pattern.replace(/\*/g, '.*');
-        return new RegExp(basePattern).test(f);
-      });
-
-      if (similar.length > 0) {
-        foundFiles++;
-        foundFilesList.push(`${file} → ${similar[0]}`);
-        console.log(`✅ ${file} → found similar: ${similar[0]}`);
-      } else {
-        missingFilesList.push(file);
-        console.log(`❌ ${file}`);
-      }
-    } else {
-      missingFilesList.push(file);
-      console.log(`❌ ${file} (directory doesn't exist)`);
-    }
-  }
-}
-
-console.log(`\n📊 Found ${foundFiles}/${requiredFiles.length} required files`);
-
-if (foundFiles === 0) {
-  console.log('\n❌ No SNOMED CT files found');
-  console.log('   Import tests will fail');
-  console.log('   Place SNOMED CT RF2 files in tx/data/snomed/Terminology/');
-  process.exit(1);
-} else if (foundFiles < requiredFiles.length) {
-  console.log('\n⚠️  Some SNOMED CT files are missing');
-  console.log('   Import tests may fail or have incomplete data');
-  console.log('\n   Missing files:');
-  missingFilesList.forEach(file => console.log(`     - ${file}`));
-} else {
-  console.log('\n✅ All required SNOMED CT files found');
-}
-
-// Check cache files
-console.log('\n🗂️ Checking for cache files:');
-
-let cacheAvailable = false;
-
-if (fs.existsSync(testCachePath)) {
-  const stats = fs.statSync(testCachePath);
-  console.log(`✅ Test cache: ${testCachePath}`);
-  console.log(`   Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
-  console.log(`   Modified: ${stats.mtime.toISOString()}`);
-  cacheAvailable = true;
-} else {
-  console.log(`❌ Test cache: ${testCachePath}`);
-}
-
-if (fs.existsSync(fallbackCachePath)) {
-  const stats = fs.statSync(fallbackCachePath);
-  console.log(`✅ Fallback cache: ${fallbackCachePath}`);
-  console.log(`   Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB`);
-  console.log(`   Modified: ${stats.mtime.toISOString()}`);
-  cacheAvailable = true;
-} else {
-  console.log(`❌ Fallback cache: ${fallbackCachePath}`);
-}
-
-if (!cacheAvailable) {
-  console.log('\n⚠️  No cache files available');
-  console.log('   Provider tests will fail until import tests create cache');
-  console.log('   Run import tests first to generate cache file');
-}
-
-// Check test expectations file
-const expectationsPath = path.resolve(__dirname, '../data/snomed-test-expectations.json');
-console.log('\n📄 Checking test expectations file:');
-
-if (fs.existsSync(expectationsPath)) {
-  console.log(`✅ Test expectations: ${expectationsPath}`);
-
-  try {
-    const expectations = JSON.parse(fs.readFileSync(expectationsPath, 'utf8'));
-    console.log(`   Known codes: ${expectations.basic?.knownCodes?.length || 0}`);
-    console.log(`   Test expressions: ${expectations.basic?.knownExpressions?.length || 0}`);
-    console.log(`   Filter tests: ${expectations.filters?.concept?.length || 0}`);
-  } catch (error) {
-    console.log(`   ⚠️  Invalid JSON: ${error.message}`);
-  }
-} else {
-  console.log(`❌ Test expectations: ${expectationsPath}`);
-  console.log('   Tests will use minimal fallback expectations');
-}
-
-// Final summary
-console.log('\n🎯 Test Readiness Summary:');
-
-if (foundFiles > 0) {
-  console.log('✅ Import tests: Ready (source files available)');
-} else {
-  console.log('❌ Import tests: Will fail (no source files)');
-}
-
-console.log('✅ Expression parser tests: Ready (no dependencies)');
-
-if (cacheAvailable) {
-  console.log('✅ Provider tests: Ready (cache files available)');
-} else {
-  console.log('❌ Provider tests: Will fail (no cache files)');
-}
-
-console.log('\n🚀 Next Steps:');
-
-if (foundFiles === 0) {
-  console.log('1. Place SNOMED CT RF2 files in tx/data/snomed/Terminology/');
-  console.log('2. Run import tests to create cache file');
-  console.log('3. Run provider tests');
-} else if (!cacheAvailable) {
-  console.log('1. Run import tests to create cache file');
-  console.log('2. Run provider tests');
-} else {
-  console.log('All prerequisites met - ready to run full test suite!');
-  console.log('Run: npm test -- tx/cs/tests/cs-snomed.test.js');
-}
-
-console.log('\n📚 For more information, see the test runner instructions.');
-
-// Exit with appropriate code
-if (foundFiles === 0) {
-  console.log('\n❌ Critical prerequisites missing');
-  process.exit(1);
-} else {
-  console.log('\n✅ All prerequisites met');
-  //process.exit(0);
-}
 // Inactive relationship rows are imported but ignored altogether (agreed with the SNOMED
 // leads, Nov 2026). The test edition's TEST1000003 relationship file carries two inactive
 // rows on 50325005 |Alcoholic fatty liver|: a finding site of 64033007 |Kidney structure|

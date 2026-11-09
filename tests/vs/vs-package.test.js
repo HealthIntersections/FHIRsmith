@@ -21,9 +21,7 @@ describe('PackageValueSetProvider', () => {
 
     try {
       // Fetch the test package
-      console.log(`Fetching package ${packageId}#${packageVersion}...`);
       packagePath = await packageManager.fetch(packageId, packageVersion);
-      console.log(`Package extracted to: ${packagePath}`);
 
       // Create provider
       const fullPackagePath = path.join(packageCacheDir, packagePath);
@@ -32,7 +30,6 @@ describe('PackageValueSetProvider', () => {
 
       // Initialize provider (this creates the database if needed)
       await provider.initialize();
-      console.log('Provider initialized successfully');
 
     } catch (error) {
       console.error('Failed to setup test package:', error);
@@ -59,14 +56,11 @@ describe('PackageValueSetProvider', () => {
       expect(stats).toHaveProperty('totalSystems');
       expect(typeof stats.totalValueSets).toBe('number');
       expect(stats.totalValueSets).toBeGreaterThan(0);
-
-      console.log('Package statistics:', stats);
     });
 
     test('should have valuesets loaded in map', () => {
       const mapSize = provider.getMapSize();
       expect(mapSize).toBeGreaterThan(0);
-      console.log(`ValueSets loaded in map: ${mapSize}`);
     });
   });
 
@@ -138,8 +132,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.status).toBe('active');
       }
-
-      console.log(`Found ${results.length} active ValueSets`);
     });
 
     test('should search by publisher', async () => {
@@ -154,8 +146,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.jsonObj.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} ValueSets with HL7 publisher`);
     });
 
     test('should search by name pattern', async () => {
@@ -170,8 +160,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.name).toContain('CDS');
       }
-
-      console.log(`Found ${results.length} ValueSets with 'CDS' in name`);
     });
 
     test('should search by url', async () => {
@@ -229,8 +217,6 @@ describe('PackageValueSetProvider', () => {
         expect(vs.status).toBe('active');
         expect(vs.jsonObj.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} active HL7 ValueSets`);
     });
 
     test('should search by system in compose', async () => {
@@ -240,8 +226,6 @@ describe('PackageValueSetProvider', () => {
 
       expect(Array.isArray(results)).toBe(true);
       expect(results.length).toBeGreaterThan(0);
-
-      console.log(`Found ${results.length} ValueSets using the specified system`);
     });
 
     test('should handle empty search criteria', async () => {

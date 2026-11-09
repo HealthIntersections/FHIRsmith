@@ -6,6 +6,7 @@
 const { PackageManager, PackageContentLoader } = require('../../library/package-manager');
 const fs = require('fs').promises;
 const path = require('path');
+const { checkThrottle, recordRun } = require('../utils/run-throttle');
 const rimraf = (dir) => require('fs').rmSync(dir, { recursive: true, force: true });
 
 /**
@@ -18,36 +19,22 @@ const TIMESTAMP_FILE = path.join(__dirname, '.last-integration-test-run');
 const MIN_HOURS_BETWEEN_RUNS = 2;
 
 
+// at most once every MIN_HOURS_BETWEEN_RUNS (tests/utils/run-throttle.js;
+// FHIRSMITH_FORCE_SLOW_TESTS=1 runs them anyway)
 function shouldRunSlowTests() {
-    // if (process.env.CI === 'true') {
-    //     return false;
-    // }
-    try {
-        const stats = require('fs').statSync(TIMESTAMP_FILE);
-        const lastRun = stats.mtime.getTime();
-        const hoursAgo = (Date.now() - lastRun) / (1000 * 60 * 60);
-
-        if (hoursAgo < MIN_HOURS_BETWEEN_RUNS) {
-            const remainingHours = (MIN_HOURS_BETWEEN_RUNS - hoursAgo).toFixed(1);
-            console.log(`⏰ Skipping slow integration tests. Last run was ${hoursAgo.toFixed(1)} hours ago.`);
-            console.log(`   Tests will run again in ${remainingHours} hours.`);
-            console.log(`   To force run: rm ${TIMESTAMP_FILE}`);
-            return false;
-        }
-    } catch (error) {
-        // File doesn't exist, first run
-        console.log('🚀 Running integration tests for the first time...');
+    const throttle = checkThrottle(TIMESTAMP_FILE, MIN_HOURS_BETWEEN_RUNS);
+    if (throttle.skip) {
+        // eslint-disable-next-line no-console -- why the suite is skipped
+        console.log(`Skipping slow integration tests: ${throttle.reason}`);
     }
-
-    return true;
+    return !throttle.skip;
 }
 
 async function markTestsAsRun() {
     try {
-        await fs.writeFile(TIMESTAMP_FILE, new Date().toISOString());
-        console.log('✅ Integration tests completed. Timestamp updated.');
+        recordRun(TIMESTAMP_FILE);
     } catch (error) {
-        console.warn('⚠️  Could not update timestamp file:', error.message);
+        console.warn('Could not update timestamp file:', error.message);
     }
 }
 

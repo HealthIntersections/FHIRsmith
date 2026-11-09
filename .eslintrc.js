@@ -27,13 +27,26 @@ module.exports = {
     'dist/',
     'build/',
     'coverage/',
-    '*.min.js'
+    '*.min.js',
+    // vendored libraries
+    'static/js/jquery*.js',
+    // the ESLint configs themselves (outside the TypeScript project the type-aware rules use)
+    '.eslintrc*.js'
   ],
   // Type-aware rules to catch a forgotten `await`. They need TypeScript type info, so
   // they run via @typescript-eslint with parserOptions.project, scoped to the source
   // files in tsconfig.eslint.json. Test files and other excluded paths keep the plain
   // parser so linting never errors on a file outside the TS program.
   overrides: [
+    {
+      // Tests don't print: a test that needs to say something says it with an assertion. The few
+      // that print on purpose (why a suite is skipped, output another test reads) are marked
+      // with an eslint-disable comment giving the reason
+      files: ['tests/**/*.js'],
+      rules: {
+        'no-console': ['error', { allow: ['warn', 'error'] }]
+      }
+    },
     {
       files: ['**/*.js'],
       excludedFiles: ['**/*.test.js', 'tests/**', 'static/**', 'coverage/**'],

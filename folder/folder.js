@@ -5,6 +5,7 @@ const USERS_FILE = '.users.json';
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
 const SAFE_NAME = /^[a-zA-Z0-9._-]+$/;
 const AUTH_FAIL_DELAY_MS = 5000;
+const folderLog = require('../library/logger').getInstance().child({ module: 'folder' });
 
 function escapeHtml(str) {
   return String(str)
@@ -30,12 +31,12 @@ class FolderModule {
         continue;
       }
       if (!fc.folder || !fc.url || !fc.name) {
-        console.log(`Folder config entry missing required fields (name, folder, url) - skipping`);
+        folderLog.warn(`config entry missing required fields (name, folder, url) - skipping`);
         continue;
       }
       const rootDir = path.resolve(fc.folder);
       if (!fs.existsSync(rootDir)) {
-        console.log(`Folder path ${rootDir} does not exist - skipping "${fc.name}"`);
+        folderLog.warn(`path ${rootDir} does not exist - skipping "${fc.name}"`);
         continue;
       }
 
@@ -57,11 +58,11 @@ class FolderModule {
 
       app.use('/', router);
       this.folders.push({ name: fc.name, folder: rootDir, url: urlBase });
-      console.log(`Folder module: serving "${fc.name}" from ${rootDir} at ${urlBase}`);
+      folderLog.info(`serving "${fc.name}" from ${rootDir} at ${urlBase}`);
     }
 
     if (this.folders.length === 0) {
-      console.log('Folder module: no folders configured');
+      folderLog.warn('no folders configured');
     }
   }
 
@@ -213,7 +214,7 @@ class FolderModule {
 
       return res.status(200).send('OK');
     }).catch(err => {
-      console.log(`Folder module: PUT error for ${fullPath}: ${err.message}`);
+      folderLog.error(`PUT failed for ${fullPath}: ${err.message}`);
       return res.status(500).send('Upload failed');
     });
   }
@@ -260,7 +261,7 @@ class FolderModule {
     let current = path.resolve(dir);
     const root = path.resolve(rootDir);
 
-    while (true) {
+    for (;;) {
       const usersPath = path.join(current, USERS_FILE);
       if (fs.existsSync(usersPath)) {
         try {

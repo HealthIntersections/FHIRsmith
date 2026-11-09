@@ -57,8 +57,10 @@ let config;
 const configPath = folders.filePath('config.json');
 bootLog.info(`Reading configuration from ${configPath}`);
 try {
-  const configData = fs.readFileSync(configPath, 'utf8');
-  config = JSON.parse(configData);
+  // JSON, with // and /* */ comments allowed (library/config-reader.js)
+  config = require('./library/config-reader').readConfig(configPath);
+  // the server block is optional (every setting in it has a default)
+  config.server = config.server || {};
 } catch (error) {
   console.error(`Failed to load configuration from ${configPath}:`, error.message);
   bootLog.error(`Failed to load configuration from ${configPath}: ${error.message}`);
@@ -595,6 +597,7 @@ async function buildRootPageContent() {
       content += '</li>';
     }
     content += '</ul>';
+    content += '</li>';
   }
 
 

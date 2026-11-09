@@ -24,6 +24,7 @@ const crypto = require('crypto');
 const Database = require('better-sqlite3');
 const { Command } = require('commander');
 const { axisLabel } = require('../cs/icd11-expressions');
+const terminal = require('./terminal');
 
 const TOOL_VERSION = '1.0.0';
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
@@ -141,7 +142,7 @@ class CodeSystemExporter {
   constructor(opts) {
     this.opts = opts;
     this.db = new Database(opts.src, { readonly: true });
-    this.log = (...a) => console.log(...a);
+    this.log = (...a) => terminal.log(...a);
   }
 
   meta(key) {
@@ -861,7 +862,7 @@ function main(argv) {
 
 if (require.main === module) {
   main(process.argv).catch(e => {
-    console.error(`\nexport failed: ${e && e.stack || e}`);
+    terminal.error(`\nexport failed: ${e && e.stack || e}`);
     process.exit(1);
   });
 }

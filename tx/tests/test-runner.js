@@ -169,8 +169,7 @@ async function startServer() {
     // Load test configuration
     let config;
     try {
-        const configData = fs.readFileSync(TEST_CONFIG_FILE, 'utf8');
-        config = JSON.parse(configData);
+        config = require('../../library/config-reader').readConfig(TEST_CONFIG_FILE);
     } catch (error) {
         throw new Error(`Failed to load test config: ${error.message}`);
     }

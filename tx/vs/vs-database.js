@@ -4,6 +4,8 @@ const sqlite3 = require('sqlite3').verbose();
 const { VersionUtilities } = require('../../library/version-utilities');
 const ValueSet = require("../library/valueset");
 const { guarded } = require('../library/sqlite-utilities');
+// the server log ({tx}), looked up when used (the database is opened by importers and tests too)
+const txLog = () => require('../../library/logger').getInstance().child({ module: 'tx' });
 
 // Settings key written once a package cache has been fully populated (see isComplete)
 const CACHE_COMPLETE_KEY = 'cache-complete';
@@ -157,7 +159,7 @@ class ValueSetDatabase {
       );
       const missing = (needHash[0] && needHash[0].n) || 0;
       if (missing > 0) {
-        console.log(`Backfilling content_hash for ${missing} existing value sets...`);
+        txLog().info(`Backfilling content_hash for ${missing} existing value sets...`);
         const rows = await all(
             "SELECT id, content FROM valuesets WHERE content_hash IS NULL"
         );
@@ -173,10 +175,10 @@ class ValueSetDatabase {
           });
           done++;
           if (done % 1000 === 0) {
-            console.log(`  ...${done}/${missing}`);
+            txLog().info(`  ...${done}/${missing}`);
           }
         }
-        console.log(`Backfilled ${done} hashes.`);
+        txLog().info(`Backfilled ${done} hashes.`);
       }
     })();
   }
@@ -313,7 +315,7 @@ class ValueSetDatabase {
 
     await new Promise((resolve) => {
       this._writeDb.close((err) => {
-        if (err) console.warn(`Warning closing database connection: ${err.message}`);
+        if (err) txLog().warn(`Warning closing database connection: ${err.message}`);
         this._writeDb = null;
         resolve();
       });

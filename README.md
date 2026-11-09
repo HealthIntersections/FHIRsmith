@@ -37,7 +37,7 @@ These are not being actively developed at present.
 
 * Maintainers: Grahame Grieve, Italo Macêdo, Josh Mandel, Jose Costa Teixeira
 * Issues / Discussion: Use github issues
-* License: BSD-3
+* License: BSD-3-Clause (see [LICENSE](LICENSE))
 * Contribution Policy: Make PRs. PRs have to pass all the tests
 * Security Information: See [security.md](security.md)
 
@@ -61,8 +61,9 @@ There are 5 executable programs:
 Unless you're developing, you only need the first three
 
 FHIRsmith is open source - see below, and you're welcome to use it for any kind of use. Note,
-though, that if you support FHIRsmith commercially as part of a managed service or product, you
-are required to be a Commercial Partner of HL7 - see (link to be provided).
+though, that if you support FHIRsmith commercially as part of a managed service or product, 
+and you seek support for your implementation from the project team, you are required to be a
+Commercial Partner of HL7 - consult [The FHIR Product Director](mailto:fhir-director@hl7.org).
 
 ### Quick Start
 
@@ -119,7 +120,7 @@ mkdir -p data data/logs
 # Copy example configuration
 cp config-template.json data/config.json
 
-# Edit configuration as needed
+# Edit configuration: every module is off until you set "enabled": true (comments are allowed)
 nano data/config.json
 ```
 
@@ -177,6 +178,9 @@ Or run it inline:
 ```bash
 FHIRSMITH_DATA_DIR=/var/lib/fhirsmith fhirsmith
 ```
+
+For cluster mode (a master and tx-workers - see [cluster.md](cluster.md)), run `fhirsmith-cluster`
+instead of `fhirsmith`.
 
 ### Changing the Node.js version
 
@@ -316,7 +320,7 @@ or do it via a PR
    ./release.sh X.Y.Z
 ```
 
-   `gr.sh` checks that the release is ready - on `main` and pushed, the three versions in
+   `release.sh` checks that the release is ready - on `main` and pushed, the three versions in
    `package.json` and `package-lock.json` match, `CHANGELOG.md` has a dated section with the
    conformance statement, and `test-cases-report.json` passed, is from this version and is
    newer than the last code change - then submits the report to
@@ -344,7 +348,7 @@ or do it via a PR
 
 ## License
 
-[BSD-3](https://opensource.org/license/bsd-3-clause)
+[BSD-3-Clause](LICENSE) - see also [opensource.org](https://opensource.org/license/bsd-3-clause)
 
 ## Contributing
 

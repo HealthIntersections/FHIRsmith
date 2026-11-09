@@ -30,7 +30,6 @@ describe('Registry Resolve Functional Tests', () => {
       const testData = loadTestData();
       crawler.loadData(testData);
       api = new RegistryAPI(crawler);
-      console.log('Test data loaded successfully.');
     } catch (error) {
       console.error('Failed to set up test environment:', error);
       throw error;
@@ -46,18 +45,12 @@ describe('Registry Resolve Functional Tests', () => {
     // Determine which resolver to use
     const isValueSet = !!valueSet;
 
-    console.log(`Running with usage: ${usage || 'none'}`);
-
     // Call the appropriate resolver
     const resolveResult = isValueSet
       ? api.resolveValueSet(fhirVersion, valueSet, authoritativeOnly, usage)
       : api.resolveCodeSystem(fhirVersion, url, authoritativeOnly, usage);
 
     const actual = resolveResult.result;
-
-    // Debug output
-    console.log(`Matches: ${resolveResult.matches}`);
-    console.log(JSON.stringify(actual, null, 2));
 
     // Basic structure checks
     expect(actual.formatVersion).toBe("1");

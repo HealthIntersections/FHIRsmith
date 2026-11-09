@@ -63,8 +63,12 @@ jobs:
 
       - name: Run tests
         run: npm run test:ci
+        timeout-minutes: 20
         env:
           SUPPRESS_LOGS: 'true'
+          # as in ci.yml: the suites run in one process (jest maxWorkers 1), which outgrows
+          # Node's default heap
+          NODE_OPTIONS: "--max-old-space-size=14000"
 
       - name: Upload test results
         uses: actions/upload-artifact@v4

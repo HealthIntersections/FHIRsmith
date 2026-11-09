@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { Command } = require('commander');
+const terminal = require('./terminal');
 
 const TOOL_VERSION = '1.0.0';
 const WHO = 'http://id.who.int';
@@ -341,8 +342,8 @@ class Icd11Importer {
     this.native = stripTrailingSlash(opts.native);
     this.fhir = opts.fhir ? stripTrailingSlash(opts.fhir) : null;
     this.fetcher = new Fetcher(opts);
-    this.log = (...a) => console.log(...a);
-    this.warn = (...a) => console.warn(...a);
+    this.log = (...a) => terminal.log(...a);
+    this.warn = (...a) => terminal.warn(...a);
   }
 
   headers(lang) {
@@ -892,7 +893,7 @@ function main(argv) {
 
 if (require.main === module) {
   main(process.argv).catch(e => {
-    console.error(`\nimport failed: ${e && e.stack || e}`);
+    terminal.error(`\nimport failed: ${e && e.stack || e}`);
     process.exit(1);
   });
 }

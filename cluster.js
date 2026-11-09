@@ -46,7 +46,6 @@
 
 const http = require('http');
 const path = require('path');
-const fs = require('fs');
 const { spawn } = require('child_process');
 const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
@@ -1199,7 +1198,7 @@ async function main() {
   const folders = require('./library/folder-setup');
   let launcher;
   try {
-    const config = JSON.parse(fs.readFileSync(folders.filePath('config.json'), 'utf8'));
+    const config = require('./library/config-reader').readConfig(folders.filePath('config.json'));
     launcher = createLauncher(loadSettings(process.argv.slice(2), process.env, config));
   } catch (error) {
     console.error(`cluster.js: ${error.message}`);

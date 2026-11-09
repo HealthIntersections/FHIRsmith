@@ -21,9 +21,7 @@ describe('PackageConceptMapProvider', () => {
 
     try {
       // Fetch the test package
-      console.log(`Fetching package ${packageId}#${packageVersion}...`);
       packagePath = await packageManager.fetch(packageId, packageVersion);
-      console.log(`Package extracted to: ${packagePath}`);
 
       // Create provider
       const fullPackagePath = path.join(packageCacheDir, packagePath);
@@ -32,7 +30,6 @@ describe('PackageConceptMapProvider', () => {
 
       // Initialize provider (this creates the database if needed)
       await provider.initialize();
-      console.log('Provider initialized successfully');
 
     } catch (error) {
       console.error('Failed to setup test package:', error);
@@ -59,14 +56,11 @@ describe('PackageConceptMapProvider', () => {
       expect(stats).toHaveProperty('totalSystems');
       expect(typeof stats.totalConceptMaps).toBe('number');
       expect(stats.totalConceptMaps).toBeGreaterThan(0);
-
-      console.log('Package statistics:', stats);
     });
 
     test('should have conceptmaps loaded in map', () => {
       const mapSize = provider.getMapSize();
       expect(mapSize).toBeGreaterThan(0);
-      console.log(`ConceptMaps loaded in map: ${mapSize}`);
     });
   });
 
@@ -138,8 +132,6 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.status).toBe('active');
       }
-
-      console.log(`Found ${results.length} active ConceptMaps`);
     });
 
     test('should search by publisher', async () => {
@@ -154,8 +146,6 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} ConceptMaps with HL7 publisher`);
     });
 
     test('should search by name pattern', async () => {
@@ -170,8 +160,6 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.name).toContain('Bfs');
       }
-
-      console.log(`Found ${results.length} ConceptMaps with 'CDS' in name`);
     });
 
     test('url is a left match: the url starts with it', async () => {
@@ -212,8 +200,6 @@ describe('PackageConceptMapProvider', () => {
         expect(vs.status).toBe('active');
         expect(vs.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} active HL7 ConceptMaps`);
     });
 
     test('should search by system in group', async () => {
@@ -223,8 +209,6 @@ describe('PackageConceptMapProvider', () => {
 
       expect(Array.isArray(results)).toBe(true);
       expect(results.length).toBeGreaterThan(0);
-
-      console.log(`Found ${results.length} ConceptMaps using the specified system`);
     });
 
     test('should handle empty search criteria', async () => {

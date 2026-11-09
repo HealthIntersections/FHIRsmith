@@ -3,6 +3,7 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const readline = require('readline');
+const terminal = require('./terminal');
 
 class NdcModule extends BaseTerminologyModule {
   getName() {
@@ -94,18 +95,18 @@ class NdcModule extends BaseTerminologyModule {
     const inquirer = require('inquirer');
     const chalk = require('chalk');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version)}`);
-    console.log(`  Products Only: ${chalk.white(config.productsOnly ? 'Yes' : 'No')}`);
-    console.log(`  Packages Only: ${chalk.white(config.packagesOnly ? 'Yes' : 'No')}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version)}`);
+    terminal.log(`  Products Only: ${chalk.white(config.productsOnly ? 'Yes' : 'No')}`);
+    terminal.log(`  Packages Only: ${chalk.white(config.packagesOnly ? 'Yes' : 'No')}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -135,14 +136,14 @@ class NdcModule extends BaseTerminologyModule {
       const stats = await this.validateNdcDirectory(options.source, parseInt(options.sample));
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Versions found: ${stats.versions.length}`);
-      console.log(`  Total products estimated: ${stats.totalProducts.toLocaleString()}`);
-      console.log(`  Total packages estimated: ${stats.totalPackages.toLocaleString()}`);
-      console.log(`  Versions: ${stats.versions.join(', ')}`);
+      terminal.log(`  Versions found: ${stats.versions.length}`);
+      terminal.log(`  Total products estimated: ${stats.totalProducts.toLocaleString()}`);
+      terminal.log(`  Total packages estimated: ${stats.totalPackages.toLocaleString()}`);
+      terminal.log(`  Versions: ${stats.versions.join(', ')}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
@@ -166,7 +167,7 @@ class NdcModule extends BaseTerminologyModule {
 
       this.logSuccess(`Found ${versions.length} NDC versions:`);
       versions.forEach((version, index) => {
-        console.log(`  ${index + 1}. ${version}`);
+        terminal.log(`  ${index + 1}. ${version}`);
       });
 
     } catch (error) {
@@ -188,13 +189,13 @@ class NdcModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
 
       this.logSuccess('Database status:');
-      console.log(`  Versions: ${stats.versions.join(', ')}`);
-      console.log(`  Products: ${stats.productCount.toLocaleString()}`);
-      console.log(`  Packages: ${stats.packageCount.toLocaleString()}`);
-      console.log(`  Organizations: ${stats.orgCount.toLocaleString()}`);
-      console.log(`  Product Types: ${stats.typeCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Versions: ${stats.versions.join(', ')}`);
+      terminal.log(`  Products: ${stats.productCount.toLocaleString()}`);
+      terminal.log(`  Packages: ${stats.packageCount.toLocaleString()}`);
+      terminal.log(`  Organizations: ${stats.orgCount.toLocaleString()}`);
+      terminal.log(`  Product Types: ${stats.typeCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -427,7 +428,7 @@ class NdcModule extends BaseTerminologyModule {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -447,7 +448,7 @@ class NdcDataMigrator {
   }
 
   async migrate(sourceDir, destFile = 'unknown', options = {}) {
-    if (options.verbose) console.log('Starting NDC data migration...');
+    if (options.verbose) terminal.log('Starting NDC data migration...');
 
     // Ensure destination directory exists
     const destDir = path.dirname(destFile);
@@ -471,12 +472,12 @@ class NdcDataMigrator {
       const versions = await this.#findVersions(sourceDir);
 
       if (options.verbose) {
-        console.log(`Found ${versions.length} versions: ${versions.join(', ')}`);
+        terminal.log(`Found ${versions.length} versions: ${versions.join(', ')}`);
       }
 
       // Process each version
       for (const versionName of versions) {
-        if (options.verbose) console.log(`Processing version: ${versionName}`);
+        if (options.verbose) terminal.log(`Processing version: ${versionName}`);
 
         await this.#processVersion(db, sourceDir, versionName, options);
       }
@@ -489,7 +490,7 @@ class NdcDataMigrator {
       // Create lookup tables
       await this.#createLookupTables(db, options.verbose);
 
-      if (options.verbose) console.log('NDC data migration completed successfully');
+      if (options.verbose) terminal.log('NDC data migration completed successfully');
     } finally {
       await this.#closeDatabase(db, options.verbose);
     }
@@ -511,7 +512,7 @@ class NdcDataMigrator {
   }
 
   async #createTables(db, verbose = true) {
-    if (verbose) console.log('Creating database tables...');
+    if (verbose) terminal.log('Creating database tables...');
 
     const tableSQL = [
       `CREATE TABLE NDCProducts (
@@ -574,7 +575,7 @@ class NdcDataMigrator {
           });
         });
 
-        if (verbose) console.log('Database tables created');
+        if (verbose) terminal.log('Database tables created');
         resolve();
       });
     });
@@ -599,11 +600,11 @@ class NdcDataMigrator {
     const productFile = path.join(versionDir, 'product.txt');
 
     if (!fs.existsSync(productFile)) {
-      if (options.verbose) console.warn(`Product file not found: ${productFile}`);
+      if (options.verbose) terminal.warn(`Product file not found: ${productFile}`);
       return;
     }
 
-    if (options.verbose) console.log(`Processing products from ${versionName}...`);
+    if (options.verbose) terminal.log(`Processing products from ${versionName}...`);
 
     const rl = readline.createInterface({
       input: fs.createReadStream(productFile),
@@ -668,7 +669,7 @@ class NdcDataMigrator {
         batch = [];
 
         if (processedCount % 10000 === 0 && options.verbose) {
-          console.log(`  Processed ${processedCount} products...`);
+          terminal.log(`  Processed ${processedCount} products...`);
         }
       }
     }
@@ -690,7 +691,7 @@ class NdcDataMigrator {
     this.codesMap = codesMap;
 
     if (options.verbose) {
-      console.log(`  Completed products: ${processedCount} records`);
+      terminal.log(`  Completed products: ${processedCount} records`);
     }
   }
 
@@ -698,11 +699,11 @@ class NdcDataMigrator {
     const packageFile = path.join(versionDir, 'package.txt');
 
     if (!fs.existsSync(packageFile)) {
-      if (options.verbose) console.warn(`Package file not found: ${packageFile}`);
+      if (options.verbose) terminal.warn(`Package file not found: ${packageFile}`);
       return;
     }
 
-    if (options.verbose) console.log(`Processing packages from ${versionName}...`);
+    if (options.verbose) terminal.log(`Processing packages from ${versionName}...`);
 
     const rl = readline.createInterface({
       input: fs.createReadStream(packageFile),
@@ -763,7 +764,7 @@ class NdcDataMigrator {
         batch = [];
 
         if (processedCount % 10000 === 0 && options.verbose) {
-          console.log(`  Processed ${processedCount} packages...`);
+          terminal.log(`  Processed ${processedCount} packages...`);
         }
       }
     }
@@ -778,7 +779,7 @@ class NdcDataMigrator {
     insertPackage.finalize();
 
     if (options.verbose) {
-      console.log(`  Completed packages: ${processedCount} records`);
+      terminal.log(`  Completed packages: ${processedCount} records`);
     }
   }
 
@@ -968,7 +969,7 @@ class NdcDataMigrator {
   }
 
   async #createLookupTables(db, verbose = true) {
-    if (verbose) console.log('Creating lookup tables...');
+    if (verbose) terminal.log('Creating lookup tables...');
 
     const lookups = [
       { table: 'NDCProductTypes', map: this.typesMap },
@@ -991,7 +992,7 @@ class NdcDataMigrator {
                 [id, name.substring(0, 500)],
                 (err) => {
                   if (err && verbose) {
-                    console.warn(`Warning inserting into ${lookup.table}: ${err.message}`);
+                    terminal.warn(`Warning inserting into ${lookup.table}: ${err.message}`);
                   }
                 }
               );
@@ -1004,7 +1005,7 @@ class NdcDataMigrator {
           if (err) {
             reject(err);
           } else {
-            if (verbose) console.log('Lookup tables created');
+            if (verbose) terminal.log('Lookup tables created');
             resolve();
           }
         });
@@ -1016,7 +1017,7 @@ class NdcDataMigrator {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });
