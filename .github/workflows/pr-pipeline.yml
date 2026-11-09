@@ -25,8 +25,9 @@ jobs:
 
       - name: Lint changed files only
         run: |
-          # Get changed JS files, excluding vendor directories
-          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/main...HEAD | grep -E '\.(js|mjs)$' | grep -v 'static/' | grep -v 'node_modules/' | tr '\n' ' ')
+          # Get changed JS files, excluding vendor directories and the ESLint configs (which
+          # .eslintrc.js ignores: passed by name, ESLint warns that they're ignored)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/main...HEAD | grep -E '\.(js|mjs)$' | grep -v 'static/' | grep -v 'node_modules/' | grep -v '^\.eslintrc' | tr '\n' ' ')
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed files: $CHANGED_FILES"
             npx eslint $CHANGED_FILES
