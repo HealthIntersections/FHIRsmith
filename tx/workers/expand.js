@@ -203,6 +203,8 @@ class ValueSetExpander {
   excludedProviders = []; // {system, cs} - see checkForExclusionVersionSpecialCase
   excluded = new Set();
   hasExclusions = false;
+  // a provider applied offset and count to the compose itself (processSelection)
+  providerPaged = false;
   requiredSupplements = new Set();
   usedSupplements = new Set();
   reportedSupplements = new Set();
@@ -368,6 +370,8 @@ class ValueSetExpander {
     const s = this.keyS(system, version, code);
 
     if (!this.map.has(s)) {
+      // a code outside the requested page is only counted and kept for de-duplication: it is never returned
+      const outsidePage = this.#outsidePage();
       const n = {};
       n.system = system;
       n.code = code;
@@ -380,7 +384,7 @@ class ValueSetExpander {
       if (isInactive) {
         n.inactive = true;
       }
-      if (!this.noDetails) {
+      if (!this.noDetails && !outsidePage) {
         if (status && status.toLowerCase() !== 'active') {
           this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", status);
         } else if (deprecated) {
@@ -815,6 +819,7 @@ class ValueSetExpander {
 
     // the provider has applied offset and count: every code it returns is in the page
     vsInfo.csDoOffset = true;
+    this.providerPaged = true;
     this.canBeHierarchy = false;
     const cds = new Designations(this.worker.i18n.languageDefinitions);
     for (const set of selection.sets || []) {
@@ -974,7 +979,10 @@ class ValueSetExpander {
               if (await this.passesFilters(cs, c, prep, set, 1)) {
                 const cds = new Designations(this.worker.i18n.languageDefinitions);
                 let added;
-                if (this.noDetails) {
+                if (!this.noDetails && this.#outsidePage()) {
+                  added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), false, null,
+                      cds, null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+                } else if (this.noDetails) {
                   await this.listDisplaysFromProvider(cds, cs, c);
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), false, null,
                       cds, null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
@@ -1044,6 +1052,12 @@ class ValueSetExpander {
               if (this.noDetails) {
                 added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
                     null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+              } else if (filter.isNull && this.#outsidePage()) {
+                added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
+                    null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+                if (added) {
+                  this.addToTotal();
+                }
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
                 this.listDisplaysFromIncludeConcept(cds, cc, vsSrc);
@@ -1124,7 +1138,7 @@ class ValueSetExpander {
               // count++;
               if (this.passesImports(valueSets, cs.system(), await cs.code(c), 0)) {
                 let added;
-                if (this.noDetails) {
+                if (this.noDetails || this.#outsidePage()) {
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
                       null,  null, cds, null, null,
                       expansion, null, null, null, null, null, excludeInactive, vsSrc.url);
@@ -1432,7 +1446,7 @@ class ValueSetExpander {
     if ((!this.params.excludeNotForUI || !await cs.isAbstract(context)) && (!this.params.activeOnly || !await cs.isInactive(context))) {
       const cds = new Designations(this.worker.i18n.languageDefinitions);
       let t;
-      if (this.noDetails) {
+      if (this.noDetails || this.#outsidePage()) {
         t = await this.includeCode(cs, null, await cs.system(), await cs.version(), code, await cs.isAbstract(context), await cs.isInactive(context), null, null, null,
             null, null, expansion, imports, null, null, null, null, excludeInactive, srcUrl);
 
@@ -2178,6 +2192,24 @@ class ValueSetExpander {
   pageFilled() {
     return this.count > 0 && this.offset > -1 && !this.hasExclusions
         && this.fullList.length >= this.count + this.offset;
+  }
+
+  /**
+   * True when the next code added to the expansion falls outside the requested page (offset,
+   * count), so it is counted and kept for de-duplication but never returned: there is no point
+   * reading its displays, definition and properties. Exclusions don't move a code once it is
+   * added: handleCompose processes every exclude before the includes, and includeCode refuses an
+   * excluded code before adding it.
+   * @returns {boolean}
+   */
+  #outsidePage() {
+    // a provider that paged the compose itself returns only the page's codes
+    if (this.providerPaged || !(this.offset > 0 || this.count > -1)) {
+      return false;
+    }
+    const start = Math.max(this.offset, 0);
+    const i = this.fullList.length;
+    return i < start || (this.count > -1 && i >= start + this.count);
   }
 
   addToTotal(t = 1) {
