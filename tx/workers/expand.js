@@ -1335,7 +1335,8 @@ class ValueSetExpander {
           // unless the page holds the whole list, when every one is built. And not when their
           // details are left to be read later: see deferDetails)
           const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code),
-            !this.noDetails && !(filter.isNull && this.#defers(cs)) && (!this.paging || this.#pageHolds(cset.concept.length)));
+            !this.noDetails && !(filter.isNull && this.#defers(cs)) && (!this.paging || this.#pageHolds(cset.concept.length)),
+            { displayOnly: this.#showsDisplayOnly(filter) });
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -2718,6 +2719,21 @@ class ValueSetExpander {
       return false;
     }
     return !this.#pageFits();
+  }
+
+  /**
+   * Whether the expansion shows nothing of a listed concept's designations but its display: the
+   * request's languages are English or none, it asks for no designations (includeDesignations,
+   * designation, displayLanguage), and no text filter is matched against them. The same rule a
+   * selecting provider can apply for itself in processSelection; told to prefetchCodes.
+   */
+  #showsDisplayOnly(filter) {
+    const p = this.params;
+    if (!filter.isNull || p.includeDesignations || p.hasDesignations || p.hasDisplayLanguages) {
+      return false;
+    }
+    const langs = this.worker.opContext.langs;
+    return !langs || (langs.languages || []).every(l => l.code === '*' || l.isEnglishOrNothing());
   }
 
   /**
