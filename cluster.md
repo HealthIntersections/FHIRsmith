@@ -251,11 +251,14 @@ The page keeps to the space it had before (it is often on a wall screen). Top to
   memory guard's measure at 90% or more of its refusal threshold; a process that isn't ready
   (starting, restarting); figures gone stale; restarts since launch; under 10% of the disk
   free; a background task whose last run failed; and a serious npm audit finding.
-* **The graphs** (see [Graphs](#graphs)).
+* **The graphs** (see [Graphs](#graphs)); their key is under More.
 * **Background tasks**: one line naming those at work, those whose last run failed (each is
   also a problem, with its state) and the idle ones, then a row for each task at work.
-* **More** (closed until opened): the status panel below, Storage, every background task, and
-  on `/dashboard` npm audit and the data folder.
+* **One line** for the server's own upkeep: on `/dashboard`, the FHIRsmith release (and whether
+  a newer one is out) and npm audit's result; and, in red, low disk space (under 10% free).
+  The npm audit advice and findings follow it when there are any.
+* **More** (closed until opened): the graphs' key, the status panel below, Storage, every
+  background task, and on `/dashboard` the data folder.
 
 The status panel, under More:
 

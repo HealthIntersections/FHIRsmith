@@ -207,7 +207,8 @@ let disconnectStatus = () => {};
 function metricsTemplate(page, level = 4) {
   const label = !role ? 'This process' : `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
   const guard = memoryGuard._state;
-  return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }), level }];
+  // (legend: false - statusContent puts the graphs' key under "More")
+  return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }), level, legend: false }];
 }
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
@@ -489,6 +490,7 @@ function backgroundTasks(level) {
 // and heap, the cluster's on the master under the launcher, else this process's; and the problems
 function statusLine() {
   const [uptime, uptimeSub] = uptimeParts(Date.now() - stats.startTime);
+  // low disk space is a problem, and also on its own line above "More", in red (see statusContent)
   const logs = logFigures();
   const disk = logs ? logs.disk : null;
   const failedTasks = stats.failedTasks();
@@ -508,14 +510,36 @@ function statusLine() {
   });
 }
 
-// The top of / and /dashboard: the status line, the graphs, the background tasks at work, then
-// under "More" the status panel, storage, every background task and `more` (html). Headings
-// start at `level`, the page's sections' own.
-async function statusContent(liquid, page, level, more = '') {
+// under this share of the disk free, a warning in red above "More"
+const DISK_LOW = 0.1;
+
+// Low disk space (the disk the logs are on), as a warning in red; '' when there is enough
+function diskWarning() {
+  const logs = logFigures();
+  const disk = logs ? logs.disk : null;
+  if (!disk || !(disk.total > 0) || disk.free >= DISK_LOW * disk.total) {
+    return '';
+  }
+  const gb = (bytes) => (bytes / 2 ** 30).toFixed(1);
+  return `<span style="color:#b00"><strong><span aria-hidden="true">⚠ </span>Disk space low:</strong> ` +
+    `${gb(disk.free)} GB free of ${gb(disk.total)} GB (${Math.round(100 * disk.free / disk.total)}%)</span>`;
+}
+
+// The top of / and /dashboard: the status line, the graphs, the background tasks at work, one
+// line of what the server needs looking at (`notes`: html, with low disk space added), then under
+// "More" the graphs' key, the status panel, storage, every background task and `more` (html).
+// Headings start at `level`, the page's sections' own.
+async function statusContent(liquid, page, level, { notes = [], details = '', more = '' } = {}) {
   let content = await liquid.renderFile('status-line', { line: statusLine(), level });
   content += await liquid.renderFile(...metricsTemplate(page, level + 1));
   content += await liquid.renderFile('status-tasks', { tasks: stats.taskSummary(), level });
-  content += `<details class="fs-status-more"><summary><h${level}>More</h${level}>: every process, memory, storage, every background task</summary>`;
+  const line = [...notes, diskWarning()].filter(Boolean);
+  if (line.length) {
+    content += `<div id="npm-audit" style="font-size:13px;margin:0 0 8px"><p style="margin:0 0 4px">${line.join(' · ')}</p>${details}</div>`;
+  }
+  content += `<details class="fs-status-more"><summary><h${level}>More</h${level}>: the graphs' key, every process, memory, storage, every background task</summary>`;
+  // the graphs' key (tx/html/cluster-metrics-script.liquid puts it here)
+  content += '<div id="serverMetricsLegend" class="server-metrics-legend"></div>';
   content += await liquid.renderFile('status-panel', { view: statusView(), level: level + 1 });
   content += await liquid.renderFile('status-panel', { view: storageStatusView(), level: level + 1 });
   content += backgroundTasks(level + 1);
@@ -821,8 +845,13 @@ app.get('/dashboard', async (req, res) => {
     // the background tasks' table (the bare template has no fhir.css)
     let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
     // the page's title is its h1 (root-bare-template.html), so its sections are h2
-    content += await statusContent(liquid, 'dash-metrics', 2,
-      (npmAudit ? npmAudit.renderDashboard() : '') + `<p>Data: ${escape(folders.dataDir())}</p>`);
+    // the release and npm audit on one line above "More" (the advice and the findings, when there
+    // are any, after it); the data folder under "More"
+    content += await statusContent(liquid, 'dash-metrics', 2, {
+      notes: npmAudit ? [npmAudit.renderLine()] : [],
+      details: npmAudit ? npmAudit.renderFindings() : '',
+      more: `<p>Data: ${escape(folders.dataDir())}</p>`
+    });
 
     content = '<div class="row mb-4"><div class="col-12">' + content + '</div></div>';
 

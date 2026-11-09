@@ -33,6 +33,7 @@ Major new features:
 
 ### Changed
 
+- Dashboard: the FHIRsmith release and npm audit's result are one line above "More", with low disk space (under 10% free, still also a problem) in red on the same line (on the home page too, which has no npm audit line); the graphs' key is under "More"
 - `config-template.json` has every module turned off: set `"enabled": true` on the ones you run
 - The npm package leaves out the release scripts and test reports, and what git ignores (npm doesn't read `.gitignore` when there is a `.npmignore`, so a local `npm publish` included, for one, `private/`)
 - `$expand` limits: the defaults are now 10000 codes returned (`externalLimit`, was 3000) and 100000 built (`internalLimit`, was 10000). The three expansion limits (`externalLimit`, `internalLimit`, `walkLimit`) are checked at startup - whole numbers above 0, external <= internal <= walk - and logged. The tx-ecosystem test runner (User-Agent `Tools/Java`) is no longer held to the old defaults: it gets the same limits as any client, and the tests that depend on a limit set `X-TOO-COSTLY-THRESHOLD`

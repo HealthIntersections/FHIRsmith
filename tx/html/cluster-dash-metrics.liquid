@@ -5,7 +5,9 @@
   .row:has(> .col-12 > .server-metrics-grid) { margin-left:0; margin-right:0; }
   .col-12:has(> .server-metrics-grid) { box-sizing:border-box; }
 </style>
+{%- unless legend == false %}
 <div id="serverMetricsLegend" class="server-metrics-legend"></div>
+{%- endunless %}
 <div id="serverMetricsShedding" class="server-metrics-shedding" hidden></div>
 <div class="server-metrics-grid">
   <div class="server-metrics-chart">

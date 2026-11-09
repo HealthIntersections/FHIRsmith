@@ -205,10 +205,16 @@ class NpmAudit {
    * Dashboard line: this server's version, and whether there is a newer release
    */
   renderRelease() {
+    const text = this.releaseText();
+    return text ? `<p>${text}</p>` : '';
+  }
+
+  /** The release, as inline html ('' if the installed version isn't known) */
+  releaseText() {
     if (!this.installedVersion) {
       return '';
     }
-    let html = `<p><strong>FHIRsmith release:</strong> this server runs ${escape(this.installedVersion)}`;
+    let html = `<strong>FHIRsmith release:</strong> this server runs ${escape(this.installedVersion)}`;
     const cmp = compareVersions(this.installedVersion, this.latestVersion);
     if (cmp === null) {
       html += ' (the latest release could not be checked)';
@@ -218,7 +224,7 @@ class NpmAudit {
     } else {
       html += ', the latest release';
     }
-    return html + '</p>';
+    return html;
   }
 
   /**
@@ -414,35 +420,55 @@ class NpmAudit {
   /**
    * Dashboard: always shown, so a check that is failing or switched off is visible too
    */
-  renderDashboard(now = Date.now()) {
-    let html = '<div id="npm-audit">';
+  /**
+   * The release and the audit, as one line of inline html (the top of /dashboard): the advice
+   * and the findings are in renderFindings
+   */
+  renderLine(now = Date.now()) {
     if (!this.enabled) {
-      return html + '<p><strong>npm audit:</strong> disabled (npmAudit.enabled = false)</p></div>';
+      return '<strong>npm audit:</strong> disabled (npmAudit.enabled = false)';
     }
-    html += this.renderRelease();
+    const parts = [];
+    const release = this.releaseText();
+    if (release) {
+      parts.push(release);
+    }
     if (!this.checkedAt) {
-      html += '<p><strong>npm audit:</strong> ';
-      html += this.lastError ? `<span style="color:#b00">could not be run: ${escape(this.lastError)}</span>` : 'not run yet';
-      return html + '</p></div>';
-    }
-    const colour = this.findings.length === 0 ? '#070' : (this.isSerious() ? '#b00' : '#b60');
-    html += `<p><strong>npm audit:</strong> <span style="color:${colour}">${escape(this.summary())}</span>` +
-      ` in ${this.packageCount} packages, checked ${escape(describeAgo(this.checkedAt.getTime(), now))}`;
-    if (this.lastError) {
-      html += ` <span style="color:#b00">(the latest check failed: ${escape(this.lastError)})</span>`;
-    }
-    html += '</p>';
-    if (this.findings.length > 0) {
-      html += `<p>${escape(this.advice())}</p>`;
-      html += '<table class="grid"><tr><th>Severity</th><th>Package</th><th>Installed</th><th>Vulnerable</th><th>Advisory</th></tr>';
-      for (const f of this.findings) {
-        const link = /^https:\/\//.test(f.url) ? `<a href="${escape(f.url)}">${escape(f.title || f.url)}</a>` : escape(f.title);
-        html += `<tr><td>${escape(f.severity)}</td><td>${escape(f.name)}</td><td>${escape(f.installed.join(', '))}</td>` +
-          `<td>${escape(f.range)}</td><td>${link}</td></tr>`;
+      parts.push('<strong>npm audit:</strong> ' +
+        (this.lastError ? `<span style="color:#b00">could not be run: ${escape(this.lastError)}</span>` : 'not run yet'));
+    } else {
+      const colour = this.findings.length === 0 ? '#070' : (this.isSerious() ? '#b00' : '#b60');
+      let audit = `<strong>npm audit:</strong> <span style="color:${colour}">${escape(this.summary())}</span>` +
+        ` in ${this.packageCount} packages, checked ${escape(describeAgo(this.checkedAt.getTime(), now))}`;
+      if (this.lastError) {
+        audit += ` <span style="color:#b00">(the latest check failed: ${escape(this.lastError)})</span>`;
       }
-      html += '</table>';
+      parts.push(audit);
     }
-    return html + '</div>';
+    return parts.join(' · ');
+  }
+
+  /** The advice and the table of findings, when there are any ('' otherwise) */
+  renderFindings() {
+    if (!this.enabled || !this.checkedAt || this.findings.length === 0) {
+      return '';
+    }
+    let html = `<p>${escape(this.advice())}</p>`;
+    html += '<table class="grid"><tr><th>Severity</th><th>Package</th><th>Installed</th><th>Vulnerable</th><th>Advisory</th></tr>';
+    for (const f of this.findings) {
+      const link = /^https:\/\//.test(f.url) ? `<a href="${escape(f.url)}">${escape(f.title || f.url)}</a>` : escape(f.title);
+      html += `<tr><td>${escape(f.severity)}</td><td>${escape(f.name)}</td><td>${escape(f.installed.join(', '))}</td>` +
+        `<td>${escape(f.range)}</td><td>${link}</td></tr>`;
+    }
+    return html + '</table>';
+  }
+
+  /**
+   * The dashboard's npm audit: one line (renderLine), and only when there are findings, the advice
+   * and the table. The home page's banner links here (#npm-audit)
+   */
+  renderDashboard(now = Date.now()) {
+    return `<div id="npm-audit"><p>${this.renderLine(now)}</p>${this.renderFindings()}</div>`;
   }
 }
 

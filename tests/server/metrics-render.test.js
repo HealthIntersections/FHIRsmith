@@ -209,3 +209,25 @@ test.each([[false, 'this process'], [true, 'the cgroup, every process']])('a ser
   const plain = JSON.parse(graphData({ startTime:now - 1000, intervalMs:600000, history }, 'This process', now + 600000));
   expect(plain.total).toBeNull();
 });
+
+test('legend: false - the key goes in a #serverMetricsLegend further down the page, once it has loaded', async () => {
+  const metrics = { cluster:true, sampledAt:now + 20000, series:[
+    { label:'Master m0', status:'ready', history:[point(now, 1)] },
+    { label:'Worker tx1', status:'ready', history:[point(now, 2)] }
+  ] };
+  const html = await liquid.renderFile('cluster-dash-metrics', { metricsJson:JSON.stringify(metrics), level:3, legend:false });
+  expect(html).not.toContain('id="serverMetricsLegend"');
+  // as on the page: the script runs while the page is loading, before the key's element exists
+  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], makeElement()]));
+  for (const [id, element] of elements) if (id.endsWith('Chart')) element.parentElement = makeElement();
+  const listeners = {};
+  const document = { readyState:'loading', getElementById:id => elements.get(id), createElement:makeElement,
+    createTextNode:text => ({ text }), addEventListener:(name, callback) => { listeners[name] = callback; } };
+  const context = vm.createContext({ document, Chart:function() { this.update = () => {}; this.destroy = () => {}; } });
+  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(script[1], context);
+  elements.set('serverMetricsLegend', makeElement());
+  listeners.DOMContentLoaded();
+  const legend = legendText(elements);
+  expect(legend).toContain('Master m0');
+  expect(legend).toContain('Worker tx1');
+});
