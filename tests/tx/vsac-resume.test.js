@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { VSACValueSetProvider, vsacLog } = require('../../tx/vs/vs-vsac');
 const { ValueSetDatabase } = require('../../tx/vs/vs-database');
 
 /**
@@ -164,7 +164,7 @@ describe('VSAC sync resumes at startup', () => {
     open.push(p);
     const delays = [];
     p._startRefreshTimer = (delayMs) => { delays.push(delayMs); };
-    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errors = jest.spyOn(vsacLog, 'error').mockImplementation(() => {});
     let logged;
     try {
       await p.initialize();
@@ -210,7 +210,7 @@ describe('VSAC refresh timer', () => {
 
   test('every sync, failed or not, sets the timer for the next one', async () => {
     const runs = timed(['fail', 'fail', 'fail', 'fail', 'ok', 'ok']);
-    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const errors = jest.spyOn(vsacLog, 'error').mockImplementation(() => {});
     try {
       const start = Date.now();
       p._startRefreshTimer(60 * 1000); // as after a failed startup sync

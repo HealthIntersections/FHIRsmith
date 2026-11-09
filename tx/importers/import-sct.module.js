@@ -12,6 +12,7 @@ const {
   SnomedRelationshipList, SnomedReferenceSetMembers, SnomedReferenceSetIndex
 } = require('../sct/structures');
 const {SnomedExpressionServices} = require("../sct/expressions");
+const terminal = require('./terminal');
 
 // definitionStatusId values from the RF2 concept file
 const SNOMED_DEFINITION_STATUS_PRIMITIVE = 900000000000074008n;
@@ -106,16 +107,16 @@ class SnomedModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
   }
 
   async confirmImport(config) {
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
 
     if (config.edition) {
       const editions = {
@@ -125,26 +126,26 @@ class SnomedModule extends BaseTerminologyModule {
         // ... other editions
       };
       const editionName = editions[config.edition] || `Edition ${config.edition}`;
-      console.log(`  Edition: ${chalk.white(editionName)} (${config.edition})`);
+      terminal.log(`  Edition: ${chalk.white(editionName)} (${config.edition})`);
     }
 
     if (config.version) {
-      console.log(`  Version: ${chalk.white(config.version)}`);
+      terminal.log(`  Version: ${chalk.white(config.version)}`);
     }
 
     if (config.uri) {
-      console.log(`  Version URI: ${chalk.white(config.uri)}`);
+      terminal.log(`  Version URI: ${chalk.white(config.uri)}`);
     }
 
     if (config.language) {
-      console.log(`  Language: ${chalk.white(config.language)}`);
+      terminal.log(`  Language: ${chalk.white(config.language)}`);
     }
 
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -357,7 +358,7 @@ class SnomedModule extends BaseTerminologyModule {
     } catch (error) {
       // Silent fail - auto-detection is best-effort
       if (this.config?.verbose) {
-        console.log(`Auto-detection warning: ${error.message}`);
+        terminal.log(`Auto-detection warning: ${error.message}`);
       }
     }
 
@@ -661,7 +662,7 @@ class SnomedModule extends BaseTerminologyModule {
 
   async runImportWithoutConfigSaving(config) {
     try {
-      console.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
+      terminal.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -680,7 +681,7 @@ class SnomedModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`${this.getName()} import failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       process.exit(1);
     }
@@ -816,10 +817,10 @@ class SnomedModule extends BaseTerminologyModule {
       const stats = await this.validateSnomedDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Concept files: ${stats.conceptFiles}`);
-      console.log(`  Description files: ${stats.descriptionFiles}`);
-      console.log(`  Relationship files: ${stats.relationshipFiles}`);
-      console.log(`  Refset directories: ${stats.refsetDirectories}`);
+      terminal.log(`  Concept files: ${stats.conceptFiles}`);
+      terminal.log(`  Description files: ${stats.descriptionFiles}`);
+      terminal.log(`  Relationship files: ${stats.relationshipFiles}`);
+      terminal.log(`  Refset directories: ${stats.refsetDirectories}`);
 
     } catch (error) {
       this.logError(`Validation failed: ${error.message}`);
@@ -843,26 +844,26 @@ class SnomedModule extends BaseTerminologyModule {
       const data = await reader.loadSnomedData();
 
       this.logSuccess('Cache file status:');
-      console.log(`  Cache Version: ${data.cacheVersion}`);
-      console.log(`  Version URI: ${data.versionUri}`);
-      console.log(`  Version Date: ${data.versionDate}`);
-      console.log(`  Edition: ${data.edition}`);
-      console.log(`  SNOMED Version: ${data.version}`);
+      terminal.log(`  Cache Version: ${data.cacheVersion}`);
+      terminal.log(`  Version URI: ${data.versionUri}`);
+      terminal.log(`  Version Date: ${data.versionDate}`);
+      terminal.log(`  Edition: ${data.edition}`);
+      terminal.log(`  SNOMED Version: ${data.version}`);
 
       // Create structure instances to get counts
       const concepts = new SnomedConceptList(data.concept);
       const descriptions = new SnomedDescriptions(data.desc);
       const relationships = new SnomedRelationshipList(data.rel);
 
-      console.log(`  Concepts: ${concepts.count().toLocaleString()}`);
-      console.log(`  Descriptions: ${descriptions.count().toLocaleString()}`);
-      console.log(`  Relationships: ${relationships.count().toLocaleString()}`);
-      console.log(`  Active Roots: ${data.activeRoots.length}`);
-      console.log(`  Inactive Roots: ${data.inactiveRoots.length}`);
+      terminal.log(`  Concepts: ${concepts.count().toLocaleString()}`);
+      terminal.log(`  Descriptions: ${descriptions.count().toLocaleString()}`);
+      terminal.log(`  Relationships: ${relationships.count().toLocaleString()}`);
+      terminal.log(`  Active Roots: ${data.activeRoots.length}`);
+      terminal.log(`  Inactive Roots: ${data.inactiveRoots.length}`);
 
       const fileStat = fs.statSync(cachePath);
-      console.log(`  File Size: ${(fileStat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`);
-      console.log(`  Last Modified: ${fileStat.mtime.toISOString()}`);
+      terminal.log(`  File Size: ${(fileStat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${fileStat.mtime.toISOString()}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -924,7 +925,7 @@ class SnomedImporterWithProgress {
         message += ` (${rate.toLocaleString()} items/sec)`;
       }
 
-      console.log(message);
+      terminal.log(message);
 
       // Clean up
       this.taskStartTimes.delete(taskName);
@@ -1161,7 +1162,7 @@ class SnomedImporter {
       await this.saveCache();
 
     } catch (error) {
-      console.error('DEBUG: Import failed with error:', error);
+      terminal.error('DEBUG: Import failed with error:', error);
       throw new Error(`Import failed: ${error.message}`);
     }
   }
@@ -1181,7 +1182,7 @@ class SnomedImporter {
     // extension content is layered on top.
     if (this.config.base) {
       if (this.config.verbose) {
-        console.log(`Loading base edition from: ${this.config.base}`);
+        terminal.log(`Loading base edition from: ${this.config.base}`);
       }
       this._scanDirectory(this.config.base, files);
     }
@@ -1232,7 +1233,7 @@ class SnomedImporter {
         files.concreteValues.push(filePath);
       }
     } catch (error) {
-      console.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
+      terminal.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
     }
   }
 
@@ -1785,7 +1786,7 @@ class SnomedImporter {
     }
     this.identifiers.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
     if (this.identifiers.length > 0 || missing > 0) {
-      console.log(`Alternate identifiers: ${this.identifiers.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
+      terminal.log(`Alternate identifiers: ${this.identifiers.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
     }
   }
 
@@ -1837,7 +1838,7 @@ class SnomedImporter {
     }
     this.concreteValues.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
     if (this.concreteValues.length > 0 || missing > 0) {
-      console.log(`Concrete values: ${this.concreteValues.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
+      terminal.log(`Concrete values: ${this.concreteValues.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
     }
   }
 
@@ -2252,7 +2253,7 @@ class SnomedImporter {
 
   async processRefsets() {
     if (this.files.refsetDirectories.length === 0) {
-      console.log('No reference set directories found');
+      terminal.log('No reference set directories found');
       this.refsetIndex.doneBuild();
       this.refsetMembers.doneBuild();
       return;
@@ -2368,7 +2369,7 @@ class SnomedImporter {
       const parts = fileName.split('_');
 
       if (parts.length < 3) {
-        console.log(`Skipping file with unexpected name format: ${fileName}`);
+        terminal.log(`Skipping file with unexpected name format: ${fileName}`);
         return;
       }
 
@@ -2401,7 +2402,7 @@ class SnomedImporter {
 
         const fields = line.split('\t');
         if (fields.length < 6) {
-          console.log(`Skipping line ${lineNumber} with insufficient fields: ${fields.length}`);
+          terminal.log(`Skipping line ${lineNumber} with insufficient fields: ${fields.length}`);
           continue; // Minimum fields required
         }
 
@@ -2437,14 +2438,14 @@ class SnomedImporter {
         try {
           member.id = this.parseGUID(id);
         } catch (error) {
-          console.log(`Invalid GUID in ${fileName}: ${id}`);
+          terminal.log(`Invalid GUID in ${fileName}: ${id}`);
           continue;
         }
 
         // Find module concept
         const moduleConcept = this.conceptMap.get(BigInt(moduleId));
         if (!moduleConcept) {
-          console.log(`Module concept not found: ${moduleId}`);
+          terminal.log(`Module concept not found: ${moduleId}`);
           continue;
         }
         member.module = moduleConcept.index;
@@ -2477,7 +2478,7 @@ class SnomedImporter {
             // Try to find as relationship (simplified - would need relationship ID lookup)
             member.kind = 3; // Other/unknown
             member.ref = 0;
-            console.log(`Component not found: ${referencedComponentId}`);
+            terminal.log(`Component not found: ${referencedComponentId}`);
             continue;
           }
         }
@@ -2500,7 +2501,7 @@ class SnomedImporter {
       }
 
     } catch (error) {
-      console.error(`Error processing reference set ${filePath}:`, error);
+      terminal.error(`Error processing reference set ${filePath}:`, error);
     }
   }
 
@@ -2588,7 +2589,7 @@ class SnomedImporter {
               value = descResult.index;
               type = 2; // Description
             } else {
-              console.log(`Referenced component not found: ${field}`);
+              terminal.log(`Referenced component not found: ${field}`);
               value = 0;
               type = 1;
             }
@@ -2845,7 +2846,7 @@ class SnomedImporter {
       } catch (error) {
         // Log the error but continue processing other concepts
         if (this.config.verbose) {
-          console.warn(`Warning: Could not build normal form for concept ${concept.id}: ${error.message}`);
+          terminal.warn(`Warning: Could not build normal form for concept ${concept.id}: ${error.message}`);
         }
       }
 
@@ -2860,7 +2861,7 @@ class SnomedImporter {
     }
 
     if (this.config.verbose) {
-      console.log(`Normal forms: ${normalFormsAdded} concepts have non-trivial normal forms`);
+      terminal.log(`Normal forms: ${normalFormsAdded} concepts have non-trivial normal forms`);
     }
   }
 

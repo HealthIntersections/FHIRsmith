@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { VSACValueSetProvider, vsacLog } = require('../../tx/vs/vs-vsac');
 const { ValueSetDatabase } = require('../../tx/vs/vs-database');
 
 /**
@@ -37,8 +37,8 @@ describe('VSAC refresh timer after a restart', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vsac-restart-'));
     p = provider(path.join(dir, 'vsac.db'));
     await p.database.create();
-    log = jest.spyOn(console, 'log').mockImplementation(() => {});
-    jest.spyOn(console, 'error').mockImplementation(() => {});
+    log = jest.spyOn(vsacLog, 'info').mockImplementation(() => {});
+    jest.spyOn(vsacLog, 'error').mockImplementation(() => {});
   });
 
   afterEach(async () => {
@@ -68,7 +68,7 @@ describe('VSAC refresh timer after a restart', () => {
     expect(p.refreshValueSets).not.toHaveBeenCalled();
     expect(delay()).toBe(22 * HOUR);
     expect(p.lastRefresh.getTime()).toBe(finished);
-    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^VSAC: next sync due at .* \(the last sync finished at /));
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^next sync due at .* \(the last sync finished at /));
   });
 
   test('the last sync 30 hours ago: the next is due now', async () => {

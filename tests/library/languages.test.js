@@ -283,7 +283,6 @@ describe('LanguageDefinitions Class', () => {
 
     if (fs.existsSync(realDataPath)) {
       definitions = await LanguageDefinitions.fromFiles(realDataPath);
-      // console.log('Using real IETF language data from lang.dat');
     } else {
       throw new Error('Real data file not found');
     }
@@ -310,8 +309,6 @@ describe('LanguageDefinitions Class', () => {
       
       // Test that common scripts are loaded
       expect(definitions.scripts.has('Latn')).toBe(true);
-      
-      // console.log(`Loaded ${definitions.languages.size} languages, ${definitions.regions.size} regions, ${definitions.scripts.size} scripts`);
     });
 
     test('should handle duplicate codes', () => {
@@ -472,12 +469,8 @@ Description: Test
       
       complexCodes.forEach(code => {
         const lang = definitions.parse(code);
-        if (lang) {
-          expect(lang.language).toBeTruthy();
-          // console.log(`Successfully parsed: ${code}`);
-        } else {
-          // console.log(`Could not parse (may not be in current dataset): ${code}`);
-        }
+        expect(lang).toBeTruthy();
+        expect(lang.language).toBeTruthy();
       });
     });
   });
@@ -568,7 +561,6 @@ describe('Language System Integration Tests', () => {
 
     if (fs.existsSync(realDataPath)) {
       definitions = await LanguageDefinitions.fromFiles(realDataPath);
-      // console.log('Using real IETF language data from lang.dat');
     } else {
       throw new Error('Real data file not found');
     }

@@ -35,8 +35,10 @@ provider._followDatabase = async () => {
   reloads++;
   return reload();
 };
+/* eslint-disable no-console -- silences the provider in this child process; origLog reports errors */
 const origLog = console.log;
 console.log = () => {};
+/* eslint-enable no-console */
 
 process.on('message', async (msg) => {
   try {

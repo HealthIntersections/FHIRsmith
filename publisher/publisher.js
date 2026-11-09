@@ -218,8 +218,8 @@ class PublisherModule {
       });
     }
 
-    // Create default admin user if none exists
-    await this.createDefaultAdmin();
+    // the administrator, with the configured password (or a random one)
+    await this.ensureAdmin();
 
     // Schema migrations for existing databases
     await this.runMigrations();
@@ -287,41 +287,51 @@ class PublisherModule {
     }
   }
 
-  async createDefaultAdmin() {
-    return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1', guarded(reject, (err, row) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+  /**
+   * The administrator, login 'admin'. Its password is the config's adminPassword, set (or reset)
+   * at every start, so changing the config changes it. With no adminPassword, an 'admin' that
+   * doesn't exist yet (and no other administrator) - or that still has the old fixed default
+   * password, admin123 - gets a random password (a UUID), which is logged: set adminPassword to
+   * choose it. There is no page to change a password
+   */
+  async ensureAdmin() {
+    const get = (sql, params = []) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+    const run = (sql, params = []) => new Promise((resolve, reject) =>
+      this.db.run(sql, params, guarded(reject, (err) => err ? reject(err) : resolve())));
+    const setPassword = async (admin, password) => {
+      const hash = await bcrypt.hash(password, 10);
+      if (admin) {
+        await run('UPDATE users SET password_hash = ?, is_admin = 1 WHERE id = ?', [hash, admin.id]);
+      } else {
+        await run('INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
+          ['Administrator', 'admin', hash, 1]);
+      }
+    };
 
-        if (row.count === 0) {
-          const defaultPassword = 'admin123'; // Change this!
-          bcrypt.hash(defaultPassword, 10, (err, hash) => {
-            if (err) {
-              reject(err);
-              return;
-            }
-
-            this.db.run(
-                'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
-                ['Administrator', 'admin', hash, 1],
-                guarded(reject, (err) => {
-                  if (err) {
-                    this.logger.error('Failed to create default admin:', err);
-                    reject(err);
-                  } else {
-                    this.logger.warn('Created default admin user - login: admin, password: admin123 - CHANGE THIS!');
-                    resolve();
-                  }
-                })
-            );
-          });
-        } else {
-          resolve();
-        }
-      }));
-    });
+    const configured = typeof this.config.adminPassword === 'string' && this.config.adminPassword.trim() !== ''
+      ? this.config.adminPassword : null;
+    const admin = await get("SELECT id, password_hash FROM users WHERE login = 'admin'");
+    if (configured) {
+      if (!admin || !(await bcrypt.compare(configured, admin.password_hash))) {
+        await setPassword(admin, configured);
+        this.logger.info(`Administrator 'admin': password ${admin ? 'changed to' : 'set from'} the configured adminPassword`);
+      }
+      return;
+    }
+    if (!admin) {
+      const others = await get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1');
+      if (others.count > 0) {
+        return;
+      }
+      const password = crypto.randomUUID();
+      await setPassword(null, password);
+      this.logger.warn(`Created administrator - login: admin, password: ${password}. Set adminPassword in the publisher config to choose the password`);
+    } else if (await bcrypt.compare('admin123', admin.password_hash)) {
+      const password = crypto.randomUUID();
+      await setPassword(admin, password);
+      this.logger.warn(`Administrator 'admin' had the old default password (admin123); it is now ${password}. Set adminPassword in the publisher config to choose the password`);
+    }
   }
 
   setupRoutes() {

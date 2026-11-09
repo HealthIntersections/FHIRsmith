@@ -8,7 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { VSACValueSetProvider, vsacLog } = require('../../tx/vs/vs-vsac');
 const { ValueSetDatabase } = require('../../tx/vs/vs-database');
 const folders = require('../../library/folder-setup');
 
@@ -213,7 +213,7 @@ describe('VSAC value sets read on demand', () => {
       }
       return { resourceType: 'Bundle', entry: [{ resource: vs(URL2, '20200101') }] };
     };
-    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const log = jest.spyOn(vsacLog, 'info').mockImplementation(() => {});
     try {
       await provider.refreshValueSets();
     } finally {
@@ -446,7 +446,7 @@ describe('VSAC recently used value sets', () => {
 
     // operator resync of one url: only that url's rows are dropped
     provider._fetchBundle = async () => ({ resourceType: 'Bundle', entry: [{ resource: vs(URL1, '20240101') }] });
-    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const log = jest.spyOn(vsacLog, 'info').mockImplementation(() => {});
     try {
       await provider.resyncValueSet(URL1);
       expect(provider._recentValueSets().size).toBe(1);

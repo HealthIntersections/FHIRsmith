@@ -111,7 +111,7 @@
     "smart-health-card"
   ],
   "author": "Health Intersections Pty Ltd",
-  "license": "BSD-3",
+  "license": "BSD-3-Clause",
   "overrides": {
     "@istanbuljs/load-nyc-config": {
       "js-yaml": "^4.1.0"
@@ -119,7 +119,8 @@
   },
   "bin": {
     "tx-import": "./tx/importers/tx-import.js",
-    "fhirsmith": "./server.js"
+    "fhirsmith": "./server.js",
+    "fhirsmith-cluster": "./cluster.js"
   },
   "repository": {
     "type": "git",

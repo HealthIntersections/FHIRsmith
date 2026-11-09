@@ -57,8 +57,6 @@ describe('UCUM Provider Integration Tests', () => {
 
         const display = await provider.display(unit.code);
         expect(display).toBeTruthy();
-
-        console.log(`✓ ${unit.name}: ${unit.code} → ${display}`);
       }
     });
 
@@ -82,20 +80,15 @@ describe('UCUM Provider Integration Tests', () => {
 
       let validCount = 0;
       for (const unit of medicationUnits) {
-        try {
-          const result = await provider.locate(unit);
-          if (result.context) {
-            validCount++;
+        // some common clinical spellings ('units/kg', 'mEq/L') are not valid UCUM
+        const result = await provider.locate(unit);
+        if (result.context) {
+          validCount++;
 
-            const analysis = await provider.analyzeUnit(unit);
-            const canonical = await provider.getCanonicalUnits(unit);
-
-            console.log(`✓ ${unit}: ${analysis} (canonical: ${canonical})`);
-          } else {
-            console.log(`✗ ${unit}: ${result.message}`);
-          }
-        } catch (error) {
-          console.log(`✗ ${unit}: ERROR - ${error.message}`);
+          // a valid unit must analyse and canonicalise without throwing
+          expect(provider.ucumService.analyse(unit)).toBeTruthy();
+          // (canonical units are '' for a dimensionless ratio such as mg/kg)
+          expect(typeof provider.ucumService.getCanonicalUnits(unit)).toBe('string');
         }
       }
 
@@ -120,11 +113,6 @@ describe('UCUM Provider Integration Tests', () => {
         const isValid = result.context !== null;
 
         expect(isValid).toBe(vital.expected);
-
-        if (isValid) {
-          const display = await provider.display(vital.unit);
-          console.log(`✓ ${vital.parameter}: ${vital.unit} → ${display}`);
-        }
       }
     });
   });
@@ -166,10 +154,6 @@ describe('UCUM Provider Integration Tests', () => {
         const result = await provider.locate(item.unit);
         if (result.context) {
           validCount++;
-
-          // // console.log(`✓ ${item.field}: ${item.unit}`);
-        } else {
-          // console.log(`✗ ${item.field}: ${item.unit} - ${result.message}`);
         }
       }
 
@@ -195,12 +179,14 @@ describe('UCUM Provider Integration Tests', () => {
         'kg/(m.s2)'      // pressure (Pa)
       ];
 
+      const invalid = [];
       for (const unit of complexUnits) {
         const result = await provider.locate(unit);
-        if (result.context) {
-          // console.log(`✓ ${unit}`);
+        if (!result.context) {
+          invalid.push(`${unit}: ${result.message}`);
         }
       }
+      expect(invalid).toEqual([]);
     });
   });
 
@@ -288,9 +274,6 @@ describe('UCUM Provider Integration Tests', () => {
       const elapsed = Date.now() - start;
       // const opsPerSecond = (testUnits.length / elapsed * 1000).toFixed(2);
 
-      // console.log(`Validated ${testUnits.length} units in ${elapsed}ms (${opsPerSecond} ops/sec)`);
-      // console.log(`Valid units: ${validCount}/${testUnits.length} (${(validCount/testUnits.length*100).toFixed(1)}%)`);
-
       expect(validCount).toBeGreaterThan(testUnits.length * 0.9); // 90%+ should be valid
       expect(elapsed).toBeLessThan(5000); // Should complete in < 5 seconds
     });
@@ -351,9 +334,7 @@ describe('UCUM Provider Integration Tests', () => {
         );
 
         // At least one expected term should be in the error message
-        if (!hasExpectedTerms) {
-          // console.log(`Warning: Error message for "${testCase.unit}" may not be descriptive enough: "${result.message}"`);
-        }
+        expect(hasExpectedTerms).toBe(true);
       }
     });
   });

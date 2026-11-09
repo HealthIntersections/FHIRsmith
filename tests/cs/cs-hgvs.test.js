@@ -91,13 +91,10 @@ describe('HGVS Provider', () => {
           expect(result.context).toBeInstanceOf(HGVSCode);
           expect(result.context.code).toBe(testCode);
           expect(result.message).toBeNull();
-          console.log(`✓ External service validated: ${testCode}`);
         } else {
           expect(result.message).toBeDefined();
-          console.log(`✓ External service rejected: ${testCode} - ${result.message}`);
         }
       } catch (error) {
-        console.log(`⚠ External service unavailable: ${error.message}`);
         // This is acceptable - external service might not be available during testing
         expect(error.message).toContain('Error validating HGVS code');
       }
@@ -106,17 +103,18 @@ describe('HGVS Provider', () => {
     test('should handle obviously invalid codes', async () => {
       const invalidCode = testData.invalidCodes[1]; // 'not.a.real:code'
 
+      let result;
       try {
-        const result = await provider.locate(invalidCode);
-
-        // Should return null context for invalid codes
-        expect(result.context).toBeNull();
-        expect(result.message).toBeDefined();
-        console.log(`✓ External service rejected invalid code: ${invalidCode}`);
+        result = await provider.locate(invalidCode);
       } catch (error) {
-        console.log(`⚠ External service unavailable for invalid code test: ${error.message}`);
         // Still acceptable - service might be down
+        expect(error.message).toContain('Error validating HGVS code');
+        return;
       }
+
+      // Should return null context for invalid codes
+      expect(result.context).toBeNull();
+      expect(result.message).toBeDefined();
     }, 10000);
 
     test('should handle network timeouts gracefully', async () => {
@@ -126,11 +124,9 @@ describe('HGVS Provider', () => {
       try {
         await provider.locate(testCode);
         // If we get here, the service responded
-        console.log(`✓ Service responded for: ${testCode}`);
       } catch (error) {
         // Should handle timeout/network errors gracefully
         expect(error.message).toMatch(/Error validating HGVS code|timeout|network/i);
-        console.log(`✓ Handled network error gracefully: ${error.message}`);
       }
     }, 10000);
   });
@@ -183,8 +179,6 @@ describe('HGVS Provider', () => {
 
       const firstDesignation = designations.designations[0];
       expect(firstDesignation.value).toBe(testCode);
-
-      console.log(`✓ Designations for ${testCode}: ${designations.length} found`);
     });
 
     test('should return empty array for null context', async () => {
@@ -286,7 +280,6 @@ describe('HGVS Provider', () => {
     test('should track factory usage', () => {
       const useCount = factory.useCount();
       expect(useCount).toBeGreaterThan(0);
-      console.log(`✓ Factory use count: ${useCount}`);
     });
 
     test('should return correct default version', () => {
@@ -298,29 +291,29 @@ describe('HGVS Provider', () => {
     test('should handle complete workflow for potentially valid code', async () => {
       const testCode = testData.potentiallyValidCodes[0];
 
+      // 1. Locate the code
+      let locateResult;
       try {
-        // 1. Locate the code
-        const locateResult = await provider.locate(testCode);
-
-        if (locateResult.context) {
-          // 2. Get code and display
-          const code = await provider.code(locateResult.context);
-          const display = await provider.display(locateResult.context);
-
-          expect(code).toBe(testCode);
-          expect(display).toBe(testCode);
-
-          // 3. Get designations
-          const designations = new Designations(await TestUtilities.loadLanguageDefinitions());
-          await provider.designations(locateResult.context, designations);
-          expect(designations.count).toBeGreaterThan(0);
-
-          console.log(`✓ Complete workflow succeeded for: ${testCode}`);
-        } else {
-          console.log(`✓ Code rejected by service: ${testCode} - ${locateResult.message}`);
-        }
+        locateResult = await provider.locate(testCode);
       } catch (error) {
-        console.log(`⚠ External service error in workflow test: ${error.message}`);
+        // acceptable - the external service might not be available during testing
+        expect(error.message).toContain('Error validating HGVS code');
+        return;
+      }
+
+      // the service may reject the code; the rest of the workflow needs one it accepts
+      if (locateResult.context) {
+        // 2. Get code and display
+        const code = await provider.code(locateResult.context);
+        const display = await provider.display(locateResult.context);
+
+        expect(code).toBe(testCode);
+        expect(display).toBe(testCode);
+
+        // 3. Get designations
+        const designations = new Designations(await TestUtilities.loadLanguageDefinitions());
+        await provider.designations(locateResult.context, designations);
+        expect(designations.count).toBeGreaterThan(0);
       }
     }, 10000);
   });

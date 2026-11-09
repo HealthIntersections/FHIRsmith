@@ -21,9 +21,15 @@ const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
 const { splitFilters, supplementFilter } = require('./supplement-filters');
 
-// Expansion limits (from Pascal constants)
-const EXTERNAL_TEST_DEFAULT_LIMIT = 3000;
-const INTERNAL_DEFAULT_LIMIT = 10000;
+// Expansion limits, when the configuration doesn't set them (modules.tx.externalLimit and
+// internalLimit; see TXModule.expansionLimits): the most codes an $expand returns, and the most
+// an expansion builds (an imported value set's, for one)
+const EXTERNAL_DEFAULT_LIMIT = 10000;
+const INTERNAL_DEFAULT_LIMIT = 100000;
+// How far a paged expansion (count and offset) may walk to reach its page, as a multiple of the
+// internal limit when not configured (modules.tx.walkLimit). Only the page is built: the codes
+// before it are kept as keys, so walking costs time (bounded by the operation limit), not memory
+const WALK_LIMIT_FACTOR = 10;
 const CACHE_WHEN_DEBUGGING = false;
 
 /**
@@ -207,17 +213,30 @@ class ValueSetExpander {
   usedSupplements = new Set();
   reportedSupplements = new Set();
   internalLimit = INTERNAL_DEFAULT_LIMIT;
-  externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT;
+  externalLimit = EXTERNAL_DEFAULT_LIMIT;
   noDetails = false;
   // count=0: the codes counted (see #countListedCodes) but not built, by keyS
   countedKeys = new Set();
   composeOnlyListsCodes = false;
+  // A paged expansion (count > 0) walks to its page keeping only the keys of the codes before
+  // it, and counts those after it (see #beforePage): paging is whether this one does, walked how many codes
+  // it has passed, walkedKeys their keys (for deduplication), walkLimit how far it may walk
+  paging = false;
+  walked = 0;
+  // a code system's cap (expandLimitation) kept codes off the page asked for: {system, limit}, for
+  // the expansion-issue that explains it (see #noteCapCut)
+  capCut = null;
+  walkedKeys = new Set();
+  // and after the page, how many more codes it has counted for the total (see #finishIfPageFilled)
+  counted = 0;
+  walkLimit = INTERNAL_DEFAULT_LIMIT * WALK_LIMIT_FACTOR;
 
   constructor(worker, params) {
     this.worker = worker;
     this.params = params;
     this.internalLimit = worker.internalLimit;
     this.externalLimit = worker.externalLimit;
+    this.walkLimit = worker.walkLimit || (this.internalLimit || INTERNAL_DEFAULT_LIMIT) * WALK_LIMIT_FACTOR;
 
     this.csCounter = new Map();
   }
@@ -327,26 +346,12 @@ class ValueSetExpander {
       return null;
     }
 
-    // expandLimitation() caps how many codes a single code system may contribute
-    // (e.g. CPT limits enumeration to 1000 codes by agreement with the AMA).
-    // NB: expandLimitation and system are methods - reading them as properties
-    // (cs.expandLimitation > 0) compares the function object and is always false,
-    // which silently disabled this cap.
-    const expandLimit = cs != null ? cs.expandLimitation() : 0;
-    if (expandLimit > 0) {
-      let cnt = this.csCounter.get(cs.system());
-      if (cnt == null) {
-        cnt = new ValueSetCounter();
-        this.csCounter.set(cs.system(), cnt);
-      }
-      cnt.increment();
-      if (cnt.count > expandLimit) {
-        return null;
-      }
+    if (this.#overSystemCap(cs)) {
+      return null;
     }
 
     if (this.limitCount > 0 && this.fullList.length >= this.limitCount && !this.hasExclusions) {
-      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.fullList.length >= this.count + this.offset) {
+      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.walked + this.fullList.length >= this.count + this.offset) {
         this.noTotal();
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
@@ -367,7 +372,7 @@ class ValueSetExpander {
 
     const s = this.keyS(system, version, code);
 
-    if (!this.map.has(s)) {
+    if (!this.map.has(s) && !this.walkedKeys.has(s)) {
       const n = {};
       n.system = system;
       n.code = code;
@@ -521,6 +526,148 @@ class ValueSetExpander {
     return result;
   }
 
+  /**
+   * expandLimitation() caps how many codes a single code system may contribute (e.g. CPT limits
+   * enumeration to 1000 codes by agreement with the AMA): count this code against its system's
+   * cap, and say whether it is over. (NB: expandLimitation and system are methods - read as
+   * properties, cs.expandLimitation > 0 compares the function object and is always false, which
+   * silently disabled this cap.)
+   */
+  #overSystemCap(cs) {
+    const expandLimit = cs != null ? cs.expandLimitation() : 0;
+    if (expandLimit > 0) {
+      let cnt = this.csCounter.get(cs.system());
+      if (cnt == null) {
+        cnt = new ValueSetCounter();
+        this.csCounter.set(cs.system(), cnt);
+      }
+      cnt.increment();
+      if (cnt.count > expandLimit) {
+        this.#noteCapCut(cs);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether the code system has already contributed all the codes its cap (expandLimitation)
+   * allows: then nothing more of it can be in the expansion, so there's no need to walk it further
+   */
+  #capReached(cs) {
+    const expandLimit = cs != null ? cs.expandLimitation() : 0;
+    if (!(expandLimit > 0)) {
+      return false;
+    }
+    const cnt = this.csCounter.get(cs.system());
+    return cnt != null && cnt.count >= expandLimit;
+  }
+
+  /**
+   * A code system's cap kept a code out: if the page asked for wasn't yet full (or there is no
+   * page - all the codes were asked for), the response is missing codes it would otherwise have,
+   * and gets an expansion-issue saying why. A code kept out after the page is full only changes
+   * the total, which is reported anyway (see the whole-system include in includeCodes)
+   */
+  #noteCapCut(cs) {
+    if (this.capCut == null && !this.pageFilled()) {
+      this.capCut = { system: cs.system(), limit: cs.expandLimitation() };
+    }
+  }
+
+  /**
+   * Tell the user something about how the expansion was made that they should know (e.g. that
+   * codes are missing, and why): an expansion-issue extension on the expansion, referring to a
+   * contained OperationOutcome with the issue
+   * @param {Object} vs the ValueSet being returned
+   * @param {Object} exp its expansion
+   * @param {Issue} issue the issue
+   */
+  addExpansionIssue(vs, exp, issue) {
+    if (!vs.contained) {
+      vs.contained = [];
+    }
+    let n = 1;
+    while (vs.contained.some(r => r.id === 'oo' + n)) {
+      n++;
+    }
+    const id = 'oo' + n;
+    vs.contained.push({ resourceType: 'OperationOutcome', id, issue: [issue.asIssue()] });
+    if (!exp.extension) {
+      exp.extension = [];
+    }
+    exp.extension.push({ url: 'http://hl7.org/fhir/StructureDefinition/expansion-issue', valueReference: { reference: '#' + id } });
+  }
+
+  /**
+   * Before the page of a paged expansion (count and offset, see handleCompose), a code that would
+   * be included is only counted: its key is kept, for deduplication, and nothing is read or built.
+   * The tests are includeCode's, in the same order, so a code counts here exactly when it would be
+   * included there. Call it first, before reading the concept's details.
+   * @returns {Promise<boolean|null>} null: not before the page (or not paging) - include the code
+   *   as usual; true: counted, go on to the next; false: it would not be included, go on to the next
+   */
+  async #beforePage(cs, system, version, code, isInactive, excludeInactive, imports) {
+    if (!this.paging || (this.walked >= this.offset && !this.pageFilled())) {
+      return null;
+    }
+    if (!this.passesImports(imports, system, code, 0) || (isInactive && excludeInactive)
+        || await this.isExcluded(system, version, code) || this.#overSystemCap(cs)) {
+      return false;
+    }
+    return this.#walk(this.keyS(system, version, code));
+  }
+
+  /**
+   * Count a code before the page, or after it (for the total): false if it was already counted
+   * or included
+   */
+  #walk(key) {
+    if (this.walkedKeys.has(key) || this.map.has(key)) {
+      this.canBeHierarchy = false;
+      return false;
+    }
+    this.walkedKeys.add(key);
+    if (this.pageFilled()) {
+      this.counted++;
+      this.#finishIfPageFilled();
+      return true;
+    }
+    this.walked++;
+    if (this.walked + this.count > this.walkLimit) {
+      const label = this.vsLabel();
+      throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY_PAGE', label
+        ? this.worker.i18n.translate('VALUESET_TOO_COSTLY_PAGE', this.params.httpLanguages, [label, this.offset, this.count, this.walkLimit])
+        : this.worker.i18n.translate('VALUESET_TOO_COSTLY_PAGE_REQUEST', this.params.httpLanguages, [this.offset, this.count, this.walkLimit]),
+      null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+    }
+    return true;
+  }
+
+  /**
+   * Paging: once the page is full, the rest of the walk only counts codes, for the total - and the
+   * total is only reported for an expansion within the response limit, as on an unpaged one (where
+   * includeCode stops at the limit). So once the codes seen reach the limit, stop: no total
+   */
+  #finishIfPageFilled() {
+    if (this.paging && this.pageFilled() && this.walked + this.fullList.length + this.counted >= this.limitCount) {
+      this.noTotal();
+      throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
+  }
+
+  /**
+   * Whether the page asked for (count and offset) is one the limits allow, as far as can be told
+   * before the walk: a paged walk checks the walk limit as it goes (#walk), so a value set that
+   * ends before the page is an empty page, not a refusal
+   */
+  #pageFits() {
+    if (!(this.count > 0) || this.count > this.limitCount) {
+      return false;
+    }
+    return this.paging || this.count + Math.max(this.offset, 0) <= this.limitCount;
+  }
+
   excludeCode(cs, system, version, code, expansion, imports, srcURL) {
     this.worker.deadCheck('excludeCode');
     if (!this.passesImports(imports, system, code, 0)) {
@@ -528,7 +675,7 @@ class ValueSetExpander {
     }
 
     if (this.limitCount > 0 && this.fullList.length >= this.limitCount && !this.hasExclusions) {
-      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.fullList.length >= this.count + this.offset) {
+      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.walked + this.fullList.length >= this.count + this.offset) {
         throw new Issue('information', 'informational', null, null, null, null).setFinished();
       } else {
         throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
@@ -619,7 +766,12 @@ class ValueSetExpander {
     let count = 0;
     await this.worker.checkAndYield('importValueSetItem');
     const s = this.keyC(c);
-    if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
+    if (this.paging && (this.walked < this.offset || this.pageFilled()) && this.passesImports(imports, c.system, c.code, offset)
+        && !(await this.isExcluded(c.system, c.version, c.code))) {
+      if (this.#walk(s)) {
+        count++;
+      }
+    } else if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !this.walkedKeys.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
       count++;
       if (imported) {
         imported.push(c);
@@ -726,7 +878,7 @@ class ValueSetExpander {
             // (not when the provider will be handed the compose: it pages and counts the
             // selection itself - see processCodes)
             if (!imp && !(vsInfo && vsInfo.handleByCS) && this.count !== 0 && this.limitCount > 0 && await cs.totalCount() > this.limitCount
-                && !(this.count > 0 && this.count + Math.max(this.offset, 0) <= this.limitCount)) {
+                && !this.#pageFits()) {
               // Report the versioned url (vurl), matching the message the
               // enumeration path produces when it hits the same limit - this
               // guard is just that refusal moved earlier.
@@ -815,6 +967,7 @@ class ValueSetExpander {
 
     // the provider has applied offset and count: every code it returns is in the page
     vsInfo.csDoOffset = true;
+    this.paging = false;
     this.canBeHierarchy = false;
     const cds = new Designations(this.worker.i18n.languageDefinitions);
     for (const set of selection.sets || []) {
@@ -946,12 +1099,24 @@ class ValueSetExpander {
               let c = await cs.nextContext(iter);
               while (c) {
                 await this.worker.checkAndYield('processCodes#3a');
+                if (this.#capReached(cs)) {
+                  // the code system's cap is reached: nothing more of it can be added
+                  this.#noteCapCut(cs);
+                  break;
+                }
                 if (await this.passesFilters(cs, c, prep, filters, 0)) {
                   tcount += await this.includeCodeAndDescendants(cs, c, expansion, valueSets, null, excludeInactive, vsSrc.vurl, visited);
                 }
                 c = await cs.nextContext(iter);
               }
-              this.addToTotal(tcount);
+              if (cs.expandLimitation() > 0 && filters.length === 0 && valueSets.length === 0 && !this.hasExclusions) {
+                // a code system that caps how many of its codes an expansion may list (e.g. CPT): the
+                // cap limits which codes can be on a page, not how many the value set has, so the
+                // total is all of them, as for count=0 (and the walk stopped at the cap)
+                this.addToTotal(await cs.countAllCodes(excludeInactive));
+              } else {
+                this.addToTotal(tcount);
+              }
             }
           } else {
             this.worker.opContext.log('prepare filters');
@@ -972,6 +1137,14 @@ class ValueSetExpander {
               await this.worker.checkAndYield('processCodes#4');
               const c = await cs.filterConcept(ctxt, set[0]);
               if (await this.passesFilters(cs, c, prep, set, 1)) {
+                const walked = await this.#beforePage(cs, await cs.system(), await cs.version(), await cs.code(c), await cs.isInactive(c), excludeInactive, valueSets);
+                if (walked !== null) {
+                  // (no total on this path: once the page is full there's nothing to count)
+                  if (this.pageFilled()) {
+                    break;
+                  }
+                  continue;
+                }
                 const cds = new Designations(this.worker.i18n.languageDefinitions);
                 let added;
                 if (this.noDetails) {
@@ -1032,7 +1205,8 @@ class ValueSetExpander {
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
           // each listed code is located next: a provider may read them together, and hand back what it read
-          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
+          // (paging: most of them are only counted, and those on the page are read at locate)
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails && !this.paging);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -1041,6 +1215,13 @@ class ValueSetExpander {
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
               const ecode = await cs.expansionCode(cctxt.context, cc.code);
+              const walked = await this.#beforePage(cs, cs.system(), cs.version(), ecode, await cs.isInactive(cctxt.context), excludeInactive, valueSets);
+              if (walked !== null) {
+                if (walked) {
+                  this.addToTotal();
+                }
+                continue;
+              }
               if (this.noDetails) {
                 added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
                     null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
@@ -1058,6 +1239,7 @@ class ValueSetExpander {
                 if (added) {
                   this.addToTotal();
                 }
+                this.#finishIfPageFilled();
               }
             }
           }
@@ -1123,6 +1305,13 @@ class ValueSetExpander {
               cds.clear();
               // count++;
               if (this.passesImports(valueSets, cs.system(), await cs.code(c), 0)) {
+                const walked = await this.#beforePage(cs, await cs.system(), await cs.version(), await cs.code(c), await cs.isInactive(c), excludeInactive, null);
+                if (walked !== null) {
+                  if (walked) {
+                    this.addToTotal();
+                  }
+                  return;
+                }
                 let added;
                 if (this.noDetails) {
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
@@ -1144,6 +1333,7 @@ class ValueSetExpander {
                 if (added) {
                   this.addToTotal();
                 }
+                this.#finishIfPageFilled();
               }
             }
           };
@@ -1418,6 +1608,11 @@ class ValueSetExpander {
       return 0;
     }
     visited.add(code);
+    if (this.#capReached(cs)) {
+      // the code system's cap is reached: nothing more of it can be added, so don't walk it further
+      this.#noteCapCut(cs);
+      return 0;
+    }
 
     if (expansion) {
       const vs = this.canonical(await cs.system(), await cs.version());
@@ -1429,7 +1624,15 @@ class ValueSetExpander {
     }
 
     let n = null;
-    if ((!this.params.excludeNotForUI || !await cs.isAbstract(context)) && (!this.params.activeOnly || !await cs.isInactive(context))) {
+    const walked = (!this.params.excludeNotForUI || !await cs.isAbstract(context)) && (!this.params.activeOnly || !await cs.isInactive(context))
+      ? await this.#beforePage(cs, await cs.system(), await cs.version(), code, await cs.isInactive(context), excludeInactive, imports) : null;
+    if (walked !== null) {
+      // before the page: counted (or not), and its descendants are walked below
+      if (walked) {
+        result++;
+      }
+      n = parent;
+    } else if ((!this.params.excludeNotForUI || !await cs.isAbstract(context)) && (!this.params.activeOnly || !await cs.isInactive(context))) {
       const cds = new Designations(this.worker.i18n.languageDefinitions);
       let t;
       if (this.noDetails) {
@@ -1447,6 +1650,7 @@ class ValueSetExpander {
       if (n == null) {
         n = t;
       }
+      this.#finishIfPageFilled();
     } else {
       n = parent;
     }
@@ -1511,6 +1715,13 @@ class ValueSetExpander {
     // count=0 can be answered by counting listed codes when that's all the value set is
     this.composeOnlyListsCodes = (source.jsonObj.compose.include || []).every(inc => inc.system && inc.concept && inc.concept.length > 0
       && !(inc.filter && inc.filter.length) && !(inc.valueSet && inc.valueSet.length));
+    // A page (count, and offset - 0 when not given) is the only part of the expansion built: the
+    // walk passes the codes before it keeping only their keys (#beforePage), so a page can be
+    // further in than the limit on what is built, and after it only counts codes, for the total
+    // (#finishIfPageFilled). Not with exclusions, which stop no walk early; nor with a text filter,
+    // which is matched against the codes' designations, so each must be read. (A hierarchy is
+    // only shown when the whole expansion fits in count: then every code is on the page)
+    this.paging = this.count > 0 && this.offset >= 0 && !(source.jsonObj.compose.exclude || []).length && filter.isNull;
     const ts = new Map();
     for (const [i, c] of (source.jsonObj.compose.include || []).entries()) {
       await this.worker.checkAndYield('handleCompose#2');
@@ -1795,6 +2006,10 @@ class ValueSetExpander {
     for (const v of ts) {
       this.addParamUri(exp, 'used-supplement', v);
     }
+    if (this.capCut) {
+      this.addExpansionIssue(result, exp, new Issue('warning', 'business-rule', null, 'VALUESET_EXPANSION_CODESYSTEM_LIMITED',
+        this.worker.i18n.translate('VALUESET_EXPANSION_CODESYSTEM_LIMITED', this.params.httpLanguages, [this.capCut.system, this.capCut.limit]), 'business-rule'));
+    }
 
     this.worker.opContext.log('finish up');
 
@@ -1845,7 +2060,8 @@ class ValueSetExpander {
         const c = list[i];
         if (this.map.has(this.keyC(c))) {
           o++;
-          if ((vsInfo.csDoOffset) || (o > this.offset && (this.count < 0 || t < this.count))) {
+          // (the provider paged it, or the walk passed the codes before the page: all that's here is the page)
+          if ((vsInfo.csDoOffset) || (o > (this.paging ? 0 : this.offset) && (this.count < 0 || t < this.count))) {
             t++;
             if (!exp.contains) {
               exp.contains = [];
@@ -2177,7 +2393,7 @@ class ValueSetExpander {
    */
   pageFilled() {
     return this.count > 0 && this.offset > -1 && !this.hasExclusions
-        && this.fullList.length >= this.count + this.offset;
+        && this.walked + this.fullList.length >= this.count + this.offset;
   }
 
   addToTotal(t = 1) {
@@ -2233,7 +2449,7 @@ class ValueSetExpander {
         continue;
       }
       const key = this.keyS(cs.system(), cs.version(), code);
-      if (!this.map.has(key) && !this.countedKeys.has(key)) {
+      if (!this.map.has(key) && !this.countedKeys.has(key) && !this.walkedKeys.has(key)) {
         keys.add(key);
       }
     }
@@ -2249,8 +2465,7 @@ class ValueSetExpander {
     if (!(this.limitCount > 0) || this.hasExclusions || this.fullList.length + n <= this.limitCount) {
       return false;
     }
-    const paged = this.count > -1 && this.offset > -1 && this.count + this.offset > 0;
-    return !(paged && this.count + this.offset <= this.limitCount);
+    return !this.#pageFits();
   }
 
   /**
@@ -2391,7 +2606,9 @@ class ValueSetExpander {
 
 class ExpandWorker extends TerminologyWorker {
   internalLimit = INTERNAL_DEFAULT_LIMIT;
-  externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT;
+  externalLimit = EXTERNAL_DEFAULT_LIMIT;
+  // how far a paged expansion may walk to reach its page (null: WALK_LIMIT_FACTOR x internalLimit)
+  walkLimit = null;
 
 
   /**
@@ -2400,12 +2617,17 @@ class ExpandWorker extends TerminologyWorker {
    * @param {Provider} provider - Provider for code systems and resources
    * @param {LanguageDefinitions} languages - Language definitions
    * @param {I18nSupport} i18n - Internationalization support
+   * @param {number} [internalLimit] - the most codes an expansion builds
+   * @param {number} [externalLimit] - the most codes a response holds
+   * @param {number} [walkLimit] - the furthest a paged expansion walks to reach its page (offset +
+   *   count); by default WALK_LIMIT_FACTOR x internalLimit
    */
   constructor(opContext, log, provider, languages,
-              i18n, internalLimit = INTERNAL_DEFAULT_LIMIT, externalLimit = EXTERNAL_TEST_DEFAULT_LIMIT) {
+              i18n, internalLimit = INTERNAL_DEFAULT_LIMIT, externalLimit = EXTERNAL_DEFAULT_LIMIT, walkLimit = null) {
     super(opContext, log, provider, languages, i18n);
     this.externalLimit = externalLimit;
     this.internalLimit = internalLimit;
+    this.walkLimit = walkLimit;
   }
 
   /**
@@ -2740,6 +2962,7 @@ module.exports = {
   ValueSetFilterContext,
   EmptyFilterContext,
   INTERNAL_DEFAULT_LIMIT,
-  EXTERNAL_TEST_DEFAULT_LIMIT,
+  WALK_LIMIT_FACTOR,
+  EXTERNAL_DEFAULT_LIMIT,
   TotalStatus
 };

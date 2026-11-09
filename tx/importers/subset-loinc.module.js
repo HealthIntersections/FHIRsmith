@@ -4,6 +4,7 @@ const path = require('path');
 const readline = require('readline');
 const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
+const terminal = require('./terminal');
 
 class LoincSubsetModule extends BaseTerminologyModule {
   constructor() {
@@ -84,7 +85,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Subset operation failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -220,15 +221,15 @@ class LoincSubsetModule extends BaseTerminologyModule {
   }
 
   async confirmSubset(config) {
-    console.log(chalk.cyan(`\n📋 LOINC Subset Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Codes File: ${chalk.white(config.codes)}`);
-    console.log(`  Expand PartLinks: ${chalk.white(config.expandPartLinks ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 LOINC Subset Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Codes File: ${chalk.white(config.codes)}`);
+    terminal.log(`  Expand PartLinks: ${chalk.white(config.expandPartLinks ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await require('inquirer').prompt({
@@ -243,14 +244,14 @@ class LoincSubsetModule extends BaseTerminologyModule {
 
   async runSubset(config) {
     try {
-      console.log(chalk.blue.bold(`🔬 Starting LOINC Subset Creation...\n`));
+      terminal.log(chalk.blue.bold(`🔬 Starting LOINC Subset Creation...\n`));
 
       if (config.verbose) {
-        console.log('Debug - Final config values:');
-        console.log(`  Source: ${config.source}`);
-        console.log(`  Dest: ${config.dest}`);
-        console.log(`  Codes: ${config.codes}`);
-        console.log('');
+        terminal.log('Debug - Final config values:');
+        terminal.log(`  Source: ${config.source}`);
+        terminal.log(`  Dest: ${config.dest}`);
+        terminal.log(`  Codes: ${config.codes}`);
+        terminal.log('');
       }
 
       // Pre-flight checks
@@ -270,7 +271,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`LOINC subset creation failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -303,13 +304,13 @@ class LoincSubsetModule extends BaseTerminologyModule {
       const stats = await this.validateSubsetInputs(options.source, options.codes);
 
       this.logSuccess('Validation passed');
-      console.log(`  Source files found: ${stats.filesFound.length}`);
-      console.log(`  Codes in list: ${stats.codeCount.toLocaleString()}`);
-      console.log(`  Unique codes: ${stats.uniqueCodes.toLocaleString()}`);
+      terminal.log(`  Source files found: ${stats.filesFound.length}`);
+      terminal.log(`  Codes in list: ${stats.codeCount.toLocaleString()}`);
+      terminal.log(`  Unique codes: ${stats.uniqueCodes.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
@@ -324,7 +325,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
         check: () => {
           const exists = fs.existsSync(config.source);
           if (!exists && config.verbose) {
-            console.log(`    Source path being checked: ${config.source}`);
+            terminal.log(`    Source path being checked: ${config.source}`);
           }
           return exists;
         }
@@ -334,7 +335,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
         check: () => {
           const exists = fs.existsSync(config.codes);
           if (!exists && config.verbose) {
-            console.log(`    Codes path being checked: ${config.codes}`);
+            terminal.log(`    Codes path being checked: ${config.codes}`);
           }
           return exists;
         }
@@ -351,7 +352,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
             const fullPath = path.join(config.source, file);
             const exists = fs.existsSync(fullPath);
             if (!exists && config.verbose) {
-              console.log(`    Missing required file: ${fullPath}`);
+              terminal.log(`    Missing required file: ${fullPath}`);
             }
             return exists;
           });
@@ -390,14 +391,14 @@ class LoincSubsetModule extends BaseTerminologyModule {
 
     if (config.verbose) {
       const sampleCodes = Array.from(initialTargetCodes).slice(0, 20);
-      console.log(`First 20 codes from file: ${sampleCodes.join(', ')}`);
+      terminal.log(`First 20 codes from file: ${sampleCodes.join(', ')}`);
 
       // Validate some codes exist in the main LOINC file
       this.logInfo('Validating codes exist in LOINC...');
       const validationResults = await this.validateCodesExist(config.source, initialTargetCodes);
-      console.log(`Found ${validationResults.found} of ${validationResults.checked} codes in LOINC main table`);
+      terminal.log(`Found ${validationResults.found} of ${validationResults.checked} codes in LOINC main table`);
       if (validationResults.notFound.length > 0) {
-        console.log(`Sample missing codes: ${validationResults.notFound.slice(0, 5).join(', ')}`);
+        terminal.log(`Sample missing codes: ${validationResults.notFound.slice(0, 5).join(', ')}`);
       }
     }
 
@@ -414,7 +415,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
       if (config.verbose && addedCodes > 0) {
         const newCodes = Array.from(finalTargetCodes).filter(code => !initialTargetCodes.has(code));
         const sampleNewCodes = newCodes.slice(0, 10);
-        console.log(`Sample newly added codes: ${sampleNewCodes.join(', ')}`);
+        terminal.log(`Sample newly added codes: ${sampleNewCodes.join(', ')}`);
       }
     } else {
       this.logInfo('Skipping PartLink expansion (disabled)');
@@ -449,7 +450,7 @@ class LoincSubsetModule extends BaseTerminologyModule {
 
     if (!fs.existsSync(partLinkPath)) {
       if (verbose) {
-        console.log(`    PartLink file not found: ${partLinkPath}`);
+        terminal.log(`    PartLink file not found: ${partLinkPath}`);
       }
       return new Set(initialCodes);
     }
@@ -457,8 +458,8 @@ class LoincSubsetModule extends BaseTerminologyModule {
     const expandedCodes = new Set(initialCodes);
 
     if (verbose) {
-      console.log(`    Processing PartLink relationships (single pass)...`);
-      console.log(`    Original codes count: ${initialCodes.size}`);
+      terminal.log(`    Processing PartLink relationships (single pass)...`);
+      terminal.log(`    Original codes count: ${initialCodes.size}`);
     }
 
     const rl = readline.createInterface({
@@ -495,19 +496,19 @@ class LoincSubsetModule extends BaseTerminologyModule {
         addedCodes += (sizeAfter - sizeBefore);
 
         if (verbose && matchedLines <= 10) {
-          console.log(`    Match ${matchedLines}: "${firstCode}" (${firstInOriginal ? 'in original' : 'new'}) <-> "${thirdCode}" (${thirdInOriginal ? 'in original' : 'new'})`);
+          terminal.log(`    Match ${matchedLines}: "${firstCode}" (${firstInOriginal ? 'in original' : 'new'}) <-> "${thirdCode}" (${thirdInOriginal ? 'in original' : 'new'})`);
         }
       }
     }
 
     if (verbose) {
-      console.log(`    Single pass completed: ${matchedLines} matching relationships found`);
-      console.log(`    Added ${addedCodes} new codes`);
-      console.log(`    Final expanded codes count: ${expandedCodes.size}`);
+      terminal.log(`    Single pass completed: ${matchedLines} matching relationships found`);
+      terminal.log(`    Added ${addedCodes} new codes`);
+      terminal.log(`    Final expanded codes count: ${expandedCodes.size}`);
 
       // Show what percentage this represents
       const expansionRatio = expandedCodes.size / initialCodes.size;
-      console.log(`    Expansion ratio: ${expansionRatio.toFixed(1)}x original size`);
+      terminal.log(`    Expansion ratio: ${expansionRatio.toFixed(1)}x original size`);
     }
 
     return expandedCodes;
@@ -837,12 +838,12 @@ class LoincSubsetProcessor {
 
   async processParts(sourcePath, destPath) {
     if (this.verbose) {
-      console.log(`    Processing parts file: ${sourcePath}`);
-      console.log(`    Target codes size: ${this.targetCodes.size}`);
+      terminal.log(`    Processing parts file: ${sourcePath}`);
+      terminal.log(`    Target codes size: ${this.targetCodes.size}`);
 
       // Show first few target codes for comparison
       const sampleCodes = Array.from(this.targetCodes).slice(0, 5);
-      console.log(`    Sample target codes: ${sampleCodes.join(', ')}`);
+      terminal.log(`    Sample target codes: ${sampleCodes.join(', ')}`);
     }
 
     await this.processFileWithFilter(sourcePath, destPath, (line, lineNum) => {
@@ -856,7 +857,7 @@ class LoincSubsetProcessor {
 
       // Debug first few lines
       if (this.verbose && lineNum <= 5) {
-        console.log(`    Line ${lineNum}: raw="${items[0]}", clean="${code}", match=${hasCode}`);
+        terminal.log(`    Line ${lineNum}: raw="${items[0]}", clean="${code}", match=${hasCode}`);
       }
 
       return hasCode;
@@ -865,12 +866,12 @@ class LoincSubsetProcessor {
 
   async processConsumerNames(sourcePath, destPath) {
     if (this.verbose) {
-      console.log(`    Processing consumer names file: ${sourcePath}`);
-      console.log(`    Target codes size: ${this.targetCodes.size}`);
+      terminal.log(`    Processing consumer names file: ${sourcePath}`);
+      terminal.log(`    Target codes size: ${this.targetCodes.size}`);
 
       // Show first few target codes for comparison
       const sampleCodes = Array.from(this.targetCodes).slice(0, 5);
-      console.log(`    Sample target codes: ${sampleCodes.join(', ')}`);
+      terminal.log(`    Sample target codes: ${sampleCodes.join(', ')}`);
     }
 
     await this.processFileWithFilter(sourcePath, destPath, (line, lineNum) => {
@@ -884,7 +885,7 @@ class LoincSubsetProcessor {
 
       // Debug first few lines
       if (this.verbose && lineNum <= 5) {
-        console.log(`    Line ${lineNum}: raw="${items[0]}", clean="${code}", match=${hasCode}`);
+        terminal.log(`    Line ${lineNum}: raw="${items[0]}", clean="${code}", match=${hasCode}`);
       }
 
       return hasCode;
@@ -917,10 +918,10 @@ class LoincSubsetProcessor {
 
   async processPartLinks(sourcePath, destPath) {
     if (this.verbose) {
-      console.log(`    Processing part links file: ${sourcePath}`);
-      console.log(`    Target codes size: ${this.targetCodes.size}`);
-      console.log(`    Original codes size: ${this.originalCodes.size}`);
-      console.log(`    Using ORIGINAL codes for PartLink filtering to prevent expansion explosion`);
+      terminal.log(`    Processing part links file: ${sourcePath}`);
+      terminal.log(`    Target codes size: ${this.targetCodes.size}`);
+      terminal.log(`    Original codes size: ${this.originalCodes.size}`);
+      terminal.log(`    Using ORIGINAL codes for PartLink filtering to prevent expansion explosion`);
     }
 
     let debugCount = 0;
@@ -941,7 +942,7 @@ class LoincSubsetProcessor {
       // Debug first few included lines
       if (this.verbose && shouldInclude && debugCount < 10) {
         debugCount++;
-        console.log(`    Include ${debugCount}: "${sourceCode}" (${hasSource ? 'original' : 'no'}) <-> "${targetCode}" (${hasTarget ? 'original' : 'no'})`);
+        terminal.log(`    Include ${debugCount}: "${sourceCode}" (${hasSource ? 'original' : 'no'}) <-> "${targetCode}" (${hasTarget ? 'original' : 'no'})`);
       }
 
       return shouldInclude;
@@ -1051,7 +1052,7 @@ class LoincSubsetProcessor {
     writeStream.end();
 
     if (this.verbose && lineNum > 1) {
-      console.log(`    Included ${includedLines - 1} of ${lineNum - 1} data rows`);
+      terminal.log(`    Included ${includedLines - 1} of ${lineNum - 1} data rows`);
     }
   }
 

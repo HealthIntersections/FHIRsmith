@@ -3,6 +3,7 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require("path");
 const readline = require("readline");
+const terminal = require('./terminal');
 
 class UniiModule extends BaseTerminologyModule {
   getName() {
@@ -81,16 +82,16 @@ class UniiModule extends BaseTerminologyModule {
     const inquirer = require('inquirer');
     const chalk = require('chalk');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version)}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version)}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -120,14 +121,14 @@ class UniiModule extends BaseTerminologyModule {
       const stats = await this.validateUniiFile(options.source, parseInt(options.sample));
       
       this.logSuccess('File validation passed');
-      console.log(`  Lines: ${stats.totalLines}`);
-      console.log(`  Estimated UNII codes: ${stats.estimatedCodes}`);
-      console.log(`  Estimated descriptions: ${stats.estimatedDescriptions}`);
-      console.log(`  Sample data format: ${stats.formatValid ? 'Valid' : 'Invalid'}`);
+      terminal.log(`  Lines: ${stats.totalLines}`);
+      terminal.log(`  Estimated UNII codes: ${stats.estimatedCodes}`);
+      terminal.log(`  Estimated descriptions: ${stats.estimatedDescriptions}`);
+      terminal.log(`  Sample data format: ${stats.formatValid ? 'Valid' : 'Invalid'}`);
       
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
       
     } catch (error) {
@@ -149,11 +150,11 @@ class UniiModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
       
       this.logSuccess('Database status:');
-      console.log(`  Version: ${stats.version}`);
-      console.log(`  UNII Codes: ${stats.uniiCount.toLocaleString()}`);
-      console.log(`  Descriptions: ${stats.descCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Version: ${stats.version}`);
+      terminal.log(`  UNII Codes: ${stats.uniiCount.toLocaleString()}`);
+      terminal.log(`  Descriptions: ${stats.descCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
       
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -304,7 +305,7 @@ class UniiModule extends BaseTerminologyModule {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -327,7 +328,7 @@ class UniiDataMigrator {
    * @returns {Promise<void>}
    */
   async migrate(sourceFile, destFile, version = 'unknown', verbose = true) {
-    if (verbose) console.log('Starting UNII data migration...');
+    if (verbose) terminal.log('Starting UNII data migration...');
 
     // Ensure destination directory exists
     const destDir = path.dirname(destFile);
@@ -350,7 +351,7 @@ class UniiDataMigrator {
       // Process source file
       await this.#processSourceFile(db, sourceFile, verbose);
 
-      if (verbose) console.log('UNII data migration completed successfully');
+      if (verbose) terminal.log('UNII data migration completed successfully');
     } finally {
       await this.#closeDatabase(db, verbose);
     }
@@ -361,7 +362,7 @@ class UniiDataMigrator {
    * @private
    */
   async #createTables(db, version, verbose = true) {
-    if (verbose) console.log('Creating database tables...');
+    if (verbose) terminal.log('Creating database tables...');
 
     return new Promise((resolve, reject) => {
       db.serialize(() => {
@@ -400,7 +401,7 @@ class UniiDataMigrator {
         // Insert version
         db.run('INSERT INTO UniiVersion (Version) VALUES (?)', [version], (err) => {
           if (err) return reject(err);
-          if (verbose) console.log('Database tables created');
+          if (verbose) terminal.log('Database tables created');
           resolve();
         });
       });
@@ -412,7 +413,7 @@ class UniiDataMigrator {
    * @private
    */
   async #processSourceFile(db, sourceFile, verbose = true) {
-    if (verbose) console.log('Processing source file:', sourceFile);
+    if (verbose) terminal.log('Processing source file:', sourceFile);
 
     if (!fs.existsSync(sourceFile)) {
       throw new Error(`Source file not found: ${sourceFile}`);
@@ -438,7 +439,7 @@ class UniiDataMigrator {
       throw new Error('Source file is empty');
     }
 
-    if (verbose) console.log(`Read ${lines.length} lines, processing...`);
+    if (verbose) terminal.log(`Read ${lines.length} lines, processing...`);
 
     // Track processed codes and auto-increment keys
     const codeMap = new Map(); // code -> UniiKey
@@ -467,7 +468,7 @@ class UniiDataMigrator {
 
             // Need at least 3 columns (Display, Type, Code)
             if (cols.length < 3) {
-              if (verbose) console.warn(`Skipping line ${i + 1}: insufficient columns`);
+              if (verbose) terminal.warn(`Skipping line ${i + 1}: insufficient columns`);
               continue;
             }
 
@@ -476,7 +477,7 @@ class UniiDataMigrator {
             const code = cols[2] || '';
 
             if (!code) {
-              if (verbose) console.warn(`Skipping line ${i + 1}: empty UNII code`);
+              if (verbose) terminal.warn(`Skipping line ${i + 1}: empty UNII code`);
               continue;
             }
 
@@ -510,14 +511,14 @@ class UniiDataMigrator {
       });
 
       if (processedLines % 10000 === 0) {
-        console.log(`Processed ${processedLines} lines...`);
+        terminal.log(`Processed ${processedLines} lines...`);
       }
     }
 
     if (verbose) {
-      console.log(`Processing completed. Total lines processed: ${processedLines}`);
-      console.log(`Unique UNII codes: ${codeMap.size}`);
-      console.log(`Total descriptions: ${lastUniiDescKey}`);
+      terminal.log(`Processing completed. Total lines processed: ${processedLines}`);
+      terminal.log(`Unique UNII codes: ${codeMap.size}`);
+      terminal.log(`Total descriptions: ${lastUniiDescKey}`);
     }
   }
 
@@ -529,7 +530,7 @@ class UniiDataMigrator {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });
@@ -558,8 +559,8 @@ class UniiDataMigratorWithProgress {
     let processedLines = 0;
     
     // Override the progress reporting in the original migrator
-    const originalConsoleLog = console.log;
-    console.log = (...args) => {
+    const originalLog = terminal.log;
+    terminal.log = (...args) => {
       const message = args.join(' ');
       if (message.includes('Processed') && message.includes('lines')) {
         const match = message.match(/Processed (\d+) lines/);
@@ -568,13 +569,13 @@ class UniiDataMigratorWithProgress {
           this.module.updateProgress(processedLines);
         }
       }
-      if (verbose) originalConsoleLog(...args);
+      if (verbose) originalLog(...args);
     };
 
     try {
       await originalMigrator.migrate(sourceFile, destFile, version, verbose);
     } finally {
-      console.log = originalConsoleLog;
+      terminal.log = originalLog;
       this.module.stopProgress();
     }
   }

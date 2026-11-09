@@ -1,7 +1,7 @@
 // The VSAC provider follows a search bundle's next link only on the VSAC server: every request
 // carries the API key, so a next link must not be able to send it somewhere else
 
-const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { VSACValueSetProvider, vsacLog } = require('../../tx/vs/vs-vsac');
 
 function provider(baseUrl = 'https://cts.nlm.nih.gov/fhir') {
   const p = Object.create(VSACValueSetProvider.prototype);
@@ -14,7 +14,7 @@ const bundle = (url) => ({ resourceType: 'Bundle', link: [{ relation: 'self', ur
 describe('VSAC next links', () => {
   let warn;
   beforeEach(() => {
-    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    warn = jest.spyOn(vsacLog, 'warn').mockImplementation(() => {});
   });
   afterEach(() => warn.mockRestore());
 

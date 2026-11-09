@@ -75,7 +75,7 @@ class IETFLanguageCodeFilter {
   }
 
   /** Why a code did not match, for the caller. @returns {string} */
-  describe(code, _lang) {
+  describe(code) {
     const action = this.status ? 'does not contain' : 'contains';
     const requirement = this.status ? 'required' : 'not allowed';
     return `The language code ${code} ${action} a ${this.component}, and it is ${requirement}`;
@@ -101,7 +101,7 @@ class IETFLanguageEqualityFilter {
     return value.toLowerCase() === this.value.toLowerCase();
   }
 
-  describe(code, _lang) {
+  describe(code) {
     return `The language code ${code} does not have a ${this.component} of '${this.value}'`;
   }
 }

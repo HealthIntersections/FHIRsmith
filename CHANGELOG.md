@@ -7,24 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.18.3] - 2026-11-dd
 
+**Upgrading**: a big upgrade - every operator should check their settings, though most won't need to change any. See [Upgrading to 1.0.0](CONFIGURATION.md#upgrading-to-100) for what to check.
+
 ### Added
 
+- `config.json` may have comments: `//` to the end of the line, and `/* ... */` (`library/config-reader.js`). A syntax error is reported at its line and column in the file
+- A LICENSE file (BSD 3-Clause); the package's licence is now the SPDX id `BSD-3-Clause` (was `BSD-3`)
+- READMEs for the publisher, xig and vcl modules, from their settings
+- A `fhirsmith-cluster` command (`cluster.js`), alongside `fhirsmith` (`server.js`), for a global npm install
 - Extension-codes supplements: a code in a code space the code system reserves for users (`codesystem-reservedCodeSpace`, a regular expression) is a valid code, whether or not anything defines it; with nothing defining it, its display is the code space's `default-display`, or 'User-assigned', and (as a placeholder) another display only gets an information issue. An `extension-codes` supplement in scope defines such codes, with their displays: a global one as if the code system defined them (a different display is an error, or a warning with lenient display validation), one that is referenced as a display that isn't the only correct one (a different display is a warning). Codes from supplements are only in an expansion when the value set lists them. ISO 3166's user-assigned codes work the same way: an extension-codes supplement's display replaces the 'User-assigned' placeholder. So do ICF's qualified (post-coordinated) codes and SNOMED CT post-coordinated expressions (matched as written, or in their minimal rendering): an extension-codes supplement's display is the code's display, and the generated one stays valid
 - Reserved code spaces: an expansion of all of a code system that reserves code spaces (`codesystem-reservedCodeSpace`) is marked unclosed (`valueset-unclosed`, with the reason), since `$validate-code` accepts codes in those spaces that the expansion can't list
 - `$cache-control` mode=start also returns the issued cache-id in the `X-Cache-Id` response header (the body is unchanged), so a request log taken at the proxy (nginx `$sent_http_x_cache_id`) can tie each cache-id to the request that created it, for replay
 - `$validate-code` (CodeSystem and ValueSet) warns when a coding has no version but its code system says `versionNeeded = true` (`CODESYSTEM_VERSION_NEEDED`); a version pinned by the value set or by the parameters doesn't count, since it's specific to that context and doesn't travel with the coding
 - IPS: a Structure view (after Narrative) showing a document's logical structure as an expandable tree: what the Composition refers to, then its sections, each with its entries and what else it refers to, and each resource referred to expanding into its own references. A reference that doesn't resolve in the document is `not-in-document`; a resource already shown isn't expanded again
 - Cluster: the daily report has a Cluster paragraph: when the launcher started; for each process that exited or was recycled, how many times and why, how long it was unavailable, and the requests lost to it (504, 502, cache-ids that came while it restarted); and the requests the launcher refused itself (503) and the connections it closed for write timeouts. The launcher sends the master what it saw over IPC, and the master keeps it in `stats.db` (`cluster_events`)
+- `modules.tx.pruneTerminologyCache` (default false): once the library and the endpoints' core packages have loaded, what in `terminology-cache` wasn't used is deleted - the `.db` and `.cache` files (with their SQLite side files) and the package folders (old versions, packages no longer in the library, core packages of FHIR versions no endpoint has, failed downloads) - and what was freed is logged. Not other files or folders, not anything changed in the last day, and in a cluster only the master
 - The largest request body the server accepts is a setting, `server.maxBodyMB` (default 50, as before; about 36x the largest IG Publisher request seen on build.fhir.org, 1.39 MB)
 
 ### Changed
+
+- `config-template.json` has every module turned off: set `"enabled": true` on the ones you run
+- The npm package leaves out the release scripts and test reports, and what git ignores (npm doesn't read `.gitignore` when there is a `.npmignore`, so a local `npm publish` included, for one, `private/`)
+- `$expand` limits: the defaults are now 10000 codes returned (`externalLimit`, was 3000) and 100000 built (`internalLimit`, was 10000). The three expansion limits (`externalLimit`, `internalLimit`, `walkLimit`) are checked at startup - whole numbers above 0, external <= internal <= walk - and logged. The tx-ecosystem test runner (User-Agent `Tools/Java`) is no longer held to the old defaults: it gets the same limits as any client, and the tests that depend on a limit set `X-TOO-COSTLY-THRESHOLD`
+
+- `$expand`: a page (`count` and `offset`) can lie past the expansion limit. Only the page is built; the codes before it are passed keeping only their keys, so `offset + count` is limited by a new, larger `walkLimit` (default 10 x `internalLimit`), and `count` by the expansion limit as before. Over the walk limit: 422 too-costly, `VALUESET_TOO_COSTLY_PAGE`. Value sets with an exclude, or a request with a text filter, are as before. Any page, the first too, builds only its own codes: the rest are counted, by key, for the total (reported, as before, only when the whole expansion is within the limit), so a `count=20` first page of a large value set no longer builds codes up to the limit
+
+- `$expand` of a code system that caps how many of its codes an expansion may list (`expandLimitation`: CPT, 1000, by agreement with the AMA): no page has codes past the cap, but the total is all the codes (as for `count=0`), and the walk stops at the cap. When the cap keeps codes off the page asked for (e.g. `count=1100`), the expansion says why: a new `expansion-issue` extension refers to a contained OperationOutcome with a business-rule warning (`VALUESET_EXPANSION_CODESYSTEM_LIMITED`). (`addExpansionIssue` is the general mechanism, for other things users of an expansion should know)
 
 - IPS: on a document's page the actions (Edit, Share, Process again, Delete) are on their own line below the processing pipeline, and Edit is a button like the others
 
 - Global supplements: a code system supplement is used without being referenced when it is a `lang-pack` or `extension-codes` supplement (`codesystem-supplement-type`) marked with `codesystem-supplement-global` = `true`. The `global-lang-pack` code (0.18.1) is gone, and a `lang-pack` supplement that isn't marked global is only used when it is referenced, like any other supplement
 
+### Security
+
+- Publisher: the administrator (`admin`) was created with a fixed password, `admin123`, and there is no page to change a password. Its password is now the module's `adminPassword` setting, set at every start; without one, the administrator gets a random password (a UUID), which is logged. An administrator that still has `admin123` is given a random one at startup
+
 ### Fixed
 
+- A `config.json` with no `server` block failed at startup; every setting in it has a default
+- The home page's folder module entry wasn't closed (`</li>`)
+- Lint: the errors in the project's own code are fixed, and the vendored jQuery files are no longer linted, so `npm run lint` has no errors
+- The release workflow's test job has the heap size that `ci.yml` gives the tests (the suites outgrow Node's default)
 - SNOMED CT importer: effectiveTimes were stored a day early when a cache was built in a time zone ahead of UTC (the day count to the 1899 epoch used local dates), so `$lookup` reported e.g. 2002-01-30 for 20020131. Caches built in such a zone need rebuilding
 - `CodeSystem/$batch-validate-code`: a top-level `url` (and `version`) is the code system for every entry, as for `CodeSystem/$validate-code`, and every entry is validated against a code system - an entry with its own `url` was validated as a value set
 - `regex` filters match the whole value, for every code system: the pattern is `^(?:pattern)$`. Code systems from CodeSystem resources, ISO 3166 and filters on supplement properties anchored it as `^pattern$`, so an alternation went wrong (`code2|code3` matched every code starting with code2); LOINC matched anywhere in the value (a CLASS regex of `CYTO` matched PANEL.HL7.CYTOGEN). LOINC regex filters may now select fewer codes

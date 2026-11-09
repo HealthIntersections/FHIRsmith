@@ -1,4 +1,6 @@
 {
+  // A starting point for config.json: every section, with comments (config.json may have
+  // // and /* */ comments too). Every module is off: set "enabled": true on the ones you run
   "server": {
     "port": 3000,
     "cors": {
@@ -137,7 +139,7 @@
       }
     },
     "registry": {
-      "enabled": true,
+      "enabled": false,
       "masterUrl": "https://fhir.github.io/ig-registry/tx-servers.json",
       "crawlInterval": 30,
       "timeout": 30000,
@@ -160,11 +162,14 @@
       // }
     },
     "publisher": {
-      "enabled": true,
+      "enabled": false,
       "database": "/absolute/path/to/publisher.db",
       // required. Without it the publisher generates a random secret at startup, logs a
       // warning, and logins stop working across restarts.
       "sessionSecret": "change-this-to-a-secure-random-string",
+      // the password of the administrator, login 'admin' - set at every start, so changing it
+      // here changes it. Without it, the administrator gets a random password, which is logged
+      "adminPassword": "change-this-to-a-secure-password",
       // session cookies are marked Secure by default, so they only travel over HTTPS.
       // Set false only to run the publisher over plain HTTP - otherwise the browser will
       // not send the cookie back and logins will appear to do nothing. Behind a TLS
@@ -210,7 +215,7 @@
       }
     },
     "npmprojector": {
-      "enabled": true,
+      "enabled": false,
       "fhirVersion": "r4",  // Options: "r4", "r5", "stu3", "dstu2"
       "basePath": "/fhir",   // Default: "/npmprojector"
       "npmPath": "./data/fhir-package",
@@ -219,7 +224,7 @@
       "debounceMs": 500
     },
     "token": {
-      "enabled": true,
+      "enabled": false,
       "database": "/absolute/path/to/token.db",
       "sessionSecret": "change-this-to-a-secure-random-string-for-token-sessions",
       "oauth": {
@@ -362,7 +367,7 @@
       ]
     },
     "ext-tracker": {
-      "enabled": true,
+      "enabled": false,
       "database": "/var/fhir/data/extension-tracker.db",
       "url": "/ext-tracker",
       // the token submissions must carry (Authorization: Bearer ...). The IG Publisher sends

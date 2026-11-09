@@ -113,13 +113,11 @@ describe('OMOP Provider', () => {
       const version = await provider.version();
       expect(version).toBeDefined();
       expect(typeof version).toBe('string');
-      console.log(`✓ OMOP Version: ${version}`);
     });
 
     test('should return correct total count', async () => {
       const count = await provider.totalCount();
       expect(count).toBe(testData.expectedCounts.concepts);
-      console.log(`✓ Total OMOP concepts: ${count}`);
     });
 
     test('should not support iteration (too large)', async () => {
@@ -136,8 +134,6 @@ describe('OMOP Provider', () => {
         expect(result.context).toBeInstanceOf(OMOPConcept);
         expect(result.context.code).toBe(conceptId);
         expect(result.message).toBeNull();
-
-        console.log(`✓ Found concept: ${conceptId} - ${result.context.display}`);
       }
     });
 
@@ -166,8 +162,6 @@ describe('OMOP Provider', () => {
         expect(concept.conceptClass).toBeDefined();
         expect(concept.standard).toBeDefined();
         expect(concept.vocabulary).toBeDefined();
-
-        console.log(`✓ Concept metadata: domain=${concept.domain}, class=${concept.conceptClass}, standard=${concept.standard}`);
       }
     });
   });
@@ -179,8 +173,6 @@ describe('OMOP Provider', () => {
         expect(display).toBeDefined();
         expect(typeof display).toBe('string');
         expect(display.length).toBeGreaterThan(0);
-
-        console.log(`✓ Display for ${conceptId}: ${display.substring(0, 50)}...`);
       }
     });
 
@@ -194,14 +186,6 @@ describe('OMOP Provider', () => {
         const firstDesignation = designations.designations[0];
         expect(firstDesignation.language).toBeDefined();
         expect(firstDesignation.value).toBeDefined();
-
-        console.log(`✓ Concept ${testData.sampleConcepts[0]} has ${designations.length} designations`);
-
-        // Check if there are synonyms
-        const synonyms = designations.designations.filter(d => !d.use);
-        if (synonyms.length > 0) {
-          console.log(`  - Including ${synonyms.length} synonyms`);
-        }
       }
     });
   });
@@ -264,7 +248,6 @@ describe('OMOP Provider', () => {
         const propNames = properties.map(p => p.part.find(part => part.name === 'code')?.valueCode);
 
         expect(propNames).toContain('domain-id');
-        console.log(`✓ Extended lookup for ${conceptId}: ${params.parameter.length} parameters`);
       }
     });
 
@@ -277,11 +260,8 @@ describe('OMOP Provider', () => {
           'valid-start-date', 'valid-end-date',
           'vocabulary-concept-id', 'invalid-reason'
         ];
+        // which properties a concept has varies; this checks only that the lookup succeeds
         await provider.extendLookup(conceptId, extendedProps, paramSet);
-        const params = { parameter: paramSet };
-
-        const properties = params.parameter.filter(p => p.name === 'property');
-        console.log(`✓ Extended properties for ${conceptId}: ${properties.length} found`);
       }
     });
 
@@ -290,16 +270,9 @@ describe('OMOP Provider', () => {
         const conceptId = testData.sampleConcepts[0];
         const paramSet = [];
 
-        // Request all properties to potentially capture relationships
+        // Request all properties to potentially capture relationships (a concept may
+        // have none; this checks only that the lookup succeeds)
         await provider.extendLookup(conceptId, [], paramSet);
-        const params = { parameter: paramSet };
-
-        const relationships = params.parameter.filter(p =>
-          p.name === 'property' &&
-          p.part.some(part => part.valueString && part.valueString.includes('|'))
-        );
-
-        console.log(`✓ Relationships for ${conceptId}: ${relationships.length} found`);
       }
     });
   });
@@ -329,8 +302,6 @@ describe('OMOP Provider', () => {
         const size = await provider.filterSize(filterContext, filter);
         expect(size).toBeGreaterThanOrEqual(0);
 
-        console.log(`✓ Domain filter '${testDomain}': ${size} concepts found`);
-
         // Test iteration through a few results
         let count = 0;
         const maxToTest = Math.min(5, size);
@@ -344,7 +315,6 @@ describe('OMOP Provider', () => {
         }
 
         expect(count).toBeGreaterThan(0);
-        console.log(`  - Iterated ${count} concepts from filter`);
 
         await provider.filterFinish(filterContext);
       }
@@ -357,18 +327,13 @@ describe('OMOP Provider', () => {
         const domain = testData.domains[i];
         const filterContext = await provider.getPrepContext(true);
 
-        try {
-          await provider.filter(filterContext, true, 'domain', '=', domain);
-          const filters = await provider.executeFilters(filterContext);
-          const filter = filters[0];
+        await provider.filter(filterContext, true, 'domain', '=', domain);
+        const filters = await provider.executeFilters(filterContext);
+        const filter = filters[0];
 
-          const size = await provider.filterSize(filterContext, filter);
-          console.log(`✓ Domain '${domain}': ${size} concepts`);
+        expect(await provider.filterSize(filterContext, filter)).toBeGreaterThanOrEqual(0);
 
-          await provider.filterFinish(filterContext);
-        } catch (error) {
-          console.log(`⚠ Domain '${domain}' caused error: ${error.message}`);
-        }
+        await provider.filterFinish(filterContext);
       }
     });
   });
@@ -389,8 +354,6 @@ describe('OMOP Provider', () => {
           const inFilter = await provider.filterCheck(filterContext, filter, concept);
           expect(typeof inFilter).toBe('boolean');
 
-          console.log(`✓ Concept ${concept.code} in domain '${concept.domain}' filter: ${inFilter}`);
-
           await provider.filterFinish(filterContext);
         }
       }
@@ -403,8 +366,6 @@ describe('OMOP Provider', () => {
 
         const notClosed = await provider.filtersNotClosed(filterContext);
         expect(notClosed).toBe(false);
-
-        console.log(`✓ OMOP filters are closed (not infinite)`);
       }
     });
   });
@@ -420,8 +381,6 @@ describe('OMOP Provider', () => {
         // Test translation to SNOMED CT
         const translations = await provider.getTranslations(coding, 'http://snomed.info/sct');
         expect(Array.isArray(translations)).toBe(true);
-
-        console.log(`✓ Translation to SNOMED CT: ${translations.length} results`);
       }
     });
 
@@ -443,21 +402,16 @@ describe('OMOP Provider', () => {
     test('should build value sets for domains', async () => {
       if (testData.domains.length > 0) {
         const domain = testData.domains[0];
-        const valueSetId = `https://fhir-terminology.ohdsi.org/ValueSet/omop-domain-${domain}`;
+        // the provider's domain value sets are https://fhir-terminology.ohdsi.org/ValueSet/{domain}
+        const valueSetId = `https://fhir-terminology.ohdsi.org/ValueSet/${domain}`;
 
-        try {
-          const valueSet = await provider.buildValueSet(null, valueSetId);
-          expect(valueSet).toBeDefined();
-          expect(valueSet.url).toBe(valueSetId);
-          expect(valueSet.name).toContain(domain);
-          expect(valueSet.compose).toBeDefined();
-          expect(valueSet.compose.include).toBeDefined();
-          expect(valueSet.compose.include.length).toBeGreaterThan(0);
-
-          console.log(`✓ Built value set for domain '${domain}': ${valueSet.name}`);
-        } catch (error) {
-          console.log(`⚠ Could not build value set for domain '${domain}': ${error.message}`);
-        }
+        const valueSet = await provider.buildValueSet(null, valueSetId);
+        expect(valueSet).toBeDefined();
+        expect(valueSet.url).toBe(valueSetId);
+        expect(valueSet.name).toContain(domain);
+        expect(valueSet.compose).toBeDefined();
+        expect(valueSet.compose.include).toBeDefined();
+        expect(valueSet.compose.include.length).toBeGreaterThan(0);
       }
     });
 
@@ -482,8 +436,6 @@ describe('OMOP Provider', () => {
 
       expect(toMaps.length).toBeGreaterThan(0);
       expect(fromMaps.length).toBeGreaterThan(0);
-
-      console.log(`✓ Registered ${conceptMaps.length} concept maps (${toMaps.length} to-, ${fromMaps.length} from-)`);
     });
   });
 
@@ -558,8 +510,6 @@ describe('OMOP Provider', () => {
         await provider.filterFinish(filterContext);
       }
 
-      console.log('✓ Domain distribution:', domainCounts);
-
       // At least one domain should have concepts
       const totalConcepts = Object.values(domainCounts).reduce((sum, count) => sum + count, 0);
       expect(totalConcepts).toBeGreaterThan(0);
@@ -580,8 +530,6 @@ describe('OMOP Provider', () => {
 
         // Standard concept should be valid value
         expect(['S', 'C', 'NS']).toContain(concept.standard);
-
-        console.log(`✓ Concept structure valid for ${concept.code}`);
       }
     });
   });
@@ -590,15 +538,12 @@ describe('OMOP Provider', () => {
     test('should track factory usage', () => {
       const useCount = factory.useCount();
       expect(useCount).toBeGreaterThan(0);
-      console.log(`✓ Factory use count: ${useCount}`);
     });
 
     test('should handle provider close', () => {
       // Should not throw
       const testProvider = provider;
       testProvider.close();
-
-      console.log(`✓ Provider closed successfully`);
     });
   });
 });

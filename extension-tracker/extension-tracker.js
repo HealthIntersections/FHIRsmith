@@ -137,8 +137,6 @@ class ExtensionTrackerModule {
     router.get(this.urlBase + '/package/:pkg', (req, res) => this.handlePackageDetail(req, res));
 
     app.use('/', router);
-    const count = this.db.prepare('SELECT COUNT(*) as count FROM packages').get().count;
-    console.log(`Extension tracker: loaded (${count} packages in database) at ${this.urlBase}`);
   }
 
   createSchema() {

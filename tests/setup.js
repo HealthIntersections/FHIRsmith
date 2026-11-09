@@ -11,6 +11,7 @@ beforeAll(() => {
 
   // Suppress console.log during tests (optional)
   if (process.env.SUPPRESS_LOGS === 'true') {
+    // eslint-disable-next-line no-console -- SUPPRESS_LOGS silences the code under test
     console.log = jest.fn();
     console.error = jest.fn();
     console.warn = jest.fn();

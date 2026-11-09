@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const readline = require('readline');
 const chalk = require('chalk');
+const terminal = require('./terminal');
 
 class RxNormModule extends BaseTerminologyModule {
   constructor() {
@@ -98,7 +99,7 @@ class RxNormModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -121,17 +122,17 @@ class RxNormModule extends BaseTerminologyModule {
   async confirmImport(config) {
     const inquirer = require('inquirer');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version || 'Auto-detect')}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Create Stems: ${chalk.white(config.createStems ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version || 'Auto-detect')}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Create Stems: ${chalk.white(config.createStems ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -161,14 +162,14 @@ class RxNormModule extends BaseTerminologyModule {
       const stats = await this.validateRxNormDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Required files found: ${stats.requiredFiles.length}/3`);
-      console.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
-      console.log(`  Estimated concepts: ${stats.estimatedConcepts.toLocaleString()}`);
-      console.log(`  Estimated relationships: ${stats.estimatedRelationships.toLocaleString()}`);
+      terminal.log(`  Required files found: ${stats.requiredFiles.length}/3`);
+      terminal.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
+      terminal.log(`  Estimated concepts: ${stats.estimatedConcepts.toLocaleString()}`);
+      terminal.log(`  Estimated relationships: ${stats.estimatedRelationships.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
@@ -190,13 +191,13 @@ class RxNormModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
 
       this.logSuccess('Database status:');
-      console.log(`  Version: ${stats.version}`);
-      console.log(`  RXNCONSO Records: ${stats.rxnconsoCount.toLocaleString()}`);
-      console.log(`  RXNREL Records: ${stats.rxnrelCount.toLocaleString()}`);
-      console.log(`  RXNSTY Records: ${stats.rxnstyCount.toLocaleString()}`);
-      console.log(`  Stem Records: ${stats.stemCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Version: ${stats.version}`);
+      terminal.log(`  RXNCONSO Records: ${stats.rxnconsoCount.toLocaleString()}`);
+      terminal.log(`  RXNREL Records: ${stats.rxnrelCount.toLocaleString()}`);
+      terminal.log(`  RXNSTY Records: ${stats.rxnstyCount.toLocaleString()}`);
+      terminal.log(`  Stem Records: ${stats.stemCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -441,7 +442,7 @@ class RxNormModule extends BaseTerminologyModule {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -477,7 +478,7 @@ class RxNormImporter {
   }
 
   async import() {
-    if (this.options.verbose) console.log('Starting RxNorm import...');
+    if (this.options.verbose) terminal.log('Starting RxNorm import...');
 
     // Ensure destination directory exists
     const destDir = path.dirname(this.destFile);
@@ -506,7 +507,7 @@ class RxNormImporter {
         await this.makeStems(db);
       }
 
-      if (this.options.verbose) console.log('RxNorm import completed successfully');
+      if (this.options.verbose) terminal.log('RxNorm import completed successfully');
     } finally {
       await this.closeDatabase(db);
     }
@@ -639,12 +640,12 @@ class RxNormImporter {
         tableSQL.forEach(sql => {
           db.run(sql, (err) => {
             if (err && this.options.verbose) {
-              console.warn(`Table creation warning: ${err.message}`);
+              terminal.warn(`Table creation warning: ${err.message}`);
             }
           });
         });
 
-        if (this.options.verbose) console.log('Database tables created');
+        if (this.options.verbose) terminal.log('Database tables created');
         resolve();
       });
     });
@@ -706,7 +707,7 @@ class RxNormImporter {
   async loadRRFFile(db, fileName, insertSQL, extractValues) {
     const filePath = path.join(this.sourceDir, fileName);
     if (!fs.existsSync(filePath)) {
-      if (this.options.verbose) console.warn(`File not found: ${fileName}`);
+      if (this.options.verbose) terminal.warn(`File not found: ${fileName}`);
       return;
     }
 
@@ -753,7 +754,7 @@ class RxNormImporter {
           if (err) {
             errorCount++;
             if (this.options.verbose && errorCount <= 10) {
-              console.warn(`Error loading ${rows} rows of ${fileName}: ${err.message}`);
+              terminal.warn(`Error loading ${rows} rows of ${fileName}: ${err.message}`);
             }
           }
         });
@@ -784,7 +785,7 @@ class RxNormImporter {
         } catch (error) {
           errorCount++;
           if (this.options.verbose && errorCount <= 10) {
-            console.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
+            terminal.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
           }
         }
       });
@@ -801,7 +802,7 @@ class RxNormImporter {
             }
 
             if (this.options.verbose) {
-              console.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
+              terminal.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
             }
             resolve();
           }
@@ -815,7 +816,7 @@ class RxNormImporter {
   async makeStems(db) {
     this.updateProgress(0, 'Generating Stems');
 
-    if (this.options.verbose) console.log('Generating word stems...');
+    if (this.options.verbose) terminal.log('Generating word stems...');
 
     // Simple English stemmer implementation
     var natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
@@ -871,7 +872,7 @@ class RxNormImporter {
               }
 
               if (this.options.verbose) {
-                console.log(`  Generated ${totalInserts} stem entries from ${processedStems} unique stems`);
+                terminal.log(`  Generated ${totalInserts} stem entries from ${processedStems} unique stems`);
               }
               resolve();
             }
@@ -895,7 +896,7 @@ class RxNormImporter {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && this.options.verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });

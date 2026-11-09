@@ -124,7 +124,6 @@ describe('CPT Provider', () => {
         expect(result.context).toBeInstanceOf(CPTConcept);
         expect(result.context.code).toBe(code);
         expect(result.message).toBeNull();
-        console.log(`✓ Found code: ${code}`);
       }
     });
 
@@ -159,7 +158,6 @@ describe('CPT Provider', () => {
       for (const [code, expectedDisplay] of Object.entries(testData.designations)) {
         const display = await provider.display(code);
         expect(display).toBe(expectedDisplay);
-        console.log(`✓ Display for ${code}: ${display.substring(0, 50)}...`);
       }
     });
 
@@ -173,8 +171,6 @@ describe('CPT Provider', () => {
         const firstDesignation = designations.designations[0];
         expect(firstDesignation.language).toBeDefined();
         expect(firstDesignation.value).toBeDefined();
-
-        console.log(`✓ Code ${code} has ${designations.length} designations`);
       }
     });
   });
@@ -235,8 +231,6 @@ describe('CPT Provider', () => {
           p.part.some(part => part.name === 'code' && part.valueCode === 'copyright')
         );
         expect(copyrightParam).toBeDefined();
-
-        console.log(`✓ Extended lookup for ${code}: ${params.parameter.length} parameters`);
       }
     });
 
@@ -259,8 +253,6 @@ describe('CPT Provider', () => {
             expect(propertyParam).toBeDefined();
           }
         }
-
-        console.log(`✓ Properties for ${code} verified`);
       }
     });
   });
@@ -275,8 +267,6 @@ describe('CPT Provider', () => {
 
         const code = await provider.code(result.context);
         expect(code).toBe(expression);
-
-        console.log(`✓ Parsed expression: ${expression}`);
       }
     });
 
@@ -285,7 +275,6 @@ describe('CPT Provider', () => {
         const result = await provider.locate(expression);
         expect(result.context).toBeNull();
         expect(result.message).toBeDefined();
-        console.log(`✓ Rejected invalid expression: ${expression} - ${result.message}`);
       }
     });
 
@@ -310,8 +299,6 @@ describe('CPT Provider', () => {
         p.part.some(part => part.name === 'code' && part.valueCode === 'modifier')
       );
       expect(modifierParams.length).toBeGreaterThan(0);
-
-      console.log(`✓ Extended lookup for expression ${expression}: ${params.parameter.length} parameters`);
     });
   });
 
@@ -354,7 +341,6 @@ describe('CPT Provider', () => {
       }
 
       expect(foundCodes.sort()).toEqual(testData.modifierCodes.sort());
-      console.log(`✓ Modifier filter (true): found ${foundCodes.join(', ')}`);
     });
 
     test('should filter modifier=false', async () => {
@@ -373,7 +359,6 @@ describe('CPT Provider', () => {
       }
 
       expect(foundCodes.sort()).toEqual(testData.baseCodes.sort());
-      console.log(`✓ Modifier filter (false): found ${foundCodes.join(', ')}`);
     });
   });
 
@@ -394,7 +379,6 @@ describe('CPT Provider', () => {
       expect(foundCodes).toContain('99202');
       expect(foundCodes).toContain('99203');
       expect(foundCodes).toContain('99252');
-      console.log(`✓ Kind filter (code): found ${foundCodes.join(', ')}`);
     });
 
     test('should filter by kind=cat-2', async () => {
@@ -411,7 +395,6 @@ describe('CPT Provider', () => {
 
       expect(foundCodes).toContain('0001A');
       expect(foundCodes).toContain('1P');
-      console.log(`✓ Kind filter (cat-2): found ${foundCodes.join(', ')}`);
     });
 
     test('should filter by kind=general', async () => {
@@ -428,7 +411,6 @@ describe('CPT Provider', () => {
 
       expect(foundCodes).toContain('25');
       expect(foundCodes).toContain('95');
-      console.log(`✓ Kind filter (general): found ${foundCodes.join(', ')}`);
     });
   });
 
@@ -441,8 +423,6 @@ describe('CPT Provider', () => {
 
       const size = await provider.filterSize(filterContext, filter);
       expect(size).toBe(testData.expectedTotalCount);
-
-      console.log(`✓ Modified filter (false): ${size} codes (all)`);
     });
 
     test('should filter modified=true (empty)', async () => {
@@ -457,8 +437,6 @@ describe('CPT Provider', () => {
       // Should report not closed since it could have infinite results
       const notClosed = await provider.filtersNotClosed(filterContext);
       expect(notClosed).toBe(true);
-
-      console.log(`✓ Modified filter (true): ${size} codes (empty, not closed)`);
     });
   });
 
@@ -473,8 +451,6 @@ describe('CPT Provider', () => {
       const located = await provider.filterLocate(filterContext, filter, testCode);
       expect(located).toBeInstanceOf(CPTConcept);
       expect(located.code).toBe(testCode);
-
-      console.log(`✓ Located code ${testCode} in modifier filter`);
     });
 
     test('should check if concepts are in filters', async () => {
@@ -490,8 +466,6 @@ describe('CPT Provider', () => {
       const modifierCodeResult = await provider.locate(testData.modifierCodes[0]);
       const notInFilter = await provider.filterCheck(filterContext, filter, modifierCodeResult.context);
       expect(notInFilter).toBe(false);
-
-      console.log(`✓ Filter check working correctly`);
     });
 
     test('should handle expressions in filters', async () => {
@@ -504,8 +478,6 @@ describe('CPT Provider', () => {
       const expressionResult = await provider.locate(testData.validExpressions[0]);
       const inFilter = await provider.filterCheck(filterContext, filter, expressionResult.context);
       expect(inFilter).toBe(true); // Because the filter is not closed
-
-      console.log(`✓ Expressions handled correctly in non-closed filters`);
     });
   });
 
@@ -526,7 +498,6 @@ describe('CPT Provider', () => {
 
       expect(foundCodes.length).toBe(testData.expectedTotalCount);
       expect(foundCodes.sort()).toEqual(testData.allCodes.sort());
-      console.log(`✓ Iterated all ${foundCodes.length} codes`);
     });
 
     test('should return empty iterator for specific context', async () => {
@@ -535,8 +506,6 @@ describe('CPT Provider', () => {
 
       const context = await provider.nextContext(iterator);
       expect(context).toBeNull();
-
-      console.log(`✓ Empty iterator for specific context`);
     });
   });
 
@@ -579,7 +548,6 @@ describe('CPT Provider', () => {
       const expression = '99202:95'; // 99202 has telemedicine=true
       const result = await provider.locate(expression);
       expect(result.context).toBeInstanceOf(CPTExpression);
-      console.log(`✓ Telemedicine modifier validation works`);
     });
 
     test('should reject expressions with non-existent modifiers', async () => {
@@ -597,13 +565,11 @@ describe('CPT Provider', () => {
 
       // Should not throw
       await provider.filterFinish(filterContext);
-      console.log(`✓ Filter cleanup completed successfully`);
     });
 
     test('should track factory usage', () => {
       const useCount = factory.useCount();
       expect(useCount).toBeGreaterThan(0);
-      console.log(`✓ Factory use count: ${useCount}`);
     });
 
     test('should handle provider close', () => {
@@ -612,7 +578,6 @@ describe('CPT Provider', () => {
 
       // Create new provider for remaining tests
       provider = null;
-      console.log(`✓ Provider closed successfully`);
     });
   });
 

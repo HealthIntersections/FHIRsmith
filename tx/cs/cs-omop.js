@@ -671,7 +671,9 @@ class OMOPServices extends BaseCSServices {
   }
 
 
-  // Subsumption testing - not implemented
+  // Subsumption: this provider has no hierarchy (the OMOP concept_ancestor table isn't
+  // imported), so two concepts that both exist are not-subsumed (the caller deals with equal
+  // codes: equivalent)
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
     await this.#ensureContext(codeB);

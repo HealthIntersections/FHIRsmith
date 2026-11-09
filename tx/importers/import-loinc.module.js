@@ -5,6 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
+const terminal = require('./terminal');
 
 class LoincModule extends BaseTerminologyModule {
   constructor() {
@@ -109,7 +110,7 @@ class LoincModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -119,17 +120,17 @@ class LoincModule extends BaseTerminologyModule {
     const inquirer = require('inquirer');
     const chalk = require('chalk');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version)}`);
-    console.log(`  Main Only: ${chalk.white(config.mainOnly ? 'Yes' : 'No')}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version)}`);
+    terminal.log(`  Main Only: ${chalk.white(config.mainOnly ? 'Yes' : 'No')}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -144,7 +145,7 @@ class LoincModule extends BaseTerminologyModule {
 
   async runImportWithoutConfigSaving(config) {
     try {
-      console.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
+      terminal.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -163,7 +164,7 @@ class LoincModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`${this.getName()} import failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       process.exit(1);
     }
@@ -186,14 +187,14 @@ class LoincModule extends BaseTerminologyModule {
       const stats = await this.validateLoincDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Main codes file: ${stats.mainCodesFound ? 'Found' : 'Missing'}`);
-      console.log(`  Parts file: ${stats.partsFound ? 'Found' : 'Missing'}`);
-      console.log(`  Language variants: ${stats.languageVariants.length} found`);
-      console.log(`  Estimated main codes: ${stats.estimatedCodes.toLocaleString()}`);
+      terminal.log(`  Main codes file: ${stats.mainCodesFound ? 'Found' : 'Missing'}`);
+      terminal.log(`  Parts file: ${stats.partsFound ? 'Found' : 'Missing'}`);
+      terminal.log(`  Language variants: ${stats.languageVariants.length} found`);
+      terminal.log(`  Estimated main codes: ${stats.estimatedCodes.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
@@ -215,15 +216,15 @@ class LoincModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
 
       this.logSuccess('Database status:');
-      console.log(`  Version: ${stats.version}`);
-      console.log(`  Total Codes: ${stats.codeCount.toLocaleString()}`);
-      console.log(`  Main LOINC Codes: ${stats.mainCodeCount.toLocaleString()}`);
-      console.log(`  Parts: ${stats.partCount.toLocaleString()}`);
-      console.log(`  Answer Lists: ${stats.answerListCount.toLocaleString()}`);
-      console.log(`  Languages: ${stats.languageCount.toLocaleString()}`);
-      console.log(`  Relationships: ${stats.relationshipCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Version: ${stats.version}`);
+      terminal.log(`  Total Codes: ${stats.codeCount.toLocaleString()}`);
+      terminal.log(`  Main LOINC Codes: ${stats.mainCodeCount.toLocaleString()}`);
+      terminal.log(`  Parts: ${stats.partCount.toLocaleString()}`);
+      terminal.log(`  Answer Lists: ${stats.answerListCount.toLocaleString()}`);
+      terminal.log(`  Languages: ${stats.languageCount.toLocaleString()}`);
+      terminal.log(`  Relationships: ${stats.relationshipCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -446,7 +447,7 @@ class LoincModule extends BaseTerminologyModule {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -579,7 +580,7 @@ class LoincDataMigrator {
   }
 
   async migrate(sourceDir, destFile, version = 'unknown', options = {}) {
-    if (options.verbose) console.log('Starting LOINC data migration...');
+    if (options.verbose) terminal.log('Starting LOINC data migration...');
 
     const destDir = path.dirname(destFile);
     if (!fs.existsSync(destDir)) {
@@ -678,14 +679,14 @@ class LoincDataMigrator {
       }
 
       await exec('COMMIT');
-      if (options.verbose) console.log('LOINC data migration completed successfully');
+      if (options.verbose) terminal.log('LOINC data migration completed successfully');
     } finally {
       await this.closeDatabase(db, options.verbose);
     }
   }
 
   async createTables(db, version, verbose = true) {
-    if (verbose) console.log('Creating database tables...');
+    if (verbose) terminal.log('Creating database tables...');
 
     const tableSQL = [
       `CREATE TABLE Config (
@@ -786,7 +787,7 @@ class LoincDataMigrator {
         });
 
         this.insertInitialData(db, version);
-        if (verbose) console.log('Database tables created');
+        if (verbose) terminal.log('Database tables created');
         resolve();
       });
     });
@@ -881,11 +882,11 @@ class LoincDataMigrator {
   }
 
   async processLanguageVariants(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Language Variants...');
+    if (options.verbose) terminal.log('Processing Language Variants...');
 
     const filePath = path.join(sourceDir, 'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Language variants file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Language variants file not found: ${filePath}`);
       return;
     }
 
@@ -912,7 +913,7 @@ class LoincDataMigrator {
   }
 
   async processParts(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Parts...');
+    if (options.verbose) terminal.log('Processing Parts...');
 
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/Part.csv');
     const rl = csvRecords(filePath);
@@ -940,7 +941,7 @@ class LoincDataMigrator {
       this.updateProgress(remaining);
     }
 
-    if (options.verbose) console.log(`  Processed ${processedCount} parts`);
+    if (options.verbose) terminal.log(`  Processed ${processedCount} parts`);
   }
 
   async processPartItem(db, items) {
@@ -964,7 +965,7 @@ class LoincDataMigrator {
   }
 
   async processCodes(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Main Codes...');
+    if (options.verbose) terminal.log('Processing Main Codes...');
 
     const filePath = path.join(sourceDir, 'LoincTable/Loinc.csv');
     const rl = csvRecords(filePath);
@@ -992,7 +993,7 @@ class LoincDataMigrator {
       this.updateProgress(remaining);
     }
 
-    if (options.verbose) console.log(`  Processed ${processedCount} main codes`);
+    if (options.verbose) terminal.log(`  Processed ${processedCount} main codes`);
   }
 
   async processCodeItem(db, items) {
@@ -1039,11 +1040,11 @@ class LoincDataMigrator {
   async processConsumerNames(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/ConsumerName/ConsumerName.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Consumer names file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Consumer names file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Consumer Names...');
+    if (options.verbose) terminal.log('Processing Consumer Names...');
 
     const rl = csvRecords(filePath);
 
@@ -1074,11 +1075,11 @@ class LoincDataMigrator {
   async processLists(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/AnswerFile/AnswerList.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Answer lists file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Answer lists file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Answer Lists...');
+    if (options.verbose) terminal.log('Processing Answer Lists...');
 
     const rl = csvRecords(filePath);
 
@@ -1160,11 +1161,11 @@ class LoincDataMigrator {
   async processPartMappings(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Part mapping file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Part mapping file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Part Mappings...');
+    if (options.verbose) terminal.log('Processing Part Mappings...');
 
     const rl = csvRecords(filePath);
 
@@ -1199,11 +1200,11 @@ class LoincDataMigrator {
   async processIeeeMappings(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`IEEE mapping file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`IEEE mapping file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing IEEE Mappings...');
+    if (options.verbose) terminal.log('Processing IEEE Mappings...');
 
     const rl = csvRecords(filePath);
 
@@ -1259,11 +1260,11 @@ class LoincDataMigrator {
   async processPartLinks(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/LoincPartLink_Primary.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Part links file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Part links file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Part Links...');
+    if (options.verbose) terminal.log('Processing Part Links...');
 
     const rl = csvRecords(filePath);
 
@@ -1308,11 +1309,11 @@ class LoincDataMigrator {
   async processListLinks(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/AnswerFile/LoincAnswerListLink.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`List links file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`List links file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing List Links...');
+    if (options.verbose) terminal.log('Processing List Links...');
 
     const rl = csvRecords(filePath);
 
@@ -1365,7 +1366,7 @@ class LoincDataMigrator {
       throw new Error(`Required file missing: ${filePath}`);
     }
 
-    if (options.verbose) console.log('Processing Hierarchy...');
+    if (options.verbose) terminal.log('Processing Hierarchy...');
 
     const rl = csvRecords(filePath);
 
@@ -1429,7 +1430,7 @@ class LoincDataMigrator {
   }
 
   async processPropertyValues(db, step, options) {
-    if (options.verbose) console.log('Processing Property Values...');
+    if (options.verbose) terminal.log('Processing Property Values...');
 
     for (const [value, key] of this.propValues) {
       db.run('INSERT INTO PropertyValues (PropertyValueKey, Value) VALUES (?, ?)', [key, value]);
@@ -1437,7 +1438,7 @@ class LoincDataMigrator {
   }
 
   async storeClosureTable(db, step, options) {
-    if (options.verbose) console.log('Storing Closure Table...');
+    if (options.verbose) terminal.log('Storing Closure Table...');
 
     let count = 0;
     for (const codeInfo of this.codeList) {
@@ -1462,7 +1463,7 @@ class LoincDataMigrator {
   }
 
   async processLanguage(db, sourceDir, step, langCode, options) {
-    if (options.verbose) console.log(`Processing Language ${langCode}...`);
+    if (options.verbose) terminal.log(`Processing Language ${langCode}...`);
 
     const langKey = this.langs.get(langCode);
     if (!langKey) return;
@@ -1472,7 +1473,7 @@ class LoincDataMigrator {
     const filePath = path.join(sourceDir, 'AccessoryFiles/LinguisticVariants', fileName);
 
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Language file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Language file not found: ${filePath}`);
       return;
     }
 
@@ -1585,7 +1586,7 @@ class LoincDataMigrator {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });

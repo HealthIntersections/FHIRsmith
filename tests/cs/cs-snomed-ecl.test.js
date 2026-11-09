@@ -683,7 +683,6 @@ describe('ECL Validator Test Suite', () => {
 
       operators.forEach(({ input, expected }) => {
         const lexer = new ECLLexer(input);
-        console.log(`Tokenizing "${input}": ${expected}`);
         const tokens = lexer.tokenize();
         expect(tokens[0].type).toBe(expected);
         expect(tokens[0].value).toBe(input);
@@ -726,7 +725,6 @@ describe('ECL Validator Test Suite', () => {
       ];
 
       tokens.forEach((token, index) => {
-        console.log(`Token ${expectedTypes[index]}: ${token.type}`);
         if (index < expectedTypes.length - 1) { // Exclude EOF from detailed check
           expect(token.type).toBe(expectedTypes[index]);
         }
@@ -844,7 +842,6 @@ describe('ECL Validator Test Suite', () => {
       ];
 
       testCases.forEach(({ input, operator }) => {
-        console.log(`Parsing: ${input}`);
         const result = eclValidator.parse(input);
         expect(result.success).toBe(true);
         expect(result.ast.operator).toBe(operator);
@@ -972,7 +969,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -987,7 +983,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1003,7 +998,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1016,7 +1010,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1042,7 +1035,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1054,7 +1046,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1081,7 +1072,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1095,7 +1085,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1117,7 +1106,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1131,7 +1119,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1164,7 +1151,6 @@ describe('ECL Validator Test Suite', () => {
 
       malformedExpressions.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(false);
         expect(result.errors.length).toBeGreaterThan(0);
       });
@@ -1179,7 +1165,6 @@ describe('ECL Validator Test Suite', () => {
 
       examples.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1280,8 +1265,6 @@ describe('ECL Validator Test Suite', () => {
       const result = eclValidator.parse(complexExpression);
       const duration = Date.now() - start;
 
-      console.log(`Parse "${complexExpression}": ${result.success} (${result.errors})`);
-
       expect(result.success).toBe(true);
       expect(duration).toBeLessThan(100); // Should parse complex expression in under 100ms
     });
@@ -1311,14 +1294,9 @@ describe('ECL Validator Test Suite', () => {
     });
 
     test('should handle wildcard evaluation with limits', async () => {
-      try {
-        const result = await eclValidator.evaluate('*');
-        expect(result.total).toBeGreaterThan(0);
-        expect(result.results.length).toBeLessThanOrEqual(1000); // Should be limited
-      } catch (error) {
-        // May not be supported or may timeout
-        console.log('Wildcard evaluation not supported or failed:', error.message);
-      }
+      const result = await eclValidator.evaluate('*');
+      expect(result.total).toBeGreaterThan(0);
+      expect(result.results.length).toBeLessThanOrEqual(1000); // Should be limited
     });
   });
 
@@ -1333,7 +1311,6 @@ describe('ECL Validator Test Suite', () => {
 
       nestedExpressions.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1366,7 +1343,6 @@ describe('ECL Validator Test Suite', () => {
 
       expressions.forEach(expr => {
         const result = eclValidator.parse(expr);
-        console.log(`Parse "${expr}": ${result.success} (${result.errors})`);
         expect(result.success).toBe(true);
       });
     });
@@ -1375,7 +1351,6 @@ describe('ECL Validator Test Suite', () => {
     test('should accept valid concept with correct term', () => {
       // You'll need to fill in a real concept ID and its actual term from your SNOMED data
       const result = eclValidator.parse('11687002 |Gestational diabetes mellitus|');
-      console.log(`Parse "11687002 |Gestational diabetes mellitus|": ${result.success} (${result.errors})`);
 
       expect(result.success).toBe(true);
       expect(result.ast.type).toBe(ECLNodeType.SUB_EXPRESSION_CONSTRAINT);
@@ -1386,7 +1361,6 @@ describe('ECL Validator Test Suite', () => {
     test('should reject valid concept with incorrect term', () => {
       // Same concept ID but with wrong term
       const result = eclValidator.parse('11687002 |Wrong term here|');
-      console.log(`Parse "11687002 |Wrong term here|": ${result.success} (${result.errors})`);
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
@@ -1396,7 +1370,6 @@ describe('ECL Validator Test Suite', () => {
     test('should accept concept without term', () => {
       // Just the concept ID without term should still work
       const result = eclValidator.parse('11687002');
-      console.log(`Parse "'11687002'": ${result.success} (${result.errors})`);
 
       expect(result.success).toBe(true);
       expect(result.ast.focus.conceptId).toBe('11687002');
@@ -1406,7 +1379,6 @@ describe('ECL Validator Test Suite', () => {
     test('should handle term validation in compound expressions', () => {
       // Test term validation works in more complex expressions
       const result = eclValidator.parse('<< 11687002 |Gestational diabetes mellitus| AND << 404684003 |Wrong clinical finding term|');
-      console.log(`Parse "<< 11687002 |Gestational diabetes mellitus| AND << 404684003 |Wrong clinical finding term|": ${result.success} (${result.errors})`);
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
@@ -1416,7 +1388,6 @@ describe('ECL Validator Test Suite', () => {
     test('should handle term validation in refinements', () => {
       // Test term validation in attribute contexts
       const result = eclValidator.parse('<< 404684003 |Clinical finding|: 116676008 |Wrong morphology term| = 72704001 |Fracture|');
-      console.log(`Parse "<< 404684003 |Clinical finding|: 116676008 |Wrong morphology term| = 72704001 |Fracture|": ${result.success} (${result.errors})`);
 
       expect(result.success).toBe(false);
       expect(result.errors).toHaveLength(1);
@@ -1560,8 +1531,7 @@ describe('ECL Validator Test Suite', () => {
         // 1. Treat as error and reject
         // 2. Treat as warning and continue
         // 3. Ask user for confirmation
-
-        console.log('Semantic warning:', semanticResult.errors[0]);
+        expect(semanticResult.errors.length).toBeGreaterThan(0);
         // Still have valid AST to work with: parseResult.ast
       });
 

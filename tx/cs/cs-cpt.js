@@ -578,7 +578,8 @@ class CPTServices extends BaseCSServices {
 
 
 
-  // Subsumption testing - not implemented
+  // Subsumption: CPT codes have no subsumption relationships, so two codes that both exist are
+  // not-subsumed (the caller deals with equal codes: equivalent)
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
     await this.#ensureContext(codeB);

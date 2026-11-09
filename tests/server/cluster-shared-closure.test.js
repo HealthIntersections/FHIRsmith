@@ -94,6 +94,7 @@ describe('cluster.js with server.cluster.sharedClosure', () => {
       const log = fs.readFileSync(path.join(cluster.dir, 'logs', 'server.log'), 'utf8');
       stats.retriesLogged = (log.match(/working the add out again/g) || []).length;
       // for the record: how much contention the run produced
+      // eslint-disable-next-line no-console -- records how much contention the run produced
       console.log(`shared closure: ${stats.retriesLogged} retries after a conflict, ${stats.busy} busy answers (retried by the client)`);
       await cluster.stop();
     }

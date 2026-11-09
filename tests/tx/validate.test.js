@@ -364,7 +364,6 @@ describe('ValidateWorker', () => {
 
       const result = await worker.doValidationVS(coded, valueSet, txp, 'coded', 'Coding');
 
-      console.log(result);
       const resultParam = (result.parameter || []).find(p => p.name === 'result');
       expect(resultParam.valueBoolean).toBe(true);
     });
@@ -383,7 +382,6 @@ describe('ValidateWorker', () => {
 
       const result = await worker.doValidationVS(coded, valueSet, txp, 'coded', 'Coding');
 
-      console.log(result);
       const resultParam = result.parameter.find(p => p.name === 'result');
       expect(resultParam.valueBoolean).toBe(false);
     });
@@ -402,7 +400,6 @@ describe('ValidateWorker', () => {
 
       const result = await worker.doValidationVS(coded, valueSet, txp, 'coded', 'Coding');
 
-      console.log(result);
       const resultParam = result.parameter.find(p => p.name === 'result');
       expect(resultParam.valueBoolean).toBe(false);
       

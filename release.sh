@@ -12,11 +12,11 @@
 set -euo pipefail
 
 fail() {
-  echo "gr.sh: $*" >&2
+  echo "release.sh: $*" >&2
   exit 1
 }
 
-[ $# -eq 1 ] || fail "usage: ./gr.sh <version>, e.g. ./gr.sh 0.17.0"
+[ $# -eq 1 ] || fail "usage: ./release.sh <version>, e.g. ./release.sh 0.17.0"
 VERSION="${1#v}"
 TAG="v$VERSION"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "'$1' is not a release version (X.Y.Z)"
@@ -67,7 +67,7 @@ if (!report.issued || new Date(report.issued) < new Date(committed)) {
   problems.push(`it was run (${report.issued}) before the last change to the code (${committed})`);
 }
 if (problems.length > 0) {
-  console.error(`gr.sh: ${file} can't be submitted for ${version}: ${problems.join('; ')} - run the tx tests again`);
+  console.error(`release.sh: ${file} can't be submitted for ${version}: ${problems.join('; ')} - run the tx tests again`);
   process.exit(1);
 }
 NODE

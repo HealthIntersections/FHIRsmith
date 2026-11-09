@@ -2,7 +2,11 @@
 
 The server is configured by `config.json` in the data directory (see
 [Data Directory](README.md#data-directory)), plus a few environment variables.
-`config-template.json` is a starting point: it has every section, with comments.
+`config-template.json` is a starting point: it has every section, with comments, and every
+module turned off - set `"enabled": true` on the ones you run. `config.json` is JSON, except that
+it may have comments: `//` to the end of the line, and `/* ... */`.
+
+Upgrading? See [Upgrading to 1.0.0](#upgrading-to-100).
 
 The top level of `config.json` has the server-wide settings described here, and a
 `modules` section with an entry for each module (see [Modules](#modules)).
@@ -181,4 +185,84 @@ Each module has its own entry under `modules`, documented with the module:
 | `folder` | [folder/readme.md](folder/readme.md) |
 | `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |
 | `token` | [token/security_guide.md](token/security_guide.md) |
-| `xig`, `vcl`, `publisher` | see `config-template.json` |
+| `xig` | [xig/readme.md](xig/readme.md) |
+| `vcl` | [vcl/readme.md](vcl/readme.md) |
+| `publisher` | [publisher/readme.md](publisher/readme.md) |
+
+## Upgrading to 1.0.0
+
+1.0.0 is a big upgrade from 0.17 and 0.18. Most servers won't need to change any settings, but
+every operator should check these. Each item says who it affects; the [CHANGELOG](CHANGELOG.md)
+has the detail.
+
+### Every server
+
+- **Node.js 24** or later (`engines` in package.json). After upgrading Node, `npm ci` (there
+  are new dependencies) - or `npm rebuild` for the native ones.
+- **Start command**: `npm start` is now `node --expose-gc server.js`. A service that runs
+  `node server.js` still works (the memory guard sets the flag itself), but add `--expose-gc`.
+- **Memory guard** (new, on by default): above 85% of the memory limit (the cgroup's - systemd
+  `MemoryMax` - or else the machine's RAM) new requests get 503, and above 92% running
+  operations are aborted (422). If your memory limit is tight, check `server.memory` ([Memory](#memory)).
+- **Request size**: `server.maxBodyMB` (default 50) is now a setting. nginx's
+  `client_max_body_size` must be at least as big, or clients get nginx's HTML 413 rather than an
+  OperationOutcome.
+- **`config.json` may have comments** (`//` and `/* */`), and `config-template.json` now has
+  every module turned off.
+- **New, optional**: `email` and `dailyReport.to` ([the daily report](#email-and-the-daily-report) -
+  nothing is sent without both), `npmAudit` (a periodic `npm audit` of the server; set
+  `"enabled": false` on a server with no internet access), `accessibility.checkPanel`,
+  `stats.sampleSeconds`.
+- **Cluster mode** (`node cluster.js`, [cluster.md](cluster.md)) is new and opt-in: `server.js`
+  runs as before.
+
+### tx (terminology server)
+
+- **Expansion limits**: the defaults are now `externalLimit` 10000 (was 3000) and `internalLimit`
+  100000 (was 10000), and there's a new `walkLimit` (default 10 x `internalLimit`) for paging.
+  The three are checked at startup: one that isn't a whole number above 0, or
+  external <= internal <= walk not holding, **stops the server**. If you set any of them, check
+  them. Bigger expansions now succeed, so a busy server may use more memory.
+- **`Tools/Java` is no longer special**: the IG Publisher and the tx-ecosystem test runner get
+  the configured limits like any client (they used to be held to 3000/10000).
+- **Memory caps** with defaults (see the `Limits:` line in the startup log): `cacheMaxConcepts`,
+  `cacheMaxTotalConcepts`, `expansionCacheMaxCodes`, `usageTrackerMaxCodes`,
+  `usageTrackerMaxCodeLength`, `languageTagCacheSize`. A client may now get `cache-id-unknown`
+  (or 422) for a `$cache-control` cache that grew too big.
+- **`pruneTerminologyCache`** (new, default false): delete the databases, caches and packages
+  in `terminology-cache` that the library no longer uses. Turn it on for a server that has the
+  data directory to itself.
+- **`instanceCode`** is checked at startup, and a cluster master needs one.
+- **VSAC** (`vsacCfg`): the default `baseUrl` is https (an http one is logged as a warning);
+  value sets are read from the database when asked for, with a cache sized by `valueSetCacheMB`
+  (default 64); a value set version VSAC doesn't have is now not found.
+- **Language packs**: a `lang-pack` or `extension-codes` supplement is used without being
+  referenced only when it is marked `codesystem-supplement-global` = `true`. The
+  `global-lang-pack` code is gone. If you load language packs, check they are marked.
+- **Behaviour, with no setting**: `regex` filters match the whole value (LOINC regex value sets
+  may select fewer codes); ICD-11 codes are entity ids; a resource that both THO and a core
+  package provide is available in both versions.
+- **Rebuilds** (optional, for the new features): SNOMED CT caches for alternate identifiers and
+  concrete values, and any built in a time zone ahead of UTC (their effectiveTimes are a day
+  early); the LOINC database for its mappings. The package value set and concept map caches
+  rebuild themselves once, so the first start is slower.
+
+### Other modules
+
+- **registry**: `maxResponseMB` (default 100) limits what the crawler reads from a server.
+- **packages**: the crawler refuses packages over its new limits (`maxDownloadMB` 250,
+  `maxUnpackedMB` 4096, `maxFileMB` 50, `maxFiles` 250000); raise them only if a real package
+  is refused.
+- **xig**: `POST /xig/update` only works when `updateToken` is set.
+- **ext-tracker**: set `token` (the IG Publisher's) so only the publisher can submit.
+- **token**: the JSON API takes the API key in a header (`Authorization: Bearer` or
+  `X-API-Key`), not the URL - clients must change.
+- **publisher**: the administrator's password is now `adminPassword` in the config (set at
+  every start). Without it, an administrator that still has the old fixed default password
+  (`admin123`) gets a random one at startup, which is logged - set `adminPassword`, or look in
+  the log.
+- **ips**: to use a validator jar of your own, set `validator.jar`, rather than replacing
+  `bin/validator_cli.jar`.
+
+There are no manual data migrations: the databases that changed migrate themselves at startup.
+

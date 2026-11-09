@@ -72,7 +72,6 @@ describe('NDC Module Import', () => {
         const count = await getTableCount(db, table.name);
 
         expect(count).toBeGreaterThanOrEqual(table.minRecords);
-        // console.log(`✓ ${table.name}: ${count} records`);
       }
 
       // Verify version table has correct version
@@ -716,7 +715,6 @@ describe('NDC Provider', () => {
           const display = await provider.display(result.context);
           expect(display).toContain('Cialis');
           expect(display).toContain('(product)');
-          // console.log(`✓ Found Cialis product: ${code} - ${display}`);
           break;
         }
       }
@@ -731,7 +729,6 @@ describe('NDC Provider', () => {
           const display = await provider.display(result.context);
           expect(display).toContain('RETEVMO');
           expect(display).toContain('(product)');
-          // console.log(`✓ Found RETEVMO: ${code} - ${display}`);
           break;
         }
       }
@@ -747,7 +744,6 @@ describe('NDC Provider', () => {
           expect(display).toContain('Trulicity');
           expect(display).toContain('SYRINGE');
           expect(display).toContain('(package)');
-          // console.log(`✓ Found Trulicity syringe: ${code} - ${display}`);
           break;
         }
       }

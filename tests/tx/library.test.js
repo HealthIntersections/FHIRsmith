@@ -36,11 +36,7 @@ describe('Provider Test', () => {
    * Test that all loaded code system factories can successfully create CodeSystemProvider instances
    */
   async function testAllCodeSystemFactories(library) {
-    console.log(`\nTesting ${library.codeSystemFactories.size} code system factories...`);
-
     const opContext = new OperationContext(Languages.fromAcceptLanguage("en"), library.i18n);
-    let successCount = 0;
-    let failureCount = 0;
     const failures = [];
 
     for (const [key] of library.codeSystemFactories.entries()) {
@@ -55,45 +51,23 @@ describe('Provider Test', () => {
         }
 
         // Attempt to get a provider using getCodeSystemProvider
-        const startTime = performance.now();
         const provider = await library.getCodeSystemProvider(opContext, system, version, []);
-        const endTime = performance.now();
-
-        if (provider) {
-          successCount++;
-          console.log(`✓ Successfully created provider for: ${key} in ${endTime - startTime} milliseconds`);
-        } else {
-          failureCount++;
+        if (!provider) {
           failures.push(`${key}: getCodeSystemProvider returned null`);
-          console.log(`✗ Failed to create provider for: ${key} (returned null) in ${endTime - startTime} milliseconds`);
         }
-
       } catch (error) {
         debugLog(error);
-        failureCount++;
         failures.push(`${key}: ${error.message}`);
-        console.log(`✗ Error creating provider for ${key}: ${error.message}`);
       }
     }
 
-    console.log(`\nCode System Factory Results:`);
-    console.log(`  Success: ${successCount}`);
-    console.log(`  Failures: ${failureCount}`);
-
-    if (failures.length > 0) {
-      console.log(`  Failed systems:`);
-      failures.forEach(failure => console.log(`    - ${failure}`));
-    }
-
-    expect(failureCount).toBe(0);
+    expect(failures).toEqual([]);
   }
 
   /**
    * Test a random selection of loaded CodeSystem resources can create providers
    */
   async function testRandomCodeSystems(library) {
-    console.log(`\nTesting random selection of ${library.codeSystems.size} loaded code systems...`);
-
     const opContext = new OperationContext(Languages.fromAcceptLanguage('en'));
     const codeSystemEntries = Array.from(library.codeSystems.entries());
 
@@ -101,52 +75,22 @@ describe('Provider Test', () => {
     const sampleSize = Math.min(20, codeSystemEntries.length);
     const randomSample = getRandomSample(codeSystemEntries, sampleSize);
 
-    let successCount = 0;
-    let failureCount = 0;
     const failures = [];
 
     for (const [key, codeSystem] of randomSample) {
       try {
         // Test createCodeSystemProvider directly
         const provider = await library.createCodeSystemProvider(opContext, codeSystem, []);
-
-        if (provider) {
-          successCount++;
-          console.log(`✓ Successfully created provider for CodeSystem: ${key}`);
-
-          // Additional validation - check if provider has expected methods
-          if (typeof provider.lookup === 'function') {
-            console.log(`  - Provider has lookup method`);
-          }
-          if (typeof provider.validate === 'function') {
-            console.log(`  - Provider has validate method`);
-          }
-        } else {
-          failureCount++;
+        if (!provider) {
           failures.push(`${key}: createCodeSystemProvider returned null`);
-          console.log(`✗ Failed to create provider for CodeSystem: ${key} (returned null)`);
         }
-
       } catch (error) {
-        failureCount++;
         failures.push(`${key}: ${error.message}`);
-        console.log(`✗ Error creating provider for CodeSystem ${key}: ${error.message}`);
       }
     }
 
-    console.log(`\nCodeSystem Provider Results:`);
-    console.log(`  Tested: ${randomSample.length} code systems`);
-    console.log(`  Success: ${successCount}`);
-    console.log(`  Failures: ${failureCount}`);
-
-    if (failures.length > 0) {
-      console.log(`  Failed systems:`);
-      failures.forEach(failure => console.log(`    - ${failure}`));
-    }
-
     // Assert that all tested code systems can create providers successfully
-    expect(successCount).toEqual(randomSample.length);
-    expect(failureCount).toEqual(0);
+    expect(failures).toEqual([]);
   }
 
   /**

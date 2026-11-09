@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const chalk = require('chalk');
+const terminal = require('./terminal');
 
 class RxNormSubsetModule extends BaseTerminologyModule {
   constructor() {
@@ -86,7 +87,7 @@ class RxNormSubsetModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Subset operation failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -237,18 +238,18 @@ class RxNormSubsetModule extends BaseTerminologyModule {
   }
 
   async confirmSubset(config) {
-    console.log(chalk.cyan(`\n📋 RxNorm Subset Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Codes File: ${chalk.white(config.codes)}`);
-    console.log(`  Expand Relationships: ${chalk.white(config.expandRelationships ? 'Yes' : 'No')}`);
-    console.log(`  Include Synonyms: ${chalk.white(config.includeSynonyms ? 'Yes' : 'No')}`);
-    console.log(`  Include Archived: ${chalk.white(config.includeArchived ? 'Yes' : 'No')}`);
-    console.log(`  Max Iterations: ${chalk.white(config.maxIterations)}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 RxNorm Subset Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Codes File: ${chalk.white(config.codes)}`);
+    terminal.log(`  Expand Relationships: ${chalk.white(config.expandRelationships ? 'Yes' : 'No')}`);
+    terminal.log(`  Include Synonyms: ${chalk.white(config.includeSynonyms ? 'Yes' : 'No')}`);
+    terminal.log(`  Include Archived: ${chalk.white(config.includeArchived ? 'Yes' : 'No')}`);
+    terminal.log(`  Max Iterations: ${chalk.white(config.maxIterations)}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await require('inquirer').prompt({
@@ -263,7 +264,7 @@ class RxNormSubsetModule extends BaseTerminologyModule {
 
   async runSubset(config) {
     try {
-      console.log(chalk.blue.bold(`🧬 Starting RxNorm Subset Creation...\n`));
+      terminal.log(chalk.blue.bold(`🧬 Starting RxNorm Subset Creation...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -282,7 +283,7 @@ class RxNormSubsetModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`RxNorm subset creation failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -315,14 +316,14 @@ class RxNormSubsetModule extends BaseTerminologyModule {
       const stats = await this.validateSubsetInputs(options.source, options.codes);
 
       this.logSuccess('Validation passed');
-      console.log(`  Required files found: ${stats.requiredFiles.length}/3`);
-      console.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
-      console.log(`  Codes in list: ${stats.codeCount.toLocaleString()}`);
-      console.log(`  Unique codes: ${stats.uniqueCodes.toLocaleString()}`);
+      terminal.log(`  Required files found: ${stats.requiredFiles.length}/3`);
+      terminal.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
+      terminal.log(`  Codes in list: ${stats.codeCount.toLocaleString()}`);
+      terminal.log(`  Unique codes: ${stats.uniqueCodes.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
@@ -380,7 +381,7 @@ class RxNormSubsetModule extends BaseTerminologyModule {
 
     if (config.verbose) {
       const sampleCodes = Array.from(initialTargetCodes).slice(0, 10);
-      console.log(`Sample codes: ${sampleCodes.join(', ')}`);
+      terminal.log(`Sample codes: ${sampleCodes.join(', ')}`);
     }
 
     let finalTargetCodes = initialTargetCodes;
@@ -403,7 +404,7 @@ class RxNormSubsetModule extends BaseTerminologyModule {
       if (config.verbose && addedCodes > 0) {
         const newCodes = Array.from(finalTargetCodes).filter(code => !initialTargetCodes.has(code));
         const sampleNewCodes = newCodes.slice(0, 10);
-        console.log(`Sample newly added codes: ${sampleNewCodes.join(', ')}`);
+        terminal.log(`Sample newly added codes: ${sampleNewCodes.join(', ')}`);
       }
     }
 
@@ -529,7 +530,7 @@ class RxNormRelationshipExpander {
 
   async expandCodes(initialCodes) {
     if (this.verbose) {
-      console.log(`    Starting relationship expansion with ${initialCodes.size} codes`);
+      terminal.log(`    Starting relationship expansion with ${initialCodes.size} codes`);
     }
 
     let currentCodes = new Set(initialCodes);
@@ -540,7 +541,7 @@ class RxNormRelationshipExpander {
       const sizeBefore = currentCodes.size;
 
       if (this.verbose) {
-        console.log(`    Iteration ${iteration}: Starting with ${sizeBefore} codes`);
+        terminal.log(`    Iteration ${iteration}: Starting with ${sizeBefore} codes`);
       }
 
       const newCodes = await this.findRelatedCodes(currentCodes);
@@ -554,13 +555,13 @@ class RxNormRelationshipExpander {
       const added = sizeAfter - sizeBefore;
 
       if (this.verbose) {
-        console.log(`    Iteration ${iteration}: Added ${added} codes (total: ${sizeAfter})`);
+        terminal.log(`    Iteration ${iteration}: Added ${added} codes (total: ${sizeAfter})`);
       }
 
       // Stop if no new codes were found
       if (added === 0) {
         if (this.verbose) {
-          console.log(`    Expansion converged after ${iteration} iterations`);
+          terminal.log(`    Expansion converged after ${iteration} iterations`);
         }
         break;
       }
@@ -575,7 +576,7 @@ class RxNormRelationshipExpander {
 
     if (!fs.existsSync(rxnrelPath)) {
       if (this.verbose) {
-        console.log(`    RXNREL file not found: ${rxnrelPath}`);
+        terminal.log(`    RXNREL file not found: ${rxnrelPath}`);
       }
       return relatedCodes;
     }
@@ -624,12 +625,12 @@ class RxNormRelationshipExpander {
       }
 
       if (processedLines % 100000 === 0 && this.verbose) {
-        console.log(`      Processed ${processedLines} relationships, found ${matchedRelationships} matches`);
+        terminal.log(`      Processed ${processedLines} relationships, found ${matchedRelationships} matches`);
       }
     }
 
     if (this.verbose) {
-      console.log(`    Found ${relatedCodes.size} related codes from ${matchedRelationships} relationships`);
+      terminal.log(`    Found ${relatedCodes.size} related codes from ${matchedRelationships} relationships`);
     }
 
     return relatedCodes;
@@ -890,7 +891,7 @@ class RxNormSubsetProcessor {
 
     if (this.verbose && lineNum > 0) {
       const filename = path.basename(sourcePath);
-      console.log(`    Included ${includedLines.toLocaleString()} of ${lineNum.toLocaleString()} lines in ${filename}`);
+      terminal.log(`    Included ${includedLines.toLocaleString()} of ${lineNum.toLocaleString()} lines in ${filename}`);
     }
   }
 

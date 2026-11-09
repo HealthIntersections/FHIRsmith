@@ -703,11 +703,12 @@ class RxNormServices extends BaseCSServices {
     return paramArray;
   }
 
-  // Subsumption testing
+  // Subsumption: RxNorm codes have no subsumption relationships (no hierarchy), so two codes
+  // that both exist are not-subsumed (the caller deals with equal codes: equivalent)
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
     await this.#ensureContext(codeB);
-    return 'not-subsumed'; // Not implemented yet
+    return 'not-subsumed';
   }
 
   /**

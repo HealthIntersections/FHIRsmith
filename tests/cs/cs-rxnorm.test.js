@@ -60,8 +60,6 @@ describe('RxNorm Import', () => {
     dbCounts = await getDatabaseCounts(testDbPath);
     dbSchema = await getDatabaseSchema(testDbPath);
     sampleData = await getSampleData(testDbPath);
-
-    console.log(`Import completed in ${importDuration.toFixed(1)} seconds`);
   }, 180000); // 3 minute timeout for import + data gathering
 
   // Clean up after all tests
@@ -100,8 +98,6 @@ describe('RxNorm Import', () => {
 
       // Should complete in under 8 minutes for subset with stems
       expect(durationMinutes).toBeLessThan(8);
-
-      console.log(`Import performance: ${importDuration.toFixed(1)} seconds (${durationMinutes.toFixed(2)} minutes)`);
     });
 
     testOrSkip('database contains expected record counts', () => {
@@ -113,9 +109,6 @@ describe('RxNorm Import', () => {
 
       // Check stems were created
       expect(dbCounts.RXNSTEMS).toBeGreaterThan(0);
-
-      // Log actual vs expected for debugging
-      console.log('Database counts:', dbCounts);
     });
 
     testOrSkip('database has proper schema structure', () => {
@@ -131,8 +124,6 @@ describe('RxNorm Import', () => {
       for (const col of expectedColumns) {
         expect(rxnconsoColumns).toContain(col);
       }
-
-      console.log('Tables found:', dbSchema.tables);
     });
 
     testOrSkip('database contains valid RxNorm data', () => {
@@ -147,23 +138,17 @@ describe('RxNorm Import', () => {
 
       // Verify no orphaned relationships
       expect(sampleData.orphanedRelationships).toBe(0);
-
-      console.log('Data integrity check:', sampleData);
     });
 
     testOrSkip('database has representative term types', () => {
       expect(sampleData.termTypes.length).toBeGreaterThan(5);
       expect(sampleData.termTypes).toContain('IN');  // Should have Ingredient
       expect(sampleData.termTypes).toContain('BN');  // Should have Brand Name
-
-      console.log('Term types found:', sampleData.termTypes);
     });
 
     testOrSkip('database has representative sources', () => {
       expect(sampleData.sources.length).toBeGreaterThan(0);
       expect(sampleData.sources).toContain('RXNORM');
-
-      console.log('Sources found:', sampleData.sources);
     });
   });
 });
@@ -215,14 +200,12 @@ describe('RxNorm Provider', () => {
       const version = await provider.version();
       expect(version).toBeDefined();
       expect(typeof version).toBe('string');
-      console.log(`✓ RxNorm version: ${version}`);
     });
 
     testOrSkip('should return total count', async () => {
       const count = await provider.totalCount();
       expect(count).toBeGreaterThan(0);
       expect(typeof count).toBe('number');
-      console.log(`✓ Total RxNorm concepts: ${count}`);
     });
 
     testOrSkip('should have parents', () => {
@@ -241,14 +224,9 @@ describe('RxNorm Provider', () => {
 
       for (const code of testCodes) {
         const result = await provider.locate(code);
-        if (result.context) {
-          expect(result.context).toBeInstanceOf(RxNormConcept);
-          expect(result.context.code).toBe(code);
-          expect(result.message).toBeNull();
-          console.log(`✓ Found code: ${code} - ${result.context.display}`);
-        } else {
-          console.log(`⚠ Code ${code} not found in test subset: ${result.message}`);
-        }
+        expect(result.context).toBeInstanceOf(RxNormConcept);
+        expect(result.context.code).toBe(code);
+        expect(result.message).toBeNull();
       }
     });
 
@@ -263,16 +241,13 @@ describe('RxNorm Provider', () => {
           const located = await provider.locate(result.code);
           if (located.context) {
             expect(located.context).toBeInstanceOf(RxNormConcept);
-            console.log(`✓ Found "${name}" as code ${result.code}: ${result.display}`);
             foundAny = true;
           }
         }
       }
 
       // We expect at least some common drug names in the subset
-      if (!foundAny) {
-        console.log('⚠ No known drug names found in test subset');
-      }
+      expect(foundAny).toBe(true);
     });
 
     testOrSkip('should return null for non-existent code', async () => {
@@ -289,7 +264,6 @@ describe('RxNorm Provider', () => {
         expect(display).toBeDefined();
         expect(typeof display).toBe('string');
         expect(display.length).toBeGreaterThan(0);
-        console.log(`✓ Display for ${sampleCode}: ${display}`);
       }
     });
 
@@ -332,6 +306,7 @@ describe('RxNorm Provider', () => {
     });
 
     testOrSkip('should handle archived codes', async () => {
+      // the test subset need not contain archived codes
       const archivedCode = await getArchivedCode(testDbPath);
       if (archivedCode) {
         const result = await provider.locate(archivedCode);
@@ -339,10 +314,7 @@ describe('RxNorm Provider', () => {
           expect(result.context.archived).toBe(true);
           const isDeprecated = await provider.isDeprecated(result.context);
           expect(isDeprecated).toBe(true);
-          console.log(`✓ Found archived code: ${archivedCode}`);
         }
-      } else {
-        console.log('⚠ No archived codes found in test subset');
       }
     });
   });
@@ -359,8 +331,6 @@ describe('RxNorm Provider', () => {
         const firstDesignation = displays.designations[0];
         expect(firstDesignation.language).toBeDefined();
         expect(firstDesignation.value).toBeDefined();
-
-        console.log(`✓ Code ${sampleCode} designations: ${displays.length} found`);
       }
     });
   });
@@ -376,7 +346,6 @@ describe('RxNorm Provider', () => {
           testCase.value
         );
         expect(supports).toBe(true);
-        console.log(`✓ Supports filter: ${testCase.property} ${testCase.operator} ${testCase.value}`);
       }
     });
 
@@ -390,7 +359,6 @@ describe('RxNorm Provider', () => {
           testCase.value
         );
         expect(supports).toBe(true);
-        console.log(`✓ Supports filter: ${testCase.property} ${testCase.operator} ${testCase.value}`);
       }
     });
 
@@ -404,7 +372,6 @@ describe('RxNorm Provider', () => {
           testCase.value
         );
         expect(supports).toBe(true);
-        console.log(`✓ Supports filter: ${testCase.property} ${testCase.operator} ${testCase.value}`);
       }
     });
 
@@ -418,7 +385,6 @@ describe('RxNorm Provider', () => {
           testCase.value
         );
         expect(supports).toBe(true);
-        console.log(`✓ Supports filter: ${testCase.property} ${testCase.operator} ${testCase.value}`);
       }
     });
 
@@ -458,10 +424,6 @@ describe('RxNorm Provider', () => {
             expect(concept).toBeInstanceOf(RxNormConcept);
             count++;
           }
-
-          console.log(`✓ TTY filter "${testCase.value}": ${size} results, iterated ${count}`);
-        } else {
-          console.log(`⚠ TTY filter "${testCase.value}": no results in test subset`);
         }
       }
     });
@@ -484,8 +446,6 @@ describe('RxNorm Provider', () => {
 
         const size = await provider.filterSize(filterContext, filter);
         expect(size).toBeGreaterThanOrEqual(testCase.expectedMinResults || 0);
-
-        console.log(`✓ SAB filter "${testCase.value}": ${size} results`);
       }
     });
   });
@@ -507,8 +467,6 @@ describe('RxNorm Provider', () => {
 
         const size = await provider.filterSize(filterContext, filter);
         expect(size).toBeGreaterThanOrEqual(testCase.expectedMinResults || 0);
-
-        console.log(`✓ STY filter "${testCase.value}" (${testCase.description}): ${size} results`);
       }
     });
   });
@@ -518,26 +476,20 @@ describe('RxNorm Provider', () => {
       const testTerms = expectedResults.textSearch.testTerms;
 
       for (const testTerm of testTerms) {
-        try {
-          const filterContext = await provider.getPrepContext(true);
+        const filterContext = await provider.getPrepContext(true);
 
-          // Create a mock filter object with stems
-          const mockFilter = {
-            stems: [testTerm.term]
-          };
+        // Create a mock filter object with stems
+        const mockFilter = {
+          stems: [testTerm.term]
+        };
 
-          await provider.searchFilter(filterContext, mockFilter, false);
-          const filters = await provider.executeFilters(filterContext);
+        await provider.searchFilter(filterContext, mockFilter, false);
+        const filters = await provider.executeFilters(filterContext);
 
-          if (filters.length > 0) {
-            const filter = filters[0];
-            const size = await provider.filterSize(filterContext, filter);
-            expect(size).toBeGreaterThanOrEqual(testTerm.expectedMinResults || 0);
-
-            console.log(`✓ Text search "${testTerm.term}": ${size} results`);
-          }
-        } catch (error) {
-          console.log(`⚠ Text search "${testTerm.term}" failed: ${error.message}`);
+        if (filters.length > 0) {
+          const filter = filters[0];
+          const size = await provider.filterSize(filterContext, filter);
+          expect(size).toBeGreaterThanOrEqual(testTerm.expectedMinResults || 0);
         }
       }
     });
@@ -554,17 +506,9 @@ describe('RxNorm Provider', () => {
 
       const sampleCode = await getFirstAvailableCode(testDbPath);
       if (sampleCode) {
-        try {
-          const located = await provider.filterLocate(filterContext, filter, sampleCode);
-          if (located instanceof RxNormConcept) {
-            expect(located.code).toBe(sampleCode);
-            console.log(`✓ Located code ${sampleCode} in RXNORM filter`);
-          } else {
-            console.log(`⚠ Code ${sampleCode} not in RXNORM filter: ${located}`);
-          }
-        } catch (error) {
-          console.log(`⚠ Filter locate error: ${error.message}`);
-        }
+        const located = await provider.filterLocate(filterContext, filter, sampleCode);
+        expect(located).toBeInstanceOf(RxNormConcept);
+        expect(located.code).toBe(sampleCode);
       }
     });
 
@@ -580,7 +524,6 @@ describe('RxNorm Provider', () => {
         if (concept.context) {
           const inFilter = await provider.filterCheck(filterContext, filter, concept.context);
           expect(typeof inFilter).toBe('boolean');
-          console.log(`✓ Concept ${sampleCode} filter check: ${inFilter}`);
         }
       }
     });
@@ -599,8 +542,6 @@ describe('RxNorm Provider', () => {
 
         const paramTypes = params.parameter.map(p => p.name);
         expect(paramTypes).toContain('designation');
-
-        console.log(`✓ Extended lookup for ${sampleCode}: ${params.parameter.length} parameters`);
       }
     });
   });
@@ -623,7 +564,6 @@ describe('RxNorm Provider', () => {
       }
 
       expect(count).toBeGreaterThan(0);
-      console.log(`✓ Iterated ${count} codes via iterator`);
     });
 
     testOrSkip('root iterator reports its total', async () => {
@@ -671,35 +611,23 @@ describe('RxNorm Provider', () => {
       const termTypes = await getTermTypes(testDbPath);
       const expectedTTYs = expectedResults.termTypes.expected;
 
-      console.log('Available term types:', termTypes);
-
       // We expect some overlap with standard RxNorm TTYs
       const foundExpected = expectedTTYs.filter(tty => termTypes.includes(tty));
       expect(foundExpected.length).toBeGreaterThan(0);
-
-      console.log(`✓ Found ${foundExpected.length}/${expectedTTYs.length} expected term types`);
     });
 
     testOrSkip('should have expected sources in database', async () => {
       const sources = await getSources(testDbPath);
-      const expectedSources = expectedResults.sources.expected;
-
-      console.log('Available sources:', sources);
       expect(sources).toContain('RXNORM');
-
-      const foundExpected = expectedSources.filter(sab => sources.includes(sab));
-      console.log(`✓ Found ${foundExpected.length}/${expectedSources.length} expected sources`);
     });
 
     testOrSkip('should have relationships in database', async () => {
       const relationships = await getRelationshipTypes(testDbPath);
-      console.log('Available relationship types:', relationships);
       expect(relationships.length).toBeGreaterThan(0);
     });
 
     testOrSkip('should have semantic types in database', async () => {
       const semanticTypes = await getSemanticTypes(testDbPath);
-      console.log('Available semantic types:', semanticTypes.slice(0, 10)); // Show first 10
       expect(semanticTypes.length).toBeGreaterThan(0);
     });
   });
