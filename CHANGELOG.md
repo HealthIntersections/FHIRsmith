@@ -5,9 +5,16 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.3] - 2026-11-dd
+## [1.0.0] - 2026-11-dd
 
-**Upgrading**: a big upgrade - every operator should check their settings, though most won't need to change any. See [Upgrading to 1.0.0](CONFIGURATION.md#upgrading-to-100) for what to check.
+**Upgrading**: a big upgrade - every operator should check their settings, though some might not need to change any. See [Upgrading to 1.0.0](CONFIGURATION.md#upgrading-to-100) for what to check.
+
+Major new features:
+
+- Cluster Mode 
+- lots of performance improvements 
+- lots of bug fixes around terminology handling 
+- IPS module 
 
 ### Added
 
