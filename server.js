@@ -121,7 +121,7 @@ const ServerStats = require("./stats");
 const { connectMetrics, graphData } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
 const { connectClusterEvents } = require('./library/cluster-events');
-const { connectStatus, ownFigures, clusterView, processView, storageView, STATUS_INTERVAL_MS } = require('./library/cluster-status');
+const { connectStatus, ownFigures, clusterView, processView, storageView, clusterSummary, processSummary, STATUS_INTERVAL_MS } = require('./library/cluster-status');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -201,11 +201,11 @@ let disconnectClusterEvents = () => {};
 let disconnectStatus = () => {};
 // The graphs on / and /dashboard, one component for every server (library/cluster-metrics.js):
 // on the master under the launcher, every process it reports; otherwise this process's own
-// samples as one series, with its memory guard's refusal threshold
-function metricsTemplate(page) {
+// samples as one series, with its memory guard's refusal threshold. `level`: the graphs' titles'
+function metricsTemplate(page, level = 4) {
   const label = !role ? 'This process' : `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
   const guard = memoryGuard._state;
-  return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }) }];
+  return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }), level }];
 }
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
@@ -475,12 +475,51 @@ function statusView() {
   });
 }
 
-// The background tasks, in the status panel's table style (tx/html/status-panel.liquid), in a
-// box of their own that scrolls rather than the page
-function backgroundTasks() {
+// Every background task, in the status panel's table style (tx/html/status-panel.liquid), in a
+// box of its own that scrolls rather than the page; under "More"
+function backgroundTasks(level) {
   const table = stats.taskDetails();
-  return table ? `<section class="fs-status fs-status-tasks"><h3 class="fs-status-head">Background tasks</h3>` +
+  return table ? `<section class="fs-status fs-status-tasks"><h${level} class="fs-status-head">All background tasks</h${level}>` +
     `<div class="fs-status-scroll">${table}</div></section>` : '';
+}
+
+// The status line at the top of / and /dashboard (tx/html/status-line.liquid): requests, uptime
+// and heap, the cluster's on the master under the launcher, else this process's; and the problems
+function statusLine() {
+  const [uptime, uptimeSub] = uptimeParts(Date.now() - stats.startTime);
+  const logs = logFigures();
+  const disk = logs ? logs.disk : null;
+  const failedTasks = stats.failedTasks();
+  const other = npmAudit && npmAudit.enabled && npmAudit.checkedAt && npmAudit.isSerious() ? [`npm audit: ${npmAudit.summary()}`] : [];
+  const cluster = clusterStatus();
+  if (cluster) {
+    return clusterSummary(cluster, { uptime, uptimeSub, disk, failedTasks, other });
+  }
+  // a fresh enough measure, as the guard takes it
+  memoryGuard.shouldReject();
+  const g = memoryGuard._state;
+  const minutes = (Date.now() - stats.startTime) / 60000;
+  return processSummary({
+    figures: ownFigures(stats, { inFlight: () => inFlight, refusing: () => memoryGuard.shouldReject() }),
+    uptime, uptimeSub, avgPerMin: minutes >= 1 ? stats.requestCount / minutes : null,
+    guard: { measure: g.sampleRss, rejectAt: g.rejectAt }, disk, failedTasks, other
+  });
+}
+
+// The top of / and /dashboard: the status line, the graphs, the background tasks at work, then
+// under "More" the status panel, storage, every background task and `more` (html). Headings
+// start at `level`, the page's sections' own.
+async function statusContent(liquid, page, level, more = '') {
+  let content = await liquid.renderFile('status-line', { line: statusLine(), level });
+  content += await liquid.renderFile(...metricsTemplate(page, level + 1));
+  content += await liquid.renderFile('status-tasks', { tasks: stats.taskSummary(), level });
+  content += `<details class="fs-status-more"><summary><h${level}>More</h${level}>: every process, memory, storage, every background task</summary>`;
+  content += await liquid.renderFile('status-panel', { view: statusView(), level: level + 1 });
+  content += await liquid.renderFile('status-panel', { view: storageStatusView(), level: level + 1 });
+  content += backgroundTasks(level + 1);
+  content += more;
+  content += '</details>';
+  return content;
 }
 
 // The storage tiles below the graphs: closure tables, logs, disk
@@ -618,15 +657,12 @@ async function buildRootPageContent() {
 
   content += '<hr/>';
 
-  // the status panel, the graphs, then storage (library/cluster-status.js)
+  // the status line, the graphs and the tasks at work; the rest under "More" (library/cluster-status.js)
   const liquid = new Liquid({
     root: path.join(__dirname, 'tx', 'html'),
     extname: '.liquid'
   });
-  content += await liquid.renderFile('status-panel', { view: statusView() });
-  content += await liquid.renderFile(...metricsTemplate('home-metrics'));
-  content += await liquid.renderFile('status-panel', { view: storageStatusView() });
-  content += backgroundTasks();
+  content += await statusContent(liquid, 'home-metrics', 3);
 
   content += '</div>';
   return content;
@@ -774,21 +810,16 @@ app.get('/dashboard', async (req, res) => {
     }
 
     const startTime = Date.now();
-    // the status panel, the graphs, then storage (library/cluster-status.js)
+    // the status line, the graphs and the tasks at work; the rest under "More" (library/cluster-status.js)
     const liquid = new Liquid({
       root: path.join(__dirname, 'tx', 'html'),
       extname: '.liquid'
     });
     // the background tasks' table (the bare template has no fhir.css)
     let content = '<style>table.grid{margin-bottom:10px;border:1px solid black;margin-right:auto}table.grid th,table.grid td{border:1px solid silver;padding:3px 7px 2px;font-size:12px;line-height:1.4em;font-family:verdana;vertical-align:top}table.grid th{font-weight:bold}table.grid td{font-weight:normal}</style>';
-    content += await liquid.renderFile('status-panel', { view: statusView() });
-    content += await liquid.renderFile(...metricsTemplate('dash-metrics'));
-    content += await liquid.renderFile('status-panel', { view: storageStatusView() });
-    content += backgroundTasks();
-    if (npmAudit) {
-      content += npmAudit.renderDashboard();
-    }
-    content += `<p>Data: ${folders.dataDir()}</p>`;
+    // the page's title is its h1 (root-bare-template.html), so its sections are h2
+    content += await statusContent(liquid, 'dash-metrics', 2,
+      (npmAudit ? npmAudit.renderDashboard() : '') + `<p>Data: ${escape(folders.dataDir())}</p>`);
 
     content = '<div class="row mb-4"><div class="col-12">' + content + '</div></div>';
 

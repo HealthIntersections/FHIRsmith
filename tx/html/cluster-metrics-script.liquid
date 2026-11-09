@@ -2,7 +2,7 @@
   /* the status panel's grid (tx/html/status-panel.liquid): its six columns, two a chart */
   .server-metrics-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; margin-bottom:16px; }
   .server-metrics-chart { min-width:0; }
-  .server-metrics-chart h6 { font-size:12px; font-weight:600; margin:0 0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .server-metrics-chart > :first-child { font-size:12px; font-weight:600; margin:0 0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .server-metrics-canvas { position:relative; height:200px; }
   @media (max-width:600px) { .server-metrics-grid { grid-template-columns:minmax(0, 1fr); } }
   .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:10px 0 8px; }

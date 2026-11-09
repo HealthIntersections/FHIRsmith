@@ -3,7 +3,7 @@
  * and the master's status table.
  */
 const { EventEmitter } = require('events');
-const { connectStatus, buildSnapshot, clusterView, processView, storageView, PALETTE, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
+const { connectStatus, buildSnapshot, clusterView, processView, storageView, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
 
 const GiB = 2 ** 30;
 const MiB = 2 ** 20;
@@ -200,6 +200,89 @@ describe('the status panel', () => {
     expect(selectors.filter(x => !x.startsWith('.fs-status'))).toEqual([]);
     const script = require('fs').readFileSync(path.join(__dirname, '../../tx/html/cluster-metrics-script.liquid'), 'utf8');
     expect([...script.matchAll(/color:'(#[0-9a-f]{6})', dash/g)].map(m => m[1]).slice(0, 8)).toEqual(PALETTE);
+  });
+});
+
+describe('the status line', () => {
+  const path = require('path');
+  const { Liquid } = require('liquidjs');
+  const liquid = new Liquid({ root: path.join(__dirname, '../../tx/html'), extname: '.liquid' });
+
+  test('the cluster: requests summed, the master\'s uptime, every process\'s heap summed; then its problems', () => {
+    const line = clusterSummary(snapshot(), { now, uptime: '1h 0m 0s', uptimeSub: '99.5% overall' });
+    expect(line.items.map(i => [i.label, i.value, i.unit || null, i.sub])).toEqual([
+      ['Requests', '30', null, '0.5 /min'],
+      ['Uptime', '1h 0m 0s', null, '99.5% overall'],
+      // 3 x 300 MB and the launcher's 20
+      ['Heap', '920', 'MB', '4 processes']
+    ]);
+    expect(line.problems).toEqual([
+      'Refusing requests: Worker tx1 (memory 7.6 GB, threshold 10.2 GB)',
+      'Worker tx1 restarted 1 time since launch'
+    ]);
+  });
+
+  test('the cluster: a process not running, figures gone stale, a failed task, low disk, npm audit', () => {
+    const p = procs();
+    p[1].figures = figures(now - 60000);
+    p[2].status = 'restarting';
+    const s = buildSnapshot({ now, intervalMs: 15000, procs: p, launcher, guard, cgroup: { anon: 9.5 * GiB, file: GiB } });
+    const line = clusterSummary(s, { now, disk: { free: 5 * GiB, total: 100 * GiB },
+      failedTasks: [{ name: 'VSAC Sync', state: 'HTTP 503', date: now - 120000 }], other: ['npm audit: 1 high'] });
+    expect(line.problems).toEqual([
+      // 9.5 GB is over 90% of the 10.2 GB threshold
+      'Memory near the refusal threshold: 9.5 GB, threshold 10.2 GB',
+      'Worker tx2: restarting',
+      'Worker tx1: no figures for 60 s',
+      'Worker tx1 restarted 1 time since launch',
+      'Disk low: 5.0 GB free of 100.0 GB',
+      'VSAC Sync failed 2m 0s ago: HTTP 503',
+      'npm audit: 1 high'
+    ]);
+    // the stale process's heap is left out, as from the other totals
+    expect(line.items[2]).toMatchObject({ value: '620', sub: '3 processes' });
+  });
+
+  test('one process: its own requests, uptime and heap; nothing listed when all is well', () => {
+    const own = { figures: figures(now), uptime: '5m 0s', uptimeSub: null, avgPerMin: 2.04,
+      guard: { measure: 3 * GiB, rejectAt: guard.rejectAt }, disk: { free: 50 * GiB, total: 100 * GiB }, failedTasks: [] };
+    const line = processSummary(own, { now });
+    expect(line.items.map(i => [i.label, i.value, i.unit || null, i.sub])).toEqual([
+      ['Requests', '10', null, '2 /min'], ['Uptime', '5m 0s', null, null], ['Heap', '300', 'MB', 'of 4,096']]);
+    expect(line.problems).toEqual([]);
+    expect(processSummary({ ...own, figures: figures(now, { refusing: true }), guard: { measure: 11 * GiB, rejectAt: guard.rejectAt } }, { now }).problems)
+      .toEqual(['Refusing requests: this process (memory 11.0 GB, threshold 10.2 GB)']);
+    // nothing to say without a threshold
+    expect(problems({ measure: 5 * GiB, rejectAt: null })).toEqual([]);
+  });
+
+  test('the template: one line; the problems only when there are any, with an icon and a sentence; headings at the page\'s level', async () => {
+    const quiet = await liquid.renderFile('status-line', { line: { items: [{ label: 'Requests', value: '1,234', sub: '<b>' }], problems: [] }, level: 2 });
+    expect(quiet).toContain('<h2 id="fs-status-line-title" class="fs-status-sr">Status</h2>');
+    expect(quiet).toContain('&lt;b&gt;');
+    expect(quiet).not.toContain('fs-status-problems"');
+    expect(quiet).not.toContain('<dt>Problems</dt>');
+    const loud = await liquid.renderFile('status-line', { line: { items: [], problems: ['Disk low: 1 GB free', 'Worker tx1: <restarting>'] }, level: 3 });
+    expect(loud).toContain('<dt>Problems</dt>');
+    expect(loud.match(/<li><span class="fs-status-icon" aria-hidden="true">⚠<\/span>/g)).toHaveLength(2);
+    expect(loud).toContain('Worker tx1: &lt;restarting&gt;');
+    // every style is the page's own: each selector starts .fs-status
+    const css = /<style>([\s\S]*?)<\/style>/.exec(quiet)[1].replace(/\/\*[\s\S]*?\*\//g, '');
+    const selectors = [...css.matchAll(/([^{}]+)\{[^{}]*\}/g)].flatMap(m => m[1].split(',')).map(x => x.trim()).filter(Boolean);
+    expect(selectors.filter(x => !x.startsWith('.fs-status'))).toEqual([]);
+  });
+
+  test('the tasks: one line naming those at work, failed and idle; a row for each at work', async () => {
+    const tasks = { working: [{ name: 'VSAC Sync', state: 'Sync: 10 of 20', frequency: '6 hours', ago: '3s' }],
+      failed: ['npm audit'], idle: ['Client Cache', 'Expansion Cache'] };
+    const html = await liquid.renderFile('status-tasks', { tasks, level: 3 });
+    expect(html).toContain('<h3 id="fs-status-jobs-title">Background tasks</h3>');
+    expect(html).toContain('1 at work · 1 failed, under Problems: npm audit · 2 idle: Client Cache, Expansion Cache');
+    expect(html.match(/<tr><td>/g)).toHaveLength(1);
+    expect(html).toContain('<td>Sync: 10 of 20</td>');
+    const none = await liquid.renderFile('status-tasks', { tasks: { working: [], failed: [], idle: ['Client <Cache>'] }, level: 2 });
+    expect(none).toContain('none at work · 1 idle: Client &lt;Cache&gt;');
+    expect(none).not.toContain('<table>');
   });
 });
 

@@ -9,15 +9,15 @@
 <div id="serverMetricsShedding" class="server-metrics-shedding" hidden></div>
 <div class="server-metrics-grid">
   <div class="server-metrics-chart">
-    <h6 id="memoryChartTitle">Private memory</h6>
+    <h{{ level | default: 4 }} id="memoryChartTitle">Private memory</h{{ level | default: 4 }}>
     <div class="server-metrics-canvas"><canvas id="memoryChart" aria-label="Private memory per process, the cluster's total and the refusal threshold"></canvas></div>
   </div>
   <div class="server-metrics-chart">
-    <h6>Turnaround Time</h6>
+    <h{{ level | default: 4 }}>Turnaround Time</h{{ level | default: 4 }}>
     <div class="server-metrics-canvas"><canvas id="tatChart" aria-label="Turnaround Time"></canvas></div>
   </div>
   <div class="server-metrics-chart">
-    <h6>Requests per Minute</h6>
+    <h{{ level | default: 4 }}>Requests per Minute</h{{ level | default: 4 }}>
     <div class="server-metrics-canvas"><canvas id="requestChart" aria-label="Requests per Minute"></canvas></div>
   </div>
 </div>

@@ -1,13 +1,17 @@
 {%- comment -%}
-  The status panel on / and /dashboard (library/cluster-status.js builds `view`): a header, a row of
-  tiles, the memory meter, a row per process, footnotes. Every style is under .fs-status, and
+  The status panel under "More" on / and /dashboard (library/cluster-status.js builds `view`): a
+  header (`level`: its heading's level, 3 by default), a row of tiles, the memory meter, a row per
+  process, footnotes. Every style is under .fs-status, and
   the graphs below share its grid (.fs-status-grid: six columns, 16 px apart).
 {%- endcomment -%}
 <style>
   .fs-status { --fs-muted:#5f6368; --fs-rule:#e3e3e3; --fs-card:#f7f7f7; margin:24px 0 16px; color:#202124; container-type:inline-size; }
   /* the site's body font throughout (fhir.css gives p and td their own) */
   .fs-status, .fs-status p, .fs-status td, .fs-status th { font-family:"Helvetica Neue", Helvetica, Arial, sans-serif; }
-  .fs-status h3.fs-status-head { font-size:18px; margin:0 0 8px; font-weight:600; }
+  .fs-status .fs-status-head { font-size:18px; margin:0 0 8px; font-weight:600; }
+  /* under "More" (status-line.liquid), closer together */
+  .fs-status-more .fs-status { margin:8px 0 12px; }
+  .fs-status-more .fs-status .fs-status-head { font-size:15px; }
   .fs-status-head .fs-status-meta { font-size:13px; font-weight:400; color:var(--fs-muted); }
   /* six columns, or as many as there are tiles (storage), so a row is never short */
   .fs-status-grid { display:grid; grid-template-columns:repeat(var(--fs-cols, 6), minmax(0, 1fr)); gap:16px; }
@@ -59,7 +63,7 @@
   @container (max-width:280px) { .fs-status-grid { grid-template-columns:minmax(0, 1fr); } }
 </style>
 <section class="fs-status">
-  <h3 class="fs-status-head">{{ view.heading | escape }}{% for m in view.meta %} <span class="fs-status-meta">· {{ m | escape }}</span>{% endfor %}</h3>
+  <h{{ level | default: 3 }} class="fs-status-head">{{ view.heading | escape }}{% for m in view.meta %} <span class="fs-status-meta">· {{ m | escape }}</span>{% endfor %}</h{{ level | default: 3 }}>
   {%- if view.tiles.size > 0 %}
   <div class="fs-status-grid"{% if view.columns %} style="--fs-cols:{{ view.columns }}"{% endif %}>
     {%- for t in view.tiles %}

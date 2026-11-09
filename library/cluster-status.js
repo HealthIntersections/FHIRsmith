@@ -14,7 +14,9 @@
  * A worker's own page shows its own figures; a process without the launcher (no role, or roles
  * started by hand behind nginx) has no IPC channel, and shows only its own.
  *
- * clusterView, processView and storageView shape the figures for tx/html/status-panel.liquid:
+ * clusterSummary and processSummary shape the status line at the top of the page
+ * (tx/html/status-line.liquid): requests, uptime, heap and any problems. clusterView,
+ * processView and storageView shape the rest, under "More" (tx/html/status-panel.liquid):
  * a header, tiles, the memory meter, a row per process and footnotes.
  */
 const v8 = require('v8');
@@ -381,4 +383,86 @@ function storageView({ heading = 'Storage', closure = null, logs = null, disk = 
   return { heading, meta: [], tiles, columns: Math.min(6, Math.max(1, tiles.length)), memory: null, table: null, footnotes: [] };
 }
 
-module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };
+// the memory guard's measure at this share of its refusal threshold or more is shown as a problem
+const NEAR_REFUSING = 0.9;
+// and less free disk than this share of it
+const DISK_LOW = 0.1;
+
+/**
+ * The problems the status line lists, each a sentence; none when all is well.
+ * @param {Object} p - refusing (labels), measure, rejectAt (the memory guard's), down
+ *   ({label, status}: processes not running), stale ({label, ageMs}), restarts ({label, count}),
+ *   disk ({free, total}|null), failedTasks ({name, state, date}, stats.failedTasks()), other
+ *   (sentences of their own, such as npm audit's), now
+ */
+function problems({ refusing = [], measure = null, rejectAt = null, down = [], stale = [], restarts = [], disk = null, failedTasks = [], other = [], now = Date.now() }) {
+  const list = [];
+  const memory = Number.isFinite(measure) && rejectAt > 0 ? `${gb(measure)} GB, threshold ${gb(rejectAt)} GB` : null;
+  if (refusing.length) {
+    list.push(`Refusing requests: ${refusing.join(', ')}${memory ? ` (memory ${memory})` : ''}`);
+  } else if (memory && measure >= NEAR_REFUSING * rejectAt) {
+    list.push(`Memory near the refusal threshold: ${memory}`);
+  }
+  for (const p of down) list.push(`${p.label}: ${p.status}`);
+  for (const p of stale) list.push(`${p.label}: no figures for ${Math.round(p.ageMs / 1000)} s`);
+  for (const p of restarts) list.push(`${p.label} restarted ${n(p.count)} ${p.count === 1 ? 'time' : 'times'} since launch`);
+  if (disk && disk.total > 0 && disk.free < DISK_LOW * disk.total) {
+    list.push(`Disk low: ${gb(disk.free)} GB free of ${gb(disk.total)} GB`);
+  }
+  for (const t of failedTasks) list.push(`${t.name} failed${Number.isFinite(t.date) ? ` ${duration(now - t.date)} ago` : ''}: ${t.state}`);
+  return list.concat(other);
+}
+
+/**
+ * The status line at the top of / and /dashboard (tx/html/status-line.liquid) on the master
+ * under the launcher: the cluster's requests, the master's uptime, the heap of every process
+ * summed, and the problems. The rest is in clusterView, under "More".
+ * @param {Object} snapshot - from buildSnapshot
+ * @param {Object} opts - uptime, uptimeSub, disk, failedTasks, other, now
+ */
+function clusterSummary(snapshot, { uptime = '—', uptimeSub = null, disk = null, failedTasks = [], other = [], now = Date.now() } = {}) {
+  const m = snapshot.memory;
+  const procs = snapshot.processes;
+  const fresh = procs.filter(p => p.fresh);
+  const requests = fresh.reduce((a, p) => a + (p.requests || 0), 0);
+  const longest = Math.max(0, ...procs.map(p => p.uptimeMs || 0));
+  const heaps = [...fresh, snapshot.launcher].filter(p => Number.isFinite(p.heapUsed));
+  const label = (code) => (procs.find(p => p.code === code) || { label: code }).label;
+  return {
+    items: [
+      { label: 'Requests', value: n(requests), sub: longest > 60000 ? `${rate(requests / (longest / 60000))} /min` : null },
+      { label: 'Uptime', value: uptime, sub: uptimeSub },
+      { label: 'Heap', value: heaps.length ? mb(heaps.reduce((a, p) => a + p.heapUsed, 0)) : '—', unit: 'MB',
+        sub: `${heaps.length} ${heaps.length === 1 ? 'process' : 'processes'}` }
+    ],
+    problems: problems({
+      refusing: snapshot.refusing.map(label),
+      measure: m.cgroup ? m.cgroup.anon : m.processAnon, rejectAt: m.rejectAt,
+      down: procs.filter(p => p.status !== 'ready' && p.status !== 'running').map(p => ({ label: p.label, status: p.status })),
+      stale: procs.filter(p => !p.fresh && p.figuresAgeMs !== null && p.uptimeMs !== null).map(p => ({ label: p.label, ageMs: p.figuresAgeMs })),
+      restarts: procs.filter(p => p.restarts > 0).map(p => ({ label: p.label, count: p.restarts })),
+      disk, failedTasks, other, now
+    })
+  };
+}
+
+/**
+ * The status line of one process (processView's figures): its requests, uptime and heap, and
+ * the problems.
+ * @param {Object} own - as for processView, with disk, failedTasks and other
+ */
+function processSummary(own, { now = Date.now() } = {}) {
+  const f = own.figures;
+  const g = own.guard;
+  return {
+    items: [
+      { label: 'Requests', value: n(f.requests), sub: Number.isFinite(own.avgPerMin) ? `${rate(own.avgPerMin)} /min` : null },
+      { label: 'Uptime', value: own.uptime, sub: own.uptimeSub },
+      { label: 'Heap', value: mb(f.heapUsed), unit: 'MB', sub: `of ${mb(f.heapLimit)}` }
+    ],
+    problems: problems({ refusing: f.refusing ? ['this process'] : [], measure: g.measure, rejectAt: g.rejectAt,
+      disk: own.disk || null, failedTasks: own.failedTasks || [], other: own.other || [], now })
+  };
+}
+
+module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };
