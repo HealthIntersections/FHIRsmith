@@ -351,6 +351,11 @@ class CIBuildClient {
 
 class PackageManager {
     totalDownloaded = 0;
+    /**
+     * {Set<string>} the package folders (id#version, in the cache folder) that fetch and
+     * fetchUrl have returned - what has been used, for pruning the rest (Library.pruneUnusedCaches)
+     */
+    usedPackages = new Set();
 
     /**
      * @param {string[]} packageServers - Ordered list of package server URLs
@@ -377,6 +382,7 @@ class PackageManager {
         // Check cache first
         const cachedPath = await this.checkCache(packageId, resolvedVersion);
         if (cachedPath) {
+            this.usedPackages.add(cachedPath);
             return cachedPath;
         }
 
@@ -386,6 +392,7 @@ class PackageManager {
         this.totalDownloaded = this.totalDownloaded + packageData.length;
         // Extract to cache
         const extractedPath = await this.extractToCache(packageId, resolvedVersion, packageData);
+        this.usedPackages.add(extractedPath);
 
         return extractedPath;
     }
@@ -629,6 +636,7 @@ class PackageManager {
             }
 
             this.totalDownloaded = this.totalDownloaded + packageData.length;
+            this.usedPackages.add(finalName);
             return finalName;
         } catch (error) {
             console.error(`Error fetching package from URL ${url}: ${error.message}`);

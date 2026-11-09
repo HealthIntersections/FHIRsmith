@@ -49,6 +49,27 @@ const { checkIdPrefix } = require("./library/resource-ids");
 const LOCAL_SOURCE_CACHE_PREFIX = 'folder-source-';
 // how long an unused folder-source-* cache is kept, in case another Library is using it
 const LOCAL_SOURCE_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
+// an unused .db or .cache file or package folder changed more recently than this isn't pruned
+// (see pruneUnusedCaches)
+const PRUNE_MIN_AGE = 24 * 60 * 60 * 1000;
+
+/**
+ * The bytes in the files under a folder
+ * @param {string} dir
+ * @returns {Promise<number>}
+ */
+async function folderSize(dir) {
+  let total = 0;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      total += await folderSize(p);
+    } else if (entry.isFile()) {
+      total += (await fs.stat(p)).size;
+    }
+  }
+  return total;
+}
 
 /**
  * This class holds all the loaded content ready for processing
@@ -98,6 +119,22 @@ class Library {
    * once they're stale (see #pruneLocalSourceCaches)
    */
   #localSourceCaches = new Set();
+
+  /**
+   * {Set<string>} the names of the files in the cache folder that this load used (see
+   * getOrDownloadFile) - with pruneTerminologyCache, the other .db and .cache files there are
+   * deleted once the library has loaded (see pruneTerminologyCache)
+   */
+  #usedCacheFiles = new Set();
+
+  /**
+   * {boolean} once the library and the endpoints' core packages are loaded, delete the .db and
+   * .cache files and the package folders in the cache folder that weren't used (the tx module's
+   * pruneTerminologyCache setting; see pruneUnusedCaches). Off by default: the cache folder is
+   * shared by everything that runs from the same data directory - a development server and the
+   * tests, say - and what one doesn't use, another may
+   */
+  pruneTerminologyCacheFiles = false;
 
   baseUrl = null;
   cacheFolder = null;
@@ -1065,6 +1102,117 @@ class Library {
   }
 
   /**
+   * With pruneTerminologyCacheFiles, and in a process that owns the caches (not a tx-worker):
+   * delete what's in the cache folder that wasn't used - the .db and .cache files
+   * (pruneTerminologyCache) and the package folders (prunePackages). Call it once everything is
+   * loaded: the library (load) and every endpoint's core packages (cloneWithFhirVersion)
+   * @returns {Promise<{files: string[], packages: string[]}>} what was deleted
+   */
+  async pruneUnusedCaches() {
+    if (!this.pruneTerminologyCacheFiles || this.packageCachesReadOnly) {
+      return { files: [], packages: [] };
+    }
+    return { files: await this.pruneTerminologyCache(), packages: await this.prunePackages() };
+  }
+
+  /**
+   * Deletes the package folders (id#version) in the cache folder that the package manager
+   * hasn't returned this run (see PackageManager.usedPackages): packages no longer in the
+   * library, older versions of ones that are, the core packages of FHIR versions no endpoint
+   * has any more, and what failed or interrupted downloads left behind. Their value set and
+   * concept map caches are in them, so go with them. A folder changed in the last
+   * PRUNE_MIN_AGE is kept.
+   * @returns {Promise<string[]>} the names of the folders deleted
+   */
+  async prunePackages() {
+    let entries;
+    try {
+      entries = await fs.readdir(this.cacheFolder, { withFileTypes: true });
+    } catch (e) {
+      return [];
+    }
+    const used = this.packageManager.usedPackages;
+    const cutoff = Date.now() - PRUNE_MIN_AGE;
+    const deleted = [];
+    let bytes = 0;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.includes('#') || used.has(entry.name)) {
+        continue;
+      }
+      const dir = path.join(this.cacheFolder, entry.name);
+      try {
+        const stat = await fs.stat(dir);
+        if (stat.mtimeMs >= cutoff) {
+          this.log.info(`Not deleting unused package ${entry.name} yet: it changed in the last day`);
+          continue;
+        }
+        const size = await folderSize(dir);
+        await fs.rm(dir, { recursive: true, force: true });
+        deleted.push(entry.name);
+        bytes += size;
+        this.log.info(`Deleted unused package ${entry.name} (${(size / 1024 / 1024).toFixed(1)} MB) from the terminology cache`);
+      } catch (e) {
+        this.log.warn(`Unable to delete unused package ${dir}: ${e.message}`);
+      }
+    }
+    if (deleted.length > 0) {
+      this.log.info(`Deleted ${deleted.length} unused package${deleted.length === 1 ? '' : 's'} from the terminology cache, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+    }
+    return deleted;
+  }
+
+  /**
+   * Deletes the .db and .cache files directly in the cache folder (terminology-cache) that this
+   * load didn't use: the downloaded databases and SNOMED CT caches of sources that are no longer
+   * in the library, and the fallback of an "a|b" source whose first file is there. Their SQLite
+   * side files (-wal, -shm, -journal) go with them. Package folders, and the other folders and
+   * files there, are left alone.
+   *
+   * A file changed in the last PRUNE_MIN_AGE is kept: it may be being copied in, or built,
+   * for a library that doesn't name it yet.
+   *
+   * See pruneUnusedCaches, which calls it
+   * @returns {Promise<string[]>} the names of the files deleted
+   */
+  async pruneTerminologyCache() {
+    let entries;
+    try {
+      entries = await fs.readdir(this.cacheFolder, { withFileTypes: true });
+    } catch (e) {
+      return [];
+    }
+    const cutoff = Date.now() - PRUNE_MIN_AGE;
+    const deleted = [];
+    let bytes = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !/\.(db|cache)$/i.test(entry.name) || this.#usedCacheFiles.has(entry.name)) {
+        continue;
+      }
+      const file = path.join(this.cacheFolder, entry.name);
+      try {
+        const stat = await fs.stat(file);
+        if (stat.mtimeMs >= cutoff) {
+          this.log.info(`Not deleting unused ${entry.name} yet: it changed in the last day`);
+          continue;
+        }
+        await fs.rm(file, { force: true });
+        for (const suffix of ['-wal', '-shm', '-journal']) {
+          await fs.rm(file + suffix, { force: true });
+        }
+        deleted.push(entry.name);
+        bytes += stat.size;
+        this.log.info(`Deleted unused ${entry.name} (${(stat.size / 1024 / 1024).toFixed(1)} MB) from the terminology cache`);
+      } catch (e) {
+        this.log.warn(`Unable to delete unused ${file}: ${e.message}`);
+      }
+    }
+    if (deleted.length > 0) {
+      this.log.info(`Deleted ${deleted.length} unused file${deleted.length === 1 ? '' : 's'} from the terminology cache, ${(bytes / 1024 / 1024).toFixed(1)} MB`);
+    }
+    return deleted;
+  }
+
+  /**
    * Shared loader for folder- and file-sourced content: registers the loader's
    * CodeSystems, ValueSets and ConceptMaps with this library.
    * @private
@@ -1148,10 +1296,12 @@ class Library {
 
       const firstPath = path.join(this.cacheFolder, firstName);
       if (await this.fileExists(firstPath)) {
+        this.#usedCacheFiles.add(path.basename(firstPath));
         return firstPath;
       }
     }
     const filePath = path.join(this.cacheFolder, fileName);
+    this.#usedCacheFiles.add(path.basename(filePath));
 
     // Check if file already exists
     if (await this.fileExists(filePath)) {
