@@ -240,7 +240,24 @@ Under the launcher, the master's `/` and `/dashboard` show the whole cluster. Ev
 `statusSeconds` (15) each process sends the launcher a few figures of its own over its IPC
 channel: its JS heap, its client caches and their concepts, its expansion cache, the requests
 it has in flight and whether its memory guard is refusing. The launcher adds what it reads
-itself, merges them, and passes the snapshot to the master. The panel shows, top to bottom:
+itself, merges them, and passes the snapshot to the master.
+
+The page keeps to the space it had before (it is often on a wall screen). Top to bottom:
+
+* **One line**: Requests (the processes' own counts, summed, and the average per minute),
+  Uptime (the master's), Heap (every process's JS heap and the launcher's, summed, and how many
+  that is), and Problems, only when there are any.
+* **The problems**, a line each with a ⚠ and a sentence: processes refusing requests, or the
+  memory guard's measure at 90% or more of its refusal threshold; a process that isn't ready
+  (starting, restarting); figures gone stale; restarts since launch; under 10% of the disk
+  free; a background task whose last run failed; and a serious npm audit finding.
+* **The graphs** (see [Graphs](#graphs)).
+* **Background tasks**: one line naming those at work, those whose last run failed (each is
+  also a problem, with its state) and the idle ones, then a row for each task at work.
+* **More** (closed until opened): the status panel below, Storage, every background task, and
+  on `/dashboard` npm audit and the data folder.
+
+The status panel, under More:
 
 * **Cluster** · the number of processes · how long ago the snapshot was taken.
 * **Tiles**:
@@ -270,9 +287,9 @@ itself, merges them, and passes the snapshot to the master. The panel shows, top
   several processes map counts in each process's mapped figure, and the kernel charges a page
   to the cgroup that first read it, so after a restart pages still cached from the last run are
   charged elsewhere: mapped memory is not in the meter.
-* The graphs, then **Storage** (closure tables, entries and concepts, the closure database,
-  the logs and the free disk, as many columns as there are tiles), then **Background tasks**
-  in the table's style.
+* Then **Storage** (closure tables, entries and concepts, the closure database, the logs and
+  the free disk, as many columns as there are tiles), then **All background tasks** in the
+  table's style.
 
 Nothing is made up. Without `/proc` (macOS) there is no per-process memory. Without a cgroup
 with a memory limit of the service's own (no `MemoryMax`, or the limit only on an enclosing
@@ -292,7 +309,8 @@ figures: `scope: "process"`, `process`, `memory` (its guard's limit and threshol
 `requests`.
 
 A worker's own page, a master before the launcher's first snapshot, and a server with no role
-show the same tiles and meter for the one process, headed **Worker tx1** · this process only,
+show the same line for the one process (Heap: its own, of its limit), and under More the same
+tiles and meter, headed **Worker tx1** · this process only,
 **Master m0** · waiting for the launcher's first snapshot, or **Server** · one process. Their
 meter is what their memory guard measures: the cgroup's private memory with a role (this
 process's segment, the rest hatched as "other"), or the process's own RSS without.

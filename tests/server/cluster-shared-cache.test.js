@@ -185,9 +185,11 @@ describe('cluster.js with server.cluster.sharedCache', () => {
     for (const page of ['/', '/dashboard']) {
       const r = await request(FRONT, 'GET', page, { headers:{ Accept:'text/html' } });
       expect(r.status).toBe(200);
-      // the cluster's panel, or the master's own until the launcher's first snapshot
-      expect(r.text).toMatch(/<h3 class="fs-status-head">(Cluster|Master m0) /);
-      expect(r.text).toContain('Private memory</h6>');
+      // the status line; under "More", the cluster's panel, or the master's own until the
+      // launcher's first snapshot (a level below the page's sections: h3 on /dashboard, h4 on /)
+      expect(r.text).toContain('id="fs-status-line-title"');
+      expect(r.text).toMatch(/<h[34] class="fs-status-head">(Cluster|Master m0) /);
+      expect(r.text).toMatch(/Private memory<\/h[34]>/);
       const match = /const metrics = (.+);/.exec(r.text);
       expect(match).not.toBeNull();
       const data = JSON.parse(match[1]);

@@ -535,6 +535,28 @@ class ServerStats {
   }
 
   /**
+   * The background tasks for the status page: those at work, in full
+   * ([{name, state, frequency, date, ago}]); the names of those whose last run failed (the status
+   * line lists them, with their state); and the names of the rest (resting, or not run yet)
+   */
+  taskSummary(now = Date.now()) {
+    const working = [];
+    const failed = [];
+    const idle = [];
+    for (const [name, info] of this.taskMap) {
+      if (info.status === 'working') {
+        working.push({name: name, state: info.state, frequency: info.frequency, date: info.date,
+          ago: info.date ? Utilities.formatDuration(info.date, now) : ''});
+      } else if (info.status === 'error') {
+        failed.push(name);
+      } else {
+        idle.push(name);
+      }
+    }
+    return { working, failed, idle };
+  }
+
+  /**
    * The background tasks whose last run failed: [{name, state, frequency, date}]
    */
   failedTasks() {

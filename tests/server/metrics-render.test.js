@@ -47,7 +47,8 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   ] };
   const { html, charts, elements } = await render(name, metrics);
   expect(charts).toHaveLength(count);
-  expect(html).toContain('Private memory</h6>');
+  // the titles' level is the page's (4 unless it says)
+  expect(html).toContain('Private memory</h4>');
   // no private memory in the samples (not Linux): the heap change, and the title says so
   expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since start');
   for (const chart of charts) {
