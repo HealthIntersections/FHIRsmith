@@ -427,7 +427,8 @@ class Provider {
   async findValueSet(opContext, url, version, systemVersionFor = null) {
     for (const vp of this.valueSetProviders) {
       if (opContext) opContext.deadCheck('findValueSet');
-      let vs = await vp.fetchValueSet(url, version);
+      // the request goes along: a provider may share work between the lookups of one request
+      let vs = await vp.fetchValueSet(url, version, opContext);
       if (vs) {
         return vs;
       }

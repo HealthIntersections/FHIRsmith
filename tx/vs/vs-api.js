@@ -39,13 +39,22 @@ class AbstractValueSetProvider {
 
   /**
    * Fetches a specific value set by URL and version
+   *
+   * When the lookup is for a request, the request's OperationContext comes too (Provider.findValueSet
+   * passes it). A provider may use it to share work between the lookups of one request (a
+   * provider that reads its value sets from a database can read a request's value sets with one
+   * connection, or keep what it read for the rest of the request), or to check the request's
+   * deadline. It is null for lookups made outside a request (the scans of every value set, say),
+   * and a provider that has no use for it ignores it.
+   *
    * @param {string} url - The URL/identifier of the value set
    * @param {string} version - The version of the value set
+   * @param {OperationContext|null} [opContext] - the request this lookup is for, if any
    * @returns {Promise<ValueSet>} The requested value set
    * @throws {Error} Must be implemented by subclasses
    */
   // eslint-disable-next-line no-unused-vars
-  async fetchValueSet(url, version) {
+  async fetchValueSet(url, version, opContext = null) {
     throw new Error('fetchValueSet must be implemented by subclass');
   }
 
