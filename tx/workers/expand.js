@@ -236,6 +236,10 @@ class ValueSetExpander {
   walkedKeys = new Set();
   // and after the page, how many more codes it has counted for the total (see #finishIfPageFilled)
   counted = 0;
+  // a paged expansion of one selection whose size the provider vouches for, as count=0 trusts it
+  // (one include of a whole code system, or of one filter set, and nothing else): that size, which
+  // is the total, so the walk stops once the page is full (see #finishIfPageFilled). null: the walk counts
+  providerSize = null;
   walkLimit = INTERNAL_DEFAULT_LIMIT * WALK_LIMIT_FACTOR;
   // a provider applied offset and count to the compose itself (processSelection): every code it
   // returns is on the page
@@ -679,9 +683,22 @@ class ValueSetExpander {
   /**
    * Paging: once the page is full, the rest of the walk only counts codes, for the total - and the
    * total is only reported for an expansion within the response limit, as on an unpaged one (where
-   * includeCode stops at the limit). So once the codes seen reach the limit, stop: no total
+   * includeCode stops at the limit). So once the codes seen reach the limit, stop: no total. And when
+   * the provider has said how big the selection is (providerSize), there is nothing to count: stop
+   * as soon as the page is full
    */
   #finishIfPageFilled() {
+    if (this.paging && this.pageFilled() && this.providerSize != null) {
+      // the provider has said how many codes the walk would count: report that, as the walk would
+      // have (only within the limit), and stop
+      if (this.providerSize < this.limitCount) {
+        this.total = this.providerSize;
+        this.totalStatus = 'set';
+      } else {
+        this.noTotal();
+      }
+      throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
     if (this.paging && this.pageFilled() && this.walked + this.fullList.length + this.counted >= this.limitCount) {
       this.noTotal();
       throw new Issue('information', 'informational', null, null, null, null).setFinished();
@@ -698,6 +715,29 @@ class ValueSetExpander {
   #pageHolds(n) {
     const start = this.walked + this.fullList.length;
     return start >= this.offset && start + n <= this.offset + this.count;
+  }
+
+  /**
+   * Whether the size of the one selection an include makes (a whole code system, or one filter set)
+   * is the total of the expansion, as count=0 trusts it: the include is the whole value set (no
+   * other include, no exclude), and no code in the selection is left out (inactive ones, or over
+   * the code system's cap on how many codes it contributes)
+   */
+  #sizeIsTotal(compose, cs, excludeInactive) {
+    return !excludeInactive && !this.params.activeOnly && !this.hasExclusions
+      && (compose.include || []).length === 1 && (compose.exclude || []).length === 0
+      && !(cs.expandLimitation() > 0);
+  }
+
+  /**
+   * A paged expansion: the provider's size of the selection it walks is its total (see
+   * #finishIfPageFilled), when the provider gives one
+   */
+  #useProviderSize(size) {
+    if (typeof size === 'number' && size >= 0) {
+      this.worker.opContext.log('paged: the provider gives the total');
+      this.providerSize = size;
+    }
   }
 
   /**
@@ -1157,6 +1197,12 @@ class ValueSetExpander {
                 throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
               }
+              if (this.paging && valueSets.length === 0 && filters.length === 0 && this.#sizeIsTotal(compose, cs, excludeInactive) && !this.params.excludeNotForUI
+                  && !cs.isNotClosed()) {
+                // the walk would count every code of the code system (excludeNotForUI would skip the
+                // abstract ones; a grammar's walk lists only some): its size is the total
+                this.#useProviderSize(await cs.countAllCodes(excludeInactive));
+              }
               let tcount = 0;
               // One visited set across all roots: in a poly-hierarchy the walks
               // from different roots can reach the same concepts.
@@ -1374,13 +1420,15 @@ class ValueSetExpander {
           // total is the set's size, and walking it would only end in VALUESET_TOO_COSTLY once
           // the set is bigger than the limit. Anything less certain is counted by walking, as
           // before: an earlier version added filterSize *and* walked, and double counted (#91, #93).
-          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && suppFilters.length === 0 && filter.isNull
-            && !excludeInactive && !this.params.activeOnly && !this.hasExclusions
-            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length)
-            && (compose.include || []).length === 1 && (compose.exclude || []).length === 0;
+          // The same holds for a page: once it is full, the walk would only count the rest of the set
+          const sizeIsTotal = !filtersOpen && fset.length === 1 && suppFilters.length === 0 && filter.isNull
+            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length) && this.#sizeIsTotal(compose, cs, excludeInactive);
+          const countOnly = this.count === 0 && sizeIsTotal;
           if (countOnly) {
             this.worker.opContext.log('count only: the filter size is the total');
             this.addToTotal(await cs.filterSize(prep, fset[0]));
+          } else if (this.paging && sizeIsTotal) {
+            this.#useProviderSize(await cs.filterSize(prep, fset[0]));
           }
 
           this.worker.opContext.log('iterate filters');
