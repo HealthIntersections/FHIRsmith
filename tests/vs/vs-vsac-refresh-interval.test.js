@@ -1,7 +1,7 @@
 // The VSAC refresh timer: Node fires a timer whose delay is above 2^31-1 ms (about 596 hours) after
 // 1 ms instead, so a long refreshIntervalHours used to run the refresh back to back
 
-const { VSACValueSetProvider } = require('../../tx/vs/vs-vsac');
+const { VSACValueSetProvider, vsacLog } = require('../../tx/vs/vs-vsac');
 
 function provider(refreshIntervalHours) {
   const p = Object.create(VSACValueSetProvider.prototype);
@@ -13,7 +13,7 @@ function provider(refreshIntervalHours) {
 describe('VSAC refresh interval', () => {
   let warn;
   beforeEach(() => {
-    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    warn = jest.spyOn(vsacLog, 'warn').mockImplementation(() => {});
   });
   afterEach(() => warn.mockRestore());
 
