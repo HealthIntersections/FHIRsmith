@@ -663,6 +663,18 @@ class ValueSetExpander {
   }
 
   /**
+   * Paging: whether the next n codes, if all are included, fall inside the page - so each will be
+   * built, and none only counted. (Fewer may be included: filters, excludes and repeats only make
+   * the list shorter, so it still fits)
+   * @param {number} n
+   * @returns {boolean}
+   */
+  #pageHolds(n) {
+    const start = this.walked + this.fullList.length;
+    return start >= this.offset && start + n <= this.offset + this.count;
+  }
+
+  /**
    * Whether the page asked for (count and offset) is one the limits allow, as far as can be told
    * before the walk: a paged walk checks the walk limit as it goes (#walk), so a value set that
    * ends before the page is an empty page, not a refusal
@@ -1215,8 +1227,10 @@ class ValueSetExpander {
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
           // each listed code is located next: a provider may read them together, and hand back what it read
-          // (paging: most of them are only counted, and those on the page are read at locate)
-          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails && !this.paging);
+          // (paging: most of them may only be counted, and those on the page are read at locate -
+          // unless the page holds the whole list, when every one is built)
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code),
+            !this.noDetails && (!this.paging || this.#pageHolds(cset.concept.length)));
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
