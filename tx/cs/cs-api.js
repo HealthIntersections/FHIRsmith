@@ -727,9 +727,12 @@ class CodeSystemProvider {
   /**
    
    * @param {string } code
+   * @param {*} [prefetched] - a handle that prefetchCodes() returned for a list holding this code, or
+   *   null. A provider uses it only if it is one of its own; otherwise it looks the code up as usual
    * @returns {{context : CodeSystemProviderContext, message : String} the result of looking for the code
    */
-  async locate(code) { throw new Error("Must override"); }
+  // eslint-disable-next-line no-unused-vars
+  async locate(code, prefetched = null) { throw new Error("Must override"); }
 
   /**
    
@@ -774,6 +777,27 @@ class CodeSystemProvider {
   async subsumesTest(codeA, codeB) { return 'not-subsumed'; }
 
   /**
+   * The codes a code sits under: every ancestor in the hierarchy subsumesTest() answers from,
+   * not just the parents, and not the code itself. Optional: $closure uses it, when it is given,
+   * to relate many concepts to one another from one call per concept instead of one
+   * subsumesTest() per pair. The default returns null (not supported), and $closure then calls
+   * subsumesTest() for each pair, as it always has.
+   *
+   * A provider that implements it must agree with its own subsumesTest(): for two different
+   * codes a and b that this method answers for, subsumesTest(a, b) is 'subsumes' exactly when a
+   * is in ancestorsOf(b), 'subsumed-by' exactly when b is in ancestorsOf(a) (and a is not in
+   * ancestorsOf(b)), and never 'equivalent'. The codes are given in the form code() returns them.
+   * For any code where that can't be promised - an unknown code, a code not in the form code()
+   * gives (so another code may be the same concept), a postcoordinated expression - return null,
+   * and the pairs that involve it are tested with subsumesTest().
+   *
+   * @param {string | CodeSystemProviderContext} code
+   * @returns {Promise<Set<string>|null>} the ancestors' codes, or null when not supported for this code
+   */
+  // eslint-disable-next-line no-unused-vars
+  async ancestorsOf(code) { return null; }
+
+  /**
    
    * @param {CodeSystemProviderContext} ctxt the context to add properties for
    * @param {string[]} props the properties requested
@@ -804,20 +828,66 @@ class CodeSystemProvider {
   }
 
   /**
-   * Process a set of includes and excludes for the code system
+   * Select the codes of a whole compose in one call (only called when handlesSelecting() is true).
    *
-   * @param {TxParameters} params: information from the request that the user made, to help optimise loading
-   * @param {Object[]} includes - a list of includes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {Object[]} excludes - a list of excludes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {boolean} excludeInactive: whether the server will use inactive codes or not
-   * @param {int} offset if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable offset. -1 if not applicable
-   * @param {int} count if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable count. -1 if not applicable
-   * @returns {FilterConceptSet[]} filter sets. In general, it wouldn't make sense to return more than one, but providers can do if they want to. See futher comments on executeFilters
+   * expand.js hands over a compose that selects from this code system alone (one system|version),
+   * imports no value sets, has no text filter, and lists no concepts (an enumerated concept
+   * carries displays and extensions from the value set, so those go through the usual path,
+   * where prefetchCodes() applies). Anything else this provider doesn't support - an
+   * unknown filter, say - it declines by returning null, and the compose goes through the
+   * usual include/exclude path (getPrepContext/filter/executeFilters, locate) instead. A compose
+   * with a filter on a property that a supplement in use defines is never handed over: the usual
+   * path evaluates that filter from the supplement (tx/workers/supplement-filters.js).
+   *
+   * The provider applies offset and count: the sets it returns hold just the requested page of
+   * the selection, in expansion order. The worker adds every code in them to the expansion
+   * (with displays, properties etc. from this provider, as for a filter set), and takes the
+   * total from the result.
+   *
+   * @param {TxParameters} params: information from the request that the user made, to help optimise loading (activeOnly, properties, designations...)
+   * @param {Object[]} includes - the compose's includes. Each names this system (and version), with or without filters
+   * @param {Object[]} excludes - the compose's excludes, in the same form
+   * @param {boolean} excludeInactive: whether the value set leaves out inactive codes (compose.inactive = false)
+   * @param {int} offset the index of the first code to return, -1 when the request gave no offset (start at 0)
+   * @param {int} count the most codes to return, -1 when the request gave no count (all of them); 0 asks for the total only
+   * @param {Object} [context] what the selection is for. `context.valueSet` is `{ url, version }` of the
+   *   value set whose compose this is (either may be undefined for a value set given inline without
+   *   them). A provider may ignore it.
+   *
+   * A provider that won't produce a selection because it would cost too much may throw the standard
+   * too-costly Issue, in the form expand.js uses when it refuses a value set (Issue from
+   * tx/library/operation-outcome.js; vurl is url|version, or url when there is no version):
+   *
+   *     throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+   *       this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + limit]),
+   *       null, 422).withDiagnostics(this.opContext.diagnostics());
+   *
+   * @returns {Promise<{sets: FilterConceptSet[], total: number, notClosed?: boolean}|null>} null to decline.
+   *   Otherwise `sets` (in general one; iterated with filterMore/filterConcept) hold the page,
+   *   `total` is the number of codes in the whole selection before paging, or -1 when the
+   *   provider hasn't counted it (the expansion then has no total), and `notClosed` is true
+   *   when the selection is open-ended (a grammar-based code system), so the expansion is
+   *   marked unclosed
    */
-  processSelection(params, includes, excludes, excludeInactive, offset, count) {
+  processSelection(params, includes, excludes, excludeInactive, offset, count, context = {}) {
     // well, you only need to override if handlesSelecting=true, but that's the only time this will be called
     throw new Error("Must override");
   }
+
+  /**
+   * Before the worker locates each code of a list one at a time: the concepts a value set include
+   * or exclude lists ($expand), or that validate-code compares a code with. A provider that
+   * answers locate() from a database may read the codes together here and return a handle to
+   * what it read: an object of its own, opaque to the worker. The worker passes the handle back
+   * as locate(code, prefetched) for each code of that list, and drops it when the loop ends. The
+   * provider keeps no state of its own for this: two lists in progress have two handles.
+   *
+   * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
+   * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations
+   * @returns {Promise<*>} the handle, or null: this provider does no prefetching (the default)
+   */
+  // eslint-disable-next-line no-unused-vars
+  async prefetchCodes(codes, withDesignations) { return null; }
 
   /**
    * returns true if a filter is supported

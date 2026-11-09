@@ -30,6 +30,7 @@ function slowCodeSystem() {
       return { context: { code }, message: undefined };
     },
     async classificationCode() { return 'other-form'; },
+    async prefetchCodes() { return null; }, // (CodeSystemProvider's default: no prefetching)
     async code(context) { return context.code; },
     system: () => 'http://example.org/slow',
     version: () => null

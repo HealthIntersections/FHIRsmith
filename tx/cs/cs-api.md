@@ -110,6 +110,7 @@ All are `async`.
 | `sameConcept(a, b)` | `false` | Returns `true` if `a` and `b` refer to the same concept (e.g. different expression forms). |
 | `isDisplay(designation)` | `false` | Called for designations not already marked with a standard display use code; return `true` to treat the designation as a display. |
 | `subsumesTest(codeA, codeB)` | `'not-subsumed'` | Returns one of `equivalent`, `subsumes`, `subsumed-by`, or `not-subsumed`. |
+| `ancestorsOf(code)` | `null` | Optional. A `Set` of the codes this code sits under (all ancestors, not itself), in the form `code()` returns them. `$closure` uses it to relate concepts with one call per concept instead of one `subsumesTest()` per pair. It must agree with `subsumesTest()`: for different codes a and b it answers for, a is in `ancestorsOf(b)` exactly when `subsumesTest(a, b)` is `subsumes`, and the two are never `equivalent`. Return `null` for any code where that can't be promised (unknown, not in `code()` form, an expression); pairs involving it are tested with `subsumesTest()`. |
 | `extendLookup(ctxt, props, params)` | — | Called during `$lookup`; add any additional properties to `params`. |
 
 ---
@@ -191,9 +192,43 @@ For large code systems where a value set selects codes from only that system, th
 hand the entire include/exclude list to the provider in one call rather than using the filter
 workflow above.
 
-Override `handlesSelecting()` to return `true` and then implement `processSelection()`.
-The method receives the full lists of includes and excludes, along with pagination parameters
-if applicable, and returns `FilterConceptSet[]`.
+Override `handlesSelecting()` to return `true` and then implement
+`processSelection(params, includes, excludes, excludeInactive, offset, count, context)`.
+
+- **When it is called.** `$expand` hands over a compose that selects from this code system
+  alone (one system|version), imports no value sets, has no text filter and lists no concepts.
+  Value sets that list concepts take the usual path: `locate`, with a `prefetchCodes` handle (see Lookup).
+- **Declining.** Return `null` for anything the provider doesn't support (an unknown filter,
+  say). The compose then goes through the filter workflow above, as for any other provider.
+- **Paging.** The provider applies `offset` (-1: none given, start at 0) and `count`
+  (-1: none given, return all; 0: the total only). The sets it returns hold just that page,
+  in expansion order.
+- **Result.** `{ sets, total, notClosed }`: `sets` is a `FilterConceptSet[]` (in general one),
+  iterated with `filterMore`/`filterConcept`; `total` is the size of the whole selection
+  before paging, or -1 if the provider hasn't counted it (the expansion then has no total);
+  `notClosed` marks an open-ended selection (a grammar-based code system).
+
+- **Context.** The optional last argument, `context`, says what the selection is for:
+  `context.valueSet` is `{ url, version }` of the value set whose compose this is (either may be
+  undefined for a value set given inline without them). A provider may ignore it.
+- **Too costly.** A provider that won't produce a selection because it would cost too much may
+  throw the standard too-costly `Issue` (tx/library/operation-outcome.js), in the form `$expand`
+  uses when it refuses a value set. Here `vurl` is `url|version`, or `url` when there is no
+  version:
+
+  ```js
+  throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+    this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + limit]),
+    null, 422).withDiagnostics(this.opContext.diagnostics());
+  ```
+
+  The response is a 422 with a `too-costly` issue, as for a value set `$expand` refuses itself.
+- **Over the limit.** When an include takes the whole system and the reported `total` is over the
+  request's limit, `$expand` refuses as it does on the usual path, unless the requested page
+  fits inside the limit.
+
+The default `handlesSelecting()` returns `false`, so a provider that doesn't override it is
+never asked.
 
 ---
 
@@ -203,8 +238,9 @@ Lookup supports the `$lookup` and `$validate-code` operations.
 
 | Method | Description |
 |---|---|
-| `locate(code)` | Look up a code by string. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
+| `locate(code, prefetched)` | Look up a code by string. `prefetched` is a handle from `prefetchCodes` for a list holding the code, or `null`; ignore it unless it is one of yours. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
 | `locateIsA(code)` | Look up a code within the scope of a parent concept. Required only if `hasParents()` returns `true`. |
+| `prefetchCodes(codes, withDesignations)` | Called before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and return a handle to what it read; the worker passes it back as `locate(code, prefetched)` for each code of that list, then drops it. No state on the provider. Default: returns `null` (no prefetching). |
 | `extendLookup(ctxt, props, params)` | Called during `$lookup` to allow the provider to add extra properties to the response `Parameters`. The `props` array lists the property names requested by the client. |
 
 The server calls `locate()` first to confirm the code exists, then uses the returned context

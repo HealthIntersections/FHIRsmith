@@ -1625,7 +1625,7 @@ class ValueSetChecker {
    * code systems with a classification code have two spellings, so for the rest this is
    * one call and false.
    */
-  async sameConceptDifferentForm(cs, code, enumerated) {
+  async sameConceptDifferentForm(cs, code, enumerated, prefetched = null) {
     if (code === enumerated) {
       return false;
     }
@@ -1633,7 +1633,7 @@ class ValueSetChecker {
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return false;
     }
-    const b = await cs.locate(enumerated);
+    const b = await cs.locate(enumerated, prefetched);
     return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
   }
 
@@ -1652,9 +1652,11 @@ class ValueSetChecker {
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
+    // each listed code is located next: a provider may read them together, and hand back what it read
+    const prefetched = await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
       this.worker.deadCheck('checkConceptSet#3');
-      if (await this.sameConceptDifferentForm(cs, code, cc.code)) {
+      if (await this.sameConceptDifferentForm(cs, code, cc.code, prefetched)) {
         return cc;
       }
     }

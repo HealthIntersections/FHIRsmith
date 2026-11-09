@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const ValueSet = require("../library/valueset");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
-const { splitFilters } = require('./supplement-filters');
+const { splitFilters, supplementFilter } = require('./supplement-filters');
 
 // Expansion limits (from Pascal constants)
 const EXTERNAL_TEST_DEFAULT_LIMIT = 3000;
@@ -723,7 +723,9 @@ class ValueSetExpander {
             // NB: totalCount is a method - as a property read (cs.totalCount) the
             // comparison was against the function object, always false, so this
             // guard was silently dead.
-            if (!imp && this.count !== 0 && this.limitCount > 0 && await cs.totalCount() > this.limitCount
+            // (not when the provider will be handed the compose: it pages and counts the
+            // selection itself - see processCodes)
+            if (!imp && !(vsInfo && vsInfo.handleByCS) && this.count !== 0 && this.limitCount > 0 && await cs.totalCount() > this.limitCount
                 && !(this.count > 0 && this.count + Math.max(this.offset, 0) <= this.limitCount)) {
               // Report the versioned url (vurl), matching the message the
               // enumeration path produces when it hits the same limit - this
@@ -736,15 +738,107 @@ class ValueSetExpander {
     }
   }
 
+  /**
+   * Hand the whole compose to the code system provider (CodeSystemProvider.handlesSelecting /
+   * processSelection). Only called for a compose that selects from one system|version and imports
+   * no value sets (scanValueSet: isSimple), when the provider says it handles selecting.
+   *
+   * Returns true when the provider took the compose: its codes are in the expansion, already
+   * paged by the provider, with the total it reported. Returns false, having added nothing, when
+   * the compose is one this hand-off doesn't cover (a text filter, an enumerated concept list, a
+   * filter with no value, content that isn't complete) or the provider declines by returning
+   * null: the compose then goes through the usual include/exclude path.
+   */
   async processCodes(path, vsSrc, compose, filter, expansion, excludeInactive, notClosed, vsInfo) {
+    const includes = compose.include || [];
+    const excludes = compose.exclude || [];
+    if (!filter.isNull) {
+      // the provider isn't told about a text filter
+      return false;
+    }
+    if ([...includes, ...excludes].some(cset => cset.concept)) {
+      // an enumerated concept carries displays, designations and extensions from the value set
+      return false;
+    }
+    if ([...includes, ...excludes].some(cset => (cset.filter || []).some(fc => !fc.value))) {
+      // the usual path reports the error
+      return false;
+    }
     const cs = await this.worker.findCodeSystem(vsInfo.system, vsInfo.version, this.params, ['complete', 'fragment'],
       false, false, true, null, this.requiredSupplements);
-    if (cs != null) {
-
-      // set up the call to the provider
-      // call the provider
-      // include the codes
+    if (cs == null || cs.contentMode() !== 'complete') {
+      return false;
     }
+    for (const cset of [...includes, ...excludes]) {
+      Extensions.checkNoModifiers(cset, 'ValueSetExpander.processCodes', 'set', vsSrc.vurl);
+      for (const fc of cset.filter || []) {
+        Extensions.checkNoModifiers(fc, 'ValueSetExpander.processCodes', 'filter', vsSrc.vurl);
+        if (await supplementFilter(cs, fc)) {
+          // a filter on a property that a supplement in use defines: the provider doesn't know
+          // it, and the usual path evaluates it from the supplement
+          return false;
+        }
+      }
+    }
+
+    const selection = await cs.processSelection(this.params, includes, excludes, excludeInactive, this.offset, this.count,
+      { valueSet: { url: vsSrc.url, version: vsSrc.version } });
+    if (selection == null) {
+      return false;
+    }
+    this.worker.opContext.log('compose handled by the code system provider');
+    // checkSource's up-front refusal of a whole-system include is skipped for a compose handed to
+    // the provider (it is told the paging). Apply it here, now that the selection's total is known,
+    // with the same message: it names the versioned url, where includeCode's refusal would name the
+    // plain url. Only the page counts against the limit: the provider pages itself, so a deep page
+    // costs no more than the first one (on the usual path offset + count must fit, because the
+    // codes before the page are built too)
+    const wholeSystemInclude = includes.some(cset => !(cset.filter || []).length);
+    if (wholeSystemInclude && this.count !== 0 && this.limitCount > 0 && selection.total > this.limitCount
+        && !(this.count > 0 && this.count <= this.limitCount)) {
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [vsSrc.vurl || vsSrc.url, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+    }
+
+    for (const cset of [...includes, ...excludes]) {
+      this.worker.checkSupplements(cs, cset, this.requiredSupplements, this.usedSupplements);
+    }
+    this.checkProviderCanonicalStatus(expansion, cs, this.valueSet);
+    this.addParamUri(expansion, 'used-codesystem', this.canonical(cs.system(), cs.version()));
+    if (selection.notClosed) {
+      notClosed.value = true;
+      const wholeSystem = includes.some(cset => !(cset.filter || []).length);
+      if (wholeSystem && cs.isNotClosed() && !Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason")) {
+        // as the usual path says for a whole grammar-based code system
+        Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members");
+      }
+    }
+
+    // the provider has applied offset and count: every code it returns is in the page
+    vsInfo.csDoOffset = true;
+    this.canBeHierarchy = false;
+    const cds = new Designations(this.worker.i18n.languageDefinitions);
+    for (const set of selection.sets || []) {
+      while (await cs.filterMore(null, set)) {
+        await this.worker.checkAndYield('processCodes#selection');
+        const c = await cs.filterConcept(null, set);
+        cds.clear();
+        if (this.noDetails) {
+          await this.includeCode(cs, null, cs.system(), cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
+            null, null, cds, null, null, expansion, null, null, null, null, null, excludeInactive, vsSrc.url);
+        } else {
+          await this.listDisplaysFromProvider(cds, cs, c);
+          await this.includeCode(cs, null, cs.system(), cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
+            await cs.isDeprecated(c), await cs.getStatus(c), cds, await cs.definition(c), await cs.itemWeight(c),
+            expansion, null, await cs.extensions(c), null, await this.#conceptProperties(cs, c), null, excludeInactive, vsSrc.url);
+        }
+      }
+    }
+    if (selection.total != null && selection.total >= 0) {
+      this.addToTotal(selection.total);
+    } else {
+      this.noTotal();
+    }
+    return true;
   }
 
   async includeCodes(cset, path, vsSrc, compose, filter, expansion, excludeInactive, notClosed) {
@@ -937,11 +1031,13 @@ class ValueSetExpander {
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
+          // each listed code is located next: a provider may read them together, and hand back what it read
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
-            const cctxt = await cs.locate(cc.code, this.allAltCodes);
+            const cctxt = await cs.locate(cc.code, prefetched);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
               const ecode = await cs.expansionCode(cctxt.context, cc.code);
@@ -1223,11 +1319,13 @@ class ValueSetExpander {
           const cds = new Designations(this.worker.i18n.languageDefinitions);
           // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
+          // each listed code is located next: a provider may read them together, and hand back what it read
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
-            const cctxt = await cs.locate(cc.code, this.allAltCodes);
+            const cctxt = await cs.locate(cc.code, prefetched);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
                 let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
@@ -1426,8 +1524,8 @@ class ValueSetExpander {
 
     this.worker.opContext.log('compose #2');
 
-    if (vsInfo.handleByCS) {
-      await this.processCodes("ValueSet.compose", source, source.jsonObj.compose, filter, expansion, this.excludeInactives(source), notClosed, vsInfo);
+    if (vsInfo.handleByCS && await this.processCodes("ValueSet.compose", source, source.jsonObj.compose, filter, expansion, this.excludeInactives(source), notClosed, vsInfo)) {
+      // the code system provider selected the codes (processSelection)
     } else {
       this.checkForExclusionVersionSpecialCase(source, expansion);
 
@@ -2113,9 +2211,12 @@ class ValueSetExpander {
     const keys = new Set();
     const expandLimit = cs.expandLimitation();
     let capCount = expandLimit > 0 && this.csCounter.has(cs.system()) ? this.csCounter.get(cs.system()).count : 0;
+    // each listed code is located next: a provider may read them together, and hand back what it
+    // read; counting builds nothing, so designations aren't wanted
+    const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
     for (const cc of cset.concept) {
       await this.worker.checkAndYield('countListedCodes');
-      const cctxt = await cs.locate(cc.code, this.allAltCodes);
+      const cctxt = await cs.locate(cc.code, prefetched);
       if (!cctxt || !cctxt.context) {
         continue;
       }
@@ -2205,13 +2306,20 @@ class ValueSetExpander {
     }
     if (simple && result.csset.size == 1) {
       result.isSimple = true;
+      const first = (compose.include || [])[0] || (compose.exclude || [])[0];
+      if (first) {
+        result.system = first.system;
+        result.version = first.version;
+      }
     }
     return result;
   }
 
   isSimpleSelect(inc, set) {
     set.add(inc.system+"|"+inc.version);
-    return !inc.valueset || inc.valueset.length == 0;
+    // (the element is valueSet: the lowercase spelling never matched, which was harmless only
+    // while processCodes did nothing)
+    return !!inc.system && (!inc.valueSet || inc.valueSet.length == 0);
   }
 
   excludeFilterList(exc) {
