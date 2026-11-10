@@ -121,8 +121,14 @@ TerminologyCapabilities, that it has the code system and version asked for (or, 
 is a url, a release of it - a SNOMED CT edition asked for without a release date). With no version
 asked for, it's the server's only version, or the one it marks `isDefault`. Requests sent on to
 another server carry the header `X-FHIRsmith-Ecosystem-Forwarded`, and a request that arrives with
-it is never resolved through the ecosystem again. What the registry and the servers say is kept
-for an hour.
+it is never resolved through the ecosystem again.
+
+What the registry says, and what each server says it has, is kept for an hour, and then refreshed
+in the background: a request never waits for a refresh, only the first request for something does
+(if a refresh fails, the old answer is used, and the refresh tried again in five minutes). The
+other servers' answers to `$lookup` and `$validate-code` are kept for an hour too (the most recent
+10,000), so the same question is only asked once. Requests that had to ask another server are
+counted, and graphed, separately on the home page (External requests).
 
 ### VSAC Configuration
 

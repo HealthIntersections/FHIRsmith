@@ -169,6 +169,94 @@ describe('EcosystemResolver', () => {
     });
   });
 
+  describe('what is kept', () => {
+    const LOOKUP = `${OPEN}/CodeSystem/$lookup?system=x&code=1`;
+    const op = () => ({ n: 0, countExternalRequest() { this.n++; } });
+
+    test('an answer is asked for once, and the same question asked at once is sent once', async () => {
+      const r = resolver();
+      mockListing();
+      const scope = nock('https://open.example').get('/fhir/CodeSystem/$lookup').query(true).once()
+        .delay(50).reply(200, { resourceType: 'Parameters', parameter: [{ name: 'display', valueString: 'one' }] });
+      const a = op();
+      const b = op();
+      const [x, y] = await Promise.all([r.sendCached(OPEN, LOOKUP, null, a), r.sendCached(OPEN, LOOKUP, null, b)]);
+      expect(x.json.parameter[0].valueString).toBe('one');
+      expect(y).toBe(x);
+      expect(scope.isDone()).toBe(true);
+      // both waited for the other server (the first for the registry's list of servers as well);
+      // the next asks no one
+      expect(a.n).toBe(2);
+      expect(b.n).toBe(1);
+      const c = op();
+      expect((await r.sendCached(OPEN, LOOKUP, null, c)).json.parameter[0].valueString).toBe('one');
+      expect(c.n).toBe(0);
+    });
+
+    test('a 4xx answer is kept, a 5xx or a failure is not', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/CodeSystem/$lookup').query(q => q.code === '404').once().reply(404, { resourceType: 'OperationOutcome' });
+      nock('https://open.example').get('/fhir/CodeSystem/$lookup').query(q => q.code === '500').twice().reply(500, {});
+      expect((await r.sendCached(OPEN, `${OPEN}/CodeSystem/$lookup?code=404`)).status).toBe(404);
+      expect((await r.sendCached(OPEN, `${OPEN}/CodeSystem/$lookup?code=404`)).status).toBe(404);
+      expect((await r.sendCached(OPEN, `${OPEN}/CodeSystem/$lookup?code=500`)).status).toBe(500);
+      expect((await r.sendCached(OPEN, `${OPEN}/CodeSystem/$lookup?code=500`)).status).toBe(500);
+      expect(nock.isDone()).toBe(true);
+    });
+
+    test('after an hour, what the registry said is used while it is asked again in the background', async () => {
+      let now = 1800000000000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      try {
+        const r = resolver();
+        mockResolve(`${SCT}|${EE}`, { candidates: [{ url: OPEN, open: true }] });
+        expect(await r.findServer(SCT, EE, 5)).toBe(OPEN);
+        now += 61 * 60 * 1000;
+        let answer;
+        const refreshed = new Promise(resolve => {
+          nock(REG).get('/tx-reg/resolve').query(true).reply(() => { setImmediate(resolve); answer = true; return [200, { candidates: [{ url: KEYED, open: true }] }]; });
+        });
+        // the old answer, without waiting, and not counted against the request
+        const o = op();
+        expect(await r.findServer(SCT, EE, 5, o)).toBe(OPEN);
+        expect(o.n).toBe(0);
+        await refreshed;
+        expect(answer).toBe(true);
+        // once the refresh is in
+        let found;
+        for (let i = 0; i < 100 && found !== KEYED; i++) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+          found = await r.findServer(SCT, EE, 5);
+        }
+        expect(found).toBe(KEYED);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    test('a refresh that fails keeps the old answer', async () => {
+      let now = 1800000000000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      try {
+        const r = resolver();
+        mockListing();
+        nock('https://open.example').get('/fhir/metadata').query(true).reply(200, { resourceType: 'TerminologyCapabilities', codeSystem: [{ uri: SCT, version: [{ code: EE }] }] });
+        expect(await r.listVersions(OPEN, SCT)).toEqual([{ code: EE, isDefault: false }]);
+        now += 61 * 60 * 1000;
+        const failed = new Promise(resolve => {
+          nock('https://open.example').get('/fhir/metadata').query(true).reply(() => { setImmediate(resolve); return [500, {}]; });
+        });
+        expect(await r.listVersions(OPEN, SCT)).toEqual([{ code: EE, isDefault: false }]);
+        await failed;
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(await r.listVersions(OPEN, SCT)).toEqual([{ code: EE, isDefault: false }]);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
   // the addresses come from the registry, which may not be the public one: requests only go to
   // public addresses (library/ssrf-guard.js), unless allowPrivateAddresses is set
   describe('the SSRF guard', () => {
