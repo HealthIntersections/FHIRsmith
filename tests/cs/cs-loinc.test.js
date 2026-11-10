@@ -704,6 +704,41 @@ describe('LOINC Provider', () => {
     });
   });
 
+  describe('Answer list Filters (answer-list and answers-for, UP-645)', () => {
+    test('should declare answer-list and answers-for', async () => {
+      expect(await provider.doesFilter('answer-list', '=', 'LA9040-2')).toBe(true);
+      expect(await provider.doesFilter('answers-for', '=', 'LL6136-7')).toBe(true);
+    });
+
+    test('should filter by answer-list and answers-for', async () => {
+      for (const testCase of expectedResults.filters.answerList) {
+        const filterContext = await provider.getPrepContext(true);
+        await provider.filter(filterContext, true, testCase.property, testCase.operator, testCase.value);
+        const filters = await provider.executeFilters(filterContext);
+        const filter = filters[0];
+        expect(filter).toBeDefined();
+
+        const foundCodes = [];
+        while (await provider.filterMore(filterContext, filter)) {
+          const concept = await provider.filterConcept(filterContext, filter);
+          foundCodes.push(concept.code);
+        }
+        expect(foundCodes.sort()).toEqual([...testCase.expectedCodes].sort());
+        expect(await provider.filterSize(filterContext, filter)).toBe(testCase.expectedCodes.length);
+      }
+    });
+
+    test('answer-list membership is checked by filterLocate/filterCheck', async () => {
+      const filterContext = await provider.getPrepContext(false);
+      await provider.filter(filterContext, false, 'answer-list', '=', 'LA9040-2');
+      const filters = await provider.executeFilters(filterContext);
+      const located = await provider.filterLocate(filterContext, filters[0], 'LL6136-7');
+      expect(typeof located).not.toBe('string');
+      expect(await provider.filterCheck(filterContext, filters[0], located)).toBe(true);
+      expect(await provider.filterLocate(filterContext, filters[0], 'LL360-9')).toBeNull();
+    });
+  });
+
   describe('Relationship Filters', () => {
     test('should filter by relationship properties', async () => {
       const testCases = expectedResults.filters.relationships;

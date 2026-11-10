@@ -799,8 +799,14 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
-    // LIST filter
+    // LIST filter: tx.fhir.org's own name for answers-for = [answer list], supported for
+    // backwards compatibility only (the defined filters are answers-for and answer-list, UP-645)
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
+      return true;
+    }
+
+    // answer-list filter: the answer lists (LL) that an answer (LA) is in (UP-645)
+    if (prop === 'answer-list' && op === '=') {
       return true;
     }
 
@@ -909,6 +915,17 @@ class LoincServices extends BaseCSServices {
               WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
                 AND SourceKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
                 AND TargetKey = `;
+    }
+    // answer-list filter: the answer lists (LL) the answer (LA) is in - the inverse of answers-for
+    else if (prop === 'answer-list' && op === '=') {
+      sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
+             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+             ORDER BY SourceKey ASC`;
+      lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
+              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+                AND SourceKey = `;
     }
     // answers-for filter
     else if (prop === 'answers-for' && op === '=') {

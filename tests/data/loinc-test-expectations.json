@@ -11,6 +11,32 @@
         "expectedCodes": ["LA32971-6", "LA32972-4", "LA9040-2", "LA10105-7"]
       }
     ],
+    "answerList": [
+      {
+        "property": "answer-list",
+        "operator": "=",
+        "value": "LA9040-2",
+        "expectedCodes": ["LL6136-7"]
+      },
+      {
+        "property": "answer-list",
+        "operator": "=",
+        "value": "LA6576-8",
+        "expectedCodes": ["LL360-9"]
+      },
+      {
+        "property": "answer-list",
+        "operator": "=",
+        "value": "LL6136-7",
+        "expectedCodes": []
+      },
+      {
+        "property": "answers-for",
+        "operator": "=",
+        "value": "LL6136-7",
+        "expectedCodes": ["LA32971-6", "LA32972-4", "LA9040-2", "LA10105-7"]
+      }
+    ],
     "relationships": [
       {
         "property": "COMPONENT",
