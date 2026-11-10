@@ -61,6 +61,7 @@ const { buildOperationOutcome, outcomeFromError } = require('./library/operation
 const txOpenApi = require('./openapi');
 const { SyndicationStore } = require('./syndication/syndication-store');
 const syndicationFeed = require('./syndication/syndication-feed');
+const { EcosystemResolver, FORWARDED_HEADER } = require('./ecosystem-resolver');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -409,6 +410,19 @@ class TXModule {
     };
     // Create the provider once for this endpoint
     endpointInfo.provider = await this.library.cloneWithFhirVersion(fhirVersion, context, endpointPath);
+    for (const old of ['ecosystemResolution', 'ecosystemExcludedServers']) {
+      if (this.config[old] !== undefined) {
+        throw new Error(`modules.tx.${old} has been replaced by modules.tx.ecosystem (see tx/README.md)`);
+      }
+    }
+    const ecosystem = EcosystemResolver.checkConfig(this.config.ecosystem);
+    if (ecosystem) {
+      if (!this.ecosystemResolver) {
+        this.ecosystemResolver = new EcosystemResolver(ecosystem);
+        this.log.info(`Code systems not held here are looked for in the ecosystem (${this.ecosystemResolver.registry})`);
+      }
+      endpointInfo.provider.ecosystem = this.ecosystemResolver;
+    }
 
     // Set up periodic pruning of the resource cache
     // cacheTimeout is in minutes, default to 30 minutes
@@ -481,6 +495,9 @@ class TXModule {
       // others read req.body / query directly). An explicit cache-id parameter
       // on the request still wins (see setupAdditionalResources).
       opContext.cacheId = req.get('X-Cache-Id') || null;
+      // a request another server sent on while resolving a code system through the ecosystem
+      // isn't resolved through the ecosystem again (see EcosystemResolver)
+      opContext.ecosystemForwarded = !!req.get(FORWARDED_HEADER);
 
       // Attach everything to request
       req.txProvider = endpointInfo.provider;
@@ -762,7 +779,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$lookup', async (req, res) => {
@@ -771,7 +788,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
 
@@ -782,7 +799,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$subsumes', async (req, res) => {
@@ -791,7 +808,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
 
@@ -802,7 +819,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$validate-code', async (req, res) => {
@@ -811,7 +828,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
@@ -822,7 +839,7 @@ class TXModule {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest(endpointPath, '$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$batch-validate-code', async (req, res) => {
@@ -831,7 +848,7 @@ class TXModule {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest(endpointPath, '$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     // ValueSet/$validate-code (GET and POST)
@@ -841,7 +858,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$validate-code', async (req, res) => {
@@ -850,7 +867,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
@@ -861,7 +878,7 @@ class TXModule {
         let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$compare', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$compare', async (req, res) => {
@@ -870,7 +887,7 @@ class TXModule {
         let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$compare', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
 
@@ -881,7 +898,7 @@ class TXModule {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest(endpointPath, '$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$batch-validate-code', async (req, res) => {
@@ -890,7 +907,7 @@ class TXModule {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest(endpointPath, 'validate', Date.now() - start);
+        this.countRequest(endpointPath, 'validate', Date.now() - start, req);
       }
     });
 
@@ -901,7 +918,7 @@ class TXModule {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$expand', async (req, res) => {
@@ -910,7 +927,7 @@ class TXModule {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
 
@@ -921,7 +938,7 @@ class TXModule {
         let worker = new CacheControlWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$cache-control', Date.now() - start);
+        this.countRequest(endpointPath, '$cache-control', Date.now() - start, req);
       }
     });
     router.post('/\\$cache-control', async (req, res) => {
@@ -930,7 +947,7 @@ class TXModule {
         let worker = new CacheControlWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$cache-control', Date.now() - start);
+        this.countRequest(endpointPath, '$cache-control', Date.now() - start, req);
       }
     });
 
@@ -941,7 +958,7 @@ class TXModule {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
     router.post('/ConceptMap/\\$translate', async (req, res) => {
@@ -950,7 +967,7 @@ class TXModule {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
 
@@ -962,7 +979,7 @@ class TXModule {
         let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$closure', Date.now() - start);
+        this.countRequest(endpointPath, '$closure', Date.now() - start, req);
       }
     });
     router.post('/\\$closure', async (req, res) => {
@@ -971,7 +988,7 @@ class TXModule {
         let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$closure', Date.now() - start);
+        this.countRequest(endpointPath, '$closure', Date.now() - start, req);
       }
     });
 
@@ -984,7 +1001,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest(endpointPath, '$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$lookup', async (req, res) => {
@@ -993,7 +1010,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest(endpointPath, '$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
 
@@ -1004,7 +1021,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest(endpointPath, '$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$subsumes', async (req, res) => {
@@ -1013,7 +1030,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest(endpointPath, '$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
 
@@ -1024,7 +1041,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$validate-code', async (req, res) => {
@@ -1033,7 +1050,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
 
     });
@@ -1045,7 +1062,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/:id/\\$validate-code', async (req, res) => {
@@ -1054,7 +1071,7 @@ class TXModule {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
@@ -1066,7 +1083,7 @@ class TXModule {
         let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$compare', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/:id/\\$compare', async (req, res) => {
@@ -1075,7 +1092,7 @@ class TXModule {
         let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$compare', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
 
@@ -1086,7 +1103,7 @@ class TXModule {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/:id/\\$expand', async (req, res) => {
@@ -1095,7 +1112,7 @@ class TXModule {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
 
@@ -1106,7 +1123,7 @@ class TXModule {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
     router.post('/ConceptMap/:id/\\$translate', async (req, res) => {
@@ -1115,7 +1132,7 @@ class TXModule {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest(endpointPath, '$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
 
@@ -1137,7 +1154,7 @@ class TXModule {
           let worker = new ReadWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
           await worker.handle(req, res, resourceType, (req, res, resourceType, id, matches) => this.renderIdChoices(req, res, resourceType, id, matches));
         } finally {
-          this.countRequest(endpointPath, 'read', Date.now() - start);
+          this.countRequest(endpointPath, 'read', Date.now() - start, req);
         }
       });
     }
@@ -1150,7 +1167,7 @@ class TXModule {
           let worker = new SearchWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
           await worker.handle(req, res, resourceType);
         } finally {
-          this.countRequest(endpointPath, 'search', Date.now() - start);
+          this.countRequest(endpointPath, 'search', Date.now() - start, req);
         }
       });
       router.post(`/${resourceType}/_search`, async (req, res) => {
@@ -1159,7 +1176,7 @@ class TXModule {
           let worker = new SearchWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
           await worker.handle(req, res, resourceType);
         } finally {
-          this.countRequest(endpointPath, 'search', Date.now() - start);
+          this.countRequest(endpointPath, 'search', Date.now() - start, req);
         }
       });
     }
@@ -1185,7 +1202,7 @@ class TXModule {
           // anything else falls through to the not-found fallback rather than hanging
           return next();
         } finally {
-          this.countRequest(endpointPath, '$read', Date.now() - start);
+          this.countRequest(endpointPath, '$read', Date.now() - start, req);
         }
       });
     }
@@ -1196,7 +1213,7 @@ class TXModule {
         let worker = new OperationsWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest(endpointPath, '$op', Date.now() - start);
+        this.countRequest(endpointPath, '$op', Date.now() - start, req);
       }
     });
 
@@ -1212,7 +1229,7 @@ class TXModule {
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } finally {
-        this.countRequest(endpointPath, 'ecl', Date.now() - start);
+        this.countRequest(endpointPath, 'ecl', Date.now() - start, req);
       }
     });
 
@@ -1226,7 +1243,7 @@ class TXModule {
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } finally {
-        this.countRequest(endpointPath, 'problems', Date.now() - start);
+        this.countRequest(endpointPath, 'problems', Date.now() - start, req);
       }
     });
 
@@ -1264,7 +1281,7 @@ class TXModule {
             res.send(source);
           }
         } finally {
-          this.countRequest(endpointPath, 'library', Date.now() - start);
+          this.countRequest(endpointPath, 'library', Date.now() - start, req);
         }
       });
     }
@@ -1284,7 +1301,7 @@ class TXModule {
           res.status(500).json(this.operationOutcome('error', 'exception', error.message));
         }
       } finally {
-        this.countRequest(endpointPath, 'metadata', Date.now() - start);
+        this.countRequest(endpointPath, 'metadata', Date.now() - start, req);
       }
     });
 
@@ -1299,7 +1316,7 @@ class TXModule {
           res.status(500).json(this.operationOutcome('error', 'exception', error.message));
         }
       } finally {
-        this.countRequest(endpointPath, '$versions', Date.now() - start);
+        this.countRequest(endpointPath, '$versions', Date.now() - start, req);
       }
     });
 
@@ -1309,7 +1326,7 @@ class TXModule {
       try {
         await res.json(buildOperationOutcome('information', 'informational', `FHIR Terminology Server - FHIR v${req.txEndpoint.fhirVersion}`));
       } finally {
-        this.countRequest(endpointPath, 'home', Date.now() - start);
+        this.countRequest(endpointPath, 'home', Date.now() - start, req);
       }
     });
 
@@ -1334,7 +1351,7 @@ class TXModule {
         this.log.error(`Error rendering info page for ${req.params.id}: ${error.message}`);
         res.status(500).send('Internal server error');
       } finally {
-        this.countRequest(endpointPath, 'info', Date.now() - start);
+        this.countRequest(endpointPath, 'info', Date.now() - start, req);
       }
     };
     router.get('/info/:id', infoHandler);
@@ -1353,7 +1370,7 @@ class TXModule {
         res.status(404).json(this.operationOutcome('error', 'not-found',
           `Unknown ${what} on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
       } finally {
-        this.countRequest(endpointPath, 'unknown', Date.now() - start);
+        this.countRequest(endpointPath, 'unknown', Date.now() - start, req);
       }
     });
 
@@ -1617,7 +1634,7 @@ class TXModule {
         this.log.error(`Error rendering syndication feed: ${error.message}`);
         res.status(500).json(this.operationOutcome('error', 'exception', 'Unable to render the syndication feed'));
       } finally {
-        this.countRequest(endpointPath, 'syndication', Date.now() - start);
+        this.countRequest(endpointPath, 'syndication', Date.now() - start, req);
       }
     };
 
@@ -1700,9 +1717,20 @@ class TXModule {
     return data;
   }
 
-  countRequest(endpoint, name, tat) {
+  /**
+   * Count a request. One that had to ask other servers (ecosystem resolution: the operation
+   * context counts the requests it sent) is counted as an external request: those take
+   * seconds, and are graphed separately (ServerStats.countExternalRequest)
+   *
+   * @param {Object} [req] - the request, for its operation context
+   */
+  countRequest(endpoint, name, tat, req = null) {
     if (this.stats) {
-      this.stats.countRequest(name, tat, endpoint);
+      if (req && req.txOpContext && req.txOpContext.externalRequests > 0) {
+        this.stats.countExternalRequest(name, tat, endpoint);
+      } else {
+        this.stats.countRequest(name, tat, endpoint);
+      }
     }
   }
 

@@ -1138,6 +1138,11 @@ class OperationContext {
     // Parameters (buildParameters, raw req.body, query/form). An explicit
     // cache-id *parameter* still takes precedence over this.
     this.cacheId = null;
+    this.ecosystemForwarded = false; // see EcosystemResolver
+    // how many requests answering this one sent to other servers (EcosystemResolver): if any,
+    // it's counted as an external request (ServerStats.countExternalRequest). Shared with the
+    // copies (a batch's entries), so what they send counts against the request
+    this._external = { requests: 0 };
     this.debugging = isDebugging();
     // Providers opened during this operation that need their underlying
     // resources (sqlite connections, etc.) released when the operation ends.
@@ -1180,6 +1185,16 @@ class OperationContext {
     return 'op_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
   }
 
+  /** the number of requests sent to other servers for this operation (see EcosystemResolver) */
+  get externalRequests() {
+    return this._external.requests;
+  }
+
+  /** another request sent to another server for this operation */
+  countExternalRequest() {
+    this._external.requests++;
+  }
+
   /**
    * Create a copy of this operation context
    * @param {Object} [options]
@@ -1202,6 +1217,8 @@ class OperationContext {
     newContext.debugging = this.debugging;
     newContext.cacheId = this.cacheId;
     newContext.usageTracker = this.usageTracker;
+    newContext.ecosystemForwarded = this.ecosystemForwarded;
+    newContext._external = this._external;
     // Share the same provider-cleanup list so providers opened by the copy
     // are released when the parent operation ends - unless the caller will
     // release them itself, with a list of its own.

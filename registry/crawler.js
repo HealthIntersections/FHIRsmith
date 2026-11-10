@@ -2,10 +2,6 @@
 // Crawler for gathering server information from terminology servers
 
 const axios = require('axios');
-const dns = require('dns');
-const http = require('http');
-const https = require('https');
-const ipaddr = require('ipaddr.js');
 const {
   ServerRegistries,
   ServerRegistry,
@@ -13,23 +9,10 @@ const {
   ServerVersionInformation,
 } = require('./model');
 const { UptimeHistory } = require('./uptime');
+const { ServerCredentials } = require('../library/server-credentials');
+const { createGuardedAgents } = require('../library/ssrf-guard');
 const {Extensions} = require("../tx/library/extensions");
 const {debugLog} = require("../tx/operation-context");
-
-// True if an IP literal is anything other than a normal public (unicast) address:
-// loopback, private, link-local (incl. 169.254.169.254 cloud metadata), unique-local,
-// CGNAT, multicast, reserved, etc. IPv4-mapped IPv6 addresses are unwrapped first.
-function isNonPublicAddress(ip) {
-  try {
-    let addr = ipaddr.parse(ip);
-    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
-      addr = addr.toIPv4Address();
-    }
-    return addr.range() !== 'unicast';
-  } catch (e) {
-    return true; // unparseable - treat as unsafe
-  }
-}
 
 const MASTER_URL = 'https://fhir.github.io/ig-registry/tx-servers.json';
 
@@ -64,67 +47,30 @@ class RegistryCrawler {
     this.totalBytes = 0;
     this.log = console;
     this.abortController = null;
-    // server code -> { token, expiresAt } or { pending: Promise }, for the OAuth servers
-    this.oauthTokens = new Map();
+    // API keys and OAuth tokens for the servers that need them (shared with the tx module's
+    // ecosystem resolution: library/server-credentials.js)
+    this.credentials = new ServerCredentials({
+      apiKeys: this.config.apiKeys,
+      oauth: this.config.oauth,
+      timeout: this.config.timeout,
+      userAgent: this.config.userAgent,
+      agents: () => this.guardedAgents(),
+      signal: () => this.abortController?.signal,
+      log: (level, message) => this.addLogEntry(level, message)
+    });
   }
 
   useLog(logv) {
     this.log = logv;
   }
 
-  // A DNS lookup wrapper that rejects any host resolving to a non-public address.
-  // Enforced at connection time (so it also covers redirect targets and defeats
-  // DNS-rebinding), this is the SSRF guard for outbound fetches. The registry is
-  // crawled from server-supplied "next" links, so the target host is not trusted.
-  // Set config.allowPrivateAddresses = true to disable (e.g. for local test servers).
-  ssrfLookup() {
-    const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
-    return (hostname, options, callback) => {
-      if (typeof options === 'function') {
-        callback = options;
-        options = {};
-      }
-      const wantAll = !!(options && options.all);
-      dns.lookup(hostname, Object.assign({}, options, { all: true }), (err, addresses) => {
-        if (err) {
-          callback(err);
-          return;
-        }
-        if (!allowPrivate) {
-          for (const a of addresses) {
-            if (isNonPublicAddress(a.address)) {
-              callback(new Error('Blocked request to non-public address ' + a.address + ' (host ' + hostname + ')'));
-              return;
-            }
-          }
-        }
-        if (wantAll) {
-          callback(null, addresses);
-        } else {
-          callback(null, addresses[0].address, addresses[0].family);
-        }
-      });
-    };
-  }
-
-  // http/https agents that route every connection through the SSRF lookup.
+  // http/https agents that only connect to public addresses: the SSRF guard for outbound
+  // fetches (library/ssrf-guard.js). The registry is crawled from server-supplied "next" links,
+  // so the target host is not trusted. Set config.allowPrivateAddresses = true to disable (e.g.
+  // for local test servers).
   guardedAgents() {
     if (!this._guardedAgents) {
-      const lookup = this.ssrfLookup();
-      class GuardedHttpAgent extends http.Agent {
-        createConnection(options, cb) {
-          return super.createConnection(Object.assign({}, options, { lookup }), cb);
-        }
-      }
-      class GuardedHttpsAgent extends https.Agent {
-        createConnection(options, cb) {
-          return super.createConnection(Object.assign({}, options, { lookup }), cb);
-        }
-      }
-      this._guardedAgents = {
-        httpAgent: new GuardedHttpAgent({ keepAlive: true }),
-        httpsAgent: new GuardedHttpsAgent({ keepAlive: true })
-      };
+      this._guardedAgents = createGuardedAgents({ allowPrivate: !!this.config.allowPrivateAddresses });
     }
     return this._guardedAgents;
   }
@@ -678,132 +624,25 @@ class RegistryCrawler {
   }
 
   /**
-   * The headers that carry a server's credentials: an OAuth bearer token if the server has
-   * an oauth entry, otherwise its API key, otherwise none
+   * The headers that carry a server's credentials (see ServerCredentials)
    */
   async credentialHeaders(serverCode, sendCredentials, renewToken) {
     if (!sendCredentials) {
       return {};
     }
-    if (this.getOAuthConfig(serverCode)) {
-      return { 'Authorization': `Bearer ${await this.getAccessToken(serverCode, renewToken)}` };
-    }
-    const apiKey = this.getApiKey(serverCode);
-    return apiKey ? { 'Api-Key': apiKey } : {};
+    return this.credentials.headers(serverCode, renewToken);
   }
 
-  /**
-   * Get API key for a server code
-   */
   getApiKey(name) {
-    if (name && Object.prototype.hasOwnProperty.call(this.config.apiKeys, name)) {
-      return this.config.apiKeys[name];
-    }
-    return null;
+    return this.credentials.getApiKey(name);
   }
 
-  /**
-   * The OAuth client credentials configured for a server code, if any
-   */
   getOAuthConfig(name) {
-    if (name && Object.prototype.hasOwnProperty.call(this.config.oauth, name)) {
-      return this.config.oauth[name] || null;
-    }
-    return null;
+    return this.credentials.getOAuthConfig(name);
   }
 
-  /**
-   * An access token for a server, from the cache while it has more than a minute (or a tenth
-   * of its life, if less) to run, otherwise from the token endpoint. Concurrent callers share
-   * one token request.
-   * @param {string} serverCode
-   * @param {boolean} renew - discard the cached token (the server refused it)
-   * @returns {Promise<string>}
-   */
   async getAccessToken(serverCode, renew = false) {
-    const cached = this.oauthTokens.get(serverCode);
-    if (cached) {
-      if (cached.pending) {
-        return cached.pending;
-      }
-      if (!renew && Date.now() < cached.renewAt) {
-        return cached.token;
-      }
-    }
-    const pending = this.requestAccessToken(serverCode)
-      .then(t => {
-        this.oauthTokens.set(serverCode, t);
-        return t.token;
-      })
-      .catch(err => {
-        this.oauthTokens.delete(serverCode);
-        throw err;
-      });
-    this.oauthTokens.set(serverCode, { pending });
-    return pending;
-  }
-
-  /**
-   * The client_credentials grant (RFC 6749 4.4), the client authenticating with its secret in
-   * the form body (client_secret_post). Error messages name the server and the endpoint, but
-   * never carry the secret or anything the endpoint said beyond its error code.
-   */
-  async requestAccessToken(serverCode) {
-    const cfg = this.getOAuthConfig(serverCode);
-    const endpoint = cfg.tokenEndpoint;
-    const fail = (why) => new Error(`Could not get an OAuth token for ${serverCode} from ${endpoint}: ${why}`);
-    if (!endpoint || !/^https:\/\//i.test(endpoint)) {
-      throw new Error(`The OAuth tokenEndpoint for ${serverCode} must be an https: URL`);
-    }
-    if (!cfg.clientId || !cfg.clientSecret) {
-      throw new Error(`The OAuth configuration for ${serverCode} needs a clientId and clientSecret`);
-    }
-
-    const form = new URLSearchParams();
-    form.set('grant_type', 'client_credentials');
-    form.set('client_id', cfg.clientId);
-    form.set('client_secret', cfg.clientSecret);
-    if (cfg.scope) {
-      form.set('scope', cfg.scope);
-    }
-
-    let response;
-    try {
-      response = await axios.post(endpoint, form.toString(), {
-        timeout: this.config.timeout,
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-          'User-Agent': this.config.userAgent
-        },
-        signal: this.abortController?.signal,
-        validateStatus: () => true,
-        maxContentLength: 1024 * 1024,
-        maxRedirects: 0, // the form carries the secret: it goes where it was configured to, or nowhere
-        httpAgent: this.guardedAgents().httpAgent,
-        httpsAgent: this.guardedAgents().httpsAgent
-      });
-    } catch (error) {
-      debugLog(error);
-      throw fail(error.response ? `HTTP ${error.response.status}` : `no response (${error.code || error.message})`);
-    }
-
-    const body = response.data && typeof response.data === 'object' ? response.data : {};
-    if (response.status !== 200) {
-      const code = typeof body.error === 'string' && /^[\w.-]{1,64}$/.test(body.error) ? ` ${body.error}` : '';
-      throw fail(`HTTP ${response.status}${code}`);
-    }
-    if (typeof body.access_token !== 'string' || !body.access_token) {
-      throw fail('the response has no access_token');
-    }
-    if (body.token_type && String(body.token_type).toLowerCase() !== 'bearer') {
-      throw fail(`unsupported token_type ${String(body.token_type).substring(0, 20)}`);
-    }
-
-    const lifetime = Number(body.expires_in) > 0 ? Number(body.expires_in) * 1000 : 5 * 60 * 1000;
-    const margin = Math.min(60 * 1000, lifetime / 10);
-    this.addLogEntry('info', `  Got an OAuth token for ${serverCode} from ${endpoint}, valid for ${Math.round(lifetime / 1000)}s`);
-    return { token: body.access_token, renewAt: Date.now() + lifetime - margin };
+    return this.credentials.getAccessToken(serverCode, renew);
   }
 
   /**

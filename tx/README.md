@@ -79,8 +79,50 @@ Add the `tx` section to your `config.json`:
 | `externalLimit`                 | integer | No       | Most codes an `$expand` returns. Default: 10000 (or `internalLimit`, if that is less). Over it, an expansion asked for without `count` fails with 422 too-costly (`VALUESET_TOO_COSTLY`, "... has too many codes to produce (>10000)"); a `count` bigger than it is cut down to it. A request can change it with the `x-too-costly-threshold` header (see below): the tx-ecosystem tests that depend on a limit set it |
 | `walkLimit`                     | integer | No       | How far a paged `$expand` (`count` and `offset`) may walk to reach its page: the most `offset + count`. Default: 10 x `internalLimit` (1000000). Only the page is built - the codes before it are passed keeping just their keys - so a page can lie well past `externalLimit`, which still caps `count`. Over it, the `$expand` fails with 422 too-costly (`VALUESET_TOO_COSTLY_PAGE`, "... can't be paged to offset ... with count ...: the server walks at most 1000000 codes to reach a page"); a value set that ends before the offset is an empty page, not a refusal. The walk is also bounded by `operationTimeLimit`. Any page, the first too, builds only its own codes; the codes after it are counted by key for the total, which is reported only when the whole expansion is within `externalLimit`, as for an unpaged one. Not for a value set with an exclude, or a request with a text filter: there, `offset + count` must still be within `externalLimit` |
 | `operationTimeLimit`            | integer | No       | Seconds of compute one operation may use (sub-operations share it). Default: 20. Time spent waiting - for the event loop, or in a queue before the operation starts - doesn't count. Over it, the operation fails with 422 too-costly ("Operation exceeded time limit of 20 seconds at ..."). The default sits under common client timeouts (okhttp gives up after 10-30 s): with a limit at or over the client's, the client hangs up first and never sees the OperationOutcome |
+| `ecosystem`                     | object  | No       | Answering for code systems that aren't held here by asking other servers in the terminology ecosystem - see [Ecosystem Resolution](#ecosystem-resolution) below. Default: not used |
 | `endpoints`                     | array   | Yes      | List of endpoint configurations (at least one required)                                                 |
 | `vsacCfg`                       | object  | No       | Settings for the VSAC value set provider; required if the library loads VSAC (see below)              |
+
+### Ecosystem Resolution
+
+When a code system (or a version of one) isn't held here, the server can ask the terminology
+ecosystem registry which server has it, and ask that server (`cs/cs-virtual.js`). Only
+`$validate-code` against a value set is supported this way, and slowly: a `$lookup` per code, and a
+`$validate-code` per filter.
+
+```json
+"ecosystem" : {
+  "use": true,
+  "excludedServers": [ "tx.fhir.org" ],
+  "excludedPatterns": [ "http://hl7.org/*", "http://terminology.hl7.org/*" ],
+  "apiKeys": { "hl7-ca" : "xx" },
+  "oauth" : {
+    "nzhts": {
+      "tokenEndpoint" : "https://authenticate.nzhts.digital.health.nz/auth/realms/nzhts/protocol/openid-connect/token",
+      "clientId" : "hl7",
+      "clientSecret" : "xx"
+    }
+  }
+}
+```
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `use` | boolean | Turns it on. Default: false |
+| `registry` | string | The ecosystem registry. Default: `https://ecosystem.hl7.org/tx-reg` |
+| `excludedServers` | array | Servers never used, each a host (`tx.fhir.org`) or an address that the server's address starts with. tx.fhir.org (and tx-dev.fhir.org, which serves the same content) sets this to `["tx.fhir.org"]`: the registry names tx.fhir.org for what `tx.fhir.org.yml` loads, so that's this server, logically, whatever its address is, and asking it again can only give the answer this server already gave |
+| `excludedPatterns` | array | Code systems never looked for in the ecosystem, as the registry writes them: `*` matches anything, and a pattern is matched against the url, and the url\|version. These aren't even asked about, so they cost nothing: a server that knows the registry will name itself (or a server in `excludedServers`) for them should list them |
+| `apiKeys` | object | Server code (as in the registry) -> API key, sent as `Api-Key`. As for the registry module |
+| `oauth` | object | Server code -> `{ tokenEndpoint, clientId, clientSecret, scope }`: an OAuth2 client_credentials grant, the token sent as `Authorization: Bearer`. As for the registry module |
+| `allowPrivateAddresses` | boolean | Lets requests go to private, loopback and other non-public addresses. Default: false - the registry, the servers it names, and the OAuth token endpoints must all be at public addresses, because the addresses come from the registry, which may not be the public one (as for the registry module's setting of the same name). For a local registry or test servers |
+
+A server is used if it's open, or if there are credentials for it. The server must also say, in its
+TerminologyCapabilities, that it has the code system and version asked for (or, for a version that
+is a url, a release of it - a SNOMED CT edition asked for without a release date). With no version
+asked for, it's the server's only version, or the one it marks `isDefault`. Requests sent on to
+another server carry the header `X-FHIRsmith-Ecosystem-Forwarded`, and a request that arrives with
+it is never resolved through the ecosystem again. What the registry and the servers say is kept
+for an hour.
 
 ### VSAC Configuration
 

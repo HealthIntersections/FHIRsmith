@@ -72,8 +72,8 @@
     const legend = document.getElementById('serverMetricsLegend');
     if (legend) legendItems.forEach(item => legend.appendChild(item));
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', placeLegend);
-  else placeLegend();
+  // (while the page is loading, at the end, with the external requests' chart)
+  if (document.readyState !== 'loading') placeLegend();
 
   const times = metrics.series.flatMap(series => series.history.map(point => point.time));
   const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);
@@ -187,15 +187,16 @@
     return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
       ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
   }
-  function chart(id, field, unit, divisor = 1) {
+  // pointRadius: bigger where the samples are few and far between (the external requests)
+  function chart(id, field, unit, divisor = 1, pointRadius = 1.5) {
     const canvas = document.getElementById(id);
     if (!canvas) return;
     const datasets = drawn.map((series, i) => ({
       label:series.label,
       data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
-        refused:point.refused })),
+        refused:point.refused, ext:point.ext })),
       borderColor:styles[i].color, backgroundColor:styles[i].color + '18', borderDash:styles[i].dash,
-      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:1.5,
+      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:pointRadius,
       pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
       fill:false, tension:0, spanGaps:false
     }));
@@ -222,7 +223,9 @@
           legend:{ display:false },
           tooltip:{ callbacks:{
             title:items => items.length ? formatTime(items[0].parsed.x) : '',
-            afterLabel:item => item.raw.refused > 0
+            afterLabel:item => field === 'extTat'
+              ? (item.raw.ext > 0 ? item.raw.ext.toLocaleString() + ' external ' + (item.raw.ext === 1 ? 'request' : 'requests') + ' in this sample' : '')
+              : item.raw.refused > 0
               ? 'Memory-pressure 503s: ' + item.raw.refused.toLocaleString() + ' in this sample'
               : ''
           } }
@@ -239,5 +242,10 @@
   // Separate mean and max scales keep a single long stall from flattening the mean.
   chart('blockChart', 'block', 'ms');
   chart('blockMaxChart', 'blockMax', 'ms');
+  // the external requests' turnaround (tx/html/external-metrics.liquid): further down the page
+  // than this script (just above Storage), so once the page has loaded
+  const drawExternal = () => chart('externalChart', 'extTat', 'seconds', 1000, 3);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { placeLegend(); drawExternal(); });
+  else drawExternal();
 })();
 </script>

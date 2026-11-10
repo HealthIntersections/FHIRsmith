@@ -725,6 +725,10 @@ class ValueSetChecker {
             determinedVersion = await this.pickApplicableVersion(vset, system, code, display);
           }
         }
+        // why the code wasn't in each include (a message from the code system - an error from
+        // another server, say). Only worth reporting if the code turns out not to be in the value
+        // set at all: if another include has it, they're beside the point
+        const reasons = [];
         const includes = [...(this.valueSet.jsonObj.compose.include || [])];
         includes.sort((a, b) => {
           if (a.system === b.system && a.version && b.version) {
@@ -779,7 +783,7 @@ class ValueSetChecker {
             contentMode.value = cs.contentMode();
 
             let msg = '';
-            if ((system === '%%null%%' || cs.system() === system) && await this.checkConceptSet(path, 'in', cs, cc, code, displays, this.valueSet, msg, inactive, normalForm, vstatus, op, vcc, messages)) {
+            if ((system === '%%null%%' || cs.system() === system) && await this.checkConceptSet(path, 'in', cs, cc, code, displays, this.valueSet, msg, inactive, normalForm, vstatus, op, vcc, reasons)) {
               ver.value = cs.version();
               result = true;
             } else {
@@ -841,6 +845,13 @@ class ValueSetChecker {
             }
             if (excluded) {
               return false;
+            }
+          }
+        }
+        if (result !== true) {
+          for (const r of reasons) {
+            if (!messages.includes(r)) {
+              messages.push(r);
             }
           }
         }
@@ -1113,13 +1124,9 @@ class ValueSetChecker {
           if (ver.value) {
             pver = ver.value;
           }
-          let pd = list.preferredDisplay(this.params.workingLanguages());
-          if (pd) {
-            pdisp = pd;
-          }
-          if (!pdisp) {
-            pdisp = list.preferredDisplay(null);
-          }
+          // this coding's display, and no other: one from a coding before it that isn't in the
+          // value set doesn't go with this code
+          pdisp = list.preferredDisplay(this.params.workingLanguages()) || list.preferredDisplay(null);
         }
       } else if (!this.params.membershipOnly && ws) {
         if (!isAbsoluteUrl(ws)) {
@@ -1238,12 +1245,17 @@ class ValueSetChecker {
                 vstatus.value = st;
               }
             }
-            let pd = list.preferredDisplay(this.params.workingLanguages());
-            if (pd) {
-              pdisp = pd;
-            }
-            if (!pdisp) {
-              pdisp = list.preferredDisplay(null);
+            // this coding isn't in the value set: its display is only reported if no coding is
+            // (the display goes with the code that's reported - the first coding that's in the
+            // value set - and a coding after that one mustn't replace it)
+            if (pcode === undefined) {
+              let pd = list.preferredDisplay(this.params.workingLanguages());
+              if (pd) {
+                pdisp = pd;
+              }
+              if (!pdisp) {
+                pdisp = list.preferredDisplay(null);
+              }
             }
             let severity = list.extensionCodeDisplay === 'referenced' ? 'warning' : this.dispWarning();
             if (c.display && list.designations.length > 0 && !list.hasDisplay(this.params.workingLanguages(), defLang.value, c.display, false, DisplayCheckingStyle.CASE_INSENSITIVE).found) {
@@ -1922,7 +1934,10 @@ class ValueSetChecker {
         }
       } else if (loc != null) {
         this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" not found in ' + this.worker.renderer.displayCoded(cs)+ ": "+loc, this.indentCount);
-        messages.push(loc);
+        // why it's not in an include (see check()); an exclude that doesn't have the code is no news
+        if (messages && role !== 'not in') {
+          messages.push(loc);
+        }
       } else {
         this.worker.opContext.addNote(this.valueSet, 'Filter ' + this.filterSummary(cset) + ': Code "' + code + '" not found in ' + this.worker.renderer.displayCoded(cs), this.indentCount);
       }

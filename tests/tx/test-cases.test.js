@@ -5907,6 +5907,22 @@ describe('exclude', () => {
     await runTest({"suite":"exclude","test":"exclude-gender2"}, "4.0");
   });
 
+  it("exclude-validate-cc-in-first" + 'R5', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-first"}, "5.0");
+  });
+
+  it("exclude-validate-cc-in-first" + 'R4', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-first"}, "4.0");
+  });
+
+  it("exclude-validate-cc-in-last" + 'R5', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-last"}, "5.0");
+  });
+
+  it("exclude-validate-cc-in-last" + 'R4', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-last"}, "4.0");
+  });
+
 });
 
 describe('search', () => {
@@ -11100,6 +11116,22 @@ describe('bugs', () => {
     await runTest({"suite":"bugs","test":"3166-d"}, "4.0");
   });
 
+  it("exclude-limit" + 'R5', async () => {
+    await runTest({"suite":"bugs","test":"exclude-limit"}, "5.0");
+  });
+
+  it("exclude-limit" + 'R4', async () => {
+    await runTest({"suite":"bugs","test":"exclude-limit"}, "4.0");
+  });
+
+  it("import-limit" + 'R5', async () => {
+    await runTest({"suite":"bugs","test":"import-limit"}, "5.0");
+  });
+
+  it("import-limit" + 'R4', async () => {
+    await runTest({"suite":"bugs","test":"import-limit"}, "4.0");
+  });
+
 });
 
 describe('permutations', () => {
@@ -13267,6 +13299,75 @@ describe('langcodes', () => {
 
   it("expand-langcodes-all" + 'R4', async () => {
     await runTest({"suite":"langcodes","test":"expand-langcodes-all"}, "4.0");
+  });
+
+});
+
+describe('ecosystem', () => {
+  // Value sets whose code systems are spread across more than one server in the ecosystem, so that no single server holds them all: tx.fhir.org answers for them by asking the other servers
+
+  it("ecosystem-cz-in" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "5.0");
+  });
+
+  it("ecosystem-cz-in" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "4.0");
+  });
+
+  it("ecosystem-cz-excluded-code" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "5.0");
+  });
+
+  it("ecosystem-cz-excluded-code" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "4.0");
+  });
+
+  it("ecosystem-cz-excluded-filter" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "5.0");
+  });
+
+  it("ecosystem-cz-excluded-filter" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "4.0");
+  });
+
+  it("ecosystem-ee-in" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-in"}, "5.0");
+  });
+
+  it("ecosystem-ee-in" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-in"}, "4.0");
+  });
+
+  it("ecosystem-ee-excluded-code" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-code"}, "5.0");
+  });
+
+  it("ecosystem-ee-excluded-code" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-code"}, "4.0");
+  });
+
+  it("ecosystem-ee-excluded-filter" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-filter"}, "5.0");
+  });
+
+  it("ecosystem-ee-excluded-filter" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-filter"}, "4.0");
+  });
+
+  it("ecosystem-cc-cz-in-ee-out" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "5.0");
+  });
+
+  it("ecosystem-cc-cz-in-ee-out" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "4.0");
+  });
+
+  it("ecosystem-cc-cz-out-ee-in" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "5.0");
+  });
+
+  it("ecosystem-cc-cz-out-ee-in" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "4.0");
   });
 
 });
@@ -17077,6 +17178,14 @@ describe('exclude', () => {
     await runTest({"suite":"exclude","test":"exclude-gender2"}, "5.0");
   });
 
+  it("exclude-validate-cc-in-first" + 'R5-cached', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-first"}, "5.0");
+  });
+
+  it("exclude-validate-cc-in-last" + 'R5-cached', async () => {
+    await runTest({"suite":"exclude","test":"exclude-validate-cc-in-last"}, "5.0");
+  });
+
 });
 
 describe('search', () => {
@@ -19714,6 +19823,14 @@ describe('bugs', () => {
     await runTest({"suite":"bugs","test":"3166-d"}, "5.0");
   });
 
+  it("exclude-limit" + 'R5-cached', async () => {
+    await runTest({"suite":"bugs","test":"exclude-limit"}, "5.0");
+  });
+
+  it("import-limit" + 'R5-cached', async () => {
+    await runTest({"suite":"bugs","test":"import-limit"}, "5.0");
+  });
+
 });
 
 describe('permutations', () => {
@@ -20809,6 +20926,43 @@ describe('langcodes', () => {
 
   it("expand-langcodes-all" + 'R5-cached', async () => {
     await runTest({"suite":"langcodes","test":"expand-langcodes-all"}, "5.0");
+  });
+
+});
+
+describe('ecosystem', () => {
+  // Value sets whose code systems are spread across more than one server in the ecosystem, so that no single server holds them all: tx.fhir.org answers for them by asking the other servers
+
+  it("ecosystem-cz-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "5.0");
+  });
+
+  it("ecosystem-cz-excluded-code" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "5.0");
+  });
+
+  it("ecosystem-cz-excluded-filter" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "5.0");
+  });
+
+  it("ecosystem-ee-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-in"}, "5.0");
+  });
+
+  it("ecosystem-ee-excluded-code" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-code"}, "5.0");
+  });
+
+  it("ecosystem-ee-excluded-filter" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-filter"}, "5.0");
+  });
+
+  it("ecosystem-cc-cz-in-ee-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "5.0");
+  });
+
+  it("ecosystem-cc-cz-out-ee-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "5.0");
   });
 
 });

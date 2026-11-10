@@ -10,7 +10,7 @@ const METRIC = 'fhirsmith:metric';
 const SNAPSHOT = 'fhirsmith:metrics';
 const HISTORY_MS = 24 * 60 * 60 * 1000;
 const MAX_POINTS = 1440;
-const FIELDS = ['mem', 'anon', 'rpm', 'tat', 'block', 'blockMax', 'clientConcepts', 'refused', 'intervalStart'];
+const FIELDS = ['mem', 'anon', 'rpm', 'tat', 'block', 'blockMax', 'clientConcepts', 'refused', 'intervalStart', 'ext', 'extTat'];
 
 class ClusterMetrics {
   /**

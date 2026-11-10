@@ -278,7 +278,7 @@ class CountryCodeServices extends CodeSystemProvider {
     if (concept && set.list.includes(concept)) {
       return concept;
     }
-    return `Code '${code}' not found in filter set`;
+    return null;
   }
 
   async filterCheck(filterContext, set, concept) {

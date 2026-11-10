@@ -231,3 +231,34 @@ test('legend: false - the key goes in a #serverMetricsLegend further down the pa
   expect(legend).toContain('Master m0');
   expect(legend).toContain('Worker tx1');
 });
+
+test('the external requests: their own section and chart, drawn once the page has loaded', async () => {
+  const metrics = { cluster:false, sampledAt:now + 20000, series:[
+    { label:'This process', status:'ready', history:[{ ...point(now, 1), ext:0, extTat:null }, { ...point(now + 10000, 2), ext:3, extTat:4500 }] }
+  ] };
+  const html = await liquid.renderFile('cluster-home-metrics', { metricsJson:JSON.stringify(metrics), level:4, legend:false });
+  const section = await liquid.renderFile('external-metrics', { level:4,
+    external:{ count:'3', average:'4.5 s', span:'24 hours' } });
+  expect(section).toContain('External requests <span class="fs-status-meta">· 3 in the last 24 hours, average turnaround 4.5 s</span></h4>');
+  // as on the page: the section is further down than the script, and isn't there yet when it runs
+  const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], makeElement()]));
+  for (const [id, element] of elements) if (id.endsWith('Chart')) element.parentElement = makeElement();
+  const listeners = {};
+  const charts = [];
+  const document = { readyState:'loading', getElementById:id => elements.get(id), createElement:makeElement,
+    createTextNode:text => ({ text }), addEventListener:(name, callback) => { listeners[name] = callback; } };
+  const context = vm.createContext({ document, Chart:function(canvas, options) {
+    Object.assign(this, { canvas, ...options }); charts.push(this); } });
+  for (const script of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) vm.runInContext(script[1], context);
+  expect(charts.some(c => c.canvas === elements.get('externalChart'))).toBe(false);
+  for (const m of section.matchAll(/id="([^"]+)"/g)) elements.set(m[1], makeElement());
+  elements.set('serverMetricsLegend', makeElement());
+  listeners.DOMContentLoaded();
+  const external = charts.find(c => c.canvas === elements.get('externalChart'));
+  expect(external.data.datasets[0].data.map(d => d.y)).toEqual([null, 4.5]);
+  expect(external.options.scales.y.title.text).toBe('seconds');
+  expect(external.options.plugins.tooltip.callbacks.afterLabel({ raw:external.data.datasets[0].data[1] }))
+    .toBe('3 external requests in this sample');
+  // the key is placed too
+  expect(legendText(elements)).toContain('This process');
+});

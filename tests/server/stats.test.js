@@ -89,10 +89,39 @@ describe('server statistics', () => {
       now += 2000;
       stats.recordMetrics();
       // without the launcher: no refusals counted, but where the interval began and the private memory
-      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['anon', 'block', 'blockMax', 'clientConcepts', 'intervalStart', 'mem', 'rpm', 'tat', 'time']);
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['anon', 'block', 'blockMax', 'clientConcepts', 'ext', 'extTat', 'intervalStart', 'mem', 'rpm', 'tat', 'time']);
       if (process.platform === 'linux') {
         expect(stats.history.at(-1).anon).toBeGreaterThan(0);
       }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('external requests are sampled separately, and kept out of the turnaround time', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      stats.markStarted();
+      const tx = stats.forModule('tx');
+      tx.countRequest('$validate-code', 10, '/r5');
+      tx.countRequest('$validate-code', 30, '/r5');
+      tx.countExternalRequest('$validate-code', 4000, '/r5');
+      tx.countExternalRequest('$validate-code', 6000, '/r5');
+      now += 2000;
+      stats.recordMetrics();
+      // in the request rate, but not the turnaround time
+      expect(stats.history.at(-1)).toMatchObject({ rpm:120, tat:20, ext:2, extTat:5000 });
+      expect(stats.requestCount).toBe(4);
+      // and counted under their own operation
+      expect(stats.counterFor('tx', '/r5', '$validate-code')).toMatchObject({ countTotal:2, timeTotal:40 });
+      expect(stats.counterFor('tx', '/r5', '$validate-code (external)')).toMatchObject({ countTotal:2, timeTotal:10000 });
+      // none in the next interval: no turnaround
+      tx.countRequest('$lookup', 8, '/r5');
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ tat:8, ext:0, extTat:null });
     } finally {
       clock.mockRestore();
     }

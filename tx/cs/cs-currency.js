@@ -245,7 +245,7 @@ class Iso4217Services extends CodeSystemProvider {
         return concept;
       }
     }
-    return `Code '${code}' not found in filter set`;
+    return null;
   }
 
   async filterCheck(filterContext, set, concept) {

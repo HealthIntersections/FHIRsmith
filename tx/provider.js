@@ -13,6 +13,7 @@ const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
 const { CodeSystemFactoryProvider } = require("./cs/cs-api");
+const { VirtualCodeSystemProvider } = require("./cs/cs-virtual");
 
 
 /**
@@ -162,6 +163,10 @@ class Provider {
 
   baseUrl = null;
   path;
+  /**
+   * {EcosystemResolver|null} finds other servers for code systems that aren't held here (modules.tx.ecosystem)
+   */
+  ecosystem = null;
   cacheFolder = null;
   startTime = Date.now();
   startMemory = process.memoryUsage();
@@ -212,7 +217,51 @@ class Provider {
     if (cs != null) {
       return this.createCodeSystemProvider(opContext, cs, supplements);
     }
-    return null;
+    return await this.findInEcosystem(opContext, system, version, supplements);
+  }
+
+  /**
+   * A code system (and version) that isn't held here, provided by another server in the
+   * ecosystem, if modules.tx.ecosystem.use is true, and the request didn't come from
+   * another server doing the same thing (see EcosystemResolver)
+   *
+   * @returns {Promise<VirtualCodeSystemProvider|null>}
+   */
+  async findInEcosystem(opContext, system, version, supplements) {
+    if (!this.ecosystem || opContext.ecosystemForwarded) {
+      return null;
+    }
+    const server = await this.ecosystem.findServer(system, version, this.fhirVersion, opContext);
+    if (!server) {
+      return null;
+    }
+    // the registry's claims are broad (tx.fhir.org is authoritative for all of http://hl7.org/*),
+    // so the server has to say that it actually has the code system - and the version: the one
+    // asked for, or, for a version that is a url, the latest release of it (a SNOMED CT edition
+    // asked for without a release date). A partial semver is not completed this way
+    const versions = await this.ecosystem.listVersions(server, system, opContext);
+    if (versions == null) {
+      return null;
+    }
+    const codes = versions.map(v => v.code);
+    let actual = version;
+    if (!version) {
+      // no version asked for: it's the server's default version - the only version it has, or
+      // the one it says is the default
+      const defaults = versions.length === 1 ? versions : versions.filter(v => v.isDefault);
+      if (defaults.length !== 1) {
+        throw new TerminologyError(`Unable to use ${server} for ${system}: its TerminologyCapabilities doesn't say which version of it is the default`);
+      }
+      actual = defaults[0].code;
+    } else if (!codes.includes(version)) {
+      const matches = codes.filter(v => v.startsWith(version + '/')).sort();
+      if (matches.length === 0) {
+        return null;
+      }
+      actual = matches[matches.length - 1];
+    }
+    opContext.log('Using ' + server + ' for ' + system + (actual ? '|' + actual : ''));
+    return new VirtualCodeSystemProvider(opContext, supplements, server, system, actual, this.ecosystem);
   }
 
   /**

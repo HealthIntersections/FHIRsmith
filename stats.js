@@ -32,6 +32,10 @@ class ModuleStats {
     this.parent.countRequest(name, tat, this.module, endpoint);
   }
 
+  countExternalRequest(name, tat, endpoint = NO_ENDPOINT) {
+    this.parent.countExternalRequest(name, tat, this.module, endpoint);
+  }
+
   addTask(name, frequency) { this.parent.addTask(name, frequency); }
   task(name, state) { this.parent.task(name, state); }
   taskDone(name, state) { this.parent.taskDone(name, state); }
@@ -63,6 +67,11 @@ class ServerStats {
   // on the master under the launcher: the workers' requests added by mergeCounts
   mergedRequestCount = 0;
   requestTime = 0;
+  // requests that had to ask another server (see countExternalRequest): in requestCount, but
+  // not in requestTime, and sampled separately
+  externalCount = 0;
+  externalTime = 0;
+  externalCountSnapshot = 0;
   // Collect metrics every 10 minutes (stats.sampleSeconds, else stats.intervalMinutes)
   intervalMs = 10 * 60 * 1000;
   // and write the counters to the database every 10 minutes (stats.intervalMinutes)
@@ -143,7 +152,10 @@ class ServerStats {
       const currentMem = process.memoryUsage().heapUsed;
       const combinedCount = this.requestCount + this.staticRequestCount;
       const requestsDelta = combinedCount - this.requestCountSnapshot;
-      const requestsTat = requestsDelta > 0 ? this.requestTime / requestsDelta : 0;
+      // the external requests are timed separately: they are orders of magnitude slower
+      const externalDelta = this.externalCount - this.externalCountSnapshot;
+      const ownDelta = requestsDelta - externalDelta;
+      const requestsTat = ownDelta > 0 ? this.requestTime / ownDelta : 0;
       // Under load, the timer can run late. Use the actual time since the last sample, so
       // an event-loop stall does not inflate the displayed request rate.
       const intervalMinutes = (now - (this.lastTime ?? this.startTime)) / 60000;
@@ -167,6 +179,9 @@ class ServerStats {
       // where the interval began, and this process's private memory (RssAnon: RSS less mapped
       // files; null where /proc can't be read), for the graphs (library/cluster-metrics.js)
       point.intervalStart = intervalStart;
+      // the external requests in the interval, and their mean turnaround (null: none)
+      point.ext = externalDelta;
+      point.extTat = externalDelta > 0 ? this.externalTime / externalDelta : null;
       const own = readProcessMemory('self');
       point.anon = own ? own.anon : null;
       if (this.onMetric) {
@@ -182,6 +197,8 @@ class ServerStats {
       this.requestCountSnapshot = combinedCount;
       this.refusedCountSnapshot = this.refusedCount;
       this.requestTime = 0;
+      this.externalCountSnapshot = this.externalCount;
+      this.externalTime = 0;
       this.lastTime = now;
 
       // Prune old data (keep 24 hours). Only the in-memory history is pruned -
@@ -320,6 +337,24 @@ class ServerStats {
     this.requestTime = this.requestTime + tat;
 
     const counter = this.counterFor(module || SERVER_MODULE, endpoint || NO_ENDPOINT, name || '(unnamed)');
+    counter.countDelta++;
+    counter.countTotal++;
+    counter.timeDelta = counter.timeDelta + tat;
+    counter.timeTotal = counter.timeTotal + tat;
+  }
+
+  /**
+   * Count one request whose answer had to ask another server (the tx module's ecosystem
+   * resolution: tx/ecosystem-resolver.js). These take seconds, not milliseconds, so they are
+   * kept out of the turnaround time graph and sampled separately (point.ext, point.extTat),
+   * and counted under their own operation, '<name> (external)'
+   */
+  countExternalRequest(name, tat, module = SERVER_MODULE, endpoint = NO_ENDPOINT) {
+    this.requestCount++;
+    this.externalCount++;
+    this.externalTime = this.externalTime + tat;
+
+    const counter = this.counterFor(module || SERVER_MODULE, endpoint || NO_ENDPOINT, (name || '(unnamed)') + ' (external)');
     counter.countDelta++;
     counter.countTotal++;
     counter.timeDelta = counter.timeDelta + tat;

@@ -154,9 +154,11 @@ describe('$expand: paging past the response limit', () => {
     }
   });
 
-  test('with an exclusion, as before: the page must fit the response limit', async () => {
+  test('with an exclusion: paged like any other, so a page past the response limit is fine', async () => {
     const vs = valueSet({ include: [{ system: CS_URL }], exclude: [{ system: CS_URL, concept: [{ code: 'c000' }] }] });
-    expect((await expand(app, vs, { offset: 100, count: 20, threshold: 50 })).status).toBe(422);
+    const deep = await expand(app, vs, { offset: 100, count: 20, threshold: 50 });
+    expect(deep.status).toBe(200);
+    expect(codesOf(deep)).toEqual(codes.slice(101, 121));
     const res = await expand(app, vs, { offset: 20, count: 20, threshold: 50 });
     expect(res.status).toBe(200);
     expect(codesOf(res)).toEqual(codes.slice(21, 41));
