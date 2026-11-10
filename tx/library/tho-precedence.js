@@ -37,4 +37,59 @@ function keepForPinnedReference(key, resource, thoVersions) {
   return false;
 }
 
-module.exports = { keepForPinnedReference };
+/**
+ * url -> the versions hl7.terminology provides, for the urls of the core package's resources
+ * (the input to keepPinnedOnly). Each THO provider is asked about each url the way a reference
+ * asks it (fetchValueSet / fetchConceptMap): with no version, which gives the version it
+ * provides by default, and - when it has the url - with the core resource's version, which
+ * gives the version it provides for a reference that names that one (the same version, or one
+ * with the same major.minor), if any. That is all keepForPinnedReference needs to know. A url
+ * no THO provider has is left out.
+ *
+ * @param {Iterable<Object>} coreResources - the core package's value sets or concept maps (repeats are harmless)
+ * @param {Object[]} thoProviders - the value set (or concept map) providers of hl7.terminology packages
+ * @param {function(Object, string, string=): Promise<Object|null>} fetch - (provider, url, version) => its resource, or null
+ * @returns {Promise<Map<string, Set<string>>>}
+ */
+async function thoVersionsOf(coreResources, thoProviders, fetch) {
+  const result = new Map();
+  if (thoProviders.length === 0) {
+    return result;
+  }
+  const versions = new Map(); // url -> the core package's versions of it
+  for (const r of coreResources) {
+    if (r && r.url) {
+      if (!versions.has(r.url)) {
+        versions.set(r.url, new Set());
+      }
+      if (r.version) {
+        versions.get(r.url).add(r.version);
+      }
+    }
+  }
+  const add = (url, r) => {
+    if (!result.has(url)) {
+      result.set(url, new Set());
+    }
+    if (r.version) {
+      result.get(url).add(r.version);
+    }
+  };
+  for (const [url, coreVersions] of versions) {
+    for (const p of thoProviders) {
+      const r = await fetch(p, url);
+      if (r) {
+        add(url, r);
+        for (const v of coreVersions) {
+          const pinned = await fetch(p, url, v);
+          if (pinned && pinned.url === url) {
+            add(url, pinned);
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+module.exports = { keepForPinnedReference, thoVersionsOf };

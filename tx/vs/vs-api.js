@@ -155,6 +155,15 @@ class AbstractValueSetProvider {
     }
   }
 
+  /**
+   * The package this provider's value sets come from (a package id such as "hl7.terminology#7.5.0"),
+   * or null. Used for search's source parameter and for THO precedence (Provider.applyTHOPrecedence)
+   * @returns {string|null}
+   */
+  sourcePackage() {
+    return null;
+  }
+
   async close() {
 
   }
