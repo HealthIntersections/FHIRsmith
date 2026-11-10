@@ -1659,6 +1659,10 @@ class ValueSetChecker {
    * ways), sameConceptDifferentForm compares each listed concept with the code.
    */
   async otherFormMatch(cs, code, cset) {
+    const stored = storedList(cset);
+    if (stored ? stored.count === 0 : (!cset.concept || cset.concept.length === 0 || cset.concept.some(cc => cc.code === code))) {
+      return null;
+    }
     const a = await cs.locate(code);
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;

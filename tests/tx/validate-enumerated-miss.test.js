@@ -81,8 +81,11 @@ describe('otherFormMatch gives what the old loop gave', () => {
     locate: jest.fn(async (code) => ({ context: byForm.get(code) || null })),
     classificationCode: async (ctxt) => ctxt.short,
     code: async (ctxt) => ctxt.id,
-    prefetchCodes: async () => null // (CodeSystemProvider's default: no prefetching)
+    prefetchCodes: async () => null, // (CodeSystemProvider's default: no prefetching)
+    codeForms: async () => null // (CodeSystemProvider's default: the forms can't be listed)
   });
+  // the same code system, saying what its forms are (as the ICD-11 provider does for a plain concept)
+  const listingCs = () => ({ ...fakeCs(), codeForms: async (ctxt) => [ctxt.id, ctxt.short].filter(Boolean) });
   const checker = Object.create(ValueSetChecker.prototype);
   checker.worker = { deadCheck: () => {} };
 
@@ -111,7 +114,9 @@ describe('otherFormMatch gives what the old loop gave', () => {
     for (const code of asked) {
       for (const list of lists) {
         const expected = await oldLoop(fakeCs(), code, list);
-        const actual = await checker.otherFormMatch(fakeCs(), code, list);
+        const actual = await checker.otherFormMatch(fakeCs(), code, { concept: list });
+        expect(actual).toBe(expected);
+        expect(await checker.otherFormMatch(listingCs(), code, { concept: list })).toBe(expected);
         expect(actual).toBe(expected);
         if (actual) matches++;
       }
@@ -123,14 +128,14 @@ describe('otherFormMatch gives what the old loop gave', () => {
     const list = Array.from({ length: 1000 }, (_, i) => ({ code: 'x' + i }));
     for (const code of ['300', 'nope']) {
       const cs = fakeCs();
-      expect(await checker.otherFormMatch(cs, code, list)).toBeNull();
+      expect(await checker.otherFormMatch(cs, code, { concept: list })).toBeNull();
       expect(cs.locate).toHaveBeenCalledTimes(1);
     }
   });
 
   test('an empty list locates nothing, as before', async () => {
     const cs = fakeCs();
-    expect(await checker.otherFormMatch(cs, '100', [])).toBeNull();
+    expect(await checker.otherFormMatch(cs, '100', { concept: [] })).toBeNull();
     expect(cs.locate).not.toHaveBeenCalled();
   });
 });
