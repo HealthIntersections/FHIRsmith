@@ -223,6 +223,9 @@ has the detail.
   The three are checked at startup: one that isn't a whole number above 0, or
   external <= internal <= walk not holding, **stops the server**. If you set any of them, check
   them. Bigger expansions now succeed, so a busy server may use more memory.
+- **Value sets with an exclude or an import are limited** like any other (they used to come
+  back whole, whatever their size): a client that expands a big one unpaged now gets a 422
+  too-costly, and should page it.
 - **`Tools/Java` is no longer special**: the IG Publisher and the tx-ecosystem test runner get
   the configured limits like any client (they used to be held to 3000/10000).
 - **Memory caps** with defaults (see the `Limits:` line in the startup log): `cacheMaxConcepts`,

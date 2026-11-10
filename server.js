@@ -541,11 +541,45 @@ async function statusContent(liquid, page, level, { notes = [], details = '', mo
   // the graphs' key (tx/html/cluster-metrics-script.liquid puts it here)
   content += '<div id="serverMetricsLegend" class="server-metrics-legend"></div>';
   content += await liquid.renderFile('status-panel', { view: statusView(), level: level + 1 });
+  const external = externalStatus();
+  if (external) {
+    content += await liquid.renderFile('external-metrics', { external, level: level + 1 });
+  }
   content += await liquid.renderFile('status-panel', { view: storageStatusView(), level: level + 1 });
   content += backgroundTasks(level + 1);
   content += more;
   content += '</details>';
   return content;
+}
+
+// The external requests - those that had to ask another server (tx ecosystem resolution,
+// ServerStats.countExternalRequest) - in the graphs' samples (every process's, on the master
+// under the launcher): {count, average, span} for tx/html/external-metrics.liquid, or null if
+// there have been none in them
+function externalStatus(now = Date.now()) {
+  const data = graphData(stats, 'external', now);
+  let count = 0;
+  let time = 0;
+  let earliest = now;
+  for (const series of data.series || []) {
+    for (const point of series.history || []) {
+      earliest = Math.min(earliest, Number.isFinite(point.intervalStart) ? point.intervalStart : point.time);
+      if (point.ext > 0 && Number.isFinite(point.extTat)) {
+        count += point.ext;
+        time += point.ext * point.extTat;
+      }
+    }
+  }
+  if (count === 0) {
+    return null;
+  }
+  const average = time / count;
+  const hours = (now - earliest) / 3600000;
+  return {
+    count: count.toLocaleString(),
+    average: average >= 1000 ? `${(average / 1000).toFixed(1)} s` : `${Math.round(average)} ms`,
+    span: hours >= 23.5 ? '24 hours' : hours >= 1.5 ? `${Math.round(hours)} hours` : hours >= 1 ? 'hour' : `${Math.max(1, Math.round(hours * 60))} minutes`
+  };
 }
 
 // The storage tiles below the graphs: closure tables, logs, disk
