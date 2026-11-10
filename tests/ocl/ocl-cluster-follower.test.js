@@ -1,6 +1,4 @@
 const fs = require('fs/promises');
-const fsSync = require('fs');
-const path = require('path');
 const { OCLCodeSystemProvider, OCLSourceCodeSystemFactory } = require('../../tx/ocl/cs-ocl');
 const { CACHE_CS_DIR, DISCOVERY_SNAPSHOT_PATH } = require('../../tx/ocl/cache/cache-paths');
 const { ensureCacheDirectories, atomicWriteFile } = require('../../tx/ocl/cache/cache-utils');
