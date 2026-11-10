@@ -352,6 +352,28 @@ class ValueSetExpander {
   }
 
   /**
+   * The response limit (limitCount: the request's, or for an imported value set, the internal
+   * limit), checked before a code is added to the expansion, by every path that adds one
+   * (includeCode, importValueSetItem). At the limit: when the page asked for (count and offset)
+   * is full, the expansion is done, without a total; otherwise the expansion is too costly
+   * (VALUESET_TOO_COSTLY). Exclusions are no exception: they are all processed before any
+   * include, so the codes already in the list stay in it. Only counting (count=0), nothing is
+   * returned, so the limit is how far a walk may go (walkLimit)
+   * @param {string} srcURL - the value set, for the message
+   */
+  #checkLimit(srcURL) {
+    const limit = this.count === 0 ? this.walkLimit : this.limitCount;
+    if (limit > 0 && this.fullList.length >= limit) {
+      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.walked + this.fullList.length >= this.count + this.offset) {
+        this.noTotal();
+        throw new Issue('information', 'informational', null, null, null, null).setFinished();
+      } else {
+        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + limit), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+      }
+    }
+  }
+
+  /**
    * @param {function(): Promise<Object>} [deferredRead] - the code's details are not added now, but
    *   read with this when an importing expansion returns the code (see deferDetails, #readDetails)
    */
@@ -373,14 +395,7 @@ class ValueSetExpander {
       return null;
     }
 
-    if (this.limitCount > 0 && this.fullList.length >= this.limitCount && !this.hasExclusions) {
-      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.walked + this.fullList.length >= this.count + this.offset) {
-        this.noTotal();
-        throw new Issue('information', 'informational', null, null, null, null).setFinished();
-      } else {
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
-      }
-    }
+    this.#checkLimit(srcURL);
 
     if (expansion && !this.noDetails) {
       const s = this.canonical(system, version);
@@ -752,18 +767,10 @@ class ValueSetExpander {
     return this.paging || this.count + Math.max(this.offset, 0) <= this.limitCount;
   }
 
-  excludeCode(cs, system, version, code, expansion, imports, srcURL) {
+  excludeCode(cs, system, version, code, expansion, imports) {
     this.worker.deadCheck('excludeCode');
     if (!this.passesImports(imports, system, code, 0)) {
       return;
-    }
-
-    if (this.limitCount > 0 && this.fullList.length >= this.limitCount && !this.hasExclusions) {
-      if (this.count > -1 && this.offset > -1 && this.count + this.offset > 0 && this.walked + this.fullList.length >= this.count + this.offset) {
-        throw new Issue('information', 'informational', null, null, null, null).setFinished();
-      } else {
-        throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
-      }
     }
 
     if (expansion) {
@@ -867,6 +874,8 @@ class ValueSetExpander {
         count++;
       }
     } else if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !this.walkedKeys.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
+      // an imported code counts against this expansion's limit like any other
+      this.#checkLimit(this.valueSet ? this.valueSet.vurl : null);
       if (!this.deferDetails && !this.noDetails && !this.#outsidePage()) {
         // returned: its details, if they were left to be read
         await this.#buildDeferred(c, sources);
@@ -1185,7 +1194,7 @@ class ValueSetExpander {
               notClosed.value = true;
             }
 
-            if (this.count === 0 && filters.length === 0 && valueSets.length === 0) {
+            if (this.count === 0 && filters.length === 0 && valueSets.length === 0 && !this.hasExclusions) {
               // count=0 (count only) with a single whole-code-system include and no
               // additional filters: report the code count directly rather than
               // enumerating - which for a poly-hierarchy (e.g. SNOMED) is both
@@ -1193,7 +1202,7 @@ class ValueSetExpander {
               this.addToTotal(await cs.countAllCodes(excludeInactive));
             } else {
               const iter = await cs.iterator(null);
-              if (valueSets.length === 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
+              if (valueSets.length === 0 && this.count !== 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
                 throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
               }
@@ -1644,7 +1653,7 @@ class ValueSetExpander {
             for (const entry of valueSets[0].codeMap.values()) {
               await this.worker.checkAndYield('processCodes#3a');
               if (entry.system === system && await this.#knownTo(cs, entry.code)) {
-                this.excludeCode(cs, system, cs.version(), entry.code, expansion, valueSets, vsSrc.url);
+                this.excludeCode(cs, system, cs.version(), entry.code, expansion, valueSets);
               }
             }
           }
@@ -1668,7 +1677,7 @@ class ValueSetExpander {
                 if (!ov) {
                   ov = await cs.itemWeight(cctxt.context);
                 }
-                this.excludeCode(cs, await cs.system(), await cs.version(), cc.code, expansion, valueSets, vsSrc.url);
+                this.excludeCode(cs, await cs.system(), await cs.version(), cc.code, expansion, valueSets);
               }
             }
           }
@@ -1702,7 +1711,7 @@ class ValueSetExpander {
           this.worker.opContext.log('iterate filters');
           const excludeFound = async (c) => {
             if (this.passesImports(valueSets, await cs.system(), await cs.code(c), 0)) {
-              this.excludeCode(cs, await cs.system(), await cs.version(), await cs.code(c), expansion, null, vsSrc.url);
+              this.excludeCode(cs, await cs.system(), await cs.version(), await cs.code(c), expansion, null);
             }
           };
           if (baseFilters.length > 0) {
@@ -1845,7 +1854,7 @@ class ValueSetExpander {
       const cds = new Designations(this.worker.i18n.languageDefinitions);
       await this.listDisplaysFromProvider(cds, cs, context);
       await this.worker.checkAndYield('processCodeAndDescendants#2');
-      this.excludeCode(cs, await cs.system(), await cs.version(), code, expansion, imports, srcUrl);
+      this.excludeCode(cs, await cs.system(), await cs.version(), code, expansion, imports);
     }
 
     const iter = await cs.iterator(context);
@@ -1867,10 +1876,11 @@ class ValueSetExpander {
     // A page (count, and offset - 0 when not given) is the only part of the expansion built: the
     // walk passes the codes before it keeping only their keys (#beforePage), so a page can be
     // further in than the limit on what is built, and after it only counts codes, for the total
-    // (#finishIfPageFilled). Not with exclusions, which stop no walk early; nor with a text filter,
-    // which is matched against the codes' designations, so each must be read. (A hierarchy is
+    // (#finishIfPageFilled). With exclusions too: they are all processed before any include, so a
+    // code's place in the list is final once it is added. Not with a text filter, which is matched
+    // against the codes' designations, so each must be read. (A hierarchy is
     // only shown when the whole expansion fits in count: then every code is on the page)
-    this.paging = this.count > 0 && this.offset >= 0 && !(source.jsonObj.compose.exclude || []).length && filter.isNull;
+    this.paging = this.count > 0 && this.offset >= 0 && filter.isNull;
     const ts = new Map();
     for (const [i, c] of (source.jsonObj.compose.include || []).entries()) {
       await this.worker.checkAndYield('handleCompose#2');
@@ -2198,9 +2208,10 @@ class ValueSetExpander {
       }
     }
 
-    if (this.offset + this.count < 0 && this.fullList.length > this.limit) {
-      this.log.log('Operation took too long @ expand (' + this.constructor.name + ')');
-      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source.vurl, '>' + this.limit), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+    if (this.count < 0 && this.limitCount > 0 && this.fullList.length > this.limitCount) {
+      // a backstop for an unpaged expansion: every path that adds a code checks the limit first
+      // (#checkLimit). Not for count=0, which only counts, as far as the walk limit allows
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     } else {
       let t = 0;
       let o = 0;
@@ -2535,13 +2546,12 @@ class ValueSetExpander {
 
   /**
    * True when the requested page (offset + count) has been filled, so an
-   * iteration that is not counting a total can stop. Exclusions are handled
-   * after the fact and can remove codes already collected, so a value set
-   * with any exclusion never stops early.
+   * iteration that is not counting a total can stop. (Exclusions are processed
+   * before any include, so they never remove a code already collected.)
    * @returns {boolean}
    */
   pageFilled() {
-    return this.count > 0 && this.offset > -1 && !this.hasExclusions
+    return this.count > 0 && this.offset > -1
         && this.walked + this.fullList.length >= this.count + this.offset;
   }
 
@@ -2704,7 +2714,7 @@ class ValueSetExpander {
    */
   #listedCodesOverLimit(n) {
     // (limitCount is only set by expand(): an expander used for something else - $related - has no limit)
-    if (!(this.limitCount > 0) || this.hasExclusions || this.fullList.length + n <= this.limitCount) {
+    if (!(this.limitCount > 0) || this.fullList.length + n <= this.limitCount) {
       return false;
     }
     return !this.#pageFits();
