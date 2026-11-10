@@ -120,7 +120,7 @@ const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
-const { connectMetrics, graphData } = require('./library/cluster-metrics');
+const { connectMetrics, graphData, externalSummary } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
 const { connectClusterEvents } = require('./library/cluster-events');
 const { connectStatus, ownFigures, clusterView, processView, storageView, clusterSummary, processSummary, STATUS_INTERVAL_MS } = require('./library/cluster-status');
@@ -557,28 +557,15 @@ async function statusContent(liquid, page, level, { notes = [], details = '', mo
 // under the launcher): {count, average, span} for tx/html/external-metrics.liquid, or null if
 // there have been none in them
 function externalStatus(now = Date.now()) {
-  const data = graphData(stats, 'external', now);
-  let count = 0;
-  let time = 0;
-  let earliest = now;
-  for (const series of data.series || []) {
-    for (const point of series.history || []) {
-      earliest = Math.min(earliest, Number.isFinite(point.intervalStart) ? point.intervalStart : point.time);
-      if (point.ext > 0 && Number.isFinite(point.extTat)) {
-        count += point.ext;
-        time += point.ext * point.extTat;
-      }
-    }
-  }
-  if (count === 0) {
+  const summary = externalSummary(stats, now);
+  if (!summary) {
     return null;
   }
-  const average = time / count;
-  const hours = (now - earliest) / 3600000;
+  const { count, average, hours } = summary;
   return {
     count: count.toLocaleString(),
     average: average >= 1000 ? `${(average / 1000).toFixed(1)} s` : `${Math.round(average)} ms`,
-    span: hours >= 23.5 ? '24 hours' : hours >= 1.5 ? `${Math.round(hours)} hours` : hours >= 1 ? 'hour' : `${Math.max(1, Math.round(hours * 60))} minutes`
+    span: hours >= 23.5 ? '24 hours' : hours >= 1.5 ? `${Math.round(hours)} hours` : hours >= 1 || Math.round(hours * 60) <= 1 ? (hours >= 1 ? 'hour' : 'minute') : `${Math.round(hours * 60)} minutes`
   };
 }
 

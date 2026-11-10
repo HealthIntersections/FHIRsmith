@@ -1,5 +1,5 @@
 const { EventEmitter } = require('events');
-const { ClusterMetrics, connectMetrics, graphData, METRIC, SNAPSHOT, HISTORY_MS, MAX_POINTS } = require('../../library/cluster-metrics');
+const { ClusterMetrics, connectMetrics, graphData, externalSummary, METRIC, SNAPSHOT, HISTORY_MS, MAX_POINTS } = require('../../library/cluster-metrics');
 
 const procs = [{ code:'m0', role:'master', servesTx:false }, { code:'tx1', role:'tx-worker', servesTx:true }];
 const now = 1800000000000;
@@ -72,6 +72,29 @@ describe('cluster graph history', () => {
     const worker = JSON.parse(graphData({ clusterMetricsUnavailable:true, startTime:now - 10000,
       intervalMs:1000, history:[sample(now).point] }, 'Worker tx1', now));
     expect(worker.series[0].status).toBe('ready'); // local samples remain usable without IPC
+  });
+});
+
+describe('external requests', () => {
+  test('summed from this process\'s own samples', () => {
+    const stats = { startTime:now - 7200000, intervalMs:600000, history:[
+      { time:now - 3600000, intervalStart:now - 4200000, rpm:1, tat:5, ext:0, extTat:null },
+      { time:now - 600000, intervalStart:now - 1200000, rpm:1, tat:5, ext:2, extTat:3000 },
+      { time:now, intervalStart:now - 600000, rpm:1, tat:5, ext:1, extTat:6000 }
+    ] };
+    expect(externalSummary(stats, now)).toEqual({ count:3, average:4000, hours:4200000 / 3600000 });
+    // none: nothing to show
+    expect(externalSummary({ startTime:now, intervalMs:600000, history:[{ time:now, rpm:1, tat:5, ext:0, extTat:null }] }, now)).toBeNull();
+    expect(externalSummary({ startTime:now, intervalMs:600000, history:[] }, now)).toBeNull();
+  });
+
+  test('on the master, every process\'s, as the workers sent them', () => {
+    const store = new ClusterMetrics(procs);
+    store.record('m0', sample(now, { ext:0, extTat:null }), now);
+    store.record('tx1', sample(now + 100, { ext:4, extTat:2500 }), now + 100);
+    store.record('tx1', sample(now + 1100, { ext:1, extTat:5000 }), now + 1100);
+    const stats = { clusterMetrics:store.snapshot(now + 2000), history:[] };
+    expect(externalSummary(stats, now + 2000)).toMatchObject({ count:5, average:3000 });
   });
 });
 

@@ -143,6 +143,14 @@ function connectMetrics(stats, channel = process) {
  * whether the guard measures the cgroup) and no Total.
  */
 function graphData(stats, label = 'Server', now = Date.now(), guard = {}) {
+  return JSON.stringify(graphSeries(stats, label, now, guard)).replace(/</g, '\\u003c');
+}
+
+/**
+ * The graphs' data (as graphData, not serialized): the launcher's snapshot, or this process's
+ * own samples as one series
+ */
+function graphSeries(stats, label = 'Server', now = Date.now(), guard = {}) {
   const data = stats.clusterMetrics || {
     cluster: false, sampledAt: now,
     total: Number.isFinite(guard.rejectAt) && guard.rejectAt > 0
@@ -155,7 +163,31 @@ function graphData(stats, label = 'Server', now = Date.now(), guard = {}) {
     const stale = item.status === 'ready' && (!last || now - last.time > Math.max(60000, 2 * item.intervalMs));
     return { ...item, status: data.cluster && stats.clusterMetricsUnavailable ? 'unavailable' : stale ? 'no recent sample' : item.status };
   });
-  return JSON.stringify({ ...data, series }).replace(/</g, '\\u003c');
+  return { ...data, series };
 }
 
-module.exports = { ClusterMetrics, connectMetrics, graphData, METRIC, SNAPSHOT, HISTORY_MS, MAX_POINTS };
+/**
+ * The external requests (those that had to ask another server: ServerStats.countExternalRequest)
+ * in the graphs' samples - every process's, on the master under the launcher: {count, average
+ * (ms), hours (how far back the samples go)}, or null if there were none
+ */
+function externalSummary(stats, now = Date.now()) {
+  let count = 0;
+  let time = 0;
+  let earliest = now;
+  for (const series of graphSeries(stats, 'external', now).series || []) {
+    for (const point of series.history || []) {
+      const from = Number.isFinite(point.intervalStart) ? point.intervalStart : point.time;
+      if (Number.isFinite(from)) {
+        earliest = Math.min(earliest, from);
+      }
+      if (point.ext > 0 && Number.isFinite(point.extTat)) {
+        count += point.ext;
+        time += point.ext * point.extTat;
+      }
+    }
+  }
+  return count > 0 ? { count, average: time / count, hours: (now - earliest) / 3600000 } : null;
+}
+
+module.exports = { ClusterMetrics, connectMetrics, graphData, graphSeries, externalSummary, METRIC, SNAPSHOT, HISTORY_MS, MAX_POINTS };
