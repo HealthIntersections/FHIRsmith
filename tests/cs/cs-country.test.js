@@ -378,8 +378,7 @@ describe('CountryCodeServices', () => {
       const filter = filters[0];
 
       const result = await provider.filterLocate(ctxt, filter, 'CAN');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in filter', async () => {

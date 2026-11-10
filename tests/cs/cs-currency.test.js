@@ -265,8 +265,7 @@ describe('Iso4217Services', () => {
 
     test('should not locate 0-decimal currency in 2-decimal filter', async () => {
       const result = await provider.filterLocate(ctxt, decimalsFilter, 'JPY');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in decimals=2 filter', async () => {
@@ -334,8 +333,7 @@ describe('Iso4217Services', () => {
 
     test('should not locate 2-decimal currency in 0-decimal filter', async () => {
       const result = await provider.filterLocate(ctxt, decimalsFilter, 'USD');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
   });
 

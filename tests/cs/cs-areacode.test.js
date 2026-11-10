@@ -174,8 +174,7 @@ describe('AreaCodeServices', () => {
 
     test('should not locate region in country filter', async () => {
       const result = await provider.filterLocate(ctxt, countryFilter, '150'); // Europe
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in country filter', async () => {
@@ -245,8 +244,7 @@ describe('AreaCodeServices', () => {
 
     test('should not locate country in region filter', async () => {
       const result = await provider.filterLocate(ctxt, regionFilter, '840'); // USA
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
   });
 

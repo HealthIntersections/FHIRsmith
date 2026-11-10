@@ -15,6 +15,11 @@
       "context": null
     }
   ],
+  "ecosystem": {
+    "use": true,
+    "excludedServers": [ "tx.fhir.org" ],
+    "excludedPatterns": [ "http://hl7.org/*", "http://terminology.hl7.org/*" ]
+  },
   "closure": {
     "enabled": true,
     "database": "closures-testing.db",
