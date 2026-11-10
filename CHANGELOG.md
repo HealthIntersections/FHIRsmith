@@ -18,6 +18,7 @@ Major new features:
 
 ### Added
 
+- LOINC: the `answer-list` filter (`answer-list = [LA code]`: the answer lists the answer is in), as agreed with LOINC (UP-645) and tested by the tx-ecosystem `loinc-*-filter-answer-list` tests. `answers-for` is the defined filter for the answers in a list; `LIST` is still accepted, for backwards compatibility only
 - `config.json` may have comments: `//` to the end of the line, and `/* ... */` (`library/config-reader.js`). A syntax error is reported at its line and column in the file
 - A LICENSE file (BSD 3-Clause); the package's licence is now the SPDX id `BSD-3-Clause` (was `BSD-3`)
 - READMEs for the publisher, xig and vcl modules, from their settings

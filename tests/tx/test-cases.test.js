@@ -6991,12 +6991,44 @@ describe('loinc', () => {
     await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for2"}, "4.0");
   });
 
+  it("loinc-validate-filter-answers-for3-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for3-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-answers-for3-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for3-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-bad"}, "4.0");
+  });
+
   it("loinc-expand-filter-answer-list" + 'R5', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "5.0");
   });
 
   it("loinc-expand-filter-answer-list" + 'R4', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "4.0");
+  });
+
+  it("loinc-validate-filter-answer-list-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answer-list-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-answer-list-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answer-list-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-bad"}, "4.0");
   });
 
   it("loinc-subsumes-equivalent" + 'R5', async () => {
@@ -17730,8 +17762,24 @@ describe('loinc', () => {
     await runTest({"suite":"loinc","test":"loinc-expand-filter-answers-for2"}, "5.0");
   });
 
+  it("loinc-validate-filter-answers-for3-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for3-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for3-bad"}, "5.0");
+  });
+
   it("loinc-expand-filter-answer-list" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-filter-answer-list"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answer-list-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answer-list-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-bad"}, "5.0");
   });
 
   it("loinc-subsumes-equivalent" + 'R5-cached', async () => {
