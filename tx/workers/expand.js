@@ -191,6 +191,13 @@ class EmptyFilterContext {
   }
 }
 
+/**
+ * The codes of a value set expanded for an import, added with their keys only (see
+ * ValueSetExpander.deferDetails): for each, how to read its details when the importing expansion
+ * returns it - {expander, cs, expansion, read}
+ */
+const DEFERRED_DETAILS = new WeakMap();
+
 class ValueSetCounter {
   constructor() {
     this.count = 0;
@@ -229,7 +236,19 @@ class ValueSetExpander {
   walkedKeys = new Set();
   // and after the page, how many more codes it has counted for the total (see #finishIfPageFilled)
   counted = 0;
+  // a paged expansion of one selection whose size the provider vouches for, as count=0 trusts it
+  // (one include of a whole code system, or of one filter set, and nothing else): that size, which
+  // is the total, so the walk stops once the page is full (see #finishIfPageFilled). null: the walk counts
+  providerSize = null;
   walkLimit = INTERNAL_DEFAULT_LIMIT * WALK_LIMIT_FACTOR;
+  // a provider applied offset and count to the compose itself (processSelection): every code it
+  // returns is on the page
+  providerPaged = false;
+  // An imported value set (include.valueSet, exclude.valueSet) whose expansion the importing
+  // expansion uses for its codes, and from which it returns only some codes, or none (its page):
+  // each code is added with its key, and what its details are read from is kept with it, for the
+  // importing expansion to build the ones it returns (#buildDeferred). Same codes, same order
+  deferDetails = false;
 
   constructor(worker, params) {
     this.worker = worker;
@@ -332,7 +351,11 @@ class ValueSetExpander {
     }
   }
 
-  async includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL) {
+  /**
+   * @param {function(): Promise<Object>} [deferredRead] - the code's details are not added now, but
+   *   read with this when an importing expansion returns the code (see deferDetails, #readDetails)
+   */
+  async includeCode(cs, parent, system, version, code, isAbstract, isInactive, deprecated, status, displays, definition, itemWeight, expansion, imports, csExtList, vsExtList, csProps, expProps, excludeInactive, srcURL, deferredRead = null) {
     let result = null;
     this.worker.deadCheck('processCode');
 
@@ -373,6 +396,9 @@ class ValueSetExpander {
     const s = this.keyS(system, version, code);
 
     if (!this.map.has(s) && !this.walkedKeys.has(s)) {
+      // a code outside the page, on an expansion that doesn't walk to it: only counted and kept
+      // for deduplication, never returned (see #outsidePage)
+      const outsidePage = this.#outsidePage();
       const n = {};
       n.system = system;
       n.code = code;
@@ -385,129 +411,10 @@ class ValueSetExpander {
       if (isInactive) {
         n.inactive = true;
       }
-      if (!this.noDetails) {
-        if (status && status.toLowerCase() !== 'active') {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", status);
-        } else if (deprecated) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", 'deprecated');
-        }
-
-        if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-label')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#label', 'label', "valueString", Extensions.readString(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-label'));
-        }
-        if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-label')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#label', 'label', "valueString", Extensions.readString(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-label'));
-        }
-
-        if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-conceptOrder')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#order', 'order', "valueDecimal", Extensions.readNumber(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-conceptOrder', undefined));
-        }
-        if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-conceptOrder')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#order', 'order', "valueDecimal", Extensions.readNumber(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-conceptOrder', undefined));
-        }
-
-        if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#itemWeight', 'weight', "valueDecimal", Extensions.readNumber(csExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight', undefined));
-        }
-        if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight')) {
-          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#itemWeight', 'weight', "valueDecimal", Extensions.readNumber(vsExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight', undefined));
-        }
-
-        if (csExtList != null) {
-          for (const ext of csExtList) {
-            if (['http://hl7.org/fhir/StructureDefinition/coding-sctdescid', 'http://hl7.org/fhir/StructureDefinition/rendering-style',
-              'http://hl7.org/fhir/StructureDefinition/rendering-xhtml', 'http://hl7.org/fhir/StructureDefinition/codesystem-alternate'].includes(ext.url)) {
-              if (!n.extension) {
-                n.extension = []
-              }
-              n.extension.push(ext);
-            }
-            if (['http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'].includes(ext.url)) {
-              this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", getValuePrimitive(ext));
-            }
-          }
-        }
-
-        if (vsExtList != null) {
-          for (const ext of vsExtList || []) {
-            if (['http://hl7.org/fhir/StructureDefinition/valueset-supplement', 'http://hl7.org/fhir/StructureDefinition/valueset-deprecated',
-              'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status',
-              'http://hl7.org/fhir/StructureDefinition/valueset-concept-definition', 'http://hl7.org/fhir/StructureDefinition/coding-sctdescid',
-              'http://hl7.org/fhir/StructureDefinition/rendering-style', 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml'].includes(ext.url)) {
-              if (!n.extension) {
-                n.extension = []
-              }
-              n.extension.push(ext);
-            }
-          }
-        }
-
-        // display and designations
-        const pref = displays.preferredDesignation(this.params.workingLanguages(), this.reportedSupplements);
-        if (pref && pref.value) {
-          n.display = pref.value;
-        }
-
-        if (this.params.includeDesignations) {
-          for (const t of displays.designations) {
-            if (t !== pref && this.useDesignation(t) && t.value != null && !this.redundantDisplay(n, t.language, t.use, t.value)) {
-              if (!n.designation) {
-                n.designation = [];
-              }
-              if (t.supplement && t.supplement.vurl) {
-                this.reportedSupplements.add(t.supplement.vurl);
-              }
-              n.designation.push(t.asObject());
-            }
-          }
-        }
-
-        // '*' asks for every property the code system defines for the concept (R6's
-        // ValueSet.compose.property allows it, and a request can name it too). It is handled
-        // here rather than by expanding it into a list of names, because which properties
-        // exist is a property of the concept, not of the request
-        if (this.params.properties.includes('*') && csProps != null && cs != null) {
-          for (const cp of csProps) {
-            const vn = getValueName(cp);
-            this.defineProperty(expansion, n, this.getPropUrl(cs, cp.code, cp), cp.code, vn, cp[vn], true);
-          }
-        }
-
-        // properties the code system always reports (ICD-11's classificationCode), unless
-        // the request asked for them anyway and the loops here add them
-        if (csProps != null && cs != null && !this.params.properties.includes('*')) {
-          for (const pn of cs.mandatoryExpansionProperties()) {
-            if (!this.params.properties.includes(pn)) {
-              for (const cp of csProps.filter(p => p.code === pn)) {
-                const vn = getValueName(cp);
-                this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, cp[vn], true);
-              }
-            }
-          }
-        }
-
-        for (const pn of this.params.properties) {
-          if (pn === '*') {
-            continue; // done above
-          } else if (pn === 'definition') {
-            if (definition) {
-              this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#definition', pn, "valueString", definition);
-            }
-          } else if (pn === 'usage-count') {
-            let counter = cs.usages().get(code);
-            this.defineProperty(expansion, n, 'http://fhir.org/FHIRsmith/CodeSystem/concept-properties#usage-count', pn, "valueInteger", counter ? counter.count : 0);
-          } else if (csProps != null && cs != null) {
-            for (const cp of csProps) {
-              if (cp.code === pn) {
-                let vn = getValueName(cp);
-                let v = cp[vn];
-                // a concept may carry the same property more than once (the
-                // "dup" property in the test code system has two values)
-                this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, v, true);
-              }
-            }
-          }
-        }
+      if (deferredRead) {
+        DEFERRED_DETAILS.set(n, { expander: this, cs, expansion, read: deferredRead });
+      } else if (!this.noDetails && !outsidePage) {
+        this.#addDetails(n, cs, code, status, deprecated, displays, definition, expansion, csExtList, vsExtList, csProps);
       }
       this.fullList.push(n);
       this.map.set(s, n);
@@ -524,6 +431,135 @@ class ValueSetExpander {
       this.canBeHierarchy = false;
     }
     return result;
+  }
+
+  /**
+   * The details of a code in the expansion: status and other properties, label, order and weight,
+   * the extensions carried over, the display and designations (see includeCode)
+   */
+  #addDetails(n, cs, code, status, deprecated, displays, definition, expansion, csExtList, vsExtList, csProps) {
+    if (status && status.toLowerCase() !== 'active') {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", status);
+    } else if (deprecated) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", 'deprecated');
+    }
+
+    if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-label')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#label', 'label', "valueString", Extensions.readString(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-label'));
+    }
+    if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-label')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#label', 'label', "valueString", Extensions.readString(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-label'));
+    }
+
+    if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-conceptOrder')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#order', 'order', "valueDecimal", Extensions.readNumber(csExtList, 'http://hl7.org/fhir/StructureDefinition/codesystem-conceptOrder', undefined));
+    }
+    if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-conceptOrder')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#order', 'order', "valueDecimal", Extensions.readNumber(vsExtList, 'http://hl7.org/fhir/StructureDefinition/valueset-conceptOrder', undefined));
+    }
+
+    if (Extensions.has(csExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#itemWeight', 'weight', "valueDecimal", Extensions.readNumber(csExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight', undefined));
+    }
+    if (Extensions.has(vsExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight')) {
+      this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#itemWeight', 'weight', "valueDecimal", Extensions.readNumber(vsExtList, 'http://hl7.org/fhir/StructureDefinition/itemWeight', undefined));
+    }
+
+    if (csExtList != null) {
+      for (const ext of csExtList) {
+        if (['http://hl7.org/fhir/StructureDefinition/coding-sctdescid', 'http://hl7.org/fhir/StructureDefinition/rendering-style',
+          'http://hl7.org/fhir/StructureDefinition/rendering-xhtml', 'http://hl7.org/fhir/StructureDefinition/codesystem-alternate'].includes(ext.url)) {
+          if (!n.extension) {
+            n.extension = []
+          }
+          n.extension.push(ext);
+        }
+        if (['http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'].includes(ext.url)) {
+          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#status', 'status', "valueCode", getValuePrimitive(ext));
+        }
+      }
+    }
+
+    if (vsExtList != null) {
+      for (const ext of vsExtList || []) {
+        if (['http://hl7.org/fhir/StructureDefinition/valueset-supplement', 'http://hl7.org/fhir/StructureDefinition/valueset-deprecated',
+          'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status',
+          'http://hl7.org/fhir/StructureDefinition/valueset-concept-definition', 'http://hl7.org/fhir/StructureDefinition/coding-sctdescid',
+          'http://hl7.org/fhir/StructureDefinition/rendering-style', 'http://hl7.org/fhir/StructureDefinition/rendering-xhtml'].includes(ext.url)) {
+          if (!n.extension) {
+            n.extension = []
+          }
+          n.extension.push(ext);
+        }
+      }
+    }
+
+    // display and designations
+    const pref = displays.preferredDesignation(this.params.workingLanguages(), this.reportedSupplements);
+    if (pref && pref.value) {
+      n.display = pref.value;
+    }
+
+    if (this.params.includeDesignations) {
+      for (const t of displays.designations) {
+        if (t !== pref && this.useDesignation(t) && t.value != null && !this.redundantDisplay(n, t.language, t.use, t.value)) {
+          if (!n.designation) {
+            n.designation = [];
+          }
+          if (t.supplement && t.supplement.vurl) {
+            this.reportedSupplements.add(t.supplement.vurl);
+          }
+          n.designation.push(t.asObject());
+        }
+      }
+    }
+
+    // '*' asks for every property the code system defines for the concept (R6's
+    // ValueSet.compose.property allows it, and a request can name it too). It is handled
+    // here rather than by expanding it into a list of names, because which properties
+    // exist is a property of the concept, not of the request
+    if (this.params.properties.includes('*') && csProps != null && cs != null) {
+      for (const cp of csProps) {
+        const vn = getValueName(cp);
+        this.defineProperty(expansion, n, this.getPropUrl(cs, cp.code, cp), cp.code, vn, cp[vn], true);
+      }
+    }
+
+    // properties the code system always reports (ICD-11's classificationCode), unless
+    // the request asked for them anyway and the loops here add them
+    if (csProps != null && cs != null && !this.params.properties.includes('*')) {
+      for (const pn of cs.mandatoryExpansionProperties()) {
+        if (!this.params.properties.includes(pn)) {
+          for (const cp of csProps.filter(p => p.code === pn)) {
+            const vn = getValueName(cp);
+            this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, cp[vn], true);
+          }
+        }
+      }
+    }
+
+    for (const pn of this.params.properties) {
+      if (pn === '*') {
+        continue; // done above
+      } else if (pn === 'definition') {
+        if (definition) {
+          this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#definition', pn, "valueString", definition);
+        }
+      } else if (pn === 'usage-count') {
+        let counter = cs.usages().get(code);
+        this.defineProperty(expansion, n, 'http://fhir.org/FHIRsmith/CodeSystem/concept-properties#usage-count', pn, "valueInteger", counter ? counter.count : 0);
+      } else if (csProps != null && cs != null) {
+        for (const cp of csProps) {
+          if (cp.code === pn) {
+            let vn = getValueName(cp);
+            let v = cp[vn];
+            // a concept may carry the same property more than once (the
+            // "dup" property in the test code system has two values)
+            this.defineProperty(expansion, n, this.getPropUrl(cs, pn, cp), pn, vn, v, true);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -647,12 +683,60 @@ class ValueSetExpander {
   /**
    * Paging: once the page is full, the rest of the walk only counts codes, for the total - and the
    * total is only reported for an expansion within the response limit, as on an unpaged one (where
-   * includeCode stops at the limit). So once the codes seen reach the limit, stop: no total
+   * includeCode stops at the limit). So once the codes seen reach the limit, stop: no total. And when
+   * the provider has said how big the selection is (providerSize), there is nothing to count: stop
+   * as soon as the page is full
    */
   #finishIfPageFilled() {
+    if (this.paging && this.pageFilled() && this.providerSize != null) {
+      // the provider has said how many codes the walk would count: report that, as the walk would
+      // have (only within the limit), and stop
+      if (this.providerSize < this.limitCount) {
+        this.total = this.providerSize;
+        this.totalStatus = 'set';
+      } else {
+        this.noTotal();
+      }
+      throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
     if (this.paging && this.pageFilled() && this.walked + this.fullList.length + this.counted >= this.limitCount) {
       this.noTotal();
       throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
+  }
+
+  /**
+   * Paging: whether the next n codes, if all are included, fall inside the page - so each will be
+   * built, and none only counted. (Fewer may be included: filters, excludes and repeats only make
+   * the list shorter, so it still fits)
+   * @param {number} n
+   * @returns {boolean}
+   */
+  #pageHolds(n) {
+    const start = this.walked + this.fullList.length;
+    return start >= this.offset && start + n <= this.offset + this.count;
+  }
+
+  /**
+   * Whether the size of the one selection an include makes (a whole code system, or one filter set)
+   * is the total of the expansion, as count=0 trusts it: the include is the whole value set (no
+   * other include, no exclude), and no code in the selection is left out (inactive ones, or over
+   * the code system's cap on how many codes it contributes)
+   */
+  #sizeIsTotal(compose, cs, excludeInactive) {
+    return !excludeInactive && !this.params.activeOnly && !this.hasExclusions
+      && (compose.include || []).length === 1 && (compose.exclude || []).length === 0
+      && !(cs.expandLimitation() > 0);
+  }
+
+  /**
+   * A paged expansion: the provider's size of the selection it walks is its total (see
+   * #finishIfPageFilled), when the provider gives one
+   */
+  #useProviderSize(size) {
+    if (typeof size === 'number' && size >= 0) {
+      this.worker.opContext.log('paged: the provider gives the total');
+      this.providerSize = size;
     }
   }
 
@@ -714,7 +798,12 @@ class ValueSetExpander {
     }
   }
 
-  async expandValueSet(uri, version, vs, filter, notClosed) {
+  /**
+   * @param {boolean} [deferDetails] - its codes' details are left to be read when this expansion
+   *   returns them (see deferDetails): for an import used only for which codes it has, or one this
+   *   expansion returns only some codes of (#importDefers)
+   */
+  async expandValueSet(uri, version, vs, filter, notClosed, deferDetails = false) {
 
     if (!vs) {
       if (version) {
@@ -733,6 +822,7 @@ class ValueSetExpander {
     let expander = new ValueSetExpander(worker, paramsInner);
     expander.internalLimit = this.internalLimit;
     expander.externalLimit = this.internalLimit; // it's deliberate that this is the internal limit
+    expander.deferDetails = deferDetails;
     let result = await expander.expand(vs, filter, false);
     if (result == null) {
       throw new Issue('error', 'not-found', null, 'VS_EXP_IMPORT_UNK', this.worker.i18n.translate('VS_EXP_IMPORT_UNK', this.params.httpLanguages, [uri]), 'unknown');
@@ -754,15 +844,20 @@ class ValueSetExpander {
     this.checkResourceCanonicalStatus(expansion, vs, this.valueSet);
 
     const imported = [];
+    // the expansions whose property declarations the codes returned use: the import's, and, for
+    // codes whose details were read only now (see #buildDeferred), the ones that added them
+    const sources = new Set([vs.expansion]);
     for (const c of vs.expansion.contains || []) {
       await this.worker.checkAndYield('importValueSet');
-      count += await this.importValueSetItem(null, c, imports, offset, imported);
+      count += await this.importValueSetItem(null, c, imports, offset, imported, sources);
     }
-    this.importPropertyDefinitions(expansion, vs.expansion.property, imported);
+    for (const source of sources) {
+      this.importPropertyDefinitions(expansion, source.property, imported);
+    }
     return count;
   }
 
-  async importValueSetItem(p, c, imports, offset, imported) {
+  async importValueSetItem(p, c, imports, offset, imported, sources) {
     let count = 0;
     await this.worker.checkAndYield('importValueSetItem');
     const s = this.keyC(c);
@@ -772,6 +867,10 @@ class ValueSetExpander {
         count++;
       }
     } else if (this.passesImports(imports, c.system, c.code, offset) && !this.map.has(s) && !this.walkedKeys.has(s) && !(await this.isExcluded(c.system, c.version, c.code))) {
+      if (!this.deferDetails && !this.noDetails && !this.#outsidePage()) {
+        // returned: its details, if they were left to be read
+        await this.#buildDeferred(c, sources);
+      }
       count++;
       if (imported) {
         imported.push(c);
@@ -787,7 +886,7 @@ class ValueSetExpander {
     }
     for (const cc of c.contains || []) {
       await this.worker.checkAndYield('importValueSetItem');
-      count += await this.importValueSetItem(c, cc, imports, offset, imported);
+      count += await this.importValueSetItem(c, cc, imports, offset, imported, sources);
     }
     return count;
   }
@@ -968,6 +1067,7 @@ class ValueSetExpander {
     // the provider has applied offset and count: every code it returns is in the page
     vsInfo.csDoOffset = true;
     this.paging = false;
+    this.providerPaged = true;
     this.canBeHierarchy = false;
     const cds = new Designations(this.worker.i18n.languageDefinitions);
     for (const set of selection.sets || []) {
@@ -978,6 +1078,9 @@ class ValueSetExpander {
         if (this.noDetails) {
           await this.includeCode(cs, null, cs.system(), cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
             null, null, cds, null, null, expansion, null, null, null, null, null, excludeInactive, vsSrc.url);
+        } else if (this.#defers(cs, await cs.code(c))) {
+          await this.includeCode(cs, null, cs.system(), cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
+            null, null, cds, null, null, expansion, null, null, null, null, null, excludeInactive, vsSrc.url, () => this.#readDetails(cs, c));
         } else {
           await this.listDisplaysFromProvider(cds, cs, c);
           await this.includeCode(cs, null, cs.system(), cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
@@ -1010,7 +1113,8 @@ class ValueSetExpander {
         const s = this.worker.pinValueSet(u);
         this.worker.opContext.log('import value set ' + s);
         let vs = await this.worker.findValueSet(s, '', vsSrc);
-        const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed));
+        // the first value set's codes are this include's; the others' only test membership
+        const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed, valueSets.length > 0 || this.#importDefers()));
         this. checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
         if (!vs.isContained) {
           this.addParamUri(expansion, 'used-valueset', this.worker.makeVurl(ivs.valueSet));
@@ -1037,7 +1141,8 @@ class ValueSetExpander {
           const s = this.worker.pinValueSet(u);
           this.worker.opContext.log('import value set ' + s);
           let vs = await this.worker.findValueSet(s, '', vsSrc);
-          const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed));
+          // (only for which codes it has: the include's codes come from the code system)
+          const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed, true));
           this.checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
           if (!vs.isContained) {
             this.addParamUri(expansion, 'used-valueset', this.worker.makeVurl(ivs.valueSet));
@@ -1049,7 +1154,7 @@ class ValueSetExpander {
           if (cs.specialEnumeration() && filters.length === 0) {
             this.worker.opContext.log('import special value set ' + cs.specialEnumeration());
             let vs = await this.worker.findValueSet(cs.specialEnumeration(), '', null);
-            const base = await this.expandValueSet(cs.specialEnumeration(), '', vs, filter, notClosed);
+            const base = await this.expandValueSet(cs.specialEnumeration(), '', vs, filter, notClosed, this.#importDefers());
             Extensions.addBoolean(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
             Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members. This extension is based on " + cs.specialEnumeration());
             await this.importValueSet(base, expansion, valueSets, 0);
@@ -1091,6 +1196,12 @@ class ValueSetExpander {
               if (valueSets.length === 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
                 throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
+              }
+              if (this.paging && valueSets.length === 0 && filters.length === 0 && this.#sizeIsTotal(compose, cs, excludeInactive) && !this.params.excludeNotForUI
+                  && !cs.isNotClosed()) {
+                // the walk would count every code of the code system (excludeNotForUI would skip the
+                // abstract ones; a grammar's walk lists only some): its size is the total
+                this.#useProviderSize(await cs.countAllCodes(excludeInactive));
               }
               let tcount = 0;
               // One visited set across all roots: in a poly-hierarchy the walks
@@ -1147,11 +1258,17 @@ class ValueSetExpander {
                 }
                 const cds = new Designations(this.worker.i18n.languageDefinitions);
                 let added;
-                if (this.noDetails) {
+                if (!this.noDetails && this.#outsidePage()) {
+                  added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), false, null,
+                      cds, null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+                } else if (this.noDetails) {
                   await this.listDisplaysFromProvider(cds, cs, c);
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), false, null,
                       cds, null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
 
+                } else if (this.#defers(cs, await cs.code(c))) {
+                  added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), false, null,
+                      cds, null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url, () => this.#readDetails(cs, c));
                 } else {
                   await this.listDisplaysFromProvider(cds, cs, c);
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c), await cs.isDeprecated(c), await cs.getStatus(c),
@@ -1205,8 +1322,11 @@ class ValueSetExpander {
           const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
 
           // each listed code is located next: a provider may read them together, and hand back what it read
-          // (paging: most of them are only counted, and those on the page are read at locate)
-          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), !this.noDetails && !this.paging);
+          // (paging: most of them may only be counted, and those on the page are read at locate -
+          // unless the page holds the whole list, when every one is built. And not when their
+          // details are left to be read later: see deferDetails)
+          const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code),
+            !this.noDetails && !(filter.isNull && this.#defers(cs)) && (!this.paging || this.#pageHolds(cset.concept.length)));
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -1225,6 +1345,18 @@ class ValueSetExpander {
               if (this.noDetails) {
                 added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
                     null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+              } else if (filter.isNull && this.#outsidePage()) {
+                added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
+                    null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url);
+                if (added) {
+                  this.addToTotal();
+                }
+              } else if (filter.isNull && this.#defers(cs, ecode)) {
+                added = await this.includeCode(cs, null, cs.system(), cs.version(), ecode, await cs.isAbstract(cctxt.context), await cs.isInactive(cctxt.context), null, null, cds,
+                    null, null, expansion, valueSets, null, null, null, null, excludeInactive, vsSrc.url, () => this.#readDetails(cs, cctxt.context, cc, vsSrc));
+                if (added) {
+                  this.addToTotal();
+                }
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
                 this.listDisplaysFromIncludeConcept(cds, cc, vsSrc);
@@ -1288,13 +1420,15 @@ class ValueSetExpander {
           // total is the set's size, and walking it would only end in VALUESET_TOO_COSTLY once
           // the set is bigger than the limit. Anything less certain is counted by walking, as
           // before: an earlier version added filterSize *and* walked, and double counted (#91, #93).
-          const countOnly = this.count === 0 && !filtersOpen && fset.length === 1 && suppFilters.length === 0 && filter.isNull
-            && !excludeInactive && !this.params.activeOnly && !this.hasExclusions
-            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length)
-            && (compose.include || []).length === 1 && (compose.exclude || []).length === 0;
+          // The same holds for a page: once it is full, the walk would only count the rest of the set
+          const sizeIsTotal = !filtersOpen && fset.length === 1 && suppFilters.length === 0 && filter.isNull
+            && !(cset.concept && cset.concept.length) && !(cset.valueSet && cset.valueSet.length) && this.#sizeIsTotal(compose, cs, excludeInactive);
+          const countOnly = this.count === 0 && sizeIsTotal;
           if (countOnly) {
             this.worker.opContext.log('count only: the filter size is the total');
             this.addToTotal(await cs.filterSize(prep, fset[0]));
+          } else if (this.paging && sizeIsTotal) {
+            this.#useProviderSize(await cs.filterSize(prep, fset[0]));
           }
 
           this.worker.opContext.log('iterate filters');
@@ -1313,11 +1447,22 @@ class ValueSetExpander {
                   return;
                 }
                 let added;
-                if (this.noDetails) {
+                if (this.noDetails || this.#outsidePage()) {
                   added = await this.includeCode(cs, null, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
                       null,  null, cds, null, null,
                       expansion, null, null, null, null, null, excludeInactive, vsSrc.url);
 
+                } else if (this.#defers(cs, await cs.code(c))) {
+                  // (the parent as below: the hierarchy decides the order an importing expansion takes the codes in)
+                  let parent = null;
+                  if (cs.hasParents()) {
+                    parent = this.map.get(this.keyS(cs.system(), cs.version(), await cs.parent(c)));
+                  } else {
+                    this.canBeHierarchy = false;
+                  }
+                  added = await this.includeCode(cs, parent, await cs.system(), await cs.version(), await cs.code(c), await cs.isAbstract(c), await cs.isInactive(c),
+                      null,  null, cds, null, null,
+                      expansion, null, null, null, null, null, excludeInactive, vsSrc.url, () => this.#readDetails(cs, c));
                 } else {
                   await this.listDisplaysFromProvider(cds, cs, c);
                   let parent = null;
@@ -1425,7 +1570,8 @@ class ValueSetExpander {
           const s = this.worker.pinValueSet(u);
           await this.worker.checkAndYield('processCodes#2');
           let vs = await this.worker.findValueSet(s, '', vsSrc);
-          const ivs = new ImportedValueSet(await this.expandValueSet(s, '',  vs, filter, notClosed));
+          // (only for which codes it has, as for the excludes below)
+          const ivs = new ImportedValueSet(await this.expandValueSet(s, '',  vs, filter, notClosed, true));
           this.checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
           // ivs.valueSet is the expansion (plain JSON), so it has no vurl - as for the
           // includes, build it
@@ -1455,7 +1601,7 @@ class ValueSetExpander {
           const s = this.worker.pinValueSet(u);
           this.worker.opContext.log('import value set ' + s);
           let vs = await this.worker.findValueSet(s, '', vsSrc);
-          const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed));
+          const ivs = new ImportedValueSet(await this.expandValueSet(s, '', vs, filter, notClosed, true));
           this.checkResourceCanonicalStatus(expansion, ivs.valueSet, this.valueSet);
           if (!vs.isContained) {
             this.addParamUri(expansion, 'used-valueset', this.worker.makeVurl(ivs.valueSet));
@@ -1635,10 +1781,13 @@ class ValueSetExpander {
     } else if ((!this.params.excludeNotForUI || !await cs.isAbstract(context)) && (!this.params.activeOnly || !await cs.isInactive(context))) {
       const cds = new Designations(this.worker.i18n.languageDefinitions);
       let t;
-      if (this.noDetails) {
+      if (this.noDetails || this.#outsidePage()) {
         t = await this.includeCode(cs, null, await cs.system(), await cs.version(), code, await cs.isAbstract(context), await cs.isInactive(context), null, null, null,
             null, null, expansion, imports, null, null, null, null, excludeInactive, srcUrl);
 
+      } else if (this.#defers(cs, code)) {
+        t = await this.includeCode(cs, parent, await cs.system(), await cs.version(), code, await cs.isAbstract(context), await cs.isInactive(context), null, null, null,
+            null, null, expansion, imports, null, null, null, null, excludeInactive, srcUrl, () => this.#readDetails(cs, context));
       } else {
         await this.listDisplaysFromProvider(cds, cs, context);
         t = await this.includeCode(cs, parent, await cs.system(), await cs.version(), code, await cs.isAbstract(context), await cs.isInactive(context), await cs.isDeprecated(context), await cs.getStatus(context), cds, await cs.definition(context),
@@ -2394,6 +2543,99 @@ class ValueSetExpander {
   pageFilled() {
     return this.count > 0 && this.offset > -1 && !this.hasExclusions
         && this.walked + this.fullList.length >= this.count + this.offset;
+  }
+
+  /**
+   * Whether the next code added falls outside the page asked for (offset, count) on an expansion
+   * that builds every code it includes - one with an exclude, or a text filter, which don't walk
+   * past the codes before the page (see handleCompose): it is counted and kept for deduplication,
+   * but never returned, so there's no point reading its displays, definition and properties.
+   * Excludes don't move a code once it is added: every exclude is processed before the includes,
+   * and includeCode refuses an excluded code before adding it. Not when paging (the walk counts
+   * the codes outside the page without adding them), nor when the provider paged the compose
+   * (every code it returns is on the page)
+   * @returns {boolean}
+   */
+  #outsidePage() {
+    if (this.paging || this.providerPaged || !(this.offset > 0 || this.count > -1)) {
+      return false;
+    }
+    const start = Math.max(this.offset, 0);
+    const i = this.fullList.length;
+    return i < start || (this.count > -1 && i >= start + this.count);
+  }
+
+  /**
+   * Whether this code's details are left to be read later (deferDetails). Not when a supplement
+   * that applies to every value set (a global one, such as a language pack) has the code: that
+   * supplement is reported as used (used-supplement) only when it gives the code's display or a
+   * designation, and this expansion's parameters are made before the importing expansion reads the
+   * details. (A supplement the value set names is reported for every code, read or not)
+   * @param {string} [code] - the code; without one, whether no global supplement could have it
+   */
+  #defers(cs, code = null) {
+    if (!this.deferDetails || this.noDetails || cs == null) {
+      return false;
+    }
+    if (cs.listSupplements(true).length === cs.listSupplements(false).length) {
+      return true;
+    }
+    return code != null && Array.isArray(cs.supplements)
+      && !cs.supplements.some(sp => sp.isGlobalSupplement() && sp.getConceptByCode(code));
+  }
+
+  /**
+   * A concept's details, read as includeCode's callers read them: displays and designations from
+   * the provider, then those the value set lists for the code (cc, an include's concept), and the
+   * concept's status, definition, extensions and properties
+   */
+  async #readDetails(cs, context, cc = null, vsSrc = null) {
+    const displays = new Designations(this.worker.i18n.languageDefinitions);
+    await this.listDisplaysFromProvider(displays, cs, context);
+    if (cc) {
+      this.listDisplaysFromIncludeConcept(displays, cc, vsSrc);
+    }
+    return {
+      displays, deprecated: await cs.isDeprecated(context), status: await cs.getStatus(context), definition: await cs.definition(context),
+      csExtList: await cs.extensions(context), vsExtList: cc ? cc.extension : null, csProps: await this.#conceptProperties(cs, context)
+    };
+  }
+
+  /**
+   * An imported code that this expansion returns: if its details were left to be read
+   * (deferDetails), read and add them now - by the expander that added the code, into its own
+   * expansion, as it would have when it added it. Its property declarations are then on that
+   * expansion, which is added to sources (see importValueSet)
+   */
+  async #buildDeferred(n, sources) {
+    const d = DEFERRED_DETAILS.get(n);
+    if (!d) {
+      return;
+    }
+    DEFERRED_DETAILS.delete(n);
+    const r = await d.read();
+    d.expander.#addDetails(n, d.cs, n.code, r.status, r.deprecated, r.displays, r.definition, d.expansion, r.csExtList, r.vsExtList, r.csProps);
+    sources.add(d.expansion);
+  }
+
+  /**
+   * Whether a value set this expansion imports, for its codes, can be expanded leaving their
+   * details to be read later (deferDetails): when this expansion returns only some of them - a
+   * page, a count, or none at all (count=0) - or is itself expanded so. Not when the expansion is
+   * sorted by display or property, which needs every code's details; nor for a $compare
+   * (noDetails), which takes the imported codes as they come
+   */
+  #importDefers() {
+    return !this.noDetails && !this.#sortsByDetails()
+      && (this.deferDetails || this.paging || this.count > -1 || this.offset > 0);
+  }
+
+  /**
+   * Whether the expansion is sorted by something read with a code's details (its display, a property)
+   */
+  #sortsByDetails() {
+    const sort = (this.params.sort || '').replace(/^-/, '');
+    return sort === 'display' || sort.startsWith('prop:');
   }
 
   addToTotal(t = 1) {
