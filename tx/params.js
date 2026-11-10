@@ -212,6 +212,24 @@ class TxParameters {
     this.hasIncludeDesignations = true;
   }
 
+  /**
+   * Whether a response to this request shows each code's display and none of its other
+   * designations: it asks for no designations (includeDesignations, designation,
+   * displayLanguage), and its languages are English or none. A provider may then leave the
+   * other designations unread: one that handles selecting asks this of the params
+   * processSelection gets; $expand tells prefetchCodes (hints.displayOnly, when there is no text
+   * filter either, since a text filter is matched against the designations).
+   *
+   * @param {Languages|null} langs - the request's languages (OperationContext.langs)
+   * @returns {boolean}
+   */
+  showsDisplayOnly(langs) {
+    if (this.includeDesignations || this.hasDesignations || this.hasDisplayLanguages) {
+      return false;
+    }
+    return !langs || (langs.languages || []).every(l => l.code === '*' || l.isEnglishOrNothing());
+  }
+
   get includeDefinition() {
     return this.FIncludeDefinition;
   }

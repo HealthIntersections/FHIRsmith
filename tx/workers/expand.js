@@ -2722,18 +2722,11 @@ class ValueSetExpander {
   }
 
   /**
-   * Whether the expansion shows nothing of a listed concept's designations but its display: the
-   * request's languages are English or none, it asks for no designations (includeDesignations,
-   * designation, displayLanguage), and no text filter is matched against them. The same rule a
-   * selecting provider can apply for itself in processSelection; told to prefetchCodes.
+   * Whether the expansion shows nothing of a listed concept's designations but its display
+   * (TxParameters.showsDisplayOnly), with no text filter matched against them: told to prefetchCodes.
    */
   #showsDisplayOnly(filter) {
-    const p = this.params;
-    if (!filter.isNull || p.includeDesignations || p.hasDesignations || p.hasDisplayLanguages) {
-      return false;
-    }
-    const langs = this.worker.opContext.langs;
-    return !langs || (langs.languages || []).every(l => l.code === '*' || l.isEnglishOrNothing());
+    return filter.isNull && this.params.showsDisplayOnly(this.worker.opContext.langs);
   }
 
   /**
