@@ -12,7 +12,7 @@ const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
 const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
 const { ensureTxParametersHashIncludesFilter, patchValueSetExpandWholeSystemForOcl } = require('./shared/patches');
 const Logger = require('../../library/logger');
@@ -42,6 +42,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     const options = typeof config === 'string' ? { baseUrl: config } : (config || {});
 
     this.org = options.org || null;
+    this.cluster = options.cluster || null;
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
@@ -76,6 +77,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     this.valueSetFingerprints = new Map();
     this._initialized = false;
     this._initializePromise = null;
+    this._followerCacheMtimes = new Map();
     this.sourcePackageCode = this.org
       ? `ocl:${this.baseUrl}|org=${this.org}`
       : `ocl:${this.baseUrl}`;
@@ -135,6 +137,12 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
           this.valueSetMap.set(valueSetObj.id, valueSetObj);
           this._idMap.set(valueSetObj.id, valueSetObj);
           this.valueSetFingerprints.set(cacheKey, cached.fingerprint || null);
+
+          const mtimeMs = getColdCacheMtimeMs(filePath);
+          if (mtimeMs != null) {
+            this._followerCacheMtimes.set(filePath, mtimeMs);
+          }
+
           loadedCount++;
         } catch (error) {
           oclVsLog.error(`Failed to load cold cache file ${file}: ${error.message}`);
@@ -179,7 +187,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
         dependencyChecksums
       };
 
-      await fs.writeFile(cacheFilePath, JSON.stringify(cacheData, null, 2), 'utf-8');
+      await atomicWriteFile(cacheFilePath, JSON.stringify(cacheData, null, 2));
       oclVsLog.info(`Saved ValueSet compose to cold cache: ${canonicalUrl} (${conceptCount} concepts, fingerprint=${fingerprint?.substring(0, 8)})`);
 
       return fingerprint;
@@ -208,18 +216,20 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
         // Load cold cache first
         await this.#loadColdCacheForValueSets();
 
-        const collections = await this.#fetchCollectionsForDiscovery();
-        oclVsLog.info(`Fetched ${collections.length} collections`);
+        if (this.cluster !== 'follower') {
+          const collections = await this.#fetchCollectionsForDiscovery();
+          oclVsLog.info(`Fetched ${collections.length} collections`);
 
-        for (const collection of collections) {
-          const valueSet = this.#toValueSet(collection);
-          if (!valueSet) {
-            continue;
+          for (const collection of collections) {
+            const valueSet = this.#toValueSet(collection);
+            if (!valueSet) {
+              continue;
+            }
+            this.#indexValueSet(valueSet);
           }
-          this.#indexValueSet(valueSet);
         }
 
-        oclVsLog.info(`Loaded ${this.valueSetMap.size} value sets`);
+        oclVsLog.info(`Loaded ${this.valueSetMap.size} value sets${this.cluster === 'follower' ? ' (follower, from cold cache)' : ''}`);
         this._initialized = true;
       } catch (error) {
         oclVsLog.error(`Initialization failed: ${error.message}`);
@@ -997,8 +1007,70 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     vs.jsonObj.compose = structuredClone(cached.compose);
   }
 
+  #followerCheckColdCache(vs, _options = {}) {
+    const canonicalUrl = vs?.url;
+    const version = vs?.version || null;
+    if (!canonicalUrl) {
+      return;
+    }
+
+    const paramsKey = 'default';
+    const cacheFilePath = getCacheFilePath(CACHE_VS_DIR, canonicalUrl, version, paramsKey);
+    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+    if (mtimeMs == null) {
+      return;
+    }
+
+    const previousMtime = this._followerCacheMtimes.get(cacheFilePath);
+    if (previousMtime != null && mtimeMs <= previousMtime) {
+      return;
+    }
+
+    (async () => {
+      try {
+        const data = await fs.readFile(cacheFilePath, 'utf-8');
+        const cached = JSON.parse(data);
+        if (!cached || !cached.canonicalUrl) {
+          return;
+        }
+
+        const compose = cached.compose || this.#composeFromExpansion(cached.expansion);
+        if (!compose || !Array.isArray(compose.include) || compose.include.length === 0) {
+          return;
+        }
+
+        const cacheKey = this.#expansionCacheKey(
+          { url: cached.canonicalUrl, version: cached.version || null },
+          cached.paramsKey || 'default'
+        );
+        const createdAt = cached.timestamp ? new Date(cached.timestamp).getTime() : null;
+        this.backgroundExpansionCache.set(cacheKey, {
+          compose,
+          metadataSignature: cached.metadataSignature || null,
+          dependencyChecksums: cached.dependencyChecksums || {},
+          createdAt: Number.isFinite(createdAt) ? createdAt : null
+        });
+        this.valueSetFingerprints.set(cacheKey, cached.fingerprint || null);
+        this._followerCacheMtimes.set(cacheFilePath, mtimeMs);
+
+        if (vs.jsonObj) {
+          vs.jsonObj.compose = structuredClone(compose);
+        }
+
+        oclVsLog.info(`Follower: reloaded cold cache for ValueSet ${canonicalUrl}`);
+      } catch (error) {
+        oclVsLog.warn(`Follower: failed to reload cold cache for ValueSet ${canonicalUrl}: ${error.message}`);
+      }
+    })();
+  }
+
   #scheduleBackgroundExpansion(vs, options = {}) {
     if (!vs || !vs.jsonObj) {
+      return;
+    }
+
+    if (this.cluster === 'follower') {
+      this.#followerCheckColdCache(vs, options);
       return;
     }
 

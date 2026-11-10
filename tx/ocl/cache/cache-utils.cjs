@@ -38,8 +38,31 @@ function formatCacheAgeMinutes(ageMs) {
   return `${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
+async function atomicWriteFile(filePath, data) {
+  const tmpPath = filePath + '.tmp.' + process.pid;
+  await fs.writeFile(tmpPath, data, 'utf-8');
+  await fs.rename(tmpPath, filePath);
+}
+
+function getColdCacheMtimeMs(cacheFilePath) {
+  try {
+    const stats = fsSync.statSync(cacheFilePath);
+    if (!stats || !Number.isFinite(stats.mtimeMs)) {
+      return null;
+    }
+    return stats.mtimeMs;
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      oclLog.error(`Failed to stat cold cache file ${cacheFilePath}: ${error.message}`);
+    }
+    return null;
+  }
+}
+
 module.exports = {
   ensureCacheDirectories,
   getColdCacheAgeMs,
-  formatCacheAgeMinutes
+  formatCacheAgeMinutes,
+  atomicWriteFile,
+  getColdCacheMtimeMs
 };

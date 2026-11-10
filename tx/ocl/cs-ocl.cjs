@@ -1,4 +1,5 @@
 const fs = require('fs/promises');
+const path = require('path');
 const { AbstractCodeSystemProvider } = require('../cs/cs-provider-api');
 const { CodeSystemProvider, CodeSystemFactoryProvider, CodeSystemContentMode, FilterExecutionContext } = require('../cs/cs-api');
 const { BaseCSServices } = require('../cs/cs-base');
@@ -10,7 +11,7 @@ const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
 const { CACHE_CS_DIR, CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs } = require('./cache/cache-utils');
 const { computeCodeSystemFingerprint } = require('./fingerprint/fingerprint');
 const { OCLBackgroundJobQueue } = require('./jobs/background-queue');
 const { OCLConceptFilterContext } = require('./model/concept-filter-context');
@@ -41,6 +42,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     const options = typeof config === 'string' ? { baseUrl: config } : (config || {});
 
     this.org = options.org || null;
+    this.cluster = options.cluster || null;
+    OCLSourceCodeSystemFactory.cluster = this.cluster;
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
@@ -69,6 +72,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._initializePromise = null;
     this._organizationIdsCache = null;
     this._organizationIdsFetchPromise = null;
+    this._followerCacheMtimes = new Map();
   }
 
   async initialize() {
@@ -83,14 +87,18 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this._initializePromise = (async () => {
       try {
-        const sources = await this.#fetchSourcesForDiscovery();
-        oclLog.info(`Fetched ${sources.length} sources`);
+        if (this.cluster === 'follower') {
+          await this.#initializeFromColdCache();
+        } else {
+          const sources = await this.#fetchSourcesForDiscovery();
+          oclLog.info(`Fetched ${sources.length} sources`);
 
-        const snapshot = this.#buildSourceSnapshot(sources);
-        await this.#augmentSnapshotWithDefaultVersions(snapshot);
-        this.#applySnapshot(snapshot);
+          const snapshot = this.#buildSourceSnapshot(sources);
+          await this.#augmentSnapshotWithDefaultVersions(snapshot);
+          this.#applySnapshot(snapshot);
+        }
 
-        oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems`);
+        oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems${this.cluster === 'follower' ? ' (follower, from cold cache)' : ''}`);
         this._initialized = true;
       } catch (error) {
         oclLog.error(`Initialization failed: ${error.message}`);
@@ -137,7 +145,11 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       return this.#emptyChanges();
     }
 
-    this.#scheduleRefresh();
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerCacheCheck();
+    } else {
+      this.#scheduleRefresh();
+    }
     if (!this._pendingChanges) {
       return this.#emptyChanges();
     }
@@ -145,6 +157,148 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     const out = this._pendingChanges;
     this._pendingChanges = null;
     return out;
+  }
+
+  async #initializeFromColdCache() {
+    await ensureCacheDirectories(CACHE_CS_DIR);
+    let files;
+    try {
+      files = await fs.readdir(CACHE_CS_DIR);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclLog.error(`Follower: failed to read cold cache directory: ${error.message}`);
+      }
+      return;
+    }
+
+    for (const file of files) {
+      if (!file.endsWith('.json')) {
+        continue;
+      }
+
+      try {
+        const filePath = path.join(CACHE_CS_DIR, file);
+        const data = await fs.readFile(filePath, 'utf-8');
+        const cached = JSON.parse(data);
+        if (!cached || !cached.canonicalUrl) {
+          continue;
+        }
+
+        const canonicalUrl = cached.canonicalUrl;
+        const version = cached.version || null;
+
+        const json = {
+          resourceType: 'CodeSystem',
+          id: canonicalUrl.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 200),
+          url: canonicalUrl,
+          version,
+          name: canonicalUrl,
+          status: 'active',
+          content: cached.concepts && cached.concepts.length > 0 ? 'complete' : 'not-present',
+          extension: [{ url: OCL_CODESYSTEM_MARKER_EXTENSION, valueBoolean: true }]
+        };
+
+        const cs = new CodeSystem(json, 'R5', true);
+        this.#trackCodeSystemId(cs);
+        this._codeSystemsByCanonical.set(canonicalUrl, cs);
+        this._idToCodeSystem.set(cs.id, cs);
+
+        const mtimeMs = getColdCacheMtimeMs(filePath);
+        if (mtimeMs != null) {
+          this._followerCacheMtimes.set(filePath, mtimeMs);
+        }
+      } catch (error) {
+        oclLog.warn(`Follower: failed to read cold cache file ${file}: ${error.message}`);
+      }
+    }
+  }
+
+  #scheduleFollowerCacheCheck() {
+    if (this._refreshPromise) {
+      return;
+    }
+
+    this._refreshPromise = (async () => {
+      try {
+        const added = [];
+        const changed = [];
+        let files;
+        try {
+          files = await fs.readdir(CACHE_CS_DIR);
+        } catch (error) {
+          return;
+        }
+
+        for (const file of files) {
+          if (!file.endsWith('.json')) {
+            continue;
+          }
+
+          const filePath = path.join(CACHE_CS_DIR, file);
+          const mtimeMs = getColdCacheMtimeMs(filePath);
+          if (mtimeMs == null) {
+            continue;
+          }
+
+          const previousMtime = this._followerCacheMtimes.get(filePath);
+          if (previousMtime != null && mtimeMs <= previousMtime) {
+            continue;
+          }
+
+          try {
+            const data = await fs.readFile(filePath, 'utf-8');
+            const cached = JSON.parse(data);
+            if (!cached || !cached.canonicalUrl) {
+              continue;
+            }
+
+            const canonicalUrl = cached.canonicalUrl;
+            const isNew = !this._codeSystemsByCanonical.has(canonicalUrl);
+
+            const json = {
+              resourceType: 'CodeSystem',
+              id: canonicalUrl.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 200),
+              url: canonicalUrl,
+              version: cached.version || null,
+              name: canonicalUrl,
+              status: 'active',
+              content: cached.concepts && cached.concepts.length > 0 ? 'complete' : 'not-present',
+              extension: [{ url: OCL_CODESYSTEM_MARKER_EXTENSION, valueBoolean: true }]
+            };
+
+            const cs = new CodeSystem(json, 'R5', true);
+            const existing = this._codeSystemsByCanonical.get(canonicalUrl);
+            if (existing) {
+              cs.id = existing.id;
+              cs.jsonObj.id = existing.id;
+            } else {
+              this.#trackCodeSystemId(cs);
+            }
+
+            this._codeSystemsByCanonical.set(canonicalUrl, cs);
+            this._idToCodeSystem.set(cs.id, cs);
+            this._followerCacheMtimes.set(filePath, mtimeMs);
+
+            if (isNew) {
+              added.push(cs);
+            } else {
+              changed.push(cs);
+            }
+          } catch (error) {
+            oclLog.warn(`Follower: failed to reload cold cache file ${file}: ${error.message}`);
+          }
+        }
+
+        if (added.length > 0 || changed.length > 0) {
+          this._pendingChanges = { added, changed, deleted: [] };
+          oclLog.info(`Follower: detected ${added.length} new, ${changed.length} updated code systems from cold cache`);
+        }
+      } catch (error) {
+        oclLog.error(`Follower cache check failed: ${error.message}`);
+      } finally {
+        this._refreshPromise = null;
+      }
+    })();
   }
 
   async close() {
@@ -1440,6 +1594,7 @@ class OCLSourceCodeSystemProvider extends BaseCSServices {
 class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   static factoriesByKey = new Map();
   static #sharedI18n = null;
+  static cluster = null;
 
   static createForDiscoveredSource(httpClient, meta) {
     if (!OCLSourceCodeSystemFactory.#sharedI18n) {
@@ -1531,13 +1686,14 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.backgroundLoadProgress = { processed: 0, total: null };
     this.materializedConceptList = null;
     this.materializedConceptCount = -1;
+    this._coldCacheLoadedMtimeMs = null;
     OCLSourceCodeSystemFactory.factoriesByKey.set(this.#resourceKey(), this);
 
     const unversionedKey = `${this.system()}|`;
     if (!OCLSourceCodeSystemFactory.factoriesByKey.has(unversionedKey)) {
       OCLSourceCodeSystemFactory.factoriesByKey.set(unversionedKey, this);
     }
-    
+
     // Load cold cache at construction
     this.#loadColdCache();
   }
@@ -1572,6 +1728,11 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
       this.#applyConceptsToCodeSystemResource(this.meta?.codeSystem || null);
 
+      const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+      if (mtimeMs != null) {
+        this._coldCacheLoadedMtimeMs = mtimeMs;
+      }
+
     } catch (error) {
       if (error.code !== 'ENOENT') {
         oclLog.error(`Failed to load cold cache for CodeSystem ${canonicalUrl}: ${error.message}`);
@@ -1597,8 +1758,8 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
         concepts
       };
 
-      await fs.writeFile(cacheFilePath, JSON.stringify(cacheData, null, 2), 'utf-8');
-      
+      await atomicWriteFile(cacheFilePath, JSON.stringify(cacheData, null, 2));
+
       return fingerprint;
     } catch (error) {
       oclLog.error(`Failed to save cold cache for CodeSystem ${canonicalUrl}: ${error.message}`);
@@ -1660,7 +1821,24 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     });
   }
 
+  reloadColdCacheIfChanged() {
+    const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, this.system(), this.version());
+    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+    if (mtimeMs == null) {
+      return false;
+    }
+    if (this._coldCacheLoadedMtimeMs != null && mtimeMs <= this._coldCacheLoadedMtimeMs) {
+      return false;
+    }
+    this.#loadColdCache();
+    return true;
+  }
+
   scheduleBackgroundLoad(reason = 'request') {
+    if (OCLSourceCodeSystemFactory.cluster === 'follower') {
+      this.reloadColdCacheIfChanged();
+      return;
+    }
     this.#syncWarmStateWithChecksum();
     const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, this.system(), this.version());
     const cacheAgeMs = getColdCacheAgeMs(cacheFilePath);
