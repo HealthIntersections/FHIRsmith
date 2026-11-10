@@ -24,4 +24,17 @@ function hasConcepts(cset) {
   return !!storedList(cset) || !!cset.concept;
 }
 
-module.exports = { STORED_CONCEPTS, storedList, hasConcepts };
+/**
+ * The concepts the include lists with this code, in list order: asked of a stored list, found in
+ * an ordinary one
+ * @returns {Promise<Object[]>}
+ */
+async function listedConcepts(cset, code) {
+  const stored = storedList(cset);
+  if (stored) {
+    return (await stored.lookup(code)) || [];
+  }
+  return (cset.concept || []).filter(cc => cc.code === code);
+}
+
+module.exports = { STORED_CONCEPTS, storedList, hasConcepts, listedConcepts };

@@ -308,6 +308,18 @@ class ICD11Services extends BaseCSServices {
     return (ctxt instanceof ICD11Expression ? ctxt.classificationCode : ctxt.code) || null;
   }
 
+  /**
+   * A plain concept has two forms, and locate() accepts each: the entity id (the uri, in the
+   * Foundation) and the short code (if it has one). An expression has many - each part may be
+   * written either way, and the order within a group of qualifiers, and of the cluster members,
+   * is free - so they aren't listed (null).
+   */
+  async codeForms(context) {
+    const ctxt = await this.#ensureContext(context);
+    if (ctxt === null || ctxt instanceof ICD11Expression) return null;
+    return [ctxt.canonicalCode, ctxt.code].filter(Boolean);
+  }
+
   /** Value sets may enumerate short codes; the expansion carries the code, the uri. */
   async expansionCode(context, requested) {
     return (await this.code(context)) || requested;

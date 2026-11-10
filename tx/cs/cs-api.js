@@ -100,6 +100,18 @@ class CodeSystemProvider {
   async classificationCode(context) { return null; }
 
   /**
+   * Every code that locate() accepts for this concept, when the code system has more than one
+   * form of a code (ICD-11: the entity id and the short code). $validate-code uses it when a
+   * value set lists a code in its other form: it looks the other forms up in the list instead of
+   * locating every listed code. Null (the default) when the forms can't be listed - then each
+   * listed code is located and compared. Only asked when classificationCode() isn't null.
+   * @param {CodeSystemProviderContext} context
+   * @returns {Promise<string[]|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async codeForms(context) { return null; }
+
+  /**
    * The classificationCode $validate-code reports for a code as it was given: by default the
    * concept's classificationCode, whatever spelling was used.
    * @param {CodeSystemProviderContext} context the concept the code located

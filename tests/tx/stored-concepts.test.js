@@ -135,7 +135,7 @@ describe('$validate-code against a stored concept list', () => {
     expect(stats.reads).toBe(0);
   });
 
-  test('a code listed in another form (as ICD-11 short codes and entity ids): the whole list is read, same answer', async () => {
+  test('a code listed in another form, when the code system can\'t list the forms (an ICD-11 expression): the whole list is read, same answer', async () => {
     // 'alt7' stands for the same concept as the listed 'c7'
     // (otherFormMatch asks whether the code has another form: a classification code)
     const s1 = jest.spyOn(FhirCodeSystemProvider.prototype, 'classificationCode').mockImplementation(async function (ctx) {
@@ -148,6 +148,28 @@ describe('$validate-code against a stored concept list', () => {
       expect(plain.result).toBe(true);
       expect(fromStore).toEqual(plain);
       expect(stats.reads).toBeGreaterThan(0);
+    } finally {
+      s1.mockRestore();
+      s2.mockRestore();
+      s3.mockRestore();
+    }
+  });
+
+  test('a code listed in another form, when the code system lists the forms (a plain ICD-11 code): the other form is looked up, the list is not read', async () => {
+    const s1 = jest.spyOn(FhirCodeSystemProvider.prototype, 'classificationCode').mockImplementation(async function (ctx) {
+      return this.system() === CS_URL && (await this.code(ctx)) === 'alt7' ? 'x' : null;
+    });
+    const s2 = jest.spyOn(FhirCodeSystemProvider.prototype, 'codeForms').mockImplementation(async function (ctx) {
+      return (await this.code(ctx)) === 'alt7' ? ['alt7', 'c7'] : null;
+    });
+    const s3 = jest.spyOn(ValueSetChecker.prototype, 'sameConceptDifferentForm');
+    try {
+      const { plain, fromStore, stats } = await both({ system: CS_URL, code: 'alt7' });
+      expect(plain.result).toBe(true);
+      expect(fromStore).toEqual(plain);
+      expect(stats.lookups).toEqual(['alt7', 'c7']);
+      expect(stats.reads).toBe(0);
+      expect(s3).not.toHaveBeenCalled();
     } finally {
       s1.mockRestore();
       s2.mockRestore();

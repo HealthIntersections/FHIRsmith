@@ -26,7 +26,7 @@ const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
-const { storedList, hasConcepts } = require('../library/stored-concepts');
+const { storedList, hasConcepts, listedConcepts } = require('../library/stored-concepts');
 
 const DEV_IGNORE_VALUESET = false; // todo: what's going on with this (ported from pascal)
 
@@ -1653,24 +1653,29 @@ class ValueSetChecker {
 
   /**
    * The listed concept that is the code written in its other form (ICD-11's short code and
-   * entity id), or null. sameConceptDifferentForm asks two things of each listed concept: does
-   * the code have another form at all (locate the code, ask for its classification code), and
-   * is this listed concept that form. The first depends only on the code, so it is asked once
-   * here, and the listed concepts are compared only when the answer is yes.
+   * entity id), or null. The code has another form only if it has a classification code. When
+   * the code system can list the code's forms (codeForms: a plain ICD-11 concept has two), each
+   * other form is looked up in the list. When it can't (an ICD-11 expression can be written many
+   * ways), sameConceptDifferentForm compares each listed concept with the code.
    */
-  async otherFormMatch(cs, code, concepts) {
-    // (a function: a stored list - see stored-concepts.js - read only if the code has another form)
-    const lazy = typeof concepts === 'function';
-    if (!concepts || (!lazy && (concepts.length === 0 || concepts.some(cc => cc.code === code)))) {
-      return null;
-    }
+  async otherFormMatch(cs, code, cset) {
     const a = await cs.locate(code);
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
-    if (lazy) {
-      concepts = concepts() || [];
+    const forms = await cs.codeForms(a.context);
+    if (forms) {
+      for (const form of forms) {
+        if (form !== code) {
+          const found = await listedConcepts(cset, form);
+          if (found.length > 0) {
+            return found[0];
+          }
+        }
+      }
+      return null;
     }
+    const concepts = cset.concept || [];
     // each listed code is located next: a provider may read them together, and hand back what it read
     const prefetched = await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
@@ -1789,23 +1794,17 @@ class ValueSetChecker {
       }
     }
 
-    // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
-    // the listed concepts that can match: all of an ordinary list (as always), or just the ones
-    // with this code from a stored list, which is asked rather than read
-    const stored = storedList(cset);
-    let listed = stored ? await stored.lookup(code) : cset.concept;
-    let altMatch;
-    if (stored) {
-      // the code may be listed in its other form only if it isn't listed as itself; then the
-      // whole list is needed, and is read only if the code has another form
-      altMatch = listed.some(cc => cc.code === code) ? null : await this.otherFormMatch(cs, code, () => cset.concept);
+    // the listed concepts with this code (a stored list - see stored-concepts.js - is asked, not
+    // read); failing that, the concept listed in the code's other form (ICD-11 short code vs id)
+    let listed = hasConcepts(cset) ? await listedConcepts(cset, code) : [];
+    let altMatch = null;
+    if (listed.length === 0 && hasConcepts(cset)) {
+      altMatch = await this.otherFormMatch(cs, code, cset);
       if (altMatch) {
         listed = [altMatch];
       }
-    } else {
-      altMatch = await this.otherFormMatch(cs, code, cset.concept);
     }
-    for (let cc of listed || []) {
+    for (let cc of listed) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
       if (code === c || cc === altMatch) {
