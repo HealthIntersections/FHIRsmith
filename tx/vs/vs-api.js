@@ -141,8 +141,9 @@ class AbstractValueSetProvider {
    * fetchValueSet(url) returns), for the scans that look at every value set (see
    * usage-tracker.js, problems.js). listAllValueSets() can list a url once per stored version:
    * older versions are not scanned, and the latest is scanned only once, so the usage counts
-   * are not inflated by how many versions there are. A provider that doesn't hold its value
-   * sets in memory can do this more cheaply than fetching each one.
+   * are not inflated by how many versions there are. The scans read only each value set's
+   * url, version and jsonObj.compose, so a provider that doesn't hold its value sets in memory
+   * may hand fn an object with just those instead of building each value set.
    *
    * @param {function(ValueSet): Promise<void>} fn
    */
