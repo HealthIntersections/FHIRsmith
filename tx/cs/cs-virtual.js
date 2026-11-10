@@ -64,8 +64,10 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
 
   // --- talking to the other server --------------------------------------------------------------
 
+  // $lookup and $validate-code: the answers are kept (EcosystemResolver.sendCached), so the
+  // same question is only asked once (the validator asks for the same concept several times)
   async #send(url, body) {
-    return this.ecosystem.send(this.server, url, body, this.opContext);
+    return this.ecosystem.sendCached(this.server, url, body, this.opContext);
   }
 
   static #outcomeText(oo) {

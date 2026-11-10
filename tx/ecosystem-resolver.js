@@ -17,6 +17,12 @@ const { createGuardedAgents } = require('../library/ssrf-guard');
  * (opContext.externalRequests), so the operation is counted as an external request: what is
  * already known (cached) costs nothing, and isn't counted.
  *
+ * What the registry and the servers say about themselves is kept for an hour, and then refreshed
+ * in the background: the request that finds it due uses what's known, and doesn't wait (only the
+ * first request for something waits for it). The servers' answers to $lookup and $validate-code
+ * are kept for an hour too (sendCached), and the same request asked twice at once is only sent
+ * once.
+ *
  * Every request (to the registry, to the servers it names, and for OAuth tokens) goes through the
  * SSRF guard (library/ssrf-guard.js): only public addresses, unless allowPrivateAddresses is set
  */
@@ -31,6 +37,8 @@ const FORWARDED_HEADER = 'X-FHIRsmith-Ecosystem-Forwarded';
 const DEFAULT_REGISTRY = 'https://ecosystem.hl7.org/tx-reg';
 const TIMEOUT_MS = 30000;
 const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
+const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
+const MAX_ANSWERS = 10000; // the most answers (to $lookup and $validate-code) kept
 
 class EcosystemResolver {
   /**
@@ -50,9 +58,13 @@ class EcosystemResolver {
       agents: () => this.agents
     });
     this.log = Logger.getInstance().child({module: 'tx-ecosystem'});
-    this.servers = new Map(); // system|version -> {at, server}
-    this.versions = new Map(); // server -> {at, map: code system -> versions}
-    this.codes = null; // {at, map: normalised address -> server code}
+    // see #known: system|version -> server address (or null); server -> its code systems; and
+    // the registry's list of servers (normalised address -> server code)
+    this.servers = new Map();
+    this.versions = new Map();
+    this.codes = new Map();
+    // see sendCached: request -> {at, value} or {pending}, oldest first
+    this.answers = new Map();
   }
 
   /**
@@ -141,21 +153,65 @@ class EcosystemResolver {
    * list of servers
    */
   async serverCode(address, opContext = null) {
-    if (!this.codes || Date.now() - this.codes.at > CACHE_MS) {
-      const map = new Map();
-      try {
-        const json = await this.getRegistryJson(this.registry, opContext);
-        for (const r of json.results || []) {
-          if (r.url && r['server-code']) {
-            map.set(EcosystemResolver.normalise(r.url), r['server-code']);
-          }
+    const map = await this.#known(this.codes, 'listing', async (ctxt) => {
+      const json = await this.getRegistryJson(this.registry, ctxt);
+      const m = new Map();
+      for (const r of json.results || []) {
+        if (r.url && r['server-code']) {
+          m.set(EcosystemResolver.normalise(r.url), r['server-code']);
         }
-      } catch (e) {
-        this.log.warn(`Unable to read the list of servers from ${this.registry}: ${e.message}`);
       }
-      this.codes = { at: Date.now(), map };
+      return m;
+    }, opContext, (e) => `Unable to read the list of servers from ${this.registry}: ${e.message}`);
+    return (map && map.get(EcosystemResolver.normalise(address))) || null;
+  }
+
+  /**
+   * What the registry or a server says, kept in cache under key (an hour), loaded by loader if
+   * it isn't known. When it's due for a refresh, what's known is returned, and loaded again in the
+   * background (not counted against the operation: it doesn't wait for it). A loader that fails
+   * (throws) gives null, the first time; on a refresh, the old answer is kept, and the refresh is
+   * tried again in a few minutes. The same thing asked for twice at once is only loaded once
+   *
+   * @param {Map} cache - key -> {at, value, pending, refreshing}
+   * @param {function(OperationContext)} loader
+   * @param {function(Error): string} why - the warning when it fails
+   */
+  async #known(cache, key, loader, opContext, why) {
+    const now = Date.now();
+    const entry = cache.get(key);
+    if (entry && entry.pending) {
+      // waiting for it is waiting on another server
+      if (opContext && opContext.countExternalRequest) {
+        opContext.countExternalRequest();
+      }
+      return entry.pending;
     }
-    return this.codes.map.get(EcosystemResolver.normalise(address)) || null;
+    if (entry && 'value' in entry) {
+      if (now - entry.at >= CACHE_MS && !entry.refreshing) {
+        entry.refreshing = true;
+        loader(null).then(value => {
+          cache.set(key, { at: Date.now(), value });
+        }).catch(e => {
+          this.log.warn(why(e) + ' (still using what it said before)');
+          entry.at = Date.now() - CACHE_MS + RETRY_MS;
+        }).finally(() => {
+          entry.refreshing = false;
+        });
+      }
+      return entry.value;
+    }
+    const pending = loader(opContext).then(value => {
+      cache.set(key, { at: Date.now(), value });
+      return value;
+    }, e => {
+      // not known: null for now, and asked again (in the background) in a few minutes
+      this.log.warn(why(e));
+      cache.set(key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null });
+      return null;
+    });
+    cache.set(key, { pending });
+    return pending;
   }
 
   /**
@@ -239,25 +295,26 @@ class EcosystemResolver {
       return null;
     }
     const key = system + (version ? '|' + version : '');
-    const cached = this.servers.get(key);
-    if (cached && Date.now() - cached.at < CACHE_MS) {
-      return cached.server;
-    }
-    let server = null;
-    const first = EcosystemResolver.fhirVersionFor(fhirVersion);
-    for (const fv of [first, ...['5.0', '4.0'].filter(v => v !== first)]) {
-      try {
-        const json = await this.getRegistryJson(this.registry + '/resolve?fhirVersion=' + fv + '&url=' + encodeURIComponent(key), opContext);
-        server = (await this.chooseServer(json.authoritative, opContext)) || (await this.chooseServer(json.candidates, opContext));
-      } catch (e) {
-        this.log.warn(`Ecosystem resolution of ${key} for FHIR ${fv} failed: ${e.message}`);
+    return this.#known(this.servers, key + '#' + fhirVersion, async (ctxt) => {
+      const first = EcosystemResolver.fhirVersionFor(fhirVersion);
+      let failure = null;
+      for (const fv of [first, ...['5.0', '4.0'].filter(v => v !== first)]) {
+        try {
+          const json = await this.getRegistryJson(this.registry + '/resolve?fhirVersion=' + fv + '&url=' + encodeURIComponent(key), ctxt);
+          const server = (await this.chooseServer(json.authoritative, ctxt)) || (await this.chooseServer(json.candidates, ctxt));
+          if (server) {
+            return server;
+          }
+        } catch (e) {
+          this.log.warn(`Ecosystem resolution of ${key} for FHIR ${fv} failed: ${e.message}`);
+          failure = e;
+        }
       }
-      if (server) {
-        break;
+      if (failure) {
+        throw failure; // not known: not the same as no server
       }
-    }
-    this.servers.set(key, { at: Date.now(), server });
-    return server;
+      return null;
+    }, opContext, (e) => `Ecosystem resolution of ${key} failed: ${e.message}`);
   }
 
   async chooseServer(list, opContext = null) {
@@ -293,28 +350,63 @@ class EcosystemResolver {
    * it couldn't be asked. Read once (an hour) for all the code systems
    */
   async codeSystemsOf(server, opContext = null) {
-    const cached = this.versions.get(server);
-    if (cached && Date.now() - cached.at < CACHE_MS) {
-      return cached.map;
-    }
-    let map = null;
-    try {
-      const { status, json } = await this.send(server, server.replace(/\/$/, '') + '/metadata?mode=terminology', null, opContext);
+    return this.#known(this.versions, server, async (ctxt) => {
+      const { status, json } = await this.send(server, server.replace(/\/$/, '') + '/metadata?mode=terminology', null, ctxt);
       if (status >= 300 || !json) {
         throw new Error(`it returned status ${status}`);
       }
-      map = new Map();
+      const map = new Map();
       for (const cs of json.codeSystem || []) {
         if (cs.uri) {
           const list = map.get(cs.uri) || [];
           map.set(cs.uri, list.concat((cs.version || []).filter(v => v.code).map(v => ({ code: v.code, isDefault: v.isDefault === true }))));
         }
       }
-    } catch (e) {
-      this.log.warn(`Unable to read the code systems that ${server} has: ${e.message}`);
+      return map;
+    }, opContext, (e) => `Unable to read the code systems that ${server} has: ${e.message}`);
+  }
+
+  /**
+   * send(), for requests whose answer doesn't change from one minute to the next ($lookup and
+   * $validate-code): the answer is kept for an hour (the most recent MAX_ANSWERS of them), and the
+   * same request asked for again while it's on its way waits for that answer. Only what the
+   * server answered is kept: an answer that says something is wrong with the request (4xx) is
+   * kept, but not one about authorisation, throttling or the server itself (401, 403, 429, 5xx),
+   * and not a failure to get an answer at all
+   */
+  async sendCached(server, url, body = null, opContext = null) {
+    const key = url + (body ? ' ' + JSON.stringify(body) : '');
+    const entry = this.answers.get(key);
+    if (entry && entry.pending) {
+      if (opContext && opContext.countExternalRequest) {
+        opContext.countExternalRequest();
+      }
+      return entry.pending;
     }
-    this.versions.set(server, { at: Date.now(), map });
-    return map;
+    if (entry && Date.now() - entry.at < CACHE_MS) {
+      // most recently used goes to the end, so the oldest are dropped first
+      this.answers.delete(key);
+      this.answers.set(key, entry);
+      return entry.value;
+    }
+    const pending = this.send(server, url, body, opContext).then(value => {
+      const s = value.status;
+      if (s < 500 && s !== 401 && s !== 403 && s !== 429) {
+        this.answers.set(key, { at: Date.now(), value });
+        while (this.answers.size > MAX_ANSWERS) {
+          this.answers.delete(this.answers.keys().next().value);
+        }
+      } else {
+        this.answers.delete(key);
+      }
+      return value;
+    }, e => {
+      this.answers.delete(key);
+      throw e;
+    });
+    this.answers.delete(key);
+    this.answers.set(key, { pending });
+    return pending;
   }
 }
 
