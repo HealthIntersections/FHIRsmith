@@ -376,11 +376,46 @@ class MetadataHandler {
       }
     }
 
+    this.markDefaultVersions(provider, seenSystems);
+
     // Convert map to array and sort by URI
     const entries = Array.from(seenSystems.values());
     entries.sort((a, b) => (a.uri || '').localeCompare(b.uri || ''));
 
     return entries.length > 0 ? entries : undefined;
+  }
+
+  /**
+   * Mark the version a request that names no version gets - the default - as isDefault. That's
+   * what getCodeSystemProvider() finds under the url alone: a native code system (factory) first,
+   * else the CodeSystem resource the provider keeps there (the most recent of the versions loaded,
+   * see Provider.addCodeSystem). A code system with only one version has that as its default,
+   * however it's held
+   */
+  markDefaultVersions(provider, seenSystems) {
+    for (const [url, entry] of seenSystems) {
+      if (!entry.version || entry.version.length === 0) {
+        continue;
+      }
+      let def = null;
+      const factory = provider && provider.codeSystemFactories ? provider.codeSystemFactories.get(url) : null;
+      if (factory) {
+        def = factory.version();
+      } else {
+        const cs = provider && provider.codeSystems ? provider.codeSystems.get(url) : null;
+        if (cs) {
+          def = cs.version || (cs.jsonObj && cs.jsonObj.version) || null;
+        }
+      }
+      if (!def && entry.version.length === 1) {
+        def = entry.version[0].code;
+      }
+      for (const v of entry.version) {
+        if (v.code === def) {
+          v.isDefault = true;
+        }
+      }
+    }
   }
 
   /**
