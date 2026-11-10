@@ -12,7 +12,7 @@ const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
 const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs } = require('./cache/cache-utils');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs, cleanupStaleTmpFiles } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
 const { ensureTxParametersHashIncludesFilter, patchValueSetExpandWholeSystemForOcl } = require('./shared/patches');
 const Logger = require('../../library/logger');
@@ -213,7 +213,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
     this._initializePromise = (async () => {
       try {
-        // Load cold cache first
+        await cleanupStaleTmpFiles(CACHE_VS_DIR);
         await this.#loadColdCacheForValueSets();
 
         if (this.cluster !== 'follower') {
@@ -1007,27 +1007,28 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     vs.jsonObj.compose = structuredClone(cached.compose);
   }
 
-  #followerCheckColdCache(vs, _options = {}) {
+  #followerCheckColdCache(vs, options = {}) {
     const canonicalUrl = vs?.url;
     const version = vs?.version || null;
     if (!canonicalUrl) {
       return;
     }
 
-    const paramsKey = 'default';
-    const cacheFilePath = getCacheFilePath(CACHE_VS_DIR, canonicalUrl, version, paramsKey);
-    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
-    if (mtimeMs == null) {
-      return;
-    }
-
-    const previousMtime = this._followerCacheMtimes.get(cacheFilePath);
-    if (previousMtime != null && mtimeMs <= previousMtime) {
-      return;
-    }
+    const paramsKey = this.#expansionParamsKey(options.params || null);
 
     (async () => {
       try {
+        const cacheFilePath = getCacheFilePath(CACHE_VS_DIR, canonicalUrl, version, paramsKey);
+        const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+        if (mtimeMs == null) {
+          return;
+        }
+
+        const previousMtime = this._followerCacheMtimes.get(cacheFilePath);
+        if (previousMtime != null && mtimeMs <= previousMtime) {
+          return;
+        }
+
         const data = await fs.readFile(cacheFilePath, 'utf-8');
         const cached = JSON.parse(data);
         if (!cached || !cached.canonicalUrl) {
@@ -1041,7 +1042,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
         const cacheKey = this.#expansionCacheKey(
           { url: cached.canonicalUrl, version: cached.version || null },
-          cached.paramsKey || 'default'
+          cached.paramsKey || paramsKey
         );
         const createdAt = cached.timestamp ? new Date(cached.timestamp).getTime() : null;
         this.backgroundExpansionCache.set(cacheKey, {
@@ -1057,7 +1058,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
           vs.jsonObj.compose = structuredClone(compose);
         }
 
-        oclVsLog.info(`Follower: reloaded cold cache for ValueSet ${canonicalUrl}`);
+        oclVsLog.info(`Follower: reloaded cold cache for ValueSet ${canonicalUrl} (params=${paramsKey})`);
       } catch (error) {
         oclVsLog.warn(`Follower: failed to reload cold cache for ValueSet ${canonicalUrl}: ${error.message}`);
       }

@@ -10,8 +10,8 @@ const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
-const { CACHE_CS_DIR, CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs } = require('./cache/cache-utils');
+const { CACHE_CS_DIR, CACHE_VS_DIR, DISCOVERY_SNAPSHOT_PATH, getCacheFilePath } = require('./cache/cache-paths');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs, cleanupStaleTmpFiles } = require('./cache/cache-utils');
 const { computeCodeSystemFingerprint } = require('./fingerprint/fingerprint');
 const { OCLBackgroundJobQueue } = require('./jobs/background-queue');
 const { OCLConceptFilterContext } = require('./model/concept-filter-context');
@@ -43,7 +43,6 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this.org = options.org || null;
     this.cluster = options.cluster || null;
-    OCLSourceCodeSystemFactory.cluster = this.cluster;
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
@@ -73,6 +72,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._organizationIdsCache = null;
     this._organizationIdsFetchPromise = null;
     this._followerCacheMtimes = new Map();
+    this._followerSnapshotMtimeMs = null;
   }
 
   async initialize() {
@@ -87,8 +87,10 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this._initializePromise = (async () => {
       try {
+        await cleanupStaleTmpFiles(CACHE_CS_DIR);
+
         if (this.cluster === 'follower') {
-          await this.#initializeFromColdCache();
+          await this.#initializeFromDiscoverySnapshot();
         } else {
           const sources = await this.#fetchSourcesForDiscovery();
           oclLog.info(`Fetched ${sources.length} sources`);
@@ -96,9 +98,12 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
           const snapshot = this.#buildSourceSnapshot(sources);
           await this.#augmentSnapshotWithDefaultVersions(snapshot);
           this.#applySnapshot(snapshot);
+          await this.#writeDiscoverySnapshot(snapshot);
+
+          this.#scheduleProactiveWarmUp();
         }
 
-        oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems${this.cluster === 'follower' ? ' (follower, from cold cache)' : ''}`);
+        oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems${this.cluster === 'follower' ? ' (follower, from discovery snapshot)' : ''}`);
         this._initialized = true;
       } catch (error) {
         oclLog.error(`Initialization failed: ${error.message}`);
@@ -159,58 +164,24 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     return out;
   }
 
-  async #initializeFromColdCache() {
+  async #initializeFromDiscoverySnapshot() {
     await ensureCacheDirectories(CACHE_CS_DIR);
-    let files;
-    try {
-      files = await fs.readdir(CACHE_CS_DIR);
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        oclLog.error(`Follower: failed to read cold cache directory: ${error.message}`);
-      }
+
+    const snapshotData = await this.#readDiscoverySnapshot();
+    if (!snapshotData) {
+      oclLog.warn('Follower: no discovery snapshot available yet; will retry on next refresh cycle');
       return;
     }
 
-    for (const file of files) {
-      if (!file.endsWith('.json')) {
-        continue;
-      }
+    const snapshot = this.#deserializeSnapshot(snapshotData);
+    this.#applySnapshot(snapshot);
 
-      try {
-        const filePath = path.join(CACHE_CS_DIR, file);
-        const data = await fs.readFile(filePath, 'utf-8');
-        const cached = JSON.parse(data);
-        if (!cached || !cached.canonicalUrl) {
-          continue;
-        }
-
-        const canonicalUrl = cached.canonicalUrl;
-        const version = cached.version || null;
-
-        const json = {
-          resourceType: 'CodeSystem',
-          id: canonicalUrl.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 200),
-          url: canonicalUrl,
-          version,
-          name: canonicalUrl,
-          status: 'active',
-          content: cached.concepts && cached.concepts.length > 0 ? 'complete' : 'not-present',
-          extension: [{ url: OCL_CODESYSTEM_MARKER_EXTENSION, valueBoolean: true }]
-        };
-
-        const cs = new CodeSystem(json, 'R5', true);
-        this.#trackCodeSystemId(cs);
-        this._codeSystemsByCanonical.set(canonicalUrl, cs);
-        this._idToCodeSystem.set(cs.id, cs);
-
-        const mtimeMs = getColdCacheMtimeMs(filePath);
-        if (mtimeMs != null) {
-          this._followerCacheMtimes.set(filePath, mtimeMs);
-        }
-      } catch (error) {
-        oclLog.warn(`Follower: failed to read cold cache file ${file}: ${error.message}`);
-      }
+    const mtimeMs = getColdCacheMtimeMs(DISCOVERY_SNAPSHOT_PATH);
+    if (mtimeMs != null) {
+      this._followerSnapshotMtimeMs = mtimeMs;
     }
+
+    oclLog.info(`Follower: initialized ${snapshot.size} code systems from discovery snapshot`);
   }
 
   #scheduleFollowerCacheCheck() {
@@ -220,81 +191,50 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this._refreshPromise = (async () => {
       try {
-        const added = [];
-        const changed = [];
-        let files;
-        try {
-          files = await fs.readdir(CACHE_CS_DIR);
-        } catch (error) {
+        const mtimeMs = getColdCacheMtimeMs(DISCOVERY_SNAPSHOT_PATH);
+        if (mtimeMs == null) {
+          return;
+        }
+        if (this._followerSnapshotMtimeMs != null && mtimeMs <= this._followerSnapshotMtimeMs) {
           return;
         }
 
-        for (const file of files) {
-          if (!file.endsWith('.json')) {
-            continue;
-          }
+        const snapshotData = await this.#readDiscoverySnapshot();
+        if (!snapshotData) {
+          return;
+        }
 
-          const filePath = path.join(CACHE_CS_DIR, file);
-          const mtimeMs = getColdCacheMtimeMs(filePath);
-          if (mtimeMs == null) {
-            continue;
-          }
+        const nextSnapshot = this.#deserializeSnapshot(snapshotData);
+        const changes = this.#diffSnapshots(this._sourceStateByCanonical, nextSnapshot);
+        this.#applySnapshot(nextSnapshot);
+        this._followerSnapshotMtimeMs = mtimeMs;
 
-          const previousMtime = this._followerCacheMtimes.get(filePath);
-          if (previousMtime != null && mtimeMs <= previousMtime) {
-            continue;
-          }
-
-          try {
-            const data = await fs.readFile(filePath, 'utf-8');
-            const cached = JSON.parse(data);
-            if (!cached || !cached.canonicalUrl) {
+        for (const cs of [...(changes.added || []), ...(changes.changed || [])]) {
+          const entry = nextSnapshot.get(cs.url);
+          for (const meta of [entry?.meta, entry?.headMeta]) {
+            if (!meta) {
               continue;
             }
-
-            const canonicalUrl = cached.canonicalUrl;
-            const isNew = !this._codeSystemsByCanonical.has(canonicalUrl);
-
-            const json = {
-              resourceType: 'CodeSystem',
-              id: canonicalUrl.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 200),
-              url: canonicalUrl,
-              version: cached.version || null,
-              name: canonicalUrl,
-              status: 'active',
-              content: cached.concepts && cached.concepts.length > 0 ? 'complete' : 'not-present',
-              extension: [{ url: OCL_CODESYSTEM_MARKER_EXTENSION, valueBoolean: true }]
-            };
-
-            const cs = new CodeSystem(json, 'R5', true);
-            const existing = this._codeSystemsByCanonical.get(canonicalUrl);
-            if (existing) {
-              cs.id = existing.id;
-              cs.jsonObj.id = existing.id;
-            } else {
-              this.#trackCodeSystemId(cs);
+            if (OCLSourceCodeSystemFactory.hasExactFactory(meta.canonicalUrl, meta.version || null)) {
+              const factory = OCLSourceCodeSystemFactory.findFactoryByKey(meta.canonicalUrl, meta.version || null);
+              if (factory) {
+                factory.reloadColdCacheIfChanged();
+              }
+              continue;
             }
-
-            this._codeSystemsByCanonical.set(canonicalUrl, cs);
-            this._idToCodeSystem.set(cs.id, cs);
-            this._followerCacheMtimes.set(filePath, mtimeMs);
-
-            if (isNew) {
-              added.push(cs);
-            } else {
-              changed.push(cs);
+            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta, this.cluster);
+            if (factory) {
+              oclLog.info(`Follower: factory created for ${meta.canonicalUrl}|${meta.version || ''}`);
             }
-          } catch (error) {
-            oclLog.warn(`Follower: failed to reload cold cache file ${file}: ${error.message}`);
           }
         }
 
-        if (added.length > 0 || changed.length > 0) {
-          this._pendingChanges = { added, changed, deleted: [] };
-          oclLog.info(`Follower: detected ${added.length} new, ${changed.length} updated code systems from cold cache`);
+        if (changes.added.length > 0 || changes.changed.length > 0 || changes.deleted.length > 0) {
+          this._pendingChanges = changes;
+          oclLog.info(`Follower: snapshot update — ${changes.added.length} new, ${changes.changed.length} updated, ${changes.deleted.length} removed`);
         }
       } catch (error) {
-        oclLog.error(`Follower cache check failed: ${error.message}`);
+        oclLog.error(`Follower snapshot check failed: ${error.message}`);
       } finally {
         this._refreshPromise = null;
       }
@@ -407,9 +347,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
         await this.#augmentSnapshotWithDefaultVersions(nextSnapshot);
         const changes = this.#diffSnapshots(this._sourceStateByCanonical, nextSnapshot);
         this.#applySnapshot(nextSnapshot);
-        // Create factories for versions that appeared: the default (release) meta
-        // first so it claims the unversioned keys, then the HEAD variant. Covers
-        // both newly discovered sources and a release published on a known one.
+        await this.#writeDiscoverySnapshot(nextSnapshot);
+
         for (const cs of [...(changes.added || []), ...(changes.changed || [])]) {
           const entry = nextSnapshot.get(cs.url);
           for (const meta of [entry?.meta, entry?.headMeta]) {
@@ -419,12 +358,14 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
             if (OCLSourceCodeSystemFactory.hasExactFactory(meta.canonicalUrl, meta.version || null)) {
               continue;
             }
-            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta);
+            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta, this.cluster);
             if (factory) {
               oclLog.info(`Factory created for ${meta.canonicalUrl}|${meta.version || ''}`);
             }
           }
         }
+
+        this.#scheduleProactiveWarmUp();
         this._pendingChanges = changes;
       } catch (error) {
         oclLog.error(`Incremental source refresh failed: ${error.message}`);
@@ -612,6 +553,89 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     }
 
     this._sourceStateByCanonical = snapshot;
+  }
+
+  async #writeDiscoverySnapshot(snapshot) {
+    try {
+      await ensureCacheDirectories(CACHE_CS_DIR);
+      const entries = [];
+      for (const [canonicalUrl, entry] of snapshot.entries()) {
+        const item = {
+          canonicalUrl,
+          checksum: entry.checksum || null,
+          meta: this.#serializeMeta(entry.meta),
+          csJson: entry.cs?.jsonObj || null
+        };
+        if (entry.headMeta) {
+          item.headMeta = this.#serializeMeta(entry.headMeta);
+          item.headCsJson = entry.headMeta.codeSystem?.jsonObj || null;
+        }
+        entries.push(item);
+      }
+      const payload = JSON.stringify({ version: 1, timestamp: new Date().toISOString(), entries }, null, 2);
+      await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, payload);
+      oclLog.info(`Discovery snapshot written (${entries.length} entries)`);
+    } catch (error) {
+      oclLog.error(`Failed to write discovery snapshot: ${error.message}`);
+    }
+  }
+
+  #serializeMeta(meta) {
+    if (!meta) {
+      return null;
+    }
+    return {
+      id: meta.id,
+      shortCode: meta.shortCode,
+      owner: meta.owner,
+      name: meta.name,
+      description: meta.description,
+      canonicalUrl: meta.canonicalUrl,
+      version: meta.version,
+      conceptsUrl: meta.conceptsUrl,
+      checksum: meta.checksum
+    };
+  }
+
+  async #readDiscoverySnapshot() {
+    try {
+      const data = await fs.readFile(DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+      return JSON.parse(data);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclLog.error(`Failed to read discovery snapshot: ${error.message}`);
+      }
+      return null;
+    }
+  }
+
+  #deserializeSnapshot(snapshotData) {
+    const snapshot = new Map();
+    if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+      return snapshot;
+    }
+    for (const item of snapshotData.entries) {
+      if (!item.canonicalUrl || !item.csJson) {
+        continue;
+      }
+      const cs = new CodeSystem(item.csJson, 'R5', true);
+      const meta = item.meta ? { ...item.meta, codeSystem: cs } : null;
+      const entry = { cs, meta, checksum: item.checksum || null };
+      if (item.headMeta && item.headCsJson) {
+        const headCs = new CodeSystem(item.headCsJson, 'R5', true);
+        entry.headMeta = { ...item.headMeta, codeSystem: headCs };
+      }
+      snapshot.set(item.canonicalUrl, entry);
+    }
+    return snapshot;
+  }
+
+  #scheduleProactiveWarmUp() {
+    for (const [, factory] of OCLSourceCodeSystemFactory.factoriesByKey.entries()) {
+      if (factory) {
+        factory.scheduleBackgroundLoad('proactive-warm');
+      }
+    }
   }
 
   #diffSnapshots(previousSnapshot, nextSnapshot) {
@@ -1594,13 +1618,16 @@ class OCLSourceCodeSystemProvider extends BaseCSServices {
 class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   static factoriesByKey = new Map();
   static #sharedI18n = null;
-  static cluster = null;
 
-  static createForDiscoveredSource(httpClient, meta) {
+  static createForDiscoveredSource(httpClient, meta, cluster = null) {
     if (!OCLSourceCodeSystemFactory.#sharedI18n) {
       return null;
     }
-    return new OCLSourceCodeSystemFactory(OCLSourceCodeSystemFactory.#sharedI18n, httpClient, meta);
+    return new OCLSourceCodeSystemFactory(OCLSourceCodeSystemFactory.#sharedI18n, httpClient, meta, cluster);
+  }
+
+  static findFactoryByKey(system, version = null) {
+    return OCLSourceCodeSystemFactory.#findFactory(system, version);
   }
 
   static #normalizeSystem(system) {
@@ -1668,13 +1695,14 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     factory.#applyConceptsToCodeSystemResource(codeSystem || factory.meta?.codeSystem || null);
   }
 
-  constructor(i18n, client, meta) {
+  constructor(i18n, client, meta, cluster = null) {
     super(i18n);
     if (!OCLSourceCodeSystemFactory.#sharedI18n) {
       OCLSourceCodeSystemFactory.#sharedI18n = i18n;
     }
     this.httpClient = client;
     this.meta = meta;
+    this.cluster = cluster;
     this.sharedConceptCache = new Map();
     this.sharedPageCache = new Map();
     this.sharedPendingConceptRequests = new Map();
@@ -1694,7 +1722,6 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       OCLSourceCodeSystemFactory.factoriesByKey.set(unversionedKey, this);
     }
 
-    // Load cold cache at construction
     this.#loadColdCache();
   }
 
@@ -1835,7 +1862,7 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   }
 
   scheduleBackgroundLoad(reason = 'request') {
-    if (OCLSourceCodeSystemFactory.cluster === 'follower') {
+    if (this.cluster === 'follower') {
       this.reloadColdCacheIfChanged();
       return;
     }

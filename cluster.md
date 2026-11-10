@@ -75,6 +75,7 @@ as before.
 | `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
 | Syndication feed (the store) | yes | no: routed to the master |
 | VSAC sync, and the resync form on `/info/vsac` | yes | no: reads what the master wrote |
+| OCL discovery, refresh, and background warm-up | yes | no: reads the master's discovery snapshot and cold cache files |
 | Package crawler, XIG download, registry crawl, daily report, npm audit | yes | no (those modules don't run) |
 | IANA media types registry (`terminology-cache/media-types.xml`), downloaded at each load | yes | no: reads the master's copy (none: a warning, and no `registered` filter) |
 | Statistics database, uptime history | yes | no: in memory only |
@@ -90,6 +91,19 @@ was loaded at. When a request uses the VSAC value sets, the worker reads the cou
 by key, at most once a second) and reloads the list in the background if it has moved, so a
 sync reaches every worker about a second after it finishes. The database is in WAL mode with a
 5 second busy timeout, so a worker's reload doesn't make the master's writes fail.
+
+**OCL.** The master discovers sources from OCL, resolves default versions, and writes a
+discovery snapshot (`data/terminology-cache/ocl/discovery-snapshot.json`) containing the full
+source metadata and CodeSystem JSON for every discovered source. After each discovery or
+refresh cycle the master also proactively downloads every source's concepts into per-source
+cold cache files (`data/terminology-cache/ocl/codesystems/`). A worker reads the discovery
+snapshot to build identical providers and factories (same ids, metadata and CodeSystem
+resources as the master), then loads concepts from the per-source cold cache files. When the
+master updates the snapshot (new sources, changed checksums), a worker detects the change on
+its next once-per-minute refresh cycle, reloads the snapshot, and creates factories for newly
+discovered sources. Workers can still fetch individual concepts on demand for cache misses,
+but never run bulk discovery or background warm-up downloads. All cache file writes use
+atomic temp-file-plus-rename to avoid torn reads.
 
 **The package caches are the master's.** The value set and concept map caches in each
 package folder (`.valuesets-2.db`, `.conceptmaps-2.db`) are built, rebuilt and migrated only

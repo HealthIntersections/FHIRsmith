@@ -59,10 +59,40 @@ function getColdCacheMtimeMs(cacheFilePath) {
   }
 }
 
+const path = require('path');
+
+async function cleanupStaleTmpFiles(...dirs) {
+  for (const dir of dirs) {
+    if (!dir) {
+      continue;
+    }
+    try {
+      const files = await fs.readdir(dir);
+      for (const file of files) {
+        if (!/\.tmp\.\d+$/.test(file)) {
+          continue;
+        }
+        try {
+          await fs.unlink(path.join(dir, file));
+        } catch (e) {
+          if (e.code !== 'ENOENT') {
+            oclLog.warn(`Failed to clean up stale tmp file ${file}: ${e.message}`);
+          }
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclLog.warn(`Failed to scan for stale tmp files in ${dir}: ${error.message}`);
+      }
+    }
+  }
+}
+
 module.exports = {
   ensureCacheDirectories,
   getColdCacheAgeMs,
   formatCacheAgeMinutes,
   atomicWriteFile,
-  getColdCacheMtimeMs
+  getColdCacheMtimeMs,
+  cleanupStaleTmpFiles
 };

@@ -592,7 +592,7 @@ class Library {
         await providerSet.codeSystemProvider.listCodeSystems('5.0', null);
         const metas = providerSet.codeSystemProvider.getSourceMetas();
         for (const meta of metas) {
-          const factory = new OCLSourceCodeSystemFactory(this.i18n, providerSet.codeSystemProvider.httpClient, meta);
+          const factory = new OCLSourceCodeSystemFactory(this.i18n, providerSet.codeSystemProvider.httpClient, meta, config.cluster || null);
           this.registerProvider(`ocl:${config.baseUrl}`, factory, isDefault);
         }
         providerSet.factoriesRegistered = true;

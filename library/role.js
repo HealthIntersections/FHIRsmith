@@ -163,7 +163,6 @@ function applyRole(config, role) {
   if (tx.vsacCfg) {
     tx.vsacCfg = { ...tx.vsacCfg, cluster: role.role === 'master' ? 'leader' : 'follower' };
   }
-  tx.oclCluster = role.role === 'master' ? 'leader' : 'follower';
   config.server = config.server || {};
   // the memory limit is the whole group's (master and workers in one cgroup)
   const memory = config.server.memory || {};
