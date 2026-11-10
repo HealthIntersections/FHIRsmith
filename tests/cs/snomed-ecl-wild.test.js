@@ -5,7 +5,7 @@
  * pattern with many of them backtracks for a time that grows as the term
  * length to the power of the number of '*'s; the match runs synchronously, so
  * the whole server stalled. Now it is matched without a regex (see
- * wildTermMatcher in cs-snomed.js), in linear time, and a run of '*'s is treated as one.
+ * wildTermMatcher in tx/sct/ecl.js), in linear time, and a run of '*'s is treated as one.
  */
 
 const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
@@ -83,5 +83,16 @@ describe('ECL wild: terms', () => {
     expect(codes('<< 10200004 {{ D term = wild:"Liver structure" }}')).toHaveLength(1);
     expect(codes('<< 10200004 {{ D term = wild:"**lobe***" }}')).toEqual(codes('<< 10200004 {{ D term = wild:"*lobe*" }}'));
     expect(codes('<< 10200004 {{ D term = wild:"*lobe*" }}').length).toBeGreaterThan(0);
+  });
+});
+
+describe('wildTermMatcher, in the ECL module', () => {
+  const { wildTermMatcher } = require('../../tx/sct/ecl');
+
+  test('the matcher the provider uses: anchored, case-insensitive, runs of * as one', () => {
+    expect(wildTermMatcher('*hema*oma')('Subdural HEMATOMA')).toBe(true);
+    expect(wildTermMatcher('hema*')('subdural hematoma')).toBe(false);
+    expect(wildTermMatcher('a***b')('aXb')).toBe(true);
+    expect(wildTermMatcher('exact')('Exact')).toBe(true);
   });
 });
