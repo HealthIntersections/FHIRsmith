@@ -376,16 +376,22 @@ describe('npm audit signatures against the packages module', () => {
     }
   });
 
+  // eslint-disable-next-line no-control-regex
+  const plain = s => String(s || '').replace(/\u001b\[[0-9;]*m/g, '');
+
   // Not execFileSync: the server is in this process, so blocking it would hang npm
   const npm = args => new Promise((resolve, reject) => {
-    execFile('npm', [...args, '--registry', `${mod.base}/`, '--cache', path.join(tmp, 'cache'), '--no-fund', '--no-update-notifier'],
-      { cwd: project, encoding: 'utf8', timeout: 50000 }, (err, stdout, stderr) => {
+    // No colour: Jest passes FORCE_COLOR to its workers, and npm then puts ANSI codes in the
+    // middle of the messages these tests look for
+    const env = { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' };
+    execFile('npm', [...args, '--registry', `${mod.base}/`, '--cache', path.join(tmp, 'cache'), '--no-fund', '--no-update-notifier', '--color', 'false'],
+      { cwd: project, encoding: 'utf8', timeout: 50000, env }, (err, stdout, stderr) => {
         if (err) {
-          err.stdout = stdout;
-          err.stderr = stderr;
+          err.stdout = plain(stdout);
+          err.stderr = plain(stderr);
           reject(err);
         } else {
-          resolve(stdout);
+          resolve(plain(stdout));
         }
       });
   });
