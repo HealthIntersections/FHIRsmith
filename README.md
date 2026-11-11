@@ -32,6 +32,13 @@ These are not being actively developed at present.
 ## Planned
 
 * R4/R6 interconverter
+* Full RESTful server implementation
+
+## Open Areas of Work 
+
+* How to handle expansions and validations of some kinds of invalid value sets 
+* more efficient CodeSystem implementations 
+* more work on internationalization of IPS documents and the IPS repository generally
 
 ## Summary Statement
 

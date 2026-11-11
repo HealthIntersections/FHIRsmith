@@ -201,6 +201,12 @@ has the detail.
   are new dependencies) - or `npm rebuild` for the native ones.
 - **Start command**: `npm start` is now `node --expose-gc server.js`. A service that runs
   `node server.js` still works (the memory guard sets the flag itself), but add `--expose-gc`.
+  `--port` or `--instance-code` without `--role` now stops the server with an error (they used
+  to be ignored): drop them from a single server's command line.
+- **`NODE_ENV`** is `production` when it isn't set (`npm run dev`: `development`). Set it
+  yourself if you relied on development mode (Express's error pages with stack traces).
+- **Keep-alive**: idle connections are kept for 65 s (was Node's 5 s), longer than nginx's
+  upstream `keepalive_timeout` (60 s by default). If you set nginx's higher, keep it under 65 s.
 - **Memory guard** (new, on by default): above 85% of the memory limit (the cgroup's - systemd
   `MemoryMax` - or else the machine's RAM) new requests get 503, and above 92% running
   operations are aborted (422). If your memory limit is tight, check `server.memory` ([Memory](#memory)).
@@ -228,10 +234,16 @@ has the detail.
   too-costly, and should page it.
 - **`Tools/Java` is no longer special**: the IG Publisher and the tx-ecosystem test runner get
   the configured limits like any client (they used to be held to 3000/10000).
+- **`x-too-costly-threshold`** can only lower the limit: a value above `internalLimit` is cut
+  down to it, and `0` (or anything that isn't a positive whole number) is ignored - it no
+  longer means "no limit".
 - **Memory caps** with defaults (see the `Limits:` line in the startup log): `cacheMaxConcepts`,
   `cacheMaxTotalConcepts`, `expansionCacheMaxCodes`, `usageTrackerMaxCodes`,
   `usageTrackerMaxCodeLength`, `languageTagCacheSize`. A client may now get `cache-id-unknown`
   (or 422) for a `$cache-control` cache that grew too big.
+- **New, optional**: `snomed` (load SNOMED CT editions memory-mapped, or prewarmed - see
+  tx/README.md), and `ecosystem` (`$validate-code` for code systems held by other servers in
+  the terminology ecosystem; off by default).
 - **`pruneTerminologyCache`** (new, default false): delete the databases, caches and packages
   in `terminology-cache` that the library no longer uses. Turn it on for a server that has the
   data directory to itself.
@@ -244,28 +256,50 @@ has the detail.
   `global-lang-pack` code is gone. If you load language packs, check they are marked.
 - **Behaviour, with no setting**: `regex` filters match the whole value (LOINC regex value sets
   may select fewer codes); ICD-11 codes are entity ids; a resource that both THO and a core
-  package provide is available in both versions.
+  package provide is available in both versions; for LOINC answer lists, `answers-for` is the
+  filter (`LIST` still works, for backwards compatibility only); `$cache-control` caches are
+  never carried over a restart.
 - **Rebuilds** (optional, for the new features): SNOMED CT caches for alternate identifiers and
   concrete values, and any built in a time zone ahead of UTC (their effectiveTimes are a day
-  early); the LOINC database for its mappings. The package value set and concept map caches
-  rebuild themselves once, so the first start is slower.
+  early); the LOINC database for its mappings, its Part translations (`PartName` designations,
+  from every linguistic variant) and without the blank answer code that externally defined
+  answer lists added. RxNorm's new index is added to an existing database at load. Coming from
+  0.16 or earlier, the package value set and concept map caches rebuild themselves once, so
+  the first start is slower.
 
 ### Other modules
 
-- **registry**: `maxResponseMB` (default 100) limits what the crawler reads from a server.
+- **registry**: `maxResponseMB` (default 100) limits what the crawler reads from a server. New,
+  optional: `oauth`, client credentials for servers that need a token to be scanned.
 - **packages**: the crawler refuses packages over its new limits (`maxDownloadMB` 250,
   `maxUnpackedMB` 4096, `maxFileMB` 50, `maxFiles` 250000); raise them only if a real package
   is refused.
+- **packages, signing** (on by default, `npmSigning`): the registry signs every version, so
+  `npm audit signatures` works against it. At the first start it makes its key,
+  `npm-signing-key.pem` next to the database (`npmSigning.keyFile`) - **back it up**: clients
+  check signatures against the published key - and signs the versions it already holds in the
+  background (`/packages/-/npm/v1/keys` is a 404 until it's done; progress in `/packages/status`).
+  Set `"enabled": false` to opt out.
+- **packages, publishers' signatures**: `crawler.signatures` defaults to `check` (a signature
+  that fails is logged and the package stored anyway); `require` refuses unsigned packages and
+  doesn't read feeds that list no keys. Feeds' keys are in `package-feeds.json`.
+- **packages, `/packages/feed-check`** (on by default, `feedCheck`): anyone can have the server
+  download and check a feed's packages (one run at a time, at most `maxItems` 50 and
+  `maxTotalMB` 500). Set `"enabled": false` if you don't want that on your server.
 - **xig**: `POST /xig/update` only works when `updateToken` is set.
 - **ext-tracker**: set `token` (the IG Publisher's) so only the publisher can submit.
 - **token**: the JSON API takes the API key in a header (`Authorization: Bearer` or
-  `X-API-Key`), not the URL - clients must change.
+  `X-API-Key`), not the URL - clients must change. The session cookie is now `Secure` when the
+  request came over https, which behind nginx needs `X-Forwarded-Proto` (`cookieSecure`
+  overrides).
 - **publisher**: the administrator's password is now `adminPassword` in the config (set at
   every start). Without it, an administrator that still has the old fixed default password
   (`admin123`) gets a random one at startup, which is logged - set `adminPassword`, or look in
   the log.
 - **ips**: to use a validator jar of your own, set `validator.jar`, rather than replacing
-  `bin/validator_cli.jar`.
+  `bin/validator_cli.jar`. `validator.checkIpsCodes` is gone (validator 7.0.4 refuses it);
+  `validator.autoLoadPackages` (default true) lets the validator load the packages that define
+  extensions it doesn't know.
 
 There are no manual data migrations: the databases that changed migrate themselves at startup.
 
