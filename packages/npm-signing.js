@@ -125,4 +125,95 @@ class NpmSigner {
   }
 }
 
-module.exports = { NpmSigner, integrityOf, integrityOfSync, verifySignature, signedMessage, keyIdOf };
+// --- publisher signatures ------------------------------------------------------------------------
+//
+// A publisher (the IG Publisher, org.hl7.fhir.utilities.npm.NpmPackageSigner) signs a package with a
+// partner file, {package}.tgz.sigstore.json, and its feed links it from the item (fhir:signature).
+// The file is a Sigstore bundle (v0.3) holding a DSSE envelope whose payload is an in-toto statement
+// with one subject: the package's purl (pkg:npm/{name}@{version}) and the sha512 of the .tgz. The
+// signature is ECDSA P-256 / SHA-256 (DER) over the DSSE pre-authentication encoding of the payload.
+// Which keys may sign a feed's packages is in package-feeds.json (feeds[].signing.keys).
+
+const BUNDLE_MEDIA_TYPE = 'application/vnd.dev.sigstore.bundle';
+const IN_TOTO_PAYLOAD = 'application/vnd.in-toto+json';
+const IN_TOTO_STATEMENT = 'https://in-toto.io/Statement/v1';
+
+// The npm package URL of a package version
+function purl(name, version) {
+  return 'pkg:npm/' + (name.startsWith('@') ? '%40' + name.substring(1) : name) + '@' + version;
+}
+
+// DSSE pre-authentication encoding: "DSSEv1" SP LEN(type) SP type SP LEN(body) SP body
+function pae(payloadType, payload) {
+  const type = Buffer.from(payloadType, 'utf8');
+  return Buffer.concat([Buffer.from(`DSSEv1 ${type.length} ${payloadType} ${payload.length} `, 'utf8'), payload]);
+}
+
+/**
+ * Checks a publisher's signature of a package. tgz is the package's bytes; bundle the parsed
+ * partner file; keys the feed's keys ([{keyid, key, expires}], key: base64 SPKI DER); name and
+ * version the package's own (from its package.json); publishedAt when it was published (a key
+ * that had expired by then doesn't count), or null. Returns {keyid, signedAt}; throws an Error
+ * saying what is wrong.
+ */
+function verifyPackageSignature(tgz, bundle, keys, name, version, publishedAt) {
+  if (!bundle || typeof bundle !== 'object' || typeof bundle.mediaType !== 'string' || !bundle.mediaType.startsWith(BUNDLE_MEDIA_TYPE)) {
+    throw new Error('not a Sigstore bundle');
+  }
+  const envelope = bundle.dsseEnvelope;
+  if (!envelope || envelope.payloadType !== IN_TOTO_PAYLOAD || typeof envelope.payload !== 'string') {
+    throw new Error('the bundle has no in-toto DSSE envelope');
+  }
+  const payload = Buffer.from(envelope.payload, 'base64');
+  const hint = bundle.verificationMaterial?.publicKey?.hint;
+  const signed = pae(IN_TOTO_PAYLOAD, payload);
+  const tried = [];
+  let signedBy = null;
+  for (const sig of Array.isArray(envelope.signatures) ? envelope.signatures : []) {
+    const keyid = sig.keyid || hint;
+    tried.push(keyid);
+    const key = (keys || []).find(k => k.keyid === keyid);
+    if (!key || typeof sig.sig !== 'string') {
+      continue;
+    }
+    if (key.expires && publishedAt && !(publishedAt.getTime() < Date.parse(key.expires))) {
+      continue;
+    }
+    try {
+      const ok = crypto.verify('sha256', signed,
+        { key: Buffer.from(key.key, 'base64'), format: 'der', type: 'spki' }, Buffer.from(sig.sig, 'base64'));
+      if (ok) {
+        signedBy = keyid;
+        break;
+      }
+    } catch (e) {
+      // a malformed key or signature: not this one
+    }
+  }
+  if (!signedBy) {
+    throw new Error(tried.length === 0 ? 'the bundle has no signatures'
+      : `no signature verifies against a key this feed lists (signed by ${tried.join(', ')})`);
+  }
+  let statement;
+  try {
+    statement = JSON.parse(payload.toString('utf8'));
+  } catch (e) {
+    throw new Error('the signed payload is not JSON');
+  }
+  if (statement._type !== IN_TOTO_STATEMENT) {
+    throw new Error(`the signed payload is not an in-toto v1 statement (_type is ${statement._type})`);
+  }
+  const expected = purl(name, version);
+  const digest = crypto.createHash('sha512').update(tgz).digest('hex');
+  const subjects = Array.isArray(statement.subject) ? statement.subject : [];
+  const named = subjects.filter(s => s && s.name === expected);
+  if (named.length === 0) {
+    throw new Error(`the signature is not for ${expected} (it is for ${subjects.map(s => s && s.name).join(', ') || 'nothing'})`);
+  }
+  if (!named.some(s => typeof s.digest?.sha512 === 'string' && s.digest.sha512.toLowerCase() === digest)) {
+    throw new Error('the signature is for different content: the package\'s sha512 doesn\'t match');
+  }
+  return { keyid: signedBy, signedAt: statement.predicate?.signedAt || null };
+}
+
+module.exports = { NpmSigner, integrityOf, integrityOfSync, verifySignature, signedMessage, keyIdOf, verifyPackageSignature, purl, pae };

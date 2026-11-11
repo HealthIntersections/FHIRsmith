@@ -35,6 +35,7 @@ In summary:
 | `GET /packages/updates` | Versions published since a date |
 | `GET /packages/broken` | Package versions whose dependencies this registry doesn't hold |
 | `GET /packages/-/npm/v1/keys` | The key this registry signs package versions with (see [Signatures](#signatures)) |
+| `GET /packages/-/fhir/v1/signatures/{name}@{version}` | The publisher's signature of a version, as the crawler fetched it (see [Publishers' signatures](#publishers-signatures)) |
 | `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |
 
 Most endpoints return an HTML page instead of JSON when the request's `Accept`
@@ -93,6 +94,7 @@ In the server config, under `modules.packages`:
 | `crawlToken` | Shared secret for `POST /packages/crawl`. Omit it to disable that endpoint; the scheduled crawler is unaffected. |
 | `crawler.enabled` | Run the crawler at startup and on the schedule. |
 | `crawler.schedule` | Cron expression for crawls. |
+| `crawler.signatures` | Publishers' package signatures: `ignore`, `check` (the default) or `require`. See [Publishers' signatures](#publishers-signatures). |
 | `masterUrl` | The list of feeds to crawl. Defaults to `https://fhir.github.io/ig-registry/package-feeds.json`. |
 | `localFeedDirs` | Optional. Directories feeds may be read from as local files (for testing). |
 | `allowPrivateAddresses` | Optional, for testing only. Lets the crawler and `/npm-check` fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
@@ -178,11 +180,62 @@ stores it.
 
 `/packages/log` shows what the last crawl did, feed by feed and item by item.
 
+### Publishers' signatures
+
+A publisher can sign its packages: the IG Publisher does, when its `fhir-settings.json` has a
+`packageSigningKey` (see `org.hl7.fhir.utilities.npm.NpmPackageSigner` in core). Each signed
+package has a partner file, `{package}.tgz.sigstore.json`, and the feed item links it in a
+`fhir:signature` element. The file is a Sigstore bundle: an ECDSA P-256 signature of a statement
+naming the package (`pkg:npm/{id}@{version}`) and the sha512 of the `.tgz`.
+
+Which keys may sign a feed's packages is in the master list, `package-feeds.json`, on the feed:
+
+```json
+"signing": {
+  "required": false,
+  "keys": [{ "keyid": "SHA256:...", "key": "{base64 public key}", "expires": null }]
+}
+```
+
+`crawler.signatures` says what the crawler does with them, for feeds that list keys:
+
+* `ignore`: nothing.
+* `check` (the default): each package's signature is fetched and checked. One that fails, or
+  can't be fetched, is logged (in the server log and `/packages/log`), and the package is stored
+  anyway, unless the feed has `"required": true`, when it is refused.
+* `require`: as `check`, but an unsigned package, or one whose signature fails, is refused,
+  and feeds that list no keys (Simplifier, for one) aren't read at all - the crawl log says so.
+
+With `ignore` or `check`, feeds that list no keys are read as before, and their packages aren't
+checked. A key that had expired when a
+package was published doesn't count. A package that was stored before it was signed (or before
+the server checked) has its signature checked against the bytes it holds, once, the next time
+the crawler sees it in a feed; it is never refused, since it is already held, but a failure is
+logged and recorded.
+
+The signature file is kept in the `PackageSignatures` table as it was when it was checked, valid
+or not, with the outcome, the key that signed it and when it was checked. The HTML lists of
+packages (search, a package's versions, updates) show each version's signature as `confirmed`,
+`rejected` or `absent` (unsigned, or not checked); hover for the key, or the reason.
+
+In the package document, each version with a signature has `dist.fhir-signature`: `url` (the
+signature file, served at `/packages/-/fhir/v1/signatures/{name}@{version}` exactly as it was
+fetched), `status` (`confirmed` or `rejected`) and, when confirmed, the `keyid`. A client can
+check the signature itself, against the keys in `package-feeds.json`.
+
+It is deliberately not `dist.attestations`. npm (`npm audit signatures`) verifies attestations
+as Sigstore attestations: it wants the signing key listed among the registry's own keys
+(`/-/npm/v1/keys`), and a transparency log (Rekor) entry in the bundle. Publishers' bundles have
+no log entry, and listing a publisher's key with the registry's would let that publisher forge
+the registry's signatures, since npm accepts a registry signature from any listed key. So every
+signed package would fail `npm audit signatures`.
+
 ## Storage
 
 Everything is in the SQLite database. `PackageVersions` holds each version's
 metadata and the tarball itself. `PackageDist` holds each version's `dist.integrity`
-and npm signature. `Packages` holds one row per package id, with its
+and npm signature. `PackageSignatures` holds the publisher's signature of each version, as
+the crawler checked it. `Packages` holds one row per package id, with its
 current version and download count. `PackageDependencies` (stored as `id@version`),
 `PackageFHIRVersions` and `PackageURLs` (the canonical URLs of the resources in each
 version) support search.

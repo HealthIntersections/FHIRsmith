@@ -164,6 +164,44 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  /-/fhir/v1/signatures/{spec}:
+    get:
+      tags: [registry]
+      operationId: getPublisherSignature
+      summary: The publisher's signature of a package version
+      description: |
+        The signature a package's publisher made of it (its `{package}.tgz.sigstore.json`,
+        linked from the publisher's feed by `fhir:signature`), exactly as this registry fetched
+        and checked it. It is a Sigstore bundle: an ECDSA P-256 signature of an in-toto
+        statement naming the package (`pkg:npm/{name}@{version}`) and the sha512 of the
+        `.tgz`. The keys a feed may sign with are listed in the FHIR package registry's
+        `package-feeds.json`; a client can check the signature against them itself.
+
+        Each version's `dist.fhir-signature` in the package document links this, with what
+        the registry made of it (`confirmed` or `rejected`). It isn't `dist.attestations`:
+        npm would try to verify it as a Sigstore attestation, which it isn't (it has no
+        transparency log entry, and the publisher's key isn't the registry's).
+      parameters:
+        - name: spec
+          in: path
+          required: true
+          description: '`{name}@{version}`, as npm writes it (a scope''s `/` escaped).'
+          schema: { type: string }
+          example: hl7.fhir.uv.ips@2.0.0
+      responses:
+        '200':
+          description: The signature bundle, as fetched
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: No signature is held for this package version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
   /-/npm/v1/keys:
     get:
       tags: [registry]
@@ -730,6 +768,16 @@ components:
                 properties:
                   keyid: { type: string }
                   sig: { type: string, description: 'base64 DER ECDSA signature' }
+            fhir-signature:
+              type: object
+              description: |
+                The publisher's signature of this version, as this registry checked it, when
+                there is one. Absent when the package isn't signed, or its feed lists no keys.
+              required: [url, status]
+              properties:
+                url: { type: string, format: uri, description: 'The signature: `/-/fhir/v1/signatures/{name}@{version}`' }
+                status: { type: string, enum: [confirmed, rejected] }
+                keyid: { type: string, description: The key that signed it (when confirmed) }
 
     SigningKeys:
       type: object
