@@ -87,7 +87,9 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
     if (this.versionId) {
       url = url + '&version=' + encodeURIComponent(this.versionId);
     }
-    url = url + '&property=inactive&property=notSelectable&property=status';
+    // asking for properties gets only those, so designation too: any designation is a valid
+    // display (see designations()), not just the preferred term
+    url = url + '&property=inactive&property=notSelectable&property=status&property=designation';
     const { status, json } = await this.#send(url);
     if (status >= 300 || !json || json.resourceType !== 'Parameters') {
       const msg = json && json.resourceType === 'OperationOutcome' ? VirtualCodeSystemProvider.#outcomeText(json) : null;
@@ -136,6 +138,9 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
   async classificationCode() { return null; }
   async codeIssues() { return []; }
   async reportedClassificationCode() { return null; }
+
+  // designations() marks the ones that are displays as it adds them, so no others are
+  isDisplay() { return false; }
 
   async designations(context, displays) {
     const ctxt = (await this.locate(context)).context;
