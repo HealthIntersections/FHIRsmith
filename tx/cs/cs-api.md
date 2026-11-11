@@ -21,6 +21,30 @@ per-request state: the requested languages (`opContext.langs`), a usage tracker,
 request-scoped information. Providers must store and consult this context when making
 language-sensitive decisions.
 
+### Batches
+
+`$batch-validate-code` validates its entries one at a time, each with its own copy of the
+`OperationContext` and its own providers, so a provider is asked about one code and cannot tell
+that more are coming. Before the first entry runs, the batch worker sets `opContext.batchCodes`
+on the batch's context, and every entry's context shares it: a `Map` from code system url to a
+`Set` of the codes the entries name (in codings, codeable concepts, and `code` with `system` or,
+on a code system, `url`). Versions are not separated. Outside a batch it is `null`.
+
+It is a hint. A provider may ignore it; one backed by a database may, when it is first asked to
+`locate` one of these codes, read all of its system's codes together and keep what it read for
+the rest of the batch, keyed on the `Map` (for example in a `WeakMap`), so nothing outlives the
+request. Codes in it may be unknown to the provider, or belong to a version it does not serve.
+
+```js
+locate(code, prefetched) {
+  const codes = this.opContext.batchCodes?.get(this.system());
+  if (codes?.has(code)) {
+    // first time for this batch: read every code in `codes`, keep it in a WeakMap on `codes`
+  }
+  // ...
+}
+```
+
 ### Supplements
 
 A provider may be constructed with an array of `CodeSystem` supplement resources. These are
@@ -238,7 +262,7 @@ Lookup supports the `$lookup` and `$validate-code` operations.
 
 | Method | Description |
 |---|---|
-| `locate(code, prefetched)` | Look up a code by string. `prefetched` is a handle from `prefetchCodes` for a list holding the code, or `null`; ignore it unless it is one of yours. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. **Must override.** |
+| `locate(code, prefetched)` | Look up a code by string. `prefetched` is a handle from `prefetchCodes` for a list holding the code, or `null`; ignore it unless it is one of yours. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. In a `$batch-validate-code`, see [Batches](#batches). **Must override.** |
 | `locateIsA(code)` | Look up a code within the scope of a parent concept. Required only if `hasParents()` returns `true`. |
 | `prefetchCodes(codes, withDesignations)` | Called before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and return a handle to what it read; the worker passes it back as `locate(code, prefetched)` for each code of that list, then drops it. No state on the provider. Default: returns `null` (no prefetching). |
 | `extendLookup(ctxt, props, params)` | Called during `$lookup` to allow the provider to add extra properties to the response `Parameters`. The `props` array lists the property names requested by the client. |

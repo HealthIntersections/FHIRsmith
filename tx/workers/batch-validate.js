@@ -100,6 +100,9 @@ class BatchValidateWorker extends TerminologyWorker {
       // session cache before any entry is evaluated. When this happens, pass 2
       // below drops per-entry tx-resource processing (they're already cached).
       const frontLoaded = this.frontLoadBatch(params);
+      // Every code the entries name, by code system, before any entry runs: a hint
+      // a provider may use (OperationContext.batchCodes, tx/cs/cs-api.md).
+      this.opContext.batchCodes = this.batchCodes(params, globalParams, codeSystemRoute);
 
       let output = [];
 
@@ -247,6 +250,54 @@ class BatchValidateWorker extends TerminologyWorker {
   operationOutcome(severity, code, message, txIssueType = null) {
     // the shared builder, so that every outcome has details.text and a tx-issue-type coding
     return buildOperationOutcome(severity, code, message, txIssueType);
+  }
+
+  /**
+   * The codes a batch's entries name, by code system: each coding, each coding of a
+   * codeableConcept, and each code with its system (or, in a CodeSystem validation,
+   * its url), an entry's own parameters first, then the globals. Versions are not
+   * separated: which version answers an entry is decided later, as it runs.
+   *
+   * @param {Object} params - the batch Parameters (req.body)
+   * @param {Object[]} globalParams - its top-level shared parameters
+   * @param {boolean} codeSystemRoute - see processBatch
+   * @returns {Map<string, Set<string>>} code system url -> codes
+   */
+  batchCodes(params, globalParams, codeSystemRoute) {
+    const bySystem = new Map();
+    const add = (system, code) => {
+      if (typeof system !== 'string' || !system || code == null || code === '') {
+        return;
+      }
+      let codes = bySystem.get(system);
+      if (!codes) {
+        bySystem.set(system, codes = new Set());
+      }
+      codes.add(String(code));
+    };
+    for (const v of params.parameter) {
+      if (v.name != 'validation' || !Array.isArray(v.resource?.parameter)) {
+        continue;
+      }
+      const own = v.resource.parameter;
+      const named = (name) => own.find(pp => pp.name == name) || globalParams.find(gp => gp.name == name);
+      for (const p of own) {
+        if (p.name == 'coding' && p.valueCoding) {
+          add(p.valueCoding.system, p.valueCoding.code);
+        } else if (p.name == 'codeableConcept' && p.valueCodeableConcept) {
+          for (const c of p.valueCodeableConcept.coding || []) {
+            add(c?.system, c?.code);
+          }
+        } else if (p.name == 'code') {
+          // on the ValueSet route, url names the value set (see processBatch)
+          const valueSetEntry = !codeSystemRoute && (named('url') || named('valueSet'));
+          const sp = named('system') || (valueSetEntry ? null : named('url'));
+          const system = sp ? (sp.valueUri ?? sp.valueUrl ?? sp.valueCanonical ?? sp.valueString) : null;
+          add(typeof system === 'string' ? system.split('|')[0] : null, p.valueCode ?? p.valueString);
+        }
+      }
+    }
+    return bySystem;
   }
 
   hasValueSet(parameter) {
