@@ -18,6 +18,7 @@ Major new features:
 
 ### Added
 
+- Packages: npm registry signatures, so `npm audit signatures` can check packages installed from the package server. Each version in a package document now has `dist.integrity` (sha512 SRI) and `dist.signatures` (ECDSA P-256 over `{id}@{version}:{integrity}`, as the npm registry signs), and `/packages/-/npm/v1/keys` lists the key. The signature is the registry's, so every version is signed, wherever it was crawled from. On by default (`npmSigning.enabled`); the key is `npmSigning.keyFile`, default `npm-signing-key.pem` next to the database, made at startup if it isn't there. Versions are signed when stored; existing ones are signed in the background at startup (progress in `/packages/status`), and the keys endpoint is a 404 until they all are. Integrity and signatures are in a new `PackageDist` table. `/packages/npm-check` checks signatures too, when the registry lists keys
 - LOINC: the `answer-list` filter (`answer-list = [LA code]`: the answer lists the answer is in), as agreed with LOINC (UP-645) and tested by the tx-ecosystem `loinc-*-filter-answer-list` tests. `answers-for` is the defined filter for the answers in a list; `LIST` is still accepted, for backwards compatibility only
 - `config.json` may have comments: `//` to the end of the line, and `/* ... */` (`library/config-reader.js`). A syntax error is reported at its line and column in the file
 - A LICENSE file (BSD 3-Clause); the package's licence is now the SPDX id `BSD-3-Clause` (was `BSD-3`)

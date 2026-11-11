@@ -18,14 +18,19 @@
  * Used by /packages/npm-check (a report on any registry) and by the test suites
  * tests/packages/npm-registry*.test.js, so all of them run the same checks.
  *
+ * A registry need not sign packages, but one that lists keys must sign every version with
+ * them: that is what `npm audit signatures` checks.
+ *
  * References:
  *   https://github.com/npm/registry/blob/main/docs/REGISTRY-API.md
  *   https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md
+ *   https://docs.npmjs.com/about-registry-signatures
  */
 
 const crypto = require('crypto');
 const zlib = require('zlib');
 const axios = require('axios');
+const { verifySignature } = require('./npm-signing');
 
 // What the npm CLI sends when it fetches a package document
 const NPM_ACCEPT = 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*';
@@ -40,7 +45,8 @@ const STEPS = [
   { id: 'search', title: '1. Search', request: 'GET /-/v1/search?text={name}' },
   { id: 'package', title: '2. Package document', request: 'GET /{name}' },
   { id: 'version', title: '3. Version document', request: 'GET /{name}/{version}' },
-  { id: 'tarball', title: '4. Tarball', request: 'GET {dist.tarball}' }
+  { id: 'tarball', title: '4. Tarball', request: 'GET {dist.tarball}' },
+  { id: 'signatures', title: '5. Signatures', request: 'GET /-/npm/v1/keys' }
 ];
 
 // A check's failure, with a message for people
@@ -302,6 +308,53 @@ const CHECKS = [
       c.eq(manifest.name, c.pkg, 'package.json name');
       c.eq(manifest.version, c.version, 'package.json version');
     }
+  },
+
+  // 5. signatures
+  {
+    step: 'signatures', uses: ['keys'], title: 'the registry\'s keys are a 404 (it doesn\'t sign) or a list of ECDSA P-256 public keys',
+    run(c) {
+      if (c.response('keys').status === 404) {
+        return;
+      }
+      c.status('keys', 200);
+      const keys = c.json('keys').keys;
+      c.ok(Array.isArray(keys) && keys.length > 0, 'keys is not a non-empty array');
+      keys.forEach((k, i) => {
+        c.ok(typeof k.keyid === 'string' && k.keyid.length > 0, `keys[${i}]: keyid is not a string`);
+        c.eq(k.keytype, 'ecdsa-sha2-nistp256', `keys[${i}].keytype`);
+        c.eq(k.scheme, 'ecdsa-sha2-nistp256', `keys[${i}].scheme`);
+        c.ok(k.expires === null || k.expires === undefined || isDate(k.expires), `keys[${i}]: expires is not null or a date: ${show(k.expires)}`);
+        try {
+          crypto.createPublicKey({ key: Buffer.from(k.key, 'base64'), format: 'der', type: 'spki' });
+        } catch (e) {
+          c.fail(`keys[${i}]: key is not a base64 SPKI public key: ${e.message}`);
+        }
+      });
+    }
+  },
+  {
+    step: 'signatures', uses: ['keys', 'packument', 'fullPackument'], title: 'if it has keys, every version is signed with one that was in force when it was published',
+    run(c) {
+      if (c.response('keys').status === 404) {
+        return;
+      }
+      const keys = c.json('keys').keys || [];
+      const doc = c.json('packument');
+      const time = c.json('fullPackument').time || {};
+      for (const [v, man] of Object.entries(doc.versions || {})) {
+        const dist = man.dist || {};
+        c.ok(SRI.test(dist.integrity || ''), `versions.${v}: no dist.integrity to sign`);
+        c.ok(Array.isArray(dist.signatures) && dist.signatures.length > 0, `versions.${v}: no dist.signatures`);
+        // as npm: a signature by any listed key will do
+        const good = dist.signatures.find(sig => {
+          const key = keys.find(k => k.keyid === sig.keyid);
+          return key && (!key.expires || Date.parse(time[v]) < Date.parse(key.expires)) &&
+            verifySignature(key, man.name, v, dist.integrity, sig.sig);
+        });
+        c.ok(good, `versions.${v}: no signature verifies against a key in force at ${time[v] || 'its (unknown) publication time'} (keyids ${dist.signatures.map(sig => sig.keyid).join(', ')})`);
+      }
+    }
   }
 ];
 
@@ -396,7 +449,7 @@ async function runNpmCheck(target, get) {
   const started = new Date();
   const search = extra => get(`${base}/-/v1/search?text=${encodeURIComponent(pkg)}${extra}`);
   const r = {};
-  [r.search, r.searchSize1, r.searchFrom1, r.packument, r.fullPackument, r.versionDoc, r.latestDoc, r.missing, r.missingVersion] = await Promise.all([
+  [r.search, r.searchSize1, r.searchFrom1, r.packument, r.fullPackument, r.versionDoc, r.latestDoc, r.missing, r.missingVersion, r.keys] = await Promise.all([
     search(`&size=${SEARCH_SIZE}`),
     search('&size=1'),
     search(`&size=${SEARCH_SIZE}&from=1`),
@@ -405,7 +458,8 @@ async function runNpmCheck(target, get) {
     get(packageUrl(base, pkg, version)),
     get(packageUrl(base, pkg, 'latest')),
     get(packageUrl(base, MISSING_PACKAGE)),
-    get(packageUrl(base, pkg, '99999.0.0'))
+    get(packageUrl(base, pkg, '99999.0.0')),
+    get(`${base}/-/npm/v1/keys`)
   ]);
   if (r.packument.status === 200) {
     try {

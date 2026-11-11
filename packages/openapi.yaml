@@ -164,6 +164,36 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  /-/npm/v1/keys:
+    get:
+      tags: [registry]
+      operationId: getSigningKeys
+      summary: The registry's signing keys (npm registry signatures)
+      description: |
+        The public keys this registry signs package versions with, in the npm registry's
+        format, so `npm audit signatures` can check packages installed from here. Each
+        version's `dist.signatures` holds the signature of `{id}@{version}:{dist.integrity}`
+        (ECDSA P-256, SHA-256, base64 DER).
+
+        A signature says this registry served that tarball. It is the registry's, not the
+        publisher's: this registry signs every version it holds, wherever it was crawled
+        from.
+
+        A 404 means the registry doesn't sign, which npm accepts. It is also the answer
+        while the registry is still signing versions it stored before it signed, since
+        npm reports an unsigned version from a registry with keys as an error.
+      responses:
+        '200':
+          description: The keys
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeys' }
+        '404':
+          description: This registry doesn't sign packages (or hasn't finished signing them)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /updates:
     get:
       tags: [search]
@@ -253,6 +283,9 @@ paths:
         on. The same checks run, as a control, against registry.npmjs.org once a day.
 
         With `Accept: text/html` and no parameters, this is a form for running the checks.
+
+        If the registry lists signing keys (`/-/npm/v1/keys`), it also checks that every
+        version of the package is signed with one of them, as `npm audit signatures` does.
 
         A run makes about ten requests, each limited in time and size, and only to public
         addresses. Runs are rate limited per client address, and the server runs only a
@@ -683,8 +716,36 @@ components:
           type: object
           required: [tarball]
           properties:
-            shasum: { type: string }
+            shasum: { type: string, description: sha1 of the tarball, hex }
+            integrity: { type: string, description: 'sha512 of the tarball, as an SRI string (`sha512-{base64}`)' }
             tarball: { type: string, format: uri }
+            signatures:
+              type: array
+              description: |
+                The registry's signatures of `{id}@{version}:{integrity}`, by the keys at
+                `/-/npm/v1/keys`. Absent when the registry doesn't sign.
+              items:
+                type: object
+                required: [keyid, sig]
+                properties:
+                  keyid: { type: string }
+                  sig: { type: string, description: 'base64 DER ECDSA signature' }
+
+    SigningKeys:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [keyid, keytype, scheme, key]
+            properties:
+              keyid: { type: string, description: '`SHA256:` and the base64 sha256 of the key' }
+              keytype: { type: string, const: ecdsa-sha2-nistp256 }
+              scheme: { type: string, const: ecdsa-sha2-nistp256 }
+              key: { type: string, description: 'The public key: base64 DER SubjectPublicKeyInfo' }
+              expires: { type: [string, 'null'], format: date-time, description: 'null: no expiry' }
 
     BrokenDependencies:
       type: object

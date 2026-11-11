@@ -23,6 +23,7 @@ const packagesOpenApi = require('./openapi');
 const rateLimit = require('express-rate-limit');
 const { runNpmCheck, makeGetter } = require('./npm-check');
 const npmCheckPage = require('./npm-check-page');
+const { NpmSigner, integrityOf } = require('./npm-signing');
 
 // Query parameter rules for validateQueryParams. These are also the contract published in
 // openapi.yaml, and tests/packages/openapi.test.js checks that the two agree - so change
@@ -116,6 +117,17 @@ const TARBALL_HEADER = 'FHIR-Package-Download';
 // Each id#version is stored once (see PackageCrawler.checkVersion)
 const UNIQUE_ID_VERSION_INDEX = 'CREATE UNIQUE INDEX SK_PackageVersions_IdVersion ON PackageVersions (Id, Version)';
 
+// Each version's dist.integrity and npm registry signature (see npm-signing.js), kept apart
+// from PackageVersions so reading them doesn't mean reading the tarball (Content)
+const PACKAGE_DIST_TABLE = `CREATE TABLE IF NOT EXISTS PackageDist
+         (
+             PackageVersionKey INTEGER PRIMARY KEY,
+             Integrity         TEXT NOT NULL,
+             KeyId             TEXT,
+             Signature         TEXT
+         )`;
+const DEFAULT_SIGNING_KEY_FILE = 'npm-signing-key.pem';
+
 class PackagesModule {
   constructor(stats) {
     this.router = express.Router();
@@ -127,6 +139,12 @@ class PackagesModule {
     this.totalRuns = 0;
     this.lastCrawlerLog = {};
     this.crawlerRunning = false;
+    // npm registry signatures: the key (null when this server doesn't sign), and the
+    // background job that fills in PackageDist for versions stored without it
+    this.signer = null;
+    this.distStatus = { state: 'not started', missing: null, done: 0, failed: 0 };
+    this.distBackfill = null;
+    this.stopping = false;
     this.setupSecurityMiddleware();
     this.setupRoutes();
     this.stats = stats;
@@ -674,12 +692,24 @@ class PackagesModule {
 
     // Initialize database
     await this.initializeDatabase();
+    await this.dbRun(PACKAGE_DIST_TABLE);
 
     // Ensure mirror directory exists
     await this.ensureMirrorDirectory();
 
+    // npm registry signatures: on unless turned off
+    if (this.config.npmSigning?.enabled !== false) {
+      this.signer = NpmSigner.load(this.getSigningKeyPath(), pckLog);
+      pckLog.info(`Signing packages with npm key ${this.signer.keyid}`);
+    }
+
     // Initialize the crawler
     this.crawler = new PackageCrawler(this.config, this.db, this.stats);
+    this.crawler.signer = this.signer;
+
+    // Versions stored without dist.integrity or a signature by this key get them in the
+    // background; /-/npm/v1/keys is a 404 until they all have them
+    this.startDistBackfill();
 
     // Start the hourly web crawler if enabled
     if (config.crawler.enabled) {
@@ -713,7 +743,134 @@ class PackagesModule {
       }
     } finally {
       this.crawlerRunning = false;
+      // if the backfill couldn't finish (a crawl's transaction rolled back one of its
+      // writes, say), it tries again
+      if (this.distStatus.state === 'incomplete') {
+        this.startDistBackfill();
+      }
     }
+  }
+
+  // The signing key file: npmSigning.keyFile, relative to the database's folder
+  getSigningKeyPath() {
+    const file = this.config.npmSigning?.keyFile || DEFAULT_SIGNING_KEY_FILE;
+    return path.isAbsolute(file) ? file : path.join(path.dirname(this.getDatabasePath()), file);
+  }
+
+  dbRun(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, guarded(reject, function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this);
+        }
+      }));
+    });
+  }
+
+  dbAll(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows)));
+    });
+  }
+
+  dbGet(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row)));
+    });
+  }
+
+  // Starts the background job that fills in PackageDist, unless it is already running.
+  // Returns its promise.
+  startDistBackfill() {
+    if (!this.distBackfill) {
+      this.distBackfill = this.runDistBackfill()
+        .catch(e => {
+          this.distStatus.state = 'incomplete';
+          pckLog.error('Adding npm integrity and signatures failed: ' + e.message);
+        })
+        .finally(() => {
+          this.distBackfill = null;
+        });
+    }
+    return this.distBackfill;
+  }
+
+  // The keys of versions with no PackageDist row, or (when signing) one not signed by this key
+  async versionsMissingDist() {
+    const sql = `SELECT v.PackageVersionKey AS k, d.Integrity AS Integrity
+                 FROM PackageVersions v LEFT JOIN PackageDist d ON d.PackageVersionKey = v.PackageVersionKey
+                 WHERE d.PackageVersionKey IS NULL` + (this.signer ? ' OR d.KeyId IS NOT ?' : '') + `
+                 ORDER BY v.PackageVersionKey`;
+    return this.dbAll(sql, this.signer ? [this.signer.keyid] : []);
+  }
+
+  // Gives every version its dist.integrity, and its signature when this server signs: the
+  // versions stored before this server did, or signed with an earlier key. A row at a time,
+  // in the background, so the server serves meanwhile; a large tarball is hashed in slices.
+  async runDistBackfill() {
+    // rows for versions that are gone (packages/utilities/dedupe-versions.js deletes versions)
+    await this.dbRun('DELETE FROM PackageDist WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)');
+    const todo = await this.versionsMissingDist();
+    this.distStatus = { state: 'running', missing: todo.length, done: 0, failed: 0 };
+    const what = this.signer ? 'npm integrity and signatures' : 'npm integrity';
+    if (todo.length > 0) {
+      pckLog.info(`Adding ${what} to ${todo.length} package versions, in the background`);
+    }
+    for (const row of todo) {
+      if (this.stopping) {
+        this.distStatus.state = 'stopped';
+        return;
+      }
+      try {
+        await this.fillDist(row.k, row.Integrity);
+        this.distStatus.done++;
+      } catch (e) {
+        this.distStatus.failed++;
+        pckLog.error(`Adding ${what} to package version ${row.k} failed: ${e.message}`);
+      }
+      if (this.distStatus.done % 1000 === 0 && this.distStatus.done > 0) {
+        pckLog.info(`Added ${what} to ${this.distStatus.done} of ${todo.length} package versions`);
+      }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    // Something stored meanwhile is done by the crawler, but a write here can be lost (it
+    // joins a crawl's transaction, and that rolls back), so count again
+    const left = todo.length === 0 ? 0 : (await this.versionsMissingDist()).length;
+    this.distStatus.missing = left;
+    this.distStatus.state = left === 0 ? 'complete' : 'incomplete';
+    if (todo.length > 0) {
+      if (left === 0) {
+        pckLog.info(`Added ${what} to every package version`);
+      } else {
+        pckLog.warn(`${left} package versions still have no ${what}; trying again after the next crawl`);
+      }
+    }
+  }
+
+  // integrity is the stored one, when only the signature is missing
+  async fillDist(key, integrity) {
+    let hash = null;
+    if (!integrity) {
+      const row = await this.dbGet('SELECT Content, Hash FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+      if (!row) {
+        return; // deleted meanwhile
+      }
+      integrity = await integrityOf(row.Content);
+      hash = row.Hash;
+    }
+    const v = await this.dbGet('SELECT Id, Version, Hash FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+    if (!v) {
+      return;
+    }
+    const keyid = this.signer ? this.signer.keyid : null;
+    const sig = this.signer ? this.signer.sign(v.Id, v.Version, integrity) : null;
+    // Only if the tarball is still the one hashed: the crawler may have replaced it meanwhile
+    // (and then it wrote this row itself)
+    await this.dbRun(`INSERT OR REPLACE INTO PackageDist (PackageVersionKey, Integrity, KeyId, Signature)
+                      SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM PackageVersions WHERE PackageVersionKey = ? AND Hash = ?)`,
+      [key, integrity, keyid, sig, key, hash || v.Hash]);
   }
 
   async initializeDatabase() {
@@ -835,7 +992,10 @@ class PackagesModule {
          (
              Url       TEXT PRIMARY KEY,
              VisitedAt TEXT NOT NULL
-         )`
+         )`,
+
+        // PackageDist table - each version's dist.integrity and npm signature
+        PACKAGE_DIST_TABLE
       ];
 
       const indexes = [
@@ -1134,6 +1294,25 @@ class PackagesModule {
         }
       } finally {
         this.stats.countRequest('catalog', Date.now() - start);
+      }
+    });
+
+    // GET /packages/-/npm/v1/keys - the key the registry signs packages with, as npm's
+    // registry does (npm audit signatures). A 404 says this registry doesn't sign, which is
+    // also the answer while versions are still being signed: once there are keys, npm reports
+    // a version with no signature as an error.
+    this.router.get('/-/npm/v1/keys', (req, res) => {
+      const start = Date.now();
+      try {
+        if (!this.signer) {
+          res.status(404).json({error: 'This registry does not sign packages'});
+        } else if (this.distStatus.state !== 'complete') {
+          res.status(404).json({error: 'This registry is still signing the packages it holds; try again later'});
+        } else {
+          res.json(this.signer.keysDocument());
+        }
+      } finally {
+        this.stats.countRequest('keys', Date.now() - start);
       }
     });
 
@@ -2076,7 +2255,7 @@ class PackagesModule {
 
   async getPackageVersions(id) {
     return new Promise((resolve, reject) => {
-      const sql = `SELECT PackageVersionKey,
+      const sql = `SELECT v.PackageVersionKey,
                           Version,
                           PubDate,
                           FhirVersions,
@@ -2088,8 +2267,11 @@ class PackagesModule {
                           License,
                           Hash,
                           GUID,
-                          Description
-                   FROM PackageVersions
+                          Description,
+                          d.Integrity,
+                          d.KeyId,
+                          d.Signature
+                   FROM PackageVersions v LEFT JOIN PackageDist d ON d.PackageVersionKey = v.PackageVersionKey
                    WHERE Id = ?
                    ORDER BY PubDate DESC`;  // Changed from ASC to DESC for most recent first
 
@@ -2180,6 +2362,12 @@ class PackagesModule {
           tarball: this.buildTarballUrl(id, pv.Version, secure, req)
         }
       };
+      if (pv.Integrity) {
+        versionObj.dist.integrity = pv.Integrity;
+      }
+      if (this.signer && pv.Signature && pv.KeyId === this.signer.keyid) {
+        versionObj.dist.signatures = [{keyid: pv.KeyId, sig: pv.Signature}];
+      }
 
       // Add optional fields
       if (pv.HomePage) {
@@ -2842,6 +3030,11 @@ class PackagesModule {
 
     await this.stopCrawlerJob();
 
+    this.stopping = true;
+    if (this.distBackfill) {
+      await this.distBackfill;
+    }
+
     // Close database connection
     if (this.db) {
       return new Promise((resolve, reject) => {
@@ -3223,6 +3416,16 @@ class PackagesModule {
         schedule: this.config.crawler.schedule,
         lastRun: this.lastRunTime,
         totalRuns: this.totalRuns
+      },
+      npmSigning: {
+        enabled: this.signer ? true : false,
+        keyid: this.signer ? this.signer.keyid : undefined,
+        // complete: every version has its integrity (and signature); running, incomplete
+        // (tried again after the next crawl), stopped
+        state: this.distStatus.state,
+        missing: this.distStatus.missing,
+        done: this.distStatus.done,
+        failed: this.distStatus.failed
       }
     };
   }
