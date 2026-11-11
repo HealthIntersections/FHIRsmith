@@ -1097,28 +1097,8 @@ class PackageCrawler {
         throw new Error(check.reason);
       }
 
-      if (!this.isValidSemVersion(version)) {
-        throw new Error(`NPM Version "${version}" is not valid from ${source}`);
-      }
+      const canonical = this.checkPackageContent(npmPackage, idver, source);
 
-      let canonical = npmPackage.canonical || `http://simplifier.net/packages/${id}`;
-      if (!this.isAbsoluteUrl(canonical)) {
-        throw new Error(`NPM Canonical "${canonical}" is not valid from ${source}`);
-      }
-
-      const isTemplate = npmPackage.kind === 2; // fhir.template
-      if (npmPackage.hasInstallScripts) {
-        throw new Error(`Package ${idver} rejected: contains install scripts (preinstall/install/postinstall)`);
-      }
-      if (npmPackage.hasJavaScript && !isTemplate && id !== 'hl7.fhir.pubpack') {
-        throw new Error(`Package ${idver} rejected: contains JavaScript files but is not a template package`);
-      }
-      // The feed gate (item.notForPublication) only sees the RSS entry. A package whose
-      // feed entry is clean can still carry notForPublication inside the tarball - that is
-      // a draft build that must never enter the registry. Reject it here too.
-      if (npmPackage.notForPublication) {
-        throw new Error(`Package ${idver} rejected: tarball is flagged notForPublication (draft build, not suitable for publication)`);
-      }
       const verdict = this.checkSignature(signing, signature, packageBuffer, id, version, date, itemLog);
       if (verdict.refuse) {
         throw new Error(`Package ${idver} rejected: ${verdict.refuse}`);
@@ -1181,6 +1161,40 @@ class PackageCrawler {
       this.log.error(`Error storing package ${guid}:`+ error.message);
       throw error;
     }
+  }
+
+  // What a package must be to be stored (beyond being new): a valid id, a whole semver version,
+  // an absolute canonical, no install scripts, no JavaScript unless it's a template, and not
+  // flagged notForPublication. Throws saying what's wrong; returns the canonical. Shared with
+  // the feed check (feed-check.js), which stores nothing.
+  checkPackageContent(npmPackage, idver, source) {
+    const {id, version} = npmPackage;
+    if (!this.isValidPackageId(id)) {
+      throw new Error(`NPM Id "${id}" is not valid from ${source}`);
+    }
+    if (!this.isValidSemVersion(version)) {
+      throw new Error(`NPM Version "${version}" is not valid from ${source}`);
+    }
+
+    let canonical = npmPackage.canonical || `http://simplifier.net/packages/${id}`;
+    if (!this.isAbsoluteUrl(canonical)) {
+      throw new Error(`NPM Canonical "${canonical}" is not valid from ${source}`);
+    }
+
+    const isTemplate = npmPackage.kind === 2; // fhir.template
+    if (npmPackage.hasInstallScripts) {
+      throw new Error(`Package ${idver} rejected: contains install scripts (preinstall/install/postinstall)`);
+    }
+    if (npmPackage.hasJavaScript && !isTemplate && id !== 'hl7.fhir.pubpack') {
+      throw new Error(`Package ${idver} rejected: contains JavaScript files but is not a template package`);
+    }
+    // The feed gate (item.notForPublication) only sees the RSS entry. A package whose
+    // feed entry is clean can still carry notForPublication inside the tarball - that is
+    // a draft build that must never enter the registry. Reject it here too.
+    if (npmPackage.notForPublication) {
+      throw new Error(`Package ${idver} rejected: tarball is flagged notForPublication (draft build, not suitable for publication)`);
+    }
+    return canonical;
   }
 
   // Reads what the crawler needs from a package as the package is unzipped and untarred:

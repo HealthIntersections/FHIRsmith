@@ -37,6 +37,7 @@ In summary:
 | `GET /packages/-/npm/v1/keys` | The key this registry signs package versions with (see [Signatures](#signatures)) |
 | `GET /packages/-/fhir/v1/signatures/{name}@{version}` | The publisher's signature of a version, as the crawler fetched it (see [Publishers' signatures](#publishers-signatures)) |
 | `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |
+| `GET /packages/feed-check` | Check a package feed the way the crawler reads it, storing nothing (a form, in a browser); the report is at `/packages/feed-check/{run}` |
 
 Most endpoints return an HTML page instead of JSON when the request's `Accept`
 header contains `text/html`. The JSON is the contract; the HTML is for people.
@@ -100,6 +101,10 @@ In the server config, under `modules.packages`:
 | `allowPrivateAddresses` | Optional, for testing only. Lets the crawler and `/npm-check` fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
 | `npmSigning.enabled` | Sign package versions (see [Signatures](#signatures)). On unless set to `false`. |
 | `npmSigning.keyFile` | The signing key, an EC P-256 private key in PEM. A relative path is resolved against the database's folder. Default `npm-signing-key.pem`; made (readable only by the server's user) if it isn't there. |
+| `feedCheck.enabled` | `/packages/feed-check`. On unless set to `false`. |
+| `feedCheck.maxItems` | Items checked per run; the rest of the feed isn't read. Default 50. |
+| `feedCheck.maxTotalMB` | Downloaded per run; items after that are listed but their packages aren't fetched. Default 500. |
+| `feedCheck.keepMinutes` | How long a run's report is kept. Default 60. |
 | `npmCheck.enabled` | `/packages/npm-check`. On unless set to `false`. |
 | `npmCheck.maxConcurrentRuns` | Runs at once, across all users; more get a 503. Default 2. |
 | `npmCheck.runsPerWindow` | Runs per client address per 10 minutes; more get a 429. Default 10. |
@@ -153,6 +158,29 @@ the public key.
 
 The signatures and integrity are in the `PackageDist` table, not in `PackageVersions`:
 reading a column stored after the tarball means reading the tarball.
+
+## Checking a feed
+
+`/packages/feed-check` takes a feed's URL and reads it the way the crawler does, without storing
+anything: no packages, signatures or visited pages go into the database, and nothing is written
+to the mirror. For each item it reports the package (downloaded, unpacked with the crawler's
+limits and checked as the crawler checks it before storing: id, semver version, canonical, no
+install scripts, no JavaScript unless it's a template, not notForPublication), whether the
+registry's `package-restrictions` allow it from this feed, its signature (`confirmed`,
+`rejected`, `absent`, or `not checked` when the feed isn't in `package-feeds.json` or lists no
+keys), and whether this registry already holds the version, and if so whether it is the same
+bytes. A feed-level problem (it can't be fetched, isn't RSS, or the server rate limits) is
+reported instead. Next pages are followed up to `feedCheck.maxItems` items.
+
+The signing keys can be given with the check, as JSON: the feed's `signing` block as it would be
+in `package-feeds.json` (or the feed's whole entry). Signatures are then checked against those
+keys instead of the registry's, so a publisher can test a feed and its keys before they are
+registered.
+
+A check runs in the background: the form redirects to `/packages/feed-check/{run}`, which reloads
+every few seconds until the check is done. Every request goes through the crawler's SSRF guard,
+and only http(s) URLs are fetched, so a feed can't make the server read local files. Only one
+check runs at a time, across all users; a request while one is running gets a 503.
 
 ## Crawling
 

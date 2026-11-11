@@ -383,6 +383,103 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '500': { $ref: '#/components/responses/ServerError' }
 
+  /feed-check:
+    get:
+      tags: [tools]
+      operationId: checkPackageFeed
+      summary: Check a package feed the way the crawler reads it
+      description: |
+        Reads a package feed (RSS, as listed in the FHIR package registry's package-feeds.json)
+        the way this registry's crawler does, and reports what it finds, without storing
+        anything: for each item, its package (downloaded, unpacked and checked as the crawler
+        checks it before storing), whether the registry's package-restrictions allow it from
+        this feed, its signature (against the keys the registry lists for the feed), and
+        whether this registry already holds it. Next pages are followed, up to an item limit.
+
+        A check runs in the background: this starts one and returns `202` with its id
+        (`303` to its report page, for a browser). Poll `/feed-check/{run}` for the report.
+        With `Accept: text/html` and no `url`, this is a form.
+
+        Every request a check makes goes only to public addresses. Only one check runs at a
+        time, across all users. A server can turn the check off (`feedCheck.enabled`), and then
+        this returns 404.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: The feed's URL.
+          schema:
+            type: string
+            maxLength: 500
+            pattern: '^https?:\/\/[^\s<>"''`]+$'
+          example: https://hl7.org/fhir/package-feed.xml
+        - name: signing
+          in: query
+          required: false
+          description: |
+            The feed's signing keys, as JSON: its `signing` block as it would be in
+            package-feeds.json (`{"required": false, "keys": [{"keyid": ..., "key": ..., "expires": null}]}`),
+            or the feed's whole entry. Signatures are checked against these instead of the keys
+            the registry lists for the feed.
+          schema:
+            type: string
+            maxLength: 5000
+            pattern: '^[^<>`]*$'
+      responses:
+        '202':
+          description: The check has started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  state: { type: string, enum: [running] }
+                  report: { type: string, description: Where to get the report }
+        '303': { description: 'For a browser: the report page' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: The check is turned off on this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: A check is already running (one at a time); try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /feed-check/{run}:
+    get:
+      tags: [tools]
+      operationId: getFeedCheck
+      summary: A feed check's report
+      description: |
+        The report of a check started with `/feed-check`: `state` is `running` (the report so
+        far), `done` or `failed`. Reports are kept for a while (an hour, by default) after the
+        check finishes. A browser gets a page that reloads until the check is done.
+      parameters:
+        - name: run
+          in: path
+          required: true
+          description: The check's id, as `/feed-check` returned it.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The check and its report
+          content:
+            application/json:
+              schema: { type: object }
+            text/html:
+              schema: { type: string }
+        '404':
+          description: No such check (or its report has been discarded)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
   /{id}:
     get:
       tags: [registry]

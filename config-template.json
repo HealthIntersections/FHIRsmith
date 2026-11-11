@@ -139,6 +139,16 @@
         "enabled": true,
         "keyFile": "npm-signing-key.pem"
       },
+      // /packages/feed-check: checks a package feed the way the crawler reads it, storing
+      // nothing; one check at a time. On by default; the other settings are the defaults.
+      // maxItems: items checked per run (each one's package is downloaded); maxTotalMB:
+      // downloaded per run; keepMinutes: how long a run's report is kept
+      "feedCheck": {
+        "enabled": true,
+        "maxItems": 50,
+        "maxTotalMB": 500,
+        "keepMinutes": 60
+      },
       // /packages/npm-check: checks any registry against the npm registry protocol. On by
       // default; the other settings are the defaults. "control": false stops the daily
       // check against the npm registry itself.
