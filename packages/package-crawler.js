@@ -17,7 +17,7 @@ const https = require('https');
 const ipaddr = require('ipaddr.js');
 const {debugLog} = require("../tx/operation-context");
 const {Parser: TarParser} = require('tar');
-const {integrityOfSync} = require('./npm-signing');
+const {integrityOfSync, verifyPackageSignature} = require('./npm-signing');
 
 const MB = 1024 * 1024;
 
@@ -75,6 +75,11 @@ function isLoopbackAddress(ip) {
 
 // A mirror file is written as <file>.tgz.tmp-<pid> and then renamed into place
 const MIRROR_TMP_MARKER = '.tmp-';
+
+// crawler.signatures: what to do with publishers' package signatures (see signingFor)
+const SIGNATURE_MODES = ['ignore', 'check', 'require'];
+// a signature file is a few KB; anything much bigger isn't one
+const MAX_SIGNATURE_BYTES = 1024 * 1024;
 // A temporary mirror file older than this was left by a crawler that stopped mid-write
 const MIRROR_TMP_MAX_AGE_MS = 60 * 60 * 1000;
 
@@ -92,6 +97,13 @@ class PackageCrawler {
     this.abortController = null;
     // the npm signing key (NpmSigner), or null when this server doesn't sign
     this.signer = null;
+    this.skippedFeeds = new Set();
+    // publisher signatures (fhir:signature in a feed, keys in package-feeds.json): ignore,
+    // check, or require - see signingFor()
+    this.signatureMode = (config.crawler && config.crawler.signatures) || 'check';
+    if (!SIGNATURE_MODES.includes(this.signatureMode)) {
+      throw new Error(`crawler.signatures must be one of ${SIGNATURE_MODES.join(', ')}, not ${this.signatureMode}`);
+    }
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA busy_timeout = 5000');
   }
@@ -118,6 +130,7 @@ class PackageCrawler {
   async crawl(log) {
     this.log = log;
     this.packages.clear();
+    this.skippedFeeds = new Set();
     this.abortController = new AbortController();
 
     const startTime = Date.now();
@@ -157,9 +170,12 @@ class PackageCrawler {
         }
         try {
           let url = this.fixUrl(feedConfig.url)
+          if (this.skipUnsigned(feedConfig)) {
+            continue;
+          }
           if (!url.includes('simplifier')) {
             this.stats.task('Package Crawler', 'Running for '+feedConfig.url);
-            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions);
+            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions, this.signingFor(feedConfig.signing));
           }
         } catch (feedError) {
           this.log.error(`Failed to process feed ${feedConfig.url}: `+ feedError.message);
@@ -176,9 +192,12 @@ class PackageCrawler {
 
         try {
           let url = this.fixUrl(feedConfig.url)
+          if (this.skipUnsigned(feedConfig)) {
+            continue;
+          }
           if (url.includes('simplifier')) {
             this.stats.task('Package Crawler', 'Running for '+feedConfig.url);
-            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions);
+            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions, this.signingFor(feedConfig.signing));
           }
         } catch (feedError) {
           this.log.error(`Failed to process feed ${feedConfig.url}: `+ feedError.message);
@@ -479,7 +498,7 @@ class PackageCrawler {
     return body;
   }
 
-  async updateTheFeed(url, source, email, packageRestrictions) {
+  async updateTheFeed(url, source, email, packageRestrictions, signing = null) {
     const feedLog = {
       url: url,
       items: []
@@ -535,7 +554,7 @@ class PackageCrawler {
         for (let i = 0; i < items.length; i++) {
           if (this.abortController?.signal.aborted) break;
           try {
-            await this.updateItem(currentUrl, items[i], i, packageRestrictions, feedLog);
+            await this.updateItem(currentUrl, items[i], i, packageRestrictions, feedLog, signing);
           } catch (itemError) {
             if (itemError.message.includes('RATE_LIMITED')) {
               this.log.info(`Rate limited while downloading package from ${currentUrl}, stopping feed processing`);
@@ -581,7 +600,8 @@ class PackageCrawler {
     }
   }
 
-  async updateItem(source, item, index, packageRestrictions, feedLog) {
+  // signing: how this feed's signatures are checked (signingFor), or null
+  async updateItem(source, item, index, packageRestrictions, feedLog, signing = null) {
     const itemLog = {
       status: '??'
     };
@@ -641,6 +661,7 @@ class PackageCrawler {
       // Check if already processed
       if (await this.hasStored(guid)) {
         itemLog.status = 'Already Processed';
+        await this.checkStoredSignature(item, guid, signing, itemLog);
         return;
       }
 
@@ -685,7 +706,8 @@ class PackageCrawler {
       this.log.info('Fetching package: ' + url);
 
       const packageContent = await this.fetchUrl(url, 'application/tar+gzip');
-      const outcome = await this.store(source, url, guid, pubDate, packageContent, id, itemLog);
+      const signature = signing ? await this.fetchSignature(item) : null;
+      const outcome = await this.store(source, url, guid, pubDate, packageContent, id, itemLog, signing, signature);
 
       itemLog.status = {stored: 'Fetched', replaced: 'Replaced Simplifier copy', skipped: 'Already Stored'}[outcome];
 
@@ -745,6 +767,141 @@ class PackageCrawler {
       return packagePrefix === maskPrefix;
     } else {
       return mask === packageId;
+    }
+  }
+
+  // --- publisher signatures (see npm-signing.js) --------------------------------------------------
+  //
+  // A feed may list keys in package-feeds.json (feeds[].signing: {required, keys}), and its items
+  // may link a signature (fhir:signature). crawler.signatures says what to do with them:
+  //   ignore  - nothing
+  //   check   - (the default) check each signature of a feed that lists keys; one that fails is
+  //             logged, and the package is stored anyway, unless the feed says signing.required
+  //   require - as check, but an unsigned package, or one whose signature fails, is refused, for
+  //             every feed that lists keys
+  // Feeds that list no keys are never affected. The signature file is kept (PackageSignatures) as
+  // it was when it was checked, valid or not.
+
+  // With crawler.signatures = require, a feed that lists no keys isn't read at all: none of its
+  // packages could be accepted. Noted in the crawl log.
+  skipUnsigned(feedConfig) {
+    if (this.signatureMode !== 'require' || this.signingFor(feedConfig.signing)) {
+      return false;
+    }
+    if (!this.skippedFeeds.has(feedConfig.url)) {
+      this.skippedFeeds.add(feedConfig.url);
+      this.log.info(`Skipping feed ${feedConfig.url}: it lists no signing keys, and signatures are required`);
+      this.crawlerLog.feeds.push({ url: feedConfig.url, skipped: 'it lists no signing keys, and signatures are required', items: [] });
+    }
+    return true;
+  }
+
+  // How a feed's signatures are checked, or null if they aren't
+  signingFor(feedSigning) {
+    if (this.signatureMode === 'ignore' || !feedSigning || !Array.isArray(feedSigning.keys) || feedSigning.keys.length === 0) {
+      return null;
+    }
+    return { keys: feedSigning.keys, required: this.signatureMode === 'require' || feedSigning.required === true };
+  }
+
+  signatureUrl(item) {
+    const s = item['fhir:signature'];
+    const v = s && typeof s === 'object' ? s['#text'] : s;
+    return v ? String(v).trim() : null;
+  }
+
+  // The item's signature file: {url, text}, {url: null} if it has none, or {url, fetchError}
+  async fetchSignature(item) {
+    const url = this.signatureUrl(item);
+    if (!url) {
+      return { url: null };
+    }
+    try {
+      const content = await this.fetchUrl(this.fixUrl(url), 'application/json');
+      if (content.length > MAX_SIGNATURE_BYTES) {
+        return { url, fetchError: `it is too large (${content.length} bytes)` };
+      }
+      return { url, text: content.toString('utf8') };
+    } catch (e) {
+      if (e.message.includes('RATE_LIMITED')) {
+        throw e;
+      }
+      return { url, fetchError: e.message };
+    }
+  }
+
+  // Checks a package's signature. Returns {record} - what to keep in PackageSignatures - and
+  // {refuse} - why the package must not be stored - either or neither
+  checkSignature(signing, signature, packageBuffer, id, version, date, itemLog) {
+    if (!signing) {
+      return {};
+    }
+    if (!signature || !signature.url) {
+      itemLog.signature = 'unsigned';
+      return signing.required ? { refuse: 'it is not signed, and this feed\'s packages must be' } : {};
+    }
+    if (signature.fetchError) {
+      itemLog.signature = `the signature ${signature.url} could not be fetched: ${signature.fetchError}`;
+      this.log.error(`Signature for ${id}#${version} could not be fetched (${signature.url}): ${signature.fetchError}`);
+      return signing.required ? { refuse: itemLog.signature } : {};
+    }
+    const record = { url: signature.url, bundle: signature.text, keyid: null, valid: false, message: null };
+    try {
+      let bundle;
+      try {
+        bundle = JSON.parse(signature.text);
+      } catch (e) {
+        throw new Error('the signature file is not JSON');
+      }
+      const v = verifyPackageSignature(packageBuffer, bundle, signing.keys, id, version, date instanceof Date && !isNaN(date) ? date : null);
+      record.keyid = v.keyid;
+      record.valid = true;
+      itemLog.signature = `valid (${v.keyid})`;
+      return { record };
+    } catch (e) {
+      record.message = e.message;
+      itemLog.signature = `invalid: ${e.message}`;
+      this.log.error(`Signature check failed for ${id}#${version} (${signature.url}): ${e.message}`);
+      return { record, refuse: signing.required ? `its signature is not valid: ${e.message}` : null };
+    }
+  }
+
+  async recordSignature(id, version, record) {
+    await this.run(`INSERT OR REPLACE INTO PackageSignatures (PackageVersionKey, Url, KeyId, Valid, Message, Checked, Bundle)
+                    SELECT PackageVersionKey, ?, ?, ?, ?, datetime('now'), ? FROM PackageVersions WHERE Id = ? AND Version = ?`,
+      [record.url, record.keyid, record.valid ? 1 : 0, record.message, record.bundle, id, version]);
+  }
+
+  // A package stored before its feed was signed (or before this server checked): its signature is
+  // checked against the stored bytes, once. Never refused - it is already held - but a failure is
+  // logged and kept. A signature that can't be fetched is tried again next crawl.
+  async checkStoredSignature(item, guid, signing, itemLog) {
+    if (!signing || !this.signatureUrl(item)) {
+      return;
+    }
+    const row = await new Promise((resolve, reject) => {
+      this.db.get(`SELECT v.PackageVersionKey, v.Id, v.Version, v.PubDate, s.PackageVersionKey AS Checked
+                   FROM PackageVersions v LEFT JOIN PackageSignatures s ON s.PackageVersionKey = v.PackageVersionKey
+                   WHERE v.GUID = ?`, [guid], (err, r) => err ? reject(err) : resolve(r));
+    });
+    if (!row || row.Checked) {
+      return;
+    }
+    const signature = await this.fetchSignature(item);
+    if (signature.fetchError) {
+      itemLog.signature = `the signature ${signature.url} could not be fetched: ${signature.fetchError}`;
+      this.log.warn(`Signature for ${row.Id}#${row.Version} could not be fetched (${signature.url}): ${signature.fetchError}`);
+      return;
+    }
+    const content = await new Promise((resolve, reject) => {
+      this.db.get('SELECT Content FROM PackageVersions WHERE PackageVersionKey = ?', [row.PackageVersionKey], (err, r) => err ? reject(err) : resolve(r));
+    });
+    if (!content) {
+      return;
+    }
+    const verdict = this.checkSignature({ ...signing, required: false }, signature, content.Content, row.Id, row.Version, new Date(row.PubDate), itemLog);
+    if (verdict.record) {
+      await this.recordSignature(row.Id, row.Version, verdict.record);
     }
   }
 
@@ -874,7 +1031,7 @@ class PackageCrawler {
         npmPackage.description, this.genHash(packageBuffer), npmPackage.author, npmPackage.license,
         npmPackage.url, packageBuffer, vkey]);
     for (const key of keys) {
-      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs', 'PackageDist']) {
+      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs', 'PackageDist', 'PackageSignatures']) {
         await this.run(`DELETE FROM ${table} WHERE PackageVersionKey = ?`, [key]);
       }
     }
@@ -911,7 +1068,8 @@ class PackageCrawler {
     return date;
   }
 
-  async store(source, url, guid, date, packageBuffer, idver, itemLog) {
+  // signing and signature: the feed's signature checking (signingFor) and what fetchSignature got
+  async store(source, url, guid, date, packageBuffer, idver, itemLog, signing = null, signature = null) {
     try {
       // Extract and parse the NPM package
       const npmPackage = await this.extractNpmPackage(packageBuffer, `${source}#${guid}`);
@@ -961,6 +1119,10 @@ class PackageCrawler {
       if (npmPackage.notForPublication) {
         throw new Error(`Package ${idver} rejected: tarball is flagged notForPublication (draft build, not suitable for publication)`);
       }
+      const verdict = this.checkSignature(signing, signature, packageBuffer, id, version, date, itemLog);
+      if (verdict.refuse) {
+        throw new Error(`Package ${idver} rejected: ${verdict.refuse}`);
+      }
 
       // Extract URLs from package
       const urls = this.processPackageUrls(npmPackage);
@@ -1009,6 +1171,9 @@ class PackageCrawler {
         throw e;
       }
 
+      if (verdict.record) {
+        await this.recordSignature(id, version, verdict.record);
+      }
       return check.action === 'replace' ? 'replaced' : 'stored';
 
     } catch (error) {

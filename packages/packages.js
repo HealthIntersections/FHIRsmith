@@ -128,6 +128,19 @@ const PACKAGE_DIST_TABLE = `CREATE TABLE IF NOT EXISTS PackageDist
          )`;
 const DEFAULT_SIGNING_KEY_FILE = 'npm-signing-key.pem';
 
+// Publishers' signatures of the packages (fhir:signature in their feeds), kept as they were when
+// the crawler checked them - valid or not - with the outcome (see PackageCrawler.signingFor)
+const PACKAGE_SIGNATURES_TABLE = `CREATE TABLE IF NOT EXISTS PackageSignatures
+         (
+             PackageVersionKey INTEGER PRIMARY KEY,
+             Url               TEXT NOT NULL,
+             KeyId             TEXT,
+             Valid             INTEGER NOT NULL,
+             Message           TEXT,
+             Checked           TEXT NOT NULL,
+             Bundle            TEXT NOT NULL
+         )`;
+
 class PackagesModule {
   constructor(stats) {
     this.router = express.Router();
@@ -693,6 +706,7 @@ class PackagesModule {
     // Initialize database
     await this.initializeDatabase();
     await this.dbRun(PACKAGE_DIST_TABLE);
+    await this.dbRun(PACKAGE_SIGNATURES_TABLE);
 
     // Ensure mirror directory exists
     await this.ensureMirrorDirectory();
@@ -812,6 +826,7 @@ class PackagesModule {
   async runDistBackfill() {
     // rows for versions that are gone (packages/utilities/dedupe-versions.js deletes versions)
     await this.dbRun('DELETE FROM PackageDist WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)');
+    await this.dbRun('DELETE FROM PackageSignatures WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)');
     const todo = await this.versionsMissingDist();
     this.distStatus = { state: 'running', missing: todo.length, done: 0, failed: 0 };
     const what = this.signer ? 'npm integrity and signatures' : 'npm integrity';
@@ -995,7 +1010,10 @@ class PackagesModule {
          )`,
 
         // PackageDist table - each version's dist.integrity and npm signature
-        PACKAGE_DIST_TABLE
+        PACKAGE_DIST_TABLE,
+
+        // PackageSignatures table - the publisher's signature of each version, as checked
+        PACKAGE_SIGNATURES_TABLE
       ];
 
       const indexes = [
@@ -1313,6 +1331,37 @@ class PackagesModule {
         }
       } finally {
         this.stats.countRequest('keys', Date.now() - start);
+      }
+    });
+
+    // GET /packages/-/fhir/v1/signatures/{name}@{version} - the publisher's signature of a
+    // package version (its {package}.tgz.sigstore.json), exactly as the crawler fetched and
+    // checked it. dist['fhir-signature'] in the package document links it, with the outcome.
+    this.router.get('/-/fhir/v1/signatures/:spec', async (req, res) => {
+      const start = Date.now();
+      try {
+        const spec = req.params.spec || '';
+        const at = spec.lastIndexOf('@');
+        const id = at > 0 ? spec.substring(0, at) : '';
+        const version = at > 0 ? spec.substring(at + 1) : '';
+        if (!PACKAGE_ID_PATTERN.test(id) || !PACKAGE_VERSION_PATTERN.test(version) ||
+          id.length > PACKAGE_ID_MAX_LENGTH || version.length > PACKAGE_VERSION_MAX_LENGTH) {
+          res.status(400).json({error: 'Expected {name}@{version}'});
+          return;
+        }
+        const row = await this.dbGet(`SELECT s.Bundle FROM PackageSignatures s
+                                      JOIN PackageVersions v ON v.PackageVersionKey = s.PackageVersionKey
+                                      WHERE v.Id = ? AND v.Version = ?`, [id, version]);
+        if (!row) {
+          res.status(404).json({error: `No signature is held for ${id}#${version}`});
+          return;
+        }
+        res.type('application/json').send(row.Bundle);
+      } catch (error) {
+        pckLog.error('Error in /packages/-/fhir/v1/signatures:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('signature', Date.now() - start);
       }
     });
 
@@ -1797,6 +1846,8 @@ class PackagesModule {
         htmlServer.loadTemplate('packages', templatePath);
       }
 
+      await this.annotateSignatures(updates, u => u.name, u => u.version);
+
       // Build template variables
       const vars = {
         fromDate: fromDate.split('T')[0], // Just the date part
@@ -1824,6 +1875,37 @@ class PackagesModule {
     }
   }
 
+  // Sets signatureState on each item of a list for an HTML page: its PackageSignatures row (the
+  // publisher's signature, as the crawler checked it), or null when there is none
+  async annotateSignatures(list, idOf, versionOf) {
+    const ids = [...new Set(list.map(idOf).filter(Boolean))];
+    const found = new Map();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const rows = await this.dbAll(`SELECT v.Id, v.Version, s.Valid, s.KeyId, s.Message, s.Checked
+                                     FROM PackageSignatures s JOIN PackageVersions v ON v.PackageVersionKey = s.PackageVersionKey
+                                     WHERE v.Id IN (${chunk.map(() => '?').join(',')})`, chunk);
+      for (const r of rows) {
+        found.set(`${r.Id}#${r.Version}`, r);
+      }
+    }
+    for (const item of list) {
+      item.signatureState = found.get(`${idOf(item)}#${versionOf(item)}`) || null;
+    }
+  }
+
+  // The Signature column: confirmed (the publisher's signature checked out), rejected (it didn't),
+  // or absent (unsigned, or not checked: the feed lists no keys, or signatures are ignored)
+  signatureCell(sig) {
+    if (!sig) {
+      return '<td class="text-muted">absent</td>';
+    }
+    if (sig.Valid) {
+      return `<td title="${escape(`Signed with ${sig.KeyId}; checked ${sig.Checked} UTC`)}"><span class="text-success">confirmed</span></td>`;
+    }
+    return `<td title="${escape(`${sig.Message || 'The signature is not valid'}; checked ${sig.Checked} UTC`)}"><span class="text-danger">rejected</span></td>`;
+  }
+
   generateUpdatesTable(updates) {
     if (updates.length === 0) {
       return '<div class="alert alert-info">No package updates found for the specified time period.</div>';
@@ -1837,6 +1919,7 @@ class PackagesModule {
     table += '<th>Type</th>';
     table += '<th>Published</th>';
     table += '<th>Canonical</th>';
+    table += '<th>Signature</th>';
     table += '</tr></thead><tbody>';
 
     for (const pkg of updates) {
@@ -1847,6 +1930,7 @@ class PackagesModule {
       table += `<td>${escape(pkg.kind)}</td>`;
       table += `<td>${new Date(pkg.date).toLocaleDateString()} ${new Date(pkg.date).toLocaleTimeString()}</td>`;
       table += `<td>${escape(pkg.canonical || '')}</td>`;
+      table += this.signatureCell(pkg.signatureState);
       table += '</tr>';
     }
 
@@ -2270,8 +2354,11 @@ class PackagesModule {
                           Description,
                           d.Integrity,
                           d.KeyId,
-                          d.Signature
+                          d.Signature,
+                          s.Valid AS PublisherSigValid,
+                          s.KeyId AS PublisherSigKeyId
                    FROM PackageVersions v LEFT JOIN PackageDist d ON d.PackageVersionKey = v.PackageVersionKey
+                     LEFT JOIN PackageSignatures s ON s.PackageVersionKey = v.PackageVersionKey
                    WHERE Id = ?
                    ORDER BY PubDate DESC`;  // Changed from ASC to DESC for most recent first
 
@@ -2368,6 +2455,17 @@ class PackagesModule {
       if (this.signer && pv.Signature && pv.KeyId === this.signer.keyid) {
         versionObj.dist.signatures = [{keyid: pv.KeyId, sig: pv.Signature}];
       }
+      // The publisher's signature, as the crawler checked it. Not dist.attestations: npm would
+      // try to verify these as Sigstore attestations, and can't (see readme)
+      if (pv.PublisherSigValid !== null && pv.PublisherSigValid !== undefined) {
+        versionObj.dist['fhir-signature'] = {
+          url: this.buildSignatureUrl(id, pv.Version, secure, req),
+          status: pv.PublisherSigValid ? 'confirmed' : 'rejected'
+        };
+        if (pv.PublisherSigKeyId) {
+          versionObj.dist['fhir-signature'].keyid = pv.PublisherSigKeyId;
+        }
+      }
 
       // Add optional fields
       if (pv.HomePage) {
@@ -2410,6 +2508,14 @@ class PackagesModule {
     return registry;
   }
 
+  // Where the publisher's signature of a version is served: npm's form of name@version
+  buildSignatureUrl(id, version, secure, req) {
+    const spec = encodeURIComponent(id).replace(/^%40/, '@') + '@' + encodeURIComponent(version);
+    const base = this.config.baseUrl ? this.config.baseUrl.replace(/\/+$/, '')
+      : `${secure ? 'https' : 'http'}://${(req && req.get && req.get('host')) || 'localhost:3000'}`;
+    return `${base}/packages/-/fhir/v1/signatures/${spec}`;
+  }
+
   buildTarballUrl(id, version, secure, req) {
     if (this.config.bucketPath) {
       let bucketUrl = this.getBucketUrl(secure);
@@ -2431,6 +2537,8 @@ class PackagesModule {
         const templatePath = path.join(__dirname, 'packages-template.html');
         htmlServer.loadTemplate('packages', templatePath);
       }
+
+      await this.annotateSignatures(packageVersions, () => id, pv => pv.Version);
 
       // Get package counts
       const versionCount = packageVersions.length;
@@ -2477,6 +2585,7 @@ class PackagesModule {
     table += '<th>Type</th>';
     table += '<th>Published</th>';
     table += '<th>Downloads</th>';
+    table += '<th>Signature</th>';
     table += '<th>Actions</th>';
     table += '</tr></thead><tbody>';
 
@@ -2487,6 +2596,7 @@ class PackagesModule {
       table += `<td>${escape(this.codeForKind(pv.Kind))}</td>`;
       table += `<td>${new Date(pv.PubDate).toLocaleDateString()}</td>`;
       table += `<td>${(pv.DownloadCount || 0).toLocaleString()}</td>`;
+      table += this.signatureCell(pv.signatureState);
       table += `<td><a href="/packages/${encodeURIComponent(id)}/${escape(pv.Version)}" class="btn btn-sm btn-primary">Download</a></td>`;
       table += '</tr>';
     }
@@ -2684,6 +2794,7 @@ class PackagesModule {
       // Get total package count
       const packageCount = await this.getTotalPackageCount();
       const downloadCount = await this.getTotalDownloadCount();
+      await this.annotateSignatures(results, r => r.name, r => r.version);
 
       // Build template variables
       const vars = {
@@ -2777,6 +2888,7 @@ class PackagesModule {
     table += `<th>${this.generateSortHeader('Published', 'date', baseUrl, currentSort)}</th>`;
     table += `<th>${this.generateSortHeader('Downloads', 'count', baseUrl, currentSort)}</th>`;
     table += `<th>${this.generateSortHeader('Canonical', 'canonical', baseUrl, currentSort)}</th>`;
+    table += '<th>Signature</th>';
     table += '</tr></thead><tbody>';
 
     for (const pkg of results) {
@@ -2788,6 +2900,7 @@ class PackagesModule {
       table += `<td>${pkg.date ? new Date(pkg.date).toLocaleDateString() : 'N/A'}</td>`;
       table += `<td>${pkg.count ? pkg.count.toLocaleString() : 'N/A'}</td>`;
       table += `<td>${escape(pkg.canonical || '')}</td>`;
+      table += this.signatureCell(pkg.signatureState);
       table += '</tr>';
     }
 
@@ -3372,7 +3485,9 @@ class PackagesModule {
 
     if (logData.feeds && logData.feeds.length > 0) {
       for (const feed of logData.feeds) {
-        if (feed.exception || feed.rateLimited) {
+        if (feed.skipped) {
+          output += `Feed: ${feed.url}: skipped - ${feed.skipped}\n`;
+        } else if (feed.exception || feed.rateLimited) {
           // Feed itself had an error
           const error = feed.rateLimited ? feed.rateLimitMessage : feed.exception;
           output += `Feed: ${feed.url}: ${error}\n`;
@@ -3386,6 +3501,9 @@ class PackagesModule {
               if (item.error && item.status !== 'Already Processed') {
                 const guid = item.guid || 'unknown';
                 output += `  error: ${guid}: ${item.error}\n`;
+              }
+              if (item.signature && !item.signature.startsWith('valid') && item.signature !== 'unsigned') {
+                output += `  signature: ${item.guid || 'unknown'}: ${item.signature}\n`;
               }
             }
           }

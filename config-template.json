@@ -125,7 +125,13 @@
         "maxDownloadMB": 250,
         "maxUnpackedMB": 4096,
         "maxFileMB": 50,
-        "maxFiles": 250000
+        "maxFiles": 250000,
+        // publishers' package signatures, for feeds that list signing keys in package-feeds.json:
+        // "ignore"; "check" (the default: a signature that fails is logged, and the package
+        // stored anyway, unless the feed says signing.required); or "require" (an unsigned
+        // package, or one whose signature fails, is refused, and feeds that list no keys aren't
+        // read at all)
+        "signatures": "check"
       },
       // npm registry signatures (npm audit signatures). On by default. keyFile is the EC
       // P-256 signing key (PEM), relative to the database's folder; made if it's not there
