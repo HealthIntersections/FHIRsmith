@@ -34,6 +34,7 @@ In summary:
 | `GET /packages/{id}/{version}` | Download a package tarball; or, when the request's `Accept` prefers JSON (ranks it above `*/*`), npm's document for that version. A `FHIR-Package-Download` header always gets the tarball (the HL7 Java tools send it) |
 | `GET /packages/updates` | Versions published since a date |
 | `GET /packages/broken` | Package versions whose dependencies this registry doesn't hold |
+| `GET /packages/-/npm/v1/keys` | The key this registry signs package versions with (see [Signatures](#signatures)) |
 | `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |
 
 Most endpoints return an HTML page instead of JSON when the request's `Accept`
@@ -95,6 +96,8 @@ In the server config, under `modules.packages`:
 | `masterUrl` | The list of feeds to crawl. Defaults to `https://fhir.github.io/ig-registry/package-feeds.json`. |
 | `localFeedDirs` | Optional. Directories feeds may be read from as local files (for testing). |
 | `allowPrivateAddresses` | Optional, for testing only. Lets the crawler and `/npm-check` fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
+| `npmSigning.enabled` | Sign package versions (see [Signatures](#signatures)). On unless set to `false`. |
+| `npmSigning.keyFile` | The signing key, an EC P-256 private key in PEM. A relative path is resolved against the database's folder. Default `npm-signing-key.pem`; made (readable only by the server's user) if it isn't there. |
 | `npmCheck.enabled` | `/packages/npm-check`. On unless set to `false`. |
 | `npmCheck.maxConcurrentRuns` | Runs at once, across all users; more get a 503. Default 2. |
 | `npmCheck.runsPerWindow` | Runs per client address per 10 minutes; more get a 429. Default 10. |
@@ -121,6 +124,33 @@ are used three ways:
 
 `/packages/npm-check` also runs them against registry.npmjs.org once a day, and says on
 the page if any fail there.
+
+## Signatures
+
+The server signs every package version it holds, the way the npm registry does, so
+`npm audit signatures` can check packages installed from it. A signature says that this
+registry served this tarball: it is the registry's statement, not the publisher's, so
+it's made for every version, wherever it was crawled from. Each version in a package
+document has `dist.integrity` (the sha512 of the tarball) and `dist.signatures`, the
+ECDSA P-256 signature of `{id}@{version}:{integrity}`; `/packages/-/npm/v1/keys` lists
+the public key.
+
+* The key is in `npmSigning.keyFile`, next to the database unless set otherwise. If
+  there's no key there, one is made at startup. It is no better protected than the
+  database and the configuration: anyone who can change those can change what is
+  served anyway.
+* A version is signed when it's stored. Versions stored before this (or signed with a
+  different key) are signed in the background at startup, a row at a time. Until every
+  version is signed, `/-/npm/v1/keys` is a 404, as if the server didn't sign: npm reports
+  an unsigned version from a registry with keys as an error. `/packages/status` shows the
+  progress (`npmSigning`). If some are left, it tries again after the next crawl.
+* To change the key, replace the file and restart: everything is signed again with the
+  new key, and the keys endpoint is a 404 until that's done.
+* With `npmSigning.enabled` false, versions still get `dist.integrity`, but there are no
+  signatures and no keys.
+
+The signatures and integrity are in the `PackageDist` table, not in `PackageVersions`:
+reading a column stored after the tarball means reading the tarball.
 
 ## Crawling
 
@@ -151,7 +181,8 @@ stores it.
 ## Storage
 
 Everything is in the SQLite database. `PackageVersions` holds each version's
-metadata and the tarball itself. `Packages` holds one row per package id, with its
+metadata and the tarball itself. `PackageDist` holds each version's `dist.integrity`
+and npm signature. `Packages` holds one row per package id, with its
 current version and download count. `PackageDependencies` (stored as `id@version`),
 `PackageFHIRVersions` and `PackageURLs` (the canonical URLs of the resources in each
 version) support search.

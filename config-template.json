@@ -127,6 +127,12 @@
         "maxFileMB": 50,
         "maxFiles": 250000
       },
+      // npm registry signatures (npm audit signatures). On by default. keyFile is the EC
+      // P-256 signing key (PEM), relative to the database's folder; made if it's not there
+      "npmSigning": {
+        "enabled": true,
+        "keyFile": "npm-signing-key.pem"
+      },
       // /packages/npm-check: checks any registry against the npm registry protocol. On by
       // default; the other settings are the defaults. "control": false stops the daily
       // check against the npm registry itself.

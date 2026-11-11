@@ -17,6 +17,7 @@ const https = require('https');
 const ipaddr = require('ipaddr.js');
 const {debugLog} = require("../tx/operation-context");
 const {Parser: TarParser} = require('tar');
+const {integrityOfSync} = require('./npm-signing');
 
 const MB = 1024 * 1024;
 
@@ -89,6 +90,8 @@ class PackageCrawler {
     this.crawlerLog = {};
     this.errors = '';
     this.abortController = null;
+    // the npm signing key (NpmSigner), or null when this server doesn't sign
+    this.signer = null;
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA busy_timeout = 5000');
   }
@@ -860,7 +863,7 @@ class PackageCrawler {
 
   // A direct copy replacing the Simplifier copies we held: it takes over the first row (so its
   // key and download count survive), and any further Simplifier rows go.
-  async replaceVersion(keys, packageBuffer, npmPackage, date, guid, id, canonical, urls) {
+  async replaceVersion(keys, packageBuffer, npmPackage, date, guid, id, version, canonical, urls) {
     const [vkey, ...extra] = keys;
     await this.run(`UPDATE PackageVersions
                     SET GUID = ?, PubDate = ?, Indexed = datetime('now'), Kind = ?, Canonical = ?,
@@ -871,7 +874,7 @@ class PackageCrawler {
         npmPackage.description, this.genHash(packageBuffer), npmPackage.author, npmPackage.license,
         npmPackage.url, packageBuffer, vkey]);
     for (const key of keys) {
-      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs']) {
+      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs', 'PackageDist']) {
         await this.run(`DELETE FROM ${table} WHERE PackageVersionKey = ?`, [key]);
       }
     }
@@ -879,6 +882,7 @@ class PackageCrawler {
       await this.run('DELETE FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
     }
     await this.insertRelatedData(vkey, npmPackage, urls);
+    await this.storeDist(vkey, id, version, packageBuffer);
     await this.refreshCurrentVersion(id);
   }
 
@@ -1349,9 +1353,19 @@ class PackageCrawler {
     return crypto.createHash('sha1').update(data).digest('hex');
   }
 
+  // The version's dist.integrity, and its registry signature when this server signs
+  // (this.signer, set by the packages module - see npm-signing.js). In their own table,
+  // PackageDist: a column after Content in PackageVersions can only be read by walking the
+  // tarball's overflow pages, and the package document reads these for every version.
+  async storeDist(vkey, id, version, packageBuffer) {
+    const integrity = integrityOfSync(packageBuffer);
+    await this.run('INSERT OR REPLACE INTO PackageDist (PackageVersionKey, Integrity, KeyId, Signature) VALUES (?, ?, ?, ?)',
+      [vkey, integrity, this.signer ? this.signer.keyid : null, this.signer ? this.signer.sign(id, version, integrity) : null]);
+  }
+
   async commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, replaceKeys = null) {
     if (replaceKeys && replaceKeys.length > 0) {
-      return this.replaceVersion(replaceKeys, packageBuffer, npmPackage, date, guid, id, canonical, urls);
+      return this.replaceVersion(replaceKeys, packageBuffer, npmPackage, date, guid, id, version, canonical, urls);
     }
     return new Promise((resolve, reject) => {
       // Get next version key
@@ -1385,10 +1399,11 @@ class PackageCrawler {
           }
 
           // Insert FHIR versions, dependencies, and URLs
-          this.insertRelatedData(vkey, npmPackage, urls).then(() => {
+          this.insertRelatedData(vkey, npmPackage, urls)
+            .then(() => this.storeDist(vkey, id, version, packageBuffer))
             // Handle package table (insert or update)
-            this.upsertPackage(id, vkey, canonical).then(resolve).catch(reject);
-          }).catch(reject);
+            .then(() => this.upsertPackage(id, vkey, canonical))
+            .then(resolve).catch(reject);
         });
       });
     });
