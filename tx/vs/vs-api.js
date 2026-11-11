@@ -9,7 +9,11 @@ const { assignIdSpace } = require('../library/resource-ids');
  * STORED_CONCEPTS (tx/library/stored-concepts.js), { count, lookup(code) }, and keeps `concept`
  * readable for code that needs every entry (a getter that reads the list on first use).
  * $validate-code then asks the handle about the one code it checks instead of reading the list.
- * An include without the handle behaves as always.
+ * An include without the handle behaves as always. lookup(code) matches exactly, case included,
+ * as the validator does for an ordinary list whether or not the code system is case-sensitive.
+ * A provider doesn't put the handle on an include whose listed concepts carry a
+ * modifierExtension: it leaves that one an ordinary array, and the validator refuses it (422).
+ * See stored-concepts.js.
  */
 class AbstractValueSetProvider {
   /**

@@ -7,7 +7,7 @@ const request = require('supertest');
 const { getTestApp, shutdownTestApp } = require('./setup');
 const { FhirCodeSystemProvider } = require('../../tx/cs/cs-cs');
 const { ValueSetChecker } = require('../../tx/workers/validate');
-const { STORED_CONCEPTS, storedList, hasConcepts } = require('../../tx/library/stored-concepts');
+const { STORED_CONCEPTS, storedList, hasConcepts, listedConcepts } = require('../../tx/library/stored-concepts');
 
 const CS_URL = 'http://example.org/fhir/CodeSystem/stored-concepts-cs';
 const N = 50;
@@ -52,6 +52,19 @@ describe('stored-concepts helpers', () => {
     expect(hasConcepts(inc)).toBe(true);
     expect(await storedList(inc).lookup('b')).toEqual([{ code: 'b' }]);
     expect(stats).toEqual({ reads: 0, lookups: ['b'] });
+  });
+
+  test('listedConcepts keeps only exact matches, whatever a lookup returns', async () => {
+    // a lookup that matches without regard to case (a NOCASE column, say) can't make a code
+    // listed that the array wouldn't (and so can't stop the search for another form of it)
+    const list = [{ code: 'Abc' }, { code: 'ABC' }, { code: 'x' }];
+    const inc = { system: 'x', concept: list };
+    const nocase = { system: 'x', [STORED_CONCEPTS]: { count: 3, lookup: async (code) => list.filter(cc => cc.code.toLowerCase() === code.toLowerCase()) } };
+    for (const code of ['Abc', 'abc', 'ABC', 'x', 'X']) {
+      expect(await listedConcepts(nocase, code)).toEqual(await listedConcepts(inc, code));
+    }
+    expect(await listedConcepts(nocase, 'abc')).toEqual([]);
+    expect(await listedConcepts(nocase, 'ABC')).toEqual([{ code: 'ABC' }]);
   });
 });
 
@@ -155,6 +168,80 @@ describe('$validate-code against a stored concept list', () => {
     } finally {
       s1.mockRestore();
       s2.mockRestore();
+    }
+  });
+});
+
+/**
+ * How a listed code is matched: exactly, case included, even when the code system isn't
+ * case-sensitive - and a stored list's lookup can't change that by matching more loosely.
+ */
+describe('a listed code is matched exactly, for an ordinary and a stored list', () => {
+  let app;
+  let mode; // null: an ordinary list; 'exact' / 'nocase': a stored list whose lookup matches that way
+  let lookups;
+  const spies = [];
+  const CI_URL = 'http://example.org/fhir/CodeSystem/stored-concepts-ci';
+  const CI_VS_URL = 'http://example.org/fhir/ValueSet/stored-concepts-ci';
+  const ciCs = (caseSensitive) => ({
+    resourceType: 'CodeSystem', url: CI_URL, version: '1.0.0', status: 'active', content: 'complete', caseSensitive,
+    concept: [{ code: 'Abc', display: 'A b c' }, { code: 'Def', display: 'D e f' }]
+  });
+  const ciVs = () => ({
+    resourceType: 'ValueSet', url: CI_VS_URL, version: '1.0.0', status: 'active',
+    compose: { include: [{ system: CI_URL, concept: [{ code: 'Abc' }] }] }
+  });
+
+  beforeAll(async () => {
+    app = await getTestApp();
+    const origPrepare = ValueSetChecker.prototype.prepare;
+    spies.push(jest.spyOn(ValueSetChecker.prototype, 'prepare').mockImplementation(async function (...args) {
+      const compose = this.valueSet && this.valueSet.jsonObj.compose;
+      if (mode && compose && this.valueSet.url === CI_VS_URL) {
+        for (const inc of compose.include) {
+          if (!storedList(inc)) {
+            const list = inc.concept;
+            inc[STORED_CONCEPTS] = {
+              count: list.length,
+              lookup: async (code) => {
+                lookups.push(code);
+                return list.filter(cc => mode === 'nocase' ? cc.code.toLowerCase() === code.toLowerCase() : cc.code === code);
+              }
+            };
+          }
+        }
+      }
+      return origPrepare.apply(this, args);
+    }));
+  }, 60000);
+
+  afterAll(async () => {
+    spies.forEach(s => s.mockRestore());
+    await shutdownTestApp();
+  });
+
+  async function resultFor(caseSensitive, code) {
+    const res = await request(app).post('/tx/r5/ValueSet/$validate-code')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [
+        { name: 'tx-resource', resource: ciCs(caseSensitive) },
+        { name: 'valueSet', resource: ciVs() },
+        { name: 'coding', valueCoding: { system: CI_URL, code } }
+      ] });
+    expect(res.status).toBe(200);
+    return res.body.parameter.find(p => p.name === 'result').valueBoolean;
+  }
+
+  test.each([[true], [false]])('caseSensitive %s: the listed spelling is in, another case is not, whichever way the list is held', async (caseSensitive) => {
+    for (const m of [null, 'exact', 'nocase']) {
+      mode = m;
+      lookups = [];
+      expect(await resultFor(caseSensitive, 'Abc')).toBe(true);
+      expect(await resultFor(caseSensitive, 'abc')).toBe(false);
+      expect(await resultFor(caseSensitive, 'Def')).toBe(false);
+      if (m) {
+        expect(lookups).toEqual(expect.arrayContaining(['Abc', 'abc', 'Def']));
+      }
     }
   });
 });
