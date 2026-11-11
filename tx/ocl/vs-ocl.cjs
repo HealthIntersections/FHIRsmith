@@ -11,7 +11,7 @@ const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRE
 const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
-const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
+const { CACHE_VS_DIR, VS_DISCOVERY_SNAPSHOT_PATH, getCacheFilePath } = require('./cache/cache-paths');
 const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs, cleanupStaleTmpFiles } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
 const { ensureTxParametersHashIncludesFilter, patchValueSetExpandWholeSystemForOcl } = require('./shared/patches');
@@ -78,6 +78,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     this._initialized = false;
     this._initializePromise = null;
     this._followerCacheMtimes = new Map();
+    this._followerVsSnapshotMtimeMs = null;
+    this._lastVsSnapshotHash = null;
     this.sourcePackageCode = this.org
       ? `ocl:${this.baseUrl}|org=${this.org}`
       : `ocl:${this.baseUrl}`;
@@ -159,6 +161,117 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
+  async #writeVsDiscoverySnapshot(collections) {
+    try {
+      await ensureCacheDirectories(CACHE_VS_DIR);
+      const entries = collections.filter(c => c && (c.canonical_url || c.canonicalUrl || c.url)).map(c => ({
+        id: c.id,
+        canonical_url: c.canonical_url || c.canonicalUrl || c.url,
+        version: c.version || null,
+        name: c.name || c.id,
+        full_name: c.full_name || c.fullName || c.name || c.id,
+        description: c.description || null,
+        publisher: c.publisher || c.owner || null,
+        owner: c.owner || null,
+        owner_type: c.owner_type || c.ownerType || null,
+        default_locale: c.default_locale || c.defaultLocale || null,
+        experimental: c.experimental || false,
+        immutable: c.immutable || false,
+        preferred_source: c.preferred_source || c.preferredSource || null,
+        concepts_url: c.concepts_url || c.conceptsUrl || null,
+        expansion_url: c.expansion_url || c.expansionUrl || null,
+        short_code: c.short_code || c.shortCode || null,
+        updated_on: c.updated_on || c.updatedOn || c.updated_at || c.updatedAt || null
+      }));
+      const payload = JSON.stringify({ version: 1, entries }, null, 2);
+
+      const crypto = require('crypto');
+      const newHash = crypto.createHash('sha256').update(payload).digest('hex');
+      if (newHash === this._lastVsSnapshotHash) {
+        return;
+      }
+
+      await atomicWriteFile(VS_DISCOVERY_SNAPSHOT_PATH, payload);
+      this._lastVsSnapshotHash = newHash;
+      oclVsLog.info(`VS discovery snapshot written (${entries.length} entries)`);
+    } catch (error) {
+      oclVsLog.error(`Failed to write VS discovery snapshot: ${error.message}`);
+    }
+  }
+
+  async #initializeFromVsDiscoverySnapshot() {
+    try {
+      const data = await fs.readFile(VS_DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+      const snapshotData = JSON.parse(data);
+      if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+        oclVsLog.warn('Follower: no VS discovery snapshot available yet');
+        return;
+      }
+
+      for (const collection of snapshotData.entries) {
+        const valueSet = this.#toValueSet(collection);
+        if (!valueSet) {
+          continue;
+        }
+        this.#indexValueSet(valueSet);
+      }
+
+      const mtimeMs = getColdCacheMtimeMs(VS_DISCOVERY_SNAPSHOT_PATH);
+      if (mtimeMs != null) {
+        this._followerVsSnapshotMtimeMs = mtimeMs;
+      }
+
+      oclVsLog.info(`Follower: initialized ${snapshotData.entries.length} value sets from VS discovery snapshot`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclVsLog.error(`Failed to read VS discovery snapshot: ${error.message}`);
+      } else {
+        oclVsLog.warn('Follower: no VS discovery snapshot available yet');
+      }
+    }
+  }
+
+  #scheduleFollowerVsSnapshotCheck() {
+    const mtimeMs = getColdCacheMtimeMs(VS_DISCOVERY_SNAPSHOT_PATH);
+    if (mtimeMs == null) {
+      return;
+    }
+    if (this._followerVsSnapshotMtimeMs != null && mtimeMs <= this._followerVsSnapshotMtimeMs) {
+      return;
+    }
+
+    (async () => {
+      try {
+        const data = await fs.readFile(VS_DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+        const snapshotData = JSON.parse(data);
+        if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+          return;
+        }
+
+        let newCount = 0;
+        for (const collection of snapshotData.entries) {
+          const canonicalUrl = collection.canonical_url || collection.canonicalUrl || collection.url;
+          if (!canonicalUrl || this.valueSetMap.has(canonicalUrl)) {
+            continue;
+          }
+          const valueSet = this.#toValueSet(collection);
+          if (!valueSet) {
+            continue;
+          }
+          this.#indexValueSet(valueSet);
+          newCount++;
+        }
+
+        this._followerVsSnapshotMtimeMs = mtimeMs;
+        if (newCount > 0) {
+          oclVsLog.info(`Follower: discovered ${newCount} new value sets from VS snapshot`);
+        }
+      } catch (error) {
+        oclVsLog.warn(`Follower: failed to reload VS discovery snapshot: ${error.message}`);
+      }
+    })();
+  }
+
   async #saveColdCacheForValueSet(vs, compose, metadataSignature, dependencyChecksums, paramsKey = 'default') {
     const canonicalUrl = vs?.url;
     const version = vs?.version || null;
@@ -213,10 +326,14 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
     this._initializePromise = (async () => {
       try {
-        await cleanupStaleTmpFiles(CACHE_VS_DIR);
+        if (this.cluster !== 'follower') {
+          await cleanupStaleTmpFiles(CACHE_VS_DIR);
+        }
         await this.#loadColdCacheForValueSets();
 
-        if (this.cluster !== 'follower') {
+        if (this.cluster === 'follower') {
+          await this.#initializeFromVsDiscoverySnapshot();
+        } else {
           const collections = await this.#fetchCollectionsForDiscovery();
           oclVsLog.info(`Fetched ${collections.length} collections`);
 
@@ -227,6 +344,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
             }
             this.#indexValueSet(valueSet);
           }
+
+          await this.#writeVsDiscoverySnapshot(collections);
         }
 
         oclVsLog.info(`Loaded ${this.valueSetMap.size} value sets${this.cluster === 'follower' ? ' (follower, from cold cache)' : ''}`);
@@ -1071,6 +1190,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
 
     if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
       this.#followerCheckColdCache(vs, options);
       return;
     }

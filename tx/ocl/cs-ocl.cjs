@@ -73,6 +73,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._organizationIdsFetchPromise = null;
     this._followerCacheMtimes = new Map();
     this._followerSnapshotMtimeMs = null;
+    this._lastSnapshotHash = null;
   }
 
   async initialize() {
@@ -87,7 +88,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this._initializePromise = (async () => {
       try {
-        await cleanupStaleTmpFiles(CACHE_CS_DIR);
+        if (this.cluster !== 'follower') {
+          await cleanupStaleTmpFiles(CACHE_CS_DIR);
+        }
 
         if (this.cluster === 'follower') {
           await this.#initializeFromDiscoverySnapshot();
@@ -99,8 +102,6 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
           await this.#augmentSnapshotWithDefaultVersions(snapshot);
           this.#applySnapshot(snapshot);
           await this.#writeDiscoverySnapshot(snapshot);
-
-          this.#scheduleProactiveWarmUp();
         }
 
         oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems${this.cluster === 'follower' ? ' (follower, from discovery snapshot)' : ''}`);
@@ -555,6 +556,14 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._sourceStateByCanonical = snapshot;
   }
 
+  #stripConcepts(jsonObj) {
+    if (!jsonObj) {
+      return null;
+    }
+    const { concept, ...rest } = jsonObj;
+    return rest;
+  }
+
   async #writeDiscoverySnapshot(snapshot) {
     try {
       await ensureCacheDirectories(CACHE_CS_DIR);
@@ -564,16 +573,24 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
           canonicalUrl,
           checksum: entry.checksum || null,
           meta: this.#serializeMeta(entry.meta),
-          csJson: entry.cs?.jsonObj || null
+          csJson: this.#stripConcepts(entry.cs?.jsonObj)
         };
         if (entry.headMeta) {
           item.headMeta = this.#serializeMeta(entry.headMeta);
-          item.headCsJson = entry.headMeta.codeSystem?.jsonObj || null;
+          item.headCsJson = this.#stripConcepts(entry.headMeta.codeSystem?.jsonObj);
         }
         entries.push(item);
       }
-      const payload = JSON.stringify({ version: 1, timestamp: new Date().toISOString(), entries }, null, 2);
+      const payload = JSON.stringify({ version: 1, entries }, null, 2);
+
+      const crypto = require('crypto');
+      const newHash = crypto.createHash('sha256').update(payload).digest('hex');
+      if (newHash === this._lastSnapshotHash) {
+        return;
+      }
+
       await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, payload);
+      this._lastSnapshotHash = newHash;
       oclLog.info(`Discovery snapshot written (${entries.length} entries)`);
     } catch (error) {
       oclLog.error(`Failed to write discovery snapshot: ${error.message}`);
@@ -631,6 +648,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
   }
 
   #scheduleProactiveWarmUp() {
+    if (this.cluster !== 'leader') {
+      return;
+    }
     for (const [, factory] of OCLSourceCodeSystemFactory.factoriesByKey.entries()) {
       if (factory) {
         factory.scheduleBackgroundLoad('proactive-warm');

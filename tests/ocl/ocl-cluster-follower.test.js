@@ -1,7 +1,6 @@
 const fs = require('fs/promises');
-const { OCLCodeSystemProvider, OCLSourceCodeSystemFactory } = require('../../tx/ocl/cs-ocl');
-const { CACHE_CS_DIR, DISCOVERY_SNAPSHOT_PATH } = require('../../tx/ocl/cache/cache-paths');
-const { ensureCacheDirectories, atomicWriteFile } = require('../../tx/ocl/cache/cache-utils');
+const os = require('os');
+const path = require('path');
 
 const TEST_CANONICAL = 'http://example.org/ocl/CodeSystem/follower-test';
 const TEST_VERSION = '1.0';
@@ -44,6 +43,37 @@ function makeSnapshotFile(entries) {
     }))
   }, null, 2);
 }
+
+let tmpDir;
+let OCLCodeSystemProvider, OCLSourceCodeSystemFactory;
+let CACHE_CS_DIR, DISCOVERY_SNAPSHOT_PATH;
+let ensureCacheDirectories, atomicWriteFile;
+
+beforeAll(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ocl-test-'));
+  process.env.OCL_CACHE_DIR = tmpDir;
+
+  jest.resetModules();
+
+  const cachePaths = require('../../tx/ocl/cache/cache-paths');
+  CACHE_CS_DIR = cachePaths.CACHE_CS_DIR;
+  DISCOVERY_SNAPSHOT_PATH = cachePaths.DISCOVERY_SNAPSHOT_PATH;
+
+  const cacheUtils = require('../../tx/ocl/cache/cache-utils');
+  ensureCacheDirectories = cacheUtils.ensureCacheDirectories;
+  atomicWriteFile = cacheUtils.atomicWriteFile;
+
+  const csOcl = require('../../tx/ocl/cs-ocl');
+  OCLCodeSystemProvider = csOcl.OCLCodeSystemProvider;
+  OCLSourceCodeSystemFactory = csOcl.OCLSourceCodeSystemFactory;
+});
+
+afterAll(async () => {
+  delete process.env.OCL_CACHE_DIR;
+  if (tmpDir) {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
 
 describe('OCL Cluster Follower', () => {
   beforeEach(async () => {

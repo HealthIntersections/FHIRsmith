@@ -1,9 +1,10 @@
 const path = require('path');
 
-const CACHE_BASE_DIR = path.join(process.cwd(), 'data', 'terminology-cache', 'ocl');
+const CACHE_BASE_DIR = process.env.OCL_CACHE_DIR || path.join(process.cwd(), 'data', 'terminology-cache', 'ocl');
 const CACHE_CS_DIR = path.join(CACHE_BASE_DIR, 'codesystems');
 const CACHE_VS_DIR = path.join(CACHE_BASE_DIR, 'valuesets');
 const DISCOVERY_SNAPSHOT_PATH = path.join(CACHE_BASE_DIR, 'discovery-snapshot.json');
+const VS_DISCOVERY_SNAPSHOT_PATH = path.join(CACHE_BASE_DIR, 'vs-discovery-snapshot.json');
 
 function sanitizeFilename(text) {
   if (!text || typeof text !== 'string') {
@@ -28,6 +29,7 @@ module.exports = {
   CACHE_CS_DIR,
   CACHE_VS_DIR,
   DISCOVERY_SNAPSHOT_PATH,
+  VS_DISCOVERY_SNAPSHOT_PATH,
   sanitizeFilename,
   getCacheFilePath
 };
