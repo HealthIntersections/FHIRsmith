@@ -51,7 +51,7 @@ SECTION=$(sed -n "/^## \[v\{0,1\}${VERSION//./\\.}\]/,/^## \[/p" CHANGELOG.md | 
 REPORT=test-cases-report.json
 [ -f "$REPORT" ] || fail "no $REPORT - run the tx tests first (npx jest tests/tx/test-cases.test.js)"
 # the last commit that changed what the tests run - not the notes, nor the version bump
-CODE_COMMITTED=$(git log -1 --format=%cI -- . ':(exclude)*.md' ':(exclude)release.sh' ':(exclude)package.json' ':(exclude)package-lock.json')
+CODE_COMMITTED=$(git log -1 --format=%cI -- . ':(exclude)*.md' ':(exclude)release.sh' ':(exclude)package.json' ':(exclude)package-lock.json' ':(exclude)utilities/submit-test-report.js')
 node - "$REPORT" "$VERSION" "$CODE_COMMITTED" <<'NODE' || exit 1
 const [file, version, committed] = process.argv.slice(2);
 const report = JSON.parse(require('fs').readFileSync(file, 'utf8'));
