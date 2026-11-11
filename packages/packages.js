@@ -23,6 +23,9 @@ const packagesOpenApi = require('./openapi');
 const rateLimit = require('express-rate-limit');
 const { runNpmCheck, makeGetter } = require('./npm-check');
 const npmCheckPage = require('./npm-check-page');
+const { FeedCheck } = require('./feed-check');
+const feedCheckPage = require('./feed-check-page');
+const crypto = require('crypto');
 const { NpmSigner, integrityOf } = require('./npm-signing');
 
 // Query parameter rules for validateQueryParams. These are also the contract published in
@@ -103,6 +106,25 @@ const NPM_CHECK_DEFAULTS = {
 };
 const NPM_CHECK_CONTROL_MAX_AGE = 24 * 60 * 60 * 1000;
 
+// GET /feed-check: check a package feed as the crawler reads it, storing nothing (also in openapi.yaml)
+const FEED_CHECK_PARAMS = {
+  url: { maxLength: 500, pattern: /^https?:\/\/[^\s<>"'`]+$/ },
+  // the feed's signing keys, as JSON: package-feeds.json's signing block ({required, keys}), or a
+  // whole feed entry with one. Used instead of what the registry lists for the feed
+  signing: { maxLength: 5000, pattern: /^[^<>`]*$/ }
+};
+// feed-check defaults; all can be set under modules.packages.feedCheck in the config. Only one
+// check runs at a time, across all users
+const FEED_CHECK_DEFAULTS = {
+  enabled: true,
+  maxItems: 50, // items checked per run (each one's package is downloaded)
+  maxTotalMB: 500, // downloaded per run; later items are reported but not downloaded
+  keepMinutes: 60 // how long a run's report can be fetched
+};
+const FEED_CHECK_MAX_JOBS = 100;
+const FEED_CHECK_JOB_PATTERN = /^[0-9a-f]{24}$/;
+const MASTER_LIST_MAX_AGE = 60 * 60 * 1000;
+
 // The query string of a request, for logging (the parameters were validated before the handler runs)
 function queryString(req) {
   const i = req.originalUrl.indexOf('?');
@@ -141,6 +163,36 @@ const PACKAGE_SIGNATURES_TABLE = `CREATE TABLE IF NOT EXISTS PackageSignatures
              Bundle            TEXT NOT NULL
          )`;
 
+// The signing information a user gives the feed check: package-feeds.json's signing block
+// ({required, keys: [{keyid, key, expires}]}), or a feed entry that has one. Throws if unusable.
+function parseSigningJson(text) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`it isn't JSON (${e.message})`);
+  }
+  const block = json && typeof json === 'object' && json.signing && typeof json.signing === 'object' ? json.signing : json;
+  if (!block || typeof block !== 'object' || !Array.isArray(block.keys) || block.keys.length === 0) {
+    throw new Error('it needs a keys array, as in package-feeds.json\'s signing block');
+  }
+  const keys = block.keys.map((k, i) => {
+    if (!k || typeof k.keyid !== 'string' || typeof k.key !== 'string') {
+      throw new Error(`keys[${i}] needs a keyid and a key`);
+    }
+    try {
+      crypto.createPublicKey({key: Buffer.from(k.key, 'base64'), format: 'der', type: 'spki'});
+    } catch (e) {
+      throw new Error(`keys[${i}].key isn't a base64 public key (SubjectPublicKeyInfo)`);
+    }
+    if (k.expires !== undefined && k.expires !== null && Number.isNaN(Date.parse(k.expires))) {
+      throw new Error(`keys[${i}].expires isn't a date`);
+    }
+    return {keyid: k.keyid, key: k.key, expires: k.expires || null};
+  });
+  return {required: block.required === true, keys};
+}
+
 class PackagesModule {
   constructor(stats) {
     this.router = express.Router();
@@ -155,6 +207,9 @@ class PackagesModule {
     // npm registry signatures: the key (null when this server doesn't sign), and the
     // background job that fills in PackageDist for versions stored without it
     this.signer = null;
+    // feed checks (/feed-check): id -> {id, url, state, report, error, started, ip}
+    this.feedCheckJobs = new Map();
+    this.feedCheckRunning = false;
     this.distStatus = { state: 'not started', missing: null, done: 0, failed: 0 };
     this.distBackfill = null;
     this.stopping = false;
@@ -1299,6 +1354,34 @@ class PackagesModule {
       }
     });
 
+    // GET /packages/feed-check - check a package feed as the crawler reads it, storing nothing.
+    // With url, starts a check and redirects to its report; the report page reloads until done.
+    // One check at a time, across all users.
+    this.router.get('/feed-check', this.validateQueryParams(FEED_CHECK_PARAMS), async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveFeedCheck(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/feed-check:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('feed-check', Date.now() - start);
+      }
+    });
+
+    // GET /packages/feed-check/{run} - a feed check's report (while it runs, what it has so far)
+    this.router.get('/feed-check/:run', async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveFeedCheckRun(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/feed-check/{run}:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('feed-check', Date.now() - start);
+      }
+    });
+
     // GET /packages/catalog - Search packages or get updates
     this.router.get('/catalog', this.validateQueryParams(searchParams), async (req, res) => {
       const start = Date.now();
@@ -1588,7 +1671,7 @@ class PackagesModule {
           // Don't process routes that are handled elsewhere. These must call next():
           // returning without responding leaves the request hanging, which is what
           // /status, /stats and /search (registered after this route) used to do.
-          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates', 'npm-check'].includes(id) ||
+          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates', 'npm-check', 'feed-check'].includes(id) ||
             id.endsWith('.html') || id === '-') {
             next();
             return;
@@ -2093,6 +2176,140 @@ class PackagesModule {
       return this.sendNpmCheckPage(res, 200, npmCheckPage.renderReport({report, control: cfg.control, controlReport: this.npmCheckControlReport}));
     }
     res.json(report);
+  }
+
+  feedCheckConfig() {
+    return {...FEED_CHECK_DEFAULTS, ...(this.config?.feedCheck || {})};
+  }
+
+  // The registry's feed list (package-feeds.json), for the feed check; fetched at most hourly
+  async feedCheckMasterList() {
+    if (this.masterListCache && Date.now() - this.masterListCache.at < MASTER_LIST_MAX_AGE) {
+      return this.masterListCache.data;
+    }
+    const reader = Object.create(PackageCrawler.prototype);
+    reader.config = this.config;
+    const data = await reader.fetchJson(this.config.masterUrl);
+    this.masterListCache = {at: Date.now(), data};
+    return data;
+  }
+
+  // Forgets runs older than keepMinutes, and the oldest beyond FEED_CHECK_MAX_JOBS
+  pruneFeedCheckJobs() {
+    const keep = this.feedCheckConfig().keepMinutes * 60 * 1000;
+    for (const [id, job] of this.feedCheckJobs) {
+      if (job.state !== 'running' && Date.now() - job.started > keep) {
+        this.feedCheckJobs.delete(id);
+      }
+    }
+    while (this.feedCheckJobs.size > FEED_CHECK_MAX_JOBS) {
+      this.feedCheckJobs.delete(this.feedCheckJobs.keys().next().value);
+    }
+  }
+
+  async serveFeedCheck(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const cfg = this.feedCheckConfig();
+    const fail = (status, message) => acceptsHtml
+      ? this.sendFeedCheckPage(res, status, `<div class="alert alert-danger">${escape(message)}</div>` + feedCheckPage.renderForm(req.query))
+      : res.status(status).json({error: message});
+
+    if (!cfg.enabled) {
+      return fail(404, 'The feed check is not enabled on this server');
+    }
+    const target = req.query.url;
+    if (!target) {
+      if (acceptsHtml) {
+        return this.sendFeedCheckPage(res, 200, feedCheckPage.renderForm({}));
+      }
+      return res.status(400).json({error: 'Parameter url is required'});
+    }
+    if (typeof target !== 'string') {
+      return fail(400, 'Give the feed URL once');
+    }
+    let url;
+    try {
+      url = new URL(target);
+    } catch (e) {
+      return fail(400, `The URL isn't valid: ${target}`);
+    }
+    // http(s) only: the crawler also reads local files, which a user must never reach
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return fail(400, 'The feed URL must be http(s), with no user name or password');
+    }
+    let signing = null;
+    if (req.query.signing && String(req.query.signing).trim()) {
+      try {
+        signing = parseSigningJson(String(req.query.signing));
+      } catch (e) {
+        return fail(400, `The signing information isn't usable: ${e.message}`);
+      }
+    }
+    if (this.feedCheckRunning) {
+      res.setHeader('Retry-After', '60');
+      return fail(503, 'A feed check is already running (only one runs at a time); try again in a minute');
+    }
+
+    this.pruneFeedCheckJobs();
+    const job = {id: crypto.randomBytes(12).toString('hex'), url: target, state: 'running', report: null, error: null, started: Date.now()};
+    this.feedCheckJobs.set(job.id, job);
+    this.feedCheckRunning = true;
+    const check = new FeedCheck(this.config, {
+      master: () => this.feedCheckMasterList(),
+      held: (id, version) => this.dbGet('SELECT Hash AS hash FROM PackageVersions WHERE Id = ? AND Version = ?', [id, version]),
+      signing,
+      maxItems: cfg.maxItems,
+      maxTotalMB: cfg.maxTotalMB
+    });
+    check.run(target, report => {
+      job.report = report;
+    }).then(report => {
+      job.report = report;
+      job.state = 'done';
+      const errors = report.items.filter(i => i.status === 'error').length;
+      pckLog.info(`feed-check ${target}: ${report.items.length} items, ${errors} with errors, ${report.errors.length} feed errors`);
+    }).catch(e => {
+      job.state = 'failed';
+      job.error = e.message;
+      pckLog.error(`feed-check ${target} failed: ${e.message}`);
+    }).finally(() => {
+      this.feedCheckRunning = false;
+    });
+
+    const where = `/packages/feed-check/${job.id}`;
+    if (acceptsHtml) {
+      return res.redirect(303, where);
+    }
+    res.status(202).setHeader('Location', where);
+    return res.json({id: job.id, state: job.state, report: where});
+  }
+
+  async serveFeedCheckRun(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const id = req.params.run;
+    const job = FEED_CHECK_JOB_PATTERN.test(id || '') ? this.feedCheckJobs.get(id) : null;
+    if (!job) {
+      const message = 'There is no feed check with that id (reports are kept for a while after the check)';
+      return acceptsHtml
+        ? this.sendFeedCheckPage(res, 404, `<div class="alert alert-info">${escape(message)}</div>` + feedCheckPage.renderForm({}))
+        : res.status(404).json({error: message});
+    }
+    if (acceptsHtml) {
+      if (job.state === 'running') {
+        res.setHeader('Refresh', '5');
+      }
+      return this.sendFeedCheckPage(res, 200, feedCheckPage.renderJob(job));
+    }
+    return res.json({id: job.id, url: job.url, state: job.state, error: job.error || undefined, report: job.report});
+  }
+
+  async sendFeedCheckPage(res, status, content) {
+    if (!htmlServer.hasTemplate('packages')) {
+      htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+    }
+    const stats = await this.gatherPackageStatistics();
+    res.status(status).setHeader('Content-Type', 'text/html');
+    res.send(htmlServer.renderPage('packages', 'Package Feed Check', content, stats));
   }
 
   async sendNpmCheckPage(res, status, content) {
