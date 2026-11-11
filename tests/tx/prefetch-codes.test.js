@@ -191,7 +191,7 @@ describe('CodeSystemProvider.prefetchCodes: the workers pass the handle back', (
   });
 
   test('$validate-code: the listed codes compared with a code that is not listed come from the handle', async () => {
-    // sameConceptDifferentForm locates listed codes only for a code system with two spellings of a
+    // otherFormMatch locates listed codes only for a code system with two spellings of a
     // code (ICD-11): make this one say it has them, so the listed codes are located
     const spy = jest.spyOn(FhirCodeSystemProvider.prototype, 'classificationCode').mockImplementation(async function () {
       return this.system() === CS_URL ? 'x' : null;

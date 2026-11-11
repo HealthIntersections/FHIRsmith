@@ -11,6 +11,10 @@
 // that asks about one code uses the handle and doesn't read the list. An ordinary include, with
 // `concept` an array and no handle, behaves as always.
 //
+// The whole list is read in one case: when the code isn't listed as given, and the code system
+// has another form of it (classificationCode() - ICD-11's short code and entity id), each listed
+// code is located and compared, as for an ordinary include.
+//
 
 const STORED_CONCEPTS = Symbol.for('fhirsmith.storedConcepts');
 

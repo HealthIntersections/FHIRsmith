@@ -1634,29 +1634,12 @@ class ValueSetChecker {
   }
 
   /**
-   * True when an enumerated concept in a value set denotes the same concept as the code
-   * asked about, though spelled differently - ICD-11's short code and entity id. Only
-   * code systems with a classification code have two spellings, so for the rest this is
-   * one call and false.
-   */
-  async sameConceptDifferentForm(cs, code, enumerated, prefetched = null) {
-    if (code === enumerated) {
-      return false;
-    }
-    const a = await cs.locate(code);
-    if (!a.context || !(await cs.classificationCode(a.context))) {
-      return false;
-    }
-    const b = await cs.locate(enumerated, prefetched);
-    return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
-  }
-
-  /**
    * The listed concept that is the code written in its other form (ICD-11's short code and
-   * entity id), or null. The code has another form only if it has a classification code. When
-   * the code system can list the code's forms (codeForms: a plain ICD-11 concept has two), each
-   * other form is looked up in the list. When it can't (an ICD-11 expression can be written many
-   * ways), sameConceptDifferentForm compares each listed concept with the code.
+   * entity id), or null: a listed concept that locates to the same concept, though spelled
+   * differently. Only code systems with a classification code have two spellings, so the code
+   * is located and asked for one first, once; the listed codes are located and compared only
+   * when it has one, in list order (a code system may read them together: prefetchCodes). Takes
+   * the include, so that an empty stored list (see stored-concepts.js) isn't read.
    */
   async otherFormMatch(cs, code, cset) {
     const stored = storedList(cset);
@@ -1667,25 +1650,17 @@ class ValueSetChecker {
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
-    const forms = await cs.codeForms(a.context);
-    if (forms) {
-      for (const form of forms) {
-        if (form !== code) {
-          const found = await listedConcepts(cset, form);
-          if (found.length > 0) {
-            return found[0];
-          }
-        }
-      }
-      return null;
-    }
     const concepts = cset.concept || [];
+    const normal = await cs.code(a.context);
     // each listed code is located next: a provider may read them together, and hand back what it read
     const prefetched = await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
       this.worker.deadCheck('checkConceptSet#3');
-      if (await this.sameConceptDifferentForm(cs, code, cc.code, prefetched)) {
-        return cc;
+      if (cc.code !== code) {
+        const b = await cs.locate(cc.code, prefetched);
+        if (b.context && (await cs.code(b.context)) === normal) {
+          return cc;
+        }
       }
     }
     return null;

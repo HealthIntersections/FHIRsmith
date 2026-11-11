@@ -135,45 +135,26 @@ describe('$validate-code against a stored concept list', () => {
     expect(stats.reads).toBe(0);
   });
 
-  test('a code listed in another form, when the code system can\'t list the forms (an ICD-11 expression): the whole list is read, same answer', async () => {
-    // 'alt7' stands for the same concept as the listed 'c7'
-    // (otherFormMatch asks whether the code has another form: a classification code)
+  test('a code listed in another form (ICD-11 short code vs id): the whole list is read, same answer', async () => {
+    // 'alt7' stands for the same concept as the listed 'c7': it has a classification code, and
+    // its code() is 'c7' (otherFormMatch locates each listed code and compares code())
+    const origCode = FhirCodeSystemProvider.prototype.code;
     const s1 = jest.spyOn(FhirCodeSystemProvider.prototype, 'classificationCode').mockImplementation(async function (ctx) {
-      return this.system() === CS_URL && (await this.code(ctx)) === 'alt7' ? 'x' : null;
+      return this.system() === CS_URL && (await origCode.call(this, ctx)) === 'alt7' ? 'x' : null;
     });
-    const s2 = jest.spyOn(ValueSetChecker.prototype, 'sameConceptDifferentForm').mockImplementation(async (cs, code, listed) => code === 'alt7' && listed === 'c7');
-    const s3 = jest.spyOn(FhirCodeSystemProvider.prototype, 'prefetchCodes');
+    const s2 = jest.spyOn(FhirCodeSystemProvider.prototype, 'code').mockImplementation(async function (ctx) {
+      const c = await origCode.call(this, ctx);
+      return this.system() === CS_URL && c === 'alt7' ? 'c7' : c;
+    });
     try {
       const { plain, fromStore, stats } = await both({ system: CS_URL, code: 'alt7' });
       expect(plain.result).toBe(true);
       expect(fromStore).toEqual(plain);
+      expect(stats.lookups).toEqual(['alt7']);
       expect(stats.reads).toBeGreaterThan(0);
     } finally {
       s1.mockRestore();
       s2.mockRestore();
-      s3.mockRestore();
-    }
-  });
-
-  test('a code listed in another form, when the code system lists the forms (a plain ICD-11 code): the other form is looked up, the list is not read', async () => {
-    const s1 = jest.spyOn(FhirCodeSystemProvider.prototype, 'classificationCode').mockImplementation(async function (ctx) {
-      return this.system() === CS_URL && (await this.code(ctx)) === 'alt7' ? 'x' : null;
-    });
-    const s2 = jest.spyOn(FhirCodeSystemProvider.prototype, 'codeForms').mockImplementation(async function (ctx) {
-      return (await this.code(ctx)) === 'alt7' ? ['alt7', 'c7'] : null;
-    });
-    const s3 = jest.spyOn(ValueSetChecker.prototype, 'sameConceptDifferentForm');
-    try {
-      const { plain, fromStore, stats } = await both({ system: CS_URL, code: 'alt7' });
-      expect(plain.result).toBe(true);
-      expect(fromStore).toEqual(plain);
-      expect(stats.lookups).toEqual(['alt7', 'c7']);
-      expect(stats.reads).toBe(0);
-      expect(s3).not.toHaveBeenCalled();
-    } finally {
-      s1.mockRestore();
-      s2.mockRestore();
-      s3.mockRestore();
     }
   });
 });

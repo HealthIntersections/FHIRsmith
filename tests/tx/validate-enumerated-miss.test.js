@@ -81,18 +81,28 @@ describe('otherFormMatch gives what the old loop gave', () => {
     locate: jest.fn(async (code) => ({ context: byForm.get(code) || null })),
     classificationCode: async (ctxt) => ctxt.short,
     code: async (ctxt) => ctxt.id,
-    prefetchCodes: async () => null, // (CodeSystemProvider's default: no prefetching)
-    codeForms: async () => null // (CodeSystemProvider's default: the forms can't be listed)
+    prefetchCodes: async () => null // (CodeSystemProvider's default: no prefetching)
   });
-  // the same code system, saying what its forms are (as the ICD-11 provider does for a plain concept)
-  const listingCs = () => ({ ...fakeCs(), codeForms: async (ctxt) => [ctxt.id, ctxt.short].filter(Boolean) });
   const checker = Object.create(ValueSetChecker.prototype);
   checker.worker = { deadCheck: () => {} };
+
+  // the old loop's test for each listed concept, as it was (sameConceptDifferentForm)
+  async function sameConceptDifferentForm(cs, code, enumerated) {
+    if (code === enumerated) {
+      return false;
+    }
+    const a = await cs.locate(code);
+    if (!a.context || !(await cs.classificationCode(a.context))) {
+      return false;
+    }
+    const b = await cs.locate(enumerated);
+    return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
+  }
 
   async function oldLoop(cs, code, list) {
     if (list && !list.some(cc => cc.code === code)) {
       for (const cc of list) {
-        if (await checker.sameConceptDifferentForm(cs, code, cc.code)) {
+        if (await sameConceptDifferentForm(cs, code, cc.code)) {
           return cc;
         }
       }
@@ -116,7 +126,6 @@ describe('otherFormMatch gives what the old loop gave', () => {
         const expected = await oldLoop(fakeCs(), code, list);
         const actual = await checker.otherFormMatch(fakeCs(), code, { concept: list });
         expect(actual).toBe(expected);
-        expect(await checker.otherFormMatch(listingCs(), code, { concept: list })).toBe(expected);
         expect(actual).toBe(expected);
         if (actual) matches++;
       }
