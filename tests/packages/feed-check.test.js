@@ -312,5 +312,20 @@ describe('feed check', () => {
       expect(form.status).toBe(200);
       expect(form.text).toContain('name="url"');
     });
+
+    test('the nav bar links to the feed check only while it is enabled', async () => {
+      const link = 'href="/packages/feed-check"';
+      expect((await request(app).get('/packages/log').set('Accept', 'text/html')).text).toContain(link);
+      const saved = module.config.feedCheck;
+      module.config.feedCheck = { enabled: false };
+      try {
+        const page = await request(app).get('/packages/log').set('Accept', 'text/html');
+        expect(page.status).toBe(200);
+        expect(page.text).not.toContain(link);
+        expect(page.text).not.toContain('[%feed-check-link%]');
+      } finally {
+        module.config.feedCheck = saved;
+      }
+    });
   });
 });

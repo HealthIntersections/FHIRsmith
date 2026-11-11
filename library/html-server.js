@@ -116,6 +116,8 @@ class HtmlServer {
       ['library-link', () => renderOptions.libraryLink || ''],
       // raw HTML too: the OpenAPI description, where a template's module has one in some places only
       ['api-link', () => renderOptions.apiLink || ''],
+      // raw HTML: the packages module's feed check, in the nav bar only when it's enabled
+      ['feed-check-link', () => renderOptions.feedCheckLink || ''],
       // raw HTML: a link to the current project (or other context) in the nav bar, where the
       // module has one
       ['context-link', () => renderOptions.contextLink || ''],

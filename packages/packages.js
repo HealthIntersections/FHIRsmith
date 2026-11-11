@@ -590,6 +590,14 @@ class PackagesModule {
   }
 
   async gatherPackageStatistics() {
+    const stats = await this.gatherPackageCounts();
+    // the nav bar offers the feed check only where it's turned on
+    stats.feedCheckLink = this.feedCheckConfig().enabled
+      ? '<a href="/packages/feed-check" style="color: gold">Feed Check</a>  &nbsp;|&nbsp;' : '';
+    return stats;
+  }
+
+  async gatherPackageCounts() {
     try {
       // Get database age info
       const dbAge = this.getDatabaseAgeInfo();
