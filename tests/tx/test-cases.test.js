@@ -7031,6 +7031,62 @@ describe('loinc', () => {
     await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-bad"}, "4.0");
   });
 
+  it("loinc-validate-filter-answers-for4-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for4-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-answers-for4-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for4-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-bad"}, "4.0");
+  });
+
+  it("loinc-validate-concept-is-a-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-good"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-good"}, "4.0");
+  });
+
+  it("loinc-validate-concept-is-a-self" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-self"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-self" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-self"}, "4.0");
+  });
+
+  it("loinc-validate-concept-is-a-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-bad"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-bad"}, "4.0");
+  });
+
+  it("loinc-validate-filter-copyright-good" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-copyright-good" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-good"}, "4.0");
+  });
+
+  it("loinc-validate-filter-copyright-bad" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-copyright-bad" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-bad"}, "4.0");
+  });
+
   it("loinc-subsumes-equivalent" + 'R5', async () => {
     await runTest({"suite":"loinc","test":"loinc-subsumes-equivalent"}, "5.0");
   });
@@ -17780,6 +17836,34 @@ describe('loinc', () => {
 
   it("loinc-validate-filter-answer-list-bad" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-validate-filter-answer-list-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for4-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-answers-for4-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-answers-for4-bad"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-good"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-self" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-self"}, "5.0");
+  });
+
+  it("loinc-validate-concept-is-a-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-concept-is-a-bad"}, "5.0");
+  });
+
+  it("loinc-validate-filter-copyright-good" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-good"}, "5.0");
+  });
+
+  it("loinc-validate-filter-copyright-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-filter-copyright-bad"}, "5.0");
   });
 
   it("loinc-subsumes-equivalent" + 'R5-cached', async () => {
