@@ -393,6 +393,10 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   async fetchValueSet(url, version) {
     this._validateFetchParams(url, version);
 
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
+
     // Fast path: skip URLs already known to not be in OCL
     if (this._negativeUrlCache.has(url)) {
       return null;
@@ -500,6 +504,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   // eslint-disable-next-line no-unused-vars
   async searchValueSets(searchParams, _elements) {
     await this.initialize();
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
     this._validateSearchParams(searchParams);
 
     const params = Object.fromEntries(searchParams.map(({ name, value }) => [name, String(value).toLowerCase()]));

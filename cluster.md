@@ -94,15 +94,22 @@ sync reaches every worker about a second after it finishes. The database is in W
 
 **OCL.** The master discovers sources from OCL, resolves default versions, and writes a
 discovery snapshot (`data/terminology-cache/ocl/discovery-snapshot.json`) containing the full
-source metadata and CodeSystem JSON for every discovered source. After each discovery or
-refresh cycle the master also proactively downloads every source's concepts into per-source
-cold cache files (`data/terminology-cache/ocl/codesystems/`). A worker reads the discovery
-snapshot to build identical providers and factories (same ids, metadata and CodeSystem
-resources as the master), then loads concepts from the per-source cold cache files. When the
-master updates the snapshot (new sources, changed checksums), a worker detects the change on
-its next once-per-minute refresh cycle, reloads the snapshot, and creates factories for newly
-discovered sources. Workers can still fetch individual concepts on demand for cache misses,
-but never run bulk discovery or background warm-up downloads. All cache file writes use
+source metadata and CodeSystem JSON (without concepts) for every discovered source. It also
+writes a VS discovery snapshot (`data/terminology-cache/ocl/vs-discovery-snapshot.json`) with
+the collection list so workers know which value sets exist. After each discovery or refresh
+cycle the master proactively downloads every source's concepts into per-source cold cache
+files (`data/terminology-cache/ocl/codesystems/`). Note: the proactive warm-up runs only in
+cluster mode; it downloads every source in the global listing, which on a public OCL server
+includes all public organisation-owned sources. A worker reads both discovery snapshots to
+build identical providers and factories (same ids, metadata, CodeSystem resources and value
+sets as the master), then loads concepts from the per-source cold cache files. When the
+master updates a snapshot (new sources, changed checksums), a worker detects the change on
+its next refresh cycle or on the next value set fetch/search, reloads the snapshot, and
+creates providers for newly discovered sources. Workers can still fetch individual concepts
+on demand for cache misses, but never run bulk discovery or background warm-up downloads.
+Snapshots are only rewritten when their content changes (hash comparison). Stale `.tmp` files
+from interrupted writes are cleaned up only by the leader or a single-process server, never
+by workers (to avoid deleting the master's in-progress writes). All cache file writes use
 atomic temp-file-plus-rename to avoid torn reads.
 
 **The package caches are the master's.** The value set and concept map caches in each
