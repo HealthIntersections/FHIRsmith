@@ -464,7 +464,9 @@ class RegistryAPI {
           // Check if server is authoritative for this code system, taking language
           // specific claims into account (a language specific claim is invisible to
           // requests without a matching language)
-          const authMatch = server.matchAuthCS(codeSystem, requestLangs);
+          // a claim on a code system covers every version of it (maskBase: the same semantics as
+          // hasMatchingCodeSystem, and as listing)
+          const authMatch = server.matchAuthCS(codeSystem, requestLangs, true);
           const isAuth = authMatch.isAuth;
 
           server.versions.forEach(version => {
@@ -797,7 +799,7 @@ class RegistryAPI {
         if (server && srv.code !== server) return;
         if (url && srv.isExcludedTarget(url)) return;
 
-        const authMatch = url ? srv.matchAuthCS(url, requestLangs) : { isAuth: false, scoped: false };
+        const authMatch = url ? srv.matchAuthCS(url, requestLangs, true) : { isAuth: false, scoped: false };
 
         srv.versions.forEach(version => {
           if (normalizedVersion && !ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {

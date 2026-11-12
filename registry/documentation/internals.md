@@ -32,9 +32,10 @@ and never concurrently with itself. A scan builds a fresh `ServerRegistries` fro
    `registration` and `ecosystem-documentation` URLs are the "Register your own server" and
    "Documentation" links on the home page (each is omitted if the file doesn't give it), since
    they depend on the ecosystem;
-2. for each registry it lists, fetch the registry file and build a `ServerRegistry`;
-3. for each server, a `ServerInformation` with its claims (`authoritative`,
-   `authoritative-valuesets`, `languages`, `usage`, `exclusions`), and for each of its
+2. for each registry it lists (except one marked `"disabled": true`, which is skipped with an
+   info log entry), fetch the registry file and build a `ServerRegistry`;
+3. for each server (again, except a disabled one), a `ServerInformation` with its claims
+   (`authoritative`, `authoritative-valuesets`, `languages`, `usage`, `exclusions`), and for each of its
    `fhirVersions` a `ServerVersionInformation` - the *endpoint*;
 4. for each endpoint, by the major FHIR version in its registration: `/metadata` (software name,
    version and release date), `/metadata?mode=terminology` (code systems and versions, sorted
@@ -143,6 +144,7 @@ applied only when the request does not accept HTML.
 |---|---|
 | `registry.test.js`, `registry-resolve.test.js` | Discovery and resolution against `test-data.json` |
 | `registry-language.test.js`, `registry-exclusions.test.js` | Language specific claims; exclusions |
+| `registry-disabled.test.js` | Disabled registries and servers are not read or scanned |
 | `registry-software.test.js` | Release dating, the collapsed software rows, uptime history |
 | `registry-auth.test.js` | The three security methods end to end (supertest), including an OIDC provider stood up in the test with a generated key pair |
 | `registry-documents.test.js` | Documents: visibility, editing, history, validation; administrator users |
