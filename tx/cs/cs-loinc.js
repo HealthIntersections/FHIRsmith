@@ -120,6 +120,15 @@ class LoincIteratorContext {
   }
 }
 
+function ascending(keys) {
+  for (let i = 1; i < keys.length; i++) {
+    if (keys[i - 1] > keys[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 class LoincFilterHolder {
   constructor() {
     this.keys = [];
@@ -131,7 +140,7 @@ class LoincFilterHolder {
     if (this.keySet) {
       return this.keySet.has(key);
     }
-    // Binary search since keys should be sorted
+    // keys in ascending order (#executeSQL gives a filter whose keys aren't a keySet): binary search
     let l = 0;
     let r = this.keys.length - 1;
     while (l <= r) {
@@ -149,9 +158,12 @@ class LoincFilterHolder {
 }
 
 class LoincPrep {
-  constructor(languages = null) {
+  constructor(languages = null, iterate = true) {
     this.filters = [];
     this.languages = languages; // what the request asked for (a text filter searches one language)
+    // false: the filters are only asked whether a code is in them ($validate-code), so their
+    // codes aren't read: each check is one indexed query (lsql)
+    this.iterate = iterate;
   }
 }
 
@@ -846,12 +858,12 @@ class LoincServices extends BaseCSServices {
   }
 
   async getPrepContext(iterate, languages = null) {
-    return new LoincPrep(languages);
+    return new LoincPrep(languages, iterate !== false);
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
     const filter = new LoincFilterHolder();
-    await this.#executeFilterQuery(prop, op, value, filter);
+    await this.#executeFilterQuery(prop, op, value, filter, filterContext.iterate !== false);
     filterContext.filters.push(filter);
   }
 
@@ -901,9 +913,16 @@ class LoincServices extends BaseCSServices {
     filterContext.filters.push(filter);
   }
 
-  async #executeFilterQuery(prop, op, value, filter) {
+  /**
+   * Prepares a filter: sql lists its codes (filter.keys), lsql + a code key counts whether that
+   * code is in it. When the filter is only asked about codes (load false: $validate-code), its
+   * codes aren't read, and each check runs lsql: loading the keys of a big filter (69,651 codes
+   * for CLASSTYPE = 1) takes far longer than the check it is for
+   */
+  async #executeFilterQuery(prop, op, value, filter, load = true) {
     let sql = '';
     let lsql = '';
+    let noMatches = false; // a regex filter that no value matches
 
     // LIST filter
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
@@ -1019,6 +1038,7 @@ class LoincServices extends BaseCSServices {
         value,
         'Description'
       );
+      noMatches = matchingKeys.length === 0;
       if (matchingKeys.length > 0) {
         sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
@@ -1089,6 +1109,7 @@ class LoincServices extends BaseCSServices {
         'Value',
         'PropertyValueKey'
       );
+      noMatches = matchingKeys.length === 0;
       if (matchingKeys.length > 0) {
         sql = `SELECT DISTINCT CodeKey as Key FROM Properties
                WHERE PropertyTypeKey = ${this.propertyList.get(prop)}
@@ -1173,14 +1194,23 @@ class LoincServices extends BaseCSServices {
       sql = `SELECT CodeKey as Key FROM Codes
              WHERE Description like '%${sqlEscapeString(value)}%'
              ORDER BY Description `+(op === '<' ? 'ASC' : 'DESC');
-      lsql = `SELECT COUNT(CodeKey) as Key FROM Codes
+      lsql = `SELECT COUNT(CodeKey) FROM Codes
              WHERE Codes.Description like '%${sqlEscapeString(value)}%'
-             AND TargetKey = `;
+             AND CodeKey = `;
     }
 
     if (sql) {
-      await this.#executeSQL(sql, filter);
       filter.lsql = lsql;
+      if (load) {
+        await this.#executeSQL(sql, filter);
+      } else {
+        filter.keys = null; // not read: see filterLocate
+      }
+    } else if (noMatches) {
+      // a regex that matches no value: the filter is empty
+      filter.keys = [];
+      filter.lsql = 'empty';
+      filter.empty = true;
     } else {
       throw new Error(`The filter "${prop} ${op} ${value}" is not supported for LOINC`);
     }
@@ -1207,10 +1237,15 @@ class LoincServices extends BaseCSServices {
              UNION
              SELECT CodeKey as Key FROM Codes WHERE Code IN (${codes})`
       : descendants;
+    // one code: an indexed look at Closure (and, for is-a, at the code itself), not the whole set
+    const ancestors = `SELECT CodeKey FROM Codes WHERE Code IN (${codes})`;
+    const member = `EXISTS (SELECT 1 FROM Closure WHERE Closure.DescendentKey = c.CodeKey AND Closure.AncestorKey IN (${ancestors}))`;
     return {
       sql: `${set}
              ORDER BY Key ASC`,
-      lsql: `SELECT COUNT(*) FROM (${set}) WHERE Key = `
+      lsql: `SELECT COUNT(*) FROM Codes c
+             WHERE (${op === 'is-a' ? `c.CodeKey IN (${ancestors}) OR ` : ''}${member})
+               AND c.CodeKey = `
     };
   }
 
@@ -1252,6 +1287,12 @@ class LoincServices extends BaseCSServices {
           reject(err);
         } else {
           filter.keys = rows.map(row => row.Key).filter(key => key !== 0);
+          // hasKey binary-searches the keys, which only works when they ascend. Not every query
+          // gives them in key order (answers-for gives an answer list's answers in the list's
+          // order, which an expansion keeps), so then hasKey uses a set
+          if (!ascending(filter.keys)) {
+            filter.keySet = new Set(filter.keys);
+          }
           resolve();
         }
       }));
@@ -1264,7 +1305,9 @@ class LoincServices extends BaseCSServices {
 
   async executeFilters(filterContext) {
     const filters = filterContext.filters;
-    if (filters.length <= 1) {
+    if (filters.length <= 1 || filters.some(f => f.keys === null)) {
+      // (filters whose codes aren't read are each asked about the code: filterLocate on the
+      // first, filterCheck on the rest)
       return filters;
     }
     // Every filter is already a list of keys in memory, so the include is their intersection,
@@ -1279,19 +1322,16 @@ class LoincServices extends BaseCSServices {
   }
 
   async filterSize(filterContext, set) {
-    return set.keys.length;
+    return this.#readKeys(set).length;
   }
 
   async filterMore(filterContext, set) {
-
     set.cursor = set.cursor || 0;
-    return set.cursor < set.keys.length;
+    return set.cursor < this.#readKeys(set).length;
   }
 
   async filterConcept(filterContext, set) {
-
-
-    if (set.cursor >= set.keys.length) {
+    if (set.cursor >= this.#readKeys(set).length) {
       return null;
     }
 
@@ -1311,20 +1351,36 @@ class LoincServices extends BaseCSServices {
       return 'Filter not understood';
     }
 
-    // Check if this context's key is in the filter
-    if (set.hasKey(context.key)) {
-      return context;
-    } else {
-      return null; // `Code ${code} is not in the specified filter`;
-    }
+    return (await this.#inFilter(set, context.key)) ? context : null;
   }
 
   async filterCheck(filterContext, set, concept) {
     if (!(concept instanceof LoincProviderContext)) {
       return false;
     }
+    return this.#inFilter(set, concept.key);
+  }
 
-    return set.hasKey(concept.key);
+  /** a filter's codes, which a filter prepared only for checking codes doesn't have */
+  #readKeys(set) {
+    if (set.keys === null) {
+      throw new Error('This LOINC filter was prepared for checking codes (getPrepContext(false)), not for listing them');
+    }
+    return set.keys;
+  }
+
+  /** whether the code (key) is in the filter: from its codes when they were read, else by lsql */
+  async #inFilter(set, key) {
+    if (set.empty) {
+      return false;
+    }
+    if (set.keys !== null) {
+      return set.hasKey(key);
+    }
+    const row = await new Promise((resolve, reject) => {
+      this.db.get(set.lsql + Number(key), guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+    });
+    return !!row && Object.values(row)[0] > 0;
   }
 
   /**

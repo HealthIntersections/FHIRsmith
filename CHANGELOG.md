@@ -5,6 +5,39 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-XX
+
+
+### Security
+
+- SNOMED CT expressions: a term with no closing `|` (e.g. `86290005 |Atemfrequenz`) read on past the end of the input, adding NULs to a string until it reached V8's limit - minutes, and about 17 GB, with the event loop held. This was the 321 s stall of tx.fhir.org's worker tx2 on 2026-11-11 (a `$validate-code`). Any operation that takes a SNOMED CT code could trigger it
+- SNOMED CT expressions are limited: at most 100,000 characters, 500 concept references, and 18 digits in a concept id. Checking, normalising and testing subsumption are synchronous, so a large expression held the process (5,000 attributes, a 95 KB body: over 15 s)
+
+### Added
+
+- A watchdog for the event loop: when it hasn't run for `logging.stallReportSeconds` (default 30) - a request holding the process with code that never yields - a worker thread reads the main thread's stack (through the inspector), and again while the stall lasts. The stacks go to `logs/stall-<instance code or pid>-<time>.txt`, and to the log once the loop runs again. On 11 Nov a `$validate-code` held tx.fhir.org's worker tx2 for 321 s and 17 GB, and nothing said what it was doing
+- tx: a request that takes `modules.tx.slowRequestSeconds` (default 30) or longer gets a warning in the log saying what it asked: the url, `Accept-Language` and the body's parameters, enough to repeat it
+
+### Changed
+
+- SNOMED CT subsumption (and so is-a, ECL, and checking an expression against the concept model) reads the stored closure by binary search instead of copying it first: checking an expression's attributes is about 200 times faster, and normalising and subsumption of expressions 5-10 times
+- Client errors (4xx: an unknown code, code system, version or cache-id...) are no longer logged as errors: the request's log line has its status. They are logged, with their stack, at `debug`. A module's logger lost an error's status, so these were logged with a stack trace
+- LOINC `$validate-code` against a value set filter no longer reads every code the filter selects: each code is checked with one indexed query (`CLASSTYPE = 1`, 69,651 codes: 244 ms to read them, 1.2 ms to check one)
+
+### Fixed
+
+- SNOMED CT expression grammar: a value (`#5`, `"x"`) is no longer accepted as a focus concept; a number must be one (`#`, `#.`, `#1.2.3` were accepted, `#-1` was not); a string value can't be empty, and takes `\"` and `\\` escapes; a NUL in an expression was taken as its end (`64572001\u0000junk` was 64572001)
+- SNOMED CT: `$subsumes` of a concept and a postcoordinated expression failed with a 500 when a defined concept's stored normal form was empty or malformed (the committed test subset has 1,125); it is built from the relationships instead. A warning from the expression services was a TypeError (they had no logger)
+- An `Accept-Language` header that isn't valid (e.g. `zh-cn`'s region, checked strictly) is a 400 OperationOutcome; it was a 500
+- `$validate-code` with an unknown version of a known code system was a 500 internally (the 422 went to the message, not the issue), and a code system with no version was listed as 'Valid versions: null'
+- LOINC `answers-for`: an answer in the list could be reported as not in the value set, though `$expand` listed it. The answers come in the list's order, and membership binary-searched them as if they were in key order; on LOINC 2.83 that missed 7,135 answers of 2,367 lists (`$text` `<`/`>` filters, in display order, had the same problem)
+- LOINC: a `regex` filter that matches no value is an empty filter; it failed as "not supported"
+- LOINC importer: a quote at the start or end of a display was lost (the field's quotes were removed twice), e.g. LA15800-8 `Minimal hypomimia, could be normal "Poker Face` lost its last quote; 15 displays in 2.83 show it. LOINC needs re-importing to fix them
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [1.0.0] - 2026-11-12
 
 **Upgrading**: a big upgrade - every operator should check their settings, though some might not need to change any. See [Upgrading to 1.0.0](CONFIGURATION.md#upgrading-to-100) for what to check.

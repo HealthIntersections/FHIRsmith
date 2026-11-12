@@ -2436,7 +2436,7 @@ class ValidateWorker extends TerminologyWorker {
           if (vl.length == 0) {
             throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION_NONE', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION_NONE', this.opContext.HTTPLanguages, [url, version]), 'not-found', 422).setUnknownSystem(url).addIssue(issue);
           } else {
-            throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION', this.opContext.HTTPLanguages, [url, version, this.presentVersionList(vl)], 422), 'not-found').setUnknownSystem(url + "|" + version).addIssue(issue);
+            throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION', this.opContext.HTTPLanguages, [url, version, this.presentVersionList(vl)]), 'not-found', 422).setUnknownSystem(url + "|" + version).addIssue(issue);
           }
         } else {
           throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM', this.opContext.HTTPLanguages, [url]), 'not-found', 422).setUnknownSystem(url).addIssue(issue);
