@@ -1,7 +1,7 @@
 // LOINC importer: an externally defined answer list (no AnswerStringId) adds the list, and no
 // blank Answer code. AnswerList.csv in 2.83 has 65 such rows; they all became one Answer whose
 // code is '', so LOINC had one code too many (257,267 rather than 257,266)
-const { LoincDataMigrator } = require('../../tx/importers/import-loinc.module');
+const { LoincDataMigrator, csvSplit } = require('../../tx/importers/import-loinc.module');
 
 function migrator() {
   const m = new LoincDataMigrator();
@@ -42,5 +42,20 @@ describe('LOINC import: answer lists', () => {
     await m.processListItem(d, row('LL2-2', 'Yes', 'LA33-6', 'Yes'), 'LL1-1');
     expect(d.inserts.map(p => [p[1], p[2]])).toEqual([['LL1-1', 3], ['LA33-6', 4], ['LA32-8', 4], ['LL2-2', 3]]);
     expect(m.relationships).toHaveLength(6);
+  });
+});
+
+describe('LOINC import: CSV fields', () => {
+  test('a quoted field loses its enclosing quotes, and nothing else', () => {
+    const line = '"LL1","List","He said ""no"" to it","""Poker face""","5"" or more","ends with ""quote""",""';
+    expect(csvSplit(line, 8)).toEqual(['LL1', 'List', 'He said "no" to it', '"Poker face"', '5" or more', 'ends with "quote"', '', '']);
+  });
+
+  test('commas inside quotes, unquoted fields, and a quote inside an unquoted field', () => {
+    expect(csvSplit('"a, b",c,5" tall,"d"', 4)).toEqual(['a, b', 'c', '5" tall', 'd']);
+  });
+
+  test('at most expectedCount fields', () => {
+    expect(csvSplit('a,b,c,d', 2)).toEqual(['a', 'b']);
   });
 });

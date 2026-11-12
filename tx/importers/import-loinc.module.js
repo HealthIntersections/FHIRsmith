@@ -999,9 +999,9 @@ class LoincDataMigrator {
   async processCodeItem(db, items) {
     this.codeKey++;
     const codeKey = this.codeKey;
-    const code = removeQuotes(items[0]);
+    const code = items[0];
     const type = 1;
-    const description = removeQuotes(items[25]);
+    const description = items[25];
     const statusKey = this.statii.get(items[11]) || 1;
 
     db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
@@ -1110,13 +1110,13 @@ class LoincDataMigrator {
   }
 
   async processListItem(db, items, currentList) {
-    const listCode = removeQuotes(items[0]);
+    const listCode = items[0];
     let listCodeKey;
 
     if (listCode !== currentList) {
       this.codeKey++;
       listCodeKey = this.codeKey;
-      const description = removeQuotes(items[1]);
+      const description = items[1];
 
       db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
         [listCodeKey, listCode, 3, null, 0, description]);
@@ -1126,7 +1126,7 @@ class LoincDataMigrator {
       listCodeKey = this.codes.get(listCode).key;
     }
 
-    const answerCode = removeQuotes(items[6]);
+    const answerCode = items[6];
     if (!answerCode) {
       // an externally defined answer list (ExtDefinedYN = Y: ICD-10, RxNorm, ...) has one row with
       // no AnswerStringId. The list is a code; the row names no answer, so there is nothing to add
@@ -1140,7 +1140,7 @@ class LoincDataMigrator {
     } else {
       this.codeKey++;
       answerCodeKey = this.codeKey;
-      const description = removeQuotes(items[10]);
+      const description = items[10];
 
       db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
         [answerCodeKey, answerCode, 4, null, 0, description]);
@@ -1695,47 +1695,50 @@ function descClassType(s) {
   return types[s] || s;
 }
 
-// CSV parsing utility
+// CSV parsing utility: the fields of one record, unquoted ("" in a quoted field is a quote).
+// A field is quoted only if it starts with a quote; the enclosing quotes are dropped and nothing
+// else, so a value that starts or ends with a quote (LOINC has answers like '"Poker face"') keeps
+// it. At most expectedCount fields; missing ones are ''
 function csvSplit(line, expectedCount) {
   const result = new Array(expectedCount).fill('');
-  let inQuoted = false;
-  let currentField = 0;
-  let fieldStart = 0;
-  let i = 0;
-
-  while (i < line.length && currentField < expectedCount) {
+  let field = 0;
+  let value = '';
+  let quoted = false; // inside a quoted field
+  let atStart = true; // at the start of a field
+  for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-
-    if (!inQuoted && ch === ',') {
-      if (currentField < expectedCount) {
-        result[currentField] = line.substring(fieldStart, i).replace(/^"|"$/g, '').replace(/""/g, '"');
-        currentField++;
-        fieldStart = i + 1;
-      }
-    } else if (ch === '"') {
-      if (inQuoted && i + 1 < line.length && line[i + 1] === '"') {
+    if (quoted) {
+      if (ch !== '"') {
+        value += ch;
+      } else if (line[i + 1] === '"') {
+        value += '"';
         i++;
       } else {
-        inQuoted = !inQuoted;
+        quoted = false;
       }
+    } else if (ch === ',') {
+      result[field] = value;
+      field++;
+      if (field >= expectedCount) {
+        return result;
+      }
+      value = '';
+      atStart = true;
+    } else if (ch === '"' && atStart) {
+      quoted = true;
+      atStart = false;
+    } else {
+      value += ch;
+      atStart = false;
     }
-    i++;
   }
-
-  if (currentField < expectedCount) {
-    result[currentField] = line.substring(fieldStart).replace(/^"|"$/g, '').replace(/""/g, '"');
-  }
-
+  result[field] = value;
   return result;
-}
-
-function removeQuotes(str) {
-  if (!str) return '';
-  return str.replace(/^"|"$/g, '');
 }
 
 module.exports = {
   LoincModule,
+  csvSplit,
   LoincDataMigrator,
   normaliseExternalSystem
 };

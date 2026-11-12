@@ -483,6 +483,21 @@ Description: Test
       expect(definitions.getDisplayForLang('unknown')).toBe('unknown');
     });
 
+    test('should join folded (continuation) lines in registry fields', () => {
+      // lang.dat folds long Description values onto an indented second line
+      expect(definitions.getDisplayForLang('ia')).toBe('Interlingua (International Auxiliary Language Association)');
+
+      const folded = LanguageDefinitions.fromContent(`%%
+Type: language
+Subtag: xx
+Description: First Name
+Description: Second Name That Is
+  Folded Across
+  Three Lines
+Added: 2005-10-16`);
+      expect(folded.languages.get('xx').displays).toEqual(['First Name', 'Second Name That Is Folded Across Three Lines']);
+    });
+
     test('should get display names for regions', () => {
       expect(definitions.getDisplayForRegion('US')).toBe('United States');
       expect(definitions.getDisplayForRegion('CA')).toBe('Canada');

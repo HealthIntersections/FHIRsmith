@@ -122,6 +122,7 @@ const htmlServer = require('./library/html-server');
 const ServerStats = require("./stats");
 const { connectMetrics, graphData, externalSummary } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
+const { startStallWatchdog } = require('./library/stall-watchdog');
 const { connectClusterEvents } = require('./library/cluster-events');
 const { connectStatus, ownFigures, clusterView, processView, storageView, clusterSummary, processSummary, STATUS_INTERVAL_MS } = require('./library/cluster-status');
 const {Liquid} = require("liquidjs");
@@ -212,6 +213,8 @@ function metricsTemplate(page, level = 4) {
 }
 // periodic npm advisory check of the installed packages - see library/npm-audit.js
 let npmAudit = null;
+// watches the event loop: see library/stall-watchdog.js
+let stallWatchdog = null;
 // the daily report, emailed at midnight when "email" and "dailyReport.to" are configured - see library/daily-report.js
 let dailyReport = null;
 
@@ -1004,6 +1007,17 @@ async function startServer() {
     // Start server
     const listening = () => {
       stats.markStarted(packageJson.version);
+      // the event loop held for logging.stallReportSeconds: its stack goes to a file in the logs
+      try {
+        stallWatchdog = startStallWatchdog({
+          thresholdSeconds: config.logging?.stallReportSeconds ?? 30,
+          dir: folders.logsDir(),
+          label: config.modules?.tx?.instanceCode || ('pid' + process.pid),
+          log: serverLog
+        });
+      } catch (e) {
+        serverLog.error(`Unable to start the event loop watchdog: ${e.message}`);
+      }
       serverLog.info(HOST ? `=== Server running on http://${HOST.includes(':') ? `[${HOST}]` : HOST}:${PORT} (server.cluster.bindAddress) ===`
         : `=== Server running on http://localhost:${PORT} ===`);
       startupComplete();
@@ -1074,6 +1088,9 @@ async function shutdown() {
   }
   if (dailyReport) {
     dailyReport.stop();
+  }
+  if (stallWatchdog) {
+    await stallWatchdog.stop();
   }
 
   // Shutdown all modules

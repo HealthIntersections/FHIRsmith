@@ -471,27 +471,11 @@ class SnomedServices {
         return false;
       }
 
-      const descendants = this.refs.getReferences(closureRef);
-      if (!descendants) {
-        return false;
-      }
-      // The closure array is stored sorted ascending (see the importer's
-      // buildConceptClosure), so membership is a binary search rather than a
-      // linear scan - this is the hot path for is-a and ECL refinement checks.
-      let lo = 0;
-      let hi = descendants.length - 1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const v = descendants[mid];
-        if (v === childRef) {
-          return true;
-        } else if (v < childRef) {
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      return false;
+      // The closure is stored sorted ascending (see the importer's buildConceptClosure), so
+      // membership is a binary search of the stored list - this is the hot path for is-a and
+      // ECL refinement checks, and copying a top-level concept's descendants out first cost
+      // milliseconds a call
+      return this.refs.hasSortedReference(closureRef, childRef);
     } catch (error) {
       return false;
     }

@@ -752,9 +752,17 @@ class LanguageDefinitions {
     const vars = {};
     let i = startIndex;
 
+    let lastKey = null;
     while (i < lines.length && lines[i].trim() !== '%%') {
-      const line = lines[i].trim();
-      if (line && !line.startsWith(' ')) {
+      const raw = lines[i];
+      if (raw.startsWith(' ') && lastKey) {
+        // continuation line (RFC 5646 s3.1.1 folding): belongs to the latest value of the last field
+        const more = raw.trim();
+        if (more) {
+          vars[lastKey] += ' ' + more;
+        }
+      } else {
+        const line = raw.trim();
         const colonIndex = line.indexOf(':');
         if (colonIndex > 0) {
           const key = line.substring(0, colonIndex).trim();
@@ -765,6 +773,7 @@ class LanguageDefinitions {
           } else {
             vars[key] = value;
           }
+          lastKey = key;
         }
       }
       i++;

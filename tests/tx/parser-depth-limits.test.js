@@ -134,7 +134,8 @@ describe('SNOMED CT expression parser limits', () => {
   test('hostile nesting is our error, not a RangeError', () => {
     const e = thrown(() => parse(nested(HOSTILE)));
     expect(e).not.toBeInstanceOf(RangeError);
-    expect(e.message).toMatch(/nests more than/);
+    // (at this size the expression is past the length limit too, which is checked first)
+    expect(e.message).toMatch(/nests more than|longer than 100000 characters/);
   });
 
   test('the parser is reusable after a depth error', () => {
