@@ -232,37 +232,45 @@ class Provider {
     if (!this.ecosystem || opContext.ecosystemForwarded) {
       return null;
     }
-    const server = await this.ecosystem.findServer(system, version, this.fhirVersion, opContext);
-    if (!server) {
-      return null;
-    }
-    // the registry's claims are broad (tx.fhir.org is authoritative for all of http://hl7.org/*),
-    // so the server has to say that it actually has the code system - and the version: the one
-    // asked for, or, for a version that is a url, the latest release of it (a SNOMED CT edition
-    // asked for without a release date). A partial semver is not completed this way
-    const versions = await this.ecosystem.listVersions(server, system, opContext);
-    if (versions == null) {
-      return null;
-    }
-    const codes = versions.map(v => v.code);
-    let actual = version;
-    if (!version) {
-      // no version asked for: it's the server's default version - the only version it has, or
-      // the one it says is the default
-      const defaults = versions.length === 1 ? versions : versions.filter(v => v.isDefault);
-      if (defaults.length !== 1) {
-        throw new TerminologyError(`Unable to use ${server} for ${system}: its TerminologyCapabilities doesn't say which version of it is the default`);
+    const servers = await this.ecosystem.findServers(system, version, this.fhirVersion, opContext);
+    // a server has to have the content of the code system (complete or fragment, unless it's
+    // authoritative for it: see EcosystemResolver.listVersions) - and the version: the one asked
+    // for, or, for a version that is a url, the latest release of it (a SNOMED CT edition asked
+    // for without a release date). A partial semver is not completed this way. A server that
+    // doesn't is passed over for the next
+    let problem = null;
+    for (const s of servers || []) {
+      const server = s.url;
+      const versions = await this.ecosystem.listVersions(server, system, opContext, s.authoritative);
+      if (versions == null) {
+        opContext.log('Not using ' + server + ' for ' + system + ': it doesn\'t have the content');
+        continue;
       }
-      actual = defaults[0].code;
-    } else if (!codes.includes(version)) {
-      const matches = codes.filter(v => v.startsWith(version + '/')).sort();
-      if (matches.length === 0) {
-        return null;
+      const codes = versions.map(v => v.code);
+      let actual = version;
+      if (!version) {
+        // no version asked for: it's the server's default version - the only version it has, or
+        // the one it says is the default
+        const defaults = versions.length === 1 ? versions : versions.filter(v => v.isDefault);
+        if (defaults.length !== 1) {
+          problem = problem || `Unable to use ${server} for ${system}: it has more than one version, and doesn't say which is the default`;
+          continue;
+        }
+        actual = defaults[0].code;
+      } else if (!codes.includes(version)) {
+        const matches = codes.filter(v => v.startsWith(version + '/')).sort();
+        if (matches.length === 0) {
+          continue;
+        }
+        actual = matches[matches.length - 1];
       }
-      actual = matches[matches.length - 1];
+      opContext.log('Using ' + server + ' for ' + system + (actual ? '|' + actual : ''));
+      return new VirtualCodeSystemProvider(opContext, supplements, server, system, actual, this.ecosystem);
     }
-    opContext.log('Using ' + server + ' for ' + system + (actual ? '|' + actual : ''));
-    return new VirtualCodeSystemProvider(opContext, supplements, server, system, actual, this.ecosystem);
+    if (problem) {
+      throw new TerminologyError(problem);
+    }
+    return null;
   }
 
   /**

@@ -5,6 +5,12 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
+
 ## [1.0.1] - 2026-11-12
 
 ### Security

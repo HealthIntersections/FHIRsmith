@@ -41,7 +41,10 @@ HL7 Australia, HL7 Europe, and so on). A server's registration carries:
   `publication`, `validation` or `code-generation`);
 * `exclusions`: code system and value set masks the server hosts but withholds from the
   ecosystem;
-* `fhirVersions`: the endpoints, each a FHIR version and a URL.
+* `fhirVersions`: the endpoints, each a FHIR version and a URL;
+* `disabled`: if `true`, the server is out of the ecosystem for now, but stays registered: it
+  isn't scanned, discovered or resolved to. A registry can be disabled the same way, in the
+  master file.
 
 **What the registry reads from the servers.** Claims are what a server says about itself; what
 it actually hosts, the registry learns by scanning each endpoint with standard FHIR:

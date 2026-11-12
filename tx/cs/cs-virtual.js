@@ -57,6 +57,7 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
   versionNeeded() { return false; }
   versionAlgorithm() { return null; }
   hasSupplement() { return false; }
+  valueSet() { return null; } // the code system's all-codes value set: not known here, and not needed
 
   versionIsMoreDetailed(checkVersion, actualVersion) {
     return !!actualVersion && !!checkVersion && actualVersion.startsWith(checkVersion);
