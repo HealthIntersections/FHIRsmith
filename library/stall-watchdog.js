@@ -24,6 +24,9 @@ const { Worker } = require('worker_threads');
 
 const MAX_SAMPLES = 5;
 const MAX_FRAMES = 40;
+// How long a sample may take before it is given up: attaching reports every script loaded first,
+// which on a busy machine takes seconds (a CI run gave up at 1 s, when this was the threshold)
+const SAMPLE_TIMEOUT_MS = 15000;
 
 // the watcher, run as a worker thread (eval: it has to be a string)
 const WATCHER = `
@@ -33,7 +36,7 @@ const path = require('path');
 const inspector = require('inspector');
 
 const beat = new BigInt64Array(workerData.buffer);
-const { thresholdMs, dir, label, maxSamples, maxFrames } = workerData;
+const { thresholdMs, dir, label, maxSamples, maxFrames, sampleTimeoutMs } = workerData;
 
 let stall = null; // { since, samples, file }
 let busy = false;
@@ -69,7 +72,7 @@ function sample(done) {
     session.post('Debugger.pause', (err2) => { if (err2) finish(null, err2.message); });
   });
   // a pause that never lands (a garbage collection that doesn't end): give up on this one
-  setTimeout(() => finish(null, 'no answer from the main thread'), Math.min(thresholdMs, 30000));
+  setTimeout(() => finish(null, 'no answer from the main thread'), sampleTimeoutMs);
 }
 
 function write(text) {
@@ -136,7 +139,7 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
 
   const worker = new Worker(WATCHER, {
     eval: true,
-    workerData: { buffer, thresholdMs, dir, label: String(label).replace(/[^A-Za-z0-9_-]/g, '_'), maxSamples: MAX_SAMPLES, maxFrames: MAX_FRAMES }
+    workerData: { buffer, thresholdMs, dir, label: String(label).replace(/[^A-Za-z0-9_-]/g, '_'), maxSamples: MAX_SAMPLES, maxFrames: MAX_FRAMES, sampleTimeoutMs: SAMPLE_TIMEOUT_MS }
   });
   worker.unref();
   worker.on('message', (m) => {

@@ -5,11 +5,20 @@ const os = require('os');
 const path = require('path');
 const { startStallWatchdog } = require('../../library/stall-watchdog');
 
-function heldHere(ms) {
-  const end = Date.now() + ms;
+// holds the event loop until the watchdog has written a stack sample (or 20 s): on a busy
+// machine reading the stack takes seconds, and a sample that lands after the loop is free again
+// doesn't show this function
+function heldHere(dir) {
+  const end = Date.now() + 20000;
   let n = 0;
   while (Date.now() < end) {
     n += [1, 2, 3].map(x => x * 2).length;
+    if (n % 200000 === 0) {
+      const files = fs.readdirSync(dir);
+      if (files.length > 0 && / blocked \d+s/.test(fs.readFileSync(path.join(dir, files[0]), 'utf8'))) {
+        break;
+      }
+    }
   }
   return n;
 }
@@ -22,7 +31,7 @@ describe('stall watchdog', () => {
     const wd = startStallWatchdog({ thresholdSeconds: 1, dir, label: 'tx9', log });
     try {
       await new Promise(r => setTimeout(r, 1200)); // the worker starts
-      heldHere(2500);
+      heldHere(dir);
       await new Promise(r => setTimeout(r, 2500)); // it notices the loop is running again
       const files = fs.readdirSync(dir);
       expect(files).toHaveLength(1);
@@ -39,7 +48,7 @@ describe('stall watchdog', () => {
       await wd.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
-  }, 20000);
+  }, 40000);
 
   test('0: not started', () => {
     expect(startStallWatchdog({ thresholdSeconds: 0, dir: os.tmpdir(), label: 'x', log: {} })).toBeNull();
