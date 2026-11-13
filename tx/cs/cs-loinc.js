@@ -9,6 +9,7 @@ const {sqlEscapeString} = require("../../library/sqlite-utilities");
 const regexUtilities = require('../../library/regex-utilities');
 const {ConceptMap} = require("../library/conceptmap");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -790,6 +791,12 @@ class LoincServices extends BaseCSServices {
 
   // Filter support
   async doesFilter(prop, op, value) {
+    // answers-for is not a property, so the core in row (property value equal to one of the
+    // strings) doesn't define answers-for in: refuse it rather than guess
+    if (prop === 'answers-for' && op === 'in') {
+      return false;
+    }
+
     // Relationship filters
     if (this.relationships.has(prop) && ['=', 'in', 'regex'].includes(op)) {
       return true;
@@ -862,6 +869,10 @@ class LoincServices extends BaseCSServices {
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
+    if (prop === 'answers-for' && op === 'in') { // see doesFilter
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        `The filter "${prop} ${op} ${value}" is not supported for LOINC`, 'vs-invalid', 422);
+    }
     const filter = new LoincFilterHolder();
     await this.#executeFilterQuery(prop, op, value, filter, filterContext.iterate !== false);
     filterContext.filters.push(filter);
@@ -996,43 +1007,16 @@ class LoincServices extends BaseCSServices {
                   AND SourceKey = `;
       }
     }
-    // answers-for 'in' filter: the union of answers-for = each value, so each value is an answer
-    // list (LL) or a term that answer lists are for, as above
-    else if (prop === 'answers-for' && op === 'in') {
-      const values = this.#valueList(value);
-      const lists = this.#commaListOfCodes(values.filter(v => v.startsWith('LL')).join(','));
-      const terms = this.#commaListOfCodes(values.filter(v => !v.startsWith('LL')).join(','));
-      const sources = `SELECT CodeKey FROM Codes WHERE Code IN (${lists})
-                       UNION
-                       SELECT SourceKey FROM Relationships
-                       WHERE RelationshipTypeKey = ${this.relationships.get('answers-for')}
-                         AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${terms}))`;
-      sql = `SELECT DISTINCT TargetKey as Key FROM Relationships
-             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
-               AND SourceKey IN (${sources})
-             ORDER BY TargetKey ASC`;
-      lsql = `SELECT COUNT(DISTINCT TargetKey) FROM Relationships
-              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
-                AND SourceKey IN (${sources})
-                AND TargetKey = `;
-    }
-    // Relationship 'in' filter: the union of = each value, so each value is a part code or,
-    // if it is not a code, a part name (SCALE_TYP in Doc,Nar)
+    // Relationship 'in' filter
     else if (this.relationships.has(prop) && op === 'in') {
-      const values = this.#valueList(value);
-      const codes = this.#commaListOfCodes(values.join(','));
-      const names = values.filter(v => !this.codes.has(v)).map(v => `'${this.#sqlWrapString(v)}'`).join(',');
-      // Codes.Description has no index: only read it for names
-      const targets = names
-        ? `SELECT CodeKey FROM Codes WHERE Code IN (${codes}) OR Description COLLATE NOCASE IN (${names})`
-        : `SELECT CodeKey FROM Codes WHERE Code IN (${codes})`;
+      const codes = this.#commaListOfCodes(value);
       sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
              WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-               AND TargetKey IN (${targets})
+               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
              ORDER BY SourceKey ASC`;
       lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                AND TargetKey IN (${targets})
+                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
                 AND SourceKey = `;
     }
     // Relationship 'exists' filter: value is true or false (doesFilter rejects anything else).

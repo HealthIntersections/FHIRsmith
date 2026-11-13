@@ -784,17 +784,13 @@ describe('LOINC Provider', () => {
       expect(got.size).toBeGreaterThan(0);
     });
 
-    test('X in a,b is the union of X = a and X = b, listed and checked', async () => {
+    test('property in a,b is the union of property = a and property = b, listed and checked', async () => {
+      // core's Filters table: [property] in = "a property value equal to one of the specified strings"
       const cases = [
-        ['SCALE_TYP', ['Qn', 'Ord']], // part names
-        ['SCALE_TYP', ['LP7753-9', 'LP7751-3']], // part codes
-        ['SCALE_TYP', ['qn', ' LP7751-3']], // a name in another case, and a code
-        ['SYSTEM', ['Ser/Plas', 'Ser']],
-        ['CLASSTYPE', ['1', '4']],
+        ['CLASSTYPE', ['1', '4']], // = takes the numbers, so in does too
         ['CLASSTYPE', ['Clinical class', 'Surveys']],
         ['ORDER_OBS', ['Both', 'Observation']],
-        ['answers-for', ['LL360-9', 'LL744-4']], // answer lists
-        ['answers-for', ['100041-3', '101421-6']] // terms the answer lists are for
+        ['ORDER_OBS', ['both', ' OBSERVATION']] // LOINC property values are not case sensitive (THO)
       ];
       for (const [property, values] of cases) {
         const union = new Set();
@@ -810,6 +806,14 @@ describe('LOINC Provider', () => {
         const checkedCodes = await checked([[property, 'in', value]]);
         expect([property, value, [...checkedCodes].sort()]).toEqual([property, value, [...union].sort()]);
       }
+    });
+
+    test('answers-for in is refused: not a property, so core does not define it', async () => {
+      expect(await provider.doesFilter('answers-for', 'in', 'LL360-9,LL744-4')).toBe(false);
+      const prep = await provider.getPrepContext(true);
+      const err = await provider.filter(prep, true, 'answers-for', 'in', 'LL360-9,LL744-4').catch(e => e);
+      expect(err).toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', issueCode: 'vs-invalid', statusCode: 422 });
+      expect(err.message).toMatch('not supported');
     });
 
     test('a regex that matches no value is an empty filter, not an error', async () => {
