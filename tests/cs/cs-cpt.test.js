@@ -516,7 +516,7 @@ describe('CPT Provider', () => {
 
       await expect(
         provider.filter(filterContext, true, 'unsupported', '=', 'value')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should handle extend lookup with invalid context', async () => {

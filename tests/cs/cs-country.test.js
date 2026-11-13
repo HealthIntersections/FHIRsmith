@@ -401,7 +401,7 @@ describe('CountryCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', 'regex', 'test')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {
@@ -413,7 +413,7 @@ describe('CountryCodeServices', () => {
     test('should throw error for invalid regex', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'code', 'regex', '[invalid')
-      ).rejects.toThrow('Invalid regex pattern');
+      ).rejects.toMatchObject({ message: expect.stringContaining('Invalid regex pattern'), cause: 'invalid', statusCode: 400 });
     });
 
     test('should throw error for search filter', async () => {

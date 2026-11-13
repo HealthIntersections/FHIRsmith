@@ -3,6 +3,7 @@ const assert = require('assert');
 const { CodeSystem } = require("../library/codesystem");
 const {CodeSystemFactoryProvider} = require("./cs-api");
 const regexUtilities = require("../../library/regex-utilities");
+const { Issue } = require('../library/operation-outcome');
 
 class CountryCodeConcept {
   constructor(userDefined, code, display, french) {
@@ -222,10 +223,11 @@ class CountryCodeServices extends CodeSystemProvider {
 
         filterContext.filters.push(result);
       } catch (error) {
-        throw new Error(`Invalid regex pattern: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid regex pattern: ${value}`, 'vs-invalid').handleAsOO(400);
       }
     } else {
-      throw new Error(`The filter ${prop} ${op} = ${value} is not supported for ${this.system()}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        `The filter ${prop} ${op} = ${value} is not supported for ${this.system()}`, 'vs-invalid', 422);
     }
   }
 

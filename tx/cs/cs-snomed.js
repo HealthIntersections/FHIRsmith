@@ -3537,7 +3537,7 @@ class SnomedProvider extends BaseCSServices {
     if (prop === 'concept') {
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n && op !== 'in') {
-        throw new Error(`Invalid concept ID: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid concept ID: ${value}`, 'vs-invalid').handleAsOO(400);
       }
 
       switch (op) {
@@ -3574,7 +3574,8 @@ class SnomedProvider extends BaseCSServices {
           return null;
         }
         default:
-          throw new Error(`Unsupported filter operation: concept ${op} ${value}`);
+          throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+            `Unsupported filter operation: concept ${op} ${value}`, 'vs-invalid', 422);
       }
     }
 
@@ -3605,7 +3606,7 @@ class SnomedProvider extends BaseCSServices {
 
     if (prop === 'inactive') {
       if (value !== 'true' && value !== 'false') {
-        throw new Error(`Invalid filter value: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid filter value: ${value}`, 'vs-invalid').handleAsOO(400);
       }
 
       switch (op) {
@@ -3614,7 +3615,8 @@ class SnomedProvider extends BaseCSServices {
           return null;
         }
         default:
-          throw new Error(`Unsupported filter operation: inactive ${op} ${value}`);
+          throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+            `Unsupported filter operation: inactive ${op} ${value}`, 'vs-invalid', 422);
       }
     }
 
@@ -3637,7 +3639,7 @@ class SnomedProvider extends BaseCSServices {
     if (prop === 'moduleId') {
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
-        throw new Error(`Invalid concept ID: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid concept ID: ${value}`, 'vs-invalid').handleAsOO(400);
       }
 
       switch (op) {
@@ -3646,7 +3648,8 @@ class SnomedProvider extends BaseCSServices {
           return null;
         }
         default:
-          throw new Error(`Unsupported filter operation: moduleId ${op} ${value}`);
+          throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+            `Unsupported filter operation: moduleId ${op} ${value}`, 'vs-invalid', 422);
       }
     }
 
@@ -3663,13 +3666,15 @@ class SnomedProvider extends BaseCSServices {
     if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
       const scheme = prop.substring(MAPPED_FILTER_PREFIX.length);
       if (this.sct.stringToIdOrZero(scheme) === 0n) {
-        throw new Error(`Invalid identifier scheme: ${scheme}`);
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          `Invalid identifier scheme: ${scheme}`, 'vs-invalid', 422);
       }
       if (op !== 'exists') {
-        throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          `Unsupported filter operation: ${prop} ${op} ${value}`, 'vs-invalid', 422);
       }
       if (value !== 'true' && value !== 'false') {
-        throw new Error(`Invalid filter value: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid filter value: ${value}`, 'vs-invalid').handleAsOO(400);
       }
       const filter = new SnomedFilterContext();
       filter.mappedScheme = scheme;
@@ -3683,7 +3688,7 @@ class SnomedProvider extends BaseCSServices {
 
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
-        throw new Error(`Invalid concept ID: ${value}`);
+        throw new Issue('error', 'invalid', null, null, `Invalid concept ID: ${value}`, 'vs-invalid').handleAsOO(400);
       }
 
       switch (op) {
@@ -3692,11 +3697,13 @@ class SnomedProvider extends BaseCSServices {
           return null;
         }
         default:
-          throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
+          throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+            `Unsupported filter operation: ${prop} ${op} ${value}`, 'vs-invalid', 422);
       }
     }
 
-    throw new Error(`Unsupported filter property: ${prop}`);
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      `Unsupported filter property: ${prop}`, 'vs-invalid', 422);
   }
 
 

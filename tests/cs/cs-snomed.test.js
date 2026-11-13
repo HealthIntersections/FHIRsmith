@@ -802,6 +802,23 @@ describe('SNOMED CT Subset Validation', () => {
       }
     });
 
+    test('a filter that isn\'t supported is 422 not-supported, not a server error', async () => {
+      for (const [property, operator, value] of [['concept', 'exists', '64572001'], ['inactive', 'in', 'true'],
+        ['moduleId', 'regex', '900000000000207008'], ['unknown', '=', 'x']]) {
+        const filterContext = await provider.getPrepContext(true);
+        await expect(provider.filter(filterContext, true, property, operator, value))
+          .rejects.toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      }
+    });
+
+    test('a supported filter with a value that can\'t be used is 400 invalid', async () => {
+      for (const [property, operator, value] of [['concept', '=', '1234.*'], ['inactive', '=', 'maybe'], ['moduleId', '=', 'x']]) {
+        const filterContext = await provider.getPrepContext(true);
+        await expect(provider.filter(filterContext, true, property, operator, value))
+          .rejects.toMatchObject({ cause: 'invalid', issueCode: 'vs-invalid', statusCode: 400 });
+      }
+    });
+
     test('should perform text search on subset concepts', async () => {
       const searchTests = [
         { term: 'disease', expectedCodes: ['64572001'] },

@@ -252,7 +252,7 @@ describe('AreaCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', '=', 'test')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {

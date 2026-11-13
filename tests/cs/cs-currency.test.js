@@ -208,7 +208,7 @@ describe('Iso4217Services', () => {
       const ctxt = await provider.getPrepContext(false);
       await expect(
         provider.filter(ctxt, true, 'symbol', 'equals', '$')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
