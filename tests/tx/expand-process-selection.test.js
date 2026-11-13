@@ -243,6 +243,14 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     expect(vs.expansion.total).toBeUndefined();
   });
 
+  test('a page past the last code: the total, as the walk counts every code when its page never fills', async () => {
+    behaviour = 'large';
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }),
+      [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 1000000 }, { name: 'count', valueInteger: 3 }]);
+    expect(codesOf(vs)).toEqual([]);
+    expect(vs.expansion.total).toBe(1000000);
+  });
+
   test('the requested properties are on each code the provider selected', async () => {
     const vs = await expand(app, valueSet({ include: [wholeSystem] }),
       [{ name: 'property', valueString: 'grade' }, { name: 'count', valueInteger: 4 }]);

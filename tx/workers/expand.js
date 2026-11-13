@@ -1174,8 +1174,10 @@ class ValueSetExpander {
     }
     // the total as the usual path reports it: always for count=0; otherwise only for a selection
     // within the response limit (#finishIfPageFilled: a paged walk that reaches the limit has no
-    // total, so the whole of LOINC or SNOMED CT with count=3 has none)
-    if (selection.total != null && selection.total >= 0 && (this.count === 0 || this.limitCount <= 0 || selection.total < this.limitCount)) {
+    // total, so the whole of LOINC or SNOMED CT with count=3 has none), or one whose page is never
+    // filled (the walk then runs to the end and counts everything: an offset past the last page)
+    if (selection.total != null && selection.total >= 0 && (this.count === 0 || this.limitCount <= 0 || selection.total < this.limitCount
+        || (this.count > 0 && selection.total - Math.max(this.offset, 0) < this.count))) {
       this.addToTotal(selection.total);
     } else {
       this.noTotal();
