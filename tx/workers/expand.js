@@ -1138,7 +1138,11 @@ class ValueSetExpander {
       notClosed.value = true;
       const wholeSystem = includes.some(cset => !(cset.filter || []).length);
       if (wholeSystem && cs.isNotClosed() && !Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason")) {
-        // as the usual path says for a whole grammar-based code system
+        // as the usual path says for a whole grammar-based code system, in its order: unclosed,
+        // then the reason
+        if (!Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed")) {
+          Extensions.addBoolean(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
+        }
         Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members");
       }
     }
