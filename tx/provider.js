@@ -204,10 +204,7 @@ class Provider {
     }
     const vurl = system+(version ? "|"+version : "");
     const vurlMM = VersionUtilities.isSemVer(version) ? system+"|"+VersionUtilities.getMajMin(version) : null;
-    let factory = this.codeSystemFactories.get(vurl);
-    if (factory == null && vurlMM) {
-      factory = this.codeSystemFactories.get(vurlMM);
-    }
+    const factory = this.codeSystemFactory(system, version);
     if (factory != null) {
       return this.buildOnce(opContext, factory, supplements);
     }
@@ -219,6 +216,22 @@ class Provider {
       return this.createCodeSystemProvider(opContext, cs, supplements);
     }
     return await this.findInEcosystem(opContext, system, version, supplements);
+  }
+
+  /**
+   * The factory held here for a code system and version (null: the default version), or null.
+   * Only this server's own factories: not code system resources, nor the ecosystem.
+   *
+   * @param {string} system - the url, without a version
+   * @param {string|null} version
+   * @returns {Object|null}
+   */
+  codeSystemFactory(system, version) {
+    const factory = this.codeSystemFactories.get(system + (version ? "|" + version : ""));
+    if (factory == null && VersionUtilities.isSemVer(version)) {
+      return this.codeSystemFactories.get(system + "|" + VersionUtilities.getMajMin(version)) || null;
+    }
+    return factory || null;
   }
 
   /**
@@ -599,10 +612,7 @@ class Provider {
     }
     const vurl = system+(version ? "|"+version : "");
     const vurlMM = VersionUtilities.isSemVer(version) ? system+"|"+VersionUtilities.getMajMin(version) : null;
-    let factory = this.codeSystemFactories.get(vurl);
-    if (factory == null && vurlMM) {
-      factory = this.codeSystemFactories.get(vurlMM);
-    }
+    const factory = this.codeSystemFactory(system, version);
     if (factory != null) {
       let vdesc = version == null ? "" : factory.describeVersion(version);
       return {

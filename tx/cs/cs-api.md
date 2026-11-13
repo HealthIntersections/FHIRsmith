@@ -24,28 +24,20 @@ language-sensitive decisions.
 ### Batches
 
 `$batch-validate-code` validates its entries one at a time, each with its own copy of the
-`OperationContext` and its own providers, so a provider is asked about one code and cannot tell
-that more are coming. An entry's context has `opContext.batch`: the batch's own context, which
-lasts until the whole batch is answered (`null` outside a batch). Before the first entry runs,
-the batch worker sets `batchCodes` on it: a `Map` from code system url to a `Set` of the codes
-the entries name (in codings, codeable concepts, and `code` with `system` or, on a code system,
-`url`). Versions are not separated.
+`OperationContext` and its own providers. So before the first entry runs, the batch worker
+calls `prefetchCodes` once for each code system and version the entries name, on a provider of
+its own, with all the entries' codes of it. It keeps the handles on the batch's context
+(`opContext.prefetched`, keyed `system|version`), which an entry's context reaches as
+`opContext.batch`, and each entry passes the handle for its provider's system and version to
+`locate(code, prefetched)` (`TerminologyWorker.batchPrefetched`).
 
-It is a hint. A provider may ignore it; one backed by a database may, when it is first asked to
-`locate` one of these codes, read all of its system's codes together and keep what it read for
-the rest of the batch, keyed on `opContext.batch` (for example in a `WeakMap`), so nothing
-outlives the request. Codes in it may be unknown to the provider, or belong to a version it does
-not serve.
+So in a batch the handle comes from another provider instance, built by the same factory, and it
+lasts until the whole batch is answered. A provider that prefetches should therefore:
 
-```js
-locate(code, prefetched) {
-  const codes = this.opContext.batch?.batchCodes?.get(this.system());
-  if (codes?.has(code)) {
-    // first time for this batch: read every code in `codes`, keep it in a WeakMap on opContext.batch
-  }
-  // ...
-}
-```
+- recognise its handles by what they were read from (the factory's data or file), not by `this`;
+- keep in the handle what `locate` needs, not a reference to the reading provider's state;
+- treat a code the handle doesn't hold as usual (an entry may resolve to another version, or
+  name codes the batch didn't collect), and ignore a handle that isn't one of its own.
 
 ### Supplements
 
@@ -266,7 +258,7 @@ Lookup supports the `$lookup` and `$validate-code` operations.
 |---|---|
 | `locate(code, prefetched)` | Look up a code by string. `prefetched` is a handle from `prefetchCodes` for a list holding the code, or `null`; ignore it unless it is one of yours. Returns `{ context, message }`. If found, `context` is a `CodeSystemProviderContext` and `message` is `null`. If not found, `context` is `null` and `message` explains why. In a `$batch-validate-code`, see [Batches](#batches). **Must override.** |
 | `locateIsA(code)` | Look up a code within the scope of a parent concept. Required only if `hasParents()` returns `true`. |
-| `prefetchCodes(codes, withDesignations, hints)` | Called before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and return a handle to what it read; the worker passes it back as `locate(code, prefetched)` for each code of that list, then drops it. No state on the provider. `hints.displayOnly` is `true` when the response shows each code's display and none of its other designations (`TxParameters.showsDisplayOnly`: the request's languages are English or none and it asks for no designations - `includeDesignations`, `designation`, `displayLanguage`; and there is no text filter). A provider that handles selecting asks `params.showsDisplayOnly(langs)` itself in `processSelection`. A provider whose display doesn't depend on its other designations may then leave them unread. Default: returns `null` (no prefetching). |
+| `prefetchCodes(codes, withDesignations, hints)` | Called before the worker locates each code of a list (the concepts a value set include or exclude lists, in `$expand` and `$validate-code`). A database-backed provider may read them together and return a handle to what it read; the worker passes it back as `locate(code, prefetched)` for each code of that list, then drops it. No state on the provider. A `$batch-validate-code` calls it once per code system for all its entries, and passes the handle to other providers of the same factory: see [Batches](#batches). `hints.displayOnly` is `true` when the response shows each code's display and none of its other designations (`TxParameters.showsDisplayOnly`: the request's languages are English or none and it asks for no designations - `includeDesignations`, `designation`, `displayLanguage`; and there is no text filter). A provider that handles selecting asks `params.showsDisplayOnly(langs)` itself in `processSelection`. A provider whose display doesn't depend on its other designations may then leave them unread. Default: returns `null` (no prefetching). |
 | `extendLookup(ctxt, props, params)` | Called during `$lookup` to allow the provider to add extra properties to the response `Parameters`. The `props` array lists the property names requested by the client. |
 
 The server calls `locate()` first to confirm the code exists, then uses the returned context

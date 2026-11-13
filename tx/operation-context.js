@@ -1145,13 +1145,12 @@ class OperationContext {
     this._external = { requests: 0 };
     // On a $batch-validate-code entry's context: the batch's own context (the request's),
     // which outlives the entry. Kept by copy(). Null outside a batch, and on the batch's own
-    // context. What the batch knows before its entries run hangs off it (batchCodes).
+    // context. What the batch knows before its entries run hangs off it (prefetched).
     this.batch = null;
     // On a $batch-validate-code's own context, set by the batch worker before its entries
-    // run: Map of code system url -> Set of the codes the entries name. A hint a provider
-    // may use, e.g. to read them all at once when it is first asked for one of them
-    // (tx/cs/cs-api.md, Batches); an entry's provider reads opContext.batch?.batchCodes.
-    this.batchCodes = null;
+    // run: Map of system|version -> the handle prefetchCodes returned for the entries' codes
+    // of it. An entry passes its provider's to locate (tx/cs/cs-api.md, Batches)
+    this.prefetched = null;
     this.debugging = isDebugging();
     // Providers opened during this operation that need their underlying
     // resources (sqlite connections, etc.) released when the operation ends.

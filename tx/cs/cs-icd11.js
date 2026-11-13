@@ -232,7 +232,9 @@ class ICD11Services extends BaseCSServices {
     assert(!code || typeof code === 'string', 'code must be a string');
     if (!code) return { context: null, message: 'Empty code' };
 
-    const concept = (prefetched instanceof ICD11Prefetched && prefetched.owner === this)
+    // a handle read from this classification: by this provider, or, in a $batch-validate-code,
+    // by the batch's provider of it (cs-api.md, Batches)
+    const concept = (prefetched instanceof ICD11Prefetched && prefetched.owner.shared === this.shared)
       ? await prefetched.resolve(code, () => this.#resolve(code))
       : await this.#resolve(code);
     if (concept) return { context: concept, message: null };
