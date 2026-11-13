@@ -1128,6 +1128,11 @@ class ValueSetExpander {
         && !(this.count > 0 && this.count <= this.limitCount)) {
       throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(vsSrc.vurl || vsSrc.url, selection.total, this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     }
+    // count=0 with a filter: the usual path walks the selection to count it, and refuses at the walk
+    // limit (#checkLimit); only a whole-system include is counted without a walk (countAllCodes)
+    if (!wholeSystemInclude && this.count === 0 && this.walkLimit > 0 && selection.total > this.walkLimit) {
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.url, '>' + this.walkLimit), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+    }
 
     for (const cset of [...includes, ...excludes]) {
       this.worker.checkSupplements(cs, cset, this.requiredSupplements, this.usedSupplements);

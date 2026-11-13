@@ -102,7 +102,7 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
       for (const code of page) {
         set.add(this.codeSystem.getConceptByCode(code));
       }
-      const total = behaviour === 'no-total' ? -1 : behaviour === 'large' ? 1000000 : all.length;
+      const total = behaviour === 'no-total' ? -1 : behaviour === 'large' ? 1000000 : behaviour === 'huge' ? 1000001 : all.length;
       return { sets: [set], total };
     }));
   }, 60000);
@@ -249,6 +249,18 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
       [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 1000000 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual([]);
     expect(vs.expansion.total).toBe(1000000);
+  });
+
+  test('count=0 of a filter over the walk limit: too costly, as the usual path\'s counting walk; the whole system is counted', async () => {
+    behaviour = 'huge';
+    const filtered = valueSet({ include: [{ system: CS_URL, filter: [{ property: 'group', op: '=', value: 'x' }] }] });
+    const res = await request(app).post('/tx/r5/ValueSet/$expand').set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [{ name: 'tx-resource', resource: CS }, { name: 'valueSet', resource: filtered },
+        { name: 'count', valueInteger: 0 }] });
+    expect(res.status).toBe(422);
+    expect(res.body.issue[0].details.text).toContain('>1000000');
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }), [{ name: 'count', valueInteger: 0 }]);
+    expect(vs.expansion.total).toBe(1000001);
   });
 
   test('the requested properties are on each code the provider selected', async () => {
