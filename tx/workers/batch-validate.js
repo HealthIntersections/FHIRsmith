@@ -101,7 +101,8 @@ class BatchValidateWorker extends TerminologyWorker {
       // below drops per-entry tx-resource processing (they're already cached).
       const frontLoaded = this.frontLoadBatch(params);
       // Every code the entries name, by code system, before any entry runs: a hint
-      // a provider may use (OperationContext.batchCodes, tx/cs/cs-api.md).
+      // a provider may use; an entry's context reaches it as opContext.batch.batchCodes
+      // (tx/cs/cs-api.md, Batches).
       this.opContext.batchCodes = this.batchCodes(params, globalParams, codeSystemRoute);
 
       let output = [];
@@ -137,6 +138,7 @@ class BatchValidateWorker extends TerminologyWorker {
           // (each with an open sqlite connection, and a reference to the entry's
           // context and its log) alive until the whole batch ends.
           const entryContext = this.opContext.copy({ ownProviders: true });
+          entryContext.batch = this.opContext;
           let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
             // Validating an entry never yields the event loop by itself, and IG builds send batches

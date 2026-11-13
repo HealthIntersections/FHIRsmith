@@ -25,21 +25,23 @@ language-sensitive decisions.
 
 `$batch-validate-code` validates its entries one at a time, each with its own copy of the
 `OperationContext` and its own providers, so a provider is asked about one code and cannot tell
-that more are coming. Before the first entry runs, the batch worker sets `opContext.batchCodes`
-on the batch's context, and every entry's context shares it: a `Map` from code system url to a
-`Set` of the codes the entries name (in codings, codeable concepts, and `code` with `system` or,
-on a code system, `url`). Versions are not separated. Outside a batch it is `null`.
+that more are coming. An entry's context has `opContext.batch`: the batch's own context, which
+lasts until the whole batch is answered (`null` outside a batch). Before the first entry runs,
+the batch worker sets `batchCodes` on it: a `Map` from code system url to a `Set` of the codes
+the entries name (in codings, codeable concepts, and `code` with `system` or, on a code system,
+`url`). Versions are not separated.
 
 It is a hint. A provider may ignore it; one backed by a database may, when it is first asked to
 `locate` one of these codes, read all of its system's codes together and keep what it read for
-the rest of the batch, keyed on the `Map` (for example in a `WeakMap`), so nothing outlives the
-request. Codes in it may be unknown to the provider, or belong to a version it does not serve.
+the rest of the batch, keyed on `opContext.batch` (for example in a `WeakMap`), so nothing
+outlives the request. Codes in it may be unknown to the provider, or belong to a version it does
+not serve.
 
 ```js
 locate(code, prefetched) {
-  const codes = this.opContext.batchCodes?.get(this.system());
+  const codes = this.opContext.batch?.batchCodes?.get(this.system());
   if (codes?.has(code)) {
-    // first time for this batch: read every code in `codes`, keep it in a WeakMap on `codes`
+    // first time for this batch: read every code in `codes`, keep it in a WeakMap on opContext.batch
   }
   // ...
 }

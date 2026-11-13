@@ -1143,10 +1143,14 @@ class OperationContext {
     // it's counted as an external request (ServerStats.countExternalRequest). Shared with the
     // copies (a batch's entries), so what they send counts against the request
     this._external = { requests: 0 };
-    // A $batch-validate-code's codes, set by the batch worker before its entries run and
-    // shared with copy()'d contexts (each entry has its own): Map of code system url ->
-    // Set of codes. A hint a provider may use, e.g. to read them all at once when it is
-    // first asked for one of them (tx/cs/cs-api.md). Null outside a batch.
+    // On a $batch-validate-code entry's context: the batch's own context (the request's),
+    // which outlives the entry. Kept by copy(). Null outside a batch, and on the batch's own
+    // context. What the batch knows before its entries run hangs off it (batchCodes).
+    this.batch = null;
+    // On a $batch-validate-code's own context, set by the batch worker before its entries
+    // run: Map of code system url -> Set of the codes the entries name. A hint a provider
+    // may use, e.g. to read them all at once when it is first asked for one of them
+    // (tx/cs/cs-api.md, Batches); an entry's provider reads opContext.batch?.batchCodes.
     this.batchCodes = null;
     this.debugging = isDebugging();
     // Providers opened during this operation that need their underlying
@@ -1224,7 +1228,7 @@ class OperationContext {
     newContext.usageTracker = this.usageTracker;
     newContext.ecosystemForwarded = this.ecosystemForwarded;
     newContext._external = this._external;
-    newContext.batchCodes = this.batchCodes;
+    newContext.batch = this.batch;
     // Share the same provider-cleanup list so providers opened by the copy
     // are released when the parent operation ends - unless the caller will
     // release them itself, with a list of its own.

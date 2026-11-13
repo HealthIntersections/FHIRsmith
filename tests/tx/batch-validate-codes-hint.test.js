@@ -3,8 +3,9 @@
  *
  * Each entry of a batch is validated with its own context and its own providers, so a
  * provider is asked about one code at a time. Before the first entry runs, the batch
- * worker sets opContext.batchCodes (code system url -> Set of codes), shared by every
- * entry's context, so a provider may read them together (tx/cs/cs-api.md, Batches).
+ * worker sets batchCodes (code system url -> Set of codes) on the batch's context, which every
+ * entry's context reaches as opContext.batch, so a provider may read them together
+ * (tx/cs/cs-api.md, Batches).
  */
 
 const request = require('supertest');
@@ -22,7 +23,8 @@ class HintRecordingCountryFactory extends CountryCodeFactoryProvider {
     const provider = super.build(opContext, supplements);
     const locate = provider.locate.bind(provider);
     provider.locate = async (code, prefetched) => {
-      this.seen.push({ code, batchCodes: provider.opContext.batchCodes });
+      const batch = provider.opContext.batch;
+      this.seen.push({ code, batch, batchCodes: batch?.batchCodes ?? null });
       return locate(code, prefetched);
     };
     return provider;
@@ -35,7 +37,7 @@ function entry(parameter) {
 
 const coding = (code, system = SYSTEM) => ({ name: 'coding', valueCoding: { system, code } });
 
-describe('$batch-validate-code: opContext.batchCodes', () => {
+describe('$batch-validate-code: opContext.batch.batchCodes', () => {
   let app;
   let factory;
 
@@ -84,8 +86,11 @@ describe('$batch-validate-code: opContext.batchCodes', () => {
     expect(sorted(first.batchCodes.keys())).toEqual(sorted([SYSTEM, OTHER]));
     expect(sorted(first.batchCodes.get(SYSTEM))).toEqual(['CA', 'GB', 'US']);
     expect(sorted(first.batchCodes.get(OTHER))).toEqual(['x1', 'x2']);
-    // one Map, shared by the entries' contexts (a provider can key what it read on it)
-    expect(factory.seen.every(s => s.batchCodes === first.batchCodes)).toBe(true);
+    // one batch context, shared by the entries' contexts (a provider can key what it read on
+    // it), and not an entry's own
+    expect(first.batch).toBeTruthy();
+    expect(factory.seen.every(s => s.batch === first.batch)).toBe(true);
+    expect(first.batch.batch).toBeNull();
   });
 
   test('a global system or url applies to the entries that do not name one', async () => {
@@ -112,11 +117,11 @@ describe('$batch-validate-code: opContext.batchCodes', () => {
     expect(sorted(bc.get(SYSTEM))).toEqual(['AU', 'NZ']);
   });
 
-  test('outside a batch it is null', async () => {
+  test('outside a batch opContext.batch is null', async () => {
     const res = await request(app).get('/tx/r5/CodeSystem/$validate-code')
       .query({ system: SYSTEM, code: 'US' });
     expect(res.status).toBe(200);
     expect(factory.seen.length).toBeGreaterThan(0);
-    expect(factory.seen.every(s => s.batchCodes === null)).toBe(true);
+    expect(factory.seen.every(s => s.batch === null)).toBe(true);
   });
 });
