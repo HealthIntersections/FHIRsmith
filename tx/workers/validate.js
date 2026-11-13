@@ -548,7 +548,7 @@ class ValueSetChecker {
         await this.checkCanonicalStatus(path, op, cs, this.valueSet);
         ver.value = cs.version();
         contentMode.value = cs.contentMode();
-        let ctxt = await cs.locate(code, this.worker.batchPrefetched(cs));
+        let ctxt = await cs.locate(code, await this.worker.batchPrefetched(cs));
         if (ctxt.context === null) {
           unkCodes.push(cs.system() + '|' + cs.version + '#' + code);
           if (cs.contentMode() !== 'complete') {
@@ -1200,7 +1200,7 @@ class ValueSetChecker {
           }
         } else {
           await this.checkCanonicalStatusCS(path, op, prov, this.valueSet);
-          let ctxt = await prov.locate(c.code, this.worker.batchPrefetched(prov));
+          let ctxt = await prov.locate(c.code, await this.worker.batchPrefetched(prov));
           if (!ctxt.context) {
             // message can never be populated in pascal?
             // if (ctxt.message) {
@@ -1469,7 +1469,7 @@ class ValueSetChecker {
     if (!cs || typeof cs.checkCodingExtensions !== 'function' || !c.extension || c.extension.length === 0) {
       return;
     }
-    const loc = await cs.locate(c.code, this.worker.batchPrefetched(cs));
+    const loc = await cs.locate(c.code, await this.worker.batchPrefetched(cs));
     if (!loc.context) {
       return;
     }
@@ -1488,7 +1488,7 @@ class ValueSetChecker {
     if (!cs || typeof cs.codeIssues !== 'function' || !c.code) {
       return;
     }
-    const loc = await cs.locate(c.code, this.worker.batchPrefetched(cs));
+    const loc = await cs.locate(c.code, await this.worker.batchPrefetched(cs));
     if (!loc.context) {
       return;
     }
@@ -1646,7 +1646,7 @@ class ValueSetChecker {
     if (stored ? stored.count === 0 : (!cset.concept || cset.concept.length === 0 || cset.concept.some(cc => cc.code === code))) {
       return null;
     }
-    const a = await cs.locate(code, this.worker.batchPrefetched(cs));
+    const a = await cs.locate(code, await this.worker.batchPrefetched(cs));
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
@@ -1692,7 +1692,7 @@ class ValueSetChecker {
     this.worker.opContext.addNote(vs, 'check code ' + role + ' ' + this.worker.renderer.displayValueSetInclude(cset) + ' at ' + path, this.indentCount);
     let result = false;
     if (!hasConcepts(cset) && !cset.filter) {
-      let loc = await cs.locate(code, this.worker.batchPrefetched(cs));
+      let loc = await cs.locate(code, await this.worker.batchPrefetched(cs));
       result = false;
       if (loc.context == null) {
         let unknownMsg = null;
@@ -1790,7 +1790,7 @@ class ValueSetChecker {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
       if (code === c || cc === altMatch) {
-        let loc = await cs.locate(code, this.worker.batchPrefetched(cs));
+        let loc = await cs.locate(code, await this.worker.batchPrefetched(cs));
         if (loc.context !== null) {
           loc = loc.context;
           this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" found in ' + this.worker.renderer.displayCoded(cs), this.indentCount);
@@ -1872,7 +1872,7 @@ class ValueSetChecker {
           }
         }
       } else {
-        const located = await cs.locate(code, this.worker.batchPrefetched(cs));
+        const located = await cs.locate(code, await this.worker.batchPrefetched(cs));
         loc = located ? located.context : null;
       }
       if (loc != null && !(typeof loc === 'string') && suppFilters.length > 0) {
@@ -1949,7 +1949,7 @@ class ValueSetChecker {
 
   async checkExpansion(path, cs, cset, code, displays, vs, message, inactive, vstatus, op) {
     let result = false;
-    let loc = await cs.locate(code, this.worker.batchPrefetched(cs), message);
+    let loc = await cs.locate(code, await this.worker.batchPrefetched(cs), message);
     result = false;
     if (loc === null || loc.context == null) {
       if (!this.params.membershipOnly) {
@@ -2032,7 +2032,7 @@ class ValueSetChecker {
     for (let v of vset) {
       let cs = await this.worker.findCodeSystem(system, v, this.params, ["complete", "fragment"], null, true, true, false, this.worker.requiredSupplements);
       if (cs != null) {
-        let loc = await cs.locate(code, this.worker.batchPrefetched(cs));
+        let loc = await cs.locate(code, await this.worker.batchPrefetched(cs));
         if (loc.context) {
           if (!display || await this.displayIsOk(cs, loc.context, display)) {
             found.push(v);

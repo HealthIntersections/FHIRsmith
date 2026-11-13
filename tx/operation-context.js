@@ -1148,8 +1148,8 @@ class OperationContext {
     // context. What the batch knows before its entries run hangs off it (prefetched).
     this.batch = null;
     // On a $batch-validate-code's own context, set by the batch worker before its entries
-    // run: Map of system|version -> the handle prefetchCodes returned for the entries' codes
-    // of it. An entry passes its provider's to locate (tx/cs/cs-api.md, Batches)
+    // run: its prefetchCodes handles, by system|version (BatchPrefetch, batch-validate.js). An
+    // entry passes its provider's to locate (tx/cs/cs-api.md, Batches)
     this.prefetched = null;
     this.debugging = isDebugging();
     // Providers opened during this operation that need their underlying

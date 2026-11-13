@@ -24,12 +24,15 @@ language-sensitive decisions.
 ### Batches
 
 `$batch-validate-code` validates its entries one at a time, each with its own copy of the
-`OperationContext` and its own providers. So before the first entry runs, the batch worker
-calls `prefetchCodes` once for each code system and version the entries name, on a provider of
-its own, with all the entries' codes of it. It keeps the handles on the batch's context
-(`opContext.prefetched`, keyed `system|version`), which an entry's context reaches as
-`opContext.batch`, and each entry passes the handle for its provider's system and version to
-`locate(code, prefetched)` (`TerminologyWorker.batchPrefetched`).
+`OperationContext` and its own providers. So the batch worker collects the codes the entries
+name, by code system, before the first entry runs. The first time an entry locates a code in a
+code system version this server holds, the batch calls `prefetchCodes` once, on a provider of its
+own for that version, with all the entries' codes of that system. It keeps the handles on the
+batch's context (`opContext.prefetched`, by `system|version`), which an entry's context reaches
+as `opContext.batch`, and each entry passes the handle for its provider's system and version to
+`locate(code, prefetched)` (`TerminologyWorker.batchPrefetched`). It waits for the first entry
+because which version answers an entry is only decided as the entry runs (`system-version`, a
+value set's pinned version).
 
 So in a batch the handle comes from another provider instance, built by the same factory, and it
 lasts until the whole batch is answered. A provider that prefetches should therefore:

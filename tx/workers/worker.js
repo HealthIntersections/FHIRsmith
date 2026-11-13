@@ -156,16 +156,16 @@ class TerminologyWorker {
   }
 
   /**
-   * In a $batch-validate-code entry, the handle prefetchCodes returned, before the entries ran,
-   * for the batch's codes of this provider's system and version (BatchValidateWorker.prefetchBatch):
-   * the `prefetched` to pass to cs.locate. Null otherwise.
+   * In a $batch-validate-code entry, the handle of the batch's prefetchCodes for this provider's
+   * system and version (BatchPrefetch, batch-validate.js): the `prefetched` to pass to cs.locate.
+   * Null otherwise.
    *
    * @param {CodeSystemProvider} cs
-   * @returns {*}
+   * @returns {Promise<*>}
    */
-  batchPrefetched(cs) {
+  async batchPrefetched(cs) {
     const prefetched = this.opContext.batch?.prefetched;
-    return prefetched && cs ? (prefetched.get(cs.system() + '|' + cs.version()) ?? null) : null;
+    return prefetched && cs ? ((await prefetched.handleFor(cs)) ?? null) : null;
   }
 
   /**

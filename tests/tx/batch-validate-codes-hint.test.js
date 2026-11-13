@@ -1,12 +1,12 @@
 /**
- * $batch-validate-code calls prefetchCodes once per code system, before the entries run
+ * $batch-validate-code calls prefetchCodes once per code system version, for all its entries
  *
  * Each entry of a batch is validated with its own context and its own providers, so a
- * provider is asked about one code at a time. Before the first entry runs, the batch worker
- * calls prefetchCodes once per code system and version, with all the entries' codes of it, and
- * keeps the handles on the batch's context (opContext.prefetched), which every entry's context
- * reaches as opContext.batch. Each entry passes its provider's handle to locate
- * (tx/cs/cs-api.md, Batches).
+ * provider is asked about one code at a time. The batch worker collects the entries' codes by
+ * code system before they run; the first entry that locates a code in a version has the batch
+ * call prefetchCodes once, on a provider of its own, with all of that system's codes. The
+ * handles are kept on the batch's context (opContext.prefetched), which every entry's context
+ * reaches as opContext.batch, and each entry passes its provider's to locate (tx/cs/cs-api.md, Batches).
  */
 
 const request = require('supertest');
@@ -115,7 +115,9 @@ describe('$batch-validate-code: prefetchCodes once per code system', () => {
     // the entries' contexts share one batch context, which holds the handles
     expect(located.every(s => s.batch === located[0].batch)).toBe(true);
     expect(located[0].batch.batch).toBeNull();
-    expect(located[0].batch.prefetched.get(SYSTEM + '|' + factory.version())).toBe(handle);
+    expect(await located[0].batch.prefetched.handles.get(SYSTEM + '|' + factory.version())).toBe(handle);
+    // the first locate already had it
+    expect(factory.seen[0].prefetched).toBe(handle);
   });
 
   test('a global url applies to the entries that do not name one', async () => {
@@ -151,12 +153,14 @@ describe('$batch-validate-code: prefetchCodes once per code system', () => {
     expect(factory.seen.filter(s => s.code === 'NZ' || s.code === 'AU').every(s => s.prefetched === handle)).toBe(true);
   });
 
-  test('an entry whose code system resolves to another version is passed no handle', async () => {
+  test('codes are collected by system, whatever the version; the handle is for the version read', async () => {
     await batch('CodeSystem', [
       entry([coding('US')]),
       entry([{ name: 'coding', valueCoding: { system: SYSTEM, version: 'not-held', code: 'CA' } }]),
     ]);
-    expect(prefetchedCodes()).toEqual(['US']);
+    // which version answers an entry is decided as it runs, so the version read gets all of them
+    expect(prefetchedCodes()).toEqual(['CA', 'US']);
+    // and a provider of another version is not passed it
     expect(factory.seen.filter(s => s.code === 'CA').every(s => s.prefetched === null)).toBe(true);
   });
 
