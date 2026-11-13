@@ -756,6 +756,8 @@ describe('LOINC Provider', () => {
         ['UNITSREQUIRED', 'exists', 'true'], ['UNITSREQUIRED', 'exists', 'false'],
         ['ORDER_OBS', 'regex', 'Obs.*'], ['COMPONENT', 'regex', '.*[Gg]lucose.*'],
         ['ORDER_OBS', 'regex', 'no value is this'], ['COMPONENT', 'regex', 'no value is this'],
+        ['SCALE_TYP', '=', 'Doc'], ['SCALE_TYP', '=', 'doc'], ['SCALE_TYP', '=', 'no part is called this'],
+        ['CLASS', 'regex', 'CHE.*'], ['CLASS', 'regex', 'no value is this'],
         ['$text', '<', 'glucose'], ['$text', '>', 'glucose']
       ];
       for (const group of ['LIST', 'answerList', 'relationships', 'properties', 'classType', 'status', 'copyright']) {
@@ -786,6 +788,53 @@ describe('LOINC Provider', () => {
 
     test('a regex that matches no value is an empty filter, not an error', async () => {
       expect((await listed('ORDER_OBS', 'regex', 'no value is this')).size).toBe(0);
+    });
+
+    test('a part given by name: the codes related to the parts with that name, in any case', async () => {
+      const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
+      const want = await new Promise((resolve, reject) => db.all(`SELECT c.Code FROM Relationships r, RelationshipTypes t, Codes c, Codes p
+          WHERE t.Description = 'SCALE_TYP' AND r.RelationshipTypeKey = t.RelationshipTypeKey
+            AND r.SourceKey = c.CodeKey AND r.TargetKey = p.CodeKey AND p.Description = 'Doc'`,
+      (err, rows) => { db.close(); return err ? reject(err) : resolve(rows.map(r => r.Code).sort()); }));
+      expect(want.length).toBeGreaterThan(0);
+      for (const name of ['Doc', 'DOC']) {
+        expect([name, [...await listed('SCALE_TYP', '=', name)].sort()]).toEqual([name, want]);
+        expect([name, [...await checked([['SCALE_TYP', '=', name]])].sort()]).toEqual([name, want]);
+      }
+      expect((await checked([['SCALE_TYP', '=', 'no part is called this']])).size).toBe(0);
+    });
+
+    test('a part name and a regex are looked up once per factory, not on each request', async () => {
+      // SCALE_TYP = Doc names a part: finding it reads every code (Codes.Description has no
+      // index). CLASS regex reads every CLASS part. One provider per request, as the server does
+      const f = new LoincServicesFactory(opContext.i18n, testDbPath);
+      const statements = [];
+      async function validate(property, operator, value, code) {
+        const p = await f.build(opContext, []);
+        for (const method of ['all', 'get', 'each']) {
+          const original = p.db[method];
+          p.db[method] = function (sql, ...args) {
+            statements.push(sql);
+            return original.call(p.db, sql, ...args);
+          };
+        }
+        try {
+          const prep = await p.getPrepContext(false);
+          await p.filter(prep, false, property, operator, value);
+          const set = (await p.executeFilters(prep))[0];
+          return await p.filterLocate(prep, set, code);
+        } finally {
+          p.close();
+        }
+      }
+      const byName = sql => /Description = /.test(sql);
+      const classScan = sql => /SELECT CodeKey as Key, Description FROM Codes/.test(sql);
+      for (let i = 0; i < 3; i++) {
+        expect(await validate('SCALE_TYP', '=', 'Doc', '15507-7')).not.toBeNull();
+        expect(await validate('CLASS', 'regex', 'CHE.*', '12814-0')).not.toBeNull();
+      }
+      // (before: 3 and 3, one per request)
+      expect([statements.filter(byName).length, statements.filter(classScan).length]).toEqual([1, 1]);
     });
 
     test('a filter prepared for checking codes cannot list them', async () => {

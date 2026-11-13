@@ -129,6 +129,42 @@ function ascending(keys) {
   return true;
 }
 
+/**
+ * The answers to the lookups a filter can need before its SQL is written: the parts a
+ * relationship filter names, and the values a regex filter matches. Each reads a whole table,
+ * and the answer depends only on the database, so the factory keeps the most recently used:
+ * at most 256 of them, holding at most 1,000,000 keys in all (lists of keys, not the filters'
+ * codes)
+ */
+class LoincFilterLookups {
+  constructor(maxEntries = 256, maxKeys = 1000000) {
+    this.maxEntries = maxEntries;
+    this.maxKeys = maxKeys;
+    this.entries = new Map(); // key -> array of keys, least recently used first
+    this.keyCount = 0;
+  }
+
+  async get(key, lookup) {
+    let keys = this.entries.get(key);
+    if (keys !== undefined) {
+      this.entries.delete(key);
+      this.entries.set(key, keys);
+      return keys;
+    }
+    keys = await lookup();
+    if (!this.entries.has(key) && keys.length <= this.maxKeys) {
+      this.entries.set(key, keys);
+      this.keyCount += keys.length;
+      while (this.entries.size > this.maxEntries || this.keyCount > this.maxKeys) {
+        const [oldest, old] = this.entries.entries().next().value;
+        this.entries.delete(oldest);
+        this.keyCount -= old.length;
+      }
+    }
+    return keys;
+  }
+}
+
 class LoincFilterHolder {
   constructor() {
     this.keys = [];
@@ -185,6 +221,7 @@ class LoincServices extends BaseCSServices {
     this.statusKeys = sharedData.statusKeys;
     this.statusCodes = sharedData.statusCodes;
     this.hasMappings = sharedData.hasMappings;
+    this.filterLookups = sharedData.filterLookups;
   }
 
   close() {
@@ -922,7 +959,7 @@ class LoincServices extends BaseCSServices {
   async #executeFilterQuery(prop, op, value, filter, load = true) {
     let sql = '';
     let lsql = '';
-    let noMatches = false; // a regex filter that no value matches
+    let noMatches = false; // a regex filter that no value matches, or a part name that no part has
 
     // LIST filter
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
@@ -986,14 +1023,19 @@ class LoincServices extends BaseCSServices {
                   AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
                   AND SourceKey = `;
       } else {
-        sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-               ORDER BY SourceKey ASC`;
-        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-                  AND SourceKey = `;
+        // a part given by its name (SCALE_TYP = Doc)
+        const partKeys = await this.#partKeysByName(value);
+        noMatches = partKeys.length === 0;
+        if (partKeys.length > 0) {
+          sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
+                 WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                   AND TargetKey IN (${partKeys.join(',')})
+                 ORDER BY SourceKey ASC`;
+          lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
+                  WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                    AND TargetKey IN (${partKeys.join(',')})
+                    AND SourceKey = `;
+        }
       }
     }
     // Relationship 'in' filter
@@ -1207,7 +1249,7 @@ class LoincServices extends BaseCSServices {
         filter.keys = null; // not read: see filterLocate
       }
     } else if (noMatches) {
-      // a regex that matches no value: the filter is empty
+      // a regex that matches no value, or a name that no part has: the filter is empty
       filter.keys = [];
       filter.lsql = 'empty';
       filter.empty = true;
@@ -1249,8 +1291,28 @@ class LoincServices extends BaseCSServices {
     };
   }
 
-// Helper method for regex matching
+  /**
+   * the keys of the codes with this name (Description, in any case). Codes.Description has no
+   * index, so the lookup reads every code (21 ms on LOINC 2.83): the factory keeps the answer
+   */
+  async #partKeysByName(name) {
+    return this.filterLookups.get('name ' + name, () => new Promise((resolve, reject) => {
+      this.db.all('SELECT CodeKey FROM Codes WHERE Description = ? COLLATE NOCASE', [name], guarded(reject, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows.map(row => row.CodeKey));
+        }
+      }));
+    }));
+  }
+
+  /** the keys (keyColumn) of the rows of sql whose valueColumn matches the regex (kept, as above) */
   async #findRegexMatches(sql, pattern, valueColumn, keyColumn = 'Key') {
+    return this.filterLookups.get(`regex ${pattern}\n${valueColumn} ${keyColumn} ${sql}`, () => this.#scanRegexMatches(sql, pattern, valueColumn, keyColumn));
+  }
+
+  async #scanRegexMatches(sql, pattern, valueColumn, keyColumn) {
     return new Promise((resolve, reject) => {
       // the whole value, as for every regex filter: a|b is ^(?:a|b)$
       const regex = regexUtilities.compile('^(?:' + pattern + ')$');
@@ -1494,7 +1556,8 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         mappedTargets: new Set(), // system|code of every external code something maps to
         _version: '',
         root: '',
-        firstCodeKey: 0
+        firstCodeKey: 0,
+        filterLookups: new LoincFilterLookups()
       };
 
       // Load small lookup tables in parallel
