@@ -996,16 +996,43 @@ class LoincServices extends BaseCSServices {
                   AND SourceKey = `;
       }
     }
-    // Relationship 'in' filter
+    // answers-for 'in' filter: the union of answers-for = each value, so each value is an answer
+    // list (LL) or a term that answer lists are for, as above
+    else if (prop === 'answers-for' && op === 'in') {
+      const values = this.#valueList(value);
+      const lists = this.#commaListOfCodes(values.filter(v => v.startsWith('LL')).join(','));
+      const terms = this.#commaListOfCodes(values.filter(v => !v.startsWith('LL')).join(','));
+      const sources = `SELECT CodeKey FROM Codes WHERE Code IN (${lists})
+                       UNION
+                       SELECT SourceKey FROM Relationships
+                       WHERE RelationshipTypeKey = ${this.relationships.get('answers-for')}
+                         AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${terms}))`;
+      sql = `SELECT DISTINCT TargetKey as Key FROM Relationships
+             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+               AND SourceKey IN (${sources})
+             ORDER BY TargetKey ASC`;
+      lsql = `SELECT COUNT(DISTINCT TargetKey) FROM Relationships
+              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+                AND SourceKey IN (${sources})
+                AND TargetKey = `;
+    }
+    // Relationship 'in' filter: the union of = each value, so each value is a part code or,
+    // if it is not a code, a part name (SCALE_TYP in Doc,Nar)
     else if (this.relationships.has(prop) && op === 'in') {
-      const codes = this.#commaListOfCodes(value);
+      const values = this.#valueList(value);
+      const codes = this.#commaListOfCodes(values.join(','));
+      const names = values.filter(v => !this.codes.has(v)).map(v => `'${this.#sqlWrapString(v)}'`).join(',');
+      // Codes.Description has no index: only read it for names
+      const targets = names
+        ? `SELECT CodeKey FROM Codes WHERE Code IN (${codes}) OR Description COLLATE NOCASE IN (${names})`
+        : `SELECT CodeKey FROM Codes WHERE Code IN (${codes})`;
       sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
              WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
+               AND TargetKey IN (${targets})
              ORDER BY SourceKey ASC`;
       lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
+                AND TargetKey IN (${targets})
                 AND SourceKey = `;
     }
     // Relationship 'exists' filter: value is true or false (doesFilter rejects anything else).
@@ -1067,18 +1094,21 @@ class LoincServices extends BaseCSServices {
                 AND PropertyValues.Value = '${this.#sqlWrapString(actualValue)}' COLLATE NOCASE
                 AND CodeKey = `;
     }
-    // Property 'in' filter
+    // Property 'in' filter: the union of = each value. The values are the property's own
+    // (ORDER_OBS in Order,Both), not LOINC codes, and CLASSTYPE takes its numbers here too
     else if (this.propertyList.has(prop) && op === 'in') {
-      const codes = this.#commaListOfCodes(value);
+      const values = this.#valueList(value)
+        .map(v => prop === 'CLASSTYPE' && ['1', '2', '3', '4'].includes(v) ? classTypes[v] : v)
+        .map(v => `'${this.#sqlWrapString(v)}'`).join(',');
       sql = `SELECT DISTINCT CodeKey as Key FROM Properties, PropertyValues
              WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
                AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
-               AND PropertyValues.Value IN (${codes}) COLLATE NOCASE
+               AND PropertyValues.Value COLLATE NOCASE IN (${values})
              ORDER BY CodeKey ASC`;
       lsql = `SELECT COUNT(DISTINCT CodeKey) FROM Properties, PropertyValues
               WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
                 AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
-                AND PropertyValues.Value IN (${codes}) COLLATE NOCASE
+                AND PropertyValues.Value COLLATE NOCASE IN (${values})
                 AND CodeKey = `;
     }
     // Property 'exists' filter: value is true or false, as for relationships above
@@ -1270,6 +1300,11 @@ class LoincServices extends BaseCSServices {
         }
       }));
     });
+  }
+
+  /** the values of an in filter's comma separated list, trimmed, without empty ones */
+  #valueList(source) {
+    return source.split(',').map(s => s.trim()).filter(s => s !== '');
   }
 
 // Helper method for comma-separated code lists
