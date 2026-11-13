@@ -1242,6 +1242,25 @@ describe('LOINC Provider', () => {
       const paramTypes = params.parameter.map(p => p.name);
       expect(paramTypes).toContain('property');
     });
+
+    test('should return the lookup properties in the same order every time', async () => {
+      // the property queries run in parallel; the order must not depend on which finishes first
+      const order = async () => {
+        const params = [];
+        await provider.extendLookup('100865-5', [], params);
+        return params.map(p => p.part.find(x => x.name === 'code').valueCode).join(',');
+      };
+      const orders = new Set();
+      for (let i = 0; i < 30; i++) {
+        orders.add(await order());
+      }
+      expect([...orders]).toHaveLength(1);
+      const codes = [...orders][0].split(',');
+      // relationships, then concept properties, then status, then related names
+      expect(codes.indexOf('COMPONENT')).toBeLessThan(codes.indexOf('CLASSTYPE'));
+      expect(codes.indexOf('CLASSTYPE')).toBeLessThan(codes.indexOf('STATUS'));
+      expect(codes.indexOf('STATUS')).toBeLessThan(codes.indexOf('RELATEDNAMES2'));
+    });
   });
 
   describe('External Mappings', () => {
