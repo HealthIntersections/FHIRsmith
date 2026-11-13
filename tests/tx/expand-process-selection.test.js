@@ -231,7 +231,8 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     const vs = await expand(app, valueSet({ include: [wholeSystem] }),
       [{ name: 'limit', valueInteger: 5 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual(codes.slice(0, 3));
-    expect(vs.expansion.total).toBe(1000000);
+    // no total: the selection is over the limit, and a paged walk reports none then (#finishIfPageFilled)
+    expect(vs.expansion.total).toBeUndefined();
   });
 
   test('a deep page is not refused: only the page counts against the limit', async () => {
@@ -239,7 +240,7 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     const vs = await expand(app, valueSet({ include: [wholeSystem] }),
       [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 4 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual(codes.slice(4, 7));
-    expect(vs.expansion.total).toBe(1000000);
+    expect(vs.expansion.total).toBeUndefined();
   });
 
   test('the requested properties are on each code the provider selected', async () => {

@@ -1168,7 +1168,10 @@ class ValueSetExpander {
         }
       }
     }
-    if (selection.total != null && selection.total >= 0) {
+    // the total as the usual path reports it: always for count=0; otherwise only for a selection
+    // within the response limit (#finishIfPageFilled: a paged walk that reaches the limit has no
+    // total, so the whole of LOINC or SNOMED CT with count=3 has none)
+    if (selection.total != null && selection.total >= 0 && (this.count === 0 || this.limitCount <= 0 || selection.total < this.limitCount)) {
       this.addToTotal(selection.total);
     } else {
       this.noTotal();
