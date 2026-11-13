@@ -30,7 +30,7 @@ code system version this server holds, the batch calls `prefetchCodes` once, on 
 own for that version, with all the entries' codes of that system. It keeps the handles on the
 batch's context (`opContext.prefetched`, by `system|version`), which an entry's context reaches
 as `opContext.batch`, and each entry passes the handle for its provider's system and version to
-`locate(code, prefetched)` (`TerminologyWorker.batchPrefetched`). It waits for the first entry
+`locate(code, prefetched)` (`ValueSetChecker.batchPrefetched`). It waits for the first entry
 because which version answers an entry is only decided as the entry runs (`system-version`, a
 value set's pinned version).
 

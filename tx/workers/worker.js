@@ -156,19 +156,6 @@ class TerminologyWorker {
   }
 
   /**
-   * In a $batch-validate-code entry, the handle of the batch's prefetchCodes for this provider's
-   * system and version (BatchPrefetch, batch-validate.js): the `prefetched` to pass to cs.locate.
-   * Null otherwise.
-   *
-   * @param {CodeSystemProvider} cs
-   * @returns {Promise<*>}
-   */
-  async batchPrefetched(cs) {
-    const prefetched = this.opContext.batch?.prefetched;
-    return prefetched && cs ? ((await prefetched.handleFor(cs)) ?? null) : null;
-  }
-
-  /**
    * Find and load a code system provider
    * @param {string} url - Code system URL
    * @param {string} version - Code system version (optional)
