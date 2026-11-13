@@ -285,6 +285,45 @@ class SnomedReferences {
     return result;
   }
 
+  /**
+   * Whether the list at index holds value, for a list stored in ascending order (a concept's
+   * closure: see the importer's buildConceptClosure). A binary search of the buffer itself:
+   * getReferences copies the whole list first, which for a top-level concept's descendants
+   * (hundreds of thousands) costs milliseconds, every call
+   * @param {number} index - the list
+   * @param {number} value
+   * @returns {boolean}
+   */
+  hasSortedReference(index, value) {
+    if (index === this.MAGIC_NO_CHILDREN || index === 0) {
+      return false;
+    }
+    if (this.builder && index >= this.master.length) {
+      this.post();
+    }
+    if (index >= this.master.length) {
+      throw new Error(`Wrong length index getting Snomed list. asked for ${index}, limit is ${this.master.length}`);
+    }
+    const count = this.master.readUInt32LE(index);
+    if (index + 4 + count * 4 > this.master.length) {
+      throw new Error(`Wrong length index (${index}, ${count}) getting Snomed list (length = ${this.master.length})`);
+    }
+    let lo = 0;
+    let hi = count - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const v = this.master.readUInt32LE(index + 4 + mid * 4);
+      if (v === value) {
+        return true;
+      } else if (v < value) {
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return false;
+  }
+
   getLength(index) {
     if (index > this.master.length) {
       throw new Error('Wrong length index getting Snomed list');

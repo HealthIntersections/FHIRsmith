@@ -26,6 +26,7 @@ const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
+const { storedList, hasConcepts, listedConcepts } = require('../library/stored-concepts');
 
 const DEV_IGNORE_VALUESET = false; // todo: what's going on with this (ported from pascal)
 
@@ -372,7 +373,8 @@ class ValueSetChecker {
   async prepareConceptSet(desc, cc, vs) {
     this.worker.deadCheck('prepareConceptSet');
     Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc, vs.vurl);
-    for (const [ci, c] of (cc.concept || []).entries()) {
+    // (a stored list - see stored-concepts.js - isn't read here: its entries are the provider's to check)
+    for (const [ci, c] of (storedList(cc) ? [] : (cc.concept || [])).entries()) {
       Extensions.checkNoModifiers(c, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc + '.concept[' + ci + ']', vs.vurl);
     }
     this.worker.opContext.addNote(this.valueSet, 'Prepare ' + desc + ': "' + this.worker.renderer.displayValueSetInclude(cc) + '"', this.indentCount);
@@ -1632,44 +1634,33 @@ class ValueSetChecker {
   }
 
   /**
-   * True when an enumerated concept in a value set denotes the same concept as the code
-   * asked about, though spelled differently - ICD-11's short code and entity id. Only
-   * code systems with a classification code have two spellings, so for the rest this is
-   * one call and false.
-   */
-  async sameConceptDifferentForm(cs, code, enumerated, prefetched = null) {
-    if (code === enumerated) {
-      return false;
-    }
-    const a = await cs.locate(code);
-    if (!a.context || !(await cs.classificationCode(a.context))) {
-      return false;
-    }
-    const b = await cs.locate(enumerated, prefetched);
-    return !!b.context && (await cs.code(a.context)) === (await cs.code(b.context));
-  }
-
-  /**
    * The listed concept that is the code written in its other form (ICD-11's short code and
-   * entity id), or null. sameConceptDifferentForm asks two things of each listed concept: does
-   * the code have another form at all (locate the code, ask for its classification code), and
-   * is this listed concept that form. The first depends only on the code, so it is asked once
-   * here, and the listed concepts are compared only when the answer is yes.
+   * entity id), or null: a listed concept that locates to the same concept, though spelled
+   * differently. Only code systems with a classification code have two spellings, so the code
+   * is located and asked for one first, once; the listed codes are located and compared only
+   * when it has one, in list order (a code system may read them together: prefetchCodes). Takes
+   * the include, so that an empty stored list (see stored-concepts.js) isn't read.
    */
-  async otherFormMatch(cs, code, concepts) {
-    if (!concepts || concepts.length === 0 || concepts.some(cc => cc.code === code)) {
+  async otherFormMatch(cs, code, cset) {
+    const stored = storedList(cset);
+    if (stored ? stored.count === 0 : (!cset.concept || cset.concept.length === 0 || cset.concept.some(cc => cc.code === code))) {
       return null;
     }
     const a = await cs.locate(code);
     if (!a.context || !(await cs.classificationCode(a.context))) {
       return null;
     }
+    const concepts = cset.concept || [];
+    const normal = await cs.code(a.context);
     // each listed code is located next: a provider may read them together, and hand back what it read
     const prefetched = await cs.prefetchCodes(concepts.map(cc => cc.code), false);
     for (const cc of concepts) {
       this.worker.deadCheck('checkConceptSet#3');
-      if (await this.sameConceptDifferentForm(cs, code, cc.code, prefetched)) {
-        return cc;
+      if (cc.code !== code) {
+        const b = await cs.locate(cc.code, prefetched);
+        if (b.context && (await cs.code(b.context)) === normal) {
+          return cc;
+        }
       }
     }
     return null;
@@ -1700,21 +1691,24 @@ class ValueSetChecker {
   async checkConceptSet(path, role, cs, cset, code, displays, vs, message, inactive, normalForm, vstatus, op, vcc, messages) {
     this.worker.opContext.addNote(vs, 'check code ' + role + ' ' + this.worker.renderer.displayValueSetInclude(cset) + ' at ' + path, this.indentCount);
     let result = false;
-    if (!cset.concept && !cset.filter) {
+    if (!hasConcepts(cset) && !cset.filter) {
       let loc = await cs.locate(code);
       result = false;
       if (loc.context == null) {
+        let unknownMsg = null;
         this.worker.opContext.addNote(this.valueSet, 'Code "' + code + '" not found in ' + this.worker.renderer.displayCoded(cs)+": "+loc.message, this.indentCount);
         if (!this.params.membershipOnly && role !== 'not in') {
           if (cs.contentMode() !== 'complete') {
             op.addIssue(new Issue('warning', 'code-invalid', addToPath(path, 'code'), 'UNKNOWN_CODE_IN_FRAGMENT', this.worker.i18n.translate('UNKNOWN_CODE_IN_FRAGMENT', this.params.HTTPLanguages, [code, cs.system(), cs.version()]), 'invalid-code'));
             result = true;
           } else {
-            op.addIssue(new Issue('error', 'code-invalid', addToPath(path, 'code'), cs.version() ? 'Unknown_Code_in_Version' : 'Unknown_Code_in',
-              this.worker.i18n.translate(Unknown_Code_in_VersionSCT(cs.system(), cs.version()), this.params.HTTPLanguages, [code, cs.system(), cs.version(), SCTVersion(cs.system(), cs.version())]), 'invalid-code'));
+            unknownMsg = this.worker.i18n.translate(Unknown_Code_in_VersionSCT(cs.system(), cs.version()), this.params.HTTPLanguages, [code, cs.system(), cs.version(), SCTVersion(cs.system(), cs.version())]);
+            op.addIssue(new Issue('error', 'code-invalid', addToPath(path, 'code'), cs.version() ? 'Unknown_Code_in_Version' : 'Unknown_Code_in', unknownMsg, 'invalid-code'));
           }
         }
-        if (loc.message && op) {
+        // the reason it wasn't found, if it says more than the error does (a code system on
+        // another server gives that server's message, which is often the same)
+        if (loc.message && op && loc.message !== unknownMsg) {
           op.addIssue(new Issue('information', 'code-invalid', addToPath(path, 'code'), null, loc.message, 'invalid-code'));
         }
       } else {
@@ -1782,9 +1776,17 @@ class ValueSetChecker {
       }
     }
 
-    // an enumerated concept may be written in the other form (ICD-11 short code vs uri)
-    const altMatch = await this.otherFormMatch(cs, code, cset.concept);
-    for (let cc of cset.concept || []) {
+    // the listed concepts with this code (a stored list - see stored-concepts.js - is asked, not
+    // read); failing that, the concept listed in the code's other form (ICD-11 short code vs id)
+    let listed = hasConcepts(cset) ? await listedConcepts(cset, code) : [];
+    let altMatch = null;
+    if (listed.length === 0 && hasConcepts(cset)) {
+      altMatch = await this.otherFormMatch(cs, code, cset);
+      if (altMatch) {
+        listed = [altMatch];
+      }
+    }
+    for (let cc of listed) {
       this.worker.deadCheck('checkConceptSet#1');
       let c = cc.code;
       if (code === c || cc === altMatch) {
@@ -2436,7 +2438,7 @@ class ValidateWorker extends TerminologyWorker {
           if (vl.length == 0) {
             throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION_NONE', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION_NONE', this.opContext.HTTPLanguages, [url, version]), 'not-found', 422).setUnknownSystem(url).addIssue(issue);
           } else {
-            throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION', this.opContext.HTTPLanguages, [url, version, this.presentVersionList(vl)], 422), 'not-found').setUnknownSystem(url + "|" + version).addIssue(issue);
+            throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM_VERSION', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM_VERSION', this.opContext.HTTPLanguages, [url, version, this.presentVersionList(vl)]), 'not-found', 422).setUnknownSystem(url + "|" + version).addIssue(issue);
           }
         } else {
           throw new Issue("error", "not-found", this.systemPath(mode), 'UNKNOWN_CODESYSTEM', this.opContext.i18n.translate('UNKNOWN_CODESYSTEM', this.opContext.HTTPLanguages, [url]), 'not-found', 422).setUnknownSystem(url).addIssue(issue);

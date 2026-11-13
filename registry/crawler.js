@@ -118,6 +118,10 @@ class RegistryCrawler {
       const registries = masterJson.registries || [];
       for (const registryConfig of registries) {
         if (this.abortController?.signal.aborted) break;
+        if (this.isDisabled(registryConfig)) {
+          this.addLogEntry('info', ` Registry ${registryConfig.name || registryConfig.code} is disabled - not scanned`, registryConfig.url || '');
+          continue;
+        }
         const registry = await this.processRegistry(registryConfig);
         if (registry) {
           newData.registries.push(registry);
@@ -179,6 +183,10 @@ class RegistryCrawler {
       const servers = registryJson.servers || [];
       for (const serverConfig of servers) {
         if (this.abortController?.signal.aborted) break;
+        if (this.isDisabled(serverConfig)) {
+          this.addLogEntry('info', `  Server ${serverConfig.name || serverConfig.code} is disabled - not scanned`, registry.address);
+          continue;
+        }
         const server = await this.processServer(serverConfig, registry.address);
         if (server) {
           registry.servers.push(server);
@@ -192,6 +200,16 @@ class RegistryCrawler {
     }
     
     return registry;
+  }
+
+  /**
+   * A registry (in the master file) or server (in a registry file) marked "disabled": true
+   * is left out of the ecosystem without deleting its registration: it isn't read or
+   * scanned, and isn't in the crawl's data, so it is never discovered or resolved to.
+   * Only the JSON value true disables (see the tx ecosystem IG: Disabling)
+   */
+  isDisabled(config) {
+    return config != null && config.disabled === true;
   }
 
   /**

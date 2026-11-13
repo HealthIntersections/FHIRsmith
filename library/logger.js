@@ -227,13 +227,17 @@ class Logger {
     if (messageOrError instanceof Error) {
       message = messageOrError.message;
       // Expected, client-facing errors - an OperationOutcome/Issue carrying a 4xx
-      // statusCode (e.g. "code not found", "cache-id unknown") - are routine and
-      // don't warrant a stack trace in the log. Keep the stack for genuinely
-      // unexpected errors (5xx, or no statusCode at all), and for everything when
-      // debug logging is enabled.
+      // statusCode (e.g. "code not found", "cache-id unknown", "code system not
+      // found") - are the answer to the request, which the request's own log line
+      // already records (its status). Logged as errors or warnings, they are noise:
+      // they appear only when debug logging is enabled. Genuinely unexpected errors
+      // (5xx, or no statusCode at all) are logged, with their stack.
       const sc = messageOrError.statusCode;
       const expected = typeof sc === 'number' && sc >= 400 && sc < 500;
-      stack = (expected && !this._shouldLog('debug')) ? undefined : messageOrError.stack;
+      if (expected && (level === 'error' || level === 'warn') && !this._shouldLog('debug')) {
+        return;
+      }
+      stack = messageOrError.stack;
     } else {
       message = String(messageOrError);
       stack = meta?.stack;
@@ -279,8 +283,9 @@ class Logger {
 
     const wrap = (level) => (messageOrError, meta = {}) => {
       if (messageOrError instanceof Error) {
+        // (the statusCode goes with it: it decides whether the error is logged - see _log)
         const prefixed = modulePrefix
-            ? Object.assign(new Error(`${modulePrefix}: ${messageOrError.message}`), { stack: messageOrError.stack })
+            ? Object.assign(new Error(`${modulePrefix}: ${messageOrError.message}`), { stack: messageOrError.stack, statusCode: messageOrError.statusCode })
             : messageOrError;
         self._log(level, prefixed, meta, childOptions);
       } else {

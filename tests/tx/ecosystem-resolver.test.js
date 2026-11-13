@@ -76,8 +76,20 @@ describe('EcosystemResolver', () => {
     test('an excluded server is passed over', async () => {
       const r = resolver({ excludedServers: ['tx.fhir.org'] });
       mockListing();
-      mockResolve(`${SCT}|${EE}`, { authoritative: [{ url: 'http://tx.fhir.org/r5', open: true }], candidates: [{ url: OPEN, open: true }] });
+      mockResolve(`${SCT}|${EE}`, { authoritative: [{ url: OPEN, open: true }], candidates: [{ url: 'http://tx.fhir.org/r5', open: true }] });
       expect(await r.findServer(SCT, EE, 5)).toBe(OPEN);
+      mockResolve(SCT, { candidates: [{ url: 'http://tx.fhir.org/r5', open: true }, { url: OPEN, open: true }] });
+      expect(await r.findServer(SCT, null, 5)).toBe(OPEN);
+    });
+
+    // e.g. tx.fhir.org is authoritative for ICD-11, and is asked for a version of it that it
+    // doesn't have: the answer is that it doesn't have it, not what another server says
+    test('nothing is looked for elsewhere when an excluded server is authoritative', async () => {
+      const r = resolver({ excludedServers: ['tx.fhir.org'] });
+      const ICD = 'http://id.who.int/icd/release/11/mms';
+      mockListing();
+      mockResolve(`${ICD}|2020-01`, { authoritative: [{ url: 'http://tx.fhir.org/r4', open: true }], candidates: [{ url: OPEN, open: true }] });
+      expect(await r.findServer(ICD, '2020-01', 4)).toBeNull();
     });
 
     test('a server that needs credentials is used only if there are some', async () => {
@@ -98,6 +110,16 @@ describe('EcosystemResolver', () => {
       mockListing();
       mockResolve(SCT, { candidates: [{ url: KEYED, open: true, content: 'not-present' }, { url: OPEN, open: true, content: 'complete' }] });
       expect(await r.findServer(SCT, null, 5)).toBe(OPEN);
+    });
+
+    // a server that holds the concepts in its own tables, and says not-present, has to be
+    // registered as authoritative to be used
+    test('an authoritative server is used whatever the registry says about the content', async () => {
+      const r = resolver();
+      mockListing();
+      mockResolve(`${SCT}|${EE}`, { authoritative: [{ url: KEYED, open: true, content: 'not-present' }],
+        candidates: [{ url: OPEN, open: true, content: 'not-present' }, { url: OAUTH, open: true }] });
+      expect(await r.findServers(SCT, EE, 5)).toEqual([{ url: KEYED, authoritative: true }, { url: OAUTH, authoritative: false }]);
     });
   });
 
@@ -165,7 +187,54 @@ describe('EcosystemResolver', () => {
       expect(await r.listVersions(OPEN, SCT)).toEqual([
         { code: `${EE}/version/20260530`, isDefault: true }, { code: `${EE}/version/20251130`, isDefault: false }]);
       expect(await r.listVersions(OPEN, 'http://loinc.org')).toEqual([]);
+      // not in the TerminologyCapabilities: its CodeSystems are searched for
+      nock('https://open.example').get('/fhir/CodeSystem').query(q => q.url === 'http://example.org/not-there').reply(200, { resourceType: 'Bundle', type: 'searchset' });
       expect(await r.listVersions(OPEN, 'http://example.org/not-there')).toBeNull();
+      expect(nock.isDone()).toBe(true);
+    });
+
+    // the same test the validator applies: the content has to be complete or fragment. What the
+    // TerminologyCapabilities says comes first; the server's CodeSystems are only searched for
+    // when it doesn't say the content is there
+    test('the content the TerminologyCapabilities states is used, without searching', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/metadata').query({ mode: 'terminology' }).reply(200, { resourceType: 'TerminologyCapabilities', codeSystem: [
+        // R4: the content is in the cross-version extension
+        { uri: 'http://example.org/r4', version: [{ code: '1' }], extension: [{ url: 'http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content', valueCode: 'complete' }] },
+        { uri: 'http://example.org/r5', version: [{ code: '2' }], content: 'fragment' },
+        // listed, and doesn't say: it's there
+        { uri: 'http://example.org/unsaid', version: [{ code: '3' }] }
+      ] });
+      const search = nock('https://open.example').get('/fhir/CodeSystem').query(true).reply(200, { resourceType: 'Bundle' });
+      expect(await r.listVersions(OPEN, 'http://example.org/r4')).toEqual([{ code: '1', isDefault: false }]);
+      expect(await r.listVersions(OPEN, 'http://example.org/r5')).toEqual([{ code: '2', isDefault: false }]);
+      expect(await r.listVersions(OPEN, 'http://example.org/unsaid')).toEqual([{ code: '3', isDefault: false }]);
+      expect(search.isDone()).toBe(false);
+    });
+
+    test('a code system the TerminologyCapabilities doesn\'t list, or says has no content, is searched for', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/metadata').query({ mode: 'terminology' }).reply(200, { resourceType: 'TerminologyCapabilities', codeSystem: [
+        { uri: 'http://example.org/tables', version: [{ code: '1' }], content: 'not-present' }
+      ] });
+      // a server that holds the codes in its own tables, and says so in the CodeSystem too
+      nock('https://open.example').get('/fhir/CodeSystem').query(q => q.url === 'http://example.org/tables' && q._summary === 'true').reply(200, { resourceType: 'Bundle', entry: [
+        { resource: { resourceType: 'CodeSystem', url: 'http://example.org/tables', version: '1', content: 'not-present' } }
+      ] });
+      nock('https://open.example').get('/fhir/CodeSystem').query(q => q.url === 'http://example.org/unlisted').reply(200, { resourceType: 'Bundle', entry: [
+        { resource: { resourceType: 'CodeSystem', url: 'http://example.org/unlisted', version: '2024', content: 'complete' } },
+        { resource: { resourceType: 'CodeSystem', url: 'http://example.org/unlisted', version: '2025', content: 'fragment' } },
+        { resource: { resourceType: 'CodeSystem', url: 'http://example.org/unlisted', version: '2023', content: 'example' } }
+      ] });
+      expect(await r.listVersions(OPEN, 'http://example.org/tables')).toBeNull();
+      expect(await r.listVersions(OPEN, 'http://example.org/unlisted')).toEqual([{ code: '2024', isDefault: false }, { code: '2025', isDefault: false }]);
+      expect(nock.isDone()).toBe(true);
+      // and what the search found is kept
+      expect(await r.listVersions(OPEN, 'http://example.org/unlisted')).toEqual([{ code: '2024', isDefault: false }, { code: '2025', isDefault: false }]);
+      // for an authoritative server, what it says about the content doesn't matter
+      expect(await r.listVersions(OPEN, 'http://example.org/tables', null, true)).toEqual([{ code: '1', isDefault: false }]);
     });
   });
 

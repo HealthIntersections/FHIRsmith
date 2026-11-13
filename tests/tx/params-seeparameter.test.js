@@ -76,3 +76,15 @@ test('seeCompose tolerates absent/odd compose', () => {
   expect(() => { p.seeCompose(undefined); p.seeCompose({}); p.seeCompose({property: 'nope'}); }).not.toThrow();
   expect(p.properties).toEqual([]);
 });
+
+test('showsDisplayOnly: no designations asked for, and English or no languages', () => {
+  const { Languages } = require('../../library/languages');
+  const en = Languages.fromAcceptLanguage('en-US', langDefs);
+  const de = Languages.fromAcceptLanguage('de', langDefs);
+  expect(mk().showsDisplayOnly(null)).toBe(true);
+  expect(mk().showsDisplayOnly(en)).toBe(true);
+  expect(mk().showsDisplayOnly(de)).toBe(false);
+  expect(read(mk(), [{name:'includeDesignations', valueBoolean:true}]).showsDisplayOnly(en)).toBe(false);
+  expect(read(mk(), [{name:'designation', valueString:'en'}]).showsDisplayOnly(en)).toBe(false);
+  expect(read(mk(), [{name:'displayLanguage', valueCode:'en'}]).showsDisplayOnly(en)).toBe(false);
+});

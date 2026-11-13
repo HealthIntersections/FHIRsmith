@@ -9,6 +9,17 @@
 const { SnomedConceptList } = require('./structures');
 
 const MAX_TERM_LENGTH = 1024;
+// The most an expression may be: real ones are a few hundred characters. A bound on the input
+// is a bound on everything done with it - checking it, normalising it, testing subsumption
+const MAX_EXPRESSION_LENGTH = 100000;
+// An SCTID is 6-18 digits
+const MAX_SCTID_LENGTH = 18;
+// The most concept references (focus concepts, attribute names, values) an expression may have.
+// Real ones have tens. Normalising one and testing subsumption costs about a millisecond for
+// each, synchronously, so this keeps the worst case to about half a second
+const MAX_EXPRESSION_CONCEPTS = 500;
+// what peek() returns at the end of the source - not a NUL, which is a character the source can hold
+const EOF = '';
 // How deep concept-definition expansion may go while building a long normal form.
 // Attribute values are themselves expanded, so a chain of definitions can descend a
 // long way; in real data it is a handful of levels.
@@ -106,7 +117,7 @@ class SnomedConcept extends SnomedExpressionBase {
     } else if (this.decimal) {
       return '#' + this.decimal;
     } else if (this.literal) {
-      return '"' + this.literal + '"';
+      return '"' + this.literal.replace(/[\\"]/g, c => '\\' + c) + '"';
     }
     return '';
   }
@@ -488,6 +499,9 @@ class SnomedExpressionParser {
     this.source = source;
     this.cursor = 0;
     this.depth = 0;
+    this.conceptCount = 0;
+    this.rule(typeof source === 'string' && source.length <= MAX_EXPRESSION_LENGTH,
+      `The expression is longer than ${MAX_EXPRESSION_LENGTH} characters`);
 
     const result = new SnomedExpression();
     result.start = this.cursor;
@@ -503,10 +517,10 @@ class SnomedExpressionParser {
       this.prefix('<');
     }
 
-    // Parse main expression
-    result.concepts.push(this.concept());
+    // Parse main expression (focus concepts are concepts: a value - #5, "x" - can only be an attribute's)
+    result.concepts.push(this.concept(false));
     while (this.gchar('+')) {
-      result.concepts.push(this.concept());
+      result.concepts.push(this.concept(false));
     }
 
     if (this.gchar(':')) {
@@ -516,7 +530,7 @@ class SnomedExpressionParser {
 
     result.stop = this.cursor;
 
-    this.rule(this.peek() === '\0', 'Found content ("' + this.peekDisp() + '") after end of expression');
+    this.rule(this.peek() === EOF, 'Found content ("' + this.peekDisp() + '") after end of expression');
 
     return result;
   }
@@ -524,12 +538,15 @@ class SnomedExpressionParser {
   /**
    * Parse a concept
    */
-  concept() {
+  concept(allowValue = true) {
     const result = new SnomedConcept();
     result.start = this.cursor;
 
     this.ws();
 
+    if (this.peek() === '#' || this.peek() === '"') {
+      this.rule(allowValue, 'A focus concept must be a concept, not a value ("' + this.peekDisp() + '")');
+    }
     if (this.peek() === '#') {
       result.decimal = this.decimal();
     } else if (this.peek() === '"') {
@@ -712,10 +729,10 @@ class SnomedExpressionParser {
     result.start = this.cursor;
 
     this.ws();
-    result.concepts.push(this.concept());
+    result.concepts.push(this.concept(false));
 
     while (this.gchar('+')) {
-      result.concepts.push(this.concept());
+      result.concepts.push(this.concept(false));
     }
 
     if (this.gchar(':')) {
@@ -731,13 +748,16 @@ class SnomedExpressionParser {
    * Parse a concept ID (sequence of digits)
    */
   conceptId() {
-    let result = '';
-
+    this.conceptCount++;
+    this.rule(this.conceptCount <= MAX_EXPRESSION_CONCEPTS, `The expression has more than ${MAX_EXPRESSION_CONCEPTS} concepts`);
+    const start = this.cursor;
     while (this.isDigit(this.peek())) {
-      result += this.next();
+      this.next();
+      this.rule(this.cursor - start <= MAX_SCTID_LENGTH, `A concept id has at most ${MAX_SCTID_LENGTH} digits`);
     }
+    const result = this.source.substring(start, this.cursor);
 
-    this.rule(result.length > 0, 'Concept not found (next char = "' + this.peekDisp() + '", in "' + this.source + '")');
+    this.rule(result.length > 0, 'Concept not found (next char = "' + this.peekDisp() + '", in "' + this.source.substring(0, 200) + '")');
     return result;
   }
 
@@ -745,13 +765,17 @@ class SnomedExpressionParser {
    * Parse a decimal number
    */
   decimal() {
-    let result = '';
     this.fixed('#');
-
-    while (this.isDigit(this.peek()) || this.peek() === '.') {
-      result += this.next();
+    const start = this.cursor;
+    if (this.peek() === '-' || this.peek() === '+') {
+      this.next();
     }
-
+    while (this.isDigit(this.peek()) || this.peek() === '.') {
+      this.next();
+    }
+    const result = this.source.substring(start, this.cursor);
+    // numericValue: an integer, or one with a fraction (decimalValue), optionally signed
+    this.rule(/^[-+]?[0-9]+(\.[0-9]+)?$/.test(result), 'Not a valid number: "#' + result + '"');
     return result;
   }
 
@@ -759,13 +783,15 @@ class SnomedExpressionParser {
    * Parse a term (text between | characters)
    */
   term() {
-    let result = '';
-
+    const start = this.cursor;
+    // (an unterminated term used to read on past the end, adding NULs until the string was too
+    // long for V8 - minutes, and 17 GB, holding the event loop: tx.fhir.org, 2026-11-11)
     while (this.peek() !== '|') {
-      result += this.next();
+      this.rule(this.peek() !== EOF, 'Unterminated term (no closing "|")');
+      this.rule(this.cursor - start < MAX_TERM_LENGTH, 'Term too long (more than ' + MAX_TERM_LENGTH + ' characters)');
+      this.next();
     }
-
-    return result;
+    return this.source.substring(start, this.cursor);
   }
 
   /**
@@ -775,16 +801,21 @@ class SnomedExpressionParser {
     let result = '';
     this.fixed('"');
 
-    while (this.peek() !== '"' && this.peek() !== '\0') {
+    while (this.peek() !== '"' && this.peek() !== EOF) {
       if (result.length > MAX_TERM_LENGTH) {
         throw new Error('Constant too long (>' + MAX_TERM_LENGTH + ' chars) at character ' + this.cursor);
+      }
+      // stringValue: a quote or backslash in it is escaped with a backslash
+      if (this.peek() === '\\' && (this.source[this.cursor + 1] === '"' || this.source[this.cursor + 1] === '\\')) {
+        this.next();
       }
       result += this.next();
     }
 
-    if (this.peek() === '\0') {
+    if (this.peek() === EOF) {
       throw new Error('Unterminated Constant at character ' + this.cursor);
     }
+    this.rule(result.length > 0, 'A string value can\'t be empty');
 
     this.fixed('"');
     return result;
@@ -843,7 +874,7 @@ class SnomedExpressionParser {
    */
   peek() {
     if (this.cursor >= this.source.length) {
-      return '\0';
+      return EOF;
     }
     return this.source[this.cursor];
   }
@@ -912,6 +943,17 @@ class MatchingConcept {
  * Provides comprehensive expression processing capabilities
  */
 class SnomedExpressionServices {
+  /**
+   * Where the warnings go. Fetched when first used (importers and tests load this module too);
+   * it was never set, so each of the warnings below threw a TypeError instead
+   */
+  get log() {
+    if (!this._log) {
+      this._log = require('../../library/logger').getInstance().child({ module: 'tx-sct' });
+    }
+    return this._log;
+  }
+
   constructor(snomedStructures, isAIndex) {
     this.strings = snomedStructures.strings;
     this.words = snomedStructures.words;
@@ -1101,30 +1143,29 @@ class SnomedExpressionServices {
    * Create normal form for a concept
    */
   createNormalForm(reference) {
-    if (this.building) {
-      const exp = new SnomedExpression();
-      this.createDefinedExpression(reference, exp, false);
-      return this.normaliseExpression(exp);
-    } else {
+    if (!this.building) {
       // Read from stored normal form
       const normalFormIndex = this.concepts.getNormalForm(reference);
-      let source;
-
-      if (normalFormIndex === 0) {
-        source = this.getConceptId(reference);
-      } else {
-        source = this.strings.getEntry(normalFormIndex);
+      const stored = normalFormIndex === 0 ? this.getConceptId(reference) : this.strings.getEntry(normalFormIndex);
+      try {
+        const result = new SnomedExpressionParser().parse(stored);
+        // Resolve concept ids to references, but do NOT run checkExpression: the MRCM rules it
+        // applies are the postcoordination ones, and this is a concept's own stored definition -
+        // precoordinated content, authored under MRCM content types that do not apply here. Running
+        // them rejects the normal form of any concept using an attribute that is precoordinated-only
+        // (e.g. 246075003 |Causative agent| on a disorder), which broke subsumption for expressions.
+        this.resolveExpressionReferences(result);
+        return result;
+      } catch (error) {
+        // A stored normal form that isn't one - empty, or naming concepts the cache doesn't have
+        // (the committed test subset has 1,125 of them, e.g. ":{272741003=}") - is built from the
+        // relationships instead, as the import does. Parsing it failed every $subsumes that
+        // needed it, with a 500
       }
-
-      const result = new SnomedExpressionParser().parse(source);
-      // Resolve concept ids to references, but do NOT run checkExpression: the MRCM rules it
-      // applies are the postcoordination ones, and this is a concept's own stored definition -
-      // precoordinated content, authored under MRCM content types that do not apply here. Running
-      // them rejects the normal form of any concept using an attribute that is precoordinated-only
-      // (e.g. 246075003 |Causative agent| on a disorder), which broke subsumption for expressions.
-      this.resolveExpressionReferences(result);
-      return result;
     }
+    const exp = new SnomedExpression();
+    this.createDefinedExpression(reference, exp, false);
+    return this.normaliseExpression(exp);
   }
 
   /**
@@ -2313,8 +2354,7 @@ class SnomedExpressionServices {
       for (const limit of limits) {
         let parentRef = this.concepts.findConcept(limit);
         let descendentsRef = this.concepts.getAllDesc(parentRef.index);
-        const descendants = this.refs.getReferences(descendentsRef);
-        if (descendants && descendants.includes(concept.reference)) {
+        if (this.refs.hasSortedReference(descendentsRef, concept.reference)) {
           ok = true;
           break;
         }
@@ -2581,11 +2621,8 @@ class SnomedExpressionServices {
         return false;
       }
 
-      // Get the array of descendant indices
-      const descendants = this.refs.getReferences(closureRef);
-
-      // Check if b is in the descendants of a
-      return descendants.includes(b);
+      // b is one of a's descendants: the closure is stored sorted (see hasSortedReference)
+      return this.refs.hasSortedReference(closureRef, b);
     } catch (error) {
       // If we can't read closure data, fall back to simple equality check
       this.log.warn(`Warning: Could not check subsumption for ${a} -> ${b}: ${error.message}`);

@@ -62,6 +62,7 @@ const txOpenApi = require('./openapi');
 const { SyndicationStore } = require('./syndication/syndication-store');
 const syndicationFeed = require('./syndication/syndication-feed');
 const { EcosystemResolver, FORWARDED_HEADER } = require('./ecosystem-resolver');
+const { summariseBody } = require('./library/request-summary');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -484,10 +485,18 @@ class TXModule {
       // 10-30s): if the server's limit is >= the client's, the client hangs up
       // first and the carefully-built too-costly OperationOutcome is written to
       // a socket nobody is reading.
-      const opContext = new OperationContext(
-        acceptLanguage, this.i18n, requestId, this.config.operationTimeLimit ?? 20,
-        endpointInfo.resourceCache, endpointInfo.expansionCache
-      );
+      let opContext;
+      try {
+        opContext = new OperationContext(
+          acceptLanguage, this.i18n, requestId, this.config.operationTimeLimit ?? 20,
+          endpointInfo.resourceCache, endpointInfo.expansionCache
+        );
+      } catch (err) {
+        // an Accept-Language header that isn't valid (e.g. a region that doesn't exist) is the
+        // client's error: 400, not 500
+        err.statusCode = err.statusCode || 400;
+        throw err;
+      }
       opContext.usageTracker = this.usageTracker;
       // Normalise the cache-id from the X-Cache-Id header onto the operation
       // context once, here, so every worker honours a front-loaded cache no
@@ -589,6 +598,13 @@ class TXModule {
           const format = isHtml ? 'html' : (xmlFmt ? 'xml' : 'json');
           let li = req.logInfo ? "(" + req.logInfo + ")" : "";
           this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${duration}ms ${responseSize}: ${req.originalUrl} ${li})`);
+          // a slow request: what it asked, so that it can be repeated (the line above has the url)
+          const slowMs = (this.config.slowRequestSeconds ?? 30) * 1000;
+          if (slowMs > 0 && duration >= slowMs) {
+            const body = req.method === 'POST' || req.method === 'PUT' ? summariseBody(req.body) : '';
+            this.log.warn(`[${requestId}] slow request (${Math.round(duration / 1000)}s): ${req.method} ${req.originalUrl}` +
+              (req.get('Accept-Language') ? ` Accept-Language: ${req.get('Accept-Language')}` : '') + (body ? ` body: ${body}` : ''));
+          }
 
           return result;
         } catch (err) {

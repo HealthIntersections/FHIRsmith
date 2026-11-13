@@ -704,6 +704,98 @@ describe('LOINC Provider', () => {
     });
   });
 
+  describe('Checking codes without reading the filter ($validate-code: getPrepContext(false))', () => {
+    // a filter that is only asked whether a code is in it doesn't read its codes: each check is
+    // one query (lsql). It must give the same answer as the codes the filter lists
+    const one = sql => new Promise((resolve, reject) => provider.db.get(sql, (err, row) => err ? reject(err) : resolve(row)));
+
+    async function listed(property, operator, value) {
+      const prep = await provider.getPrepContext(true);
+      await provider.filter(prep, true, property, operator, value);
+      const set = (await provider.executeFilters(prep))[0];
+      const codes = new Set();
+      while (await provider.filterMore(prep, set)) {
+        codes.add((await provider.filterConcept(prep, set)).code);
+      }
+      return codes;
+    }
+
+    async function checked(filters) {
+      const prep = await provider.getPrepContext(false);
+      for (const [property, operator, value] of filters) {
+        await provider.filter(prep, false, property, operator, value);
+      }
+      const sets = await provider.executeFilters(prep);
+      const codes = new Set();
+      for (const code of provider.codes.keys()) {
+        let loc = await provider.filterLocate(prep, sets[0], code);
+        expect(typeof loc).not.toBe('string');
+        for (let i = 1; loc && i < sets.length; i++) {
+          if (!(await provider.filterCheck(prep, sets[i], loc))) {
+            loc = null;
+          }
+        }
+        if (loc) {
+          codes.add(code);
+        }
+      }
+      return codes;
+    }
+
+    async function filters() {
+      const top = await one(`SELECT c.Code FROM Codes c WHERE c.CodeKey =
+        (SELECT AncestorKey FROM Closure GROUP BY AncestorKey ORDER BY COUNT(*) DESC LIMIT 1)`);
+      const component = await one(`SELECT Description FROM Codes WHERE Code = 'LP14082-9'`);
+      const two = [...provider.codes.keys()].filter(c => /^\d+-\d$/.test(c)).slice(0, 2);
+      const list = [
+        ['concept', 'is-a', top.Code], ['concept', 'descendent-of', top.Code], ['code', 'is-a', top.Code],
+        ['ancestor', '=', top.Code], ['ancestor', 'in', top.Code + ',' + two[0]],
+        ['concept', '=', two[0]], ['concept', 'in', two.join(',')], ['code', '=', two[1]],
+        ['COMPONENT', '=', component.Description], ['COMPONENT', 'in', 'LP14082-9,LP7255-5'],
+        ['COMPONENT', 'exists', 'true'], ['COMPONENT', 'exists', 'false'],
+        ['UNITSREQUIRED', 'exists', 'true'], ['UNITSREQUIRED', 'exists', 'false'],
+        ['ORDER_OBS', 'regex', 'Obs.*'], ['COMPONENT', 'regex', '.*[Gg]lucose.*'],
+        ['ORDER_OBS', 'regex', 'no value is this'], ['COMPONENT', 'regex', 'no value is this'],
+        ['$text', '<', 'glucose'], ['$text', '>', 'glucose']
+      ];
+      for (const group of ['LIST', 'answerList', 'relationships', 'properties', 'classType', 'status', 'copyright']) {
+        for (const t of expectedResults.filters[group]) {
+          list.push([t.property, t.operator, t.value]);
+        }
+      }
+      return list;
+    }
+
+    test('each filter: the codes checked are the codes listed', async () => {
+      for (const [property, operator, value] of await filters()) {
+        const want = await listed(property, operator, value);
+        const got = await checked([[property, operator, value]]);
+        expect([property, operator, value, [...got].sort()]).toEqual([property, operator, value, [...want].sort()]);
+      }
+    });
+
+    test('several filters: a code is in all of them', async () => {
+      const component = ['COMPONENT', '=', 'LP14082-9'];
+      const units = ['UNITSREQUIRED', '=', 'Y'];
+      const a = await listed(...component);
+      const b = await listed(...units);
+      const got = await checked([component, units]);
+      expect([...got].sort()).toEqual([...a].filter(c => b.has(c)).sort());
+      expect(got.size).toBeGreaterThan(0);
+    });
+
+    test('a regex that matches no value is an empty filter, not an error', async () => {
+      expect((await listed('ORDER_OBS', 'regex', 'no value is this')).size).toBe(0);
+    });
+
+    test('a filter prepared for checking codes cannot list them', async () => {
+      const prep = await provider.getPrepContext(false);
+      await provider.filter(prep, false, 'STATUS', '=', 'ACTIVE');
+      const set = (await provider.executeFilters(prep))[0];
+      await expect(provider.filterMore(prep, set)).rejects.toThrow(/prepared for checking codes/);
+    });
+  });
+
   describe('Answer list Filters (answer-list and answers-for, UP-645)', () => {
     test('should declare answer-list and answers-for', async () => {
       expect(await provider.doesFilter('answer-list', '=', 'LA9040-2')).toBe(true);
@@ -725,6 +817,33 @@ describe('LOINC Provider', () => {
         }
         expect(foundCodes.sort()).toEqual([...testCase.expectedCodes].sort());
         expect(await provider.filterSize(filterContext, filter)).toBe(testCase.expectedCodes.length);
+      }
+    });
+
+    test('answers-for membership holds when the answers are not in key order', async () => {
+      // the query gives a list's answers in the list's order, not key order, and in LOINC that
+      // is often not ascending (an answer several lists share has the key of the list that first
+      // had it). Membership used to binary-search them: on LOINC 2.83 it missed 7,135 answers of
+      // 2,367 lists. The test data's lists share no answers, so the rows are reversed here
+      const db = provider.db;
+      const all = db.all;
+      db.all = function (sql, ...args) {
+        const callback = args.pop();
+        return all.call(db, sql, ...args, (err, rows) => callback(err, rows ? [...rows].reverse() : rows));
+      };
+      try {
+        const testCase = expectedResults.filters.answerList.find(t => t.property === 'answers-for');
+        expect(testCase.expectedCodes.length).toBeGreaterThan(2);
+        const filterContext = await provider.getPrepContext(false);
+        await provider.filter(filterContext, false, testCase.property, testCase.operator, testCase.value);
+        const filter = (await provider.executeFilters(filterContext))[0];
+        for (const code of testCase.expectedCodes) {
+          const located = await provider.filterLocate(filterContext, filter, code);
+          expect([code, located === null ? 'null' : typeof located]).toEqual([code, 'object']);
+          expect(await provider.filterCheck(filterContext, filter, located)).toBe(true);
+        }
+      } finally {
+        db.all = all;
       }
     });
 

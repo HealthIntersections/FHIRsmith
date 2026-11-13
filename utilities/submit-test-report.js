@@ -120,7 +120,9 @@ async function main() {
   console.log(`Submitting ${path.basename(opts.file)} (${report.result}, ${Array.isArray(report.test) ? report.test.length : 0} tests) to ${url}`);
   let res;
   try {
-    res = await fetch(url, { method: 'POST', headers, body });
+    // sent compact: the file is pretty-printed (about 1.7x the size), and the server limits
+    // the size of a report (npm.fhir.org: about 1.5 MB)
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(report) });
   } catch (e) {
     console.error(`Could not reach ${url}: ${e.cause ? e.cause.message : e.message}`);
     process.exit(1);

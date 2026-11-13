@@ -4,8 +4,8 @@
  *
  * When the code being validated is not one of an include's listed codes and the code system
  * says the code has another form (ICD-11 short code vs uri), checkConceptSet asks, for every
- * listed code, whether the two are the same concept (sameConceptDifferentForm): locate() calls
- * per listed code. The loop had no deadline check, so with a slow code system it ran to the
+ * listed code, whether the two are the same concept (otherFormMatch): a locate() call per
+ * listed code. The loop had no deadline check, so with a slow code system it ran to the
  * end, however long that took, before the next loop noticed the time limit had passed.
  */
 

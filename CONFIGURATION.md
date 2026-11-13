@@ -100,6 +100,9 @@ Add a `logging` section to `config.json` to control log behaviour. All fields ar
 | `maxSize` | `0` (unlimited) | Maximum size per log file before rotation. Accepts human-readable strings: `"20m"`, `"1g"`, or a raw byte count |
 | `flushInterval` | `2000` | Milliseconds between buffered writes to disk. Increase to reduce I/O under heavy load |
 | `flushSize` | `200` | Number of buffered log lines that trigger an immediate flush regardless of the timer |
+| `stallReportSeconds` | `30` | When the event loop hasn't run for this long (seconds) - a request holding the process with code that never yields - a watchdog thread reads the main thread's stack, and again every as long while the stall lasts (up to 5 times). The stacks go to `logs/stall-<instance code or pid>-<time>.txt` straight away, and into the log as a warning once the event loop runs again. 0: not watched |
+
+Errors that are the answer to a request - a client error (4xx) such as an unknown code, an unknown code system or cache-id, or a bad `Accept-Language` - aren't logged: the request's own log line has its status. They are logged (with their stack) when `level` is `debug`.
 
 Log files are written to the `logs/` subdirectory of the data directory as `server-YYYY-MM-DD.log`. A `server.log` symlink always points to the current day's file, so `tail -f data/logs/server.log` tracks the active log without needing to know the date.
 

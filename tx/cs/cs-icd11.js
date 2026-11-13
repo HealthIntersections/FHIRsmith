@@ -93,6 +93,31 @@ class ICD11FilterSet {
   }
 }
 
+/** The columns ICD11Concept reads (not the native JSON, which is large). */
+const PREFETCH_COLUMNS = 'id, entity_id, uri, code, class_kind, selectable, residual, depth, block_id, code_range, ' +
+  'source_uri, browser_url, lft, rgt';
+
+/**
+ * What prefetchCodes read for one list: for each code, the rows #resolve could return. A code
+ * the list didn't hold, or one two rows answer (#resolve would pick one), is resolved as usual.
+ */
+class ICD11Prefetched {
+  constructor(owner, codes, rows, toConcept) {
+    this.owner = owner;
+    this.codes = codes;
+    this.rows = rows;
+    this.toConcept = toConcept;
+  }
+
+  async resolve(code, otherwise) {
+    if (!this.codes.has(code)) return otherwise();
+    const rows = this.rows.get(code) || [];
+    if (rows.length === 0) return null;
+    if (rows.length === 1) return this.toConcept(rows[0]);
+    return otherwise();
+  }
+}
+
 class ICD11Services extends BaseCSServices {
   constructor(opContext, supplements, db, shared) {
     super(opContext, supplements);
@@ -203,11 +228,13 @@ class ICD11Services extends BaseCSServices {
    * the Foundation accepts its entity uri and the short code. Returns { context, message }; a plain miss carries no message, which the
    * validation worker treats as "not there" rather than "malformed".
    */
-  async locate(code) {
+  async locate(code, prefetched = null) {
     assert(!code || typeof code === 'string', 'code must be a string');
     if (!code) return { context: null, message: 'Empty code' };
 
-    const concept = await this.#resolve(code);
+    const concept = (prefetched instanceof ICD11Prefetched && prefetched.owner === this)
+      ? await prefetched.resolve(code, () => this.#resolve(code))
+      : await this.#resolve(code);
     if (concept) return { context: concept, message: null };
 
     // Not a code as written. It may still be a postcoordinated expression -- but only in a
@@ -233,6 +260,35 @@ class ICD11Services extends BaseCSServices {
       `SELECT * FROM concept WHERE system = ? AND (code = ? OR uri = ?)`,
       [this.shared.systemId, code, uri]);
     return row ? this.#concept(row) : null;
+  }
+
+  /**
+   * Reads a list's plain codes together (#resolve for each, in a few queries), so that
+   * locate(code, prefetched) answers them without a query each. Expressions in the list are
+   * located as usual: what isn't a plain code goes on to the expression parser.
+   */
+  async prefetchCodes(codes) {
+    const wanted = [...new Set((codes || []).filter(c => typeof c === 'string' && c))];
+    if (wanted.length === 0) return null;
+    const rows = new Map(); // code as written -> the rows #resolve could return for it
+    const add = (key, row) => {
+      if (!rows.has(key)) rows.set(key, []);
+      if (!rows.get(key).some(r => r.id === row.id)) rows.get(key).push(row);
+    };
+    const prefix = this.#bareIds ? `${this.shared.url}/` : '';
+    const wantedSet = new Set(wanted);
+    for (let i = 0; i < wanted.length; i += 400) {
+      const chunk = wanted.slice(i, i + 400);
+      const marks = chunk.map(() => '?').join(',');
+      const found = await this.#all(
+        `SELECT ${PREFETCH_COLUMNS} FROM concept WHERE system = ? AND (code IN (${marks}) OR uri IN (${marks}))`,
+        [this.shared.systemId, ...chunk, ...chunk.map(c => prefix + c)]);
+      for (const row of found) {
+        if (row.code !== null && wantedSet.has(row.code)) add(row.code, row);
+        if (row.uri.startsWith(prefix) && wantedSet.has(row.uri.slice(prefix.length))) add(row.uri.slice(prefix.length), row);
+      }
+    }
+    return new ICD11Prefetched(this, wantedSet, rows, (row) => this.#concept(row));
   }
 
   /** What the expression parser needs: the database, and the request's translations. */

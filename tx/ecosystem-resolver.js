@@ -35,6 +35,8 @@ const { createGuardedAgents } = require('../library/ssrf-guard');
 const FORWARDED_HEADER = 'X-FHIRsmith-Ecosystem-Forwarded';
 
 const DEFAULT_REGISTRY = 'https://ecosystem.hl7.org/tx-reg';
+// how an R4 (or R3) TerminologyCapabilities says what content it has for a code system
+const CAPS_CONTENT_EXT = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content';
 const TIMEOUT_MS = 30000;
 const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
 const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
@@ -62,6 +64,8 @@ class EcosystemResolver {
     // the registry's list of servers (normalised address -> server code)
     this.servers = new Map();
     this.versions = new Map();
+    // server|system -> the versions a search of the server's CodeSystems found (see searchVersions)
+    this.searched = new Map();
     this.codes = new Map();
     // see sendCached: request -> {at, value} or {pending}, oldest first
     this.answers = new Map();
@@ -279,18 +283,33 @@ class EcosystemResolver {
   }
 
   /**
-   * The address of a server that the registry says can provide system|version, and that can be
-   * used (open, or there are credentials for it, and not excluded), or null. Authoritative
-   * servers come first. The registry is asked about the FHIR version of the endpoint first, then
-   * the other versions: the operations used on the other server don't depend on its FHIR version
+   * The address of the first server that the registry says can provide system|version, and that
+   * can be used (see findServers), or null
+   */
+  async findServer(system, version, fhirVersion, opContext = null) {
+    const servers = await this.findServers(system, version, fhirVersion, opContext);
+    return servers && servers.length > 0 ? servers[0].url : null;
+  }
+
+  /**
+   * The servers that the registry says can provide system|version, and that can be used (open,
+   * or there are credentials for it, and not excluded), authoritative ones first, as
+   * {url, authoritative}, or null if there are none. The registry is asked about the FHIR version
+   * of the endpoint first, then the other versions: the operations used on the other server don't
+   * depend on its FHIR version. Whether a candidate has the content is checked when it's used
+   * (listVersions)
+   *
+   * If this server (an excluded one: see modules.tx.ecosystem.excludedServers) is authoritative
+   * for it, there are none: the answer is this server's - e.g. that it doesn't have that version -
+   * not whatever another server says
    *
    * @param {string} system
    * @param {string} version - may be null
    * @param {number} fhirVersion - the endpoint's (3, 4, 5 or 6)
    * @param {OperationContext} [opContext] - the operation it's for
-   * @returns {Promise<string|null>}
+   * @returns {Promise<{url: string, authoritative: boolean}[]|null>}
    */
-  async findServer(system, version, fhirVersion, opContext = null) {
+  async findServers(system, version, fhirVersion, opContext = null) {
     if (this.isExcludedSystem(system, version)) {
       return null;
     }
@@ -301,9 +320,14 @@ class EcosystemResolver {
       for (const fv of [first, ...['5.0', '4.0'].filter(v => v !== first)]) {
         try {
           const json = await this.getRegistryJson(this.registry + '/resolve?fhirVersion=' + fv + '&url=' + encodeURIComponent(key), ctxt);
-          const server = (await this.chooseServer(json.authoritative, ctxt)) || (await this.chooseServer(json.candidates, ctxt));
-          if (server) {
-            return server;
+          if ((json.authoritative || []).some(s => s.url && this.isExcludedServer(s.url))) {
+            return null;
+          }
+          const servers = [...(await this.chooseServers(json.authoritative, true, ctxt)), ...(await this.chooseServers(json.candidates, false, ctxt))];
+          const seen = new Set();
+          const list = servers.filter(s => !seen.has(s.url) && seen.add(s.url));
+          if (list.length > 0) {
+            return list;
           }
         } catch (e) {
           this.log.warn(`Ecosystem resolution of ${key} for FHIR ${fv} failed: ${e.message}`);
@@ -317,37 +341,82 @@ class EcosystemResolver {
     }, opContext, (e) => `Ecosystem resolution of ${key} failed: ${e.message}`);
   }
 
-  async chooseServer(list, opContext = null) {
+  /**
+   * The servers in a list from the registry that can be used, in the registry's order. A
+   * candidate the registry says doesn't have the content (from its TerminologyCapabilities) isn't
+   * used; an authoritative server is, whatever it says: a server that provides services for a code
+   * system it says it has no content for (because it holds the concepts in its own tables) has to
+   * be registered as authoritative for it
+   */
+  async chooseServers(list, authoritative, opContext = null) {
+    const result = [];
     for (const s of list || []) {
-      // a candidate that says it doesn't have the content can't answer
-      if (!s.url || s.content === 'not-present' || this.isExcludedServer(s.url)) {
+      if (!s.url || this.isExcludedServer(s.url)) {
+        continue;
+      }
+      if (!authoritative && s.content && !EcosystemResolver.isUsableContent(s.content)) {
         continue;
       }
       const open = (s.open || s.security === 'open') && !s.token;
       if (open || this.credentials.hasCredentials(await this.serverCode(s.url, opContext))) {
-        return s.url;
+        result.push({ url: s.url, authoritative });
       }
     }
-    return null;
+    return result;
   }
 
   /**
-   * The versions of system that a server says it has (from its TerminologyCapabilities), or
-   * null if it doesn't list the code system at all (or couldn't be asked)
+   * True if a code system's content mode means its codes are there to validate against (the same
+   * test the validator applies: complete or fragment)
+   */
+  static isUsableContent(content) {
+    return content === 'complete' || content === 'fragment';
+  }
+
+  /**
+   * The content mode a TerminologyCapabilities.codeSystem states: R5 has codeSystem.content; R4
+   * (and R3) carry it in the cross-version extension. undefined if it doesn't say
+   */
+  static capsContent(cs) {
+    if (cs.content) {
+      return cs.content;
+    }
+    const ext = (cs.extension || []).find(e => e.url === CAPS_CONTENT_EXT);
+    return ext ? ext.valueCode : undefined;
+  }
+
+  /**
+   * The versions of system that a server has, or null if it doesn't have it (or couldn't be
+   * asked).
+   *
+   * What the server says in its TerminologyCapabilities comes first: if it lists the code system,
+   * and doesn't say that the content is anything other than complete or fragment, the versions it
+   * lists there are the answer. Otherwise - it doesn't list it, or says the content isn't there, or
+   * there's no TerminologyCapabilities - the server's CodeSystem resources for it are searched for,
+   * and the versions with complete or fragment content are the answer (searchVersions).
+   *
+   * For a server that's authoritative for the code system, what it says about the content isn't
+   * looked at (see chooseServers)
    *
    * @param {string} server
    * @param {string} system
    * @param {OperationContext} [opContext] - the operation it's for
+   * @param {boolean} [authoritative] - the registry says the server is authoritative for it
    * @returns {Promise<{code: string, isDefault: boolean}[]|null>}
    */
-  async listVersions(server, system, opContext = null) {
+  async listVersions(server, system, opContext = null, authoritative = false) {
     const caps = await this.codeSystemsOf(server, opContext);
-    return caps ? (caps.get(system) || null) : null;
+    const entry = caps ? caps.get(system) : null;
+    if (entry && (authoritative || entry.content === undefined || EcosystemResolver.isUsableContent(entry.content))) {
+      return entry.versions;
+    }
+    return this.searchVersions(server, system, opContext, authoritative);
   }
 
   /**
-   * What a server says it has (its TerminologyCapabilities): code system -> versions, or null if
-   * it couldn't be asked. Read once (an hour) for all the code systems
+   * What a server says it has (its TerminologyCapabilities): code system -> {content, versions},
+   * or null if it couldn't be asked. Read once (an hour) for all the code systems. content is
+   * undefined if the server doesn't say
    */
   async codeSystemsOf(server, opContext = null) {
     return this.#known(this.versions, server, async (ctxt) => {
@@ -358,12 +427,45 @@ class EcosystemResolver {
       const map = new Map();
       for (const cs of json.codeSystem || []) {
         if (cs.uri) {
-          const list = map.get(cs.uri) || [];
-          map.set(cs.uri, list.concat((cs.version || []).filter(v => v.code).map(v => ({ code: v.code, isDefault: v.isDefault === true }))));
+          const entry = map.get(cs.uri) || { content: undefined, versions: [] };
+          const content = EcosystemResolver.capsContent(cs);
+          if (content !== undefined && !EcosystemResolver.isUsableContent(entry.content)) {
+            entry.content = content;
+          }
+          entry.versions = entry.versions.concat((cs.version || []).filter(v => v.code).map(v => ({ code: v.code, isDefault: v.isDefault === true })));
+          map.set(cs.uri, entry);
         }
       }
       return map;
     }, opContext, (e) => `Unable to read the code systems that ${server} has: ${e.message}`);
+  }
+
+  /**
+   * The versions of system that a server has CodeSystem resources for with complete or fragment
+   * content (any content, for a server that's authoritative for it), from a search for them, or
+   * null if there aren't any (or it couldn't be asked). Kept for an hour. None of them is the
+   * default: a search doesn't say
+   */
+  async searchVersions(server, system, opContext = null, authoritative = false) {
+    return this.#known(this.searched, server + '|' + system + (authoritative ? '#auth' : ''), async (ctxt) => {
+      const url = server.replace(/\/$/, '') + '/CodeSystem?url=' + encodeURIComponent(system) + '&_summary=true&_count=100';
+      const { status, json } = await this.send(server, url, null, ctxt);
+      if (status >= 300 || !json || json.resourceType !== 'Bundle') {
+        throw new Error(`it returned status ${status}`);
+      }
+      let found = false;
+      const versions = [];
+      for (const e of json.entry || []) {
+        const cs = e.resource;
+        if (cs && cs.resourceType === 'CodeSystem' && cs.url === system && (authoritative || EcosystemResolver.isUsableContent(cs.content))) {
+          found = true;
+          if (cs.version && !versions.some(v => v.code === cs.version)) {
+            versions.push({ code: cs.version, isDefault: false });
+          }
+        }
+      }
+      return found ? versions : null;
+    }, opContext, (e) => `Unable to search for ${system} on ${server}: ${e.message}`);
   }
 
   /**

@@ -58,3 +58,5 @@ coverage/
 .claude/
 
 private/
+
+.vscode/
