@@ -223,7 +223,7 @@ class CountryCodeServices extends CodeSystemProvider {
 
         filterContext.filters.push(result);
       } catch (error) {
-        throw new Issue('error', 'invalid', null, null, `Invalid regex pattern: ${value}`, 'vs-invalid').handleAsOO(400);
+        throw new Error(`Invalid regex pattern: ${value}`);
       }
     } else {
       throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',

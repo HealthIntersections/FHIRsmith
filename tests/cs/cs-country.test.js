@@ -413,7 +413,7 @@ describe('CountryCodeServices', () => {
     test('should throw error for invalid regex', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'code', 'regex', '[invalid')
-      ).rejects.toMatchObject({ message: expect.stringContaining('Invalid regex pattern'), cause: 'invalid', statusCode: 400 });
+      ).rejects.toThrow('Invalid regex pattern');
     });
 
     test('should throw error for search filter', async () => {
