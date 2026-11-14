@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
   sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
   ```
+
+  The server says so once at startup, with that command, when it loads a LOINC database without the index (not in a tx-worker: the master says it)
 - LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
 
 ### Fixed
