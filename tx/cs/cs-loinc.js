@@ -9,7 +9,6 @@ const {sqlEscapeString} = require("../../library/sqlite-utilities");
 const regexUtilities = require('../../library/regex-utilities');
 const {ConceptMap} = require("../library/conceptmap");
 const { guarded } = require('../library/sqlite-utilities');
-const { Issue } = require('../library/operation-outcome');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -834,12 +833,6 @@ class LoincServices extends BaseCSServices {
 
   // Filter support
   async doesFilter(prop, op, value) {
-    // answers-for is not a property, so the core in row (property value equal to one of the
-    // strings) doesn't define answers-for in: refuse it rather than guess
-    if (prop === 'answers-for' && op === 'in') {
-      return false;
-    }
-
     // Relationship filters
     if (this.relationships.has(prop) && ['=', 'in', 'regex'].includes(op)) {
       return true;
@@ -877,8 +870,8 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
-    // answers-for filter
-    if (prop === 'answers-for' && op === '=') {
+    // answers-for filter (in: the union of = each value)
+    if (prop === 'answers-for' && ['=', 'in'].includes(op)) {
       return true;
     }
 
@@ -912,10 +905,6 @@ class LoincServices extends BaseCSServices {
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
-    if (prop === 'answers-for' && op === 'in') { // see doesFilter
-      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-        `The filter "${prop} ${op} ${value}" is not supported for LOINC`, 'vs-invalid', 422);
-    }
     const filter = new LoincFilterHolder();
     await this.#executeFilterQuery(prop, op, value, filter, filterContext.iterate !== false);
     filterContext.filters.push(filter);
@@ -976,7 +965,7 @@ class LoincServices extends BaseCSServices {
   async #executeFilterQuery(prop, op, value, filter, load = true) {
     let sql = '';
     let lsql = '';
-    let noMatches = false; // a regex filter that no value matches, or a part name that no part has
+    let noMatches = false; // a regex filter that no value matches, or part names and codes that no part has
 
     // LIST filter
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
@@ -1028,6 +1017,26 @@ class LoincServices extends BaseCSServices {
                   AND TargetKey = `;
       }
     }
+    // answers-for 'in' filter: the union of answers-for = each value, so each value is an answer
+    // list (LL) or a term that answer lists are for, as above
+    else if (prop === 'answers-for' && op === 'in') {
+      const values = this.#valueList(value);
+      const lists = this.#commaListOfCodes(values.filter(v => v.startsWith('LL')).join(','));
+      const terms = this.#commaListOfCodes(values.filter(v => !v.startsWith('LL')).join(','));
+      const sources = `SELECT CodeKey FROM Codes WHERE Code IN (${lists})
+                       UNION
+                       SELECT SourceKey FROM Relationships
+                       WHERE RelationshipTypeKey = ${this.relationships.get('answers-for')}
+                         AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${terms}))`;
+      sql = `SELECT DISTINCT TargetKey as Key FROM Relationships
+             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+               AND SourceKey IN (${sources})
+             ORDER BY TargetKey ASC`;
+      lsql = `SELECT COUNT(DISTINCT TargetKey) FROM Relationships
+              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+                AND SourceKey IN (${sources})
+                AND TargetKey = `;
+    }
     // Relationship equal filter
     else if (this.relationships.has(prop) && op === '=') {
       if (this.codes.has(value)) {
@@ -1055,17 +1064,26 @@ class LoincServices extends BaseCSServices {
         }
       }
     }
-    // Relationship 'in' filter
+    // Relationship 'in' filter: the union of = each value, so each value is a part code or,
+    // if it is not a code, a part name (SCALE_TYP in Doc,Nar), as above
     else if (this.relationships.has(prop) && op === 'in') {
-      const codes = this.#commaListOfCodes(value);
-      sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-             WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
-             ORDER BY SourceKey ASC`;
-      lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-              WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
-                AND SourceKey = `;
+      const partKeys = new Set();
+      for (const v of this.#valueList(value)) {
+        const keys = this.codes.has(v) ? [this.codes.get(v).key] : await this.#partKeysByName(v);
+        keys.forEach(k => partKeys.add(k));
+      }
+      noMatches = partKeys.size === 0;
+      if (partKeys.size > 0) {
+        const targets = [...partKeys].join(',');
+        sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
+               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                 AND TargetKey IN (${targets})
+               ORDER BY SourceKey ASC`;
+        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
+                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                  AND TargetKey IN (${targets})
+                  AND SourceKey = `;
+      }
     }
     // Relationship 'exists' filter: value is true or false (doesFilter rejects anything else).
     // true = codes that have at least one relationship of this type; false = every other code
