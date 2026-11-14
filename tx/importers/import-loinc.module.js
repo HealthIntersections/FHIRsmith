@@ -414,6 +414,7 @@ class LoincModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_codes_type ON Codes(Type)',
       'CREATE INDEX IF NOT EXISTS idx_codes_status ON Codes(StatusKey)',
       'CREATE INDEX IF NOT EXISTS idx_codes_type_status ON Codes(Type, StatusKey)',
+      'CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)',
 
       // Relationships table indexes
       'CREATE INDEX IF NOT EXISTS idx_relationships_source ON Relationships(RelationshipTypeKey, SourceKey)',

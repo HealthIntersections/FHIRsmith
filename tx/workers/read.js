@@ -73,6 +73,8 @@ class ReadWorker extends TerminologyWorker {
     let cs = this.provider.getCodeSystemById(this.opContext, id);
     if (cs != null) {
       req.sourcePackage = cs.sourcePackage;
+      // a stored resource: the tx module gives it an ETag, and can answer 304 without serialising
+      req.txStoredResource = cs.jsonObj;
       return res.json(cs.jsonObj);
     }
 
@@ -132,6 +134,8 @@ class ReadWorker extends TerminologyWorker {
       const vs = await vsp.fetchValueSetById(id);
       if (vs) {
         req.sourcePackage = vs.sourcePackage;
+        // a stored resource: the tx module gives it an ETag, and can answer 304 without serialising
+        req.txStoredResource = vs.jsonObj;
         return res.json(vs.jsonObj);
       }
     }
@@ -148,6 +152,8 @@ class ReadWorker extends TerminologyWorker {
       const cm = await cmsp.fetchConceptMapById(id);
       if (cm) {
         req.sourcePackage = cm.sourcePackage;
+        // a stored resource: the tx module gives it an ETag, and can answer 304 without serialising
+        req.txStoredResource = cm.jsonObj;
         return res.json(cm.jsonObj);
       }
     }

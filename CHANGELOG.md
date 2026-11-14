@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- LOINC: a relationship filter that names its part (`SCALE_TYP = Doc`) found the part by reading every code (`Codes.Description` had no index), in every membership query: on LOINC 2.83, 18 ms for each `$validate-code`. The importer now indexes `Codes.Description` (`idx_codes_description`, 14 MB on 2.83), and the lookup takes 0.04 ms. A database imported before this doesn't need re-importing: add the index once (about 2 s on 2.83) with the sqlite3 command line, while the server isn't using the file:
+
+  ```
+  sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
+  ```
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
+
+## [1.0.2]
+
 ### Added
 
 - Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
+- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
+- tx: a request whose response took 10 ms or more to serialise says so in its log line: `5+6120ms` is 5 ms for the operation and 6,120 ms to serialise. The time was taken before serialising, so a request that held the process for seconds was logged as taking a few ms
+
+### Changed
+
+- tx: XML responses are serialised a part at a time, letting other requests run every 25 ms. The full ICD-10-CM CodeSystem as XML (64 MB, `CodeSystem?url=http://hl7.org/fhir/sid/icd-10-cm`, fetched 50-200 times a day) held a tx.fhir.org process for 9 s on average and up to 17 s, 204 times on 2026-11-13 - the long spikes in the Node Blocking graph. The XML serialiser is also about 3 times faster, with about 7 times less garbage collection
+- tx: converting a CodeSystem or ValueSet from R5 for an R4 or R3 endpoint no longer copies the whole resource first: what changes is copied, and the rest shared (for ICD-10-CM, 110-190 ms of copying a response, now none). The same stored code system or cached expansion converted again gives the same result, so its XML can come from the cache
+- ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id, as JSON or XML) has an ETag from a hash of its content, worked out once, and a matching `If-None-Match` gets a 304 before anything is serialised; it was serialised in full and then hashed. These ETags aren't the old ones, so a client that keeps them gets each resource once more. Other responses over 1 MB no longer get an ETag: Express hashed every response, POSTs included
+- Ecosystem resolution: a server the registry lists as a candidate for a code system is used only if it has the content (complete or fragment) - as its TerminologyCapabilities says (for R4 and R3, in the cross-version extension), or else as a search of its CodeSystems finds - and the next candidate is tried if it doesn't, or doesn't have the version. A server the registry says is authoritative is used whatever it says about the content. If this server is authoritative for the code system, no other server is asked
+
+### Fixed
+
+- R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
+- R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
 
 ## [1.0.1] - 2026-11-12
 

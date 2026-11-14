@@ -4067,6 +4067,51 @@ class SnomedProvider extends BaseCSServices {
     }
   }
 
+  /**
+   * The concepts a concept sits under, for $closure (see CodeSystemProvider.ancestorsOf): a
+   * walk up the active is-a parents held in memory. The descendant closure subsumesTest reads
+   * (getAllDesc) is built at import from the same relationships the other way round (active,
+   * defining is-a; inactive rows are ignored), so the two agree. The walk costs the concept's
+   * ancestors (about 20 on average, at most about 130), where subsumesTest parses both codes and
+   * searches a descendant list, twice, for every pair.
+   *
+   * Only a plain concept id, in the form code() gives it, is answered: an expression, or a
+   * concept written another way (with a term, or leading zeros) gets null, so $closure
+   * compares it with subsumesTest, which knows when two spellings are the same concept.
+   *
+   * @param {string|SnomedExpressionContext} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof SnomedExpressionContext) || !ctxt.isSimple() || ctxt.expression.concepts.length !== 1) {
+      return null;
+    }
+    const ref = ctxt.getReference();
+    if (ref === NO_REFERENCE || ref === undefined || ref === null) {
+      return null;
+    }
+    const id = this.sct.getConceptId(ref);
+    if ((await this.code(ctxt)) !== id) {
+      return null;
+    }
+    const seen = new Set();
+    const ancestors = new Set();
+    let todo = this.sct.getConceptParents(ref);
+    while (todo.length > 0) {
+      const next = [];
+      for (const p of todo) {
+        if (p !== ref && !seen.has(p)) {
+          seen.add(p);
+          ancestors.add(this.sct.getConceptId(p));
+          next.push(...this.sct.getConceptParents(p));
+        }
+      }
+      todo = next;
+    }
+    return ancestors;
+  }
+
   // Helper methods
   async #ensureContext(context) {
     if (!context) {
