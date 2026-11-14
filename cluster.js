@@ -1195,6 +1195,11 @@ function createLauncher(settings) {
 }
 
 async function main() {
+  // cluster.js --check: config.json, the launcher's settings, and each process's configuration
+  // (library/config-check.js); nothing is started
+  if (require('./library/config-check').wantsCheck(process.argv.slice(2))) {
+    process.exit(require('./library/config-check').runCheck(process.argv.slice(2), process.env, { cluster: true, loadSettings }));
+  }
   const folders = require('./library/folder-setup');
   let launcher;
   try {

@@ -442,14 +442,14 @@ describe('EcosystemResolver', () => {
 
     test('a server that sends too much', async () => {
       const r = resolver({ registry: `${local}/huge/tx-reg`, allowPrivateAddresses: true });
-      await expect(r.send(`${local}/fhir`, `${local}/huge/fhir/metadata`)).rejects.toThrow(/maxContentLength/);
+      await expect(r.send(`${local}/fhir`, `${local}/huge/fhir/metadata`)).rejects.toThrow(/huge\/fhir\/metadata: the response is more than 10 MB$/);
       expect(await r.findServer(SCT, null, 5)).toBeNull();
     });
 
     test('a server that never finishes', async () => {
       const r = resolver({ registry: `${local}/slow/tx-reg`, allowPrivateAddresses: true });
       const start = Date.now();
-      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/canceled/);
+      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/slow\/fhir\/metadata: no complete response within 30 s$/);
       expect(await r.findServer(SCT, null, 5)).toBeNull();
       expect(Date.now() - start).toBeLessThan(5000);
     });

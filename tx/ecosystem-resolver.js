@@ -2,6 +2,7 @@ const axios = require('axios');
 const Logger = require('../library/logger');
 const { ServerCredentials } = require('../library/server-credentials');
 const { createGuardedAgents } = require('../library/ssrf-guard');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
 
 /**
  * Finds another server in the terminology ecosystem for a code system (and version) that this
@@ -245,7 +246,19 @@ class EcosystemResolver {
     if (opContext && opContext.countExternalRequest) {
       opContext.countExternalRequest();
     }
-    return axios.request(config);
+    // the deadline covers the whole request; axios's timeout only the wait for the headers
+    const deadline = requestDeadline(TIMEOUT_MS);
+    try {
+      return await axios.request({
+        ...config,
+        timeout: TIMEOUT_MS,
+        signal: deadline.signal,
+        maxContentLength: MAX_RESPONSE_BYTES
+      });
+    } catch (e) {
+      // the warnings that report this give the server's answer in words, not axios's
+      throw new Error(`${config.url}: ${describeRequestFailure(e, { timeoutMs: TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, deadline })}`, { cause: e });
+    }
   }
 
   async getRegistryJson(url, opContext = null) {
@@ -253,10 +266,7 @@ class EcosystemResolver {
       url,
       method: 'GET',
       headers: { 'Accept': 'application/json', [FORWARDED_HEADER]: 'true' },
-      timeout: TIMEOUT_MS,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
       validateStatus: () => true,
-      maxContentLength: MAX_RESPONSE_BYTES,
       httpAgent: this.agents.httpAgent,
       httpsAgent: this.agents.httpsAgent
     });
@@ -289,10 +299,7 @@ class EcosystemResolver {
         method: body ? 'POST' : 'GET',
         headers,
         data: body ? JSON.stringify(body) : undefined,
-        timeout: TIMEOUT_MS,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
         validateStatus: () => true,
-        maxContentLength: MAX_RESPONSE_BYTES,
         maxRedirects: 0, // the credentials go where they were configured to, or nowhere
         httpAgent: this.agents.httpAgent,
         httpsAgent: this.agents.httpsAgent

@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --expose-gc server.js",
     "dev": "node --expose-gc --watch server.js",
+    "check": "node server.js --check",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",

@@ -10,6 +10,7 @@ const {
 } = require('./model');
 const { UptimeHistory } = require('./uptime');
 const { ServerCredentials } = require('../library/server-credentials');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
 const { createGuardedAgents } = require('../library/ssrf-guard');
 const {Extensions} = require("../tx/library/extensions");
 const {debugLog} = require("../tx/operation-context");
@@ -32,6 +33,9 @@ class RegistryCrawler {
       allowPrivateAddresses: config.allowPrivateAddresses || false, // SSRF opt-out for local test servers
       // the most a server's response can be, once unzipped: the servers are other people's
       maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024,
+      // the longest a request may take, response included (timeout is only the wait for the
+      // response to start): a server that sends its answer a byte at a time can't hold the crawl
+      maxRequestMs: (config.maxRequestSeconds || 120) * 1000,
       uptimeRetentionDays: config.uptimeRetentionDays,
       uptimeWindowDays: config.uptimeWindowDays
     };
@@ -55,7 +59,8 @@ class RegistryCrawler {
       timeout: this.config.timeout,
       userAgent: this.config.userAgent,
       agents: () => this.guardedAgents(),
-      signal: () => this.abortController?.signal,
+      // (the token request: the same deadline as any other, and stopped when the crawl is)
+      signal: () => requestDeadline(this.config.maxRequestMs, this.abortController?.signal).signal,
       log: (level, message) => this.addLogEntry(level, message)
     });
   }
@@ -607,6 +612,9 @@ class RegistryCrawler {
       if (/maxContentLength/.test(error.message)) {
         throw new Error(`The response from ${url} is more than ${this.config.maxResponseBytes / (1024 * 1024)} MB`);
       }
+      if (/^no complete response/.test(error.message)) {
+        throw new Error(`No complete response from ${url} within ${this.config.maxRequestMs / 1000} s`);
+      }
       if (error.response) {
         throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
       } else if (error.request) {
@@ -618,13 +626,25 @@ class RegistryCrawler {
   }
 
   async getJson(fetchUrl, credentials) {
+    const deadline = requestDeadline(this.config.maxRequestMs, this.abortController?.signal);
+    try {
+      return await this.#get(fetchUrl, credentials, deadline.signal);
+    } catch (e) {
+      if (deadline.expired()) {
+        throw new Error(describeRequestFailure(e, { timeoutMs: this.config.maxRequestMs, deadline }), { cause: e });
+      }
+      throw e;
+    }
+  }
+
+  async #get(fetchUrl, credentials, signal) {
     return axios.get(fetchUrl, {
       timeout: this.config.timeout,
       headers: Object.assign({
         'Accept': 'application/json, application/fhir+json',
         'User-Agent': this.config.userAgent
       }, credentials),
-      signal: this.abortController?.signal,
+      signal,
       validateStatus: (status) => status < 500, // Don't throw on 4xx
       // counted as it is unzipped, so a small response that unzips to a lot is stopped too
       maxContentLength: this.config.maxResponseBytes,
