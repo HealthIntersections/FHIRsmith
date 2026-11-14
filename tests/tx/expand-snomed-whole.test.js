@@ -160,6 +160,38 @@ describe('Whole-code-system SNOMED expansion', () => {
     }
   });
 
+  // A filter naming a concept the edition does not have makes the value set invalid: 400,
+  // the same issue an unknown concept in ECL gives, not a 500 exception.
+  test.each([
+    ['in', '41000147108'],      // an unknown reference set
+    ['is-a', '584021000052104'],
+    ['=', '584021000052104'],
+    ['descendent-of', '584021000052104']
+  ])('concept %s an unknown concept (%s) is a 400 invalid, like ECL', async (op, value) => {
+    const expandFilter = (filter) => request(app)
+      .post('/tx/r5/ValueSet/$expand')
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send({
+        resourceType: 'Parameters',
+        parameter: [{ name: 'valueSet', resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: SNOMED_URI, filter: [filter] }] } } }]
+      });
+
+    const response = await expandFilter({ property: 'concept', op, value });
+    expect(response.status).toBe(400);
+    expect(response.body.resourceType).toBe('OperationOutcome');
+    const [issue] = response.body.issue;
+    expect(issue.severity).toBe('error');
+    expect(issue.code).toBe('invalid');
+    expect(issue.details.text).toBe(`The SNOMED CT Concept ${value} is not known`);
+    expect(issue.details.coding).toEqual([{ system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'vs-invalid' }]);
+
+    const ecl = await expandFilter({ property: 'constraint', op: '=', value: `<< ${value}` });
+    expect(ecl.status).toBe(response.status);
+    expect(ecl.body.issue[0]).toMatchObject({ severity: issue.severity, code: issue.code, details: { coding: issue.details.coding } });
+    expect(ecl.body.issue[0].details.text).toContain(issue.details.text);
+  });
+
   test('an expansion that cannot fit the limit is refused as too-costly', async () => {
     // No count, threshold below the subset size: enumeration could only ever
     // end in too-costly at the limit, so the request must be refused up front
