@@ -786,6 +786,50 @@ describe('LOINC Provider', () => {
       expect(got.size).toBeGreaterThan(0);
     });
 
+    test('X in a,b is the union of X = a and X = b, listed and checked', async () => {
+      // in is = for each value: whatever = takes, in takes too
+      const cases = [
+        ['CLASSTYPE', ['1', '4']], // = takes the numbers, so in does too
+        ['CLASSTYPE', ['Clinical class', 'Surveys']],
+        ['ORDER_OBS', ['Both', 'Observation']],
+        ['ORDER_OBS', ['both', ' OBSERVATION']], // LOINC property values are not case sensitive (THO)
+        ['SCALE_TYP', ['LP7753-9', 'LP7751-3']], // part codes
+        ['SCALE_TYP', ['Qn', 'Ord']], // part names (= has always taken them: a legacy form)
+        ['SCALE_TYP', ['Doc', 'NAR']], // names in any case
+        ['SCALE_TYP', ['qn', ' LP7751-3']], // a name and a code
+        ['SYSTEM', ['Ser/Plas', 'Ser']],
+        ['answers-for', ['LL360-9', 'LL744-4']], // answer lists
+        ['answers-for', ['100041-3', '101421-6']], // terms the answer lists are for
+        ['answers-for', ['LL360-9', '101421-6']] // a list and a term
+      ];
+      for (const [property, values] of cases) {
+        const union = new Set();
+        for (const v of values) {
+          const one = await listed(property, '=', v.trim());
+          expect([property, v, one.size > 0]).toEqual([property, v, true]);
+          const oneChecked = await checked([[property, '=', v.trim()]]);
+          expect([property, v, [...oneChecked].sort()]).toEqual([property, v, [...one].sort()]);
+          one.forEach(c => union.add(c));
+        }
+        const value = values.join(',');
+        expect(await provider.doesFilter(property, 'in', value)).toBe(true);
+        const got = await listed(property, 'in', value);
+        expect([property, value, [...got].sort()]).toEqual([property, value, [...union].sort()]);
+        const checkedCodes = await checked([[property, 'in', value]]);
+        expect([property, value, [...checkedCodes].sort()]).toEqual([property, value, [...union].sort()]);
+      }
+    });
+
+    test('values of an in that = finds nothing for add nothing', async () => {
+      const qn = [...await listed('SCALE_TYP', '=', 'Qn')].sort();
+      expect([...await listed('SCALE_TYP', 'in', 'Qn,no part is called this,LP0000-0')].sort()).toEqual(qn);
+      expect([...await checked([['SCALE_TYP', 'in', 'Qn,no part is called this']])].sort()).toEqual(qn);
+      for (const [property, value] of [['SCALE_TYP', 'no part is called this,LP0000-0'], ['answers-for', 'LL0000-0,0000-0']]) {
+        expect([property, (await listed(property, 'in', value)).size]).toEqual([property, 0]);
+        expect([property, (await checked([[property, 'in', value]])).size]).toEqual([property, 0]);
+      }
+    });
+
     test('a regex that matches no value is an empty filter, not an error', async () => {
       expect((await listed('ORDER_OBS', 'regex', 'no value is this')).size).toBe(0);
     });
