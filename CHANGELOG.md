@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - XML: a JSON key that isn't an element name (every FHIR element name is a simple token: letters, digits and `_`), from a resource that came in from outside, is refused - the response falls back to JSON - instead of being written into the XML as markup (`{"a><x/><b": ...}` became `<a><x/><b .../>`). The same check covers a resource's type in a Bundle or Parameters
 
+  ```
+  sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
+  ```
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
+
+### Fixed
+
+- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
+
+## [1.0.2]
+
 ### Added
 
 - `node server.js --check` (or `-t`; `npm run check`): checks the configuration and exits 0 or 1, without starting anything, as `nginx -t` does - `config.json`, unknown settings (warnings, with the setting that may have been meant), replaced settings, types and ranges, the files the configuration names (the tx library, parsed and its sources checked), the folders the server writes to, the Node.js version and the native SQLite modules. With `--role`, what the role makes of it; `node cluster.js --check`, the launcher's settings and each process's configuration. The server logs the same errors and warnings as it starts. See CONFIGURATION.md, "Checking the configuration"
