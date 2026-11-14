@@ -1674,19 +1674,25 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
   }
 
   /**
-   * A database imported before the importer made idx_codes_description (CHANGELOG, Unreleased)
+   * A database imported before the importer made idx_codes_description (CHANGELOG, 1.0.2)
    * still works, but a filter that names a part reads every code the first time it is used.
    * Says so once per file, with the command that adds the index. A tx-worker leaves it to the
-   * master, which opens the same file.
+   * master, which opens the same file. It is only advice: if the check itself fails, the
+   * database loads all the same, and nothing is said
    */
   async #checkIndexes(db) {
     if (this.readOnly || indexHintGiven.has(this.dbPath)) {
       return;
     }
-    const row = await new Promise((resolve, reject) => {
-      db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'index' AND name = 'idx_codes_description'", [],
-        guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
-    });
+    let row;
+    try {
+      row = await new Promise((resolve, reject) => {
+        db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'index' AND name = 'idx_codes_description'", [],
+          guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+      });
+    } catch (e) {
+      return;
+    }
     if (row) {
       return;
     }

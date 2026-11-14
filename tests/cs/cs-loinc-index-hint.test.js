@@ -85,6 +85,23 @@ describe('LOINC factory: the idx_codes_description hint', () => {
     expect(warnings).toEqual([]);
   });
 
+  test('if the check itself fails, the database loads all the same, and nothing is said', async () => {
+    const copy = path.join(dir, 'check-fails.db');
+    fs.copyFileSync(withoutIndex, copy);
+    const get = sqlite3.Database.prototype.get;
+    jest.spyOn(sqlite3.Database.prototype, 'get').mockImplementation(function (sql, ...rest) {
+      if (/idx_codes_description/.test(sql)) {
+        const done = rest[rest.length - 1];
+        setImmediate(() => done(new Error('disk I/O error')));
+        return this;
+      }
+      return get.call(this, sql, ...rest);
+    });
+    const factory = await load(copy);
+    expect(factory._loaded).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
   test('the warning\'s command adds the index, after which nothing is said', async () => {
     const copy = path.join(dir, 'fixed.db');
     fs.copyFileSync(withoutIndex, copy);
