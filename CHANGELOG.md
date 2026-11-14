@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - XML: a JSON key that isn't an element name (every FHIR element name is a simple token: letters, digits and `_`), from a resource that came in from outside, is refused - the response falls back to JSON - instead of being written into the XML as markup (`{"a><x/><b": ...}` became `<a><x/><b .../>`). The same check covers a resource's type in a Bundle or Parameters
+- Configuration check: a setting whose value is wrong was reported (by `--check`, and in the server's log at startup) with its value, so a misconfigured secret - a password, token, key or client secret given as a number, say - was written to the log. A secret's value is no longer shown, nor what is inside an object or a list
+- LOINC: a relationship `in` filter looks each part name up on its own (PR #386); a long list of names now answers to the operation's time limit, and to the client hanging up, as it goes
 
 ### Added
 
@@ -43,7 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
   The server says so once at startup, with that command, when it loads a LOINC database without the index (not in a tx-worker: the master says it)
-- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index (PR #384, PR #392, Josh Mandel)
+- `$batch-validate-code` (PR #378, Josh Mandel): the codes the entries name are collected by code system before any entry runs, and a code system whose provider reads codes together (`prefetchCodes`: ICD-11) is asked once per version for all of them, instead of each entry looking its code up on its own. The answers are the same (see `tx/cs/cs-api.md`, Batches)
+- `$closure` (PR #388, Josh Mandel): LOINC, SNOMED CT, ICD-11, CodeSystem resources, CPT, OMOP and RxNorm give a concept's ancestors (`ancestorsOf`), so a concept is related to the others with one lookup instead of a `subsumesTest` for each pair
+- tx: an expansion that imports value sets kept, for each imported code, how to read its details if the code is returned, in a module-level `WeakMap`. A heavy import (condition-code and procedure-code on SNOMED CT US: about 180,000 codes) made the next major garbage collection pause for about half a second; the record is now kept on the code itself, and that pause is about 30 ms (PR #394, Josh Mandel)
 
 ### Fixed
 
@@ -51,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
 - R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
 - tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
-- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
+- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers (PR #386, Josh Mandel)
+- LOINC `$lookup`: the properties come in a fixed order. They came in the order their queries finished, so `$lookup`, and the properties in `$expand`, could change order from one request to the next (PR #385, Josh Mandel)
 
 ### Tx Conformance Statement
 

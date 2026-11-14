@@ -1075,6 +1075,9 @@ class LoincServices extends BaseCSServices {
     else if (this.relationships.has(prop) && op === 'in') {
       const partKeys = new Set();
       for (const v of this.#valueList(value)) {
+        // a lookup for each name: a long list has to answer to the time limit (and the client
+        // going), as a filter that does the work in one query does by finishing
+        this.opContext.deadCheck('loinc:relationship-in');
         const keys = this.codes.has(v) ? [this.codes.get(v).key] : await this.#partKeysByName(v);
         keys.forEach(k => partKeys.add(k));
       }
