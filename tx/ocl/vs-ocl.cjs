@@ -232,6 +232,10 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   #scheduleFollowerVsSnapshotCheck() {
+    if (this._vsSnapshotCheckPromise) {
+      return;
+    }
+
     const mtimeMs = getColdCacheMtimeMs(VS_DISCOVERY_SNAPSHOT_PATH);
     if (mtimeMs == null) {
       return;
@@ -240,7 +244,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       return;
     }
 
-    (async () => {
+    this._vsSnapshotCheckPromise = (async () => {
       try {
         const data = await fs.readFile(VS_DISCOVERY_SNAPSHOT_PATH, 'utf-8');
         const snapshotData = JSON.parse(data);
@@ -268,6 +272,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
         }
       } catch (error) {
         oclVsLog.warn(`Follower: failed to reload VS discovery snapshot: ${error.message}`);
+      } finally {
+        this._vsSnapshotCheckPromise = null;
       }
     })();
   }
@@ -473,6 +479,10 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
+
     const local = this.#getLocalValueSetById(id);
     if (local) {
       await this.#ensureComposeIncludes(local);

@@ -45,6 +45,16 @@ function makeSnapshotFile(entries) {
   }, null, 2);
 }
 
+function orgSource(id, canonical, checksum) {
+  return {
+    id, short_code: id, owner: 'TestOrg', owner_type: 'Organization',
+    url: `/orgs/TestOrg/sources/${id}/`, canonical_url: canonical,
+    version: 'HEAD', concepts_url: `/orgs/TestOrg/sources/${id}/concepts/`,
+    public_access: 'View',
+    checksums: { standard: checksum || 'abc' }, updated_at: '2026-01-01T00:00:00Z'
+  };
+}
+
 describe('OCL Cluster Follower', () => {
   beforeEach(async () => {
     OCLSourceCodeSystemFactory.factoriesByKey.clear();
@@ -179,17 +189,15 @@ describe('OCL Cluster Follower', () => {
       expect((await provider.listCodeSystems('5.0', null)).length).toBe(1);
 
       // Simulate leader writing updated snapshot with a new source
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise(r => setTimeout(r, 10));
       const snapshotV2 = makeSnapshotFile([
         { canonicalUrl: TEST_CANONICAL, version: TEST_VERSION, id: 'test-source', checksum: 'v2' },
         { canonicalUrl: 'http://example.org/cs/New', id: 'new-source', checksum: 'v1' }
       ]);
       await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, snapshotV2);
 
-      // Trigger the check cycle
       provider.getCodeSystemChanges('5.0', null);
-      // Wait for the async refresh
-      await new Promise(r => setTimeout(r, 100));
+      await provider._refreshPromise;
 
       const codeSystems = await provider.listCodeSystems('5.0', null);
       expect(codeSystems.length).toBe(2);
@@ -197,40 +205,28 @@ describe('OCL Cluster Follower', () => {
   });
 
   describe('snapshot hash deduplication', () => {
-    it('should not rewrite snapshot file when written twice with same content', async () => {
-      const snapshotContent = makeSnapshotFile([{
-        canonicalUrl: TEST_CANONICAL,
-        version: TEST_VERSION,
-        id: 'hash-test'
-      }]);
-      await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, snapshotContent);
+    it('should not rewrite snapshot when leader discovers same sources', async () => {
+      const source = orgSource('HashTest', TEST_CANONICAL, 'abc');
+      const provider = new OCLCodeSystemProvider({ baseUrl: 'https://ocl.example.org', cluster: 'leader' });
+      provider.httpClient = {
+        get: jest.fn(async (url) => {
+          if (url === '/sources/') {
+            return { data: { results: [source], num_found: 1 } };
+          }
+          return { data: [] };
+        }),
+        post: jest.fn()
+      };
 
+      await provider.listCodeSystems('5.0', null);
       const stat1 = await fs.stat(DISCOVERY_SNAPSHOT_PATH);
 
-      // Wait to ensure mtime would differ if file were rewritten
-      await new Promise(r => setTimeout(r, 50));
-
-      // Write same content again — file should NOT change
-      await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, snapshotContent);
-      const stat2 = await fs.stat(DISCOVERY_SNAPSHOT_PATH);
-
-      // atomicWriteFile always rewrites; the hash dedup is inside the provider.
-      // Here we verify the snapshot format is stable: same input -> same output.
-      // The provider's #writeDiscoverySnapshot uses SHA-256 to skip the write,
-      // which we verify indirectly: a follower seeing the same mtime skips reload.
-      expect(stat2.mtimeMs).toBeGreaterThanOrEqual(stat1.mtimeMs);
-
-      // Verify the follower doesn't reload when mtime hasn't changed
-      const provider = new OCLCodeSystemProvider({ cluster: 'follower' });
-      await provider.initialize();
-      const codeSystems1 = await provider.listCodeSystems('5.0', null);
-      expect(codeSystems1.length).toBe(1);
-
-      // Trigger check — same mtime, should be a no-op
+      // Trigger a second refresh with the same sources
       provider.getCodeSystemChanges('5.0', null);
-      await new Promise(r => setTimeout(r, 50));
-      const codeSystems2 = await provider.listCodeSystems('5.0', null);
-      expect(codeSystems2.length).toBe(1);
+      await provider._refreshPromise;
+
+      const stat2 = await fs.stat(DISCOVERY_SNAPSHOT_PATH);
+      expect(stat2.mtimeMs).toBe(stat1.mtimeMs);
     });
   });
 });

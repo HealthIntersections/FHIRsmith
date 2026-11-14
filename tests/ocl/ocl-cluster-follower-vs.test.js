@@ -89,7 +89,7 @@ describe('OCL Cluster Follower VS Discovery', () => {
 
     // searchValueSets triggers VS snapshot check for followers
     await provider.searchValueSets([], null);
-    await new Promise(r => setTimeout(r, 50));
+    await provider._vsSnapshotCheckPromise;
 
     all = await provider.listAllValueSets();
     expect(all).toContain('http://example.org/ValueSet/Two');
