@@ -22,6 +22,7 @@ const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = req
 const {Parameters} = require("../library/parameters");
 const {ValidateWorker} = require("./validate");
 const {debugLog} = require("../operation-context");
+const {CodeSystemProvider} = require("../cs/cs-api");
 
 class BatchValidateWorker extends TerminologyWorker {
 
@@ -100,6 +101,11 @@ class BatchValidateWorker extends TerminologyWorker {
       // session cache before any entry is evaluated. When this happens, pass 2
       // below drops per-entry tx-resource processing (they're already cached).
       const frontLoaded = this.frontLoadBatch(params);
+      // Before any entry runs: the codes the entries name, by code system. The first entry that
+      // locates a code in a version of one has the batch prefetchCodes them all, once, and every
+      // entry passes the handle to locate (BatchPrefetch; tx/cs/cs-api.md, Batches)
+      this.opContext.batchPrefetch = new BatchPrefetch(this.provider, this.opContext,
+        this.batchCodes(params, globalParams, codeSystemRoute));
 
       let output = [];
 
@@ -134,6 +140,7 @@ class BatchValidateWorker extends TerminologyWorker {
           // (each with an open sqlite connection, and a reference to the entry's
           // context and its log) alive until the whole batch ends.
           const entryContext = this.opContext.copy({ ownProviders: true });
+          entryContext.batch = this.opContext;
           let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
           try {
             // Validating an entry never yields the event loop by itself, and IG builds send batches
@@ -249,8 +256,123 @@ class BatchValidateWorker extends TerminologyWorker {
     return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
+  /**
+   * The codes a batch's entries name, by code system: each coding, each coding of a
+   * codeableConcept, and each code with its system (in a code system validation, its url, or its
+   * codeSystem resource's), an entry's own parameters first, then the globals. Versions are not
+   * separated: which version answers an entry is decided as it runs (system-version, say).
+   *
+   * @param {Object} params - the batch Parameters (req.body)
+   * @param {Object[]} globalParams - its top-level shared parameters
+   * @param {boolean} codeSystemRoute - see processBatch
+   * @returns {Map<string, Set<string>>} code system url -> codes
+   */
+  batchCodes(params, globalParams, codeSystemRoute) {
+    const bySystem = new Map();
+    const add = (system, code) => {
+      if (typeof system !== 'string' || !system || code == null || code === '') {
+        return;
+      }
+      system = system.split('|')[0];
+      let codes = bySystem.get(system);
+      if (!codes) {
+        bySystem.set(system, codes = new Set());
+      }
+      codes.add(String(code));
+    };
+    const value = (p) => p ? (p.valueUri ?? p.valueUrl ?? p.valueCanonical ?? p.valueString ?? null) : null;
+    for (const v of params.parameter) {
+      if (v.name != 'validation' || !Array.isArray(v.resource?.parameter)) {
+        continue;
+      }
+      const own = v.resource.parameter;
+      const named = (name) => own.find(pp => pp.name == name) || globalParams.find(gp => gp.name == name);
+      for (const p of own) {
+        if (p.name == 'coding' && p.valueCoding) {
+          add(p.valueCoding.system, p.valueCoding.code);
+        } else if (p.name == 'codeableConcept' && p.valueCodeableConcept) {
+          for (const c of p.valueCodeableConcept.coding || []) {
+            add(c?.system, c?.code);
+          }
+        } else if (p.name == 'code') {
+          // as ValidateWorker reads them: a value set validation (on the ValueSet route, an
+          // entry with url or valueSet; see processBatch) names system; a code system
+          // validation url (or system, or its codeSystem resource)
+          const valueSetEntry = !codeSystemRoute && (named('url') || named('valueSet'));
+          const system = valueSetEntry ? value(named('system'))
+            : (value(named('url')) ?? value(named('system')) ?? named('codeSystem')?.resource?.url);
+          add(system, p.valueCode ?? p.valueString);
+        }
+      }
+    }
+    return bySystem;
+  }
+
   hasValueSet(parameter) {
     return parameter.find(p => p.name == 'url' || p.name == 'valueSet');
+  }
+}
+
+/**
+ * A $batch-validate-code's prefetchCodes handles, on the batch's context (opContext.batchPrefetch).
+ * Each entry builds its own providers, so the batch reads for them: the first time an entry
+ * locates a code in a code system version this server holds (a factory: not a code system
+ * resource, nor the ecosystem) and whose provider prefetches (overrides prefetchCodes), the
+ * batch builds a provider of its own for that version, with no supplements and under the batch's
+ * context, and calls prefetchCodes once, with every code the entries name in that system. Every
+ * entry whose provider is that system|version is then passed the handle. It is done at the first need, not
+ * before the entries run, because which version answers an entry is only decided as it runs
+ * (system-version, a value set's pinned version).
+ */
+class BatchPrefetch {
+  /**
+   * @param {Provider} provider - the request's provider
+   * @param {OperationContext} opContext - the batch's context (its providers last for the batch)
+   * @param {Map<string, Set<string>>} codes - code system url -> the codes the entries name
+   */
+  constructor(provider, opContext, codes) {
+    this.provider = provider;
+    this.opContext = opContext;
+    this.codes = codes;
+    this.handles = new Map(); // system|version -> Promise of the handle (or null)
+  }
+
+  /**
+   * @param {CodeSystemProvider} cs - an entry's provider
+   * @returns {Promise<*>} the handle for cs's system and version, or null
+   */
+  handleFor(cs) {
+    // a provider that doesn't prefetch: no provider built to read for it
+    if (cs.prefetchCodes === CodeSystemProvider.prototype.prefetchCodes) {
+      return null;
+    }
+    const codes = this.codes.get(cs.system());
+    if (!codes) {
+      return null;
+    }
+    const key = cs.system() + '|' + cs.version();
+    let handle = this.handles.get(key);
+    if (handle === undefined) {
+      handle = this.read(cs.system(), cs.version(), codes);
+      this.handles.set(key, handle);
+      // a failure (the time limit, say) is the entry's; a later entry tries again
+      handle.catch(() => this.handles.delete(key));
+    }
+    return handle;
+  }
+
+  async read(system, version, codes) {
+    const factory = this.provider.codeSystemFactory(system, version);
+    if (!factory) {
+      return null;
+    }
+    const cs = await this.provider.buildOnce(this.opContext, factory, []);
+    this.opContext.registerProvider(cs);
+    if (!cs || cs.system() !== system || cs.version() !== version) {
+      return null;
+    }
+    // the entries check displays, so designations are wanted
+    return cs.prefetchCodes([...codes], true);
   }
 }
 

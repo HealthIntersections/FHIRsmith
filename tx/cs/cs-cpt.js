@@ -5,6 +5,7 @@ const { FilterExecutionContext, CodeSystemFactoryProvider } = require('./cs-api'
 const {validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class CPTConceptDesignation {
   constructor(kind, value) {
@@ -521,7 +522,8 @@ class CPTServices extends BaseCSServices {
     } else if (prop === 'kind' && op === '=') {
       list = this.conceptList.filter(concept => concept.hasProperty('kind', value));
     } else {
-      throw new Error(`The filter "${prop} ${op} ${value}" is not supported for CPT`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const filter = new CPTFilterContext(`${prop}:${value}`, list, closed);

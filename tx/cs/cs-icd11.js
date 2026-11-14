@@ -98,23 +98,29 @@ const PREFETCH_COLUMNS = 'id, entity_id, uri, code, class_kind, selectable, resi
   'source_uri, browser_url, lft, rgt';
 
 /**
- * What prefetchCodes read for one list: for each code, the rows #resolve could return. A code
- * the list didn't hold, or one two rows answer (#resolve would pick one), is resolved as usual.
+ * What prefetchCodes read for one list: for each code, the rows #resolve could return. Only row
+ * data: it is recognised by the classification it was read from (shared), and the provider that
+ * locates the code builds the concept itself, so in a $batch-validate-code it can be passed to
+ * another provider of the same classification (cs-api.md, Batches).
  */
 class ICD11Prefetched {
-  constructor(owner, codes, rows, toConcept) {
-    this.owner = owner;
+  constructor(shared, codes, rows) {
+    this.shared = shared;
     this.codes = codes;
     this.rows = rows;
-    this.toConcept = toConcept;
   }
 
-  async resolve(code, otherwise) {
-    if (!this.codes.has(code)) return otherwise();
+  /**
+   * The row for a code, null if the list held the code and nothing answers it, or undefined if
+   * the code is to be resolved as usual: the list didn't hold it, or two rows answer it (#resolve
+   * would pick one).
+   */
+  resolve(code) {
+    if (!this.codes.has(code)) return undefined;
     const rows = this.rows.get(code) || [];
     if (rows.length === 0) return null;
-    if (rows.length === 1) return this.toConcept(rows[0]);
-    return otherwise();
+    if (rows.length === 1) return rows[0];
+    return undefined;
   }
 }
 
@@ -232,9 +238,11 @@ class ICD11Services extends BaseCSServices {
     assert(!code || typeof code === 'string', 'code must be a string');
     if (!code) return { context: null, message: 'Empty code' };
 
-    const concept = (prefetched instanceof ICD11Prefetched && prefetched.owner === this)
-      ? await prefetched.resolve(code, () => this.#resolve(code))
-      : await this.#resolve(code);
+    // a handle read from this classification: by this provider, or, in a $batch-validate-code,
+    // by the batch's provider of it (cs-api.md, Batches)
+    const row = (prefetched instanceof ICD11Prefetched && prefetched.shared === this.shared)
+      ? prefetched.resolve(code) : undefined;
+    const concept = row === undefined ? await this.#resolve(code) : (row ? this.#concept(row) : null);
     if (concept) return { context: concept, message: null };
 
     // Not a code as written. It may still be a postcoordinated expression -- but only in a
@@ -288,7 +296,7 @@ class ICD11Services extends BaseCSServices {
         if (row.uri.startsWith(prefix) && wantedSet.has(row.uri.slice(prefix.length))) add(row.uri.slice(prefix.length), row);
       }
     }
-    return new ICD11Prefetched(this, wantedSet, rows, (row) => this.#concept(row));
+    return new ICD11Prefetched(this.shared, wantedSet, rows);
   }
 
   /** What the expression parser needs: the database, and the request's translations. */
@@ -936,8 +944,7 @@ class ICD11Services extends BaseCSServices {
   async filter(filterContext, forIteration, prop, op, value) {
     if (!await this.doesFilter(prop, op, value)) {
       throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-        `The filter "${prop} ${op} ${value}" is not understood for ${this.system()}`,
-        'vs-invalid', 422);
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
     const target = await this.#resolve(value);
     if (!target) {

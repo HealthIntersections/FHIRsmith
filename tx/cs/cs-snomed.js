@@ -45,6 +45,7 @@ const IDENTIFIER_SCHEMES = {
 
 /** The $expand / ECL-free filter on alternate identifiers: mapped:<scheme> exists true|false */
 const MAPPED_FILTER_PREFIX = 'mapped:';
+const SNOMED_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'descendent-leaf', 'is-not-a', 'in']);
 
 // Description language index -> language code. The index is assigned at import
 // time by SnomedImporter.mapLanguageCode(); this table is its inverse and must
@@ -3535,6 +3536,10 @@ class SnomedProvider extends BaseCSServices {
     prop = SnomedProvider.#filterProperty(prop);
 
     if (prop === 'concept') {
+      if (!SNOMED_CONCEPT_FILTER_OPS.has(op)) {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n && op !== 'in') {
         throw new Error(`Invalid concept ID: ${value}`);
@@ -3573,8 +3578,6 @@ class SnomedProvider extends BaseCSServices {
           filterContext.filters.push(this.sct.filterIn(value));
           return null;
         }
-        default:
-          throw new Error(`Unsupported filter operation: concept ${op} ${value}`);
       }
     }
 
@@ -3604,18 +3607,15 @@ class SnomedProvider extends BaseCSServices {
     }
 
     if (prop === 'inactive') {
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       if (value !== 'true' && value !== 'false') {
         throw new Error(`Invalid filter value: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterInactive(value === 'true'));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: inactive ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterInactive(value === 'true'));
+      return null;
     }
 
     if (prop === 'constraint' && op === '=') {
@@ -3635,19 +3635,16 @@ class SnomedProvider extends BaseCSServices {
     }
 
     if (prop === 'moduleId') {
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
         throw new Error(`Invalid concept ID: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterModuleId(id));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: moduleId ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterModuleId(id));
+      return null;
     }
 
     if (prop == 'expressions' && op == '=') {
@@ -3663,10 +3660,12 @@ class SnomedProvider extends BaseCSServices {
     if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
       const scheme = prop.substring(MAPPED_FILTER_PREFIX.length);
       if (this.sct.stringToIdOrZero(scheme) === 0n) {
-        throw new Error(`Invalid identifier scheme: ${scheme}`);
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       if (op !== 'exists') {
-        throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       if (value !== 'true' && value !== 'false') {
         throw new Error(`Invalid filter value: ${value}`);
@@ -3680,23 +3679,20 @@ class SnomedProvider extends BaseCSServices {
 
     const cid = this.sct.stringToIdOrZero(prop);
     if (cid != 0) {
-
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
         throw new Error(`Invalid concept ID: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterByProperty(cid, id));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterByProperty(cid, id));
+      return null;
     }
 
-    throw new Error(`Unsupported filter property: ${prop}`);
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
 

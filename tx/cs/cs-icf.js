@@ -372,7 +372,7 @@ class IcfCodeSystemProvider extends FhirCodeSystemProvider {
       return super.filter(filterContext, forIteration, prop, op, value, fc);
     }
     if (value !== 'true' && value !== 'false') {
-      throw new Issue('error', 'exception', null, 'FILTER_NOT_UNDERSTOOD',
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
         this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
     const want = value === 'true';

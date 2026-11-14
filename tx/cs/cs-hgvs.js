@@ -5,6 +5,7 @@
 const assert = require('assert');
 const https = require('https');
 const { CodeSystemProvider, Designation, CodeSystemFactoryProvider } = require('./cs-api');
+const { Issue } = require('../library/operation-outcome');
 
 class HGVSCode {
   constructor(code) {
@@ -207,14 +208,9 @@ class HGVSServices extends CodeSystemProvider {
     return false;
   }
 
-  async getPrepContext(iterate) {
-    
-    throw new Error('Filters are not supported for HGVS');
-  }
-
   async filter(filterContext, forIteration, prop, op, value) {
-    
-    throw new Error('Filters are not supported for HGVS');
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
   async prepare(filterContext) {

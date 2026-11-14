@@ -4,6 +4,7 @@ const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemProvider, CodeSystemFactoryProvider} = require('./cs-api');
 const {validateArrayParameter} = require("../../library/utilities");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class NdcConcept {
   constructor(code, display, isPackage = false, key = null) {
@@ -420,7 +421,8 @@ class NdcServices extends CodeSystemProvider {
       return filter;
     }
 
-    throw new Error(`The filter "${prop} ${op} ${value}" is not supported for NDC`);
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
   async executeFilters(filterContext) {

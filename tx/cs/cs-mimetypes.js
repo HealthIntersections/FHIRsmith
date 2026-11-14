@@ -587,10 +587,12 @@ class MimeTypeServices extends CodeSystemProvider {
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
     if (prop !== 'base' && prop !== 'registered') {
-      throw new Error(`Unsupported filter property: ${prop}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
     if (op !== '=') {
-      throw new Error(`Unsupported filter operator for ${prop}: ${op}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
     // forIteration marks the filter the expander will walk; any others are only ever used as
     // predicates over what that one produces, and those do not have to be enumerable

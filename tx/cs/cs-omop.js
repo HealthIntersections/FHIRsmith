@@ -6,6 +6,7 @@ const {validateOptionalParameter, validateArrayParameter} = require("../../libra
 const {ConceptMap} = require("../library/conceptmap");
 const {BaseCSServices} = require("./cs-base");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class OMOPConcept {
   constructor(code, display, domain, conceptClass, standard, vocabulary) {
@@ -594,7 +595,8 @@ class OMOPServices extends BaseCSServices {
       }
       filterContext.filters.push(filter);
     } else {
-      throw new Error(`Filter "${prop} ${op} ${value}" not understood for OMOP`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 

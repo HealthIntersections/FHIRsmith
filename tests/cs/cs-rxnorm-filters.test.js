@@ -106,6 +106,10 @@ describe('RxNorm filters, totals, status and lookup', () => {
     test('a value with a quote in it is matched as written', async () => {
       expect(await size(['SAB', '=', "O'Brien"])).toBe(0);
     });
+
+    test('a filter that can\'t be done is the request\'s fault (422), not the server\'s', async () => {
+      await expect(size(['STY', 'regex', 'T1.*'])).rejects.toMatchObject({ msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+    });
   });
 
   describe('R2: results and totals are concepts, not atoms', () => {

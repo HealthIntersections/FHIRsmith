@@ -881,6 +881,10 @@ class CodeSystemProvider {
    * what it read: an object of its own, opaque to the worker. The worker passes the handle back
    * as locate(code, prefetched) for each code of that list, and drops it when the loop ends. The
    * provider keeps no state of its own for this: two lists in progress have two handles.
+   * $batch-validate-code calls it once per code system for all its entries' codes, and each entry
+   * passes the handle to a provider of its own, from the same factory (cs-api.md, Batches): so a
+   * handle holds only row data, read with no supplements under the batch's context, and is
+   * recognised by what it was read from, not by provider.
    *
    * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
    * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations

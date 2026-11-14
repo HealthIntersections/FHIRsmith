@@ -1143,6 +1143,14 @@ class OperationContext {
     // it's counted as an external request (ServerStats.countExternalRequest). Shared with the
     // copies (a batch's entries), so what they send counts against the request
     this._external = { requests: 0 };
+    // On a $batch-validate-code entry's context: the batch's own context (the request's),
+    // which outlives the entry. Kept by copy(). Null outside a batch, and on the batch's own
+    // context. What the batch knows before its entries run hangs off it (batchPrefetch).
+    this.batch = null;
+    // On a $batch-validate-code's own context, set by the batch worker before its entries
+    // run: its prefetchCodes handles, by system|version (BatchPrefetch, batch-validate.js). An
+    // entry passes its provider's to locate (tx/cs/cs-api.md, Batches)
+    this.batchPrefetch = null;
     this.debugging = isDebugging();
     // Providers opened during this operation that need their underlying
     // resources (sqlite connections, etc.) released when the operation ends.
@@ -1219,6 +1227,7 @@ class OperationContext {
     newContext.usageTracker = this.usageTracker;
     newContext.ecosystemForwarded = this.ecosystemForwarded;
     newContext._external = this._external;
+    newContext.batch = this.batch;
     // Share the same provider-cleanup list so providers opened by the copy
     // are released when the parent operation ends - unless the caller will
     // release them itself, with a list of its own.

@@ -182,7 +182,7 @@ describe('IETF Language CodeSystem Provider', () => {
       
       await expect(
         provider.filter(prep, true, 'language', 'equals', 'en')
-      ).rejects.toThrow('Unsupported filter operator');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "language equals en" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should reject invalid exists values', async () => {
@@ -198,7 +198,15 @@ describe('IETF Language CodeSystem Provider', () => {
       
       await expect(
         provider.filter(prep, true, 'invalid-prop', 'exists', 'true')
-      ).rejects.toThrow('Unsupported filter property');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "invalid-prop exists true" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+    });
+
+    test('should reject = on a component that has no equality filter', async () => {
+      const prep = await provider.getPrepContext(false);
+
+      await expect(
+        provider.filter(prep, true, 'variant', '=', 'x')
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "variant = x" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
