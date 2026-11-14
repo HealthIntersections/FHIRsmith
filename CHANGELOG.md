@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stall watchdog: the stack of a blocked event loop is read with a `Runtime.evaluate` on the main thread instead of by pausing it in the debugger. Enabling the debugger first lists every script the process has loaded, which takes longer the more it has loaded: in a CI run of every test suite in one process, no stack came back within 15 s
 - R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
 - R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
 - tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
@@ -57,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tx Conformance Statement
 
-(paste)
+FHIRsmith v1.0.2 passed all 5251 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
 
 ## [1.0.1] - 2026-11-12
 

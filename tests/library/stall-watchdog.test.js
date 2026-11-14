@@ -5,9 +5,8 @@ const os = require('os');
 const path = require('path');
 const { startStallWatchdog } = require('../../library/stall-watchdog');
 
-// holds the event loop until the watchdog has written a stack sample (or 20 s): on a busy
-// machine reading the stack takes seconds, and a sample that lands after the loop is free again
-// doesn't show this function
+// holds the event loop until the watchdog has written a stack sample (or 20 s): a sample that
+// lands after the loop is free again doesn't show this function
 function heldHere(dir) {
   const end = Date.now() + 20000;
   let n = 0;
