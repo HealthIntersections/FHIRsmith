@@ -571,6 +571,15 @@ class TXModule {
           const isHtml = txhtml.acceptsHtml(req);
           const xmlFmt = this.acceptsXml(req);
           const jsonFmt = this.acceptsJson(req);
+          // the client has hung up: there is no one to serialise the response for. (499, as nginx
+          // logs a client that closed the connection, though nothing is sent)
+          const abandon = () => {
+            this.log.info(`[${requestId}] ${req.method} ${isHtml ? 'html' : (xmlFmt ? 'xml' : 'json')} 499 ${duration}+${Date.now() - serialiseStart}ms 0: ${req.originalUrl} (the client disconnected before the response was sent))`);
+            return res;
+          };
+          if (opContext.clientGone) {
+            return abandon();
+          }
           // a stored resource that was read: our own ETag (Express's would hash the whole body,
           // after serialising it), and a 304 at once if the client has it already. Not for HTML,
           // where the page around the resource varies
@@ -603,11 +612,14 @@ class TXModule {
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const xml = await this.convertResourceToXmlAsync(data);
+              const xml = await this.convertResourceToXmlAsync(data, () => !opContext.clientGone);
               responseSize = Buffer.byteLength(xml, 'utf8');
               res.setHeader('Content-Type', xmlFmt);
               result = res.send(xml);
             } catch (err) {
+              if (err.abandoned) {
+                return abandon();
+              }
               console.error(err);
               // Fall back to JSON if XML conversion not supported
               this.log.warn(`XML conversion failed for ${data.resourceType}: ${err.message}, falling back to JSON`);
@@ -1728,8 +1740,8 @@ class TXModule {
    * convertResourceToXml, letting other requests run while a large resource is
    * serialised (see FhirXmlBase.toXmlAsync)
    */
-  async convertResourceToXmlAsync(res) {
-    return FhirXmlBase.toXmlAsync(() => this.convertResourceToXml(res));
+  async convertResourceToXmlAsync(res, stillWanted = null) {
+    return FhirXmlBase.toXmlAsync(() => this.convertResourceToXml(res), stillWanted);
   }
 
   convertResourceToXml(res) {

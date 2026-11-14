@@ -9,11 +9,17 @@
  * main thread - nothing there runs until it ends, not the memory guard, the operation
  * time limit or the logger. So a worker thread watches a heartbeat the main thread
  * writes every second. When the heartbeat is older than the threshold, the worker
- * attaches to the main thread through the inspector and pauses it just long enough to
- * read its stack (inspector messages are V8 interrupts, so they get through a busy
- * loop; a long garbage collection holds them until it ends). It does that again each
- * threshold while the stall lasts, up to MAX_SAMPLES, so the stacks show whether it is
- * stuck in one place or moving through a long loop.
+ * attaches to the main thread through the inspector and has it take its own stack: a
+ * Runtime.evaluate of new Error().stack (inspector messages are V8 interrupts, so they get
+ * through a busy loop, and the expression runs on top of the frames it interrupted; a long
+ * garbage collection, or a long call into native code, holds them until it ends). It does
+ * that again each threshold while the stall lasts, up to MAX_SAMPLES, so the stacks show
+ * whether it is stuck in one place or moving through a long loop.
+ *
+ * Not Debugger.pause: enabling the debugger first reports every script the process has
+ * loaded, one message each, which grows with the process (the CI run, every test suite in
+ * one process, got no stack within 15 s). An evaluation needs nothing enabled, and takes a
+ * millisecond.
  *
  * What it finds goes to a file in the log folder straight away (the main thread may
  * never recover: the process can run out of memory), and into the log as a warning once
@@ -24,9 +30,29 @@ const { Worker } = require('worker_threads');
 
 const MAX_SAMPLES = 5;
 const MAX_FRAMES = 40;
-// How long a sample may take before it is given up: attaching reports every script loaded first,
-// which on a busy machine takes seconds (a CI run gave up at 1 s, when this was the threshold)
+// How long a sample may take before it is given up: it is answered at the main thread's next
+// interrupt check, so only something that holds those (a long garbage collection, a long call
+// into native code) takes more than a few milliseconds
 const SAMPLE_TIMEOUT_MS = 15000;
+
+// Run on the main thread, on top of the frames it interrupted: its stack, as text, without the
+// expression's own frames (which have no file). The stack is formatted here, not by
+// Error.prepareStackTrace, which a library (or jest) may have replaced
+const STACK_EXPRESSION = '(() => {' +
+  ' const prepare = Error.prepareStackTrace, limit = Error.stackTraceLimit;' +
+  ' try {' +
+  '  Error.stackTraceLimit = MAX_FRAMES + 5;' +
+  '  Error.prepareStackTrace = (e, sites) => sites;' +
+  '  const sites = new Error().stack;' +
+  '  let i = 0;' +
+  '  while (i < sites.length && !sites[i].getFileName()) i++;' +
+  '  return sites.slice(i, i + MAX_FRAMES).map(s => (s.getFunctionName() || s.getMethodName() || "(anonymous)") +' +
+  '   " (" + String(s.getFileName()).replace(/^file:\\/\\//, "") + ":" + s.getLineNumber() + ":" + s.getColumnNumber() + ")");' +
+  ' } finally {' +
+  '  Error.prepareStackTrace = prepare;' +
+  '  Error.stackTraceLimit = limit;' +
+  ' }' +
+  '})()';
 
 // the watcher, run as a worker thread (eval: it has to be a string)
 const WATCHER = `
@@ -36,7 +62,7 @@ const path = require('path');
 const inspector = require('inspector');
 
 const beat = new BigInt64Array(workerData.buffer);
-const { thresholdMs, dir, label, maxSamples, maxFrames, sampleTimeoutMs } = workerData;
+const { thresholdMs, dir, label, maxSamples, sampleTimeoutMs, stackExpression } = workerData;
 
 let stall = null; // { since, samples, file }
 let busy = false;
@@ -47,10 +73,8 @@ function sample(done) {
   const finish = (frames, error) => {
     if (finished) return;
     finished = true;
-    session.post('Debugger.disable', () => {
-      try { session.disconnect(); } catch (e) { /* already gone */ }
-      done(frames, error);
-    });
+    try { session.disconnect(); } catch (e) { /* already gone */ }
+    done(frames, error);
   };
   try {
     session.connectToMainThread();
@@ -58,20 +82,16 @@ function sample(done) {
     done(null, e.message);
     return;
   }
-  // the call frames name their script by id: the scripts are listed as the debugger is enabled
-  const scripts = new Map();
-  session.on('Debugger.scriptParsed', (m) => scripts.set(m.params.scriptId, m.params.url));
-  session.on('Debugger.paused', (m) => {
-    const frames = m.params.callFrames.slice(0, maxFrames).map(f =>
-      (f.functionName || '(anonymous)') + ' (' + (scripts.get(f.location.scriptId) || f.url || '?').replace(/^file:\\/\\//, '') +
-      ':' + (f.location.lineNumber + 1) + ':' + (f.location.columnNumber + 1) + ')');
-    session.post('Debugger.resume', () => finish(frames, null));
+  session.post('Runtime.evaluate', { expression: stackExpression, returnByValue: true, silent: true }, (err, res) => {
+    if (err) {
+      finish(null, err.message);
+    } else if (res.exceptionDetails || !res.result || !Array.isArray(res.result.value)) {
+      finish(null, 'the stack could not be read: ' + ((res.exceptionDetails && res.exceptionDetails.text) || 'no value'));
+    } else {
+      finish(res.result.value, null);
+    }
   });
-  session.post('Debugger.enable', (err) => {
-    if (err) { finish(null, err.message); return; }
-    session.post('Debugger.pause', (err2) => { if (err2) finish(null, err2.message); });
-  });
-  // a pause that never lands (a garbage collection that doesn't end): give up on this one
+  // a sample that never lands (a garbage collection that doesn't end): give up on this one
   setTimeout(() => finish(null, 'no answer from the main thread'), sampleTimeoutMs);
 }
 
@@ -139,7 +159,8 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
 
   const worker = new Worker(WATCHER, {
     eval: true,
-    workerData: { buffer, thresholdMs, dir, label: String(label).replace(/[^A-Za-z0-9_-]/g, '_'), maxSamples: MAX_SAMPLES, maxFrames: MAX_FRAMES, sampleTimeoutMs: SAMPLE_TIMEOUT_MS }
+    workerData: { buffer, thresholdMs, dir, label: String(label).replace(/[^A-Za-z0-9_-]/g, '_'), maxSamples: MAX_SAMPLES, sampleTimeoutMs: SAMPLE_TIMEOUT_MS,
+      stackExpression: STACK_EXPRESSION.replaceAll('MAX_FRAMES', String(MAX_FRAMES)) }
   });
   worker.unref();
   worker.on('message', (m) => {

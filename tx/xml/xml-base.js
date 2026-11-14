@@ -24,6 +24,11 @@ let deferred = null;
 const DEFERRED_MARK = /\u0000(\d+)\u0000/;
 // how long serialising runs before it lets the event loop handle other requests
 const YIELD_MS = 25;
+// every FHIR element name is a simple token. A JSON key that isn't one (from a resource that came
+// in from outside) is refused, rather than written into the XML as markup - or as one of the marks
+// above. The names seen are few, so the ones checked are remembered
+const ELEMENT_NAME = /^[A-Za-z0-9_]+$/;
+const checkedNames = new Set();
 // the XML of large arrays, kept for next time (see xml-fragment-cache.js); null: none
 let fragmentCache = null;
 
@@ -509,6 +514,25 @@ class FhirXmlBase {
   }
 
   /**
+   * Refuse a name that isn't an element name: every FHIR element name is a simple token
+   * (letters, digits and _). A JSON key that isn't one could only have come in from outside,
+   * and written into the XML it would be markup.
+   * @param {string} name
+   * @throws {Error} if it isn't one
+   */
+  static checkElementName(name) {
+    if (checkedNames.has(name)) {
+      return;
+    }
+    if (typeof name !== 'string' || !ELEMENT_NAME.test(name)) {
+      throw new Error(`Cannot serialise this content as XML: ${JSON.stringify(String(name)).substring(0, 100)} is not an element name`);
+    }
+    if (checkedNames.size < 10000) {
+      checkedNames.add(name);
+    }
+  }
+
+  /**
    * Escape special characters for XML
    *
    * XML 1.0 cannot represent the C0 control characters at all - not literally,
@@ -625,6 +649,7 @@ class FhirXmlBase {
     if (value === null || value === undefined) {
       return;
     }
+    this.checkElementName(name);
 
     if (Array.isArray(value)) {
       if (deferred && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
@@ -683,9 +708,11 @@ class FhirXmlBase {
    * is the same text toXml produces.
    *
    * @param {Function} render - produces the XML synchronously, e.g. () => CodeSystemXML.toXml(json)
+   * @param {Function} [stillWanted] - asked at each yield; when it returns false (the client has
+   *   hung up), serialising stops with an error marked abandoned
    * @returns {Promise<string>} XML string
    */
-  static async toXmlAsync(render) {
+  static async toXmlAsync(render, stillWanted = null) {
     let text;
     let jobs;
     deferred = [];
@@ -702,7 +729,7 @@ class FhirXmlBase {
     const out = [];
     // out is joined into chunks as it goes (at each yield), so the end isn't one join of millions
     // of pieces. busy: the time spent serialising, not counting the time given to other work
-    const clock = { last: performance.now(), chunks: [], busy: 0 };
+    const clock = { last: performance.now(), chunks: [], busy: 0, stillWanted };
     const busyNow = () => clock.busy + (performance.now() - clock.last);
     const cache = fragmentCache;
     // split leaves the text between the marks at the even positions, and the job numbers at the odd ones
@@ -775,6 +802,7 @@ class FhirXmlBase {
       if (Array.isArray(item)) {
         await this._emitArrayAsync(out, name, item, level, clock);
       } else if (item !== null && typeof item === 'object') {
+        this.checkElementName(name);
         const ind = this.indent(level);
         let skipKeys = NO_KEYS;
         if (name === 'extension' || name === 'modifierExtension') {
@@ -805,6 +833,11 @@ class FhirXmlBase {
         out.length = 0;
         clock.busy += now - clock.last;
         await new Promise(resolve => setImmediate(resolve));
+        if (clock.stillWanted && !clock.stillWanted()) {
+          const error = new Error('Serialising abandoned: the response is no longer wanted');
+          error.abandoned = true;
+          throw error;
+        }
         clock.last = performance.now();
       }
     }

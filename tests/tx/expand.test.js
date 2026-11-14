@@ -8,6 +8,7 @@ const request = require('supertest');
 const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
 const { CountryCodeFactoryProvider } = require('../../tx/cs/cs-country');
 const { IETFLanguageCodeFactory } = require('../../tx/cs/cs-lang');
+const { USStateFactoryProvider } = require('../../tx/cs/cs-usstates');
 
 // Caches must be created explicitly via $cache-control before a cache-id can be
 // referenced. Returns the server-issued id.
@@ -293,30 +294,75 @@ describe('Expand Worker', () => {
       }
     });
 
+    // Put a code system's factory in place for one test, and put back whatever was there
+    async function withFactory(system, factory, fn) {
+      const factories = getTxModule().endpoints[0].provider.codeSystemFactories;
+      const had = factories.has(system);
+      const before = factories.get(system);
+      factories.set(system, factory);
+      try {
+        await fn();
+      } finally {
+        if (had) {
+          factories.set(system, before);
+        } else {
+          factories.delete(system);
+        }
+      }
+    }
+
+    function expectFilterNotUnderstood(response, text) {
+      expect(response.status).toBe(422);
+      expect(response.body.issue[0].code).toBe('not-supported');
+      expect(messages(response)[0]).toBe(text);
+    }
+
+    const filtered = (system, filter) => ({
+      name: 'valueSet',
+      resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system, filter: [filter] }] } }
+    });
+
     test('a filter the code system doesn\'t support: 422, not 500', async () => {
       const factory = new CountryCodeFactoryProvider(getTxModule().i18n);
       await factory.load();
-      getTxModule().endpoints[0].provider.codeSystemFactories.set('urn:iso:std:iso:3166', factory);
-      const response = await expand([{
-        name: 'valueSet',
-        resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{
-          system: 'urn:iso:std:iso:3166', filter: [{ property: 'display', op: 'regex', value: 'United.*' }] }] } }
-      }]);
-      expect(response.status).toBe(422);
-      expect(response.body.issue[0].code).toBe('not-supported');
-      expect(messages(response)[0]).toBe('The filter "display regex United.*" is not understood or supported');
+      await withFactory('urn:iso:std:iso:3166', factory, async () => {
+        expectFilterNotUnderstood(await expand([filtered('urn:iso:std:iso:3166', { property: 'display', op: 'regex', value: 'United.*' })]),
+          'The filter "display regex United.*" is not understood or supported');
+      });
     });
 
     test('an unsupported filter on BCP-47: 422 not-supported, translated message', async () => {
-      getTxModule().endpoints[0].provider.codeSystemFactories.set('urn:ietf:bcp:47', new IETFLanguageCodeFactory(getTxModule().i18n));
-      const response = await expand([{
-        name: 'valueSet',
-        resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{
-          system: 'urn:ietf:bcp:47', filter: [{ property: 'language', op: 'regex', value: 'en' }] }] } }
-      }]);
-      expect(response.status).toBe(422);
-      expect(response.body.issue[0].code).toBe('not-supported');
-      expect(messages(response)[0]).toBe('The filter "language regex en" is not understood or supported');
+      await withFactory('urn:ietf:bcp:47', new IETFLanguageCodeFactory(getTxModule().i18n), async () => {
+        expectFilterNotUnderstood(await expand([filtered('urn:ietf:bcp:47', { property: 'language', op: 'regex', value: 'en' })]),
+          'The filter "language regex en" is not understood or supported');
+      });
+    });
+
+    // US states has no filters, and doesn't override filter(): the base refuses it
+    test('a code system with no filters at all: 422, not 500', async () => {
+      const factory = new USStateFactoryProvider(getTxModule().i18n);
+      await factory.load();
+      await withFactory('https://www.usps.com/', factory, async () => {
+        expectFilterNotUnderstood(await expand([filtered('https://www.usps.com/', { property: 'concept', op: 'is-a', value: 'AK' })]),
+          'The filter "concept is-a AK" is not understood or supported');
+      });
+    });
+
+    test('$validate-code against a filter the code system doesn\'t support: 422, as $expand', async () => {
+      const factory = new USStateFactoryProvider(getTxModule().i18n);
+      await factory.load();
+      await withFactory('https://www.usps.com/', factory, async () => {
+        const response = await request(app)
+          .post('/tx/r5/ValueSet/$validate-code')
+          .set('Accept', 'application/json')
+          .set('Content-Type', 'application/json')
+          .send({ resourceType: 'Parameters', parameter: [
+            filtered('https://www.usps.com/', { property: 'region', op: '=', value: 'west' }),
+            { name: 'system', valueUri: 'https://www.usps.com/' }, { name: 'code', valueCode: 'AK' }] });
+        expect(response.status).toBe(422);
+        expect(response.body.issue[0].code).toBe('not-supported');
+        expect(response.body.issue[0].details.coding[0].code).toBe('vs-invalid');
+      });
     });
   });
 

@@ -262,6 +262,27 @@ describe('EcosystemResolver', () => {
       expect(c.n).toBe(0);
     });
 
+    test('what the registry said about code systems is kept for the 1000 most recently asked about', async () => {
+      const r = resolver();
+      const scope = nock(REG).get('/tx-reg/resolve').query(true).reply(200, {}).persist();
+      try {
+        const cs = (i) => `http://example.org/cs${i}`;
+        await r.findServers(cs(0), null, 5);
+        for (let i = 1; i <= 1005; i++) {
+          await r.findServers(cs(i), null, 5);
+          if (i % 100 === 0) {
+            await r.findServers(cs(0), null, 5); // still being used
+          }
+        }
+        expect(r.servers.size).toBe(1000);
+        expect([...r.servers.keys()].some(k => k.startsWith(cs(0) + '#'))).toBe(true);
+        expect([...r.servers.keys()].some(k => k.startsWith(cs(1) + '#'))).toBe(false);
+      } finally {
+        scope.persist(false);
+        nock.cleanAll();
+      }
+    });
+
     test('a 4xx answer is kept, a 5xx or a failure is not', async () => {
       const r = resolver();
       mockListing();
@@ -421,14 +442,14 @@ describe('EcosystemResolver', () => {
 
     test('a server that sends too much', async () => {
       const r = resolver({ registry: `${local}/huge/tx-reg`, allowPrivateAddresses: true });
-      await expect(r.send(`${local}/fhir`, `${local}/huge/fhir/metadata`)).rejects.toThrow(/maxContentLength/);
+      await expect(r.send(`${local}/fhir`, `${local}/huge/fhir/metadata`)).rejects.toThrow(/huge\/fhir\/metadata: the response is more than 10 MB$/);
       expect(await r.findServer(SCT, null, 5)).toBeNull();
     });
 
     test('a server that never finishes', async () => {
       const r = resolver({ registry: `${local}/slow/tx-reg`, allowPrivateAddresses: true });
       const start = Date.now();
-      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/canceled/);
+      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/slow\/fhir\/metadata: no complete response within 30 s$/);
       expect(await r.findServer(SCT, null, 5)).toBeNull();
       expect(Date.now() - start).toBeLessThan(5000);
     });

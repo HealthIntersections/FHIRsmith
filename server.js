@@ -11,6 +11,14 @@
 // the safe behaviour. `npm run dev` (node --watch) runs in development mode
 process.env.NODE_ENV ??= process.execArgv.includes('--watch') ? 'development' : 'production';
 
+// node server.js --check (or -t, as nginx has it): check the configuration - config.json, the
+// files it names, the folders the server writes to, and with --role what the role makes of it -
+// print what's wrong, and exit 0 if nothing is, 1 if something is. Before anything else, so
+// nothing is made, logged or started (library/config-check.js)
+if (require('./library/config-check').wantsCheck(process.argv.slice(2))) {
+  process.exit(require('./library/config-check').runCheck(process.argv.slice(2)));
+}
+
 // Logging starts before anything else, so that a server that fails to start (bad config.json, a
 // missing dependency, an unwritable folder) says why in the log as well as on stderr. It starts with
 // the logger defaults; config.logging is applied once config.json has been read
@@ -68,6 +76,16 @@ try {
   process.exit(1);
 }
 
+// what --check would say about it (library/config-check.js): logged once logging is configured,
+// below. Checked before the role changes it. Nothing here stops the server - what it can't run
+// with, it refuses as it starts, as before
+let configReport = null;
+try {
+  configReport = require('./library/config-check').checkParsedConfig(config, { dataDir: folders.dataDir(), environment: false });
+} catch (error) {
+  bootLog.warn(`The configuration couldn't be checked: ${error.message}`);
+}
+
 // --role=master|tx-worker (cluster.md). With no role this is null and the configuration is
 // untouched: every `if (role)` below is skipped
 const { parseRole, applyRole, describeRole } = require('./library/role');
@@ -84,6 +102,17 @@ try {
 
 Logger.getInstance().configure(config.logging || {});
 const serverLog = Logger.getInstance().child({ module: 'server' });
+if (configReport) {
+  for (const e of configReport.errors) {
+    serverLog.error(`Configuration: ${e.where}: ${e.message}`);
+  }
+  for (const e of configReport.warnings) {
+    serverLog.warn(`Configuration: ${e.where}: ${e.message}`);
+  }
+  if (!configReport.ok || configReport.warnings.length) {
+    serverLog.warn('Configuration: node server.js --check reports on the configuration without starting the server');
+  }
+}
 const packageJson = require('./package.json');
 
 // Startup banner

@@ -8,6 +8,7 @@ const {Extensions} = require("../library/extensions");
 const {validateParameter, validateArrayParameter} = require("../../library/utilities");
 const {I18nSupport} = require("../../library/i18nsupport");
 const {VersionUtilities} = require("../../library/version-utilities");
+const { Issue } = require("../library/operation-outcome");
 
 /**
  * For documentation, see cs-api.md
@@ -979,7 +980,12 @@ class CodeSystemProvider {
    *   Providers that gain nothing from this (the SQL-backed providers, and the trivial
    *   in-memory enumerations) simply ignore fc.
    **/
-  async filter(filterContext, forIteration, prop, op, value, fc) { throw new Error("Must override"); } // well, only if any filters are actually supported
+  async filter(filterContext, forIteration, prop, op, value, fc) {
+    // a provider that supports no filters needn't override this: the request asked for a filter
+    // this code system doesn't have, which is the client's problem, not a server error
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+  }
 
   /**
    * called once all the filters have been handled, and iteration is about to happen.

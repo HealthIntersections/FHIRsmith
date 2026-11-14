@@ -137,6 +137,9 @@ The server reads `config.json` from the data directory. See [CONFIGURATION.md](C
 for the server settings (port, body size, logging, email and the daily report), the environment
 variables, and where each module's own settings are documented.
 
+To check the configuration without starting the server: `npm run check` (`node server.js --check`).
+See [Checking the configuration](CONFIGURATION.md#checking-the-configuration).
+
 ### Start the Server
 
 ```bash
@@ -177,6 +180,7 @@ cp node_modules/fhirsmith/config-template.json /var/lib/fhirsmith/config.json
 
 # Set the data directory and run
 export FHIRSMITH_DATA_DIR=/var/lib/fhirsmith
+fhirsmith --check   # check the configuration
 fhirsmith
 ```
 
@@ -210,6 +214,10 @@ docker pull ghcr.io/healthintersections/fhirsmith:latest
 mkdir -p /path/to/data
 cp config-template.json /path/to/data/config.json
 # Edit config.json as needed
+
+# Check the configuration (exits 0 if it's good, 1 if not)
+docker run --rm -e FHIRSMITH_DATA_DIR=/app/data -v /path/to/data:/app/data \
+  ghcr.io/healthintersections/fhirsmith:latest node server.js --check
 
 # Run with data directory mounted
 docker run -d --name fhirsmith \

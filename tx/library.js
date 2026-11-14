@@ -188,7 +188,32 @@ class Library {
     this.codeSystemFactories.set(factory.system()+"|"+ver, factory);
     const verMin = factory.getPartialVersion();
     if (verMin) {
-      this.codeSystemFactories.set(factory.system()+"|"+verMin, factory);
+      const key = factory.system() + "|" + verMin;
+      this.#warnIfOlder(key, this.codeSystemFactories.get(key), factory);
+      this.codeSystemFactories.set(key, factory);
+    }
+  }
+
+  /**
+   * The library's order decides which release a partial version (a SNOMED CT edition without
+   * its release, a semver major.minor) means: the one loaded last. That is deliberate - it's how
+   * the library file controls version resolution - but when the one loaded last is older than one
+   * loaded before it, it may not be what was meant, so say so
+   */
+  #warnIfOlder(key, previous, factory) {
+    if (!previous || previous === factory) {
+      return;
+    }
+    const was = previous.version();
+    const now = factory.version();
+    if (was && now && was !== now && VersionUtilities.compareVersionsGeneral(was, now) > 0) {
+      const msg = `Library order: ${key} now means ${now}, though ${was}, which is newer, was loaded before it. ` +
+        `A request for ${key} gets the older one: if that isn't what was meant, list ${was} after ${now} in the library`;
+      if (this.log) {
+        this.log.warn(msg);
+      } else {
+        console.warn(msg);
+      }
     }
   }
 

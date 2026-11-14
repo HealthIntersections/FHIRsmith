@@ -2,6 +2,7 @@ const axios = require('axios');
 const Logger = require('../library/logger');
 const { ServerCredentials } = require('../library/server-credentials');
 const { createGuardedAgents } = require('../library/ssrf-guard');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
 
 /**
  * Finds another server in the terminology ecosystem for a code system (and version) that this
@@ -42,6 +43,7 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // a TerminologyCapabilities is und
 const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
 const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
 const MAX_ANSWERS = 10000; // the most answers (to $lookup and $validate-code) kept
+const MAX_KNOWN = 1000; // the most entries kept in each of the caches of what the registry and the servers say (#known)
 
 class EcosystemResolver {
   /**
@@ -186,6 +188,10 @@ class EcosystemResolver {
   async #known(cache, key, loader, opContext, why) {
     const now = Date.now();
     const entry = cache.get(key);
+    if (entry) {
+      // most recently used: the last to be dropped (see #remember)
+      this.#remember(cache, key, entry);
+    }
     if (entry && entry.pending) {
       // waiting for it is waiting on another server
       if (opContext && opContext.countExternalRequest) {
@@ -197,7 +203,7 @@ class EcosystemResolver {
       if (now - entry.at >= CACHE_MS && !entry.refreshing) {
         entry.refreshing = true;
         loader(null).then(value => {
-          cache.set(key, { at: Date.now(), value });
+          this.#remember(cache, key, { at: Date.now(), value });
         }).catch(e => {
           this.log.warn(why(e) + ' (still using what it said before)');
           entry.at = Date.now() - CACHE_MS + RETRY_MS;
@@ -208,16 +214,29 @@ class EcosystemResolver {
       return entry.value;
     }
     const pending = loader(opContext).then(value => {
-      cache.set(key, { at: Date.now(), value });
+      this.#remember(cache, key, { at: Date.now(), value });
       return value;
     }, e => {
       // not known: null for now, and asked again (in the background) in a few minutes
       this.log.warn(why(e));
-      cache.set(key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null });
+      this.#remember(cache, key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null });
       return null;
     });
-    cache.set(key, { pending });
+    this.#remember(cache, key, { pending });
     return pending;
+  }
+
+  /**
+   * Keep entry under key, as the most recently used, and drop the least recently used beyond
+   * MAX_KNOWN. Some of these caches are keyed by what requests ask for (a system and version), so
+   * without a limit they would grow with every code system anyone names
+   */
+  #remember(cache, key, entry) {
+    cache.delete(key);
+    cache.set(key, entry);
+    while (cache.size > MAX_KNOWN) {
+      cache.delete(cache.keys().next().value);
+    }
   }
 
   /**
@@ -227,7 +246,19 @@ class EcosystemResolver {
     if (opContext && opContext.countExternalRequest) {
       opContext.countExternalRequest();
     }
-    return axios.request(config);
+    // the deadline covers the whole request; axios's timeout only the wait for the headers
+    const deadline = requestDeadline(TIMEOUT_MS);
+    try {
+      return await axios.request({
+        ...config,
+        timeout: TIMEOUT_MS,
+        signal: deadline.signal,
+        maxContentLength: MAX_RESPONSE_BYTES
+      });
+    } catch (e) {
+      // the warnings that report this give the server's answer in words, not axios's
+      throw new Error(`${config.url}: ${describeRequestFailure(e, { timeoutMs: TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, deadline })}`, { cause: e });
+    }
   }
 
   async getRegistryJson(url, opContext = null) {
@@ -235,10 +266,7 @@ class EcosystemResolver {
       url,
       method: 'GET',
       headers: { 'Accept': 'application/json', [FORWARDED_HEADER]: 'true' },
-      timeout: TIMEOUT_MS,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
       validateStatus: () => true,
-      maxContentLength: MAX_RESPONSE_BYTES,
       httpAgent: this.agents.httpAgent,
       httpsAgent: this.agents.httpsAgent
     });
@@ -271,10 +299,7 @@ class EcosystemResolver {
         method: body ? 'POST' : 'GET',
         headers,
         data: body ? JSON.stringify(body) : undefined,
-        timeout: TIMEOUT_MS,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
         validateStatus: () => true,
-        maxContentLength: MAX_RESPONSE_BYTES,
         maxRedirects: 0, // the credentials go where they were configured to, or nowhere
         httpAgent: this.agents.httpAgent,
         httpsAgent: this.agents.httpsAgent

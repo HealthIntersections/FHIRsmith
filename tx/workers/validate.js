@@ -414,7 +414,7 @@ class ValueSetChecker {
         if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op)) && !(await supplementFilter(cs, ccf))) {
           if (!(await cs.doesFilter(ccf.property, ccf.op, ccf.value))) {
             throw new Issue('error', 'not-supported', "ValueSet.compose."+desc+".filter["+i+"]", 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', 
-              this.params.HTTPLanguages, [ccf.property, ccf.op, ccf.value, this.valueSet.url, cs.system()]), "vs-invalid").handleAsOO(400);
+              this.params.HTTPLanguages, [ccf.property, ccf.op, ccf.value, this.valueSet.url, cs.system()]), "vs-invalid").handleAsOO(422);
           }
         }
         i++;

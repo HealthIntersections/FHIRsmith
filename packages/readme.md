@@ -95,6 +95,8 @@ In the server config, under `modules.packages`:
 | `crawlToken` | Shared secret for `POST /packages/crawl`. Omit it to disable that endpoint; the scheduled crawler is unaffected. |
 | `crawler.enabled` | Run the crawler at startup and on the schedule. |
 | `crawler.schedule` | Cron expression for crawls. |
+| `crawler.maxFeedMB` | The largest feed (JSON or RSS) the crawler will read, as downloaded. Default 50; the largest real feed, Simplifier's, is 5 MB. |
+| `crawler.maxRequestSeconds` | The longest a download (a feed or a package) may take, response included. The request timeouts only cover the wait for a response to start, so a server that then sent a byte now and then could hold the crawl indefinitely. Default 300. |
 | `crawler.signatures` | Publishers' package signatures: `ignore`, `check` (the default) or `require`. See [Publishers' signatures](#publishers-signatures). |
 | `masterUrl` | The list of feeds to crawl. Defaults to `https://fhir.github.io/ig-registry/package-feeds.json`. |
 | `localFeedDirs` | Optional. Directories feeds may be read from as local files (for testing). |

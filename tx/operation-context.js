@@ -1323,6 +1323,13 @@ class OperationContext {
   }
 
   /**
+   * Whether the client has disconnected (markClientGone): the response has no one to go to
+   */
+  get clientGone() {
+    return this._clock.clientGone === true;
+  }
+
+  /**
    * deadCheck plus cooperative yielding: call this (awaited) from long-running
    * loops in async code. Runs the normal deadCheck, and after every
    * YIELD_INTERVAL ms of continuous compute awaits a real setImmediate so the

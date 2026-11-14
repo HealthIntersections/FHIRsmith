@@ -5,10 +5,42 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-11-15
+
+### Security
+
+- XML: a JSON key that isn't an element name (every FHIR element name is a simple token: letters, digits and `_`), from a resource that came in from outside, is refused - the response falls back to JSON - instead of being written into the XML as markup (`{"a><x/><b": ...}` became `<a><x/><b .../>`). The same check covers a resource's type in a Bundle or Parameters
+
+  ```
+  sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
+  ```
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
+
+### Added
+
+- `node server.js --check` (or `-t`; `npm run check`): checks the configuration and exits 0 or 1, without starting anything, as `nginx -t` does - `config.json`, unknown settings (warnings, with the setting that may have been meant), replaced settings, types and ranges, the files the configuration names (the tx library, parsed and its sources checked), the folders the server writes to, the Node.js version and the native SQLite modules. With `--role`, what the role makes of it; `node cluster.js --check`, the launcher's settings and each process's configuration. The server logs the same errors and warnings as it starts. See CONFIGURATION.md, "Checking the configuration"
+- tx: a warning at startup when the library's order makes a partial version (`http://loinc.org|2`, say) mean an older version than one loaded before it: the version the library lists last wins, deliberately, so the order says which one a partial version means - the warning catches an order that says it by mistake
+- Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
+- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, counted in characters, so text outside Latin-1 can take up to twice that; 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
+- tx: a request whose response took 10 ms or more to serialise says so in its log line: `5+6120ms` is 5 ms for the operation and 6,120 ms to serialise. The time was taken before serialising, so a request that held the process for seconds was logged as taking a few ms
 
 ### Changed
 
+- Requests to other servers have a deadline for the whole request, response included: a server that sends its response headers and then a byte now and then no longer holds the request for as long as it likes (axios's `timeout` only covers the wait for the response to start). Ecosystem resolution: 30 s and 10 MB (PR #382, Josh Mandel). Registry crawler: `maxRequestSeconds` (default 120), also for the OAuth token request. Package crawler: `crawler.maxRequestSeconds` (default 300) for feeds and packages, and feeds are limited to `crawler.maxFeedMB` (default 50; they had no limit, and the largest, Simplifier's, is 5 MB). `/packages/npm-check`: its `requestTimeout` now covers the whole request. A request that hits a limit says which in the log ("no complete response within 30 s", "the response is more than 10 MB"), not "canceled" or "maxContentLength size of 10485760 exceeded"
+- tx: XML responses are serialised a part at a time, letting other requests run every 25 ms. The full ICD-10-CM CodeSystem as XML (64 MB, `CodeSystem?url=http://hl7.org/fhir/sid/icd-10-cm`, fetched 50-200 times a day) held a tx.fhir.org process for 9 s on average and up to 17 s, 204 times on 2026-11-13 - the long spikes in the Node Blocking graph. The XML serialiser is also about 3 times faster, with about 7 times less garbage collection
+- tx: converting a CodeSystem or ValueSet from R5 for an R4 or R3 endpoint no longer copies the whole resource first: what changes is copied, and the rest shared (for ICD-10-CM, 110-190 ms of copying a response, now none). The same stored code system or cached expansion converted again gives the same result, so its XML can come from the cache
+- ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id, as JSON or XML) has an ETag from a hash of its content, worked out once, and a matching `If-None-Match` gets a 304 before anything is serialised; it was serialised in full and then hashed. These ETags aren't the old ones, so a client that keeps them gets each resource once more. Other responses over 1 MB no longer get an ETag: Express hashed every response, POSTs included
+- Ecosystem resolution: a server the registry lists as a candidate for a code system is used only if it has the content (complete or fragment) - as its TerminologyCapabilities says (for R4 and R3, in the cross-version extension), or else as a search of its CodeSystems finds - and the next candidate is tried if it doesn't, or doesn't have the version. A server the registry says is authoritative is used whatever it says about the content. If this server is authoritative for the code system, no other server is asked
+- tx: a response isn't serialised once the client has hung up - before it starts, or (XML) at the next point it lets other work run - and the request is logged with 499
+- Ecosystem resolution: the caches of what the registry and the other servers say keep the 1,000 most recently used entries each. They are keyed by the code systems (and versions) requests name, so they grew without limit
+- Provider contracts (PR #368, Josh Mandel): what a code system or value set provider that keeps its content in a database (rather than in memory) is told, so it needn't load everything:
+  - `fetchValueSet(url, version, opContext)`: the request comes too, so a provider can share work between the lookups of one request
+  - an include's (or exclude's) concept list can stay in the store, with a handle `{ count, lookup(code) }` on the include (`tx/library/stored-concepts.js`): `$validate-code` asks it about the one code it checks instead of reading the list. An include whose listed concepts carry a `modifierExtension` stays an ordinary list, and is refused as before (422)
+  - `prefetchCodes` is told when the response shows each code's display and nothing else of its designations (`hints.displayOnly`), so the rest needn't be read
+  - THO precedence asks hl7.terminology's providers for their versions with `fetchValueSet` / `fetchConceptMap`, instead of reading their in-memory maps
+  - the scans of every value set (`scanAllValueSets`) read only each value set's url, version and compose, and a provider may hand them just those
+  - the ECL `wild:` term matcher is in the ECL module, so every SNOMED CT provider matches the same way
+- `$validate-code` against a value set that lists a code in another form (ICD-11's short code and entity id): the listed codes are located only when the code isn't listed as given, and ICD-11 reads them together (`prefetchCodes`, a query per 400 codes) instead of one at a time
 - LOINC: a relationship filter that names its part (`SCALE_TYP = Doc`) found the part by reading every code (`Codes.Description` had no index), in every membership query: on LOINC 2.83, 18 ms for each `$validate-code`. The importer now indexes `Codes.Description` (`idx_codes_description`, 14 MB on 2.83), and the lookup takes 0.04 ms. A database imported before this doesn't need re-importing: add the index once (about 2 s on 2.83) with the sqlite3 command line, while the server isn't using the file:
 
   ```
@@ -18,27 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
-
-## [1.0.2]
-
-### Added
-
-- Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
-- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
-- tx: a request whose response took 10 ms or more to serialise says so in its log line: `5+6120ms` is 5 ms for the operation and 6,120 ms to serialise. The time was taken before serialising, so a request that held the process for seconds was logged as taking a few ms
-
-### Changed
-
-- tx: XML responses are serialised a part at a time, letting other requests run every 25 ms. The full ICD-10-CM CodeSystem as XML (64 MB, `CodeSystem?url=http://hl7.org/fhir/sid/icd-10-cm`, fetched 50-200 times a day) held a tx.fhir.org process for 9 s on average and up to 17 s, 204 times on 2026-11-13 - the long spikes in the Node Blocking graph. The XML serialiser is also about 3 times faster, with about 7 times less garbage collection
-- tx: converting a CodeSystem or ValueSet from R5 for an R4 or R3 endpoint no longer copies the whole resource first: what changes is copied, and the rest shared (for ICD-10-CM, 110-190 ms of copying a response, now none). The same stored code system or cached expansion converted again gives the same result, so its XML can come from the cache
-- ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id, as JSON or XML) has an ETag from a hash of its content, worked out once, and a matching `If-None-Match` gets a 304 before anything is serialised; it was serialised in full and then hashed. These ETags aren't the old ones, so a client that keeps them gets each resource once more. Other responses over 1 MB no longer get an ETag: Express hashed every response, POSTs included
-- Ecosystem resolution: a server the registry lists as a candidate for a code system is used only if it has the content (complete or fragment) - as its TerminologyCapabilities says (for R4 and R3, in the cross-version extension), or else as a search of its CodeSystems finds - and the next candidate is tried if it doesn't, or doesn't have the version. A server the registry says is authoritative is used whatever it says about the content. If this server is authoritative for the code system, no other server is asked
-
-### Fixed
-
+- Stall watchdog: the stack of a blocked event loop is read with a `Runtime.evaluate` on the main thread instead of by pausing it in the debugger. Enabling the debugger first lists every script the process has loaded, which takes longer the more it has loaded: in a CI run of every test suite in one process, no stack came back within 15 s
 - R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
 - R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
+- tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
+- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.2 passed all 5251 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
 
 ## [1.0.1] - 2026-11-12
 

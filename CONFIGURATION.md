@@ -8,8 +8,63 @@ it may have comments: `//` to the end of the line, and `/* ... */`.
 
 Upgrading? See [Upgrading to 1.0.0](#upgrading-to-100).
 
+To check a configuration without starting the server, see [Checking the configuration](#checking-the-configuration).
+
 The top level of `config.json` has the server-wide settings described here, and a
 `modules` section with an entry for each module (see [Modules](#modules)).
+
+## Checking the configuration
+
+`node server.js --check` (or `-t`, as with `nginx -t`; `npm run check`; `fhirsmith --check` for a
+global install) checks the configuration and exits, without starting anything: no folder is
+made, nothing is written to the log, no database is opened and nothing is downloaded. It prints
+one line for each problem and a verdict, and exits 0 if there are no errors, 1 if there are:
+
+```
+fhirsmith: [info] modules: enabled: packages, tx
+fhirsmith: [warn] modules.tx.cacheTimout: is not a setting FHIRsmith knows: did you mean cacheTimeout? It is ignored
+fhirsmith: [error] modules.tx.externalLimit: is 200000, more than internalLimit (100000): an expansion can't return more codes than it builds
+fhirsmith: the configuration file /var/lib/fhirsmith/config.json test failed (1 error, 1 warning)
+```
+
+It checks:
+
+- that `config.json` reads (as JSON with comments)
+- every setting against the settings FHIRsmith has: one it doesn't know is a **warning** (the
+  server ignores it, so it is usually a typo, with the setting it may have meant). A key that
+  starts with `_` or `x-` is taken to be parked on purpose, and isn't reported. A module that
+  isn't enabled isn't checked, beyond being an object
+- settings that have been replaced (an error, naming the replacement), and settings the server
+  sets itself (an error: they can't be set in the file)
+- types, ranges and allowed values: ports, sizes, limits, cron schedules, choices such as
+  `logging.level`, and settings that go together (the tx expansion limits)
+- for enabled modules, the files the configuration names: the tx library (which must parse, with
+  well-formed sources and unique id prefixes, and `folder:`/`file:` sources that exist), the SHL
+  certificates, the publisher's GitHub App key
+- that the data folder, the log folder and the terminology cache are writable, or can be made
+- the environment: the Node.js version, and that the native SQLite modules load (they must be
+  built for this Node.js: see [Changing the Node.js version](README.md#changing-the-nodejs-version))
+
+It does not reach out to anything: an address in the configuration isn't tried, and the
+databases the library downloads aren't looked for.
+
+With a role (`node server.js --check --role=tx-worker --instance-code=tx1`, or `FHIRSMITH_ROLE`),
+it also checks what the role makes of the configuration. `node cluster.js --check` (or
+`fhirsmith-cluster --check`), with the launcher's own flags, checks the launcher's settings and
+the configuration as the master and each worker will have it, and reports the ports and the
+number of workers it would start (see [cluster.md](cluster.md)).
+
+As it starts, the server logs the same errors and warnings (`Configuration: ...`) and goes on:
+what it can't run with, it refuses as it starts, as it always has.
+
+Where to run it:
+
+- by hand, after editing `config.json`, before restarting the server
+- under systemd, as `ExecStartPre=/usr/bin/node server.js --check` (or `cluster.js --check`): a
+  configuration with errors then stops the start, and `systemctl status` shows why
+- with Docker, against the mounted data folder before replacing the running container:
+  `docker run --rm -e FHIRSMITH_DATA_DIR=/app/data -v /path/to/data:/app/data ghcr.io/healthintersections/fhirsmith:latest node server.js --check`,
+  or inside the running one: `docker exec fhirsmith node server.js --check`
 
 ## Server
 

@@ -454,11 +454,17 @@ Under systemd, the launcher and its processes are one unit and one cgroup:
 [Service]
 WorkingDirectory=/opt/fhirsmith
 Environment=FHIRSMITH_DATA_DIR=/var/lib/fhirsmith
+ExecStartPre=/usr/bin/node cluster.js --check
 ExecStart=/usr/bin/node cluster.js
 KillMode=mixed
 MemoryMax=16G
 TimeoutStopSec=2min
 ```
+
+`cluster.js --check` (with the same flags as `ExecStart`) checks the configuration, the
+launcher's settings and the configuration each process will have, and exits 1 on an error, so a
+broken configuration stops the start rather than a master that never comes up (see
+[Checking the configuration](CONFIGURATION.md#checking-the-configuration)).
 
 A stop can take `drainSeconds` (30), then up to 30 s for the workers to shut down, 5 s for
 their last request counts, and up to 30 s for the master: 95 s at the most, usually a few

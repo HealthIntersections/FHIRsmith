@@ -5,6 +5,7 @@
 //
 
 const axios = require('axios');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
 const {XMLParser} = require('fast-xml-parser');
 const crypto = require('crypto');
 const zlib = require('zlib');
@@ -30,7 +31,11 @@ const MB = 1024 * 1024;
 //   maxFileMB      a file the crawler reads: package.json, .index.json, ig.ini, and each
 //                  .json file (for its url). Memory is bounded by this, not by the package
 //   maxFiles       the number of files in the package
-const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: 4096, maxFileMB: 50, maxFiles: 250000 };
+//   maxFeedMB      a feed (JSON or RSS) as downloaded. The largest, Simplifier's, is 5 MB (Nov 2026)
+//   maxRequestSeconds  the longest a download (a feed or a package) may take, response included:
+//                  axios's timeout only covers the wait for the response to start, so a server
+//                  that then sends a byte now and then could hold the crawl for as long as it liked
+const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: 4096, maxFileMB: 50, maxFiles: 250000, maxFeedMB: 50, maxRequestSeconds: 300 };
 
 function crawlerLimits(config) {
   const c = { ...LIMIT_DEFAULTS, ...(config?.crawler || {}) };
@@ -38,7 +43,9 @@ function crawlerLimits(config) {
     maxDownloadBytes: c.maxDownloadMB * MB,
     maxUnpackedBytes: c.maxUnpackedMB * MB,
     maxFileBytes: c.maxFileMB * MB,
-    maxFiles: c.maxFiles
+    maxFiles: c.maxFiles,
+    maxFeedBytes: c.maxFeedMB * MB,
+    maxRequestMs: c.maxRequestSeconds * 1000
   };
 }
 
@@ -348,14 +355,9 @@ class PackageCrawler {
         const content = await fs.promises.readFile(this.resolveLocalReadPath(url), "utf8");
         return JSON.parse(content);
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 30000,
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          },
-          httpAgent: this.guardedAgents().httpAgent,
-          httpsAgent: this.guardedAgents().httpsAgent
+          maxContentLength: crawlerLimits(this.config).maxFeedBytes
         });
         return response.data;
       }
@@ -364,8 +366,42 @@ class PackageCrawler {
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
-      throw new Error(`Failed to fetch JSON from ${url}: ${error.message}`);
+      throw new Error(`Failed to fetch JSON from ${url}: ${this.feedFailure(error)}`);
     }
+  }
+
+  /**
+   * axios.get for a feed or a package, with a deadline for the whole request (maxRequestSeconds),
+   * also stopped if the crawl is. A request that runs out of time fails saying so; other failures
+   * are axios's own (so a 429 or a size limit can still be told apart)
+   */
+  async getRemote(url, options) {
+    const limits = crawlerLimits(this.config);
+    const deadline = requestDeadline(limits.maxRequestMs, this.abortController?.signal);
+    try {
+      return await axios.get(url, {
+        ...options,
+        signal: deadline.signal,
+        headers: {
+          'User-Agent': 'FHIR Package Crawler/1.0'
+        },
+        httpAgent: this.guardedAgents().httpAgent,
+        httpsAgent: this.guardedAgents().httpsAgent
+      });
+    } catch (e) {
+      if (deadline.expired()) {
+        throw new Error(`${describeRequestFailure(e, { timeoutMs: limits.maxRequestMs, deadline })} (maxRequestSeconds)`, { cause: e });
+      }
+      throw e;
+    }
+  }
+
+  /** why a feed couldn't be read, in words */
+  feedFailure(error) {
+    if (/maxContentLength/.test(error.message)) {
+      return `the feed is more than the limit of ${crawlerLimits(this.config).maxFeedBytes / MB} MB (maxFeedMB)`;
+    }
+    return error.message;
   }
 
   async fetchXml(url) {
@@ -380,14 +416,9 @@ class PackageCrawler {
         });
         return parser.parse(content);
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 30000,
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          },
-          httpAgent: this.guardedAgents().httpAgent,
-          httpsAgent: this.guardedAgents().httpsAgent
+          maxContentLength: crawlerLimits(this.config).maxFeedBytes
         });
 
         const parser = new XMLParser({
@@ -403,7 +434,7 @@ class PackageCrawler {
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
-      throw new Error(`Failed to fetch XML from ${url}: ${error.message}`);
+      throw new Error(`Failed to fetch XML from ${url}: ${this.feedFailure(error)}`);
     }
   }
 
@@ -420,18 +451,12 @@ class PackageCrawler {
         this.totalBytes += buffer.byteLength;
         return buffer;
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 60000,
           responseType: 'arraybuffer',
           // We want the package file's own bytes: decodePackageBody undoes the Content-Encoding
           decompress: false,
-          maxContentLength: limits.maxDownloadBytes,
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          },
-          httpAgent: this.guardedAgents().httpAgent,
-          httpsAgent: this.guardedAgents().httpsAgent
+          maxContentLength: limits.maxDownloadBytes
         });
 
         this.totalBytes += response.data.byteLength;

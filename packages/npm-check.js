@@ -28,6 +28,7 @@
  */
 
 const crypto = require('crypto');
+const { requestDeadline } = require('../library/http-limits');
 const zlib = require('zlib');
 const axios = require('axios');
 const { verifySignature } = require('./npm-signing');
@@ -416,11 +417,15 @@ function makeGetter(options = {}) {
     if (!/^https?:\/\//i.test(url)) {
       return { url, error: 'not an http(s) URL' };
     }
+    // timeout is for the whole request: axios's own only covers the wait for the response to
+    // start, and the registry being checked is whatever the client named
+    const deadline = requestDeadline(options.timeout || 30000);
     try {
       const res = await axios.get(url, {
         responseType: 'arraybuffer',
         headers: { accept, 'user-agent': options.userAgent || 'FHIRsmith npm registry check' },
         timeout: options.timeout || 30000,
+        signal: deadline.signal,
         maxContentLength: options.maxBytes || 100 * 1024 * 1024,
         maxRedirects: 5,
         validateStatus: () => true,
@@ -429,7 +434,7 @@ function makeGetter(options = {}) {
       });
       return { url, status: res.status, contentType: String(res.headers['content-type'] || ''), body: Buffer.from(res.data) };
     } catch (e) {
-      const why = e.code === 'ECONNABORTED' ? 'timed out' : /maxContentLength/.test(e.message) ? 'the response is too large' : e.message;
+      const why = e.code === 'ECONNABORTED' || deadline.expired() ? 'timed out' : /maxContentLength/.test(e.message) ? 'the response is too large' : e.message;
       return { url, error: why };
     }
   };

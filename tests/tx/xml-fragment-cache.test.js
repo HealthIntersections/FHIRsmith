@@ -122,10 +122,46 @@ describe('FhirXmlBase.toXmlAsync', () => {
     await expect(FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(cs))).rejects.toThrow(/U\+0001/);
   });
 
+  test('a key that is not an element name is refused, not written into the XML', async () => {
+    const markup = { ...codeSystem(), 'a><injected/><b': 'v' };
+    expect(() => CodeSystemXML.toXml(markup)).toThrow(/is not an element name/);
+    await expect(FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(markup))).rejects.toThrow(/is not an element name/);
+    // nor one that would pass for the mark of an array set aside
+    const mark = { ...codeSystem(), '\u00000\u0000': 'v' };
+    await expect(FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(mark))).rejects.toThrow(/is not an element name/);
+    // deep inside, too (rendered by the asynchronous pass)
+    const deep = codeSystem();
+    deep.concept[2].concept[1]['bad name'] = 'v';
+    await expect(FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(deep))).rejects.toThrow(/is not an element name/);
+    // and a resource's type, in a bundle
+    const bundle = searchBundle({ ...codeSystem(), resourceType: 'CodeSystem><x' });
+    expect(() => BundleXML.toXml(bundle, 5)).toThrow(/is not an element name/);
+    // primitive extensions (_x) are still left out, as before
+    expect(CodeSystemXML.toXml({ ...codeSystem(), _status: { extension: [] } })).toBe(CodeSystemXML.toXml(codeSystem()));
+  });
+
+  test('stops when the response is no longer wanted (the client has hung up)', async () => {
+    const cs = codeSystem();
+    for (let i = 0; i < 40000; i++) {
+      cs.concept.push({ code: `X${i}`, display: `Extra concept ${i}` });
+    }
+    // enough to take well over 25 ms on any machine, so it yields, and asks
+    for (let i = 0; i < 260000; i++) {
+      cs.concept.push({ code: `Y${i}`, display: `More concepts ${i}`, designation: [{ value: `Designation ${i}` }] });
+    }
+    let asked = 0;
+    const error = await FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(cs), () => ++asked < 2).catch(e => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.abandoned).toBe(true);
+    expect(asked).toBe(2);
+    // still wanted: the whole thing
+    expect(await FhirXmlBase.toXmlAsync(() => CodeSystemXML.toXml(cs), () => true)).toBe(CodeSystemXML.toXml(cs));
+  });
+
   test('lets other work run while serialising a large resource', async () => {
     const cs = codeSystem();
-    // enough concepts to take well over the 25 ms between yields
-    for (let i = 0; i < 40000; i++) {
+    // enough concepts to take well over the 25 ms between yields, on any machine
+    for (let i = 0; i < 300000; i++) {
       cs.concept.push({ code: `X${i}`, display: `Extra concept ${i}`, designation: [{ value: `Designation ${i}` }] });
     }
     let ran = 0;

@@ -14,6 +14,7 @@ The registry is configured under `modules.registry` in the server's configuratio
   "apiKeys": {},
   "oauth": {},
   "maxResponseMB": 100,
+  "maxRequestSeconds": 120,
   "uptimeWindowDays": 30,
   "uptimeRetentionDays": 90,
   "security": { }
@@ -65,9 +66,10 @@ same values can be copied between the two.
 | Setting | Default | |
 |---|---|---|
 | `crawlInterval` | none | Minutes between scans. 0 or absent: the registry never scans, and answers from the data it last saved - useful for a read-only replica or a test. |
-| `timeout` | 30000 | Per-request timeout when scanning, in milliseconds. |
+| `timeout` | 30000 | How long the scanner waits for a server's response to start, in milliseconds. |
 | `userAgent` | `FHIRRegistryServer/1.0` | The `User-Agent` the scanner sends. Server operators see this in their logs, so name your registry. |
 | `maxResponseMB` | 100 | The most a scanned server's response may be once decompressed. The servers are other people's; a misbehaving one must not exhaust the registry's memory. |
+| `maxRequestSeconds` | 120 | The longest a request may take, response included. `timeout` only covers the wait for the response to start, so a server that then sends its answer a byte at a time would otherwise hold the scan for as long as it liked. |
 | `allowPrivateAddresses` | false | The scanner refuses to fetch from private, loopback and link-local addresses (SSRF protection - the URLs it follows come from registration files and servers it does not control). Set true only for a test registry whose servers are on localhost. |
 | `releasesUrl` | GitHub's FHIRsmith releases API | Where the software page learns FHIRsmith's release dates. `""` turns the lookup off (the dates in the shipped `CHANGELOG.md` are used instead). |
 
