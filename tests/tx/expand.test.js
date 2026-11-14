@@ -5,7 +5,9 @@
  */
 
 const request = require('supertest');
-const { getTestApp, shutdownTestApp } = require('./setup');
+const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
+const { CountryCodeFactoryProvider } = require('../../tx/cs/cs-country');
+const { IETFLanguageCodeFactory } = require('../../tx/cs/cs-lang');
 
 // Caches must be created explicitly via $cache-control before a cache-id can be
 // referenced. Returns the server-issued id.
@@ -289,6 +291,32 @@ describe('Expand Worker', () => {
         expect(response.status).toBe(422);
         expect(messages(response)[0]).toContain(text);
       }
+    });
+
+    test('a filter the code system doesn\'t support: 422, not 500', async () => {
+      const factory = new CountryCodeFactoryProvider(getTxModule().i18n);
+      await factory.load();
+      getTxModule().endpoints[0].provider.codeSystemFactories.set('urn:iso:std:iso:3166', factory);
+      const response = await expand([{
+        name: 'valueSet',
+        resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{
+          system: 'urn:iso:std:iso:3166', filter: [{ property: 'display', op: 'regex', value: 'United.*' }] }] } }
+      }]);
+      expect(response.status).toBe(422);
+      expect(response.body.issue[0].code).toBe('not-supported');
+      expect(messages(response)[0]).toBe('The filter "display regex United.*" is not understood or supported');
+    });
+
+    test('an unsupported filter on BCP-47: 422 not-supported, translated message', async () => {
+      getTxModule().endpoints[0].provider.codeSystemFactories.set('urn:ietf:bcp:47', new IETFLanguageCodeFactory(getTxModule().i18n));
+      const response = await expand([{
+        name: 'valueSet',
+        resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{
+          system: 'urn:ietf:bcp:47', filter: [{ property: 'language', op: 'regex', value: 'en' }] }] } }
+      }]);
+      expect(response.status).toBe(422);
+      expect(response.body.issue[0].code).toBe('not-supported');
+      expect(messages(response)[0]).toBe('The filter "language regex en" is not understood or supported');
     });
   });
 

@@ -1,6 +1,7 @@
 const { CodeSystemProvider, FilterExecutionContext, CodeSystemFactoryProvider} = require('./cs-api');
 const assert = require('assert');
 const { CodeSystem } = require("../library/codesystem");
+const { Issue } = require('../library/operation-outcome');
 
 class CurrencyConcept {
   constructor(code, display, decimals, symbol) {
@@ -193,7 +194,8 @@ class Iso4217Services extends CodeSystemProvider {
       }
       filterContext.filters.push(result);
     } else {
-      throw new Error(`The filter ${prop} ${op} = ${value} is not supported for ${this.system()}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 

@@ -9,6 +9,7 @@ const {sqlEscapeString} = require("../../library/sqlite-utilities");
 const regexUtilities = require('../../library/regex-utilities');
 const {ConceptMap} = require("../library/conceptmap");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -1218,7 +1219,8 @@ class LoincServices extends BaseCSServices {
       filter.lsql = 'empty';
       filter.empty = true;
     } else {
-      throw new Error(`The filter "${prop} ${op} ${value}" is not supported for LOINC`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 

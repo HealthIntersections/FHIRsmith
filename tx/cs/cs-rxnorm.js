@@ -6,6 +6,7 @@ const { BaseCSServices } = require('./cs-base');
 const {validateArrayParameter, formatDateMMDDYYYY} = require("../../library/utilities");
 const Logger = require("../../library/logger");
 const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 // Context for RxNorm concepts
 class RxNormConcept {
@@ -504,7 +505,8 @@ class RxNormServices extends BaseCSServices {
     }
 
     if (!sql) {
-      throw new Error(`Unknown filter "${prop} ${op} ${value}"`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     filter.sql = sql;
