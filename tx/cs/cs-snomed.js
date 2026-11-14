@@ -13,7 +13,7 @@ const {DesignationUse} = require("../library/designations");
 const {BaseCSServices} = require("./cs-base");
 const {formatDateMMDDYYYY} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
-const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType} = require("../sct/ecl");
+const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType, wildTermMatcher} = require("../sct/ecl");
 const {Issue} = require("../library/operation-outcome");
 const {debugLog} = require("../operation-context");
 const {editionName, editionCode, SNOMED_LINKABLE_EDITIONS} = require("../sct/editions");
@@ -161,45 +161,6 @@ class SnomedPrep {
 /**
  * Core SNOMED services providing access to structures and expression processing
  */
-/**
- * A matcher for an ECL wild: term: case-insensitive, anchored at both ends, '*' matching any
- * run of characters (a run of '*'s the same as one) and every other character literal.
- *
- * No regex: a native RegExp built from '*' -> '.*' backtracks for a time that grows as the
- * term length to the power of the number of '*'s (one $expand burned 90 s of CPU), and re2js,
- * though linear, is 10-70 times slower than this over a whole edition's descriptions. The
- * pieces between the '*'s are literal, so the term must start with the first and end with
- * the last, and each one in between is found with indexOf after the one before - taking the
- * leftmost match of each is always right for such a pattern. Linear, with no backtracking.
- *
- * @param {string} value - the wild: term
- * @returns {function(string): boolean}
- */
-function wildTermMatcher(value) {
-  const parts = value.toLowerCase().split(/\*+/);
-  const first = parts[0];
-  const last = parts[parts.length - 1];
-  if (parts.length === 1) {
-    return (term) => term.toLowerCase() === first;
-  }
-  const middle = parts.slice(1, -1).filter(p => p.length > 0);
-  return (term) => {
-    const t = term.toLowerCase();
-    if (t.length < first.length + last.length || !t.startsWith(first)) {
-      return false;
-    }
-    let pos = first.length;
-    for (const part of middle) {
-      const i = t.indexOf(part, pos);
-      if (i < 0) {
-        return false;
-      }
-      pos = i + part.length;
-    }
-    return t.length - pos >= last.length && t.endsWith(last);
-  };
-}
-
 class SnomedServices {
   constructor(sharedData) {
     // Core data structures

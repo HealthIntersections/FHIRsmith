@@ -1335,7 +1335,8 @@ class ValueSetExpander {
           // unless the page holds the whole list, when every one is built. And not when their
           // details are left to be read later: see deferDetails)
           const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code),
-            !this.noDetails && !(filter.isNull && this.#defers(cs)) && (!this.paging || this.#pageHolds(cset.concept.length)));
+            !this.noDetails && !(filter.isNull && this.#defers(cs)) && (!this.paging || this.#pageHolds(cset.concept.length)),
+            { displayOnly: this.#showsDisplayOnly(filter) });
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
             cds.clear();
@@ -2718,6 +2719,14 @@ class ValueSetExpander {
       return false;
     }
     return !this.#pageFits();
+  }
+
+  /**
+   * Whether the expansion shows nothing of a listed concept's designations but its display
+   * (TxParameters.showsDisplayOnly), with no text filter matched against them: told to prefetchCodes.
+   */
+  #showsDisplayOnly(filter) {
+    return filter.isNull && this.params.showsDisplayOnly(this.worker.opContext.langs);
   }
 
   /**

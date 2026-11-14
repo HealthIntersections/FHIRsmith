@@ -3,6 +3,17 @@ const { assignIdSpace } = require('../library/resource-ids');
 /**
  * Abstract base class for value set providers
  * Defines the interface that all value set providers must implement
+ *
+ * Stored concept lists. A value set's include or exclude may list its concepts in a store (a
+ * database, say) rather than in memory: the provider puts a handle on the include under
+ * STORED_CONCEPTS (tx/library/stored-concepts.js), { count, lookup(code) }, and keeps `concept`
+ * readable for code that needs every entry (a getter that reads the list on first use).
+ * $validate-code then asks the handle about the one code it checks instead of reading the list.
+ * An include without the handle behaves as always. lookup(code) matches exactly, case included,
+ * as the validator does for an ordinary list whether or not the code system is case-sensitive.
+ * A provider doesn't put the handle on an include whose listed concepts carry a
+ * modifierExtension: it leaves that one an ordinary array, and the validator refuses it (422).
+ * See stored-concepts.js.
  */
 class AbstractValueSetProvider {
   /**
@@ -39,13 +50,22 @@ class AbstractValueSetProvider {
 
   /**
    * Fetches a specific value set by URL and version
+   *
+   * When the lookup is for a request, the request's OperationContext comes too (Provider.findValueSet
+   * passes it). A provider may use it to share work between the lookups of one request (a
+   * provider that reads its value sets from a database can read a request's value sets with one
+   * connection, or keep what it read for the rest of the request), or to check the request's
+   * deadline. It is null for lookups made outside a request (the scans of every value set, say),
+   * and a provider that has no use for it ignores it.
+   *
    * @param {string} url - The URL/identifier of the value set
    * @param {string} version - The version of the value set
+   * @param {OperationContext|null} [opContext] - the request this lookup is for, if any
    * @returns {Promise<ValueSet>} The requested value set
    * @throws {Error} Must be implemented by subclasses
    */
   // eslint-disable-next-line no-unused-vars
-  async fetchValueSet(url, version) {
+  async fetchValueSet(url, version, opContext = null) {
     throw new Error('fetchValueSet must be implemented by subclass');
   }
 
@@ -125,8 +145,9 @@ class AbstractValueSetProvider {
    * fetchValueSet(url) returns), for the scans that look at every value set (see
    * usage-tracker.js, problems.js). listAllValueSets() can list a url once per stored version:
    * older versions are not scanned, and the latest is scanned only once, so the usage counts
-   * are not inflated by how many versions there are. A provider that doesn't hold its value
-   * sets in memory can do this more cheaply than fetching each one.
+   * are not inflated by how many versions there are. The scans read only each value set's
+   * url, version and jsonObj.compose, so a provider that doesn't hold its value sets in memory
+   * may hand fn an object with just those instead of building each value set.
    *
    * @param {function(ValueSet): Promise<void>} fn
    */
@@ -137,6 +158,15 @@ class AbstractValueSetProvider {
         await fn(vs);
       }
     }
+  }
+
+  /**
+   * The package this provider's value sets come from (a package id such as "hl7.terminology#7.5.0"),
+   * or null. Used for search's source parameter and for THO precedence (Provider.applyTHOPrecedence)
+   * @returns {string|null}
+   */
+  sourcePackage() {
+    return null;
   }
 
   async close() {

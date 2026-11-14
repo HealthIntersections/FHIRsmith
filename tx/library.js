@@ -944,7 +944,7 @@ class Library {
       this.conceptMapProviders.push(cm);
     }
 
-    this.#logPackage(contentLoader.id(), contentLoader.version(), csc, vs ? vs.valueSetMap.size : 0);
+    this.#logPackage(contentLoader.id(), contentLoader.version(), csc, vs ? vs.vsCount() : 0);
   }
 
   /**
@@ -1275,7 +1275,7 @@ class Library {
     await cm.initialize();
     this.conceptMapProviders.push(cm);
 
-    this.#logPackage(contentLoader.id(), contentLoader.version(), csc, vs.valueSetMap.size);
+    this.#logPackage(contentLoader.id(), contentLoader.version(), csc, vs.vsCount());
   }
 
   /**
@@ -1472,7 +1472,7 @@ class Library {
     // Now add the existing value set providers after the FHIR core packages
     provider.valueSetProviders.push(...this.valueSetProviders);
     provider.conceptMapProviders.push(...this.conceptMapProviders);
-    provider.applyTHOPrecedence();
+    await provider.applyTHOPrecedence();
 
     // bind UCUM common value set
     let ucum = provider.codeSystemFactories.get("http://unitsofmeasure.org");

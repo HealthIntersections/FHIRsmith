@@ -12,6 +12,7 @@ const {PackageValueSetProvider} = require("./vs/vs-package");
 const ValueSet = require("./library/valueset");
 const {PackageConceptMapProvider} = require("./cm/cm-package");
 const { applyIdPrefix, CORE_PREFIX } = require("./library/resource-ids");
+const { thoVersionsOf } = require("./library/tho-precedence");
 const { CodeSystemFactoryProvider } = require("./cs/cs-api");
 const { VirtualCodeSystemProvider } = require("./cs/cs-virtual");
 
@@ -435,7 +436,8 @@ class Provider {
   async findValueSet(opContext, url, version, systemVersionFor = null) {
     for (const vp of this.valueSetProviders) {
       if (opContext) opContext.deadCheck('findValueSet');
-      let vs = await vp.fetchValueSet(url, version);
+      // the request goes along: a provider may share work between the lookups of one request
+      let vs = await vp.fetchValueSet(url, version, opContext);
       if (vs) {
         return vs;
       }
@@ -918,44 +920,20 @@ class Provider {
    * version itself). They are never what a reference with no version gets, and they aren't
    * read by id, found by search, or used for translation unless asked for.
    */
-  applyTHOPrecedence() {
-    const thoValueSets = new Map();
-    for (const vp of this.valueSetProviders) {
-      if (vp instanceof PackageValueSetProvider && Provider.#isTHOPackage(vp.sourcePackage())) {
-        for (const vs of vp.valueSetMap.values()) {
-          Provider.#addVersion(thoValueSets, vs);
-        }
-      }
-    }
-    const thoConceptMaps = new Map();
-    for (const cmp of this.conceptMapProviders) {
-      if (cmp instanceof PackageConceptMapProvider && Provider.#isTHOPackage(cmp.sourcePackage())) {
-        for (const cm of cmp.conceptMapMap.values()) {
-          Provider.#addVersion(thoConceptMaps, cm);
-        }
-      }
-    }
+  async applyTHOPrecedence() {
+    // THO's side is asked the way any reference asks it - fetchValueSet / fetchConceptMap of each
+    // url the core package provides - so it doesn't matter how a THO provider keeps its resources
+    const thoValueSetProviders = this.valueSetProviders.filter(vp => Provider.#isTHOPackage(vp.sourcePackage()));
+    const thoConceptMapProviders = this.conceptMapProviders.filter(cmp => Provider.#isTHOPackage(cmp.sourcePackage()));
     for (const vp of this.valueSetProviders) {
       if (vp instanceof PackageValueSetProvider && VersionUtilities.isCorePackage(vp.sourcePackage())) {
-        vp.keepPinnedOnly(thoValueSets);
+        vp.keepPinnedOnly(await thoVersionsOf(vp.valueSetMap.values(), thoValueSetProviders, (p, url, version) => p.fetchValueSet(url, version)));
       }
     }
     for (const cmp of this.conceptMapProviders) {
       if (cmp instanceof PackageConceptMapProvider && VersionUtilities.isCorePackage(cmp.sourcePackage())) {
-        cmp.keepPinnedOnly(thoConceptMaps);
+        cmp.keepPinnedOnly(await thoVersionsOf(cmp.conceptMapMap.values(), thoConceptMapProviders, (p, url, version) => p.fetchConceptMap(url, version)));
       }
-    }
-  }
-
-  static #addVersion(map, resource) {
-    if (!resource || !resource.url) {
-      return;
-    }
-    if (!map.has(resource.url)) {
-      map.set(resource.url, new Set());
-    }
-    if (resource.version) {
-      map.get(resource.url).add(resource.version);
     }
   }
 

@@ -884,10 +884,15 @@ class CodeSystemProvider {
    *
    * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
    * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations
+   * @param {Object} [hints] - what the worker knows about the response; a provider may ignore it.
+   *   `displayOnly: true` - the response shows each code's display and none of its other
+   *   designations (TxParameters.showsDisplayOnly, and there is no text filter). A provider
+   *   whose display doesn't depend on its other designations may then have designations() report
+   *   the display alone for these codes, and leave the rest unread. Absent or false: no such promise.
    * @returns {Promise<*>} the handle, or null: this provider does no prefetching (the default)
    */
   // eslint-disable-next-line no-unused-vars
-  async prefetchCodes(codes, withDesignations) { return null; }
+  async prefetchCodes(codes, withDesignations, hints = {}) { return null; }
 
   /**
    * returns true if a filter is supported

@@ -4,6 +4,7 @@ const {div} = require("../../library/html");
 const {getValuePrimitive} = require("../../library/utilities");
 const {getValueName} = require("../../library/utilities");
 const {InvalidError} = require("./errors");
+const { storedList } = require("./stored-concepts");
 
 // Valid FHIR value sets used when validating values before rendering, so that
 // illegal input produces an error that names the offending value rather than
@@ -137,7 +138,10 @@ class Renderer {
     let result;
     if (inc.system) {
       result = '(' + inc.system + ')';
-      if (inc.concept) {
+      if (storedList(inc)) {
+        // a stored list (see stored-concepts.js) isn't read just to describe the include
+        result = result + '(' + storedList(inc).count + ' codes)';
+      } else if (inc.concept) {
         const shown = inc.concept.slice(0, MAX_INCLUDE_CODES_SHOWN).map(cc => cc.code).join(',');
         const more = inc.concept.length - MAX_INCLUDE_CODES_SHOWN;
         result = result + '(' + shown + (more > 0 ? ',... +' + more + ' more (' + inc.concept.length + ' codes)' : '') + ')';
