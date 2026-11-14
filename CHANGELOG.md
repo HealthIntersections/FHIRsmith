@@ -16,12 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 - LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
 
-### Fixed
-
-- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
-
-## [1.0.2]
-
 ### Added
 
 - `node server.js --check` (or `-t`; `npm run check`): checks the configuration and exits 0 or 1, without starting anything, as `nginx -t` does - `config.json`, unknown settings (warnings, with the setting that may have been meant), replaced settings, types and ranges, the files the configuration names (the tx library, parsed and its sources checked), the folders the server writes to, the Node.js version and the native SQLite modules. With `--role`, what the role makes of it; `node cluster.js --check`, the launcher's settings and each process's configuration. The server logs the same errors and warnings as it starts. See CONFIGURATION.md, "Checking the configuration"
@@ -59,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
 - R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
 - tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
+- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers
+
+### Tx Conformance Statement
+
+(paste)
 
 ## [1.0.1] - 2026-11-12
 
