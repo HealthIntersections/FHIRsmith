@@ -1,6 +1,7 @@
 const {VersionUtilities} = require("../../library/version-utilities");
 const {getValueName, getValuePrimitive} = require("../../library/utilities");
 const {Extensions} = require("../library/extensions");
+const { mapShared, designationsFromR5, convertOnce, VS_ADDITIONAL_USE_EXT } = require("./xv-shared");
 
 // ValueSet.compose.property is R5 and up - it is how a client says which properties it wants
 // back in an expansion. R4 and R3 have nowhere to put it, so it travels as a cross-version
@@ -76,7 +77,9 @@ function valueSetIncludeToR5(inc) {
 
 
 /**
- * Converts R5 ValueSet to target version format (clones object first)
+ * Converts R5 ValueSet to target version format, without changing the original: what changes
+ * is copied, and the rest shared (see xv-shared.js) - for a large expansion, only the contains
+ * that carry properties or designation.additionalUse are copied
  * @param {Object} r5Obj - The R5 format ValueSet object
  * @param {string} targetVersion - Target FHIR version
  * @returns {Object} New object in target version format
@@ -86,176 +89,150 @@ function valueSetFromR5(r5Obj, targetVersion) {
   if (VersionUtilities.isR5Ver(targetVersion)) {
     return r5Obj; // No conversion needed
   }
-
-  // Clone the object to avoid modifying the original
-  const cloned = JSON.parse(JSON.stringify(r5Obj));
-
-  if (VersionUtilities.isR4Ver(targetVersion)) {
-    return valueSetR5ToR4(cloned);
-  } else if (VersionUtilities.isR3Ver(targetVersion)) {
-    return valueSetR5ToR3(cloned);
+  const r3 = VersionUtilities.isR3Ver(targetVersion);
+  if (!r3 && !VersionUtilities.isR4Ver(targetVersion)) {
+    throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
   }
 
-  throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
+  const out = { ...r5Obj };
+  if (out.versionAlgorithmString) {
+    delete out.versionAlgorithmString;
+  }
+  if (out.versionAlgorithmCoding) {
+    delete out.versionAlgorithmCoding;
+  }
+  if (out.compose) {
+    out.compose = composeFromR5(out.compose, r3);
+  }
+  if (out.expansion) {
+    out.expansion = expansionFromR5(out.expansion, r3);
+  }
+  return out;
 }
 
 /**
- * Converts R5 ValueSet to R4 format
- * @param {Object} r5Obj - Cloned R5 ValueSet object
- * @returns {Object} R4 format ValueSet
+ * ValueSet.compose for R4 or R3: compose.property into its extension, filter operators the
+ * version doesn't have into the filter.op extension, and designation.additionalUse into its
+ * extension
  * @private
  */
-function valueSetR5ToR4(r5Obj) {
-  if (r5Obj.versionAlgorithmString) {
-    delete r5Obj.versionAlgorithmString;
-  }
-  if (r5Obj.versionAlgorithmCoding) {
-    delete r5Obj.versionAlgorithmCoding;
-  }
-
+function composeFromR5(compose, r3) {
+  const out = { ...compose };
   // ValueSet.compose.property has no home in R4, so it goes into the extension
-  if (r5Obj.compose && Array.isArray(r5Obj.compose.property) && r5Obj.compose.property.length > 0) {
-    r5Obj.compose.extension = r5Obj.compose.extension || [];
-    for (const prop of r5Obj.compose.property) {
-      r5Obj.compose.extension.push({ url: COMPOSE_PROPERTY_EXT, valueString: prop });
-    }
-    delete r5Obj.compose.property;
+  if (Array.isArray(compose.property) && compose.property.length > 0) {
+    out.extension = [...(compose.extension || []), ...compose.property.map(prop => ({ url: COMPOSE_PROPERTY_EXT, valueString: prop }))];
+    delete out.property;
   }
-
-  // Filter out R5-only filter operators in compose
-  if (r5Obj.compose && r5Obj.compose.include) {
-    r5Obj.compose.include = r5Obj.compose.include.map(include => {
-      if (include.filter && Array.isArray(include.filter)) {
-        include.filter = include.filter.map(filter => {
-          if (filter.op && isR5OnlyFilterOperator(filter.op)) {
-            filter._op = { "extension": [{ url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.include.filter.op", "valueCode": filter.op}]};
-            delete filter.op;
-          }
-          return filter;
-        }).filter(filter => filter !== null);
-      }
-      return include;
-    });
+  if (compose.include) {
+    out.include = compose.include.map(inc => includeFromR5(inc, r3));
   }
-
-  if (r5Obj.compose && r5Obj.compose.exclude) {
-    r5Obj.compose.exclude = r5Obj.compose.exclude.map(exclude => {
-      if (exclude.filter && Array.isArray(exclude.filter)) {
-        exclude.filter = exclude.filter.map(filter => {
-          if (filter.op && isR5OnlyFilterOperator(filter.op)) {
-            filter._op = { "extension": [{ url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.include.filter.op", "valueCode": filter.op}]};
-            delete filter.op;
-          }
-          return filter;
-        }).filter(filter => filter !== null);
-      }
-      return exclude;
-    });
+  if (compose.exclude) {
+    out.exclude = compose.exclude.map(inc => includeFromR5(inc, r3));
   }
+  return out;
+}
 
-  if (r5Obj.expansion) {
-    let exp = r5Obj.expansion;
-
-    // Convert ValueSet.expansion.property to extensions
-    if (exp.property && exp.property.length > 0) {
-      exp.extension = exp.extension || [];
-      for (let prop of exp.property) {
-        // uri is 0..1: a property without one (a provider that doesn't declare its properties)
-        // must not produce an empty uri extension, which is not valid
-        const ext = [{ url: "code", valueCode: prop.code }];
-        if (prop.uri) {
-          ext.push({ url: "uri", valueUri: prop.uri });
-        }
-        exp.extension.push({
-          url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.property",
-          extension: ext
-        });
-      }
-      delete exp.property;
-    }
-
-    // ValueSet.expansion.contains.property is R5-only too, and must be converted
-    // whether or not the expansion declares expansion-level property definitions:
-    // a contained code can carry a property with no expansion.property present.
-    convertContainsPropertyR5ToR4(exp.contains);
+/** An include or exclude (the same object if nothing in it changes) @private */
+function includeFromR5(inc, r3) {
+  const filter = Array.isArray(inc.filter) ? mapShared(inc.filter, f => filterFromR5(f, r3)) : inc.filter;
+  const concept = Array.isArray(inc.concept)
+    ? mapShared(inc.concept, c => {
+      const designation = designationsFromR5(c.designation, VS_ADDITIONAL_USE_EXT);
+      return designation === c.designation ? c : { ...c, designation };
+    })
+    : inc.concept;
+  if (filter === inc.filter && concept === inc.concept) {
+    return inc;
   }
-
-  return r5Obj;
+  const out = { ...inc };
+  if (filter !== inc.filter) {
+    out.filter = filter;
+  }
+  if (concept !== inc.concept) {
+    out.concept = concept;
+  }
+  return out;
 }
 
 /**
- * Converts R5 ValueSet to R3 format
- * @param {Object} r5Obj - Cloned R5 ValueSet object
- * @returns {Object} R3 format ValueSet
+ * A filter whose operator the version doesn't have: the operator goes into the filter.op
+ * extension (R5-only operators for R4; for R3, also those R3 doesn't have)
  * @private
  */
-function valueSetR5ToR3(r5Obj) {
-  // First apply R4 conversions
-  const r4Obj = valueSetR5ToR4(r5Obj);
-
-  // R3 has more limited filter operator support
-  if (r4Obj.compose && r4Obj.compose.include) {
-    r4Obj.compose.include = r4Obj.compose.include.map(include => {
-      if (include.filter && Array.isArray(include.filter)) {
-        include.filter = include.filter.map(filter => {
-          if (filter.op && !isR3CompatibleFilterOperator(filter.op)) {
-            filter._op = { "extension": [{ url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.include.filter.op", "valueCode": filter.op}]};
-            delete filter.op;
-          }
-          return filter;
-        }).filter(filter => filter !== null);
-      }
-      return include;
-    });
+function filterFromR5(filter, r3) {
+  let out = filter;
+  if (out.op && isR5OnlyFilterOperator(out.op)) {
+    out = { ...out, _op: filterOpExtension(out.op) };
+    delete out.op;
   }
-
-  if (r4Obj.compose && r4Obj.compose.exclude) {
-    r4Obj.compose.exclude = r4Obj.compose.exclude.map(exclude => {
-      if (exclude.filter && Array.isArray(exclude.filter)) {
-        exclude.filter = exclude.filter.map(filter => {
-          if (filter.op && !isR3CompatibleFilterOperator(filter.op)) {
-            filter._op = { "extension": [{ url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.include.filter.op", "valueCode": filter.op}]};
-            delete filter.op;
-          }
-          return filter;
-        }).filter(filter => filter !== null);
-      }
-      return exclude;
-    });
+  if (r3 && out.op && !isR3CompatibleFilterOperator(out.op)) {
+    out = { ...out, _op: filterOpExtension(out.op) };
+    delete out.op;
   }
-  return r4Obj;
+  return out;
 }
 
+function filterOpExtension(op) {
+  return { "extension": [{ url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.include.filter.op", "valueCode": op }] };
+}
 
-
-// Recursive function to convert contains.property
-function convertContainsPropertyR5ToR4(containsList) {
-  if (!containsList) return;
-
-  for (let item of containsList) {
-    if (item.property && item.property.length > 0) {
-      item.extension = item.extension || [];
-      for (let prop of item.property) {
-        let ext = {
-          url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.contains.property",
-          extension: [
-            { url: "code", valueCode: prop.code }
-          ]
-        };
-        let pn = getValueName(prop);
-        let subExt = { url: "value" };
-        subExt[pn] = prop[pn];
-        ext.extension.push(subExt);
-        item.extension.push(ext);
+/**
+ * ValueSet.expansion for R4 or R3: expansion.property, and each contains.property, into their
+ * extensions (both R5-only), and designation.additionalUse into its extension
+ * @private
+ */
+function expansionFromR5(expansion, r3) {
+  const out = { ...expansion };
+  if (expansion.property && expansion.property.length > 0) {
+    // uri is 0..1: a property without one (a provider that doesn't declare its properties)
+    // must not produce an empty uri extension, which is not valid
+    out.extension = [...(expansion.extension || []), ...expansion.property.map(prop => {
+      const ext = [{ url: "code", valueCode: prop.code }];
+      if (prop.uri) {
+        ext.push({ url: "uri", valueUri: prop.uri });
       }
-      delete item.property;
-    }
-
-    // Recurse into nested contains
-    if (item.contains) {
-      convertContainsPropertyR5ToR4(item.contains);
-    }
+      return { url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.property", extension: ext };
+    })];
+    delete out.property;
   }
+  // contains.property must be converted whether or not the expansion declares expansion-level
+  // property definitions: a contained code can carry a property with no expansion.property present.
+  // (A cached expansion's contains are converted again on every R4 response: convertOnce keeps
+  // the result, so it's the same each time - and its XML can come from the XML cache)
+  if (Array.isArray(expansion.contains)) {
+    out.contains = convertOnce(expansion.contains, r3 ? 'vs-r3' : 'vs-r4', contains => mapShared(contains, containsFromR5));
+  }
+  return out;
+}
+
+/** A contains, and those under it (the same object if nothing in it changes) @private */
+function containsFromR5(item) {
+  const contains = Array.isArray(item.contains) ? mapShared(item.contains, containsFromR5) : item.contains;
+  const designation = designationsFromR5(item.designation, VS_ADDITIONAL_USE_EXT);
+  const hasProperties = item.property && item.property.length > 0;
+  if (!hasProperties && contains === item.contains && designation === item.designation) {
+    return item;
+  }
+  const out = { ...item };
+  if (hasProperties) {
+    out.extension = [...(item.extension || []), ...item.property.map(prop => {
+      const pn = getValueName(prop);
+      const value = { url: "value" };
+      value[pn] = prop[pn];
+      return {
+        url: "http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.expansion.contains.property",
+        extension: [{ url: "code", valueCode: prop.code }, value]
+      };
+    })];
+    delete out.property;
+  }
+  if (contains !== item.contains) {
+    out.contains = contains;
+  }
+  if (designation !== item.designation) {
+    out.designation = designation;
+  }
+  return out;
 }
 
 

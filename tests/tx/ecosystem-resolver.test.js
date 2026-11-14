@@ -373,4 +373,64 @@ describe('EcosystemResolver', () => {
         .toThrow('modules.tx.ecosystem: allowPrivateAddresses must be true or false, not "yes"');
     });
   });
+
+  // another server's answer is read into memory: one that is too big, or that never finishes,
+  // is a failure, the same as a server that can't be reached
+  describe('an answer that is too big or too slow', () => {
+    let server;
+    let local;
+    let timeout;
+    beforeAll(async () => {
+      nock.enableNetConnect('127.0.0.1');
+      server = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/fhir+json' });
+        res.write('{"resourceType":"Parameters","parameter":[');
+        if (req.url.includes('huge')) {
+          // 12 MB, as fast as it can be taken
+          const chunk = JSON.stringify({ name: 'x', valueString: 'y'.repeat(1000) });
+          let i = 0;
+          const pump = () => {
+            while (i < 12000 && res.write((i ? ',' : '') + chunk)) {
+              i++;
+            }
+            if (i < 12000) {
+              res.once('drain', pump);
+            } else {
+              res.end(']}');
+            }
+          };
+          pump();
+        } else {
+          // a byte now and then, never finishing
+          const t = setInterval(() => res.write(' '), 50);
+          req.on('close', () => clearInterval(t));
+        }
+      });
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+      local = `http://127.0.0.1:${server.address().port}`;
+      // the deadline for the whole request, shortened from 30s
+      const real = AbortSignal.timeout.bind(AbortSignal);
+      timeout = jest.spyOn(AbortSignal, 'timeout').mockImplementation(() => real(500));
+    });
+    afterAll(async () => {
+      timeout.mockRestore();
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      nock.disableNetConnect();
+    });
+
+    test('a server that sends too much', async () => {
+      const r = resolver({ registry: `${local}/huge/tx-reg`, allowPrivateAddresses: true });
+      await expect(r.send(`${local}/fhir`, `${local}/huge/fhir/metadata`)).rejects.toThrow(/maxContentLength/);
+      expect(await r.findServer(SCT, null, 5)).toBeNull();
+    });
+
+    test('a server that never finishes', async () => {
+      const r = resolver({ registry: `${local}/slow/tx-reg`, allowPrivateAddresses: true });
+      const start = Date.now();
+      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/canceled/);
+      expect(await r.findServer(SCT, null, 5)).toBeNull();
+      expect(Date.now() - start).toBeLessThan(5000);
+    });
+  });
 });

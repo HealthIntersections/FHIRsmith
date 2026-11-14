@@ -681,6 +681,20 @@ class OMOPServices extends BaseCSServices {
     return 'not-subsumed';
   }
 
+  /**
+   * For $closure (see CodeSystemProvider.ancestorsOf): OMOP has no hierarchy here -
+   * subsumesTest answers not-subsumed for any two known codes - so a known code sits under
+   * nothing. One locate per concept instead of two per pair; an unknown code gets null, and
+   * $closure then reports it through subsumesTest as before.
+   *
+   * @param {string|Object} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    return ctxt ? new Set() : null;
+  }
+
   // Translation support
   async getTranslations(map, coding, target) {
     if (map == null) {

@@ -127,6 +127,24 @@ describe('memory-guard', () => {
     expect(onReject).not.toHaveBeenCalled();
   });
 
+  test('while refusing, the caches registered with addReliever are emptied before the forced GC', () => {
+    setRss(8.5 * GB);
+    rssSpy.mockImplementation(() => 7 * GB);
+    memoryGuard._state.sampleRss = 8.5 * GB;
+    memoryGuard._state.sampleTime = Date.now();
+    const order = [];
+    memoryGuard.addReliever('test cache', () => { order.push('relieve'); return GB; });
+    const lines = [];
+    const log = { info: (m) => lines.push(m), warn: () => {} };
+    try {
+      memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 2 * GB, gc: () => order.push('gc') })({ path: '/r4/x' }, fakeRes(), () => {});
+    } finally {
+      memoryGuard.addReliever('test cache', () => 0);
+    }
+    expect(order).toEqual(['relieve', 'gc']);
+    expect(lines.join('\n')).toMatch(/dropped the test cache \(1(\.0+)? GB\)/);
+  });
+
   test('the forced GC is a last-resort one on this runtime (V8 12 on), which gives back the pages V8 keeps', () => {
     expect(memoryGuard._state.lastResortGc).toBe(Number(process.versions.v8.split('.')[0]) >= 12);
     expect(memoryGuard._state.lastResortGc).toBe(true); // Node 24, package.json engines
