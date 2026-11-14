@@ -130,6 +130,11 @@ function ascending(keys) {
   return true;
 }
 
+/** What the importer makes (import-loinc.module.js); a database imported before it has no such index */
+const CODES_DESCRIPTION_INDEX = 'CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)';
+// the database files the missing-index hint has been given for (once per file, per process)
+const indexHintGiven = new Set();
+
 /**
  * The answers to the lookups a filter can need before its SQL is written: the parts a
  * relationship filter names, and the values a regex filter matches. Each reads a whole table,
@@ -1622,6 +1627,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     await this.#optimizeDatabase(db);
 
     try {
+      await this.#checkIndexes(db);
       this._sharedData = {
         langs: new Map(),
         codes: new Map(),
@@ -1665,6 +1671,32 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
       db.close();
     }
     this._loaded = true;
+  }
+
+  /**
+   * A database imported before the importer made idx_codes_description (CHANGELOG, Unreleased)
+   * still works, but a filter that names a part reads every code the first time it is used.
+   * Says so once per file, with the command that adds the index. A tx-worker leaves it to the
+   * master, which opens the same file.
+   */
+  async #checkIndexes(db) {
+    if (this.readOnly || indexHintGiven.has(this.dbPath)) {
+      return;
+    }
+    const row = await new Promise((resolve, reject) => {
+      db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'index' AND name = 'idx_codes_description'", [],
+        guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+    });
+    if (row) {
+      return;
+    }
+    indexHintGiven.add(this.dbPath);
+    const file = /^[\w./-]+$/.test(this.dbPath) ? this.dbPath : `'${this.dbPath.replace(/'/g, `'\\''`)}'`;
+    // fetched here: importers and tests require this module too
+    require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(
+      `LOINC: ${this.dbPath} has no index on Codes.Description, so a filter that names a part ` +
+      `(SCALE_TYP = Doc) reads every code the first time. Add it once, while the server isn't using the file: ` +
+      `sqlite3 ${file} "${CODES_DESCRIPTION_INDEX}"`);
   }
 
   async #optimizeDatabase(db) {
