@@ -427,7 +427,29 @@ const MODULES = {
 // ---------------------------------------------------------------------------------------------
 // checking a value against its specification
 
-function describe(value) {
+// settings whose values are secrets: what's wrong with one is said without its value (the startup
+// check writes these messages to the server's log)
+const SECRET_SETTING = /password|secret|token|apikey|api-key|private|credential/i;
+
+/**
+ * A value, for a message about it: never a secret's (by the setting's name, where), nor what is
+ * inside an object or a list (which can hold secrets: an oauth entry's clientSecret, say)
+ */
+function describe(value, where = '') {
+  if (Array.isArray(value)) {
+    return 'a list';
+  }
+  if (value !== null && typeof value === 'object') {
+    return 'an object';
+  }
+  if (SECRET_SETTING.test(where)) {
+    return value === null ? 'null' : `a ${typeof value} (not shown)`;
+  }
+  return brief(value);
+}
+
+/** A value as it is, shortened: for what isn't a setting (an entry in the tx library) */
+function brief(value) {
   const s = JSON.stringify(value);
   return s === undefined ? String(value) : s.length > 60 ? s.substring(0, 57) + '...' : s;
 }
@@ -563,20 +585,20 @@ function check(value, spec, where, report) {
         // check the one it fits, for the details of containers
         check(value, spec.specs.find(s => fits(value, s)), where, report);
       } else {
-        report.error(where, `${spec.specs.map(s => mismatch(value, s) || 'must be ' + kindName(s)).join(', or ')}, not ${describe(value)}`);
+        report.error(where, `${spec.specs.map(s => mismatch(value, s) || 'must be ' + kindName(s)).join(', or ')}, not ${describe(value, where)}`);
       }
       return;
     }
     case 'arr':
       if (!Array.isArray(value)) {
-        report.error(where, `must be a list, not ${describe(value)}`);
+        report.error(where, `must be a list, not ${describe(value, where)}`);
         return;
       }
       value.forEach((item, i) => check(item, spec.of, `${where}[${i}]`, report));
       return;
     case 'map':
       if (!isObject(value)) {
-        report.error(where, `must be an object, not ${describe(value)}`);
+        report.error(where, `must be an object, not ${describe(value, where)}`);
         return;
       }
       for (const [k, v] of Object.entries(value)) {
@@ -585,7 +607,7 @@ function check(value, spec, where, report) {
       return;
     case 'obj':
       if (!isObject(value)) {
-        report.error(where, `must be an object, not ${describe(value)}`);
+        report.error(where, `must be an object, not ${describe(value, where)}`);
         return;
       }
       for (const [k, s] of Object.entries(spec.keys)) {
@@ -602,7 +624,7 @@ function check(value, spec, where, report) {
     default: {
       const why = mismatch(value, spec);
       if (why) {
-        report.error(where, `${why}, not ${describe(value)}`);
+        report.error(where, `${why}, not ${describe(value, where)}`);
       }
     }
   }
@@ -759,7 +781,7 @@ function checkLibrary(file, where, report) {
   const { checkIdPrefix } = require('../tx/library/resource-ids');
   const prefixes = new Map();
   for (const source of library.sources) {
-    const here = `${where} (${path.basename(file)}: ${typeof source === 'string' ? source : describe(source)})`;
+    const here = `${where} (${path.basename(file)}: ${typeof source === 'string' ? source : brief(source)})`;
     if (typeof source !== 'string') {
       report.error(here, 'a source must be a string, type:details');
       continue;
@@ -936,7 +958,7 @@ function checkParsedConfig(config, options = {}) {
         continue;
       }
       if (cfg.enabled !== undefined && typeof cfg.enabled !== 'boolean') {
-        report.error(`${where}.enabled`, `must be true or false, not ${describe(cfg.enabled)}`);
+        report.error(`${where}.enabled`, `must be true or false, not ${describe(cfg.enabled, where)}`);
       }
       if (cfg.enabled !== true) {
         continue;

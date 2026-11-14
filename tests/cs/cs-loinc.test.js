@@ -808,6 +808,27 @@ describe('LOINC Provider', () => {
       }
     });
 
+    test('a long list of part names in an in answers to the time limit: one check per name', async () => {
+      // each name is a lookup of its own, so a list of thousands would otherwise run on regardless
+      const names = Array.from({ length: 50 }, (_, i) => 'no part is called ' + i);
+      const spy = jest.spyOn(provider.opContext, 'deadCheck');
+      try {
+        await listed('SCALE_TYP', 'in', names.join(','));
+        expect(spy.mock.calls.filter(c => c[0] === 'loinc:relationship-in')).toHaveLength(names.length);
+        // a time limit reached part way stops the filter there
+        let n = 0;
+        spy.mockImplementation(() => {
+          if (++n > 10) {
+            throw new Error('Operation exceeded time limit');
+          }
+          return false;
+        });
+        await expect(listed('SCALE_TYP', 'in', names.join(','))).rejects.toThrow('time limit');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     test('a regex that matches no value is an empty filter, not an error', async () => {
       expect((await listed('ORDER_OBS', 'regex', 'no value is this')).size).toBe(0);
     });

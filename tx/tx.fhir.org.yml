@@ -20,7 +20,7 @@ sources:
   - internal:hgvs
   - ucum:tx/data/ucum-essence.xml
   - loinc:loinc-2.77-a.db
-  - loinc!:Loinc_2.83c.db
+  - loinc!:Loinc_2.83d.db
   - rxnorm:rxnorm_20261005.cache
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
