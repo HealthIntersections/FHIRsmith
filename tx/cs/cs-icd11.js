@@ -868,6 +868,30 @@ class ICD11Services extends BaseCSServices {
     return !!row;
   }
 
+  /**
+   * The concepts a concept sits under, for $closure (see CodeSystemProvider.ancestorsOf): one
+   * indexed lookup on the same closure subsumesTest probes, so the two agree. The closure
+   * holds each concept as its own ancestor, which is left out.
+   *
+   * Only a concept code in the form code() gives (the entity id, or the Foundation's uri) is
+   * answered: a short code is the same concept written another way, and an expression is
+   * not in the hierarchy, so both get null and $closure compares them with subsumesTest.
+   *
+   * @param {string|ICD11Concept} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof ICD11Concept) || (typeof code === 'string' && ctxt.canonicalCode !== code)) {
+      return null;
+    }
+    const rows = await this.#all(
+      `SELECT c.* FROM concept_closure cl JOIN concept c ON c.id = cl.ancestor
+        WHERE cl.descendant = ? AND cl.ancestor <> ? AND c.system = ?`,
+      [ctxt.id, ctxt.id, this.shared.systemId]);
+    return new Set(rows.map(row => this.#concept(row).canonicalCode));
+  }
+
   // -- iteration -------------------------------------------------------------------------
 
   /**
