@@ -192,11 +192,14 @@ class EmptyFilterContext {
 }
 
 /**
- * The codes of a value set expanded for an import, added with their keys only (see
- * ValueSetExpander.deferDetails): for each, how to read its details when the importing expansion
- * returns it - {expander, cs, expansion, read}
+ * A code of a value set expanded for an import, added with its key only (see
+ * ValueSetExpander.deferDetails), carries under this key how to read its details when the
+ * importing expansion returns it: {expander, cs, expansion, read}. The property is not enumerable,
+ * so the code's JSON, a copy or a spread of it never has it, and it is removed when the details
+ * are read. (Not a WeakMap from the code: a heavy import adds 100,000 or more codes, and so many
+ * WeakMap entries make every major GC slow, and the map's growth stalls the event loop)
  */
-const DEFERRED_DETAILS = new WeakMap();
+const DEFERRED_DETAILS = Symbol('deferredDetails');
 
 class ValueSetCounter {
   constructor() {
@@ -427,7 +430,7 @@ class ValueSetExpander {
         n.inactive = true;
       }
       if (deferredRead) {
-        DEFERRED_DETAILS.set(n, { expander: this, cs, expansion, read: deferredRead });
+        Object.defineProperty(n, DEFERRED_DETAILS, { value: { expander: this, cs, expansion, read: deferredRead }, configurable: true, writable: true });
       } else if (!this.noDetails && !outsidePage) {
         this.#addDetails(n, cs, code, status, deprecated, displays, definition, expansion, csExtList, vsExtList, csProps);
       }
@@ -2619,11 +2622,11 @@ class ValueSetExpander {
    * expansion, which is added to sources (see importValueSet)
    */
   async #buildDeferred(n, sources) {
-    const d = DEFERRED_DETAILS.get(n);
+    const d = n[DEFERRED_DETAILS];
     if (!d) {
       return;
     }
-    DEFERRED_DETAILS.delete(n);
+    delete n[DEFERRED_DETAILS];
     const r = await d.read();
     d.expander.#addDetails(n, d.cs, n.code, r.status, r.deprecated, r.displays, r.definition, d.expansion, r.csExtList, r.vsExtList, r.csProps);
     sources.add(d.expansion);
@@ -3227,5 +3230,6 @@ module.exports = {
   INTERNAL_DEFAULT_LIMIT,
   WALK_LIMIT_FACTOR,
   EXTERNAL_DEFAULT_LIMIT,
-  TotalStatus
+  TotalStatus,
+  DEFERRED_DETAILS
 };
