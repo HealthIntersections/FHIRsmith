@@ -37,7 +37,8 @@ const FORWARDED_HEADER = 'X-FHIRsmith-Ecosystem-Forwarded';
 const DEFAULT_REGISTRY = 'https://ecosystem.hl7.org/tx-reg';
 // how an R4 (or R3) TerminologyCapabilities says what content it has for a code system
 const CAPS_CONTENT_EXT = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content';
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 30000; // for the whole request, not just until the answer starts
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // a TerminologyCapabilities is under 1 MB
 const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
 const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
 const MAX_ANSWERS = 10000; // the most answers (to $lookup and $validate-code) kept
@@ -56,6 +57,7 @@ class EcosystemResolver {
       apiKeys: config.apiKeys,
       oauth: config.oauth,
       timeout: TIMEOUT_MS,
+      signal: () => AbortSignal.timeout(TIMEOUT_MS),
       userAgent: 'FHIRsmith (ecosystem resolution)',
       agents: () => this.agents
     });
@@ -234,7 +236,9 @@ class EcosystemResolver {
       method: 'GET',
       headers: { 'Accept': 'application/json', [FORWARDED_HEADER]: 'true' },
       timeout: TIMEOUT_MS,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       validateStatus: () => true,
+      maxContentLength: MAX_RESPONSE_BYTES,
       httpAgent: this.agents.httpAgent,
       httpsAgent: this.agents.httpsAgent
     });
@@ -268,7 +272,9 @@ class EcosystemResolver {
         headers,
         data: body ? JSON.stringify(body) : undefined,
         timeout: TIMEOUT_MS,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
         validateStatus: () => true,
+        maxContentLength: MAX_RESPONSE_BYTES,
         maxRedirects: 0, // the credentials go where they were configured to, or nowhere
         httpAgent: this.agents.httpAgent,
         httpsAgent: this.agents.httpsAgent

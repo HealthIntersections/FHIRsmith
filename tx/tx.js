@@ -7,6 +7,10 @@
 
 const { reportedReleaseDate } = require('../library/changelog');
 
+// serialising a response that takes this long is shown in the request's log line
+const SERIALISE_LOG_MS = 10;
+// the most XML kept for large resources, by default (modules.tx.xmlCacheMB)
+const DEFAULT_XML_CACHE_MB = 256;
 // when this server process started (the release date of a snapshot build)
 const SERVER_STARTED = new Date(Date.now() - process.uptime() * 1000);
 const express = require('express');
@@ -18,6 +22,10 @@ const { OperationContext, ResourceCache, ExpansionCache, ExpansionCacheBudget, d
 const { LanguageDefinitions } = require('../library/languages');
 const { I18nSupport } = require('../library/i18nsupport');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
+const { FhirXmlBase } = require('./xml/xml-base');
+const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
+const memoryGuard = require('../library/memory-guard');
+const { storedResourceETag } = require('../library/etags');
 const txHtml = require('./tx-html');
 const { Liquid } = require('liquidjs');
 const packageJson = require("../package.json");
@@ -398,6 +406,14 @@ class TXModule {
       this.log.info(`Expansion caches: at most ${this.expansionCacheBudget.maxCodes} codes in all` +
         (this.config.expansionCacheMaxCodes ? '' : ' (a quarter of the heap limit, at 1 KB a code)'));
     }
+    // the XML of large resources, kept for next time (tx/xml/xml-fragment-cache.js)
+    if (!FhirXmlBase.fragmentCache && this.config.xmlCacheMB !== 0) {
+      const mb = this.config.xmlCacheMB ?? DEFAULT_XML_CACHE_MB;
+      const cache = new XmlFragmentCache({ budgetBytes: mb * 1024 * 1024 });
+      FhirXmlBase.setFragmentCache(cache);
+      memoryGuard.addReliever('XML cache', () => cache.clear());
+      this.log.info(`XML cache: at most ${mb} MB`);
+    }
 
     // Store endpoint info for provider creation
     const endpointInfo = {
@@ -548,10 +564,25 @@ class TXModule {
       let txhtml = new TxHtmlRenderer(new Renderer(opContext, endpointInfo.provider), this.liquid, this.languages, this.i18n, endpointInfo.path);
       res.json = async (data) => {
         try {
-          const duration = Date.now() - req.txStartTime;
+          // the operation's time; what follows (version conversion, serialising) is timed
+          // separately: for a large resource it can be the larger part
+          const serialiseStart = Date.now();
+          const duration = serialiseStart - req.txStartTime;
           const isHtml = txhtml.acceptsHtml(req);
           const xmlFmt = this.acceptsXml(req);
           const jsonFmt = this.acceptsJson(req);
+          // a stored resource that was read: our own ETag (Express's would hash the whole body,
+          // after serialising it), and a 304 at once if the client has it already. Not for HTML,
+          // where the page around the resource varies
+          if (!isHtml && req.txStoredResource === data && data && (req.method === 'GET' || req.method === 'HEAD') && res.statusCode === 200) {
+            const format = xmlFmt ? 'xml' : 'json';
+            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion));
+            if (req.fresh) {
+              res.status(304).end();
+              this.log.info(`[${requestId}] ${req.method} ${format} 304 ${duration}ms 0: ${req.originalUrl} )`);
+              return res;
+            }
+          }
           data = this.transformResourceForVersion(data, endpointInfo.fhirVersion);
 
           let responseSize;
@@ -572,7 +603,7 @@ class TXModule {
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const xml = this.convertResourceToXml(data);
+              const xml = await this.convertResourceToXmlAsync(data);
               responseSize = Buffer.byteLength(xml, 'utf8');
               res.setHeader('Content-Type', xmlFmt);
               result = res.send(xml);
@@ -597,12 +628,16 @@ class TXModule {
           // Log the request with request ID
           const format = isHtml ? 'html' : (xmlFmt ? 'xml' : 'json');
           let li = req.logInfo ? "(" + req.logInfo + ")" : "";
-          this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${duration}ms ${responseSize}: ${req.originalUrl} ${li})`);
+          // operation+serialising, when serialising took long enough to matter (e.g. "5+6120ms")
+          const serialiseMs = Date.now() - serialiseStart;
+          const timing = serialiseMs >= SERIALISE_LOG_MS ? `${duration}+${serialiseMs}ms` : `${duration}ms`;
+          this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${timing} ${responseSize}: ${req.originalUrl} ${li})`);
           // a slow request: what it asked, so that it can be repeated (the line above has the url)
           const slowMs = (this.config.slowRequestSeconds ?? 30) * 1000;
-          if (slowMs > 0 && duration >= slowMs) {
+          const total = duration + serialiseMs;
+          if (slowMs > 0 && total >= slowMs) {
             const body = req.method === 'POST' || req.method === 'PUT' ? summariseBody(req.body) : '';
-            this.log.warn(`[${requestId}] slow request (${Math.round(duration / 1000)}s): ${req.method} ${req.originalUrl}` +
+            this.log.warn(`[${requestId}] slow request (${Math.round(total / 1000)}s): ${req.method} ${req.originalUrl}` +
               (req.get('Accept-Language') ? ` Accept-Language: ${req.get('Accept-Language')}` : '') + (body ? ` body: ${body}` : ''));
           }
 
@@ -1687,6 +1722,14 @@ class TXModule {
     params.parameter = params.parameter.filter(p => p.name !== 'tx-resource');
 
     return params;
+  }
+
+  /**
+   * convertResourceToXml, letting other requests run while a large resource is
+   * serialised (see FhirXmlBase.toXmlAsync)
+   */
+  async convertResourceToXmlAsync(res) {
+    return FhirXmlBase.toXmlAsync(() => this.convertResourceToXml(res));
   }
 
   convertResourceToXml(res) {

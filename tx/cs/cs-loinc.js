@@ -378,14 +378,20 @@ class LoincServices extends BaseCSServices {
       throw new Error('Invalid context for LOINC lookup');
     }
 
-    // Run all property queries in parallel — they're independent reads on the same key
+    // Run all property queries in parallel - they're independent reads on the same key - but
+    // each into its own list, appended in a fixed order, so that the order of the properties
+    // does not depend on which query finishes first
+    const groups = [[], [], [], [], []];
     await Promise.all([
-      this.#addRelationshipProperties(ctxt, props, params),
-      this.#addConceptProperties(ctxt, props,params),
-      this.#addStatusProperty(ctxt, props,params),
-      this.#addRelatedNames(ctxt, props,params),
-      this.#addMappingProperties(ctxt, props, params)
+      this.#addRelationshipProperties(ctxt, props, groups[0]),
+      this.#addConceptProperties(ctxt, props, groups[1]),
+      this.#addStatusProperty(ctxt, props, groups[2]),
+      this.#addRelatedNames(ctxt, props, groups[3]),
+      this.#addMappingProperties(ctxt, props, groups[4])
     ]);
+    for (const group of groups) {
+      params.push(...group);
+    }
   }
 
   /**
@@ -1413,6 +1419,38 @@ class LoincServices extends BaseCSServices {
       return 'subsumed-by';
     }
     return 'not-subsumed';
+  }
+
+  /**
+   * The parts a code sits under, for $closure (see CodeSystemProvider.ancestorsOf): one indexed
+   * lookup on the Closure table by DescendentKey. It is the table subsumesTest probes, so the
+   * two agree: a is an ancestor of b here exactly when subsumesTest(a, b) is 'subsumes'. The
+   * Closure table follows ComponentHierarchyBySystem path by path, which is not the same as
+   * walking the parent links (see #hierarchyFilterSql), so that walk is not used.
+   *
+   * locate() is an exact match on the code, so a code it finds is already in the form code()
+   * gives, and two different codes are two different concepts.
+   *
+   * @param {string|LoincProviderContext} code
+   * @returns {Promise<Set<string>|null>} null for a code that isn't known
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof LoincProviderContext)) {
+      return null;
+    }
+    const rows = await new Promise((resolve, reject) => {
+      this.db.all('SELECT AncestorKey FROM Closure WHERE DescendentKey = ?', [ctxt.key],
+        guarded(reject, (err, rows) => err ? reject(err) : resolve(rows)));
+    });
+    const ancestors = new Set();
+    for (const row of rows) {
+      const a = this.codeList[row.AncestorKey];
+      if (a && a.key !== ctxt.key) {
+        ancestors.add(a.code);
+      }
+    }
+    return ancestors;
   }
 
   /**
