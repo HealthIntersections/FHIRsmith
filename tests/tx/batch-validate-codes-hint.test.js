@@ -5,7 +5,7 @@
  * provider is asked about one code at a time. The batch worker collects the entries' codes by
  * code system before they run; the first entry that locates a code in a version has the batch
  * call prefetchCodes once, on a provider of its own, with all of that system's codes. The
- * handles are kept on the batch's context (opContext.prefetched), which every entry's context
+ * handles are kept on the batch's context (opContext.batchPrefetch), which every entry's context
  * reaches as opContext.batch, and each entry passes its provider's to locate (tx/cs/cs-api.md, Batches).
  */
 
@@ -16,19 +16,27 @@ const { CountryCodeFactoryProvider } = require('../../tx/cs/cs-country');
 const SYSTEM = 'urn:iso:std:iso:3166';
 const OTHER = 'http://example.org/fhir/CodeSystem/other';
 
-/** Country codes, with a prefetchCodes; records each prefetchCodes and what each locate is passed. */
+/**
+ * Country codes, with a prefetchCodes (unless noPrefetch); records each build, each
+ * prefetchCodes and what each locate is passed.
+ */
 class PrefetchRecordingCountryFactory extends CountryCodeFactoryProvider {
   prefetches = [];
   seen = [];
+  builds = [];
+  noPrefetch = false;
 
   build(opContext, supplements) {
     const provider = super.build(opContext, supplements);
+    this.builds.push(opContext);
     const locate = provider.locate.bind(provider);
-    provider.prefetchCodes = async (codes) => {
-      const handle = { from: this, codes: [...codes] };
-      this.prefetches.push({ provider, handle });
-      return handle;
-    };
+    if (!this.noPrefetch) {
+      provider.prefetchCodes = async (codes) => {
+        const handle = { from: this, codes: [...codes] };
+        this.prefetches.push({ provider, handle });
+        return handle;
+      };
+    }
     provider.locate = async (code, prefetched) => {
       this.seen.push({ code, provider, batch: provider.opContext.batch, prefetched: prefetched ?? null });
       return locate(code, prefetched);
@@ -77,6 +85,8 @@ describe('$batch-validate-code: prefetchCodes once per code system', () => {
   beforeEach(() => {
     factory.prefetches = [];
     factory.seen = [];
+    factory.builds = [];
+    factory.noPrefetch = false;
   });
 
   async function batch(route, parameter) {
@@ -115,7 +125,7 @@ describe('$batch-validate-code: prefetchCodes once per code system', () => {
     // the entries' contexts share one batch context, which holds the handles
     expect(located.every(s => s.batch === located[0].batch)).toBe(true);
     expect(located[0].batch.batch).toBeNull();
-    expect(await located[0].batch.prefetched.handles.get(SYSTEM + '|' + factory.version())).toBe(handle);
+    expect(await located[0].batch.batchPrefetch.handles.get(SYSTEM + '|' + factory.version())).toBe(handle);
     // the first locate already had it
     expect(factory.seen[0].prefetched).toBe(handle);
   });
@@ -162,6 +172,23 @@ describe('$batch-validate-code: prefetchCodes once per code system', () => {
     expect(prefetchedCodes()).toEqual(['CA', 'US']);
     // and a provider of another version is not passed it
     expect(factory.seen.filter(s => s.code === 'CA').every(s => s.prefetched === null)).toBe(true);
+  });
+
+  test('a provider that doesn\'t prefetch: the batch builds no provider to read for it', async () => {
+    const entries = [entry([coding('US')]), entry([coding('CA')]), entry([coding('GB')])];
+    // with prefetchCodes: one provider built on the batch's own context (no opContext.batch)
+    await batch('CodeSystem', entries);
+    expect(factory.builds.filter(c => c.batch === null).length).toBe(1);
+
+    factory.builds = [];
+    factory.seen = [];
+    factory.prefetches = [];
+    factory.noPrefetch = true;
+    await batch('CodeSystem', entries);
+    expect(factory.prefetches.length).toBe(0);
+    expect(factory.builds.length).toBeGreaterThan(0);
+    expect(factory.builds.every(c => c.batch !== null)).toBe(true);
+    expect(factory.seen.every(s => s.prefetched === null)).toBe(true);
   });
 
   test('outside a batch, nothing is prefetched and locate is passed no handle', async () => {

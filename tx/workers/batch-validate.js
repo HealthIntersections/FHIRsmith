@@ -22,6 +22,7 @@ const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = req
 const {Parameters} = require("../library/parameters");
 const {ValidateWorker} = require("./validate");
 const {debugLog} = require("../operation-context");
+const {CodeSystemProvider} = require("../cs/cs-api");
 
 class BatchValidateWorker extends TerminologyWorker {
 
@@ -103,7 +104,7 @@ class BatchValidateWorker extends TerminologyWorker {
       // Before any entry runs: the codes the entries name, by code system. The first entry that
       // locates a code in a version of one has the batch prefetchCodes them all, once, and every
       // entry passes the handle to locate (BatchPrefetch; tx/cs/cs-api.md, Batches)
-      this.opContext.prefetched = new BatchPrefetch(this.provider, this.opContext,
+      this.opContext.batchPrefetch = new BatchPrefetch(this.provider, this.opContext,
         this.batchCodes(params, globalParams, codeSystemRoute));
 
       let output = [];
@@ -313,12 +314,13 @@ class BatchValidateWorker extends TerminologyWorker {
 }
 
 /**
- * A $batch-validate-code's prefetchCodes handles, on the batch's context (opContext.prefetched).
+ * A $batch-validate-code's prefetchCodes handles, on the batch's context (opContext.batchPrefetch).
  * Each entry builds its own providers, so the batch reads for them: the first time an entry
  * locates a code in a code system version this server holds (a factory: not a code system
- * resource, nor the ecosystem), the batch builds a provider of its own for that version and
- * calls prefetchCodes once, with every code the entries name in that system. Every entry whose
- * provider is that system|version is then passed the handle. It is done at the first need, not
+ * resource, nor the ecosystem) and whose provider prefetches (overrides prefetchCodes), the
+ * batch builds a provider of its own for that version, with no supplements and under the batch's
+ * context, and calls prefetchCodes once, with every code the entries name in that system. Every
+ * entry whose provider is that system|version is then passed the handle. It is done at the first need, not
  * before the entries run, because which version answers an entry is only decided as it runs
  * (system-version, a value set's pinned version).
  */
@@ -340,6 +342,10 @@ class BatchPrefetch {
    * @returns {Promise<*>} the handle for cs's system and version, or null
    */
   handleFor(cs) {
+    // a provider that doesn't prefetch: no provider built to read for it
+    if (cs.prefetchCodes === CodeSystemProvider.prototype.prefetchCodes) {
+      return null;
+    }
     const codes = this.codes.get(cs.system());
     if (!codes) {
       return null;

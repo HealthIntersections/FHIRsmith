@@ -1470,7 +1470,7 @@ class ValueSetChecker {
    * @returns {Promise<*>}
    */
   async batchPrefetched(cs) {
-    const prefetched = this.worker.opContext?.batch?.prefetched;
+    const prefetched = this.worker.opContext?.batch?.batchPrefetch;
     return prefetched && cs ? ((await prefetched.handleFor(cs)) ?? null) : null;
   }
 

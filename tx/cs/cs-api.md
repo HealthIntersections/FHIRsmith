@@ -26,19 +26,23 @@ language-sensitive decisions.
 `$batch-validate-code` validates its entries one at a time, each with its own copy of the
 `OperationContext` and its own providers. So the batch worker collects the codes the entries
 name, by code system, before the first entry runs. The first time an entry locates a code in a
-code system version this server holds, the batch calls `prefetchCodes` once, on a provider of its
-own for that version, with all the entries' codes of that system. It keeps the handles on the
-batch's context (`opContext.prefetched`, by `system|version`), which an entry's context reaches
-as `opContext.batch`, and each entry passes the handle for its provider's system and version to
-`locate(code, prefetched)` (`ValueSetChecker.batchPrefetched`). It waits for the first entry
-because which version answers an entry is only decided as the entry runs (`system-version`, a
-value set's pinned version).
+code system version this server holds, and its provider overrides `prefetchCodes`, the batch
+calls `prefetchCodes` once, on a provider of its own for that version, with all the entries'
+codes of that system. It keeps the handles on the batch's context (`opContext.batchPrefetch`, by
+`system|version`), which an entry's context reaches as `opContext.batch`, and each entry passes
+the handle for its provider's system and version to `locate(code, prefetched)`
+(`ValueSetChecker.batchPrefetched`). It waits for the first entry because which version answers
+an entry is only decided as the entry runs (`system-version`, a value set's pinned version).
 
 So in a batch the handle comes from another provider instance, built by the same factory, and it
-lasts until the whole batch is answered. A provider that prefetches should therefore:
+lasts until the whole batch is answered. That reading provider is built with no supplements,
+under the batch's context (the request's languages, not an entry's). An entry with supplements,
+or with languages of its own, is passed a handle read without them. A provider that prefetches
+should therefore:
 
 - recognise its handles by what they were read from (the factory's data or file), not by `this`;
-- keep in the handle what `locate` needs, not a reference to the reading provider's state;
+- keep in the handle only row data: what `locate` needs to build the context itself, nothing that
+  depends on supplements or languages, and no reference to the reading provider or its state;
 - treat a code the handle doesn't hold as usual (an entry may resolve to another version, or
   name codes the batch didn't collect), and ignore a handle that isn't one of its own.
 
