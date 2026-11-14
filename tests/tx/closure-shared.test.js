@@ -23,6 +23,7 @@ const request = require('supertest');
 const TXModule = require('../../tx/tx');
 const { ClosureStore } = require('../../tx/closure/closure-store');
 const ClosureWorker = require('../../tx/workers/closure');
+const { FhirCodeSystemProvider } = require('../../tx/cs/cs-cs');
 
 const LIBRARY = path.join(__dirname, 'fixtures', 'test-library.yaml');
 const R5 = '/tx/r5';
@@ -132,7 +133,10 @@ describe('$closure on a shared database', () => {
     expect((await post(app, init(T))).status).toBe(200);
     expect((await post(app, params(name(T), concept('a')))).body.version).toBe('1');
 
-    // three tries are each beaten by another process's add of an unrelated concept
+    // three tries are each beaten by another process's add of an unrelated concept.
+    // The pairs are tested one by one here (no ancestor sets), so that the remembered
+    // subsumesTest answers are what is being checked
+    const ancestors = jest.spyOn(FhirCodeSystemProvider.prototype, 'ancestorsOf').mockResolvedValue(null);
     const orig = ClosureWorker.prototype.memoSubsumes;
     let hits = 0;
     let misses = 0;
@@ -163,6 +167,7 @@ describe('$closure on a shared database', () => {
     // each pair was tested once, and remembered across the four tries: a1 and r each
     // against a, u1, u2, u3, and r against a1
     subsumes.mockRestore();
+    ancestors.mockRestore();
     expect(misses).toBe(9);
     expect(hits).toBeGreaterThan(0);
 

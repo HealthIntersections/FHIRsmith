@@ -1026,6 +1026,28 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
+   * The codes a code sits under, for $closure (see CodeSystemProvider.ancestorsOf): the
+   * CodeSystem's own ancestor walk, which is what subsumesTest above asks of each pair.
+   *
+   * Only a code in the form code() gives is answered (in a case-insensitive code system,
+   * another spelling gets null). A subclass with its own subsumesTest (ICF) gets null too,
+   * since this walk may not be what it answers from.
+   *
+   * @param {string|FhirCodeSystemProviderContext} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    if (this.subsumesTest !== FhirCodeSystemProvider.prototype.subsumesTest) {
+      return null;
+    }
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof FhirCodeSystemProviderContext) || (typeof code === 'string' && ctxt.code !== code)) {
+      return null;
+    }
+    return new Set(this.hasParents() ? this.codeSystem.getAncestors(ctxt.code) : []);
+  }
+
+  /**
    * @param {string|FhirCodeSystemProviderContext} context - Code or context to iterate from
    * @returns {Promise<Object|null>} A handle that can be passed to nextContext (or null if can't be iterated)
    */
