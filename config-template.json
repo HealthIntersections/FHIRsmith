@@ -359,6 +359,8 @@
       "expansionCacheMemoryThreshold": 0,
       // most codes the expansion caches hold in all (default: a quarter of the heap limit, at 1 KB a code)
       // "expansionCacheMaxCodes": 1000000,
+      // most XML, in MB, kept per process for large resources asked for as XML (0: none; default 256)
+      // "xmlCacheMB": 256,
       "endpoints": [
         {
           "path": "/tx/r5",

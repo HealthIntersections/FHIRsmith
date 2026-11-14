@@ -204,6 +204,19 @@ function shouldReject() {
 
 let gcFn;
 
+// caches to let go of while refusing, by name: each returns the bytes it let go (see addReliever)
+const relievers = new Map();
+
+/**
+ * A cache the guard can empty while it refuses requests for memory, before it forces a GC.
+ * Registering again under the same name replaces the earlier one.
+ * @param {string} name - what it is, for the log ("XML cache")
+ * @param {Function} relieve - empties it; returns about how many bytes that let go
+ */
+function addReliever(name, relieve) {
+  relievers.set(name, relieve);
+}
+
 /**
  * global.gc if node was started with --expose-gc, which is how it should be started (the
  * Dockerfile and npm start do; add it to the node command of a systemd unit). Otherwise
@@ -342,6 +355,17 @@ function middleware(opts = {}) {
       // a group: every process refusing does this, so each need only free its share
       const share = state.group ? Math.max(1, readCgroupProcessRss(state.group).size) : 1;
       const done = [];
+      // caches that can be let go first, for the GC below to take back
+      for (const [name, relieve] of relievers) {
+        try {
+          const freed = relieve();
+          if (freed > 0) {
+            done.push(`dropped the ${name} (${gb(freed)} GB)`);
+          }
+        } catch {
+          // ignore
+        }
+      }
       if (!state.lastResortGc && heap < excess / share) {
         if (log) {
           log.info(`Memory: no forced GC - the JS heap (${gb(heap)} GB) is less than the ${gb(excess)} GB over the threshold`);
@@ -425,4 +449,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { thresholds, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };
+module.exports = { addReliever, thresholds, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };

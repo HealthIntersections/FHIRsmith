@@ -3,6 +3,30 @@
 // Common functionality for all FHIR resource XML serialization/deserialization
 //
 
+const { performance } = require('perf_hooks');
+
+// indentation strings, by level (renderers ask for one per element)
+const INDENTS = Array.from({ length: 32 }, (_, i) => '  '.repeat(i));
+const NO_KEYS = [];
+const URL_ONLY = ['url'];
+// anything escapeXml has to change, or refuse
+// eslint-disable-next-line no-control-regex
+const NEEDS_ESCAPE = /[&<>"'\u0000-\u0008\u000B\u000C\u000E-\u001F]/;
+const ESCAPED_CHARS = /[&<>"']/g;
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
+// serialising for toXmlAsync: the arrays of objects set aside by the synchronous pass,
+// to be rendered by the asynchronous one (null: not deferring). The synchronous pass
+// can't be interleaved with another, so one slot for all of them is enough
+let deferred = null;
+// marks where a deferred array goes in the text. NUL can't appear anywhere else:
+// escapeXml refuses it in content
+// eslint-disable-next-line no-control-regex
+const DEFERRED_MARK = /\u0000(\d+)\u0000/;
+// how long serialising runs before it lets the event loop handle other requests
+const YIELD_MS = 25;
+// the XML of large arrays, kept for next time (see xml-fragment-cache.js); null: none
+let fragmentCache = null;
+
 /**
  * Base class for FHIR XML serialization/deserialization
  * Contains shared methods for converting between FHIR JSON and XML formats
@@ -481,7 +505,7 @@ class FhirXmlBase {
    * @returns {string}
    */
   static indent(level) {
-    return '  '.repeat(level);
+    return INDENTS[level] ?? '  '.repeat(level);
   }
 
   /**
@@ -498,6 +522,9 @@ class FhirXmlBase {
    * outside (a remote API, an imported file) and should have been caught at
    * the boundary.
    *
+   * Nearly every value has nothing to escape, so one scan decides that and the
+   * value goes out as it is (a large CodeSystem has millions of them).
+   *
    * @param {*} value - Value to escape
    * @returns {string}
    * @throws {Error} if the value contains a character XML cannot carry
@@ -505,18 +532,16 @@ class FhirXmlBase {
   static escapeXml(value) {
     if (value === null || value === undefined) return '';
     const str = String(value);
+    if (!NEEDS_ESCAPE.test(str)) {
+      return str;
+    }
     // eslint-disable-next-line no-control-regex
     const illegal = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.exec(str);
     if (illegal) {
       const code = illegal[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
       throw new Error(`Cannot serialise this content as XML: it contains U+${code} at offset ${illegal.index}, a control character XML does not allow`);
     }
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+    return str.replace(ESCAPED_CHARS, c => ESCAPES[c]);
   }
 
   /**
@@ -533,6 +558,12 @@ class FhirXmlBase {
       .replace(/&apos;/g, "'");
   }
 
+  // The renderers below write their pieces into one array (out), joined once at the
+  // end, rather than each returning a string for its caller to append: for a large
+  // resource (the full ICD-10-CM CodeSystem is 64 MB of XML) the intermediate strings
+  // were most of the work, and most of the garbage collection, of serialising it. The
+  // render* methods keep their string-returning signatures for the classes that use them.
+
   /**
    * Render an element to XML
    * @param {string} name - Element name
@@ -541,35 +572,9 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderElement(name, value, level) {
-    if (value === null || value === undefined) {
-      return '';
-    }
-
-    let xml = '';
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        xml += this.renderElement(name, item, level);
-      }
-    } else if (typeof value === 'object') {
-      // Special handling for extension - url is an attribute
-      if (name === 'extension' || name === 'modifierExtension') {
-        const url = value.url ? ` url="${this.escapeXml(value.url)}"` : '';
-        xml += `${this.indent(level)}<${name}${url}>\n`;
-        xml += this.renderObject(value, level + 1, ['url']);
-        xml += `${this.indent(level)}</${name}>\n`;
-      } else {
-        xml += `${this.indent(level)}<${name}>\n`;
-        xml += this.renderObject(value, level + 1);
-        xml += `${this.indent(level)}</${name}>\n`;
-      }
-    } else if (typeof value === 'boolean' || typeof value === 'number') {
-      xml += `${this.indent(level)}<${name} value="${value}"/>\n`;
-    } else {
-      xml += `${this.indent(level)}<${name} value="${this.escapeXml(value)}"/>\n`;
-    }
-
-    return xml;
+    const out = [];
+    this._emitElement(out, name, value, level);
+    return out.join('');
   }
 
   /**
@@ -580,20 +585,9 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderObject(obj, level, skipKeys = []) {
-    let xml = '';
-
-    for (const [key, value] of Object.entries(obj)) {
-      // Skip primitive extension keys (handled separately)
-      if (key.startsWith('_')) {
-        continue;
-      }
-      if (skipKeys.includes(key)) {
-        continue;
-      }
-      xml += this.renderElement(key, value, level);
-    }
-
-    return xml;
+    const out = [];
+    this._emitObject(out, obj, level, skipKeys);
+    return out.join('');
   }
 
   /**
@@ -604,23 +598,216 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderElementsInOrder(obj, level, elementOrder) {
-    let xml = '';
+    const out = [];
 
     // Process elements in order
     for (const key of elementOrder) {
       if (Object.hasOwn(obj, key) && key !== 'resourceType') {
-        xml += this.renderElement(key, obj[key], level);
+        this._emitElement(out, key, obj[key], level);
       }
     }
 
     // Process any remaining elements not in the order list
     for (const key of Object.keys(obj)) {
       if (!elementOrder.includes(key) && key !== 'resourceType' && !key.startsWith('_')) {
-        xml += this.renderElement(key, obj[key], level);
+        this._emitElement(out, key, obj[key], level);
       }
     }
 
-    return xml;
+    return out.join('');
+  }
+
+  /**
+   * renderElement, into out
+   * @private
+   */
+  static _emitElement(out, name, value, level) {
+    if (value === null || value === undefined) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      if (deferred && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+        out.push('\u0000' + deferred.length + '\u0000');
+        deferred.push({ name, value, level });
+        return;
+      }
+      for (const item of value) {
+        this._emitElement(out, name, item, level);
+      }
+    } else if (typeof value === 'object') {
+      const ind = this.indent(level);
+      // Special handling for extension - url is an attribute
+      if (name === 'extension' || name === 'modifierExtension') {
+        out.push(ind, '<', name, value.url ? ` url="${this.escapeXml(value.url)}"` : '', '>\n');
+        this._emitObject(out, value, level + 1, URL_ONLY);
+      } else {
+        out.push(ind, '<', name, '>\n');
+        this._emitObject(out, value, level + 1, NO_KEYS);
+      }
+      out.push(ind, '</', name, '>\n');
+    } else if (typeof value === 'boolean' || typeof value === 'number') {
+      out.push(this.indent(level), '<', name, ' value="', String(value), '"/>\n');
+    } else {
+      out.push(this.indent(level), '<', name, ' value="', this.escapeXml(value), '"/>\n');
+    }
+  }
+
+  /**
+   * renderObject, into out
+   * @private
+   */
+  static _emitObject(out, obj, level, skipKeys) {
+    for (const key in obj) {
+      if (!Object.hasOwn(obj, key)) {
+        continue;
+      }
+      // Skip primitive extension keys (handled separately)
+      if (key.charCodeAt(0) === 95 /* _ */) {
+        continue;
+      }
+      if (skipKeys.length > 0 && skipKeys.includes(key)) {
+        continue;
+      }
+      this._emitElement(out, key, obj[key], level);
+    }
+  }
+
+  /**
+   * Serialise without holding the event loop for the whole of a large resource.
+   *
+   * The XML for the full ICD-10-CM CodeSystem is 64 MB; serialising it in one go held
+   * tx.fhir.org's event loop for seconds. This runs toXml (render) with every array of
+   * objects - concepts, expansion contains, bundle entries, and so on - set aside, then
+   * renders those an item at a time, letting other work run every YIELD_MS. The result
+   * is the same text toXml produces.
+   *
+   * @param {Function} render - produces the XML synchronously, e.g. () => CodeSystemXML.toXml(json)
+   * @returns {Promise<string>} XML string
+   */
+  static async toXmlAsync(render) {
+    let text;
+    let jobs;
+    deferred = [];
+    try {
+      text = render();
+    } finally {
+      jobs = deferred;
+      deferred = null;
+    }
+    if (jobs.length === 0) {
+      return text;
+    }
+    const parts = text.split(DEFERRED_MARK);
+    const out = [];
+    // out is joined into chunks as it goes (at each yield), so the end isn't one join of millions
+    // of pieces. busy: the time spent serialising, not counting the time given to other work
+    const clock = { last: performance.now(), chunks: [], busy: 0 };
+    const busyNow = () => clock.busy + (performance.now() - clock.last);
+    const cache = fragmentCache;
+    // split leaves the text between the marks at the even positions, and the job numbers at the odd ones
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 0) {
+        out.push(parts[i]);
+        continue;
+      }
+      const job = jobs[Number(parts[i])];
+      const key = job.name + '|' + job.level;
+      const kept = cache ? cache.get(job.value, key) : null;
+      if (kept !== null) {
+        out.push(kept);
+        continue;
+      }
+      // this array's text in chunks of its own, in case it's worth keeping
+      clock.chunks.push(out.join(''));
+      out.length = 0;
+      const first = clock.chunks.length;
+      const started = busyNow();
+      await this._emitArrayAsync(out, job.name, job.value, job.level, clock);
+      if (cache && cache.wants(job.value, key, busyNow() - started)) {
+        clock.chunks.push(out.join(''));
+        out.length = 0;
+        const text = clock.chunks.splice(first).join('');
+        clock.chunks.push(text);
+        cache.put(job.value, key, text);
+      }
+    }
+    clock.chunks.push(out.join(''));
+    return clock.chunks.join('');
+  }
+
+  /**
+   * The cache toXmlAsync keeps the XML of large arrays in (null: none)
+   * @param {XmlFragmentCache|null} cache
+   */
+  static setFragmentCache(cache) {
+    fragmentCache = cache;
+  }
+
+  static get fragmentCache() {
+    return fragmentCache;
+  }
+
+  /**
+   * Render with nothing set aside for toXmlAsync, for a caller that does more with the
+   * text than include it in the output (ParametersXML re-indents embedded resources)
+   * @param {Function} render - produces the text synchronously
+   * @returns {*} what render returns
+   */
+  static withoutDeferral(render) {
+    const saved = deferred;
+    deferred = null;
+    try {
+      return render();
+    } finally {
+      deferred = saved;
+    }
+  }
+
+  /**
+   * _emitElement for an array, an item at a time, yielding as it goes. Arrays of
+   * objects inside an item (a concept's child concepts) are done the same way, so
+   * one item with a large subtree doesn't hold the loop either.
+   * @private
+   */
+  static async _emitArrayAsync(out, name, array, level, clock) {
+    for (const item of array) {
+      if (Array.isArray(item)) {
+        await this._emitArrayAsync(out, name, item, level, clock);
+      } else if (item !== null && typeof item === 'object') {
+        const ind = this.indent(level);
+        let skipKeys = NO_KEYS;
+        if (name === 'extension' || name === 'modifierExtension') {
+          out.push(ind, '<', name, item.url ? ` url="${this.escapeXml(item.url)}"` : '', '>\n');
+          skipKeys = URL_ONLY;
+        } else {
+          out.push(ind, '<', name, '>\n');
+        }
+        // as _emitObject
+        for (const key in item) {
+          if (!Object.hasOwn(item, key) || key.charCodeAt(0) === 95 /* _ */ || (skipKeys.length > 0 && skipKeys.includes(key))) {
+            continue;
+          }
+          const value = item[key];
+          if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+            await this._emitArrayAsync(out, key, value, level + 1, clock);
+          } else {
+            this._emitElement(out, key, value, level + 1);
+          }
+        }
+        out.push(ind, '</', name, '>\n');
+      } else {
+        this._emitElement(out, name, item, level);
+      }
+      const now = performance.now();
+      if (now - clock.last >= YIELD_MS) {
+        clock.chunks.push(out.join(''));
+        out.length = 0;
+        clock.busy += now - clock.last;
+        await new Promise(resolve => setImmediate(resolve));
+        clock.last = performance.now();
+      }
+    }
   }
 
   /**
