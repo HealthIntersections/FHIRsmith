@@ -221,7 +221,7 @@ class LoincServices extends BaseCSServices {
     this.statusKeys = sharedData.statusKeys;
     this.statusCodes = sharedData.statusCodes;
     this.hasMappings = sharedData.hasMappings;
-    this.filterLookups = sharedData.filterLookups;
+    this.filterLookups = sharedData.filterLookups || new LoincFilterLookups();
   }
 
   close() {
@@ -1298,11 +1298,14 @@ class LoincServices extends BaseCSServices {
   }
 
   /**
-   * the keys of the codes with this name (Description, in any case). Codes.Description has no
-   * index, so the lookup reads every code (21 ms on LOINC 2.83): the factory keeps the answer
+   * the keys of the codes with this name (Description, in any case). Without the index
+   * idx_codes_description (databases imported before it) the lookup reads every code (21 ms on
+   * LOINC 2.83): the factory keeps the answer. The key is lower-cased as NOCASE compares (ASCII
+   * letters only), so Doc and DOC share it
    */
   async #partKeysByName(name) {
-    return this.filterLookups.get('name ' + name, () => new Promise((resolve, reject) => {
+    const key = 'name ' + name.replace(/[A-Z]/g, c => c.toLowerCase());
+    return this.filterLookups.get(key, () => new Promise((resolve, reject) => {
       this.db.all('SELECT CodeKey FROM Codes WHERE Description = ? COLLATE NOCASE', [name], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);

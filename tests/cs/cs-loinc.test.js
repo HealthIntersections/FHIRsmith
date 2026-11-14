@@ -805,8 +805,9 @@ describe('LOINC Provider', () => {
     });
 
     test('a part name and a regex are looked up once per factory, not on each request', async () => {
-      // SCALE_TYP = Doc names a part: finding it reads every code (Codes.Description has no
-      // index). CLASS regex reads every CLASS part. One provider per request, as the server does
+      // SCALE_TYP = Doc names a part: finding it reads every code where Codes.Description has no
+      // index (as in databases imported before idx_codes_description). CLASS regex reads every
+      // CLASS part. One provider per request, as the server does
       const f = new LoincServicesFactory(opContext.i18n, testDbPath);
       const statements = [];
       async function validate(property, operator, value, code) {
@@ -829,11 +830,11 @@ describe('LOINC Provider', () => {
       }
       const byName = sql => /Description = /.test(sql);
       const classScan = sql => /SELECT CodeKey as Key, Description FROM Codes/.test(sql);
-      for (let i = 0; i < 3; i++) {
-        expect(await validate('SCALE_TYP', '=', 'Doc', '15507-7')).not.toBeNull();
+      for (const name of ['Doc', 'DOC', 'doc']) {
+        expect(await validate('SCALE_TYP', '=', name, '15507-7')).not.toBeNull();
         expect(await validate('CLASS', 'regex', 'CHE.*', '12814-0')).not.toBeNull();
       }
-      // (before: 3 and 3, one per request)
+      // (before: 3 and 3, one per request; Doc, DOC and doc are one name, as NOCASE compares)
       expect([statements.filter(byName).length, statements.filter(classScan).length]).toEqual([1, 1]);
     });
 
