@@ -5,6 +5,7 @@ const path = require('path');
 const { LoincServicesFactory } = require('../../tx/cs/cs-loinc');
 const { OperationContext } = require('../../tx/operation-context');
 const { TestUtilities } = require('../test-utilities');
+const { loincTestingDbCopy } = require('../loinc-testing-db');
 
 /**
  * CLASSTYPE 3: the importer stores its description as 'Claims attachment', which the provider
@@ -17,16 +18,13 @@ const run = (db, sql, args = []) => new Promise((resolve, reject) => db.run(sql,
 const get = (db, sql, args = []) => new Promise((resolve, reject) => db.get(sql, args, (err, row) => err ? reject(err) : resolve(row)));
 
 describe('LOINC CLASSTYPE: claims attachments', () => {
-  const source = path.resolve(__dirname, '../../data/loinc-testing.db');
   let dir;
   let provider;
   let code;
 
   beforeAll(async () => {
-    expect(fs.existsSync(source)).toBe(true);
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loinc-classtype-'));
-    const dbPath = path.join(dir, 'loinc.db');
-    fs.copyFileSync(source, dbPath);
+    const dbPath = await loincTestingDbCopy(dir);
 
     // make one code's CLASSTYPE a claims attachment, as the importer stores it
     const db = new sqlite3.Database(dbPath);

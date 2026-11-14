@@ -27,6 +27,7 @@ const { CodeSystem } = require('../../tx/library/codesystem');
 const { ICD11ServicesFactory } = require('../../tx/cs/cs-icd11');
 const { CPTServicesFactory } = require('../../tx/cs/cs-cpt');
 const { OMOPServicesFactory } = require('../../tx/cs/cs-omop');
+const { loincTestingDbCopy } = require('../loinc-testing-db');
 const { RxNormServicesFactory } = require('../../tx/cs/cs-rxnorm');
 
 /** a seeded random number generator (mulberry32) */
@@ -100,19 +101,20 @@ beforeAll(async () => {
 // -- LOINC ------------------------------------------------------------------------------
 
 /**
- * The repository's LOINC test database (data/loinc-testing.db, written by cs-loinc.test.js),
- * or, when that hasn't run yet, the same import into a temporary directory.
+ * A copy of the repository's LOINC test database (data/loinc-testing.db: tests/loinc-testing-db.js),
+ * as loading it sets WAL and makes indexes, and other suites copy it.
  */
+const loincCopies = [];
 async function repoLoincDb() {
-  const file = path.resolve(__dirname, '../../data/loinc-testing.db');
-  if (fs.existsSync(file)) {
-    return file;
-  }
-  const { LoincDataMigrator } = require('../../tx/importers/import-loinc.module');
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'loinc-ancestors-')), 'loinc-testing.db');
-  await new LoincDataMigrator().migrate(path.resolve(__dirname, '../../tx/data/loinc'), out, '2.80-test', { verbose: false, mainOnly: false });
-  return out;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loinc-ancestors-'));
+  loincCopies.push(dir);
+  return loincTestingDbCopy(dir, 'loinc-testing.db');
 }
+afterAll(() => {
+  for (const dir of loincCopies) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 const loincDbs = [['loinc-testing.db', null], process.env.FHIRSMITH_TEST_LOINC_DB]
   .filter(f => f && (Array.isArray(f) || fs.existsSync(f))).map(f => (Array.isArray(f) ? f : [path.basename(f), f]));
