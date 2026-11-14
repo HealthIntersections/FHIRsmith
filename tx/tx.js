@@ -340,6 +340,7 @@ class TXModule {
       // the LOINC, RxNorm, NDC, UNII, CPT and OMOP databases are the master's; a worker opens
       // them read-only
       this.library.terminologyDatabasesReadOnly = config.clusterRole === 'tx-worker';
+      this.library.oclCluster = config.clusterRole === 'master' ? 'leader' : 'follower';
     }
 
     // The syndication feed: content is recorded in the store as the library loads it, from

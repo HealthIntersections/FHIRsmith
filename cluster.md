@@ -75,6 +75,7 @@ as before.
 | `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
 | Syndication feed (the store) | yes | no: routed to the master |
 | VSAC sync, and the resync form on `/info/vsac` | yes | no: reads what the master wrote |
+| OCL discovery, refresh, and background warm-up | yes | no: reads the master's discovery snapshot and cold cache files |
 | Package crawler, XIG download, registry crawl, daily report, npm audit | yes | no (those modules don't run) |
 | IANA media types registry (`terminology-cache/media-types.xml`), downloaded at each load | yes | no: reads the master's copy (none: a warning, and no `registered` filter) |
 | Statistics database, uptime history | yes | no: in memory only |
@@ -90,6 +91,26 @@ was loaded at. When a request uses the VSAC value sets, the worker reads the cou
 by key, at most once a second) and reloads the list in the background if it has moved, so a
 sync reaches every worker about a second after it finishes. The database is in WAL mode with a
 5 second busy timeout, so a worker's reload doesn't make the master's writes fail.
+
+**OCL.** The master discovers sources from OCL, resolves default versions, and writes a
+discovery snapshot (`data/terminology-cache/ocl/discovery-snapshot.json`) containing the full
+source metadata and CodeSystem JSON (without concepts) for every discovered source. It also
+writes a VS discovery snapshot (`data/terminology-cache/ocl/vs-discovery-snapshot.json`) with
+the collection list so workers know which value sets exist. After each discovery or refresh
+cycle the master proactively downloads every source's concepts into per-source cold cache
+files (`data/terminology-cache/ocl/codesystems/`). Note: the proactive warm-up runs only in
+cluster mode; it downloads every source in the global listing, which on a public OCL server
+includes all public organisation-owned sources. A worker reads both discovery snapshots to
+build identical providers and factories (same ids, metadata, CodeSystem resources and value
+sets as the master), then loads concepts from the per-source cold cache files. When the
+master updates a snapshot (new sources, changed checksums), a worker detects the change on
+its next refresh cycle or on the next value set fetch/search, reloads the snapshot, and
+creates providers for newly discovered sources. Workers can still fetch individual concepts
+on demand for cache misses, but never run bulk discovery or background warm-up downloads.
+Snapshots are only rewritten when their content changes (hash comparison). Stale `.tmp` files
+from interrupted writes are cleaned up only by the leader or a single-process server, never
+by workers (to avoid deleting the master's in-progress writes). All cache file writes use
+atomic temp-file-plus-rename to avoid torn reads.
 
 **The package caches are the master's.** The value set and concept map caches in each
 package folder (`.valuesets-2.db`, `.conceptmaps-2.db`) are built, rebuilt and migrated only

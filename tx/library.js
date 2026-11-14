@@ -174,6 +174,12 @@ class Library {
   terminologyDatabasesReadOnly = false;
 
   /**
+   * {string|null} 'leader', 'follower', or null (no cluster): how the OCL providers behave.
+   * Set by tx.js after construction, analogous to the VSAC provider's config.cluster
+   */
+  oclCluster = null;
+
+  /**
    * {SyndicationStore|null} where the content this library loads is recorded for the
    * syndication feed, when the server has one (see tx/syndication)
    */
@@ -546,6 +552,9 @@ class Library {
 
   async loadOcl(details, isDefault, mode) {
     const config = this.parseOclConfig(details);
+    if (this.oclCluster) {
+      config.cluster = this.oclCluster;
+    }
     const cacheKey = `${config.baseUrl}|${config.org || ''}`;
 
     let providerSet = this.oclProviderSets.get(cacheKey);
@@ -583,7 +592,7 @@ class Library {
         await providerSet.codeSystemProvider.listCodeSystems('5.0', null);
         const metas = providerSet.codeSystemProvider.getSourceMetas();
         for (const meta of metas) {
-          const factory = new OCLSourceCodeSystemFactory(this.i18n, providerSet.codeSystemProvider.httpClient, meta);
+          const factory = new OCLSourceCodeSystemFactory(this.i18n, providerSet.codeSystemProvider.httpClient, meta, config.cluster || null);
           this.registerProvider(`ocl:${config.baseUrl}`, factory, isDefault);
         }
         providerSet.factoriesRegistered = true;
