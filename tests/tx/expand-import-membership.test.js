@@ -8,6 +8,7 @@
 const request = require('supertest');
 const { getTestApp, shutdownTestApp } = require('./setup');
 const { FhirCodeSystemProvider } = require('../../tx/cs/cs-cs');
+const { ValueSetExpander, ExpandWorker, DEFERRED_DETAILS } = require('../../tx/workers/expand');
 
 const CS_URL = 'http://example.org/fhir/CodeSystem/import-membership';
 const N = 150;
@@ -142,6 +143,54 @@ describe('$expand of a value set that imports another: only the codes returned a
     const byCode = new Map(res.body.expansion.contains.map(c => [c.code, c]));
     expect((byCode.get('m099').designation || []).map(d => d.value)).toEqual(expect.arrayContaining(['VS display m099', 'Affichage m099']));
     expect(byCode.get('m095').property.find(p => p.code === 'label').valueString).toBe('L24');
+  });
+
+  test('a code whose details are left to be read carries that on itself, hidden, and the expansion returned (and cached) carries none', async () => {
+    // the imported expansions, and the expansion the request returns (what the cache keeps)
+    const imported = [];
+    const orig = ValueSetExpander.prototype.expandValueSet;
+    jest.spyOn(ValueSetExpander.prototype, 'expandValueSet').mockImplementation(async function (...args) {
+      const r = await orig.apply(this, args);
+      imported.push(r);
+      return r;
+    });
+    const origPerform = ExpandWorker.prototype.performExpansion;
+    const returned = [];
+    jest.spyOn(ExpandWorker.prototype, 'performExpansion').mockImplementation(async function (...args) {
+      const r = await origPerform.apply(this, args);
+      returned.push(r);
+      return r;
+    });
+    const res = await expand(app, outer({ include: [{ valueSet: [NESTED.url] }] }), { offset: 20, count: 10, extra });
+    expect(res.status).toBe(200);
+    expect(res.body.expansion.contains).toHaveLength(10);
+    const page = new Set(res.body.expansion.contains.map(c => c.code));
+    const walk = (list, f) => { for (const c of list || []) { f(c); walk(c.contains, f); } };
+
+    // the codes not returned still carry how to read their details: on the code itself, not
+    // enumerable, so not in its JSON, a spread or a structured clone
+    let pending = 0;
+    for (const r of imported) {
+      walk(r.expansion.contains, c => {
+        if (!page.has(c.code)) {
+          if (Object.prototype.hasOwnProperty.call(c, DEFERRED_DETAILS)) {
+            pending++;
+            expect(Object.keys(c)).not.toContain(DEFERRED_DETAILS.toString());
+            expect(Object.getOwnPropertySymbols({ ...c })).toEqual([]);
+            expect(Object.getOwnPropertySymbols(structuredClone(c))).toEqual([]);
+            expect(JSON.stringify(c)).not.toContain('expander');
+          }
+        }
+      });
+    }
+    expect(pending).toBeGreaterThan(100);
+
+    // the expansion returned holds no code that still has it: each was read when it was returned
+    expect(returned).toHaveLength(1);
+    let held = 0, seen = 0;
+    walk(returned[0].expansion.contains, c => { seen++; if (c[DEFERRED_DETAILS] !== undefined) held++; });
+    expect(seen).toBe(10);
+    expect(held).toBe(0);
   });
 
   test('count=0: the total, and no code\'s details are read', async () => {
