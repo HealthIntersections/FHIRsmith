@@ -208,7 +208,7 @@ describe('Iso4217Services', () => {
       const ctxt = await provider.getPrepContext(false);
       await expect(
         provider.filter(ctxt, true, 'symbol', 'equals', '$')
-      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "symbol equals $" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 

@@ -1487,7 +1487,7 @@ describe('LOINC Provider', () => {
       expect(await provider.doesFilter('CLASSTYPE', 'exists', 'True')).toBe(false);
       const filterContext = await provider.getPrepContext(true);
       await expect(provider.filter(filterContext, true, 'METHOD_TYP', 'exists', 'False'))
-        .rejects.toThrow('not supported');
+        .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "METHOD_TYP exists False" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
@@ -1497,7 +1497,7 @@ describe('LOINC Provider', () => {
 
       await expect(
         provider.filter(filterContext, true, 'unsupported', '=', 'value')
-      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "unsupported = value" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should handle extend lookup with invalid context', async () => {

@@ -195,7 +195,7 @@ class Iso4217Services extends CodeSystemProvider {
       filterContext.filters.push(result);
     } else {
       throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-        `The filter ${prop} ${op} = ${value} is not supported for ${this.system()}`, 'vs-invalid', 422);
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 

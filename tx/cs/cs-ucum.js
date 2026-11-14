@@ -10,6 +10,7 @@ const {UcumService} = require("../library/ucum-service");
 const {Pair, Decimal} = require("../library/ucum-types");
 const {validateArrayParameter, validateParameter, validateOptionalParameter} = require("../../library/utilities");
 const {DesignationUse} = require("../library/designations");
+const { Issue } = require('../library/operation-outcome');
 const {BaseCSServices} = require("./cs-base");
 
 /**
@@ -270,11 +271,13 @@ class UcumCodeSystemProvider extends BaseCSServices {
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
     if (prop !== 'canonical') {
-      throw new Error(`Unsupported filter property: ${prop}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     if (op !== '=') {
-      throw new Error(`Unsupported filter operator for canonical: ${op}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const ucumFilter = new UcumFilter(value);

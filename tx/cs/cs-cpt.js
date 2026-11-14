@@ -523,7 +523,7 @@ class CPTServices extends BaseCSServices {
       list = this.conceptList.filter(concept => concept.hasProperty('kind', value));
     } else {
       throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-        `The filter "${prop} ${op} ${value}" is not supported for CPT`, 'vs-invalid', 422);
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const filter = new CPTFilterContext(`${prop}:${value}`, list, closed);

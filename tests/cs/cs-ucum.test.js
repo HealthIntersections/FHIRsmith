@@ -222,6 +222,13 @@ describe('UCUM Provider Integration Tests', () => {
   //     // }
   //   });
 
+    test('should refuse a filter it does not support: 422 not-supported', async () => {
+      await expect(provider.filter(new FilterExecutionContext(), true, 'property', '=', 'mass'))
+        .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "property = mass" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      await expect(provider.filter(new FilterExecutionContext(), true, 'canonical', 'is-a', 'g'))
+        .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "canonical is-a g" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+    });
+
     test('should filter by canonical units', async () => {
       const filterContext = new FilterExecutionContext();
 

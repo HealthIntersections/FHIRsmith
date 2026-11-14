@@ -506,7 +506,7 @@ class RxNormServices extends BaseCSServices {
 
     if (!sql) {
       throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-        `Unknown filter "${prop} ${op} ${value}"`, 'vs-invalid', 422);
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     filter.sql = sql;

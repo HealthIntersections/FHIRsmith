@@ -3538,7 +3538,7 @@ class SnomedProvider extends BaseCSServices {
     if (prop === 'concept') {
       if (!SNOMED_CONCEPT_FILTER_OPS.has(op)) {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Unsupported filter operation: concept ${op} ${value}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n && op !== 'in') {
@@ -3609,7 +3609,7 @@ class SnomedProvider extends BaseCSServices {
     if (prop === 'inactive') {
       if (op !== '=') {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Unsupported filter operation: inactive ${op} ${value}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       if (value !== 'true' && value !== 'false') {
         throw new Error(`Invalid filter value: ${value}`);
@@ -3637,7 +3637,7 @@ class SnomedProvider extends BaseCSServices {
     if (prop === 'moduleId') {
       if (op !== '=') {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Unsupported filter operation: moduleId ${op} ${value}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
@@ -3661,11 +3661,11 @@ class SnomedProvider extends BaseCSServices {
       const scheme = prop.substring(MAPPED_FILTER_PREFIX.length);
       if (this.sct.stringToIdOrZero(scheme) === 0n) {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Invalid identifier scheme: ${scheme}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       if (op !== 'exists') {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Unsupported filter operation: ${prop} ${op} ${value}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       if (value !== 'true' && value !== 'false') {
         throw new Error(`Invalid filter value: ${value}`);
@@ -3681,7 +3681,7 @@ class SnomedProvider extends BaseCSServices {
     if (cid != 0) {
       if (op !== '=') {
         throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-          `Unsupported filter operation: ${prop} ${op} ${value}`, 'vs-invalid', 422);
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
@@ -3692,7 +3692,7 @@ class SnomedProvider extends BaseCSServices {
     }
 
     throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
-      `Unsupported filter property: ${prop}`, 'vs-invalid', 422);
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
 

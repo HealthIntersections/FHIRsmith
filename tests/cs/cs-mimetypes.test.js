@@ -349,6 +349,13 @@ describe('MimeTypeServices', () => {
   });
 
   describe('Error Handling', () => {
+    test('should refuse a filter it does not support: 422 not-supported', async () => {
+      await expect(provider.filter(await provider.getPrepContext(false), true, 'subtype', '=', 'plain'))
+        .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "subtype = plain" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      await expect(provider.filter(await provider.getPrepContext(false), true, 'base', 'is-a', 'text'))
+        .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "base is-a text" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+    });
+
     test('should handle null operation context', () => {
       expect(() => provider._ensureOpContext(null)).toThrow();
     });

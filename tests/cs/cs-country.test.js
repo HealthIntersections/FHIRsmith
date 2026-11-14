@@ -401,13 +401,13 @@ describe('CountryCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', 'regex', 'test')
-      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "display regex test" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'code', 'equals', 'US')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "code equals US" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for invalid regex', async () => {

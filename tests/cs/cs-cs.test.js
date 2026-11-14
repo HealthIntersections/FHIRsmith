@@ -1446,6 +1446,12 @@ describe('FHIR CodeSystem Provider', () => {
           expect(await simpleProvider.doesFilter('unknown', '=', 'value')).toBe(false);
           expect(await simpleProvider.doesFilter('code', 'unsupported-op', 'value')).toBe(false);
         });
+
+        test('should refuse an unsupported filter: 422 not-supported', async () => {
+          await expect(simpleProvider.filter(filterContext, true, 'unknown', '=', 'value'))
+            .rejects.toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422,
+              message: 'The filter "unknown = value" is not understood or supported' });
+        });
       });
 
       describe('Search Filter', () => {

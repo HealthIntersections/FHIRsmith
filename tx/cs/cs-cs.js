@@ -1575,7 +1575,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
       }
 
       if (!results) {
-        throw new Issue('error', 'exception', null, 'FILTER_NOT_UNDERSTOOD',
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
               this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
 
@@ -1728,7 +1728,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
         throw new Issue('error', 'exception', null, 'INVALID_REGEX', this.opContext.i18n.translate('INVALID_REGEX', this.opContext.langs, [value, error.message]), 'vs-invalid', 422);
       }
     } else {
-      throw new Issue('error', 'exception', null, 'FILTER_NOT_UNDERSTOOD',
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
           this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 

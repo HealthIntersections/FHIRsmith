@@ -252,13 +252,13 @@ describe('AreaCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', '=', 'test')
-      ).rejects.toMatchObject({ message: expect.stringContaining('not supported'), msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "display = test" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'class', 'contains', 'country')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "class contains country" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for search filter', async () => {

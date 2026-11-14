@@ -520,7 +520,8 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
 
     if (op === '=') {
       if (!EQUALITY_COMPONENTS.includes(prop)) {
-        throw new Error(`The '=' filter is only supported on ${EQUALITY_COMPONENTS.join(', ')}, not '${prop}'`);
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
       }
       // The value has to be a registered subtag of the right kind, or the filter selects
       // nothing and says nothing about why
@@ -535,7 +536,8 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     }
 
     if (op !== 'exists') {
-      throw new Error(`Unsupported filter operator: ${op}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     if (value !== 'true' && value !== 'false') {
@@ -544,7 +546,8 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
 
     const componentIndex = CODES_LanguageComponent.indexOf(prop);
     if (componentIndex < 0) {
-      throw new Error(`Unsupported filter property: ${prop}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const component = CODES_LanguageComponent[componentIndex];
