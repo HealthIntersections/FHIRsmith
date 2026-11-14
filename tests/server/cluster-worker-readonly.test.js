@@ -13,6 +13,7 @@ const sqlite3 = require('sqlite3');
 const { spawn } = require('child_process');
 const { request, param } = require('../utils/cluster-harness');
 const { ValueSetDatabase } = require('../../tx/vs/vs-database');
+const { loincTestingDbCopy } = require('../loinc-testing-db');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PORT = 20180;
@@ -92,8 +93,7 @@ describe('a tx-worker on read-only databases', () => {
     await database.create();
     await database.upsertValueSet(vs, crypto.createHash('sha256').update(JSON.stringify(vs)).digest('hex'));
     await database.close();
-    const loinc = path.join(ro, 'loinc.db');
-    fs.copyFileSync(path.join(ROOT, 'data', 'loinc-testing.db'), loinc);
+    const loinc = await loincTestingDbCopy(ro);
     await exec(loinc, 'PRAGMA journal_mode = DELETE; DROP INDEX IF EXISTS idx_properties_codekey;');
     const loincCode = (await all(loinc, "SELECT Code FROM Codes WHERE Code LIKE '%-%' ORDER BY CodeKey LIMIT 1"))[0].Code;
     const rxnorm = path.join(ro, 'rxnorm.db');

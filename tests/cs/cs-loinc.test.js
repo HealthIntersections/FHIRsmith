@@ -1,38 +1,21 @@
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { LoincDataMigrator, normaliseExternalSystem } = require('../../tx/importers/import-loinc.module');
+const { normaliseExternalSystem } = require('../../tx/importers/import-loinc.module');
 const { LoincServices, LoincServicesFactory, LoincProviderContext } = require('../../tx/cs/cs-loinc');
 const { OperationContext } = require('../../tx/operation-context');
 const {validateParameter} = require("../../library/utilities");
 const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
 const {CodeSystem} = require('../../tx/library/codesystem');
-const folders = require('../../library/folder-setup');
+const { LOINC_TESTING_DB, importLoincTestingDb, loincTestingDbCopy } = require('../loinc-testing-db');
 
 describe('LOINC Module Import', () => {
   const testSourceDir = path.resolve(__dirname, '../../tx/data/loinc');
-  const testDbPath = folders.ensureFilePath('loinc-testing.db');
-
-  beforeAll(() => {
-    // Ensure data directory exists
-    const dataDir = path.dirname(testDbPath);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
-    }
-
-    // Clean up any existing test database
-    if (fs.existsSync(testDbPath)) {
-      fs.unlinkSync(testDbPath);
-    }
-  });
-
-  afterAll(() => {
-    // Clean up test database after tests
-    // if (fs.existsSync(testDbPath)) {
-    //   fs.unlinkSync(testDbPath);
-    // }
-  });
+  // imported into a file of its own and renamed into place, as other suites copy it
+  // (tests/loinc-testing-db.js); opened read-only here
+  const testDbPath = LOINC_TESTING_DB;
 
   test('should import LOINC test data successfully', async () => {
     // Verify source data exists
@@ -49,26 +32,18 @@ describe('LOINC Module Import', () => {
       expect(fs.existsSync(filePath)).toBe(true);
     }
 
-    // Create migrator and run import
-    const migrator = new LoincDataMigrator();
-
-    await migrator.migrate(
-      testSourceDir,
-      testDbPath,
-      '2.80-test',
-      {
-        verbose: false, // Suppress console output during tests
-        mainOnly: false // Include language variants
-      }
-    );
+    // Import (into a file of its own, renamed onto data/loinc-testing.db)
+    const before = Date.now();
+    await importLoincTestingDb(testDbPath);
 
     // Verify database file was created
     expect(fs.existsSync(testDbPath)).toBe(true);
+    expect(fs.statSync(testDbPath).mtimeMs).toBeGreaterThanOrEqual(before - 1000);
   });
 
   test('should have all expected tables with data', async () => {
     // Open database connection
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     try {
       // Define expected tables and their minimum expected record counts
@@ -115,7 +90,7 @@ describe('LOINC Module Import', () => {
   });
 
   test('should have valid LOINC data structure', async () => {
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     try {
       // Verify we have main LOINC codes (Type = 1)
@@ -144,7 +119,7 @@ describe('LOINC Module Import', () => {
   });
 
   test('should have language variants if available', async () => {
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     try {
       // Check if we have multiple languages
@@ -162,7 +137,7 @@ describe('LOINC Module Import', () => {
   });
 
   test('should have proper referential integrity', async () => {
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     try {
       // Verify relationships reference valid codes
@@ -190,7 +165,7 @@ describe('LOINC Module Import', () => {
     // tx/data/loinc's hierarchy has a CODE_TEXT with a line break in it, as LOINC 2.83 does.
     // Read line by line, the second half looked like a second root, and the import failed
     // on a duplicate Config key
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
     try {
       const parents = await new Promise((resolve, reject) => {
         db.all(`SELECT p.Code FROM Relationships r
@@ -207,7 +182,7 @@ describe('LOINC Module Import', () => {
   });
 
   test('should have external code mappings', async () => {
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     const mapsFor = (code) => new Promise((resolve, reject) => {
       db.all(`SELECT e.System, e.Version, e.Code, e.Display, m.Equivalence
@@ -262,7 +237,7 @@ describe('LOINC Module Import', () => {
   });
 
   test('should have reasonable data distribution', async () => {
-    const db = new sqlite3.Database(testDbPath);
+    const db = new sqlite3.Database(testDbPath, sqlite3.OPEN_READONLY);
 
     try {
       // Check that we have active codes
@@ -499,14 +474,16 @@ const expectedResults = JSON.parse(fs.readFileSync(
 ));
 
 describe('LOINC Provider', () => {
-  const testDbPath = path.resolve(__dirname, '../../data/loinc-testing.db');
+  // a copy: loading sets WAL and makes indexes, and other suites copy data/loinc-testing.db
+  let dir;
+  let testDbPath;
   let factory;
   let provider;
   let opContext;
 
   beforeAll(async () => {
-    // Verify test database exists (should be created by import tests)
-    expect(fs.existsSync(testDbPath)).toBe(true);
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loinc-provider-'));
+    testDbPath = await loincTestingDbCopy(dir);
 
     // Create factory and provider
     opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
@@ -518,6 +495,7 @@ describe('LOINC Provider', () => {
     if (provider) {
       provider.close();
     }
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   describe('Factory and Basic Setup', () => {

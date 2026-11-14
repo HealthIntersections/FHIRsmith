@@ -21,8 +21,8 @@ const { CPTServicesFactory } = require('../../tx/cs/cs-cpt');
 const { OMOPServicesFactory } = require('../../tx/cs/cs-omop');
 const { OperationContext } = require('../../tx/operation-context');
 const { TestUtilities } = require('../test-utilities');
+const { loincTestingDbCopy } = require('../loinc-testing-db');
 
-const LOINC_SOURCE = path.resolve(__dirname, '../../data/loinc-testing.db');
 const NDC_SOURCE = path.resolve(__dirname, '../../tx/data/ndc');
 const UNII_SOURCE = path.resolve(__dirname, '../data/unii-source-testing.txt');
 const CPT_SOURCE = path.resolve(__dirname, '../../tx/data/cpt-fragment.db');
@@ -48,8 +48,7 @@ const tryWrite = (db) => new Promise(resolve => db.run('CREATE TABLE write_test 
 
 /** A copy of the LOINC test database in rollback-journal mode, with or without the load indexes. */
 async function loincCopy(dir, withIndexes) {
-  const dbPath = path.join(dir, 'loinc.db');
-  fs.copyFileSync(LOINC_SOURCE, dbPath);
+  const dbPath = await loincTestingDbCopy(dir);
   await exec(dbPath, 'PRAGMA journal_mode = DELETE;' + (withIndexes ? '' : LOINC_INDEXES.map(i => `DROP INDEX IF EXISTS ${i};`).join('')));
   return dbPath;
 }
@@ -78,7 +77,6 @@ describe('LOINC and RxNorm databases in a tx-worker', () => {
   let opContext;
 
   beforeAll(async () => {
-    expect(fs.existsSync(LOINC_SOURCE)).toBe(true);
     opContext = new OperationContext('en', await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions()));
   });
   beforeEach(() => {
