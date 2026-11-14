@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.2] - 2026-11-15
+## [Unreleased]
+
+### Changed
+
+- LOINC: a relationship filter that names its part (`SCALE_TYP = Doc`) found the part by reading every code (`Codes.Description` had no index), in every membership query: on LOINC 2.83, 18 ms for each `$validate-code`. The importer now indexes `Codes.Description` (`idx_codes_description`, 14 MB on 2.83), and the lookup takes 0.04 ms. A database imported before this doesn't need re-importing: add the index once (about 2 s on 2.83) with the sqlite3 command line, while the server isn't using the file:
+
+  ```
+  sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
+  ```
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index
+
+## [1.0.2]
 
 ### Security
 
