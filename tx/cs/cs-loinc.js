@@ -377,14 +377,20 @@ class LoincServices extends BaseCSServices {
       throw new Error('Invalid context for LOINC lookup');
     }
 
-    // Run all property queries in parallel — they're independent reads on the same key
+    // Run all property queries in parallel - they're independent reads on the same key - but
+    // each into its own list, appended in a fixed order, so that the order of the properties
+    // does not depend on which query finishes first
+    const groups = [[], [], [], [], []];
     await Promise.all([
-      this.#addRelationshipProperties(ctxt, props, params),
-      this.#addConceptProperties(ctxt, props,params),
-      this.#addStatusProperty(ctxt, props,params),
-      this.#addRelatedNames(ctxt, props,params),
-      this.#addMappingProperties(ctxt, props, params)
+      this.#addRelationshipProperties(ctxt, props, groups[0]),
+      this.#addConceptProperties(ctxt, props, groups[1]),
+      this.#addStatusProperty(ctxt, props, groups[2]),
+      this.#addRelatedNames(ctxt, props, groups[3]),
+      this.#addMappingProperties(ctxt, props, groups[4])
     ]);
+    for (const group of groups) {
+      params.push(...group);
+    }
   }
 
   /**
