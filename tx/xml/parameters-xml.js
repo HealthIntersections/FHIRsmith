@@ -189,6 +189,7 @@ class ParametersXML extends FhirXmlBase {
     let xml = '';
     const resourceType = resource.resourceType;
     if (resourceType) {
+      this.checkElementName(resourceType);
       xml += `${this.indent(level)}<${resourceType} xmlns="${this.getNamespace()}">\n`;
       for (const [key, value] of Object.entries(resource)) {
         if (key !== 'resourceType') {

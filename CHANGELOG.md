@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.2]
 
+### Security
+
+- XML: a JSON key that isn't an element name (every FHIR element name is a simple token: letters, digits and `_`), from a resource that came in from outside, is refused - the response falls back to JSON - instead of being written into the XML as markup (`{"a><x/><b": ...}` became `<a><x/><b .../>`). The same check covers a resource's type in a Bundle or Parameters
+
 ### Added
 
 - Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
-- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
+- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, counted in characters, so text outside Latin-1 can take up to twice that; 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
 - tx: a request whose response took 10 ms or more to serialise says so in its log line: `5+6120ms` is 5 ms for the operation and 6,120 ms to serialise. The time was taken before serialising, so a request that held the process for seconds was logged as taking a few ms
 
 ### Changed
@@ -19,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - tx: converting a CodeSystem or ValueSet from R5 for an R4 or R3 endpoint no longer copies the whole resource first: what changes is copied, and the rest shared (for ICD-10-CM, 110-190 ms of copying a response, now none). The same stored code system or cached expansion converted again gives the same result, so its XML can come from the cache
 - ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id, as JSON or XML) has an ETag from a hash of its content, worked out once, and a matching `If-None-Match` gets a 304 before anything is serialised; it was serialised in full and then hashed. These ETags aren't the old ones, so a client that keeps them gets each resource once more. Other responses over 1 MB no longer get an ETag: Express hashed every response, POSTs included
 - Ecosystem resolution: a server the registry lists as a candidate for a code system is used only if it has the content (complete or fragment) - as its TerminologyCapabilities says (for R4 and R3, in the cross-version extension), or else as a search of its CodeSystems finds - and the next candidate is tried if it doesn't, or doesn't have the version. A server the registry says is authoritative is used whatever it says about the content. If this server is authoritative for the code system, no other server is asked
+- tx: a response isn't serialised once the client has hung up - before it starts, or (XML) at the next point it lets other work run - and the request is logged with 499
+- Ecosystem resolution: the caches of what the registry and the other servers say keep the 1,000 most recently used entries each. They are keyed by the code systems (and versions) requests name, so they grew without limit
+- Provider contracts (PR #368, Josh Mandel): what a code system or value set provider that keeps its content in a database (rather than in memory) is told, so it needn't load everything:
+  - `fetchValueSet(url, version, opContext)`: the request comes too, so a provider can share work between the lookups of one request
+  - an include's (or exclude's) concept list can stay in the store, with a handle `{ count, lookup(code) }` on the include (`tx/library/stored-concepts.js`): `$validate-code` asks it about the one code it checks instead of reading the list. An include whose listed concepts carry a `modifierExtension` stays an ordinary list, and is refused as before (422)
+  - `prefetchCodes` is told when the response shows each code's display and nothing else of its designations (`hints.displayOnly`), so the rest needn't be read
+  - THO precedence asks hl7.terminology's providers for their versions with `fetchValueSet` / `fetchConceptMap`, instead of reading their in-memory maps
+  - the scans of every value set (`scanAllValueSets`) read only each value set's url, version and compose, and a provider may hand them just those
+  - the ECL `wild:` term matcher is in the ECL module, so every SNOMED CT provider matches the same way
+- `$validate-code` against a value set that lists a code in another form (ICD-11's short code and entity id): the listed codes are located only when the code isn't listed as given, and ICD-11 reads them together (`prefetchCodes`, a query per 400 codes) instead of one at a time
 
 ### Fixed
 

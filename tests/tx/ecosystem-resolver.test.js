@@ -262,6 +262,27 @@ describe('EcosystemResolver', () => {
       expect(c.n).toBe(0);
     });
 
+    test('what the registry said about code systems is kept for the 1000 most recently asked about', async () => {
+      const r = resolver();
+      const scope = nock(REG).get('/tx-reg/resolve').query(true).reply(200, {}).persist();
+      try {
+        const cs = (i) => `http://example.org/cs${i}`;
+        await r.findServers(cs(0), null, 5);
+        for (let i = 1; i <= 1005; i++) {
+          await r.findServers(cs(i), null, 5);
+          if (i % 100 === 0) {
+            await r.findServers(cs(0), null, 5); // still being used
+          }
+        }
+        expect(r.servers.size).toBe(1000);
+        expect([...r.servers.keys()].some(k => k.startsWith(cs(0) + '#'))).toBe(true);
+        expect([...r.servers.keys()].some(k => k.startsWith(cs(1) + '#'))).toBe(false);
+      } finally {
+        scope.persist(false);
+        nock.cleanAll();
+      }
+    });
+
     test('a 4xx answer is kept, a 5xx or a failure is not', async () => {
       const r = resolver();
       mockListing();
