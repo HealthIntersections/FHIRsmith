@@ -432,6 +432,54 @@ function describe(value) {
   return s === undefined ? String(value) : s.length > 60 ? s.substring(0, 57) + '...' : s;
 }
 
+// The fields of a cron schedule as node-cron takes them: minute hour day-of-month month
+// day-of-week, with an optional seconds field first. Checked here, not by node-cron, so the check
+// doesn't depend on how (or whether) node-cron loads
+const CRON_FIELDS = [
+  { name: 'second', min: 0, max: 59 },
+  { name: 'minute', min: 0, max: 59 },
+  { name: 'hour', min: 0, max: 23 },
+  { name: 'day-of-month', min: 1, max: 31 },
+  { name: 'month', min: 1, max: 12, names: ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'], base: 1 },
+  { name: 'day-of-week', min: 0, max: 7, names: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'], base: 0 }
+];
+
+/**
+ * Why a cron schedule isn't one, or null: each field is *, a value, a range a-b, any of those
+ * with /step, or a list of them separated by commas; months and weekdays may be names
+ */
+function cronProblem(schedule) {
+  const parts = schedule.trim().split(/\s+/);
+  if (parts.length !== 5 && parts.length !== 6) {
+    return `is not a cron schedule: it has ${parts.length} field${parts.length === 1 ? '' : 's'}, not 5 (minute hour day-of-month month day-of-week), or 6 with seconds first`;
+  }
+  const fields = parts.length === 6 ? CRON_FIELDS : CRON_FIELDS.slice(1);
+  for (let i = 0; i < parts.length; i++) {
+    const f = fields[i];
+    const number = (text) => {
+      const lower = text.toLowerCase();
+      if (f.names && f.names.includes(lower)) {
+        return f.names.indexOf(lower) + f.base;
+      }
+      return /^\d+$/.test(text) ? Number(text) : NaN;
+    };
+    for (const item of parts[i].split(',')) {
+      const m = /^(\*|[a-z0-9]+(?:-[a-z0-9]+)?)(?:\/(\d+))?$/i.exec(item);
+      const bad = `is not a cron schedule: '${parts[i]}' is not a ${f.name} (${f.min}-${f.max}${f.names ? ' or a name' : ''})`;
+      if (!m || (m[2] !== undefined && Number(m[2]) < 1)) {
+        return bad;
+      }
+      if (m[1] !== '*') {
+        const [from, to] = m[1].split('-').map(number);
+        if (!(from >= f.min && from <= f.max) || (to !== undefined && !(to >= from && to <= f.max))) {
+          return bad;
+        }
+      }
+    }
+  }
+  return null;
+}
+
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const parked = (key) => key.startsWith('_') || key.startsWith('x-');
 
@@ -475,18 +523,11 @@ function mismatch(value, spec) {
         return `must be ${spec.patternText}`;
       }
       return null;
-    case 'cron': {
+    case 'cron':
       if (typeof value !== 'string' || !value.trim()) {
         return 'must be a cron schedule, e.g. "0 * * * *"';
       }
-      let valid = true;
-      try {
-        valid = require('node-cron').validate(value);
-      } catch {
-        // node-cron not installed: the environment check reports that
-      }
-      return valid ? null : 'is not a valid cron schedule (minute hour day-of-month month day-of-week)';
-    }
+      return cronProblem(value);
     default:
       return null;
   }

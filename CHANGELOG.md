@@ -5,7 +5,7 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2]
+## [1.0.2] - 2026-11-15
 
 ### Security
 
@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
 - R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
+- tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
 
 ## [1.0.1] - 2026-11-12
 
