@@ -28,18 +28,25 @@ describe('ECL wild: terms', () => {
     .map(i => snomedServices.concepts.getConceptId(i).toString()).sort();
   const matches = (value, term) => snomedServices._eclTermMatcher({ kind: 'wild', value })(term);
 
+  // As a regex, these backtrack for longer than any test runs, so the limits only need to tell
+  // linear from that: they are generous, because a CI run (coverage, every suite in one process,
+  // a shared machine) can take several times as long as a quiet machine, and once took 614 ms
+  // over a limit of 100 for the query on the whole test cache
   test('a wild: term with many *s is quick', () => {
     const term = 'Structure of left lower lobe of lung and something else here';
     let start = Date.now();
     expect(matches('*'.repeat(30) + 'x', term)).toBe(false);
     expect(matches('* * * * * * * * * * * * x', term)).toBe(false);
     expect(matches('*e*e*e*e*e*e*e*e*e*e*e*e*e*x', term)).toBe(false);
-    expect(Date.now() - start).toBeLessThan(100);
+    expect(Date.now() - start).toBeLessThan(1000);
 
+    // the same query with one '*': many '*'s are one, so it takes about as long
+    start = Date.now();
     const endsInX = codes('* {{ D term = wild:"*x" }}');
+    const once = Date.now() - start;
     start = Date.now();
     expect(codes('* {{ D term = wild:"' + '*'.repeat(30) + 'x" }}')).toEqual(endsInX);
-    expect(Date.now() - start).toBeLessThan(100);
+    expect(Date.now() - start).toBeLessThan(5 * once + 2000);
   });
 
   test('wild: terms match as before', () => {
