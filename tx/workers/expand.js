@@ -1187,7 +1187,36 @@ class ValueSetExpander {
     } else {
       this.noTotal();
     }
+    // where the walk ends with the expansion finished (#finishIfPageFilled), it skips what follows
+    // the compose in expand(), such as the required-supplement check: the same here, so a value set
+    // naming a supplement that no code system takes gets the walk's answer
+    if (this.#walkFinishesAfterPage(compose, cs, excludeInactive, selection.total)) {
+      throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
     return true;
+  }
+
+  /**
+   * Whether the usual path's paged walk of this compose would stop with the expansion finished
+   * (#finishIfPageFilled, after each code it adds or counts): its page is full, and either the
+   * walk took the provider's size as the total (#useProviderSize: one include, the whole system or
+   * one filter, #sizeIsTotal), or the codes it has walked reach the response limit. Otherwise it
+   * counts every code to the end, and the expansion goes on as an unpaged one does.
+   * @param {number} total - the selection's total (null or -1: not counted)
+   */
+  #walkFinishesAfterPage(compose, cs, excludeInactive, total) {
+    if (!(this.count > 0 && this.offset >= 0) || this.fullList.length < this.count) {
+      return false;
+    }
+    if (total == null || total < 0 || this.limitCount <= 0 || total >= this.limitCount) {
+      return true;
+    }
+    const includes = compose.include || [];
+    if (includes.length !== 1 || !this.#sizeIsTotal(compose, cs, excludeInactive)) {
+      return false;
+    }
+    const filters = includes[0].filter || [];
+    return filters.length === 0 ? !this.params.excludeNotForUI && !cs.isNotClosed() : filters.length === 1;
   }
 
   async includeCodes(cset, path, vsSrc, compose, filter, expansion, excludeInactive, notClosed) {
