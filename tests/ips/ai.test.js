@@ -6,7 +6,7 @@
 
 const { fakeService } = require('./fake-ai');
 const { complete, checkAccount, jsonIn, costOf, encryptKey, decryptKey } = require('../../ips/ai-client');
-const { assessmentOf, documentForAi, aiSystemPrompt, AI_SYSTEM_PROMPT } = require('../../ips/pipeline');
+const { assessmentOf, documentForAi, stripAttachments, aiSystemPrompt, AI_SYSTEM_PROMPT, ATTACHMENT_PLACEHOLDER } = require('../../ips/pipeline');
 
 describe('the AI client', () => {
   let svc;
@@ -108,6 +108,37 @@ describe('the AI client', () => {
     expect(aiSystemPrompt(true)).toContain('what does the narrative say that the structured data does not back up');
     expect(aiSystemPrompt(true)).not.toContain('narratives have been removed');
     expect(AI_SYSTEM_PROMPT).toContain('International Patient Summary');
+  });
+
+  test('replaces attachments with a placeholder, and tells the model to ignore them', () => {
+    const big = 'QUJD'.repeat(1000);
+    const analysed = { resourceType: 'Bundle', entry: [
+      { resource: { resourceType: 'Composition', section: [{ title: 't' }] } },
+      { resource: { resourceType: 'DocumentReference', content: [{ attachment: { contentType: 'application/pdf', data: big, title: 'Report' } }] } },
+      { resource: { resourceType: 'Binary', contentType: 'image/png', data: big } },
+      { resource: { resourceType: 'Patient', photo: [{ contentType: 'image/jpeg', data: big }], extension: [{ url: 'x', valueBase64Binary: big }] } },
+      { resource: { resourceType: 'Observation', valueSampledData: { origin: { value: 0 }, period: 1, dimensions: 1, data: '1 2 3' } } }
+    ] };
+    const master = structuredClone(analysed);
+    master.entry[3].resource.text = { status: 'generated', div: `<div><img src="data:image/png;base64,${big}" alt="photo"/></div>` };
+    const stats = {};
+    const d = documentForAi(analysed, null, stats);
+    expect(stats.attachments).toBe(4);
+    expect(d.entry[1].resource.content[0].attachment).toEqual({ contentType: 'application/pdf', data: ATTACHMENT_PLACEHOLDER, title: 'Report' });
+    expect(d.entry[2].resource.data).toBe(ATTACHMENT_PLACEHOLDER);
+    expect(d.entry[3].resource.photo[0].data).toBe(ATTACHMENT_PLACEHOLDER);
+    expect(d.entry[3].resource.extension[0].valueBase64Binary).toBe(ATTACHMENT_PLACEHOLDER);
+    // SampledData is not an attachment
+    expect(d.entry[4].resource.valueSampledData.data).toBe('1 2 3');
+    // the analysed copy itself is not changed
+    expect(analysed.entry[2].resource.data).toBe(big);
+    const n = documentForAi(analysed, master, stats);
+    expect(stats.attachments).toBe(5);
+    expect(n.entry[3].resource.text.div).toBe(`<div><img src="${ATTACHMENT_PLACEHOLDER}" alt="photo"/></div>`);
+    expect(JSON.stringify(n)).not.toContain('QUJD');
+    expect(stripAttachments(n)).toBe(0);
+    expect(aiSystemPrompt(false)).toContain(`Ignore attachments altogether`);
+    expect(aiSystemPrompt(true)).toContain(`("${ATTACHMENT_PLACEHOLDER}")`);
   });
 });
 

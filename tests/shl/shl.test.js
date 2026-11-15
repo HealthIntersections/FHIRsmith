@@ -90,4 +90,33 @@ describe('SHL Module', () => {
       expect(r.status).toBe(400);
     });
   });
+
+  describe('VHL', () => {
+    test('the manifest is a searchset Bundle of DocumentReferences, the files as attachments', async () => {
+      await addShl('vhl1', true, 1);
+      const r = await request(app).post('/shl/access/vhl1').set('Host', 'example.org').send({ recipient: 'x' });
+      expect(r.status).toBe(200);
+      expect(r.body.resourceType).toBe('Bundle');
+      expect(r.body.type).toBe('searchset');
+      expect(r.body.entry[0].resource).toMatchObject({
+        resourceType: 'DocumentReference', status: 'current',
+        content: [{ attachment: { contentType: 'application/fhir+json', url: 'https://example.org/shl/file/vhl1-f0' } }]
+      });
+      expect(r.body.entry[0].resource.content[0].url).toBeUndefined();
+    });
+
+    test('signs the link with integer claim keys, as the IPS viewer checks it', async () => {
+      const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+      mod.config = { certificates: { kid: 'test-kid' }, vhl: { issuer: 'XX' } };
+      mod.loadCertificates = () => ({ certPem: publicKey.export({ type: 'spki', format: 'pem' }), keyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+      const shlink = 'shlink://eyJ1cmwiOiJodHRwczovL2V4YW1wbGUub3JnL3NobC9hY2Nlc3MvdmhsMSJ9';
+      const r = await request(app).post('/shl/sign').send({ url: shlink });
+      expect(r.status).toBe(200);
+      const { decodeVhl, loadTrust, Trace } = require('../../ips/viewer');
+      const trace = new Trace();
+      const out = decodeVhl(`HC1:${r.body.signature}`, loadTrust([{ kid: 'test-kid', name: 'the test key', certificate: publicKey.export({ type: 'spki', format: 'pem' }) }]), trace);
+      expect(out).toEqual({ shlink, issuer: 'XX', kid: 'test-kid', verified: true, verifiedBy: 'the test key' });
+      expect(trace.entries.filter(e => e.level === 'warning' || e.level === 'error')).toEqual([]);
+    });
+  });
 });

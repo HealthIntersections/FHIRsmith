@@ -27,6 +27,7 @@ const profiles = require('./profiles');
 const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem } = require('./terminology');
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
 const { jurisdiction } = require('./jurisdictions');
+const { summaryOf, STEP_TIMINGS_SAMPLE } = require('./store');
 const { SNOMED_LINKABLE_EDITIONS, editionName } = require('../tx/sct/editions');
 const { nationalityText } = require('./nationality');
 
@@ -36,9 +37,9 @@ const FLAGS = new Set(['US', 'AU']);
 /** The nation a document is from, as a flag (a black and white globe when it isn't known, or has no flag). */
 function nationalityFlag(result) {
   const code = result?.jurisdiction || null;
-  const title = result ? nationalityText(result) : 'The nationality has not been determined yet';
+  const title = result ? nationalityText(result) : 'The jurisdiction has not been determined yet';
   const src = code && FLAGS.has(code) ? `/assets/images/flags/${code.toLowerCase()}.svg` : '/assets/images/flags/unknown.svg';
-  const alt = code ? (jurisdiction(code)?.display || code) : 'Nationality unknown';
+  const alt = code ? (jurisdiction(code)?.display || code) : 'Jurisdiction unknown';
   return `<img class="ips-flag" src="${src}" alt="${escape(alt)}" title="${escape(title)}"/>`;
 }
 const { dateText } = require('./presenter');
@@ -359,16 +360,57 @@ function renderHome(projects, ctx) {
   h += '<p>Each project is a collection of International Patient Summary documents, with its own FHIR endpoint ' +
     '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
     `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain, and ` +
-    `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define.</p>`;
+    `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define. ` +
+    `The <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents.</p>`;
   if (projects.length === 0) {
-    return h + '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
+    h += '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
+  } else {
+    h += '<table class="table table-sm table-striped ips-table"><tr><th>Project</th><th>Code</th><th>Description</th><th>Documents</th></tr>';
+    for (const p of projects) {
+      h += `<tr><td><a href="${projectUrl(ctx, p)}">${escape(p.name)}</a></td><td><code>${escape(p.code)}</code></td>` +
+        `<td>${escape(p.description || '')}</td><td>${p.documents}</td></tr>`;
+    }
+    h += '</table>';
   }
-  h += '<table class="table table-sm table-striped ips-table"><tr><th>Project</th><th>Code</th><th>Description</th><th>Documents</th></tr>';
-  for (const p of projects) {
-    h += `<tr><td><a href="${projectUrl(ctx, p)}">${escape(p.name)}</a></td><td><code>${escape(p.code)}</code></td>` +
-      `<td>${escape(p.description || '')}</td><td>${p.documents}</td></tr>`;
+  if (ctx.viewerUrl) {
+    h += viewerInstructions(ctx);
   }
-  return h + '</table>';
+  return h;
+}
+
+/**
+ * For the home page: how another system makes this server the viewer for the SHLs and VHLs
+ * it generates.
+ */
+function viewerInstructions(ctx) {
+  const v = escape(ctx.viewerUrl);
+  const base = escape(ctx.base);
+  return '<div class="ips-explain"><h3>Using this server as the viewer for your SMART Health Links</h3>' +
+    `<p>This server has an <a href="${base}/view">SHL viewer</a>. A system that generates SMART Health Links (SHL) or Verifiable Health Links (VHL) ` +
+    'for IPS documents can name it as the viewer, so that whoever opens the link sees the document here - and, if they want, adds it to one of the projects. ' +
+    'It is meant for testing: each step it takes is shown on the page, so it is also a way to see what your SHL server does, and where it goes wrong.</p>' +
+    '<h4>SHL</h4>' +
+    `<p>Put the viewer's address in front of the shlink, as the SHL specification describes: the link (and the QR code) is <code>${v}shlink:/{payload}</code>, ` +
+    'where <code>{payload}</code> is the base64url-encoded JSON payload (<code>url</code>, <code>key</code>, and optionally <code>exp</code>, <code>flag</code>, <code>label</code>, <code>v</code>). ' +
+    'The part after the <code>#</code> is never sent to this server by the browser: the page reads it and passes it on. For example:</p>' +
+    `<pre class="ips-json">${v}shlink:/eyJ1cmwiOiJodHRwczovL3NobC5leGFtcGxlLm9yZy9hY2Nlc3MvMTIzIiwia2V5IjoiLi4uIiwiZmxhZyI6IlUiLCJsYWJlbCI6Ikphbidz...</pre>` +
+    '<ul>' +
+    '<li>Your SHL server must be reachable from this server over https, at a public address. It does not need to allow cross-origin requests: the viewer works on the server, not in the browser (the log says whether it does, for viewers that run in the browser)</li>' +
+    '<li>Flag <code>U</code>: the viewer gets the file with <code>GET {url}?recipient=...</code> and expects the JWE back. Otherwise it posts <code>{ "recipient": ..., "passcode": ... }</code> to <code>{url}</code> ' +
+    'and reads the manifest\'s files - <code>embedded</code>, or fetched from <code>location</code></li>' +
+    '<li>Flag <code>P</code>: the viewer asks the user for the passcode, and says when your server refuses it (with the attempts left, if your server gives <code>remainingAttempts</code>)</li>' +
+    '<li>The files must be JWEs (<code>alg: dir</code>, <code>enc: A256GCM</code>; <code>zip: DEF</code> is fine) of <code>application/fhir+json</code> content. ' +
+    'SMART Health Cards and SMART API access are not supported here</li>' +
+    '<li>A document can be added to a project only if it is an IPS: a <code>document</code> Bundle whose Composition.type is LOINC <code>60591-5</code>. Other documents can be looked at</li>' +
+    '</ul>' +
+    '<h4>VHL</h4>' +
+    '<p>A VHL\'s QR code carries <code>HC1:...</code>, not an address, so it cannot name a viewer: whoever has the QR code scans it with an app that knows what to do with it. ' +
+    `To open one here, paste the <code>HC1:...</code> text into the <a href="${base}/view">viewer</a>, or link to <code>${v}HC1:...</code> with the <code>HC1:...</code> text percent-encoded ` +
+    '(base45 uses the space, <code>%</code>, <code>+</code> and other characters that are not safe in an address as they are). ' +
+    'The viewer decodes it, checks the signature, and opens the SHL it carries as above. The signature is checked only when this server has the issuer\'s certificate, ' +
+    'published through the GDHCN trust network: ask the server\'s administrator to add it (otherwise the log says it could not be checked).</p>' +
+    '<p class="ips-small">This is a public test service: the link - its key included - what your server sends back, and the document are shown on the viewer\'s page and kept for a while. ' +
+    'Don\'t use it for real patients\' documents.</p></div>';
 }
 
 function renderLogin(ctx, error) {
@@ -534,7 +576,7 @@ function renderProject(project, query, results, search, ctx, problems) {
   const columns = [
     ['_id', 'Id'], ['composition.patient.name', 'Patient'], ['composition.patient.gender', 'Gender'],
     ['composition.patient.birthdate', 'Born'], ['composition.date', 'Date'], ['composition.title', 'Title'],
-    ['processing-status', 'Status'], ['_lastUpdated', 'Received'], [null, 'Nation']
+    ['processing-status', 'Status'], ['_lastUpdated', 'Received'], [null, 'Jurisdiction']
   ];
   if (ctx.canManage) {
     columns.push([null, '']);
@@ -965,12 +1007,12 @@ function renderAnalysis(row, options = {}) {
   h += '<div class="ips-filter mb-2 ips-an-filter" hidden><label><input type="checkbox" id="ips-an-problems"/> Only show problems</label> ' +
     `<span class="ips-small ips-an-count" hidden>Showing ${total - quiet} of ${total}</span></div>`;
   h += '<table class="table table-condensed ips-an"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
-  h += '<div class="ips-explain"><p class="ips-small">What the analysis step found in each resource of the document as submitted, in the order of the structure view, and in the Composition section by section (the Composition\'s first bullet is which nation the document is from, and why - the nationality step): ' +
+  h += '<div class="ips-explain"><p class="ips-small">What the analysis step found in each resource of the document as submitted, in the order of the structure view, and in the Composition section by section (the Composition\'s first bullet is which jurisdiction the document is from, and why - the jurisdiction step): ' +
     'extensions (with their definitions, from the validator, where it knows them; textLink is left out), <span class="ips-an-modifier">modifier extensions and implicitRules</span>, ' +
     '<span class="ips-an-status">records that are inactive, entered in error, of unknown status, or missing a status they should have</span>, ' +
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
-    '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
-    'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the nationality of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
+    '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), values given as an extension instead (a data-absent-reason, say), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
+    'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the jurisdiction of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
     'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK - and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
   h += `<script>
 (function () {
@@ -1290,7 +1332,7 @@ function renderTranslation(row, options = {}) {
   if (v.defaultEdition && v.defaultEdition.edition) {
     const d = v.defaultEdition;
     h += `<p class="ips-small">SNOMED CT codes with no version were translated as codes of the ${editionHtml(d.edition)} - the SNOMED CT edition of the national profile ` +
-      `<code>${escape(`${d.packageId}#${d.version}`)}</code>, for ${escape(d.jurisdiction)}, the nation the document is from.</p>`;
+      `<code>${escape(`${d.packageId}#${d.version}`)}</code>, for ${escape(d.jurisdiction)}, the jurisdiction the document is from.</p>`;
   }
   h += '<table class="table table-sm table-striped ips-table"><tr><th>Element</th><th>Codings</th><th>Value set</th><th>Outcome</th><th>Detail</th></tr>';
   for (const e of v.entries) {
@@ -1364,7 +1406,8 @@ function renderAi(row, options = {}) {
     (v.usage && (v.usage.input !== null || v.usage.output !== null) ? `; ${escape(tokens(v.usage.input))} tokens in, ${escape(tokens(v.usage.output))} out` : '') +
     (typeof v.cost === 'number' ? ` (${escape(usd(v.cost))})` : '') +
     (v.truncated ? '; <b>the answer was cut off at the token limit</b>' : '') +
-    (typeof v.bytesSent === 'number' ? `; ${escape(v.bytesSent.toLocaleString('en-US'))} bytes sent` : '') + '</p>';
+    (typeof v.bytesSent === 'number' ? `; ${escape(v.bytesSent.toLocaleString('en-US'))} bytes sent` : '') +
+    (v.attachmentsRemoved ? `, with ${escape(String(v.attachmentsRemoved))} attachment${v.attachmentsRemoved === 1 ? '' : 's'} replaced by a placeholder` : '') + '</p>';
   const a = v.assessment;
   if (!a) {
     h += '<p><b>The model did not answer with the expected JSON.</b>' +
@@ -1898,6 +1941,309 @@ function renderProfileEditor(sd, ctx, options) {
   return h;
 }
 
+// ---- the SHL viewer --------------------------------------------------------------------------
+
+const TRACE_LEVELS = {
+  info: ['', ''],
+  ok: ['ips-tr-ok', '&#10003;'],
+  warning: ['ips-tr-warning', '&#9888;'],
+  error: ['ips-tr-error', '&#10007;']
+};
+
+const VIEWER_STYLE = `<style>
+  .ips-trace td { vertical-align: top; }
+  .ips-trace .ips-tr-ms { white-space: nowrap; color: #6c757d; text-align: right; font-size: 85%; }
+  .ips-trace .ips-tr-ok { color: #2e7d32; }
+  .ips-trace .ips-tr-warning { color: #b26a00; }
+  .ips-trace .ips-tr-error { color: #c62828; font-weight: bold; }
+  .ips-trace details summary { cursor: pointer; font-size: 85%; color: #5e35b1; }
+  .ips-trace pre { max-height: 400px; overflow: auto; margin: 4px 0 0 0; }
+  .ips-view-doc { border: 1px solid #d1c4e9; border-radius: 4px; padding: 10px 14px; margin-bottom: 14px; }
+  .ips-view-add { background: #fffde7; border: 1px solid #fff59d; border-radius: 4px; padding: 8px 12px; margin: 8px 0; }
+  .ips-view-add select, .ips-view-add input[type=password] { margin: 0 6px; }
+</style>`;
+
+/**
+ * The viewer's first page: with script, it takes the link from the address (after the #)
+ * and posts it at once; without, or with no link there, the link can be pasted in.
+ */
+function renderViewerStart(ctx, message) {
+  const base = escape(ctx.base);
+  let h = STYLE + VIEWER_STYLE + userBar(ctx) + crumbs(ctx, null, 'SHL viewer');
+  h += '<div class="ips-banner"><b class="ips-project-name">SMART Health Link viewer</b></div>';
+  if (message) {
+    h += `<div class="alert alert-danger">${escape(message)}</div>`;
+  }
+  h += '<p>A viewer for SMART Health Links (SHL) and Verifiable Health Links (VHL) that carry International Patient Summary documents. ' +
+    'It retrieves the document, showing every step it takes - to help with debugging SHL servers - shows the document\'s narrative, ' +
+    'and offers to add the document to one of this server\'s projects.</p>';
+  h += `<div class="alert alert-warning">This is a public test service. The link - its key included - the requests and responses, and the document itself are ` +
+    `kept on this server for ${escape(String(ctx.keepMinutes))} minutes, and shown to anyone who has the page's address. Don't use it for real patients' documents.</div>`;
+  h += `<form method="post" action="${base}/view" id="ips-viewer-form">` +
+    '<label for="ips-viewer-link">The link</label> <span class="ips-small">(a viewer URL with <code>#shlink:/...</code>, the <code>shlink:/...</code> itself, or a VHL\'s <code>HC1:...</code>)</span>' +
+    '<textarea id="ips-viewer-link" name="link" rows="4" style="width: 100%; font-family: monospace; font-size: 85%" required></textarea>' +
+    '<p><label for="ips-viewer-passcode">Passcode</label> <input type="password" id="ips-viewer-passcode" name="passcode" autocomplete="off"/> ' +
+    '<span class="ips-small">(only for a link that needs one - flag P; you will be asked if it does)</span></p>' +
+    '<button type="submit" class="btn btn-primary">Open</button> <span class="ips-small ips-viewer-opening" hidden>Opening the link...</span></form>';
+  h += `<div class="ips-explain"><p class="ips-small">To make this the viewer for an SHL, put <code>${escape(ctx.viewerUrl)}</code> in front of the <code>shlink:/...</code>. ` +
+    'The link is opened on the server, not in the browser: the SHL server does not need to allow cross-origin requests (the log says whether it does). ' +
+    'Only FHIR JSON files are supported (not SMART Health Cards), and only an IPS document - a document Bundle whose Composition type is LOINC 60591-5 - can be added to a project. ' +
+    'A VHL\'s signature is checked when this server has the issuer\'s certificate.</p></div>';
+  h += `<script>
+(function () {
+  var hash = window.location.hash ? window.location.hash.substring(1) : '';
+  try { hash = decodeURIComponent(hash); } catch (e) { /* as it is */ }
+  if (hash.indexOf('shlink:/') < 0 && !/^HC1:/i.test(hash)) { return; }
+  var form = document.getElementById('ips-viewer-form');
+  form.querySelector('textarea').value = hash;
+  // the key is in the address: take it out of the browser's history
+  try { window.history.replaceState(null, '', window.location.pathname); } catch (e) { /* no matter */ }
+  form.querySelector('.ips-viewer-opening').hidden = false;
+  form.submit();
+})();
+</script>`;
+  return h;
+}
+
+/** The viewer's log, as a table: when, what, and the detail (behind a disclosure). */
+function traceHtml(entries) {
+  let h = '<table class="table table-condensed ips-trace"><thead><tr><th>ms</th><th></th><th>Step</th></tr></thead><tbody>';
+  for (const e of entries || []) {
+    const [cls, icon] = TRACE_LEVELS[e.level] || TRACE_LEVELS.info;
+    h += `<tr class="${cls}"><td class="ips-tr-ms">${escape(String(e.ms))}</td><td>${icon}</td><td>${escape(e.text)}` +
+      (e.detail ? `<details><summary>details</summary><pre class="ips-json">${escape(e.detail)}</pre></details>` : '') + '</td></tr>';
+  }
+  return h + '</tbody></table>';
+}
+
+/** Flags, in words. */
+function flagWords(flag) {
+  const f = typeof flag === 'string' ? flag : '';
+  return [f.includes('L') ? 'long term' : null, f.includes('P') ? 'passcode' : null, f.includes('U') ? 'direct file' : null].filter(Boolean).join(', ') || 'none';
+}
+
+/**
+ * What the viewer retrieved: the link's facts, a passcode form if it needs one, each document
+ * (who, adding it to a project, its narrative as submitted), then the log of what was done.
+ * @param {Object} view - store.readView()
+ * @param {Object} ctx - with projects [{code, name, needsToken, ai}], duplicates (per document,
+ *   the documents already here with the same identifier), keepMinutes
+ */
+function renderView(view, ctx, message) {
+  const base = escape(ctx.base);
+  const r = view.result;
+  const vurl = `${base}/view/${escape(view.token)}`;
+  let h = STYLE + VIEWER_STYLE + userBar(ctx) + crumbs(ctx, null, 'SHL viewer');
+  const p = r.payload || {};
+  h += '<div class="ips-banner"><div class="ips-project-name"><b>' + escape(typeof p.label === 'string' && p.label ? p.label : 'SMART Health Link') + '</b></div>';
+  h += '<div class="ips-facts">' + (r.vhl ? 'A Verifiable Health Link' + (r.vhl.issuer !== null && r.vhl.issuer !== undefined ? `, issued by ${escape(String(r.vhl.issuer))}` : '') +
+    (r.vhl.verified === true ? `, <b>signature good</b> (${escape(r.vhl.verifiedBy || '')})` : r.vhl.verified === false ? ', <b style="color: #c62828">signature NOT good</b>' : ', signature not checked') + ' &nbsp;|&nbsp; ' : '') +
+    (p.url ? `${escape(p.url)} &nbsp;|&nbsp; flags: ${escape(flagWords(p.flag))}` : '') +
+    (typeof p.exp === 'number' ? ` &nbsp;|&nbsp; expires ${escape(new Date(p.exp * 1000).toISOString())}` : '') +
+    ` &nbsp;|&nbsp; opened ${escape(view.created)}; this page is kept until ${escape(view.expires)}</div></div>`;
+  if (message) {
+    h += `<div class="alert alert-danger">${escape(message)}</div>`;
+  }
+  if (r.state === 'needs-passcode') {
+    if (r.message) {
+      h += `<div class="alert alert-danger">${escape(r.message)}</div>`;
+    }
+    h += `<form method="post" action="${vurl}" class="ips-view-add"><label for="ips-view-passcode">This link needs a passcode</label>` +
+      '<input type="password" id="ips-view-passcode" name="passcode" required autocomplete="off"/> <button type="submit" class="btn btn-primary">Open</button>' +
+      '<div class="ips-small">The SHL server may allow only a few wrong passcodes before it disables the link.</div></form>';
+  } else if (r.state === 'failed') {
+    h += `<div class="alert alert-danger">The document could not be retrieved: ${escape(r.message || 'see the log below')}</div>`;
+  }
+  const docs = Array.isArray(r.documents) ? r.documents : [];
+  docs.forEach((d, i) => {
+    const s = summaryOf(d.bundle);
+    h += '<div class="ips-view-doc">';
+    h += `<div class="ips-patient"><b>${escape(s.patient_name || '(no name)')}</b>` + (s.patient_gender ? `, ${escape(s.patient_gender)}` : '') +
+      (s.patient_birth ? `, born ${escape(s.patient_birth)}` : '') + '</div>';
+    h += '<div class="ips-facts">' + (s.comp_title ? `${escape(s.comp_title)} &nbsp;|&nbsp; ` : '') + (s.comp_date ? `Document date ${escape(s.comp_date)} &nbsp;|&nbsp; ` : '') +
+      `${(d.bundle.entry || []).length} entries` + (docs.length > 1 ? ` &nbsp;|&nbsp; document ${i + 1} of ${docs.length}` : '') + '</div>';
+    for (const a of (r.added || []).filter(x => x.doc === i)) {
+      h += `<div class="alert alert-success">Added to <a href="${base}/${encodeURIComponent(a.project)}">${escape(a.name)}</a> as ` +
+        `<a href="${base}/${encodeURIComponent(a.project)}/Bundle/${a.id}">document ${a.id}</a>.</div>`;
+    }
+    if (d.ips) {
+      const dups = (ctx.duplicates || [])[i] || [];
+      if (dups.length > 0) {
+        h += '<div class="alert alert-warning">This document (the same Bundle.identifier) is already here: ' +
+          dups.map(x => `<a href="${base}/${encodeURIComponent(x.project_code)}/Bundle/${x.id}">${escape(x.project_name)}, document ${x.id}</a>`).join('; ') + '.</div>';
+      }
+      const projects = ctx.projects || [];
+      if (projects.length === 0) {
+        h += '<p class="ips-small"><i>There are no projects to add the document to.</i></p>';
+      } else {
+        h += `<form method="post" action="${vurl}/add" class="ips-view-add"><input type="hidden" name="doc" value="${i}"/>` +
+          `<label for="ips-view-project-${i}">Add it to a project</label><select id="ips-view-project-${i}" name="project" required><option value="">(choose)</option>` +
+          projects.map(x => `<option value="${escape(x.code)}">${escape(x.name)}${x.needsToken ? ' (needs a token)' : ''}${x.ai ? ' (AI assessment)' : ''}</option>`).join('') + '</select>' +
+          `<label for="ips-view-token-${i}">Submission token</label><input type="password" id="ips-view-token-${i}" name="token" autocomplete="off" placeholder="if the project needs one"/>` +
+          '<button type="submit" class="btn btn-default">Add</button>' +
+          '<div class="ips-small"><b>Adding the document to a project makes it visible to everyone</b>: anyone can list, search and read a project\'s documents. ' +
+          'It is processed like any other document (validated, translated and checked) - and, in a project marked AI assessment, sent to an external AI service.</div></form>';
+      }
+    } else {
+      h += '<p class="ips-small"><i>This is not an IPS document (its Composition type is not LOINC 60591-5), so it can\'t be added to a project.</i></p>';
+    }
+    h += assembledNarrative(d.bundle);
+    h += '</div>';
+  });
+  h += '<h3>What the viewer did</h3>';
+  h += traceHtml(r.trace?.entries);
+  h += '<div class="ips-explain"><p class="ips-small">Each step the viewer took to retrieve the document: the link decoded, each request and what came back (headers and body - open the details), ' +
+    'the key, the decryption, and what the content is. The narrative is the document\'s own, as submitted. ' +
+    `<a href="${base}/view">Open another link</a>.</p></div>`;
+  return h;
+}
+
+// ---- the processing queue ----------------------------------------------------------------
+
+/** A step's average time: "850 ms", "4.2 s", "1 min 12 s". */
+function stepTimeText(ms) {
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  return ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : durationText(ms);
+}
+
+/** Time per KB: "0.42 ms/KB", "35 ms/KB". */
+function perKbText(v) {
+  if (v === null || v === undefined) {
+    return '--';
+  }
+  return `${v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString('en-US')} ms/KB`;
+}
+
+/** "12 s", "3 min 4 s" */
+function durationText(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  return sec < 60 ? `${sec} s` : `${Math.floor(sec / 60)} min ${sec % 60} s`;
+}
+
+/**
+ * The processing queue (one for the whole module): the document being processed and the
+ * step it is up to, then the documents waiting, in the order they will be processed.
+ * @param {{processing: Array, waiting: Array, waitingTotal: number}} q - store.queue(), with
+ *   the processing rows' results, step, startedMs and stepStartedMs filled in
+ * @param {{state: string, text: string}} state - whether the queue is being worked through
+ * @param {Object} ctx - with steps (the step names, in order) and now (ms)
+ */
+function renderQueue(q, state, ctx) {
+  const base = escape(ctx.base);
+  const docUrl = (r) => `${base}/${encodeURIComponent(r.project_code)}/Bundle/${r.id}`;
+  const docLink = (r) => `<a href="${base}/${encodeURIComponent(r.project_code)}">${escape(r.project_name)}</a> &raquo; <a href="${docUrl(r)}">Document ${r.id}</a>`;
+  let h = STYLE + userBar(ctx) + crumbs(ctx, null, 'Processing queue');
+  h += '<div class="ips-banner"><b class="ips-project-name">Processing queue</b></div>';
+  h += `<p class="ips-queue-state ips-queue-${escape(state.state)}">${escape(state.text)}.</p>`;
+
+  h += '<h3>Now processing</h3>';
+  if (q.processing.length === 0) {
+    h += '<p><i>No document is being processed.</i></p>';
+  }
+  for (const r of q.processing) {
+    h += '<div class="ips-queue-current">';
+    h += `<p>${docLink(r)}: <b>${escape(r.patient_name || '(no name)')}</b>` + (r.comp_title ? ` - ${escape(r.comp_title)}` : '') +
+      ` <span class="ips-small">(received ${escape(r.received)}, ${r.size.toLocaleString('en-US')} bytes)</span></p>`;
+    h += '<div class="ips-steps">' + stepsHtml({ ...r, status: 'processing' }, { steps: ctx.steps, canManage: false }, docUrl(r)) + '</div>';
+    const label = r.step ? (STEP_LABELS[r.step] || [r.step])[0] : null;
+    h += '<p>' + (label ? `Up to: <b>${escape(label)}</b>` + (r.stepStartedMs ? ` (for ${escape(durationText(ctx.now - r.stepStartedMs))})` : '') : 'Starting') +
+      (r.startedMs ? `; processing for ${escape(durationText(ctx.now - r.startedMs))}` : '') + '</p>';
+    h += '</div>';
+  }
+
+  h += `<h3>Waiting${q.waitingTotal ? ` (${q.waitingTotal})` : ''}</h3>`;
+  if (q.waiting.length === 0) {
+    h += '<p><i>Nothing is waiting to be processed.</i></p>';
+  } else {
+    h += '<table class="table table-condensed ips-table"><thead><tr><th>#</th><th>Document</th><th>Patient</th><th>Title</th><th>Received</th><th>Size</th></tr></thead><tbody>';
+    q.waiting.forEach((r, i) => {
+      h += `<tr><td>${i + 1}</td><td>${docLink(r)}</td><td>${escape(r.patient_name || '(no name)')}</td><td>${escape(r.comp_title || '')}</td>` +
+        `<td class="ips-date">${escape(r.received)}</td><td>${r.size.toLocaleString('en-US')}</td></tr>`;
+    });
+    h += '</tbody></table>';
+    if (q.waitingTotal > q.waiting.length) {
+      h += `<p class="ips-small">and ${q.waitingTotal - q.waiting.length} more.</p>`;
+    }
+  }
+
+  // how long each step takes, built up as documents are processed
+  h += '<h3>How long the steps take</h3>';
+  const timings = ctx.timings || {};
+  h += '<table class="table table-condensed ips-table ips-step-times"><thead><tr><th>Step</th><th>Average</th><th>Per KB of document</th><th>Runs averaged</th><th>Last run</th></tr></thead><tbody>';
+  for (const step of ctx.steps || []) {
+    const t = timings[step];
+    const label = (STEP_LABELS[step] || [step])[0];
+    h += t
+      ? `<tr><td>${escape(label)}</td><td>${escape(stepTimeText(t.avgMs))}</td><td>${escape(perKbText(t.msPerKb))}</td><td>${t.runs}</td><td class="ips-date">${escape(t.last)}</td></tr>`
+      : `<tr><td>${escape(label)}</td><td colspan="4"><i>not measured yet</i></td></tr>`;
+  }
+  h += '</tbody></table>';
+  h += `<p class="ips-small">Over each step's most recent ${STEP_TIMINGS_SAMPLE} runs. Only runs where the step did its work count: not one that failed, nor one that was skipped ` +
+    '(an AI assessment that is turned off, say). Per KB is all the time over all the KB of document (as stored), so big documents count for what they are.</p>';
+
+  // refreshing: on unless turned off (the choice is remembered in the browser); without script, a link
+  h += '<p class="ips-small"><a href="">Refresh</a> <label class="ips-queue-auto" hidden><input type="checkbox" id="ips-queue-auto"/> Refresh every 5 seconds</label></p>';
+  h += '<div class="ips-explain"><p class="ips-small">There is one processing queue for all the projects: documents are processed one at a time, oldest first, ' +
+    'each through every step of the pipeline in turn (the line of steps shows where the document being processed is up to; each step links to the view of its work). ' +
+    'A document goes back in the queue when a manager asks for it to be processed again.</p></div>';
+  h += `<script>
+(function () {
+  var KEY = 'fhirsmith.ips.queue.autoRefresh';
+  var box = document.getElementById('ips-queue-auto');
+  if (!box) { return; }
+  box.closest('.ips-queue-auto').hidden = false;
+  var timer = null;
+  function apply() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (box.checked) { timer = setTimeout(function () { window.location.reload(); }, 5000); }
+  }
+  try { box.checked = window.localStorage.getItem(KEY) !== '0'; } catch (e) { box.checked = true; }
+  apply();
+  box.addEventListener('change', function () {
+    try { window.localStorage.setItem(KEY, box.checked ? '1' : '0'); } catch (e) { /* not remembered */ }
+    apply();
+  });
+})();
+</script>`;
+  return h;
+}
+
+/**
+ * The source of the document: the original (as submitted), or the modified copy (the analysed
+ * copy - what the processing ended up with: translations added, the generated narrative, the
+ * terminology check's extensions), with the buttons that share whichever is shown.
+ */
+function renderSource(row, durl, ctx) {
+  const modified = ctx.source === 'modified';
+  let h = '<div class="ips-switch">' +
+    `<a href="${durl}?view=source"${modified ? '' : ' class="active"'} title="The document as it was submitted">Original</a>` +
+    `<a href="${durl}?view=source&amp;source=modified"${modified ? ' class="active"' : ''} title="The document as the processing left it: with the translations, the generated narrative and the terminology check">Modified</a></div>`;
+  const doc = modified ? row.analysed : row.bundle;
+  if (!doc) {
+    return h + '<p><i>There is no modified copy of this document: it has not been processed yet.</i></p>';
+  }
+  if (ctx.canShare) {
+    // sharing as a QR code: a form each (they work without scripts); with scripts, the
+    // page asks for JSON and shows the code in a panel over the page
+    const which = modified ? 'modified' : 'original';
+    const what = modified ? 'the modified copy of this document' : 'this document';
+    const form = (kind, title, label) => `<form method="post" action="${durl}/share" class="ips-inline ips-share-form">` +
+      `<input type="hidden" name="source" value="${which}"/><input type="hidden" name="kind" value="${kind}"/>` +
+      `<button type="submit" class="btn btn-default" title="${escape(title)}">${label}</button></form>`;
+    h += '<div class="ips-doc-actions">' +
+      form('shl', `A SMART Health Link to ${what}, as a QR code`, 'Share as SHL') +
+      form('vhl', `A Verifiable Health Link (GDHCN) to ${what}, as a QR code`, 'Share as VHL') + '</div>';
+    h += sharePanelScript();
+  }
+  h += `<pre class="ips-json">${escape(JSON.stringify(doc, null, 2))}</pre>`;
+  h += '<div class="ips-explain"><p class="ips-small">Original is the document as it was submitted. Modified is what the processing ended up with: ' +
+    'codings added to CodeableConcepts by translation (marked with an extension saying where they came from), the narrative generated by this server, ' +
+    'and an extension on each CodeableConcept recording the terminology check. The original is never changed. Either can be shared, as a SMART Health Link or a Verifiable Health Link.</p></div>';
+  return h;
+}
+
 /** The QR code and its links, as the share page and the panel show them. */
 function shareHtml(out) {
   const kind = out.kind === 'vhl' ? 'VHL' : 'SHL';
@@ -1913,7 +2259,7 @@ function shareHtml(out) {
 function renderShare(project, row, out, ctx) {
   const durl = `${projectUrl(ctx, project)}/Bundle/${row.id}`;
   let h = STYLE + userBar(ctx) + crumbs(ctx, project, `Document ${row.id}`);
-  h += `<h3>Document ${row.id} as ${out.kind === 'vhl' ? 'a VHL' : 'an SHL'}</h3>`;
+  h += `<h3>Document ${row.id}${out.source === 'modified' ? ' (modified)' : ''} as ${out.kind === 'vhl' ? 'a VHL' : 'an SHL'}</h3>`;
   h += shareHtml(out);
   h += `<p><a href="${durl}">Back to the document</a></p>`;
   return h;
@@ -1936,11 +2282,12 @@ function sharePanelScript() {
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var kind = form.querySelector('[name=kind]').value;
+      var fields = new URLSearchParams(new FormData(form)).toString();
       var button = form.querySelector('button');
       button.disabled = true;
       body.innerHTML = '<p><i>Preparing the ' + kind.toUpperCase() + '...</i></p>';
       overlay.hidden = false;
-      fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: 'kind=' + encodeURIComponent(kind), credentials: 'same-origin' })
+      fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' }, body: fields, credentials: 'same-origin' })
         .then(function (r) { return r.json().then(function (j) { if (!r.ok) { throw new Error(j.error || ('HTTP ' + r.status)); } return j; }); })
         .then(function (out) {
           var name = out.kind === 'vhl' ? 'VHL' : 'SHL';
@@ -1988,14 +2335,15 @@ const VIEW_ALIASES = {
 /**
  * The view a request asks for (?view=, and ?narrative= for the narrative tab's switch):
  * the default when it names none we know.
- * @returns {{view: string, narrative: string}} narrative is 'provided' or 'generated'
+ * @returns {{view: string, narrative: string, source: string}} narrative is 'provided' or 'generated'; source is 'original' or 'modified'
  */
 function viewOf(query = {}) {
   const v = typeof query.view === 'string' ? query.view : '';
   const alias = VIEW_ALIASES[v];
   const view = alias ? alias.view : VIEWS.some(([k]) => k === v) ? v : VIEWS[0][0];
   const narrative = alias?.narrative || (query.narrative === 'generated' ? 'generated' : 'provided');
-  return { view, narrative };
+  const source = query.source === 'modified' ? 'modified' : 'original';
+  return { view, narrative, source };
 }
 
 /**
@@ -2032,7 +2380,7 @@ function stepState(row, step) {
 
 // each step as the pipeline shows it, and the view that shows its work (as a query)
 const STEP_LABELS = {
-  nationality: ['Nationality', 'view=analysis'],
+  nationality: ['Jurisdiction', 'view=analysis'],
   analysis: ['Analysis', 'view=analysis'],
   translate: ['Translate', 'view=translation'],
   narrative: ['Narrative', 'view=narrative&narrative=generated'],
@@ -2055,7 +2403,7 @@ function stepsHtml(row, ctx, durl) {
     // a failure's reason can name the inside of the server: for managers
     const detail = message && (state !== 'failed' || ctx.canManage) ? `: ${message}` : '';
     const [label, query] = STEP_LABELS[step] || [step, null];
-    const attrs = `class="ips-step ips-step-${state}" title="${escape(`${step} - ${word}${detail}`)}"`;
+    const attrs = `class="ips-step ips-step-${state}" title="${escape(`${label.toLowerCase()} - ${word}${detail}`)}"`;
     const inner = `<span class="ips-step-icon">${symbol}</span> ${escape(label)}`;
     h += query && durl ? `<a ${attrs} href="${escape(`${durl}?${query}`)}">${inner}</a>` : `<span ${attrs}>${inner}</span>`;
   }
@@ -2084,22 +2432,12 @@ function renderDocument(project, row, view, ctx) {
     h += '<div class="ips-doc-actions">';
     // a form like the others, so it looks like them
     h += `<form method="get" action="${purl}/compose" class="ips-inline"><input type="hidden" name="from" value="${row.id}"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>`;
-    if (ctx.canShare) {
-      // sharing as a QR code: a form each (they work without scripts); with scripts, the
-      // page asks for JSON and shows the code in a panel over the page
-      h += `<form method="post" action="${durl}/share" class="ips-inline ips-share-form"><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button></form>` +
-        `<form method="post" action="${durl}/share" class="ips-inline ips-share-form"><input type="hidden" name="kind" value="vhl"/><button type="submit" class="btn btn-default" title="A Verifiable Health Link (GDHCN) to this document, as a QR code">Share as VHL</button></form>`;
-    }
     if (ctx.canManage) {
       h += `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
         `<form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${row.id}?`)}">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
     }
     h += '</div>';
   }
-  if (ctx.canShare) {
-    h += sharePanelScript();
-  }
-
   // the views, as tabs
   h += '<ul class="nav nav-tabs ips-nav">' + VIEWS.map(([v, label]) =>
     `<li${v === view ? ' class="active"' : ''}><a href="${durl}?view=${v}">${label}</a></li>`).join('') + '</ul>';
@@ -2109,7 +2447,7 @@ function renderDocument(project, row, view, ctx) {
   } else if (view === 'analysis') {
     h += renderAnalysis(row, { canManage: ctx.canManage });
   } else if (view === 'source') {
-    h += `<pre class="ips-json">${escape(JSON.stringify(row.bundle, null, 2))}</pre>`;
+    h += renderSource(row, durl, ctx);
   } else if (view === 'terminology') {
     // the analysed copy carries the checks; the concepts are the same
     h += renderTerminology(row.analysed || row.bundle, { ...ctx, analysed: !!row.analysed, docUrl: durl });
@@ -2138,5 +2476,5 @@ module.exports = {
   analysisOk,
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
-  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, VIEWS, viewOf
+  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };

@@ -1009,6 +1009,11 @@ class SHLModule {
           try {
             const jwk = this.pemToJwk(certPem, keyPem);
 
+            // the CWT claims, keyed by integers as CWT and the GDHCN have them (a JS object's
+            // keys would be encoded as text: "1", "-260"): 1 is the issuer, -260 the health
+            // certificate, whose 5 is the list of links
+            const claims = new Map([[1, issuer], [-260, new Map([[5, [url]]])]]);
+            // the same, for the steps shown in the response (JSON keys are always text)
             const payload = {
               "1": issuer,
               "-260": {
@@ -1016,7 +1021,7 @@ class SHLModule {
               }
             };
 
-            const cborEncoded = CBOR.encode(payload);
+            const cborEncoded = CBOR.encode(claims);
             const coseSigned = await this.createCOSESign1(cborEncoded, jwk, kid);
             const deflated = pako.deflate(coseSigned);
             const base45Encoded = base45.encode(deflated);

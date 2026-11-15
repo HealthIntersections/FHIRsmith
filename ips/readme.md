@@ -185,7 +185,7 @@ takes submitted documents in turn, marks each `processing`, runs the pipeline's 
 it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `error` with the
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
-document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **nationality**; **analyse** each resource; **translate** CodeableConcepts
+document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
 **national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
 validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
@@ -193,21 +193,33 @@ document in `document_results` (one row per step - the validation outcome), or i
 **analysed copy** - a second copy of the document (`documents.analysed_json`) that the steps
 adorn with extensions, so that the master document is never changed. The analysed copy is
 rebuilt from the master on every run, so a document can always be processed again.
-Anything left `processing` when the server stopped is queued again at startup. Managers can
+Anything left `processing` when the server stopped is queued again at startup.
+
+There is one queue for the whole module, and its page is `/ips/queue` (linked from the top
+menu; JSON for a client that doesn't ask for HTML): whether processing is running, idle,
+waiting (for the validator or the terminology server) or turned off; the document being
+processed, with the line of steps and the step it is up to (and for how long); and the
+documents waiting, in the order they will be taken; and how long each step takes - its
+average time, and its time per KB of document (all the time over all the KB, so big documents
+count for what they are) - over its most recent 100 runs. A step's time is recorded (in
+`step_timings`, the most recent 1000 of each step kept) only when it did its work: not when it
+failed, nor when it was skipped (its result says `skipped`). The page refreshes itself every 5
+seconds unless that is turned off (remembered in the browser). Managers can
 queue a document again from its page, though not while it is being processed.
 
-### Nationality
+### Jurisdiction
 
-The first step (`ips/nationality.js`) works out which nation the document is from, as far as the document says -
-few national IGs give a way to tell, so this is a short list of signs, to grow as more are found:
+The first step (`ips/nationality.js` - the code still calls it nationality) works out which jurisdiction the document is
+from, as far as the document says. Jurisdiction rather than nation, because there are IPS specifications at smaller
+(Canadian provinces) and bigger (the EU) levels than a nation. Few national IGs give a way to tell, so this is a short list of signs, to grow as more are found:
 
 - **US**: the Bundle claims the US Patient Summary profile (`http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs`),
   or a US Core extension (`http://hl7.org/fhir/us/core/StructureDefinition/...`) is used anywhere in the document;
 - **AU**: the Bundle claims the AU Patient Summary profile (`http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle`).
 
-The nation is its ISO 3166 two-letter code, or unknown when nothing points to a nation, or the signs point to more
+The jurisdiction is its ISO 3166 two-letter code, or unknown when nothing points to one, or the signs point to more
 than one. It is kept as the step's result (with the reasons) and in `documents.nationality`, for the list: the
-project page has a Nation column (the code, or `??`), the document page shows the nation's flag to the left of the
+project page has a Jurisdiction column (the code, or `??`), the document page shows the jurisdiction's flag to the left of the
 banner (a black and white globe when it isn't known, or there is no flag for it yet -
 `static/assets/images/flags/{code}.svg`), and the first bullet on the Composition in the analysis view says what was
 decided, and why.
@@ -265,8 +277,8 @@ or, for an element with no value set of its own, no international coding - is se
 terminology server to translate: `ConceptMap/$translate` with `sourceCodeableConcept` (the
 concept as submitted) and `targetScope` (the element's value set, or the fallback), the
 value set and what it draws on as `tx-resource`. A SNOMED CT coding with no version is sent as a code of
-the edition of the document's nation: when the [nationality](#nationality) step found one, and a national profile
-for that nation names a SNOMED CT edition, the coding goes with `version` = `http://snomed.info/sct/{edition}`
+the edition of the document's jurisdiction: when the [jurisdiction](#jurisdiction) step found one, and a national profile
+for that jurisdiction names a SNOMED CT edition, the coding goes with `version` = `http://snomed.info/sct/{edition}`
 (the document is not changed, and the translation view says which edition was used). Which edition a code is
 from decides which maps apply - a national edition's own concepts translate to the International Edition. The
 terminology check does not do this: it takes the codes as they are, so a SNOMED CT code with no version passes if
@@ -441,7 +453,11 @@ findings (severity, finding, the codes). Whether the narrative goes is the proje
 smaller and cheaper; with it, the narratives are the ones the sender wrote (from the master -
 the analysed copy's were generated by the narrative step), and the prompt asks for a third
 assessment, what the narrative says that the structured data does not back up, and the
-reverse. The submission page says so when it is on.
+reverse. The submission page says so when it is on. Attachments - Attachment and Binary
+`data` (not SampledData's), `valueBase64Binary`, and `data:` URIs in the narrative - are
+replaced with the placeholder `[attachment removed]` before the document is sent (most of a
+large document is usually its attachments), and the prompt tells the model to ignore them;
+how many were replaced is kept with the result, and shown on the view.
 
 The service is an account - provider, base URL, model, API key - of one of two shapes
 (`ips/ai-client.js`): `openai`, the chat-completions API that OpenAI, OpenRouter, LiteLLM,
@@ -584,13 +600,16 @@ fhirpath.evaluate(bundle, expr, null, r4Model, { userInvocationTable: ipsFunctio
 
 ## Sharing as SHL / VHL
 
-With `modules.ips.shl` configured, a document's page has "Share as SHL" and "Share as VHL"
-buttons (for anyone who can see the document). Each makes a QR code in a panel over the
+With `modules.ips.shl` configured, a document's Source view has "Share as SHL" and "Share as VHL"
+buttons (for anyone who can see the document), under its switch between the Original document
+(the master, as submitted) and the Modified one (the analysed copy - what the processing ended up
+with), sharing whichever is shown (`source` = `original` or `modified` in the post; the modified
+one can't be shared until the document has been processed). Each makes a QR code in a panel over the
 page, to scan or copy, with what the code carries in a box beside a Copy button, and the
 link to the manifest; without scripts, the same lands on its own page. The steps are the
 ones the healthintersections.com.au passport page takes, here on the server (`ips/share.js`):
 an entry is created on the SHL server (`POST {shl}/create`, with the server's password and
-the number of days the copy lives), the document (the master, as submitted) is encrypted
+the number of days the copy lives), the document (the original or the modified one) is encrypted
 as a JWE (`dir` / `A256GCM`, a random key) and uploaded (`POST {shl}/upload`), and the
 shlink payload - the manifest link, the key, flag `U`, a label naming the patient - is
 base64url-encoded. An SHL's code carries `{viewer}#shlink:/{payload}`; a VHL's carries
@@ -600,6 +619,53 @@ shl module (`"server": "/shl"`, dispatched in-process, the password taken from
 `modules.shl.password` unless given) or another FHIRsmith's (an https URL and its password).
 Shares are rate-limited as submissions are, and a document whose JWE is over 2MB is not
 shared this way. The QR codes are made with `qrcode-generator`, error correction L.
+
+The QR code of an SHL opens this server's own viewer (`{server}/ips/view#shlink:/...`, below)
+unless `modules.ips.shl.viewer` names another.
+
+## The SHL viewer
+
+`/ips/view` is a viewer for SMART Health Links and Verifiable Health Links that carry IPS
+documents (`ips/viewer.js`): other systems can name it as the viewer in their SHLs
+(`{server}/ips/view#shlink:/...`), and a link - a viewer URL, a bare `shlink:/...`, or a VHL's
+`HC1:...` - can be pasted into it. The part after the `#` never reaches the server, so the
+page's script reads it and posts it (and takes it out of the browser's history); the server
+retrieves the document, keeps what happened under a random token for `keepMinutes` (60, in
+`shl_views`), and redirects to `/ips/view/{token}`. Everything is done on the server, so an SHL
+server that doesn't allow cross-origin requests still works (the log says it doesn't).
+
+The point is as much debugging other people's SHL servers as viewing documents, so the page
+shows each step the viewer took, with the detail behind a disclosure: the payload decoded and
+checked (url, key - shown, this is a public test service - exp, flags, label, v); for a VHL,
+base45, inflate, the COSE_Sign1 headers, the CWT claims, and the signature; each request - the
+U-flag `GET {url}?recipient=...`, or the manifest `POST {url}` with `recipient` (and `passcode`)
+- with what was sent and what came back (status, headers, body), redirects followed one at a
+time; each file, embedded or fetched from its location; the JWE header, the decryption (`dir` /
+`A256GCM`, `zip: DEF` too) and the decrypted content; and what the content is. The server's own
+log gets one line per link.
+
+- A link with the P flag asks for the passcode (it can also be given with the link), and says
+  when the SHL server refuses it, with the attempts left when the server says.
+- A manifest may be an SHL manifest (`files`, each `embedded` or `location`) or, as a VHL server
+  gives it, a FHIR Bundle of DocumentReferences (`content.attachment.url`; a bare `content.url`,
+  which isn't FHIR - this server's shl module gave it before 1.0.3 - is used with a warning).
+- Only `application/fhir+json` files are read: SMART Health Cards and SMART API access are logged
+  as not supported.
+- A VHL's signature (ES256) is checked against the certificates in `modules.ips.viewer.trust`
+  (`[{ kid, name, certFile | certificate }]`, PEM - a certificate or a public key), and this
+  server's own shl module's certificate (unless `trustOwnShl` is false). A VHL from anyone else
+  is checked only if their certificate - published through the GDHCN trust network - is
+  configured; otherwise the log says it could not be checked. No secret is needed.
+- Requests go only to public addresses, over https, unless `allowPrivateAddresses` is true (for
+  testing a local SHL server; http is allowed then too); each has a deadline (`timeout`, 30 s)
+  and a size limit (`maxMB`, 10).
+
+Each document is shown with its narrative as submitted (as the Narrative view shows it). An
+IPS document - a document Bundle whose Composition.type is LOINC 60591-5 - can be added to a
+project, by the rules of the submission form (the project's token, the size limit, the same
+checks, the same rate limit), with source `shl`; the form says plainly that this makes it
+visible to everyone, and warns when a document with the same Bundle.identifier is already in
+the module. Other documents can be looked at, but not added.
 
 ### Validation view
 

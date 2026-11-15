@@ -31,7 +31,8 @@
  *   modifier   a modifier extension, or implicitRules (maroon)
  *   status     inactive, entered in error, unknown, or missing status (navy)
  *   subject    a subject other than the document's, or a focus (dark green)
- *   attention  a date in the future where one isn't expected, a Patient's link, a
+ *   attention  a date in the future where one isn't expected, a primitive that has an
+ *              extension instead of a value (a data-absent-reason, say), a Patient's link, a
  *              Composition that isn't final, a document that uses more than one approach
  *              to negation
  *   negation   how the document does negation (on the Composition; like narrative, always
@@ -148,6 +149,53 @@ function walk(node, prefix, skip, visit) {
     }
   };
   go(node, prefix);
+}
+
+/**
+ * The primitives that have an extension instead of a value: in JSON, a "_name" with
+ * extensions and no "name" (or, in a list, a null where the "_name" entry has extensions). A
+ * data-absent-reason, or some other extension standing in for the value - legal almost
+ * everywhere in IPS, but often misread. As [path, urls].
+ */
+function extensionsWithoutValues(node, prefix, skip) {
+  const out = [];
+  const urlsOf = (e) => (isObject(e) && Array.isArray(e.extension) ? e.extension.filter(x => isObject(x) && text(x.url)).map(x => x.url) : []);
+  const go = (v, path) => {
+    if (Array.isArray(v)) {
+      v.forEach((x, i) => go(x, `${path}[${i}]`));
+      return;
+    }
+    if (!isObject(v)) {
+      return;
+    }
+    for (const [k, x] of Object.entries(v)) {
+      if (k === 'contained' || (path === prefix && skip.includes(k))) {
+        continue;
+      }
+      if (k.startsWith('_') && k.length > 1) {
+        const name = k.substring(1);
+        const value = v[name];
+        if (Array.isArray(x)) {
+          x.forEach((e, i) => {
+            const urls = urlsOf(e);
+            const missing = !Array.isArray(value) || value[i] === null || value[i] === undefined;
+            if (urls.length && missing) {
+              out.push([`${path}.${name}[${i}]`, urls]);
+            }
+          });
+        } else {
+          const urls = urlsOf(x);
+          if (urls.length && (value === null || value === undefined)) {
+            out.push([`${path}.${name}`, urls]);
+          }
+        }
+        continue;
+      }
+      go(x, `${path}.${k}`);
+    }
+  };
+  go(node, prefix);
+  return out;
 }
 
 /** The extensions and modifier extensions on a resource or section, as [kind, url, path]. */
@@ -269,6 +317,10 @@ async function common(findings, thing, modelPath, prefix, skip, options, cache) 
     }
     const def = cache.get(url);
     findings.push({ kind, url, path, found: !!def, ...(def ? { title: text(def.title) || text(def.name), description: text(def.description) } : {}) });
+  }
+  for (const [path, urls] of extensionsWithoutValues(thing, prefix, skip)) {
+    findings.push({ kind: 'attention', text: `There is no value at "${path}" - instead, the extension ${urls.join(', ')} is found. ` +
+      'Check that this is truly necessary - such values are often misinterpreted' });
   }
   const focus = Array.isArray(thing.focus) ? thing.focus.filter(isObject) : isObject(thing.focus) ? [thing.focus] : [];
   if (focus.length) {
@@ -469,7 +521,7 @@ function unknownEdition(bundle) {
   const named = [...new Set(codes.map(c => text(c.display) ? `${c.code} ${c.display}` : c.code))];
   const list = named.slice(0, MAX_NAMED_CODES).join(', ') + (named.length > MAX_NAMED_CODES ? `, and ${named.length - MAX_NAMED_CODES} more` : '');
   return { kind: 'error', text: `${codes.length} SNOMED CT code${codes.length === 1 ? ' does' : 's do'} not say which edition ${codes.length === 1 ? 'it is' : 'they are'} from (${list}), ` +
-    'and the nationality of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed' };
+    'and the jurisdiction of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed' };
 }
 
 /** All OK when there's nothing but the narrative to say; the narrative last. */
