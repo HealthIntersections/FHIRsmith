@@ -190,7 +190,13 @@ class SnomedServices {
     this.isAIndex = sharedData.isAIndex;
     this.activeRoots = sharedData.activeRoots;
     this.inactiveRoots = sharedData.inactiveRoots;
-    this.defaultLanguage = sharedData.defaultLanguage;
+    // The edition's default description language, as a language byte (SCT_LANGUAGE_CODES).
+    // Caches written by the importer here store 1. Caches written by the original server
+    // store something else in that slot: the membersByRef offset of the edition's default
+    // language reference set (51756144 - US English 900000000000509007 - in the 20250201
+    // International Edition), which is no language. Read anything that is not a language
+    // byte as English, as the importer would have written it.
+    this.defaultLanguage = SCT_LANGUAGE_CODES[sharedData.defaultLanguage] ? sharedData.defaultLanguage : 1;
     this.isTesting = sharedData.isTesting;
 
     // Expression services
@@ -3483,7 +3489,9 @@ class SnomedProvider extends BaseCSServices {
         return code;
       }
     }
-    return this.sct.defaultLanguage || 1;
+    // none named: the edition's default, if it has descriptions in it, else its first language
+    const fallback = this.sct.defaultLanguage;
+    return present.has(fallback) || present.size === 0 ? fallback : Math.min(...present);
   }
 
   // the concept index of 900000000000550004 |Definition|, or -1

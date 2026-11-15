@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 
-const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
+const { SnomedServicesFactory, SnomedServices, SnomedProvider } = require('../../tx/cs/cs-snomed');
 const { SnomedTextIndex, filterTokens, tokenize } = require('../../tx/sct/text-index');
 const { OperationContext } = require('../../tx/operation-context');
 const { LanguageDefinitions } = require('../../library/languages');
@@ -123,6 +123,21 @@ describe('SNOMED text search', () => {
       const neither = await sct.scanSearch('fracture zzzz', false, null);
       expect(neither.matches).toEqual([]);
     });
+
+    test('a text filter with no request language finds matches when the cache\'s default language slot holds no language', async () => {
+      // Caches written by the original server hold the default language reference set's
+      // membersByRef offset in this slot (51756144 in sct_intl_20250201.cache), not a language
+      const services = new SnomedServices({ ...factory._sharedData, defaultLanguage: 51756144 });
+      const provider = new SnomedProvider(new OperationContext('en', i18n), [], services);
+      const codes = async (languages) => {
+        const fc = await provider.getPrepContext(true, languages);
+        const f = await provider.searchFilter(fc, new SearchFilterText('appendicitis'), null);
+        return f.matches.map(m => m.term.toString());
+      };
+      expect(await codes(null)).toContain('74400008');
+      expect(await codes([{ language: 'en' }])).toContain('74400008');
+      expect(services.defaultLanguage).toBe(1);
+    }, 60000);
 
     test('the scan yields through the operation context', async () => {
       // The scan is the expensive path (a full pass over the edition), so it

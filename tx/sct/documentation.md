@@ -224,7 +224,11 @@ role group pairing.
   preferred synonyms. A concept whose only English description is its FSN
   gets its national-language preferred synonym instead.
 - `sharedData.defaultLanguage` is hard-coded to 1 at import and
-  `getDisplayName` ignores the language argument it is passed.
+  `getDisplayName` ignores the language argument it is passed. Caches
+  written by the original server hold the default language refset's
+  `membersByRef` offset in that slot instead; `SnomedServices` reads any
+  value that is not a language byte as 1 (English). It is the language a
+  text filter searches when the request names none.
 
 ### Filters and implicit resources
 
