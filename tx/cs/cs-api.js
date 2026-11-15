@@ -9,6 +9,7 @@ const {validateParameter, validateArrayParameter} = require("../../library/utili
 const {I18nSupport} = require("../../library/i18nsupport");
 const {VersionUtilities} = require("../../library/version-utilities");
 const { Issue } = require("../library/operation-outcome");
+const { SupplementTextIndex } = require("../library/supplement-text-index");
 
 /**
  * For documentation, see cs-api.md
@@ -311,18 +312,8 @@ class CodeSystemProvider {
    * @returns {boolean}
    */
   _hasSupplementText(lang) {
-    for (const supplement of this.supplements || []) {
-      const suppLang = supplement.jsonObj.language || this.defLang();
-      for (const concept of supplement.getAllConcepts()) {
-        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, lang)) {
-          return true;
-        }
-        if ((concept.designation || []).some(d => d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, suppLang))) {
-          return true;
-        }
-      }
-    }
-    return false;
+    // the languages a supplement has text in are worked out once (SupplementTextIndex)
+    return (this.supplements || []).some(s => SupplementTextIndex.of(s, this.defLang()).hasText(lang));
   }
 
   /**
@@ -334,11 +325,9 @@ class CodeSystemProvider {
    * @returns {boolean}
    */
   static inSearchLanguage(code, searchLang, fallback = 'en') {
-    let lang = code instanceof Language ? code : (code ? new Language(code) : null);
-    if (!lang || !lang.language) {
-      lang = new Language(fallback || 'en');
-    }
-    return lang.language === searchLang.language;
+    // only the primary subtag counts, so the tag isn't parsed (this is asked of every display
+    // and designation a text search looks at); compared without regard to case, as BCP 47 says
+    return SupplementTextIndex.languageOf(code, fallback) === SupplementTextIndex.languageOf(searchLang, 'en');
   }
 
   /**
@@ -346,28 +335,66 @@ class CodeSystemProvider {
    * pass a text filter - a supplement's designations are searched like the code system's own,
    * so every word of the filter must match (as LOINC's and SNOMED CT's own text search need)
    *
+   * Answered from each supplement's text index (SupplementTextIndex), built once per
+   * supplement: stemming every display of a large supplement (a global language pack has one
+   * for every code) for each search held the event loop for about a second.
+   *
    * @param {SearchFilterText} filter
    * @param {Language} searchLang - from searchLanguage()
-   * @returns {Set<string>}
+   * @param {Map<string, string>} [sources] - filled in: code -> the supplement (vurl) that matched it
+   *   first, so that the caller can report a supplement whose matches it uses (used-supplement)
+   * @returns {Promise<Set<string>>}
    */
-  _supplementSearchCodes(filter, searchLang) {
+  async _supplementSearchCodes(filter, searchLang, sources = null) {
     const codes = new Set();
     for (const supplement of this.supplements || []) {
-      const suppLang = supplement.jsonObj.language || this.defLang();
-      for (const concept of supplement.getAllConcepts()) {
-        if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, searchLang) && filter.passesAll(concept.display)) {
-          codes.add(concept.code);
+      const matches = await SupplementTextIndex.of(supplement, this.defLang()).searchTexts(filter, searchLang);
+      for (const [code, texts] of matches) {
+        if (codes.has(code)) {
           continue;
         }
-        for (const d of concept.designation || []) {
-          if (d.value && CodeSystemProvider.inSearchLanguage(d.language, searchLang, suppLang) && filter.passesAll(d.value)) {
-            codes.add(concept.code);
-            break;
-          }
+        // a text that only repeats the code system's own display (a language pack that copies
+        // the English names alongside its own, to make it easier to maintain) says nothing the
+        // code system's own search doesn't: it is left out, so the two can't disagree over it
+        const root = await this._rootDisplay(code);
+        if (root && texts.every(t => CodeSystemProvider.sameText(t, root))) {
+          continue;
+        }
+        codes.add(code);
+        if (sources) {
+          sources.set(code, supplement.vurl);
         }
       }
     }
     return codes;
+  }
+
+  /**
+   * The code's own display in the code system, without what supplements give it, for leaving
+   * out of a text search a supplement's text that only repeats it; null if the provider doesn't
+   * say (then nothing is left out)
+   * @param {string} code
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async _rootDisplay(code) {
+    return null;
+  }
+
+  /** Whether two texts are the same, but for case and white space */
+  static sameText(a, b) {
+    const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
+    return norm(a) === norm(b);
+  }
+
+  /**
+   * Note on a filter context that a supplement in use gave a text filter some of its codes: the
+   * expansion reports it as used (used-supplement), whatever it shows of the codes' displays
+   */
+  static noteSupplementUsed(filterContext, vurl) {
+    if (filterContext && vurl) {
+      (filterContext.usedSupplements ??= new Set()).add(vurl);
+    }
   }
 
   _hasAnySupplementDisplays(languages) {

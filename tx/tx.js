@@ -24,6 +24,8 @@ const { I18nSupport } = require('../library/i18nsupport');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
 const { FhirXmlBase } = require('./xml/xml-base');
 const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
+const { resourceToJson } = require('./json-serialise');
+const { SupplementTextIndex } = require('./library/supplement-text-index');
 const memoryGuard = require('../library/memory-guard');
 const { storedResourceETag } = require('../library/etags');
 const txHtml = require('./tx-html');
@@ -369,6 +371,9 @@ class TXModule {
     await this.library.pruneUnusedCaches();
 
     this.log.info(`TX module initialized with ${config.endpoints.length} endpoint(s)`);
+    // the text indexes of the global supplements (language packs), in the background: otherwise
+    // the first text search of a code system with one waits for its index (seconds, for LOINC's)
+    void this.warmSupplementIndexes();
 
     // Self-test: verify metadata generation works for each endpoint before accepting traffic
     await this.selfTest();
@@ -379,6 +384,36 @@ class TXModule {
    * @param {Object} endpoint - Endpoint configuration {path, fhirVersion, context}
    * @param {express.Application} app - Express application
    */
+  /**
+   * Build the text indexes of the global supplements (SupplementTextIndex) one after another, in
+   * the background, letting other work run. Not awaited: requests are answered meanwhile, and a
+   * search that needs an index before it's ready waits for that one
+   */
+  warmSupplementIndexes() {
+    const supplements = new Map();
+    for (const endpoint of this.endpoints || []) {
+      for (const cs of endpoint.provider?.codeSystems?.values() || []) {
+        if (cs?.jsonObj?.content === 'supplement' && cs.isGlobalSupplement() && !supplements.has(cs.vurl)) {
+          supplements.set(cs.vurl, cs);
+        }
+      }
+    }
+    if (supplements.size === 0) {
+      return null;
+    }
+    const start = Date.now();
+    return (async () => {
+      for (const cs of supplements.values()) {
+        try {
+          await SupplementTextIndex.warm(cs, 'en');
+        } catch (e) {
+          this.log.warn(`Unable to build the text index of the supplement ${cs.vurl}: ${e.message}`);
+        }
+      }
+      this.log.info(`Text indexes of the global supplements built (${supplements.size}) in ${((Date.now() - start) / 1000).toFixed(1)} s`);
+    })();
+  }
+
   async setupEndpoint(endpoint, app) {
     const { path: endpointPath, context } = endpoint;
     const fhirVersion = String(endpoint.fhirVersion);
@@ -410,13 +445,13 @@ class TXModule {
       this.log.info(`Expansion caches: at most ${this.expansionCacheBudget.maxCodes} codes in all` +
         (this.config.expansionCacheMaxCodes ? '' : ' (a quarter of the heap limit, at 1 KB a code)'));
     }
-    // the XML of large resources, kept for next time (tx/xml/xml-fragment-cache.js)
+    // the XML (and JSON) of large resources, kept for next time (tx/xml/xml-fragment-cache.js)
     if (!FhirXmlBase.fragmentCache && this.config.xmlCacheMB !== 0) {
       const mb = this.config.xmlCacheMB ?? DEFAULT_XML_CACHE_MB;
       const cache = new XmlFragmentCache({ budgetBytes: mb * 1024 * 1024 });
       FhirXmlBase.setFragmentCache(cache);
       memoryGuard.addReliever('XML cache', () => cache.clear());
-      this.log.info(`XML cache: at most ${mb} MB`);
+      this.log.info(`XML (and JSON) cache: at most ${mb} MB`);
     }
 
     // Store endpoint info for provider creation
@@ -633,7 +668,8 @@ class TXModule {
               result = originalJson(data);
             }
           } else {
-            const jsonStr = JSON.stringify(data);
+            // the JSON of large arrays comes from the XML cache, when it's there (tx/json-serialise.js)
+            const jsonStr = resourceToJson(data, FhirXmlBase.fragmentCache);
             res.setHeader('Content-Type', jsonFmt);
             this.checkProperJson(jsonStr);
             responseSize = Buffer.byteLength(jsonStr, 'utf8');

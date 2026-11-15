@@ -1315,6 +1315,7 @@ class ValueSetExpander {
             }
             const prep = await cs.getPrepContext(true, this.params.requestedLanguages()); // the text filter's language
             const ctxt = await cs.searchFilter(prep, filter, true);
+            this.#reportSearchSupplements(prep);
             let set = await cs.executeFilters(prep);
             if (this.count === 0 && valueSets.length === 0) {
               // count=0 (count only): report the filtered size directly without
@@ -1444,7 +1445,7 @@ class ValueSetExpander {
               } else {
                 await this.listDisplaysFromProvider(cds, cs, cctxt.context);
                 this.listDisplaysFromIncludeConcept(cds, cc, vsSrc);
-                if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
+                if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passesCode(cc.code)) {
                   let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
                   if (!ov) {
                     ov = await cs.itemWeight(cctxt.context);
@@ -1469,6 +1470,7 @@ class ValueSetExpander {
 
           if (!filter.isNull) {
             await cs.searchFilter(prep, filter, true);
+            this.#reportSearchSupplements(prep);
           }
 
           if (cs.specialEnumeration()) {
@@ -1580,7 +1582,7 @@ class ValueSetExpander {
             // only filters on supplement properties: the codes are those the supplements list
             for (const c of await this.#supplementFilterConcepts(cs, suppFilters, path)) {
               await this.worker.checkAndYield('processCodes#5');
-              if ((!this.params.activeOnly || !await cs.isInactive(c)) && (filter.isNull || filter.passes(await cs.code(c)) || filter.passes(await cs.display(c)))) {
+              if ((!this.params.activeOnly || !await cs.isInactive(c)) && (filter.isNull || filter.passesCode(await cs.code(c)) || await this.#displayPasses(filter, cs, c))) {
                 await addFound(c);
               }
             }
@@ -1589,6 +1591,23 @@ class ValueSetExpander {
         }
       }
     }
+  }
+
+  /**
+   * The supplements in use that gave a text filter some of its codes (noted on the filter context
+   * by the provider: CodeSystemProvider.noteSupplementUsed) are reported as used: they decided
+   * what the expansion has, whatever language its displays are in
+   */
+  #reportSearchSupplements(prep) {
+    for (const s of (prep && prep.usedSupplements) || []) {
+      this.reportedSupplements.add(s);
+    }
+  }
+
+  // whether a concept's display passes a text filter (in the code system's language)
+  async #displayPasses(filter, cs, c) {
+    const display = await cs.display(c);
+    return !!display && filter.passes(display, false, cs.defLang());
   }
 
   async #passesSupplementFilters(cs, c, suppFilters) {
@@ -1747,7 +1766,7 @@ class ValueSetExpander {
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, prefetched);
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
-              if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passes(cc.code)) {
+              if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passesCode(cc.code)) {
                 let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
                 if (!ov) {
                   ov = await cs.itemWeight(cctxt.context);

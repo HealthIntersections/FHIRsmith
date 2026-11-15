@@ -7,6 +7,7 @@ const {Issue} = require("../library/operation-outcome");
 const {Extensions} = require("../library/extensions");
 const {BaseCSServices} = require("./cs-base");
 const regexUtilities = require("../../library/regex-utilities");
+const { NameIndex } = require("../library/text-match");
 
 // Symbol key under which resolved filter analysis is memoised directly on the
 // ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
@@ -22,63 +23,9 @@ const FILTER_ANALYSIS = Symbol('filterAnalysis');
 // The standard concept properties (http://hl7.org/fhir/concept-properties)
 const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
 
-// The texts of each concept as a text filter compares them, by concept. Folding is
-// the costly part of a search over a large code system, so it is done once per
-// concept, and dropped with the code system.
-const SEARCH_TEXTS = new WeakMap();
-
-/**
- * Lower case without accents, so "colera" finds "Cólera". Only marks on Latin, Greek and
- * Cyrillic letters are accents: in other scripts, such as kana or Devanagari, marks are
- * part of how a word is spelt, and dropping them would make "がん" find "かん".
- */
-function foldSearchText(text) {
-  return text.normalize('NFD')
-    .replace(/([\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])\p{M}+/gu, '$1')
-    .toLowerCase();
-}
-
-/**
- * A text as a text filter compares it: `text` folded, and `words` the same with each
- * run of other characters made one space and a space in front, so that " " + word
- * finds where a word starts.
- */
-function searchText(text) {
-  const folded = foldSearchText(text);
-  return { text: folded, words: ' ' + folded.replace(/[^\p{L}\p{N}]+/gu, ' ') };
-}
-
-function conceptSearchTexts(concept) {
-  let texts = SEARCH_TEXTS.get(concept);
-  if (texts === undefined) {
-    texts = {
-      code: foldSearchText(concept.code),
-      display: concept.display ? searchText(concept.display) : null,
-      definition: concept.definition ? foldSearchText(concept.definition) : null,
-      designations: Array.isArray(concept.designation)
-        ? concept.designation.filter(designation => designation.value)
-          .map(designation => ({ ...searchText(designation.value), language: designation.language || null }))
-        : []
-    };
-    SEARCH_TEXTS.set(concept, texts);
-  }
-  return texts;
-}
-
-/**
- * Whether every word starts a word of the text.
- */
-function startsWords(text, words) {
-  return words.every(word => text.words.includes(' ' + word));
-}
-
-/**
- * How much of the text the words cover, from 0 to 1, counting one space between words
- * whatever separated them in the search.
- */
-function wordsRatio(words, text) {
-  return Math.min(1, words.join(' ').length / text.text.length);
-}
+// The text index of each code system (text-match.js), built the first time it is searched, and
+// dropped with the code system: {size, promise of a NameIndex}
+const TEXT_INDEXES = new WeakMap();
 
 /**
  * Context class for FHIR CodeSystem provider concepts
@@ -1357,33 +1304,57 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
   }
   /**
-   * Execute text-based search filter
+   * Execute text-based search filter. The same rules as every provider's search (text-match.js):
+   * the concepts with a name (the display, or a designation) in the search language that has every
+   * word of the filter, or a code that starts with it; and those that a supplement in use gives a
+   * matching name (_supplementSearchCodes). Answered from the code system's text index, built the
+   * first time it is searched
    * @param {FilterExecutionContext} filterContext - Filter context
-   * @param {string} filter - Search text
+   * @param {SearchFilterText} filter - the filter
    * @param {boolean} sort - Whether to sort results by relevance
    * @returns {Promise<FhirCodeSystemProviderFilterContext>} Filter results
    */
   async searchFilter(filterContext, filter, sort) {
-    
-
     const results = new FhirCodeSystemProviderFilterContext();
-    const searchTerm = foldSearchText(filter.filter);
-    const searchWords = searchTerm.split(/[^\p{L}\p{N}]+/u).filter(word => word !== '');
-    // the display, definition and designations in one language only (see searchLanguage),
-    // with the designations that supplements in use give in that language
+    const query = filter.query;
+    // the display and designations in one language only (see searchLanguage)
     const lang = this.searchLanguage(filterContext.languages);
-
-    // Search through all concepts
     const allConcepts = this.codeSystem.getAllConcepts();
+    const index = await this.#textIndex(allConcepts);
+    this.opContext.deadCheck('cs:searchFilter');
 
-    for (const concept of allConcepts) {
-      this.opContext.deadCheck('cs:searchFilter');
-      const rating = this._calculateSearchRating(concept, searchTerm, searchWords, lang);
-      if (rating > 0) {
-        results.add(concept, rating);
+    const ratings = new Map(); // concept ordinal -> rating
+    for (const [ordinal, texts] of index.searchNames(query, lang)) {
+      const concept = allConcepts[ordinal];
+      let rating = 0;
+      for (const text of texts) {
+        // the display is the better match; a designation, a little less
+        const r = query.nameRank(text, lang) - (text === concept.display ? 0 : 10);
+        rating = Math.max(rating, r);
+      }
+      ratings.set(ordinal, Math.max(1, rating));
+    }
+    for (const ordinal of index.searchCodes(query)) {
+      ratings.set(ordinal, Math.max(ratings.get(ordinal) || 0, query.codeRank(allConcepts[ordinal].code)));
+    }
+    if (this.supplements && this.supplements.length > 0) {
+      const sources = new Map();
+      const supplementCodes = await this._supplementSearchCodes(filter, lang, sources);
+      if (supplementCodes.size > 0) {
+        for (let ordinal = 0; ordinal < allConcepts.length; ordinal++) {
+          const code = allConcepts[ordinal].code;
+          if (supplementCodes.has(code) && !ratings.has(ordinal)) {
+            ratings.set(ordinal, 10);
+            CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
+          }
+        }
       }
     }
 
+    // in the code system's order, unless sorted
+    for (const ordinal of [...ratings.keys()].sort((a, b) => a - b)) {
+      results.add(allConcepts[ordinal], ratings.get(ordinal));
+    }
     if (sort) {
       results.sort();
     }
@@ -1398,75 +1369,36 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
-   * Calculate search relevance rating for a concept
-   * @param {Object} concept - The concept to rate
-   * @param {string} searchTerm - The search term (folded: lower case, no accents)
-   * @param {string[]} searchWords - The words of the search term
-   * @returns {number} Rating (0 = no match, higher = better match)
-   * @private
+   * The text index of the code system: its concepts' displays (in its language) and designations
+   * (in theirs), and codes, keyed by the concept's place in getAllConcepts(). Built once, letting
+   * other work run while it is; built again if the concepts change
    */
-  _calculateSearchRating(concept, searchTerm, searchWords, lang = null) {
-    const all = conceptSearchTexts(concept);
-    let texts = all;
-    if (lang) {
+  async #textIndex(allConcepts) {
+    let entry = TEXT_INDEXES.get(this.codeSystem);
+    if (!entry || entry.size !== allConcepts.length) {
       const csLang = this.defLang();
-      const inLang = CodeSystemProvider.inSearchLanguage(csLang, lang);
-      texts = {
-        code: all.code,
-        display: inLang ? all.display : null,
-        definition: inLang ? all.definition : null,
-        designations: all.designations.filter(d => CodeSystemProvider.inSearchLanguage(d.language, lang, csLang))
-          .concat(this.#supplementSearchTexts(concept.code, lang))
-      };
-    }
-    const display = texts.display;
-    let rating = 0;
-
-    // Exact matches get highest rating
-    if (texts.code === searchTerm) {
-      rating = 100;
-    } else if (display && display.text === searchTerm) {
-      rating = 100;
-    }
-    // Code starts with search term
-    else if (texts.code.startsWith(searchTerm)) {
-      rating = 90;
-    }
-    // Display starts with search term
-    else if (display && display.text.startsWith(searchTerm)) {
-      const lengthRatio = searchTerm.length / display.text.length;
-      rating = 80 + (10 * lengthRatio);
-    }
-    // Code contains search term
-    else if (texts.code.includes(searchTerm)) {
-      rating = 60;
-    }
-    // Display contains search term
-    else if (display && display.text.includes(searchTerm)) {
-      rating = 50;
-    }
-    // Definition contains search term
-    else if (texts.definition && texts.definition.includes(searchTerm)) {
-      rating = 30;
-    }
-    // Check designations
-    else if (texts.designations.some(designation => designation.text.includes(searchTerm))) {
-      rating = 40;
-    }
-    // Each word of a search of several starts a word of the display, in any order;
-    // the shorter the display, the closer the match
-    else if (searchWords.length > 1 && display && startsWords(display, searchWords)) {
-      rating = 20 + (10 * wordsRatio(searchWords, display));
-    }
-    // Or of one designation
-    else if (searchWords.length > 1) {
-      const designation = texts.designations.find(designation => startsWords(designation, searchWords));
-      if (designation) {
-        rating = 10 + (10 * wordsRatio(searchWords, designation));
+      const index = new NameIndex();
+      for (let ordinal = 0; ordinal < allConcepts.length; ordinal++) {
+        const concept = allConcepts[ordinal];
+        index.addCode(ordinal, concept.code);
+        index.add(ordinal, csLang, concept.display);
+        for (const d of concept.designation || []) {
+          index.add(ordinal, d.language || csLang, d.value);
+        }
       }
+      entry = { size: allConcepts.length, promise: index.build() };
+      entry.promise.catch(() => TEXT_INDEXES.delete(this.codeSystem));
+      TEXT_INDEXES.set(this.codeSystem, entry);
     }
+    return await entry.promise;
+  }
 
-    return rating;
+  /**
+   * The code's own display, without what supplements give it
+   */
+  async _rootDisplay(code) {
+    const concept = this.codeSystem.getConceptByCode(code);
+    return concept ? concept.display || null : null;
   }
 
   /**
@@ -1495,27 +1427,6 @@ class FhirCodeSystemProvider extends BaseCSServices {
       }
     }
     return this._hasSupplementText(lang);
-  }
-
-  // the displays and designations that supplements in use give a code, in the search language
-  #supplementSearchTexts(code, lang) {
-    const result = [];
-    for (const supplement of this.supplements || []) {
-      const concept = supplement.getConceptByCode(code);
-      if (!concept) {
-        continue;
-      }
-      const suppLang = supplement.jsonObj.language || this.defLang();
-      if (concept.display && CodeSystemProvider.inSearchLanguage(suppLang, lang)) {
-        result.push(searchText(concept.display));
-      }
-      for (const d of concept.designation || []) {
-        if (d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, suppLang)) {
-          result.push(searchText(d.value));
-        }
-      }
-    }
-    return result;
   }
 
   /**

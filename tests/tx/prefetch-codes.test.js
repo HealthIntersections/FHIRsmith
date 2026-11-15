@@ -204,10 +204,16 @@ describe('CodeSystemProvider.prefetchCodes: the workers pass the handle back', (
       expect(res.status).toBe(200);
       expect(res.body.parameter.find(p => p.name === 'result').valueBoolean).toBe(false);
 
-      expect(prefetches().map(e => [e.prefetch, e.withDesignations])).toEqual([[codes, false]]);
-      const h = prefetches()[0].handle;
+      // the list is read together twice: to compare the listed codes with the one asked about
+      // (otherFormMatch), and, since the code isn't valid, to see whether the value set names
+      // codes the code system doesn't have (invalidContentMessages). Each time every listed code
+      // is located from that read's handle, never one at a time
+      expect(prefetches().map(e => [e.prefetch, e.withDesignations])).toEqual([[codes, false], [codes, false]]);
+      for (const { handle } of prefetches()) {
+        expect(locates().filter(e => e.handle === handle)).toEqual(codes.map(locate => ({ locate, handle })));
+      }
+      expect(locates().filter(e => codes.includes(e.locate)).every(e => e.handle !== null)).toBe(true);
       // 'other' (the code asked about) isn't in the list: it is located as usual
-      expect(locates().filter(e => codes.includes(e.locate))).toEqual(codes.map(locate => ({ locate, handle: h })));
       expect(locates().filter(e => e.locate === 'other').every(e => e.handle === null)).toBe(true);
     } finally {
       spy.mockRestore();

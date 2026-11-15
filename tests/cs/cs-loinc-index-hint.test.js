@@ -51,7 +51,8 @@ describe('LOINC factory: the idx_codes_description hint', () => {
 
   beforeEach(() => {
     warnings = [];
-    jest.spyOn(Logger.getInstance(), 'child').mockReturnValue({ warn: (m) => warnings.push(m) });
+    // only this hint: these databases have no text index either, which has a hint of its own
+    jest.spyOn(Logger.getInstance(), 'child').mockReturnValue({ warn: (m) => { if (m.includes('idx_codes_description')) warnings.push(m); } });
   });
 
   afterEach(() => {

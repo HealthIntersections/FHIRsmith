@@ -379,11 +379,12 @@ class ValueSetChecker {
    * @returns {Promise<string[]>} the messages, in the order the includes give them
    */
   /**
-   * Whether a code is in the code system (a provider that can't say - it fails - is taken as no)
+   * Whether a code is in the code system (a provider that can't say - it fails - is taken as no).
+   * `prefetched`: the handle of a prefetchCodes for a list the code is in
    */
-  async codeKnown(cs, code) {
+  async codeKnown(cs, code, prefetched = null) {
     try {
-      const loc = await cs.locate(code);
+      const loc = await cs.locate(code, prefetched);
       return !!(loc && loc.context);
     } catch (e) {
       return false;
@@ -418,8 +419,11 @@ class ValueSetChecker {
         continue;
       }
       const system = cs.version() ? cs.system() + '|' + cs.version() : cs.system();
-      for (const c of storedList(cc) ? [] : (cc.concept || [])) {
-        if (!(await this.codeKnown(cs, c.code))) {
+      const listed = storedList(cc) ? [] : (cc.concept || []);
+      // the listed codes are located together: a provider may read them together (prefetchCodes)
+      const prefetched = listed.length > 0 ? await cs.prefetchCodes(listed.map(c => c.code), false) : null;
+      for (const c of listed) {
+        if (!(await this.codeKnown(cs, c.code, prefetched))) {
           res.push(this.worker.i18n.translate('VALUESET_EXPANSION_INCLUDE_UNKNOWN_CODE_ERROR', this.params.HTTPLanguages, [c.code, system]));
         }
       }

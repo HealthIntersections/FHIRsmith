@@ -97,6 +97,38 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-enum-bad"}, "4.0");
   });
 
+  it("simple-expand-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-enum-invalid"}, "5.0");
+  });
+
+  it("simple-expand-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-enum-invalid"}, "4.0");
+  });
+
+  it("simple-expand-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-isa-invalid"}, "5.0");
+  });
+
+  it("simple-expand-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-isa-invalid"}, "4.0");
+  });
+
+  it("simple-validate-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-enum-invalid"}, "5.0");
+  });
+
+  it("simple-validate-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-enum-invalid"}, "4.0");
+  });
+
+  it("simple-validate-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-isa-invalid"}, "5.0");
+  });
+
+  it("simple-validate-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-isa-invalid"}, "4.0");
+  });
+
   it("simple-expand-isa" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-isa"}, "5.0");
   });
@@ -6024,6 +6056,30 @@ describe('search', () => {
     await runTest({"suite":"search","test":"search-all-supplement-fr-no-language"}, "4.0");
   });
 
+  it("search-lang-supplement-display" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-display"}, "5.0");
+  });
+
+  it("search-lang-supplement-display" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-display"}, "4.0");
+  });
+
+  it("search-lang-supplement-only" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-only"}, "5.0");
+  });
+
+  it("search-lang-supplement-only" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-only"}, "4.0");
+  });
+
+  it("search-lang-own" + 'R5', async () => {
+    await runTest({"suite":"search","test":"search-lang-own"}, "5.0");
+  });
+
+  it("search-lang-own" + 'R4', async () => {
+    await runTest({"suite":"search","test":"search-lang-own"}, "4.0");
+  });
+
 });
 
 describe('default-valueset-version', () => {
@@ -6525,6 +6581,70 @@ describe('loinc', () => {
 
   it("loinc-expand-enum-bad" + 'R4', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-enum-bad"}, "4.0");
+  });
+
+  it("loinc-expand-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid"}, "5.0");
+  });
+
+  it("loinc-expand-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid"}, "4.0");
+  });
+
+  it("loinc-expand-enum-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-expand-enum-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid-check-digit"}, "4.0");
+  });
+
+  it("loinc-expand-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid"}, "5.0");
+  });
+
+  it("loinc-expand-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid"}, "4.0");
+  });
+
+  it("loinc-expand-isa-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-expand-isa-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid-check-digit"}, "4.0");
+  });
+
+  it("loinc-validate-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid"}, "5.0");
+  });
+
+  it("loinc-validate-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid"}, "4.0");
+  });
+
+  it("loinc-validate-enum-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-validate-enum-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid-check-digit"}, "4.0");
+  });
+
+  it("loinc-validate-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid"}, "5.0");
+  });
+
+  it("loinc-validate-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid"}, "4.0");
+  });
+
+  it("loinc-validate-isa-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-validate-isa-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid-check-digit"}, "4.0");
   });
 
   it("loinc-expand-status" + 'R5', async () => {
@@ -7282,6 +7402,70 @@ describe('snomed', () => {
 
   it("snomed-expand-inactive" + 'R4', async () => {
     await runTest({"suite":"snomed","test":"snomed-expand-inactive"}, "4.0");
+  });
+
+  it("snomed-expand-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid"}, "5.0");
+  });
+
+  it("snomed-expand-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid"}, "4.0");
+  });
+
+  it("snomed-expand-enum-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-expand-enum-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid-check-digit"}, "4.0");
+  });
+
+  it("snomed-expand-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid"}, "5.0");
+  });
+
+  it("snomed-expand-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid"}, "4.0");
+  });
+
+  it("snomed-expand-isa-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-expand-isa-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid-check-digit"}, "4.0");
+  });
+
+  it("snomed-validate-enum-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid"}, "5.0");
+  });
+
+  it("snomed-validate-enum-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid"}, "4.0");
+  });
+
+  it("snomed-validate-enum-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-validate-enum-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid-check-digit"}, "4.0");
+  });
+
+  it("snomed-validate-isa-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid"}, "5.0");
+  });
+
+  it("snomed-validate-isa-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid"}, "4.0");
+  });
+
+  it("snomed-validate-isa-invalid-check-digit" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-validate-isa-invalid-check-digit" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid-check-digit"}, "4.0");
   });
 
   it("snomed-expand-isa" + 'R5', async () => {
@@ -14392,6 +14576,22 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-enum-bad"}, "5.0");
   });
 
+  it("simple-expand-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-enum-invalid"}, "5.0");
+  });
+
+  it("simple-expand-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-isa-invalid"}, "5.0");
+  });
+
+  it("simple-validate-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-enum-invalid"}, "5.0");
+  });
+
+  it("simple-validate-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-isa-invalid"}, "5.0");
+  });
+
   it("simple-expand-isa" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-isa"}, "5.0");
   });
@@ -17439,6 +17639,18 @@ describe('search', () => {
     await runTest({"suite":"search","test":"search-all-supplement-fr-no-language"}, "5.0");
   });
 
+  it("search-lang-supplement-display" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-display"}, "5.0");
+  });
+
+  it("search-lang-supplement-only" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-lang-supplement-only"}, "5.0");
+  });
+
+  it("search-lang-own" + 'R5-cached', async () => {
+    await runTest({"suite":"search","test":"search-lang-own"}, "5.0");
+  });
+
 });
 
 describe('default-valueset-version', () => {
@@ -17696,6 +17908,38 @@ describe('loinc', () => {
 
   it("loinc-expand-enum-bad" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-expand-enum-bad"}, "5.0");
+  });
+
+  it("loinc-expand-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid"}, "5.0");
+  });
+
+  it("loinc-expand-enum-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-expand-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid"}, "5.0");
+  });
+
+  it("loinc-expand-isa-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-expand-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-validate-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid"}, "5.0");
+  });
+
+  it("loinc-validate-enum-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("loinc-validate-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid"}, "5.0");
+  });
+
+  it("loinc-validate-isa-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-validate-isa-invalid-check-digit"}, "5.0");
   });
 
   it("loinc-expand-status" + 'R5-cached', async () => {
@@ -18077,6 +18321,38 @@ describe('snomed', () => {
 
   it("snomed-expand-inactive" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"snomed-expand-inactive"}, "5.0");
+  });
+
+  it("snomed-expand-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid"}, "5.0");
+  });
+
+  it("snomed-expand-enum-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-expand-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid"}, "5.0");
+  });
+
+  it("snomed-expand-isa-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-validate-enum-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid"}, "5.0");
+  });
+
+  it("snomed-validate-enum-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-validate-isa-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid"}, "5.0");
+  });
+
+  it("snomed-validate-isa-invalid-check-digit" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid-check-digit"}, "5.0");
   });
 
   it("snomed-expand-isa" + 'R5-cached', async () => {

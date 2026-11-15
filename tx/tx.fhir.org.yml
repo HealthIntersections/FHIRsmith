@@ -19,9 +19,9 @@ sources:
   - internal:urls
   - internal:hgvs
   - ucum:tx/data/ucum-essence.xml
-  - loinc:loinc-2.77-a.db
-  - loinc!:Loinc_2.83d.db
-  - rxnorm:rxnorm_20261005.cache
+  - loinc:loinc-2.77-c.db
+  - loinc!:Loinc_2.83f.db
+  - rxnorm:rxnorm_20261005-a.cache
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
   - snomed:sct_intl_20250201.cache
@@ -44,7 +44,7 @@ sources:
   - npm:hl7.fhir.uv.sdc=sdc
   - npm:hl7.fhir.uv.ips=ips
   - internal:vsac=vsac
-  - icd11:icd11-2026-01-b.db
+  - icd11:icd11-2026-01-c.db
 
 ignored:
   - urn:iso:std:iso:3166#20210120
