@@ -1,6 +1,6 @@
 const { LanguagePartType, Languages, Language, LanguageDefinitions} = require('../../library/languages');
 const {validateParameter, validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
-const natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
+const { TextQuery, words, stem, languageOf } = require('./text-match');
 /**
  * Display checking modes for concept designations
  */
@@ -17,101 +17,77 @@ const allowedDesignationExtensions = [
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status',
   'http://hl7.org/fhir/StructureDefinition/codesystem-alternate'
 ];
+
 /**
- * Text search filter with stemming support
+ * A text filter ($expand filter=...). The rules are TextQuery's (text-match.js), which every
+ * provider follows: a name matches when it has every word of the filter (the start of one of its
+ * words, or the same stem in the name's language; stop words aside), a code when it starts with
+ * the filter. `query` is the TextQuery, for providers that search an index
  */
 class SearchFilterText {
   constructor(filter) {
     validateOptionalParameter(filter, 'filter', String);
 
     this.filter = filter ? filter.toLowerCase() : null;
-    this.stems = [];
-    // The words the stems came from, index-aligned with stems. A provider whose text
-    // index cannot hold a particular token (RxNorm's stem table has nothing that starts
-    // with a digit, for one) needs the word itself to search the text with instead.
-    this.words = [];
-    this.stemmer = natural.PorterStemmer;
-    if (filter) {
-      this._process();
-    }
+    this.query = new TextQuery(filter || '');
+    // The words of the filter as searched in English, and their stems, index-aligned, sorted
+    // by stem (matches() binary searches them)
+    const found = this.query.tokens('en').map(t => ({ word: t.word, stem: t.stem }));
+    found.sort((a, b) => (a.stem < b.stem ? -1 : (a.stem > b.stem ? 1 : 0)));
+    this.stems = found.map((f) => f.stem);
+    this.words = found.map((f) => f.word);
   }
 
   /**
    * Check if filter is empty
    */
   get isNull() {
-    return this.stems.length === 0;
+    return this.query.isNull;
   }
 
   /**
-   * Check if a value passes the filter
+   * Whether a name (a display or designation, in language lang) passes the filter: it has every
+   * word of the filter (TextQuery.nameMatches). With returnRating, {passes, rating}
+   * (TextQuery.nameRank)
    */
-  passes(value, returnRating = false) {
+  passes(value, returnRating = false, lang = 'en') {
     validateParameter(value, 'value', String);
     validateOptionalParameter(returnRating, 'returnRating', Boolean);
 
     if (this.isNull) {
       return returnRating ? {passes: true, rating: 0} : true;
     }
-
-    let rating = 0;
-    let i = 0;
-
-    while (i < value.length) {
-      if (this._isAlphaNumeric(value[i])) {
-        const j = i;
-        while (i < value.length && this._isAlphaNumeric(value[i])) {
-          i++;
-        }
-        const word = value.substring(j, i).toLowerCase();
-        const stemmed = this.stemmer.stem(word);
-
-        if (this._find(stemmed)) {
-          if (returnRating) {
-            rating += value.length / this.stems.length;
-            return {passes: true, rating};
-          } else {
-            return true;
-          }
-        }
-      } else {
-        i++;
-      }
+    if (returnRating) {
+      const rating = this.query.nameRank(value, lang);
+      return { passes: rating > 0, rating };
     }
-
-    return returnRating ? {passes: false, rating: 0} : false;
+    return this.query.nameMatches(value, lang);
   }
 
   /**
-   * Whether every word of the filter is in the value, a word matching as in passes() (its
-   * stem starts with the filter word's stem). passes() needs only one word
+   * The same as passes (once, passes needed only one word of the filter)
    */
-  passesAll(value) {
-    validateParameter(value, 'value', String);
-
-    if (this.isNull) {
-      return true;
-    }
-
-    const stems = [];
-    let i = 0;
-    while (i < value.length) {
-      if (this._isAlphaNumeric(value[i])) {
-        const j = i;
-        while (i < value.length && this._isAlphaNumeric(value[i])) {
-          i++;
-        }
-        stems.push(this.stemmer.stem(value.substring(j, i).toLowerCase()));
-      } else {
-        i++;
-      }
-    }
-    return this.stems.every(filterStem => stems.some(stem => stem.startsWith(filterStem)));
+  passesAll(value, lang = 'en') {
+    return this.passes(value, false, lang);
   }
 
   /**
-   * Check if designations pass the filter
+   * Whether a code passes the filter: it starts with it
    */
+  passesCode(code) {
+    return this.isNull || this.query.codeMatches(code);
+  }
+
+  /**
+   * The stems of the words of a text, in a language (text-match.js)
+   * @param {string} value
+   * @param {string} [lang]
+   * @returns {string[]}
+   */
+  static stemsOf(value, lang = 'en') {
+    return words(value).map(w => stem(w, lang));
+  }
+
   /**
    * Whether any of the designations passes the filter. With a search language (see
    * CodeSystemProvider.searchLanguage), only designations in that language take part,
@@ -127,8 +103,13 @@ class SearchFilterText {
 
     if (!cds) return false;
 
+    const wanted = searchLang ? languageOf(searchLang) : null;
     for (const cd of cds.designations) {
-      if (cd.value && (!searchLang || SearchFilterText.#languageOf(cd.language, fallback) === searchLang.language) && this.passes(cd.value)) {
+      if (!cd.value) {
+        continue;
+      }
+      const lang = SearchFilterText.#languageOf(cd.language, fallback);
+      if ((!wanted || lang === wanted) && this.passes(cd.value, false, lang)) {
         return true;
       }
     }
@@ -139,10 +120,7 @@ class SearchFilterText {
     if (lang && lang.language) {
       return lang.language;
     }
-    if (typeof lang === 'string' && lang) {
-      return lang.split('-')[0].toLowerCase();
-    }
-    return (fallback || 'en').split('-')[0].toLowerCase();
+    return languageOf(typeof lang === 'string' ? lang : null, fallback || 'en');
   }
 
   /**
@@ -176,57 +154,6 @@ class SearchFilterText {
     }
 
     return result;
-  }
-
-  // Private methods
-
-  _process() {
-    let i = 0;
-    const found = [];
-
-    while (i < this.filter.length) {
-      if (this._isAlphaNumeric(this.filter[i])) {
-        const j = i;
-        while (i < this.filter.length && this._isAlphaNumeric(this.filter[i])) {
-          i++;
-        }
-        const word = this.filter.substring(j, i).toLowerCase();
-        found.push({ word: word, stem: this.stemmer.stem(word) });
-      } else {
-        i++;
-      }
-    }
-
-    // Sorted by stem, because _find() binary searches stems - words ride along so that
-    // words[n] is always the word stems[n] came from.
-    found.sort((a, b) => (a.stem < b.stem ? -1 : (a.stem > b.stem ? 1 : 0)));
-    this.stems = found.map((f) => f.stem);
-    this.words = found.map((f) => f.word);
-  }
-
-  _isAlphaNumeric(char) {
-    return /[0-9a-zA-Z]/.test(char);
-  }
-
-  _find(stem) {
-    // Binary search
-    let left = 0;
-    let right = this.stems.length - 1;
-
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2);
-      const midStem = this.stems[mid];
-
-      if (stem.startsWith(midStem)) {
-        return true;
-      } else if (stem < midStem) {
-        right = mid - 1;
-      } else {
-        left = mid + 1;
-      }
-    }
-
-    return false;
   }
 }
 

@@ -141,6 +141,29 @@ const SCHEMA = `
     outcome     TEXT NOT NULL
   );
 
+  -- what the SHL viewer retrieved (viewer.js): the link, the log of what it did, the documents.
+  -- Kept for a while (modules.ips.viewer.keepMinutes), so the page can be looked at again and a
+  -- document added to a project without fetching it again; then dropped
+  CREATE TABLE IF NOT EXISTS shl_views (
+    token       TEXT PRIMARY KEY,   -- random: the page's address
+    created_ms  INTEGER NOT NULL,
+    expires_ms  INTEGER NOT NULL,
+    link        TEXT NOT NULL,      -- what was given: the viewer URL, shlink or HC1
+    json        TEXT NOT NULL       -- the result: state, payload, vhl, documents, trace, added
+  );
+
+  -- how long each processing step took, for the averages on the queue page: one row per step
+  -- that did its work (not one that failed, or was skipped); the most recent are kept
+  CREATE TABLE IF NOT EXISTS step_timings (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    step    TEXT NOT NULL,
+    doc_id  INTEGER NOT NULL,   -- no foreign key: the time still counts after the document is deleted
+    at_ms   INTEGER NOT NULL,
+    ms      INTEGER NOT NULL,
+    size    INTEGER NOT NULL    -- the document's size, as stored (bytes)
+  );
+  CREATE INDEX IF NOT EXISTS idx_step_timings_step ON step_timings(step, id);
+
   CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_ms);
   CREATE INDEX IF NOT EXISTS idx_pipeline_runs_running ON pipeline_runs(outcome, doc_id);
   CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id, id);
@@ -184,6 +207,11 @@ function summaryOf(bundle) {
     comp_title: str(comp?.title, 300)
   };
 }
+
+// the step averages on the queue page are over each step's most recent runs: this many
+const STEP_TIMINGS_SAMPLE = 100;
+// and this many are kept
+const STEP_TIMINGS_KEPT = 1000;
 
 /** A national_profiles row, as the store gives it. */
 function nationalProfileOf(r) {
@@ -650,6 +678,78 @@ class IpsStore {
     })();
   }
 
+  // ---- the SHL viewer ----
+
+  /** Keep (or replace) what the viewer retrieved; drops the ones that have expired. */
+  saveView(token, link, result, keepMs, nowMs = Date.now()) {
+    this.db.prepare('DELETE FROM shl_views WHERE expires_ms <= ?').run(nowMs);
+    const existing = this.db.prepare('SELECT created_ms FROM shl_views WHERE token = ?').get(token);
+    this.db.prepare('INSERT OR REPLACE INTO shl_views (token, created_ms, expires_ms, link, json) VALUES (?, ?, ?, ?, ?)')
+      .run(token, existing ? existing.created_ms : nowMs, nowMs + keepMs, link, JSON.stringify(result));
+  }
+
+  /** @returns {{token: string, created: string, expires: string, link: string, result: Object}|null} unless it has expired */
+  readView(token, nowMs = Date.now()) {
+    const r = this.db.prepare('SELECT token, created_ms, expires_ms, link, json FROM shl_views WHERE token = ? AND expires_ms > ?').get(token, nowMs);
+    return r ? { token: r.token, created: new Date(r.created_ms).toISOString(), expires: new Date(r.expires_ms).toISOString(), link: r.link, result: JSON.parse(r.json) } : null;
+  }
+
+  /**
+   * The documents (in any project) with the same Bundle.identifier - the same document, as
+   * far as can be told.
+   * @returns {Array<{id: number, project_code: string, project_name: string}>}
+   */
+  findByIdentifier(system, value) {
+    return this.db.prepare(`SELECT d.id, p.code AS project_code, p.name AS project_name FROM documents d JOIN projects p ON p.id = d.project_id
+      WHERE json_extract(d.json, '$.identifier.value') = ? AND json_extract(d.json, '$.identifier.system') IS ? ORDER BY d.id`)
+      .all(value, system === undefined ? null : system);
+  }
+
+  /**
+   * Record how long a step took with a document; only the most recent STEP_TIMINGS_KEPT
+   * of each step are kept.
+   */
+  recordStepTime(step, docId, ms, size, nowMs = Date.now()) {
+    this.db.prepare('INSERT INTO step_timings (step, doc_id, at_ms, ms, size) VALUES (?, ?, ?, ?, ?)').run(step, docId, nowMs, Math.max(0, Math.round(ms)), Math.max(0, size || 0));
+    this.db.prepare(`DELETE FROM step_timings WHERE step = ? AND id <= (SELECT id FROM step_timings WHERE step = ? ORDER BY id DESC LIMIT 1 OFFSET ${STEP_TIMINGS_KEPT})`).run(step, step);
+  }
+
+  /**
+   * How long each step takes: over its most recent `sample` runs, the average time, and the
+   * time per KB of document (all the time over all the KB, so big documents count for what
+   * they are).
+   * @returns {Object<string, {runs: number, avgMs: number, msPerKb: number|null, last: string}>} by step
+   */
+  stepTimings(sample = STEP_TIMINGS_SAMPLE) {
+    const out = {};
+    const rows = this.db.prepare(`SELECT step, COUNT(*) AS n, AVG(ms) AS avg_ms, SUM(ms) AS total_ms, SUM(size) AS total_bytes, MAX(at_ms) AS last_ms
+      FROM (SELECT step, ms, size, at_ms, ROW_NUMBER() OVER (PARTITION BY step ORDER BY id DESC) AS rn FROM step_timings) WHERE rn <= ? GROUP BY step`).all(sample);
+    for (const r of rows) {
+      out[r.step] = {
+        runs: r.n,
+        avgMs: r.avg_ms,
+        msPerKb: r.total_bytes > 0 ? r.total_ms / (r.total_bytes / 1024) : null,
+        last: new Date(r.last_ms).toISOString()
+      };
+    }
+    return out;
+  }
+
+  /**
+   * The processing queue, for its page: the document being processed (if any), then the
+   * documents waiting, in the order they will be taken (oldest first, as claimNext does).
+   * @param {number} [limit] - the most waiting documents to list
+   * @returns {{processing: Array<Object>, waiting: Array<Object>, waitingTotal: number}}
+   */
+  queue(limit = 200) {
+    const cols = 'd.id, d.project_id, p.code AS project_code, p.name AS project_name, d.status, d.received, d.source, d.size, d.patient_name, d.comp_title';
+    const from = 'FROM documents d JOIN projects p ON p.id = d.project_id';
+    const processing = this.db.prepare(`SELECT ${cols} ${from} WHERE d.status = 'processing' ORDER BY d.id`).all();
+    const waiting = this.db.prepare(`SELECT ${cols} ${from} WHERE d.status = 'submitted' ORDER BY d.id LIMIT ?`).all(limit);
+    const waitingTotal = this.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'submitted'").get().n;
+    return { processing, waiting, waitingTotal };
+  }
+
   /**
    * Record the outcome of processing a document: ok, the pipeline finished (the document
    * is processed); not ok, it failed (the document is in error).
@@ -759,4 +859,4 @@ class IpsStore {
   }
 }
 
-module.exports = { IpsStore, summaryOf, nameText, MAX_PAGE_BYTES };
+module.exports = { STEP_TIMINGS_SAMPLE, IpsStore, summaryOf, nameText, MAX_PAGE_BYTES };

@@ -67,7 +67,9 @@ class ShlClient {
     this.log = options.log || null;
     this.password = config.password;
     this.days = Number.isInteger(config.days) && config.days > 0 ? config.days : DEFAULT_DAYS;
-    this.viewer = typeof config.viewer === 'string' && config.viewer ? config.viewer : DEFAULT_VIEWER;
+    // the viewer the QR opens: the configured one, else the one share() is given (this
+    // server's own, usually), else viewer.tcpdev.org
+    this.viewer = typeof config.viewer === 'string' && config.viewer ? config.viewer : null;
     this.timeoutMs = Number.isInteger(config.timeoutMs) && config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
   }
 
@@ -126,7 +128,7 @@ class ShlClient {
    * Share a document.
    *
    * @param {Object} bundle - the document
-   * @param {{kind: 'shl'|'vhl', host?: string, label?: string, days?: number}} options
+   * @param {{kind: 'shl'|'vhl', host?: string, label?: string, days?: number, viewer?: string}} options
    * @returns {Promise<{kind: string, link: string, qr: string, text: string, expires: string, bytes: number}>}
    *   link: the SHL server's link to the manifest; qr: the QR code as SVG; text: what the QR
    *   carries (the viewer link with the shlink, or HC1:...)
@@ -160,7 +162,7 @@ class ShlClient {
       }
       text = `HC1:${signed.signature}`;
     } else {
-      text = `${this.viewer}shlink:/${encoded}`;
+      text = `${this.viewer || options.viewer || DEFAULT_VIEWER}shlink:/${encoded}`;
     }
     const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     return { kind, link: created.link, qr: qrSvg(text), text, expires, bytes: jwe.length };

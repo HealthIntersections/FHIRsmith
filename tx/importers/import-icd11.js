@@ -27,6 +27,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const { Command } = require('commander');
 const terminal = require('./terminal');
+const { buildTextIndex } = require('./icd11-text-index');
 
 const TOOL_VERSION = '1.0.0';
 const WHO = 'http://id.who.int';
@@ -850,6 +851,9 @@ class Icd11Importer {
 
     this.stmt.setMeta.run('importFinished', now());
     this.stmt.setMeta.run('httpRequests', String(this.fetcher.count));
+    // what a text filter searches (icd11-text-index.js)
+    this.log(`\ntext index...`);
+    this.log(`  ${buildTextIndex(this.db, (msg) => this.log(msg)).toLocaleString()} names`);
     this.log(`\noptimising...`);
     this.db.exec('PRAGMA optimize; VACUUM; ANALYZE;');
 
@@ -872,7 +876,7 @@ function main(argv) {
   program
     .name('import-icd11')
     .description('Build a SQLite database of ICD-11 content from the WHO ICD-API')
-    .requiredOption('-n, --native <url>', 'native ICD-API endpoint, eg https://id.who.int')
+    .option('-n, --native <url>', 'native ICD-API endpoint, eg https://id.who.int (required, but for --text-index-only)')
     .option('-f, --fhir <url>', 'FHIR endpoint, used for release metadata and the $lookup sample')
     .requiredOption('-d, --dest <file>', 'destination SQLite database')
     .option('-s, --systems <list>', 'which code systems to import', 'mms,icf,foundation')
@@ -885,10 +889,36 @@ function main(argv) {
     .option('--retries <n>', 'retries per request', v => parseInt(v, 10), 4)
     .option('--timeout <ms>', 'request timeout', v => parseInt(v, 10), 90000)
     .option('--overwrite', 'delete any existing database first', false)
+    .option('--text-index-only', 'only (re)build the text index of an existing database (icd11-text-index.js)', false)
     .option('--verbose', 'more logging', false);
 
   program.parse(argv);
-  return new Icd11Importer(program.opts()).run();
+  const opts = program.opts();
+  if (opts.textIndexOnly) {
+    return rebuildTextIndex(opts.dest);
+  }
+  if (!opts.native) {
+    program.error("error: required option '-n, --native <url>' not specified");
+  }
+  return new Icd11Importer(opts).run();
+}
+
+/**
+ * Rebuild the text index of an existing database in place, without crawling again. Run it while
+ * no server has the file open
+ */
+async function rebuildTextIndex(dest) {
+  if (!fs.existsSync(dest)) {
+    throw new Error(`database not found: ${dest}`);
+  }
+  const db = new Database(dest);
+  try {
+    const t0 = Date.now();
+    const count = buildTextIndex(db, (msg) => terminal.log(msg));
+    terminal.log(`text index rebuilt: ${count.toLocaleString()} names, in ${fmtDuration(Date.now() - t0)}`);
+  } finally {
+    db.close();
+  }
 }
 
 if (require.main === module) {

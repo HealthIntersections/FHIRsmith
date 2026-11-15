@@ -56,6 +56,22 @@ describe('the analysis', () => {
     expect(out2.counts).toMatchObject({ extensions: 5, notFound: 3 });
   });
 
+  test('a primitive with an extension instead of a value', async () => {
+    const DAR = 'http://hl7.org/fhir/StructureDefinition/data-absent-reason';
+    const d = doc(section(['o']), entry({ resourceType: 'Observation', id: 'o', status: 'final', subject: { reference: 'urn:uuid:p' },
+      _effectiveDateTime: { extension: [{ url: DAR, valueCode: 'unknown' }] },
+      // a value and an extension: fine
+      issued: '2026-01-01T00:00:00Z', _issued: { extension: [{ url: 'http://x.org/e' }] },
+      // only an id: not an extension
+      _status: { id: 's1' } }));
+    d.entry[1].resource.name = [{ given: ['Jo', null], _given: [null, { extension: [{ url: DAR, valueCode: 'masked' }] }] }];
+    const out = await analyseDocument(d, { now: NOW });
+    const missing = (fs) => fs.filter(f => /^There is no value/.test(f.text || '')).map(f => f.text);
+    expect(missing(out.items.e1)).toEqual([`There is no value at "Patient.name[0].given[1]" - instead, the extension ${DAR} is found. Check that this is truly necessary - such values are often misinterpreted`]);
+    expect(missing(out.items.e3)).toEqual([`There is no value at "Observation.effectiveDateTime" - instead, the extension ${DAR} is found. Check that this is truly necessary - such values are often misinterpreted`]);
+    expect(out.items.e3.find(f => /^There is no value/.test(f.text || '')).kind).toBe('attention');
+  });
+
   test('implicitRules, inactive, entered in error, unknown and missing status', async () => {
     const out = await analyseDocument(doc(section(['a', 'b', 'c', 'd', 'e']),
       entry({ resourceType: 'Observation', id: 'a', implicitRules: 'http://x.org/rules', status: 'final', subject: { reference: 'urn:uuid:p' } }),
@@ -197,7 +213,7 @@ describe('the analysis', () => {
       expect(kinds(out.items.e0)).toEqual(['error', 'negation', 'narrative']);
       // a version that isn't an edition (a date) doesn't say which edition
       expect(texts(out.items.e0)[0]).toBe('2 SNOMED CT codes do not say which edition they are from (38341003 Hypertension, 73211009 Diabetes mellitus), ' +
-        'and the nationality of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed');
+        'and the jurisdiction of the document is unknown, so the edition cannot be worked out. The International Edition of SNOMED CT is assumed');
       expect(out.counts.ok).toBe(Object.values(out.items).filter(fs => fs[0].kind === 'ok').length);
     });
 

@@ -95,3 +95,38 @@ describe('RxNorm text search', () => {
     expect(q.params.stem0).toBe('acetam%');
   });
 });
+
+// A database with the text index (RXNTEXT: rxnorm-text-index.js) is searched by the rules every
+// provider's search follows (text-match.js): one MATCH for all the words, numbers too, and the
+// codes that start with the filter
+describe('RxNorm text search, with the text index', () => {
+  let indexed;
+  beforeAll(async () => {
+    const i18n = await TestUtilities.loadTranslations(await TestUtilities.loadLanguageDefinitions());
+    indexed = new RxNormServices(new OperationContext('en', i18n), [], null,
+      { version: 'test', rels: [], reltypes: [], totalCodeCount: 0, textIndex: true });
+  });
+
+  async function indexedQueryFor(text) {
+    const prep = await indexed.getPrepContext(true);
+    await indexed.searchFilter(prep, new SearchFilterText(text), false);
+    const set = await indexed.executeFilters(prep);
+    expect(set).toHaveLength(1);
+    return set[0];
+  }
+
+  test('every word in one MATCH, numbers too, or a code that starts with the filter', async () => {
+    const q = await indexedQueryFor('acetaminophen 500');
+    expect(q.sql).toContain('IN (SELECT cui FROM RXNTEXT WHERE RXNTEXT MATCH $text0)');
+    expect(q.sql).not.toContain('rxnstems');
+    expect(Object.values(q.params)).toContain('(words : "acetaminophen"* OR stems : "acetaminophen") AND (words : "500"* OR stems : "500")');
+    expect(q.sql).toContain('rxnconso.RXCUI >= $codeLow0_0');
+    expect(boundNames(q).missing).toEqual([]);
+  });
+
+  test('punctuation alone matches nothing but codes', async () => {
+    const q = await indexedQueryFor('-');
+    expect(q.sql).not.toContain('MATCH');
+    expect(boundNames(q).missing).toEqual([]);
+  });
+});

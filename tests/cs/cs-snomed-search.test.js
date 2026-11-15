@@ -24,8 +24,12 @@ describe('SNOMED text search', () => {
           ['fracture', 'of', 'shaft', 'of', 'tibia', 'disorder']);
     });
 
-    test('drops stop words and single characters', () => {
+    test('drops stop words', () => {
       expect(filterTokens('fracture of the T6 a')).toEqual(['fracture', 't6']);
+    });
+
+    test('keeps single letters and digits (they match whole words)', () => {
+      expect(filterTokens('hepatitis b')).toEqual(['hepatitis', 'b']);
     });
 
     test('keeps stop words when the filter is nothing else', () => {
@@ -36,8 +40,8 @@ describe('SNOMED text search', () => {
       expect(filterTokens('right right lymph node')).toEqual(['right', 'lymph', 'node']);
     });
 
-    test('yields nothing indexable for a single character', () => {
-      expect(filterTokens('a')).toEqual([]);
+    test('a stop word alone is kept', () => {
+      expect(filterTokens('a')).toEqual(['a']);
     });
   });
 
@@ -90,12 +94,25 @@ describe('SNOMED text search', () => {
       expect(await search('appendicitis fever')).toEqual([]);
     });
 
-    test('prefix-matches the last word only', async () => {
+    test('every word can be the start of a word', async () => {
       // "append" is still being typed, so it reaches Appendicitis
       expect(await search('append')).toContain('74400008');
-      // but a completed word is not a prefix: "liver pain" must not be
-      // reachable as "live pain"
-      expect(await search('live pain')).toEqual([]);
+      expect(await search('fract tib')).toContain('6990005'); // Fracture of shaft of tibia
+    });
+
+    test('every word has to be in one description', async () => {
+      // 1059007 is "Opisthorchiasis" and "Cat liver fluke infection": both words are the
+      // concept's, but no one description has them both
+      const index = await sct.getTextIndex(null);
+      const query = new SearchFilterText('opisthorchiasis liver').query;
+      expect(index.search(query.tokens('en')).length).toBeGreaterThan(0);
+      expect(await search('opisthorchiasis liver')).not.toContain('1059007');
+      expect(await search('liver fluke')).toContain('1059007');
+    });
+
+    test('finds a concept by its identifier', async () => {
+      expect((await search('74400008'))[0]).toBe('74400008');
+      expect(await search('7440000')).toContain('74400008');
     });
 
     test('ranks an exact term first', async () => {

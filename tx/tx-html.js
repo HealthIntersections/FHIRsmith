@@ -21,7 +21,7 @@ const {ParametersXML} = require("./xml/parameters-xml");
 const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
 const {debugLog} = require("./operation-context");
 const {InvalidError} = require("./library/errors");
-const {VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES} = require("./library/renderer");
+const {VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES, MAX_RENDERED_CONCEPTS} = require("./library/renderer");
 const txOpenApi = require("./openapi");
 
 const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
@@ -250,6 +250,77 @@ function buildLibrarySourcePage(source, filename, endpointPath) {
 }
 
 
+/**
+ * A copy of a resource with no more than `limit` of its codes - a CodeSystem's concepts, a
+ * ValueSet's include and exclude concept lists, its expansion's contains - counting nested
+ * ones, depth first. What the JSON and XML tabs show: the whole resource is a link away, and a
+ * page with all of ICD-10-CM in it held the event loop for seconds and helped no one. Only
+ * what's cut is copied; the resource itself is not changed.
+ *
+ * @returns {{resource: Object, shown: number, total: number}}
+ */
+function capResourceCodes(resource, limit) {
+  const budget = { left: limit, total: 0 };
+  const count = (list, child) => {
+    let n = 0;
+    for (const item of list || []) {
+      n += 1 + (Array.isArray(item?.[child]) ? count(item[child], child) : 0);
+    }
+    return n;
+  };
+  const cut = (list, child) => {
+    const out = [];
+    for (const item of list) {
+      if (budget.left <= 0) {
+        break;
+      }
+      budget.left--;
+      if (Array.isArray(item?.[child]) && item[child].length > 0) {
+        out.push({ ...item, [child]: cut(item[child], child) });
+      } else {
+        out.push(item);
+      }
+    }
+    return out;
+  };
+  // the lists, by where they are
+  const lists = [];
+  if (resource?.resourceType === 'CodeSystem' && Array.isArray(resource.concept)) {
+    lists.push({ get: r => r.concept, set: (r, v) => ({ ...r, concept: v }), child: 'concept' });
+  }
+  if (resource?.resourceType === 'ValueSet') {
+    for (const part of ['include', 'exclude']) {
+      (resource.compose?.[part] || []).forEach((inc, i) => {
+        if (Array.isArray(inc?.concept)) {
+          lists.push({
+            get: r => r.compose[part][i].concept,
+            set: (r, v) => {
+              const items = [...r.compose[part]];
+              items[i] = { ...items[i], concept: v };
+              return { ...r, compose: { ...r.compose, [part]: items } };
+            },
+            child: 'concept'
+          });
+        }
+      });
+    }
+    if (Array.isArray(resource.expansion?.contains)) {
+      lists.push({ get: r => r.expansion.contains, set: (r, v) => ({ ...r, expansion: { ...r.expansion, contains: v } }), child: 'contains' });
+    }
+  }
+  for (const l of lists) {
+    budget.total += count(l.get(resource), l.child);
+  }
+  if (budget.total <= limit) {
+    return { resource, shown: budget.total, total: budget.total };
+  }
+  let copy = resource;
+  for (const l of lists) {
+    copy = l.set(copy, cut(l.get(resource), l.child));
+  }
+  return { resource: copy, shown: limit - budget.left, total: budget.total };
+}
+
 class TxHtmlRenderer {
   renderer;
   liquid;
@@ -273,7 +344,9 @@ class TxHtmlRenderer {
       version: packageJson.version,
       endpointpath: endpoint.path,
       fhirversion: endpoint.fhirVersion,
-      ms: Date.now() - startTime,
+      // the template's [%ms%] (htmlServer.renderPage reads processingTime: under any other name the
+      // page always said 0 ms)
+      processingTime: Number.isFinite(startTime) ? Date.now() - startTime : 0,
       libraryLink: publishLibrarySource
         ? '<a href="' + escape(endpoint.path) + '/library" style="color: gold">Library</a>  &nbsp;|&nbsp;'
         : ''
@@ -1049,6 +1122,9 @@ class TxHtmlRenderer {
    * Render CodeSystem resource
    */
   async renderCodeSystem(json, inBundle, _fmt, op, sourcePackage) {
+    // the concept table stops at MAX_RENDERED_CONCEPTS: the whole code system is a link away, as JSON
+    this.renderer.fullContentHref = json.id
+      ? `${this.path}/CodeSystem/${encodeURIComponent(json.id)}?_format=json` : null;
     if (inBundle) {
       return await this.renderResourceWithNarrative(json, await this.renderer.renderCodeSystem(json));
     } else {
@@ -1890,11 +1966,27 @@ class TxHtmlRenderer {
   }
 
   async renderResourceJson(json) {
+    const capped = capResourceCodes(json, MAX_RENDERED_CONCEPTS);
     let html = "";
     html += `<div class="json-content" style="margin-top: 10px;">`;
-    html += `<pre>${escape(JSON.stringify(json, null, 2))}</pre>`;
+    html += this.cappedNote(json, capped, 'json', 'JSON');
+    html += `<pre>${escape(JSON.stringify(capped.resource, null, 2))}</pre>`;
     html += '</div>';
     return html;
+  }
+
+  /**
+   * The line above a JSON or XML tab that shows only some of the resource's codes: how many,
+   * and a link to the whole resource in that format (served from the XML and JSON cache)
+   */
+  cappedNote(json, capped, format, name) {
+    if (capped.shown === capped.total) {
+      return '';
+    }
+    const href = json.id && json.resourceType
+      ? `${this.path}/${encodeURIComponent(json.resourceType)}/${encodeURIComponent(json.id)}?_format=${format}` : null;
+    return `<p><i>This shows the first ${capped.shown.toLocaleString('en-US')} of the ${capped.total.toLocaleString('en-US')} codes.</i> ` +
+      (href ? `The whole ${escape(json.resourceType)} can be had <a href="${escape(href)}">as ${name}</a>.` : `The whole resource can be had as ${name}.`) + '</p>';
   }
 
   convertResourceToXml(res) {
@@ -1911,9 +2003,11 @@ class TxHtmlRenderer {
   }
 
   async renderResourceXml(json) {
-    let xml = this.convertResourceToXml(json);
+    const capped = capResourceCodes(json, MAX_RENDERED_CONCEPTS);
+    let xml = this.convertResourceToXml(capped.resource);
     let html = "";
     html += `<div class="xml-content" style="margin-top: 10px;">`;
+    html += this.cappedNote(json, capped, 'xml', 'XML');
     html += `<pre>${escape(xml)}</pre>`;
     html += '</div>';
     return html;
@@ -1950,7 +2044,7 @@ class TxHtmlRenderer {
 }
 
 module.exports = {
-  TxHtmlRenderer, loadTemplate, acceptsHtml,
+  TxHtmlRenderer, capResourceCodes, loadTemplate, acceptsHtml,
   setPublishLibrarySource, publishesLibrarySource, highlightYaml, buildLibrarySourcePage,
   setSyndicationFeed
 };

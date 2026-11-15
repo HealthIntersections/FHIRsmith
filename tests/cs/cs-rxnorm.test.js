@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose();
 const { RxNormImporter } = require('../../tx/importers/import-rxnorm.module');
 const { RxNormServices, RxNormServicesFactory, RxNormConcept } = require('../../tx/cs/cs-rxnorm');
 const { OperationContext } = require('../../tx/operation-context');
+const { SearchFilterText } = require('../../tx/library/designations');
 const {Designations} = require("../../tx/library/designations");
 const {TestUtilities, testOrSkip} = require("../test-utilities");
 const folders = require('../../library/folder-setup');
@@ -107,13 +108,13 @@ describe('RxNorm Import', () => {
       expect(dbCounts.RXNSAB).toBe(expectedCounts.RXNSAB);
       expect(dbCounts.RXNCUI).toBe(expectedCounts.RXNCUI);
 
-      // Check stems were created
-      expect(dbCounts.RXNSTEMS).toBeGreaterThan(0);
+      // Check the text index was made
+      expect(dbCounts.RXNTEXT).toBeGreaterThan(0);
     });
 
     testOrSkip('database has proper schema structure', () => {
       // Check required tables exist
-      const expectedTables = ['RXNCONSO', 'RXNREL', 'RXNSTY', 'RXNSAB', 'RXNCUI', 'RXNATOMARCHIVE', 'RXNSTEMS'];
+      const expectedTables = ['RXNCONSO', 'RXNREL', 'RXNSTY', 'RXNSAB', 'RXNCUI', 'RXNATOMARCHIVE', 'RXNTEXT'];
       for (const table of expectedTables) {
         expect(dbSchema.tables).toContain(table);
       }
@@ -394,6 +395,37 @@ describe('RxNorm Provider', () => {
     });
   });
 
+  // a text filter searches RXNTEXT (rxnorm-text-index.js), by the rules every provider's search
+  // follows (text-match.js): every word of the filter in one name, as the start of a word or with
+  // the same stem; and codes that start with the filter
+  describe('Text search', () => {
+    async function textCodes(text) {
+      const filterContext = await provider.getPrepContext(true);
+      await provider.searchFilter(filterContext, new SearchFilterText(text), false);
+      const filters = await provider.executeFilters(filterContext);
+      const codes = [];
+      while (await provider.filterMore(filterContext, filters[0])) {
+        codes.push((await provider.filterConcept(filterContext, filters[0])).code);
+      }
+      return codes;
+    }
+
+    testOrSkip('the imported database has the text index', () => {
+      expect(provider.textIndex).toBe(true);
+    });
+
+    testOrSkip('every word, numbers too, as the start of a word or the same stem', async () => {
+      // 102603: aspirin 600 MG Delayed Release Oral Tablet
+      expect(await textCodes('aspirin 600 tablets')).toContain('102603');
+      expect(await textCodes('asp delayed')).toContain('102603');
+      expect(await textCodes('aspirin 150')).not.toContain('102603');
+    });
+
+    testOrSkip('a code that starts with the filter', async () => {
+      expect(await textCodes('102603')).toContain('102603');
+    });
+  });
+
   describe('TTY Filters', () => {
     testOrSkip('should filter by term type (TTY)', async () => {
       const testCases = expectedResults.filters.TTY;
@@ -472,18 +504,13 @@ describe('RxNorm Provider', () => {
   });
 
   describe('Text Search', () => {
-    testOrSkip('should perform text search using stems', async () => {
+    testOrSkip('should perform text search', async () => {
       const testTerms = expectedResults.textSearch.testTerms;
 
       for (const testTerm of testTerms) {
         const filterContext = await provider.getPrepContext(true);
 
-        // Create a mock filter object with stems
-        const mockFilter = {
-          stems: [testTerm.term]
-        };
-
-        await provider.searchFilter(filterContext, mockFilter, false);
+        await provider.searchFilter(filterContext, new SearchFilterText(testTerm.term), false);
         const filters = await provider.executeFilters(filterContext);
 
         if (filters.length > 0) {
@@ -645,7 +672,7 @@ async function getDatabaseCounts(dbPath) {
       { table: 'RXNSTY', sql: 'SELECT COUNT(*) as count FROM RXNSTY' },
       { table: 'RXNSAB', sql: 'SELECT COUNT(*) as count FROM RXNSAB' },
       { table: 'RXNCUI', sql: 'SELECT COUNT(*) as count FROM RXNCUI' },
-      { table: 'RXNSTEMS', sql: 'SELECT COUNT(*) as count FROM RXNSTEMS' }
+      { table: 'RXNTEXT', sql: 'SELECT COUNT(*) as count FROM RXNTEXT' }
     ];
 
     // Run queries sequentially to avoid timing issues

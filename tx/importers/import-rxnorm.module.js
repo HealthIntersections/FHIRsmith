@@ -5,6 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const chalk = require('chalk');
 const terminal = require('./terminal');
+const { buildTextIndex, TEXT_INDEX_TABLE } = require('./rxnorm-text-index');
 
 class RxNormModule extends BaseTerminologyModule {
   constructor() {
@@ -46,9 +47,19 @@ class RxNormModule extends BaseTerminologyModule {
       .option('-v, --version <version>', 'RxNorm version identifier')
       .option('-y, --yes', 'Skip confirmations')
       .option('--no-indexes', 'Skip index creation for faster import')
-      .option('--no-stems', 'Skip stem generation for faster import')
+      .option('--no-stems', 'Skip the text index (text filters won\'t work) for faster import')
       .action(async (options) => {
         await this.handleImportCommand({...globalOptions, ...options});
+      });
+
+    // Rebuild the text index of a database imported before it (rxnorm-text-index.js)
+    terminologyCommand
+      .command('upgrade-text-index')
+      .description('Rebuild the text index of an RxNorm database in place, without importing again')
+      .option('-d, --dest <file>', 'Database file to upgrade')
+      .option('--sab <sab>', 'The source whose names are indexed', 'RXNORM')
+      .action(async (options) => {
+        await this.handleUpgradeTextIndexCommand({...globalOptions, ...options});
       });
 
     // Validate command
@@ -177,6 +188,29 @@ class RxNormModule extends BaseTerminologyModule {
     }
   }
 
+  /**
+   * Rebuild RXNTEXT in place (rxnorm-text-index.js), for a database imported before it. Run it
+   * while no server has the file open
+   */
+  async handleUpgradeTextIndexCommand(options) {
+    const dbPath = options.dest;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      this.logError(`Database not found: ${dbPath || '(give it with -d)'}`);
+      return;
+    }
+    this.logInfo(`Rebuilding the text index of ${dbPath}`);
+    const db = new sqlite3.Database(dbPath);
+    const start = Date.now();
+    try {
+      const rows = await buildTextIndex(db, options.sab || 'RXNORM', (msg) => terminal.log(`  ${msg}`));
+      this.logSuccess(`Text index rebuilt: ${rows.toLocaleString()} names, in ${((Date.now() - start) / 1000).toFixed(0)} s`);
+    } catch (error) {
+      this.logError(`Rebuilding the text index failed: ${error.message}`);
+    } finally {
+      await new Promise((resolve) => db.close(() => resolve()));
+    }
+  }
+
   async handleStatusCommand(options) {
     const dbPath = options.dest || './data/rxnorm.db';
 
@@ -195,7 +229,7 @@ class RxNormModule extends BaseTerminologyModule {
       terminal.log(`  RXNCONSO Records: ${stats.rxnconsoCount.toLocaleString()}`);
       terminal.log(`  RXNREL Records: ${stats.rxnrelCount.toLocaleString()}`);
       terminal.log(`  RXNSTY Records: ${stats.rxnstyCount.toLocaleString()}`);
-      terminal.log(`  Stem Records: ${stats.stemCount.toLocaleString()}`);
+      terminal.log(`  Text index names: ${stats.stemCount.toLocaleString()}`);
       terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
       terminal.log(`  Last Modified: ${stats.lastModified}`);
 
@@ -386,7 +420,7 @@ class RxNormModule extends BaseTerminologyModule {
       { name: 'rxnconsoCount', sql: 'SELECT COUNT(*) as count FROM RXNCONSO' },
       { name: 'rxnrelCount', sql: 'SELECT COUNT(*) as count FROM RXNREL' },
       { name: 'rxnstyCount', sql: 'SELECT COUNT(*) as count FROM RXNSTY' },
-      { name: 'stemCount', sql: 'SELECT COUNT(*) as count FROM RXNSTEMS' }
+      { name: 'stemCount', sql: `SELECT COUNT(*) as count FROM ${TEXT_INDEX_TABLE}` }
     ];
 
     let completed = 0;
@@ -433,8 +467,6 @@ class RxNormModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
-      'CREATE INDEX IF NOT EXISTS idx_rxnstems_stem_cui ON RXNSTEMS(stem, CUI)',
-      'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)',
       'CREATE INDEX IF NOT EXISTS idx_rxnatomarchive_rxcui_sab ON RXNATOMARCHIVE(RXCUI, SAB)'
     ];
 
@@ -504,7 +536,9 @@ class RxNormImporter {
       await this.loadRXNSTY(db);
 
       if (this.options.createStems) {
-        await this.makeStems(db);
+        // the text index, from what's now in RXNCONSO (rxnorm-text-index.js)
+        this.updateProgress(0, 'Text Index');
+        await buildTextIndex(db, 'RXNORM', (msg) => this.options.verbose && terminal.log(msg));
       }
 
       if (this.options.verbose) terminal.log('RxNorm import completed successfully');
@@ -534,7 +568,6 @@ class RxNormImporter {
       'DROP TABLE IF EXISTS RXNCONSO',
       'DROP TABLE IF EXISTS RXNREL',
       'DROP TABLE IF EXISTS RXNSTY',
-      'DROP TABLE IF EXISTS RXNSTEMS',
       'DROP TABLE IF EXISTS RXNATOMARCHIVE',
       'DROP TABLE IF EXISTS RXNCUI',
       'DROP TABLE IF EXISTS RXNSAB',
@@ -585,13 +618,6 @@ class RxNormImporter {
                                        SAB varchar(20),
                                        TTY varchar(20),
                                        MERGED_TO_RXCUI varchar(8)
-       )`,
-
-      // Create RXNSTEMS table
-      `CREATE TABLE RXNSTEMS (
-                                 stem CHAR(20) NOT NULL,
-                                 CUI VARCHAR(8) NOT NULL,
-                                 PRIMARY KEY (stem, CUI)
        )`,
 
       // Create RXNSAB table
@@ -811,85 +837,6 @@ class RxNormImporter {
 
       rl.on('error', reject);
     });
-  }
-
-  async makeStems(db) {
-    this.updateProgress(0, 'Generating Stems');
-
-    if (this.options.verbose) terminal.log('Generating word stems...');
-
-    // Simple English stemmer implementation
-    var natural = require('natural/lib/natural/stemmers'); // just the stemmers: the package index also loads its storage backends, and dotenv with them
-    const stems = new Map();
-
-    // Get all RXNORM concepts
-    return new Promise((resolve, reject) => {
-      db.all("SELECT RXCUI, STR FROM RXNCONSO WHERE SAB = 'RXNORM'", (err, rows) => {
-        if (err) return reject(err);
-
-        // Process each concept and generate stems
-        rows.forEach(row => {
-          const words = this.extractWords(row.STR);
-          words.forEach(word => {
-            const stem = natural.PorterStemmer.stem(word.toLowerCase());
-            if (stem.length > 0 && stem.length <= 20) {
-              if (!stems.has(stem)) {
-                stems.set(stem, new Set());
-              }
-              stems.get(stem).add(row.RXCUI);
-            }
-          });
-        });
-
-        // Insert stems into database
-        db.serialize(() => {
-          db.run('BEGIN TRANSACTION');
-          const stmt = db.prepare('INSERT OR IGNORE INTO RXNSTEMS (stem, CUI) VALUES (?, ?)');
-
-          let totalInserts = 0;
-          let processedStems = 0;
-
-          for (const [stem, cuis] of stems) {
-            for (const cui of cuis) {
-              stmt.run([stem, cui]);
-              totalInserts++;
-
-              if (totalInserts % 1000 === 0) {
-                this.updateProgress(1000);
-              }
-            }
-            processedStems++;
-          }
-
-          stmt.finalize();
-          db.run('COMMIT', (err) => {
-            if (err) reject(err);
-            else {
-              // Update progress for remaining inserts
-              const remaining = totalInserts % 1000;
-              if (remaining > 0) {
-                this.updateProgress(remaining);
-              }
-
-              if (this.options.verbose) {
-                terminal.log(`  Generated ${totalInserts} stem entries from ${processedStems} unique stems`);
-              }
-              resolve();
-            }
-          });
-        });
-      });
-    });
-  }
-
-  extractWords(text) {
-    // Extract words from text, removing punctuation and numbers
-    return text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(word => word.length > 2 && !/^\d+$/.test(word))
-      .filter(word => word.match(/^[a-z]/));
   }
 
   async closeDatabase(db) {

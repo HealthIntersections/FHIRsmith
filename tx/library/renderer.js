@@ -39,6 +39,17 @@ const VALID_PUBLICATION_STATUS = new Set(['draft', 'active', 'retired', 'unknown
 const MAX_RENDERED_INCLUDE_CODES = 500;
 
 /**
+ * How many concepts a CodeSystem's concept table shows. Past this, the table stops with a line
+ * saying how many there are and, when the renderer has been given fullContentHref, a link to
+ * the whole code system as JSON. Built in one go, the table for ICD-10-CM (98,000 concepts,
+ * a 24 MB page) held the event loop for 5-6 s; nobody reads a page that long.
+ */
+const MAX_RENDERED_CONCEPTS = 1000;
+
+// While building a concept table, let other work run after this many ms
+const RENDER_YIELD_MS = 25;
+
+/**
  * @typedef {Object} TerminologyLinkResolver
  * @property {function(OperationContext, string, string=): {description: string, link: string}|null} resolveURL
  *   Given a URL and optional version, returns description and link, or null if not found
@@ -57,6 +68,24 @@ class Renderer {
     this.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
     /** Where "Show all" goes when an include is cut short; null for no link. */
     this.showAllCodesHref = null;
+    /** How many concepts a CodeSystem's concept table shows; null shows them all. */
+    this.conceptLimit = MAX_RENDERED_CONCEPTS;
+    /** Where the whole code system can be had (as JSON) when its table is cut short; null for no link. */
+    this.fullContentHref = null;
+    this._lastYield = performance.now();
+  }
+
+  /**
+   * Lets other work run (a real turn of the event loop) once RENDER_YIELD_MS has passed since
+   * the last time: building a large table is otherwise one unbroken piece of compute. The
+   * renderer's own awaits don't do this - they resolve at once.
+   */
+  async yieldIfDue() {
+    const now = performance.now();
+    if (now - this._lastYield >= RENDER_YIELD_MS) {
+      await new Promise(resolve => setImmediate(resolve));
+      this._lastYield = performance.now();
+    }
   }
 
   displayCoded(...args) {
@@ -974,9 +1003,25 @@ class Renderer {
       headerRow.th().tx(this.formatDesignationHeader(desig));
     }
 
-    // Render concepts recursively
+    // Render concepts recursively, up to conceptLimit rows
+    const rows = { count: 0, limit: this.conceptLimit };
     for (const concept of cs.concept) {
-      await this.addConceptRow(tbl, concept, 0, cs, columnInfo);
+      if (!await this.addConceptRow(tbl, concept, 0, cs, columnInfo, rows)) {
+        break;
+      }
+    }
+    const total = this.countConcepts(cs.concept);
+    if (rows.count < total) {
+      const p = x.para();
+      p.i().tx(`This page shows the first ${rows.count.toLocaleString('en-US')} of the ${total.toLocaleString('en-US')} concepts.`);
+      p.tx(' ');
+      if (this.fullContentHref) {
+        p.tx('The whole code system can be had ');
+        p.ah(this.fullContentHref).tx('as JSON');
+        p.tx('.');
+      } else {
+        p.tx('The whole code system can be had as JSON.');
+      }
     }
   }
 
@@ -1171,7 +1216,17 @@ class Renderer {
     return false;
   }
 
-  async addConceptRow(tbl, concept, level, cs, columnInfo) {
+  /**
+   * @param {Object} [rows] - { count, limit }: the rows rendered so far, and the most to render
+   *   (null: no limit)
+   * @returns {Promise<boolean>} false once the limit is reached: render no more rows
+   */
+  async addConceptRow(tbl, concept, level, cs, columnInfo, rows = { count: 0, limit: null }) {
+    if (rows.limit != null && rows.count >= rows.limit) {
+      return false;
+    }
+    rows.count++;
+    await this.yieldIfDue();
     this._requireValidCode(concept.code, 'CodeSystem.concept.code');
     const tr = tbl.tr();
 
@@ -1312,9 +1367,12 @@ class Renderer {
     // Recurse for child concepts
     if (concept.concept) {
       for (const child of concept.concept) {
-        await this.addConceptRow(tbl, child, level + 1, cs, columnInfo);
+        if (!await this.addConceptRow(tbl, child, level + 1, cs, columnInfo, rows)) {
+          return false;
+        }
       }
     }
+    return true;
   }
 
   getPropertyValue(concept, code) {
@@ -2829,4 +2887,4 @@ class Renderer {
 
 }
 
-module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES, MAX_INCLUDE_CODES_SHOWN };
+module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES, MAX_INCLUDE_CODES_SHOWN, MAX_RENDERED_CONCEPTS };

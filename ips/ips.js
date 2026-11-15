@@ -67,6 +67,7 @@ const MAX_CACHED_EXTENSIONS = 5000;
 const { IpsValueSets } = require('./ips-valuesets');
 const aiClient = require('./ai-client');
 const { ShlClient } = require('./share');
+const { ShlViewer, Trace } = require('./viewer');
 const composer = require('./composer');
 const editorSchema = require('./editor-schema');
 const profiles = require('./profiles');
@@ -85,7 +86,13 @@ const CODE_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
 // paths at the root that can't be project codes
 const { jurisdiction: jurisdictionOf } = require('./jurisdictions');
 const { SNOMED_LINKABLE_EDITIONS } = require('../tx/sct/editions');
-const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles']);
+const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles', 'queue', 'view']);
+// how long the SHL viewer keeps what it retrieved (modules.ips.viewer.keepMinutes)
+const DEFAULT_VIEW_KEEP_MINUTES = 60;
+// a viewer page's address
+const VIEW_TOKEN_RE = /^[A-Za-z0-9_-]{16,64}$/;
+// the most a link given to the viewer can be (a VHL is about 300 characters, an SHL less)
+const MAX_LINK_LENGTH = 20000;
 
 /**
  * What's wrong with a national profile's details, or null: a jurisdiction (a country's ISO 3166
@@ -318,10 +325,19 @@ class IpsModule {
       }
     }
 
+    // the SHL viewer: other systems can name this server's /ips/view as the viewer in their SHLs
+    this.viewer = null;
+    if (this.config.viewer?.enabled !== false) {
+      this.viewer = new ShlViewer(this.config.viewer || {}, { log: this.log });
+      const minutes = this.config.viewer?.keepMinutes;
+      this.viewKeepMinutes = typeof minutes === 'number' && minutes > 0 ? minutes : DEFAULT_VIEW_KEEP_MINUTES;
+    }
+
     this.setupSession();
     this.setupRootRoutes();
     this.setupProfileRoutes();
     this.setupNationalProfileRoutes();
+    this.setupViewerRoutes();
     this.setupProjectRoutes();
     this.setupValidator();
     this.setupValueSets();
@@ -389,12 +405,14 @@ class IpsModule {
     this.adminOnly = admin;
 
     r.get('/', ...this.web, h('home', (req, res) => {
-      this.sendHtml(res, 'International Patient Summary', render.renderHome(this.store.projects(), this.ctx(req, res)), Date.now());
+      this.sendHtml(res, 'International Patient Summary', render.renderHome(this.store.projects(), { ...this.ctx(req, res), viewerUrl: this.viewer ? this.viewerUrl(req) : null }), Date.now());
     }));
 
     // Every page with a form has this.session, this.csrf; every form post has sameOrigin,
     // this.session, form, this.csrf. They are written out in each route rather than spread
     // from an array, so that CodeQL can see the CSRF middleware on every cookie-using route.
+    // the processing queue: one for the whole module
+    r.get('/queue', ...this.web, h('queue', (req, res) => this.sendQueue(req, res)));
     r.get('/login', this.session, this.csrf, h('login', (req, res) => this.sendLogin(req, res, 200)));
     r.post('/login', this.sameOrigin, loginLimiter, this.session, this.form, this.csrf, h('login', (req, res) => this.login(req, res)));
     r.post('/logout', this.sameOrigin, this.session, this.form, this.csrf, h('logout', (req, res) => {
@@ -505,23 +523,60 @@ class IpsModule {
     }));
   }
 
+  /**
+   * The rate limit on submitting (and on the SHL viewer, which fetches from other servers),
+   * as middleware: one limiter, so submissions and the viewer count together.
+   */
+  submissionLimiters() {
+    if (!this.postingLimiters) {
+      const rl = this.config.rateLimit || {};
+      const max = rl.max === undefined ? 60 : rl.max;
+      this.postingLimiters = [];
+      if (max > 0) {
+        this.postingLimiters.push(rateLimit({
+          windowMs: (rl.windowMinutes || 1) * 60 * 1000,
+          limit: max,
+          standardHeaders: 'draft-7',
+          legacyHeaders: false,
+          handler: (req, res) => wantsHtml(req)
+            ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Too many documents submitted; try again later'), 429)
+            : this.sendOutcome(res, 429, 'throttled', 'Too many documents submitted; try again later')
+        }));
+      }
+    }
+    return this.postingLimiters;
+  }
+
+  setupViewerRoutes() {
+    if (!this.viewer) {
+      return;
+    }
+    const r = this.router;
+    const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+    const limit = this.submissionLimiters();
+    // a viewer page, from its token; 404 once it has expired
+    const view = (req, res, next) => {
+      const v = VIEW_TOKEN_RE.test(req.params.token) ? this.store.readView(req.params.token) : null;
+      if (!v) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('There is no such viewer page: it has expired (they are kept for ' +
+          `${this.viewKeepMinutes} minutes), or never existed. Open the link again`), 404);
+      }
+      req.view = v;
+      next();
+    };
+    // Like the submission form, these posts start no session and carry no CSRF token: the
+    // viewer is open to anyone, and adding a document needs the project's token (in the form)
+    r.get('/view', ...this.web, h('view', (req, res) => this.sendViewerStart(req, res)));
+    r.post('/view', this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerOpen(req, res)));
+    r.get('/view/:token', view, ...this.web, h('view', (req, res) => this.sendView(req, res)));
+    r.post('/view/:token', view, this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerPasscode(req, res)));
+    r.post('/view/:token/add', view, this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerAdd(req, res)));
+  }
+
   setupProjectRoutes() {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
-    const rl = this.config.rateLimit || {};
-    const max = rl.max === undefined ? 60 : rl.max;
-    const posting = [];
-    if (max > 0) {
-      posting.push(rateLimit({
-        windowMs: (rl.windowMinutes || 1) * 60 * 1000,
-        limit: max,
-        standardHeaders: 'draft-7',
-        legacyHeaders: false,
-        handler: (req, res) => wantsHtml(req)
-          ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Too many documents submitted; try again later'), 429)
-          : this.sendOutcome(res, 429, 'throttled', 'Too many documents submitted; try again later')
-      }));
-    }
+    const posting = this.submissionLimiters();
 
     // the project, from its code; 404 if there isn't one
     const project = (req, res, next) => {
@@ -925,6 +980,8 @@ class IpsModule {
         }
         n++;
         const project = this.store.projectById(row.project_id);
+        // for the queue page: which document, and (processDocument) which step
+        this.current = { id: row.id, started: Date.now(), step: null, stepStarted: null };
         try {
           const note = await this.processDocument(row, project);
           this.store.finish(row.id, true, note || null);
@@ -934,6 +991,8 @@ class IpsModule {
           if (this.stats) {
             this.stats.taskError('IPS processing', `document ${row.id}: ${e.message}`);
           }
+        } finally {
+          this.current = null;
         }
       }
       if (n > 0 && this.stats) {
@@ -965,6 +1024,10 @@ class IpsModule {
     try {
       for (const step of this.steps) {
         this.store.saveStepStatus(row.id, step.name, 'running');
+        if (this.current && this.current.id === row.id) {
+          this.current.step = step.name;
+          this.current.stepStarted = Date.now();
+        }
         this.log.info(`IPS module: document ${row.id} ('${project.code}'): ${step.name} starting`);
         const started = Date.now();
         let note;
@@ -976,6 +1039,14 @@ class IpsModule {
           throw new Error(`${step.name}: ${e.message}`);
         }
         this.store.saveStepStatus(row.id, step.name, 'done', typeof note === 'string' ? note : null);
+        // for the averages on the queue page: not a step that was skipped (it did no work)
+        try {
+          if (!this.store.readResult(row.id, step.name)?.result?.skipped) {
+            this.store.recordStepTime(step.name, row.id, Date.now() - started, row.size);
+          }
+        } catch (e) {
+          this.log.error(`IPS module: the time of ${step.name} could not be recorded: ${e.message}`);
+        }
         this.log.info(`IPS module: document ${row.id}: ${step.name} done in ${Date.now() - started} ms${typeof note === 'string' && note ? ` - ${note}` : ''}`);
         if (typeof note === 'string' && note) {
           notes.push(note);
@@ -1105,6 +1176,191 @@ class IpsModule {
     };
   }
 
+  // ---- the SHL viewer ----
+
+  /** The viewer's address on this server, as SHLs name it (the shlink goes after the #). */
+  viewerUrl(req) {
+    return `${req.protocol}://${req.get('host')}${req.baseUrl}/view#`;
+  }
+
+  /** Who the viewer says it is, to the SHL server. */
+  viewerRecipient(req) {
+    const r = this.config.viewer?.recipient;
+    return typeof r === 'string' && r ? r : `FHIRsmith IPS viewer (${req.get('host')})`;
+  }
+
+  /** The viewer's first page: it reads the link from the address (after #), or takes it pasted in. */
+  sendViewerStart(req, res, message = null, status = 200) {
+    res.status(status);
+    this.sendHtml(res, 'SHL viewer', render.renderViewerStart({ ...this.ctx(req, res), keepMinutes: this.viewKeepMinutes, viewerUrl: this.viewerUrl(req) }, message), Date.now());
+  }
+
+  /** Keep what the viewer did. */
+  saveView(token, link, result, added = []) {
+    this.store.saveView(token, link, {
+      state: result.state,
+      message: result.message || null,
+      payload: result.payload || null,
+      vhl: result.vhl || null,
+      documents: result.documents || [],
+      trace: { started: result.trace.started, entries: result.trace.entries },
+      added
+    }, this.viewKeepMinutes * 60 * 1000);
+  }
+
+  /** One line in the server's log for each link opened (the page has the details). */
+  logView(token, result) {
+    const docs = (result.documents || []).length;
+    this.log.info(`IPS module: SHL viewer ${token}: ${result.state} - ${result.payload?.url || '(no url)'}` +
+      `${result.message ? `: ${result.message}` : ''} (${docs} document${docs === 1 ? '' : 's'}, ${result.trace.entries.length} steps)`);
+  }
+
+  /** Open a link: retrieve the document, keep what happened, and show it on its own page. */
+  async viewerOpen(req, res) {
+    const link = typeof req.body.link === 'string' ? req.body.link.trim() : '';
+    if (!link) {
+      return this.sendViewerStart(req, res, 'Give the link to open', 400);
+    }
+    if (link.length > MAX_LINK_LENGTH) {
+      return this.sendViewerStart(req, res, `The link is too long (${link.length} characters; the limit is ${MAX_LINK_LENGTH})`, 400);
+    }
+    const passcode = typeof req.body.passcode === 'string' && req.body.passcode ? req.body.passcode : undefined;
+    const result = await this.viewer.open(link, { passcode, recipient: this.viewerRecipient(req) });
+    const token = crypto.randomBytes(18).toString('base64url');
+    this.saveView(token, link, result);
+    this.logView(token, result);
+    res.redirect(303, `${req.baseUrl}/view/${token}`);
+  }
+
+  /** Try a link that needs a passcode again, with one. */
+  async viewerPasscode(req, res) {
+    const v = req.view;
+    const passcode = typeof req.body.passcode === 'string' ? req.body.passcode : '';
+    if (v.result.state !== 'needs-passcode') {
+      return res.redirect(303, `${req.baseUrl}/view/${v.token}`);
+    }
+    if (!passcode) {
+      return this.sendView(req, res, 'Give the passcode', 400);
+    }
+    // the log goes on from where it was
+    const trace = new Trace(v.result.trace.entries, v.result.trace.started);
+    trace.info('Trying again, with the passcode the user gave');
+    const result = await this.viewer.open(v.link, { passcode, recipient: this.viewerRecipient(req), trace });
+    this.saveView(v.token, v.link, result, v.result.added || []);
+    this.logView(v.token, result);
+    res.redirect(303, `${req.baseUrl}/view/${v.token}`);
+  }
+
+  /** What the viewer retrieved: the documents' narratives, adding them to a project, and the log. */
+  sendView(req, res, message = null, status = 200) {
+    const v = req.view;
+    const projects = this.store.projects().map(p => {
+      const full = this.store.projectByCode(p.code);
+      return { code: p.code, name: p.name, needsToken: tokenConfigured(full?.token), ai: full ? this.store.projectAi(full).enabled === true : false };
+    });
+    // the same document already here: the same Bundle.identifier
+    const duplicates = (v.result.documents || []).map(d => {
+      const id = d.bundle?.identifier;
+      return id && typeof id.value === 'string' ? this.store.findByIdentifier(id.system, id.value) : null;
+    });
+    res.status(status);
+    this.sendHtml(res, 'SHL viewer', render.renderView(v, { ...this.ctx(req, res), projects, duplicates, keepMinutes: this.viewKeepMinutes }, message), Date.now());
+  }
+
+  /** Add a document the viewer retrieved to a project: the rules of the submission form. */
+  viewerAdd(req, res) {
+    const v = req.view;
+    const index = parseInt(req.body.doc, 10);
+    const doc = Number.isInteger(index) ? (v.result.documents || [])[index] : null;
+    if (!doc || !doc.ips) {
+      return this.sendView(req, res, 'Only an IPS document can be added to a project', 400);
+    }
+    const code = typeof req.body.project === 'string' ? req.body.project : '';
+    const project = CODE_RE.test(code) && !RESERVED.has(code) ? this.store.projectByCode(code) : null;
+    if (!project) {
+      return this.sendView(req, res, 'Choose a project to add the document to', 400);
+    }
+    const supplied = typeof req.body.token === 'string' ? req.body.token.trim() : '';
+    if (tokenConfigured(project.token) && !tokenMatches(project.token, supplied)) {
+      return this.sendView(req, res, `The submission token for ${project.name} is missing or wrong`, 401);
+    }
+    const bundle = structuredClone(doc.bundle);
+    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > this.maxSize) {
+      return this.sendView(req, res, `Documents can't be bigger than ${this.maxSize} bytes`, 413);
+    }
+    const problems = validateDocument(bundle);
+    if (problems.length > 0) {
+      return this.sendView(req, res, `The document can't be added: ${problems.join('. ')}`, 400);
+    }
+    req.project = project;
+    const { id } = this.receive(req, bundle, 'shl');
+    const added = [...(v.result.added || []), { doc: index, project: project.code, name: project.name, id }];
+    this.store.saveView(v.token, v.link, { ...v.result, added }, this.viewKeepMinutes * 60 * 1000);
+    this.log.info(`IPS module: SHL viewer ${v.token}: document ${index + 1} added to '${project.code}' as document ${id}`);
+    res.redirect(303, `${req.baseUrl}/${encodeURIComponent(project.code)}/Bundle/${id}`);
+  }
+
+  // ---- the processing queue ----
+
+  /**
+   * Whether the queue is being worked through, and if not, why not - for the queue page.
+   * @returns {{state: string, text: string}} state is running, idle, waiting or off
+   */
+  queueState() {
+    const cfg = this.config.processing || {};
+    if (this.processing) {
+      return { state: 'running', text: 'Processing is running' };
+    }
+    if (cfg.enabled === false) {
+      return { state: 'off', text: 'Processing is turned off on this server (modules.ips.processing.enabled): documents stay in the queue' };
+    }
+    if (this.validatorStarting) {
+      return { state: 'waiting', text: 'Processing is waiting for the validator to start' };
+    }
+    if (this.txMissing && Date.now() - this.startedAt < TX_STARTUP_GRACE_MS) {
+      return { state: 'waiting', text: 'Processing is waiting for the terminology server to answer' };
+    }
+    const seconds = typeof cfg.intervalSeconds === 'number' && cfg.intervalSeconds > 0 ? cfg.intervalSeconds : DEFAULT_INTERVAL_SECONDS;
+    return { state: 'idle', text: `Processing is idle: the queue is looked at every ${seconds} second${seconds === 1 ? '' : 's'}` };
+  }
+
+  /**
+   * The processing queue: the document being processed, and the step it is up to, then the
+   * documents waiting, in the order they will be processed. JSON for a client that is not
+   * a browser.
+   */
+  sendQueue(req, res) {
+    const start = Date.now();
+    const q = this.store.queue();
+    const steps = this.steps.map(st => st.name);
+    const current = this.current;
+    for (const row of q.processing) {
+      row.results = {};
+      for (const step of steps) {
+        row.results[step] = this.store.readResult(row.id, step);
+      }
+      // the step it is up to: the one running, as the results say (else as this process knows)
+      row.step = steps.find(st => row.results[st]?.result?.status === 'running') || (current && current.id === row.id ? current.step : null);
+      if (current && current.id === row.id) {
+        row.startedMs = current.started;
+        row.stepStartedMs = current.step === row.step ? current.stepStarted : null;
+      }
+    }
+    const state = this.queueState();
+    const timings = this.store.stepTimings();
+    if (!wantsHtml(req)) {
+      const doc = (r) => ({ id: r.id, project: r.project_code, received: r.received, patient: r.patient_name || null, title: r.comp_title || null, size: r.size });
+      return res.json({
+        state: state.state,
+        processing: q.processing.map(r => ({ ...doc(r), step: r.step || null, ...(r.startedMs ? { started: new Date(r.startedMs).toISOString() } : {}) })),
+        waiting: q.waiting.map(doc),
+        waitingTotal: q.waitingTotal,
+        steps: steps.map(st => ({ step: st, ...(timings[st] ? { runs: timings[st].runs, averageMs: Math.round(timings[st].avgMs), msPerKb: timings[st].msPerKb === null ? null : Number(timings[st].msPerKb.toFixed(3)) } : { runs: 0 }) }))
+      });
+    }
+    this.sendHtml(res, 'IPS processing queue', render.renderQueue(q, state, { ...this.ctx(req, res), steps, timings, now: Date.now() }), start);
+  }
+
   // ---- sharing ----
 
   /**
@@ -1125,15 +1381,23 @@ class IpsModule {
       return fail(404, `No document with id '${req.params.id}'`);
     }
     const kind = req.body.kind === 'vhl' ? 'vhl' : 'shl';
+    // the original (as submitted), or the modified copy - what the processing ended up with
+    const source = req.body.source === 'modified' ? 'modified' : 'original';
+    const doc = source === 'modified' ? row.analysed : row.bundle;
+    if (!doc) {
+      return fail(409, `Document ${id} has not been processed yet, so there is no modified copy to share`);
+    }
     const label = row.patient_name ? `Patient Health Document for ${row.patient_name}` : 'Patient Health Document';
     let out;
     try {
-      out = await this.shl.share(row.bundle, { kind, host: req.get('host'), label });
+      // the QR opens this server's viewer, unless the configuration names another
+      out = await this.shl.share(doc, { kind, host: req.get('host'), label, viewer: this.viewer ? this.viewerUrl(req) : undefined });
+      out.source = source;
     } catch (e) {
       this.log.error(`IPS module: document ${id} could not be shared as ${kind}: ${e.message}`);
       return fail(502, e.message);
     }
-    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
+    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared (${source}) as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
     if (json) {
       return res.json(out);
     }
@@ -1884,7 +2148,7 @@ class IpsModule {
       if (!row) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
       }
-      const { view, narrative } = render.viewOf(req.query);
+      const { view, narrative, source } = render.viewOf(req.query);
       row.results = {};
       for (const step of this.steps) {
         row.results[step.name] = this.store.readResult(row.id, step.name);
@@ -1895,7 +2159,8 @@ class IpsModule {
         level: typeof req.query.level === 'string' ? req.query.level : undefined,
         np: typeof req.query.np === 'string' ? req.query.np : undefined,
         problemsOnly: req.query.problems === '1',
-        narrative
+        narrative,
+        source
       };
       return this.sendHtml(res, `${req.project.name}: Document ${row.id}`, render.renderDocument(req.project, row, view, ctx), start, req);
     }

@@ -45,6 +45,15 @@ additional terminologies.
      --yes
    ```
 
+5. **Bring an existing database's text index up to date** (what text filters search, by the rules
+   in [Text filters](../README.md#text-filters); needed since FHIRsmith 1.0.3), without importing
+   again. Run it while no server has the file open:
+   ```bash
+   ./tx-import.js loinc upgrade-text-index --dest ./data/loinc.db
+   ./tx-import.js rxnorm upgrade-text-index --dest ./data/rxnorm.db
+   node tx/importers/import-icd11.js --text-index-only --dest ./data/icd11.db
+   ```
+
 ## Available Terminologies
 
 | Terminology | Command | Description | Duration |
@@ -291,7 +300,7 @@ tx-import rxnorm import \
   --version "RXNORM-2025-02-03" \
   --yes
 
-# Skip stem generation for faster import
+# Skip the text index for faster import (text filters won't work)
 tx-import rxnorm import \
   --source /path/to/rrf/files \
   --dest ./data/rxnorm.db \
@@ -301,7 +310,7 @@ tx-import rxnorm import \
 
 **Options:**
 - `--no-indexes`: Skip index creation for faster import
-- `--no-stems`: Skip stem generation (word stems used for text search)
+- `--no-stems`: Skip the text index (`RXNTEXT`, what text filters search; it replaces `RXNSTEMS`)
 
 **Required RRF Structure:**
 ```

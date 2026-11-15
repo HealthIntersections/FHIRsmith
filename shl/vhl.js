@@ -25,7 +25,7 @@ function processVHL(host, uuid, standardResponse) {
   // Example structure - modify as needed:
   const vhlResponse = {
     "resourceType": "Bundle",
-    "type": "searchSet",
+    "type": "searchset",
     "link": [{
       "relation": "self",
       "url": "https://" + host + "/shl/access/" + uuid
@@ -44,9 +44,12 @@ function processVHL(host, uuid, standardResponse) {
           "system": "urn:ietf:rfc:3986",
           "value": "urn:uuid:" + uuid2
         },
+        "status": "current",
         "content": [{
-          "url": file.location,
-          "contentType": file.contentType
+          "attachment": {
+            "contentType": file.contentType,
+            "url": file.location
+          }
         }]
       }
     }
