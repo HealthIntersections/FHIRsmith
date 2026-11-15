@@ -5,6 +5,29 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - unreleased
+
+### Added
+
+- IPS: a page for the processing queue, `/ips/queue` (linked from the top menu; JSON for other clients): the document being processed and the step it is up to, and the documents waiting, in the order they will be processed. `queue` can no longer be a project's code. It also shows how long each processing step takes - on average, and per KB of document - over each step's last 100 runs that did their work (recorded from now on, in `step_timings`)
+- IPS: an SHL viewer, `/ips/view`: other systems can name it as the viewer in their SMART Health Links (`{server}/ips/view#shlink:/...`), and SHLs and VHLs (`HC1:...`) can be pasted into it. It retrieves the document on the server and shows every step it took - the payload, key included, each request and response with headers and body, redirects, the decryption, the decrypted content - to help debug SHL servers; asks for a passcode when the link needs one; checks a VHL's signature against the certificates it trusts (`modules.ips.viewer.trust`, and this server's own shl module's); shows the document's narrative; and offers to add an IPS document to a project, saying that this makes it visible to everyone, and warning when the same document is already here. The module's own SHL QR codes now open this viewer unless `modules.ips.shl.viewer` says otherwise. The IPS home page says how a system that generates SHLs or VHLs names this server as the viewer. Settings: `modules.ips.viewer` (see the configuration template)
+- IPS: the Source view switches between the original document and the modified one (what the processing ended up with: the translations, the generated narrative, the terminology check), and the Share as SHL / VHL buttons have moved there, to share whichever is shown
+- tx: `$expand` of a value set whose include lists a code that isn't in the code system: the code was silently left out; now the expansion says so, with an `expansion-issue` (a contained OperationOutcome with a warning for each such code). A new setting, `modules.tx.errorsForInvalidCodes` (false), makes it an error instead: the value set can't be expanded (422)
+- tx: `$expand` of a value set with an include filter that selects by concept (`is-a`, `descendent-of`, `child-of`, `descendent-leaf`, `generalizes`, `=` on `concept` or `code`) on a code the code system doesn't have: what happened depended on the code system - nothing (most), or an error (SNOMED CT, for an id with a wrong check digit; ICD-11). Now every code system does the same: the include adds no codes, and the expansion says so with an `expansion-issue` warning - or, with `errorsForInvalidCodes`, the value set can't be expanded (422)
+- tx: `$validate-code` against a value set that names codes its code systems don't have (listed, or in an `is-a`-style filter): when the code isn't valid, the OperationOutcome has an error saying the value set is not valid, and why (`VALUESET_INVALID_FOR_VALIDATION`; `errorsForInvalidCodes` doesn't apply). Such a filter matches nothing: SNOMED CT used to fail on it (500), and a filter other than `is-a` / `descendent-of` on an unknown concept was refused as not understood (422)
+
+### Changed
+
+- IPS: "nationality" is now "jurisdiction" on the pages (IPS specifications exist for provinces and for regions like the EU, not just nations); nothing else changes
+- IPS: the AI assessment replaces attachments (Attachment and Binary data, base64Binary values, images in the narrative) with a placeholder before the document is sent, and the model is told to ignore them: most of a document that was too big to send was its attachments
+
+- tx: ISO 3166 country codes: EU (exceptionally reserved by ISO for the European Union, but used, in health exchange too) is an active code; the alpha-2 codes formerly used and not assigned again (AN, BU, CS, DD, FX, NT, SU, TP, YU, ZR and the rest, 25 in all) are known, as inactive codes, with a definition saying what they were and their ISO 3166-3 code. The other reserved codes (UK - use GB - EZ, UN, IC and so on) are still not codes; the user-assigned and XX / XZ / ZZ arrangements are unchanged
+
+### Fixed
+
+- SHL: a VHL's signed claims (`/shl/sign`) had text keys (`"1"`, `"-260"`, `"5"`) where CWT and the GDHCN use integers (1, -260, 5): they are integers now
+- SHL: the Bundle a VHL link's manifest request returns is valid FHIR: type `searchset` (was `searchSet`), each DocumentReference has a status (`current`), and its file is `content.attachment.url` (was `content.url`, which isn't an element)
+
 ## [1.0.2] - 2026-11-15
 
 ### Security

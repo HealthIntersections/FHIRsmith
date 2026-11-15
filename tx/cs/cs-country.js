@@ -6,13 +6,57 @@ const regexUtilities = require("../../library/regex-utilities");
 const { Issue } = require('../library/operation-outcome');
 
 class CountryCodeConcept {
-  constructor(userDefined, code, display, french) {
+  /**
+   * @param {boolean} userDefined - one of the user-assigned codes
+   * @param {string} code
+   * @param {string} display
+   * @param {string|null} french
+   * @param {boolean} [inactive] - a code ISO 3166 no longer assigns (formerly used)
+   * @param {string|null} [definition] - what the code is, where that needs saying (a reserved
+   *   or formerly used code)
+   */
+  constructor(userDefined, code, display, french, inactive = false, definition = null) {
     this.userDefined = userDefined;
     this.code = code;
     this.display = display;
     this.french = french;
+    this.inactive = inactive;
+    this.definition = definition;
   }
 }
+
+/**
+ * The ISO 3166-1 alpha-2 codes formerly used that have not been assigned to anything else:
+ * [code, name, the year it was deleted, its ISO 3166-3 code]. CS was used twice: for
+ * Czechoslovakia (until 1993) and for Serbia and Montenegro (2003-2006).
+ */
+const FORMER_CODES = [
+  ['AN', 'Netherlands Antilles', 2010, 'ANHH'],
+  ['BU', 'Burma', 1989, 'BUMM'],
+  ['CS', 'Serbia and Montenegro (earlier, Czechoslovakia)', 2006, 'CSXX; CSHH'],
+  ['CT', 'Canton and Enderbury Islands', 1984, 'CTKI'],
+  ['DD', 'German Democratic Republic', 1990, 'DDDE'],
+  ['DY', 'Dahomey', 1977, 'DYBJ'],
+  ['FQ', 'French Southern and Antarctic Territories', 1979, 'FQHH'],
+  ['FX', 'France, Metropolitan', 1997, 'FXFR'],
+  ['HV', 'Upper Volta', 1984, 'HVBF'],
+  ['JT', 'Johnston Island', 1986, 'JTUM'],
+  ['MI', 'Midway Islands', 1986, 'MIUM'],
+  ['NH', 'New Hebrides', 1980, 'NHVU'],
+  ['NQ', 'Dronning Maud Land', 1983, 'NQAQ'],
+  ['NT', 'Neutral Zone', 1993, 'NTHH'],
+  ['PC', 'Pacific Islands (Trust Territory)', 1986, 'PCHH'],
+  ['PU', 'United States Miscellaneous Pacific Islands', 1986, 'PUUM'],
+  ['PZ', 'Panama Canal Zone', 1980, 'PZPA'],
+  ['RH', 'Southern Rhodesia', 1980, 'RHZW'],
+  ['SU', 'USSR', 1992, 'SUHH'],
+  ['TP', 'East Timor', 2002, 'TPTL'],
+  ['VD', 'Viet-Nam, Democratic Republic of', 1977, 'VDVN'],
+  ['WK', 'Wake Island', 1986, 'WKUM'],
+  ['YD', 'Yemen, Democratic', 1990, 'YDYE'],
+  ['YU', 'Yugoslavia', 2003, 'YUCS'],
+  ['ZR', 'Zaire', 1997, 'ZRCD']
+];
 
 class CountryCodeConceptFilter {
   constructor() {
@@ -96,9 +140,9 @@ class CountryCodeServices extends CodeSystemProvider {
   }
 
   async definition(code) {
-    
-    await this.#ensureContext(code);
-    return null; // No definitions provided
+    const ctxt = await this.#ensureContext(code);
+    // only the reserved and formerly used codes have one: what they are
+    return ctxt ? ctxt.definition : null;
   }
 
   async isAbstract(code) {
@@ -108,9 +152,14 @@ class CountryCodeServices extends CodeSystemProvider {
   }
 
   async isInactive(code) {
-    
-    await this.#ensureContext(code);
-    return false; // No inactive concepts
+    const ctxt = await this.#ensureContext(code);
+    // the formerly used codes (ISO 3166-3) that have not been assigned again
+    return ctxt ? ctxt.inactive : false;
+  }
+
+  async getStatus(code) {
+    const ctxt = await this.#ensureContext(code);
+    return ctxt && ctxt.inactive ? 'inactive' : null;
   }
 
   async isDeprecated(code) {
@@ -591,6 +640,10 @@ class CountryCodeFactoryProvider extends CodeSystemFactoryProvider {
       [false, 'ZA', 'South Africa', 'Afrique du Sud (l\')'],
       [false, 'ZM', 'Zambia', 'Zambie (la)'],
       [false, 'ZW', 'Zimbabwe', 'Zimbabwe (le)'],
+      // exceptionally reserved, but used (by the EU itself, and in health exchange): a jurisdiction
+      // no assigned code names. The other reserved codes are not accepted (UK: use GB)
+      [false, 'EU', 'European Union', 'Union européenne (l\')', false,
+        'Exceptionally reserved in ISO 3166-1 for the European Union; accepted here as a jurisdiction (not a country)'],
       [true, 'AA', 'User-assigned'],
       [true, 'QM', 'User-assigned'],
       [true, 'QN', 'User-assigned'],
@@ -633,6 +686,11 @@ class CountryCodeFactoryProvider extends CodeSystemFactoryProvider {
       [true, 'XY', 'User-assigned'],
       [false, 'XZ', 'International Waters'],
       [false, 'ZZ', 'Unknown or Invalid Territory'],
+
+      // ISO 3166-1 alpha-2 codes formerly used, and not assigned again (ISO 3166-3 gives each a
+      // four-letter code): inactive - they turn up in historical data, such as a place of birth
+      ...FORMER_CODES.map(([code, display, until, iso3]) => [false, code, display, null, true,
+        `Formerly used for ${display}, until ${until}: no longer assigned (ISO 3166-3: ${iso3})`]),
 
       // ISO 3166-1 alpha-3 codes
       [false, 'ABW', 'Aruba', 'Aruba'],
@@ -1137,8 +1195,8 @@ class CountryCodeFactoryProvider extends CodeSystemFactoryProvider {
       [false, '894', 'Zambia', 'Zambie (la)'],
     ];
 
-    for (const [userDefined, code, display, french] of data) {
-      const concept = new CountryCodeConcept(userDefined, code, display, french || null);
+    for (const [userDefined, code, display, french, inactive, definition] of data) {
+      const concept = new CountryCodeConcept(userDefined, code, display, french || null, inactive === true, definition || null);
       this.codes.push(concept);
       this.codeMap.set(code, concept);
     }

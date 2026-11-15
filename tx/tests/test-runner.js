@@ -17,6 +17,8 @@ let count = 0;
 let error = 0;
 // which pass we are in, so the output of the three passes can be told apart on disk
 let forcedCaching = false;
+// errorsForInvalidCodes as the test configuration has it: the third pass runs the other way
+let configuredErrorsForInvalidCodes = undefined;
 // one entry per test run, for the TestReport written next to the summary
 let testResults = [];
 
@@ -35,12 +37,23 @@ async function startTxTests() {
  * starts clean. Used to run the whole test suite a third time with caching
  * fully active, which exercises cache correctness (e.g. that language is part
  * of the cache key) that the fast, normally-uncached runs cannot.
+ *
+ * The third pass also runs with errorsForInvalidCodes switched the other way from
+ * the first two (whatever the test configuration says), so that tests that let the
+ * server choose between behaviours (http-code "200|4xx", e.g. simple-expand-enum-invalid)
+ * are run both ways. The handlers read the setting per request, so it takes effect
+ * at once; the expansion caches are cleared here, so no expansion made under one
+ * setting is served under the other.
  */
 function setForcedCaching(enabled) {
     forcedCaching = enabled;
     if (!txModule || !Array.isArray(txModule.endpoints)) {
         return;
     }
+    if (configuredErrorsForInvalidCodes === undefined) {
+        configuredErrorsForInvalidCodes = txModule.config.errorsForInvalidCodes === true;
+    }
+    txModule.config.errorsForInvalidCodes = enabled ? !configuredErrorsForInvalidCodes : configuredErrorsForInvalidCodes;
     for (const ep of txModule.endpoints) {
         if (ep.expansionCache) {
             ep.expansionCache.clearAll();

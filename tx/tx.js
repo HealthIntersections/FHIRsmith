@@ -231,6 +231,10 @@ class TXModule {
       Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
     this.log.info(`Expansion limits: externalLimit=${this.expansionLimitValues.external}, internalLimit=${this.expansionLimitValues.internal}, ` +
       `walkLimit=${this.expansionLimitValues.walk}`);
+    if (config.errorsForInvalidCodes !== undefined && typeof config.errorsForInvalidCodes !== 'boolean') {
+      throw new Error(`modules.tx.errorsForInvalidCodes must be true or false, not ${JSON.stringify(config.errorsForInvalidCodes)}`);
+    }
+    this.log.info(`Invalid codes in value set includes: ${config.errorsForInvalidCodes === true ? 'an error' : 'left out, with a warning'} (errorsForInvalidCodes)`);
 
     // Optional instance code, prefixed onto every cache-id this server issues so a
     // proxy in front of several instances can route by it (see nginx.md). Checked
@@ -979,6 +983,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start, req);
@@ -988,6 +993,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start, req);
@@ -1164,6 +1170,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start, req);
@@ -1173,6 +1180,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$expand', Date.now() - start, req);

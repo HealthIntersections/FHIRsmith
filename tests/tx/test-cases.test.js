@@ -14339,7 +14339,7 @@ describe('icf-ec', () => {
 
 });
 
-describe('cached (forced caching)', () => {
+describe('cached (forced caching, errorsForInvalidCodes switched)', () => {
   beforeAll(() => { setForcedCaching(true); });
   afterAll(() => { setForcedCaching(false); });
 

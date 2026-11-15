@@ -21,7 +21,7 @@ const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = req
 const {Parameters} = require("../library/parameters");
 const {Designations, DisplayCheckingStyle, DisplayDifference, SearchFilterText} = require("../library/designations");
 const ValueSet = require("../library/valueset");
-const {ValueSetExpander} = require("./expand");
+const {ValueSetExpander, UNKNOWN_CONCEPT_FILTER_PROPS, UNKNOWN_CONCEPT_FILTER_OPS} = require("./expand");
 const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
@@ -370,6 +370,68 @@ class ValueSetChecker {
     }
   }
 
+  /**
+   * What makes the value set invalid: a code an include lists, or an include filter selects by
+   * (is-a etc.), that isn't in its code system - the same things $expand reports (see
+   * ValueSetExpander.#unknownCode), in the same words. Only asked for when a code has failed
+   * to validate, so a value set that is used successfully costs nothing. A code system that
+   * isn't complete (a fragment) can't say a code isn't in it, so it isn't checked
+   * @returns {Promise<string[]>} the messages, in the order the includes give them
+   */
+  /**
+   * Whether a code is in the code system (a provider that can't say - it fails - is taken as no)
+   */
+  async codeKnown(cs, code) {
+    try {
+      const loc = await cs.locate(code);
+      return !!(loc && loc.context);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Whether an include filter selects by concept on a code the code system doesn't have: it
+   * matches nothing (the value set is invalid - see invalidContentMessages)
+   */
+  async filterNamesUnknownCode(cs, fc) {
+    return !!fc.value && UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) && UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)
+      && !(await this.codeKnown(cs, fc.value));
+  }
+
+  async invalidContentMessages() {
+    const res = [];
+    const compose = this.valueSet.jsonObj.compose;
+    for (const cc of (compose && compose.include) || []) {
+      this.worker.deadCheck('invalidContentMessages');
+      if (!cc.system) {
+        continue;
+      }
+      let cs = null;
+      try {
+        const v = this.worker.determineVersionBase(cc.system, cc.version, this.params);
+        cs = await this.worker.findCodeSystem(cc.system, v, this.params, ['complete', 'fragment'], null, true, false, false, this.worker.requiredSupplements);
+      } catch (e) {
+        cs = null;
+      }
+      if (!cs || cs.contentMode() !== 'complete') {
+        continue;
+      }
+      const system = cs.version() ? cs.system() + '|' + cs.version() : cs.system();
+      for (const c of storedList(cc) ? [] : (cc.concept || [])) {
+        if (!(await this.codeKnown(cs, c.code))) {
+          res.push(this.worker.i18n.translate('VALUESET_EXPANSION_INCLUDE_UNKNOWN_CODE_ERROR', this.params.HTTPLanguages, [c.code, system]));
+        }
+      }
+      for (const f of cc.filter || []) {
+        if (await this.filterNamesUnknownCode(cs, f)) {
+          res.push(this.worker.i18n.translate('VALUESET_EXPANSION_FILTER_UNKNOWN_CODE_ERROR', this.params.HTTPLanguages, [f.property, f.op, f.value, system]));
+        }
+      }
+    }
+    return res;
+  }
+
   async prepareConceptSet(desc, cc, vs) {
     this.worker.deadCheck('prepareConceptSet');
     Extensions.checkNoModifiers(cc, 'ValueSetChecker.prepare', 'ValueSet.compose.' + desc, vs.vurl);
@@ -411,7 +473,9 @@ class ValueSetChecker {
           throw new Issue('error', 'invalid', "ValueSet.compose."+desc+".filter["+i+"]", 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE',
             this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), ccf.property, ccf.op]), "vs-invalid").handleAsOO(400);
         }
-        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op)) && !(await supplementFilter(cs, ccf))) {
+        // (a filter on a concept the code system doesn't have is supported - it matches nothing)
+        if (!(ccf.property === 'concept' && ['is-a', 'descendent-of'].includes(ccf.op)) && !(await supplementFilter(cs, ccf))
+            && !(await this.filterNamesUnknownCode(cs, ccf))) {
           if (!(await cs.doesFilter(ccf.property, ccf.op, ccf.value))) {
             throw new Issue('error', 'not-supported', "ValueSet.compose."+desc+".filter["+i+"]", 'FILTER_NOT_UNDERSTOOD', this.worker.i18n.translate('FILTER_NOT_UNDERSTOOD', 
               this.params.HTTPLanguages, [ccf.property, ccf.op, ccf.value, this.valueSet.url, cs.system()]), "vs-invalid").handleAsOO(422);
@@ -1362,6 +1426,17 @@ class ValueSetChecker {
       }
     }
 
+    // the code failed: if the value set itself is invalid (it names codes its code systems don't
+    // have), say so too - that may be why
+    if (ok === false && !this.valueSet.jsonObj.internallyDefined) {
+      for (const reason of await this.invalidContentMessages()) {
+        const m = this.worker.i18n.translate('VALUESET_INVALID_FOR_VALIDATION', this.params.HTTPLanguages, [this.valueSet.vurlOrMsg, reason]);
+        if (op.addIssue(new Issue('error', 'invalid', null, 'VALUESET_INVALID_FOR_VALIDATION', m, 'vs-invalid'))) {
+          msg(m);
+        }
+      }
+    }
+
     // the answer, which is not the same as ok: a coding can be in the value set and still carry an
     // error of its own (an unknown version, say), and then the CodeableConcept is not valid
     let valid = ok === true && !op.hasErrors();
@@ -1859,6 +1934,13 @@ class ValueSetChecker {
       for (let fc of cfl) {
         if (!fc.value) {
           throw new Issue('error', 'invalid', null, 'UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.worker.i18n.translate('UNABLE_TO_HANDLE_SYSTEM_FILTER_WITH_NO_VALUE', this.params.HTTPLanguages, [cs.system(), fc.property, fc.op]));
+        }
+      }
+      // a filter that selects by concept on a code the code system doesn't have matches nothing,
+      // whatever the code system would make of it (some fail)
+      for (const fc of cfl) {
+        if (await this.filterNamesUnknownCode(cs, fc)) {
+          return false;
         }
       }
       // filters on properties that supplements in use define are evaluated from the supplements;

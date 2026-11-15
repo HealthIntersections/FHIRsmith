@@ -45,6 +45,11 @@ const TotalStatus = {
  * Wraps an already-expanded ValueSet for fast code lookups
  * Used when importing ValueSets during expansion
  */
+// include filters that select by concept: one that names a code the code system doesn't have is
+// reported (see ValueSetExpander.#filterNamesUnknownCode)
+const UNKNOWN_CONCEPT_FILTER_PROPS = new Set(['concept', 'code']);
+const UNKNOWN_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'descendent-leaf', 'generalizes']);
+
 class ImportedValueSet {
   /**
    * @param {Object} valueSet - Expanded ValueSet resource
@@ -630,12 +635,73 @@ class ValueSetExpander {
   }
 
   /**
+   * A code that an include lists (compose.include.concept) isn't in its code system. If the
+   * server is configured to treat that as an error (modules.tx.errorsForInvalidCodes), the value
+   * set can't be expanded: a 422. Otherwise the code is left out, and the expansion says so with
+   * an expansion-issue (see expand()). A code missing from a fragment or example code system may
+   * be in some other part of it, so that is only ever a warning
+   */
+  #unknownListedCode(cs, code) {
+    const system = this.canonical(cs.system(), cs.version());
+    this.#unknownCode(cs, 'VALUESET_EXPANSION_INCLUDE_UNKNOWN_CODE', [code, system], system + '#' + code);
+  }
+
+  /**
+   * An include filter that selects by concept (is-a, descendent-of, child-of, descendent-leaf,
+   * generalizes, =) names a code that isn't in its code system: like a listed code that isn't
+   * (see #unknownListedCode), the value set can't be expanded (errorsForInvalidCodes), or the
+   * include contributes no codes, and the expansion says so. Checked here, before the provider is
+   * asked, so every code system behaves the same way (left to themselves, some return nothing,
+   * some fail). is-not-a, in, not-in and regex are not checked
+   * @returns {Promise<boolean>} true if a filter names an unknown code (the include is skipped)
+   */
+  async #filterNamesUnknownCode(cs, filters) {
+    let unknown = false;
+    for (const fc of filters) {
+      if (!fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) {
+        continue;
+      }
+      let loc = null;
+      try {
+        loc = await cs.locate(fc.value);
+      } catch (e) {
+        loc = null;
+      }
+      if (!loc || !loc.context) {
+        const system = this.canonical(cs.system(), cs.version());
+        this.#unknownCode(cs, 'VALUESET_EXPANSION_FILTER_UNKNOWN_CODE', [fc.property, fc.op, fc.value, system],
+          system + '#' + fc.property + ' ' + fc.op + ' ' + fc.value);
+        unknown = true;
+      }
+    }
+    return unknown;
+  }
+
+  /**
+   * A code the value set names isn't in its code system: an error if the server is configured
+   * that way (errorsForInvalidCodes; the message id with _ERROR), else noted for an
+   * expansion-issue warning (see expand()). A fragment or example code system is only ever warned about
+   */
+  #unknownCode(cs, msgId, params, key) {
+    if (this.worker.errorsForInvalidCodes && cs.contentMode() === 'complete') {
+      throw new Issue('error', 'code-invalid', null, msgId + '_ERROR',
+        this.worker.i18n.translate(msgId + '_ERROR', this.params.HTTPLanguages, params), 'invalid-code', 422);
+    }
+    if (!this.unknownCodes) {
+      this.unknownCodes = new Map();
+    }
+    if (!this.unknownCodes.has(key)) {
+      this.unknownCodes.set(key, { msgId, params });
+    }
+  }
+
+  /**
    * Tell the user something about how the expansion was made that they should know (e.g. that
    * codes are missing, and why): an expansion-issue extension on the expansion, referring to a
    * contained OperationOutcome with the issue
    * @param {Object} vs the ValueSet being returned
    * @param {Object} exp its expansion
-   * @param {Issue} issue the issue
+   * @param {Issue|Issue[]} issue the issue (or issues, reported in one OperationOutcome)
    */
   addExpansionIssue(vs, exp, issue) {
     if (!vs.contained) {
@@ -646,7 +712,7 @@ class ValueSetExpander {
       n++;
     }
     const id = 'oo' + n;
-    vs.contained.push({ resourceType: 'OperationOutcome', id, issue: [issue.asIssue()] });
+    vs.contained.push({ resourceType: 'OperationOutcome', id, issue: (Array.isArray(issue) ? issue : [issue]).map(i => i.asIssue()) });
     if (!exp.extension) {
       exp.extension = [];
     }
@@ -826,6 +892,7 @@ class ValueSetExpander {
     }
     let worker = new ExpandWorker(this.worker.opContext, this.worker.log, this.worker.provider, this.worker.languages, this.worker.i18n);
     worker.additionalResources = this.worker.additionalResources;
+    worker.errorsForInvalidCodes = this.worker.errorsForInvalidCodes;
     // we're going to let this one do more expansion for technical reasons
     let paramsInner = this.params.clone();
     paramsInner.limit = this.internalLimit;
@@ -1345,7 +1412,11 @@ class ValueSetExpander {
             cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, prefetched);
-            if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
+            if (!cctxt || !cctxt.context) {
+              this.#unknownListedCode(cs, cc.code);
+              continue;
+            }
+            if ((!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
               let added;
               const ecode = await cs.expansionCode(cctxt.context, cc.code);
               const walked = await this.#beforePage(cs, cs.system(), cs.version(), ecode, await cs.isInactive(cctxt.context), excludeInactive, valueSets);
@@ -1391,7 +1462,7 @@ class ValueSetExpander {
           this.worker.opContext.log('iterate concepts done');
         }
 
-        if (cset.filter && cset.filter.length > 0) {
+        if (cset.filter && cset.filter.length > 0 && !(await this.#filterNamesUnknownCode(cs, cset.filter))) {
           this.worker.opContext.log('prepare filters');
           const fcl = cset.filter;
           const prep = await cs.getPrepContext(true, this.params.requestedLanguages());
@@ -2169,6 +2240,11 @@ class ValueSetExpander {
     for (const v of ts) {
       this.addParamUri(exp, 'used-supplement', v);
     }
+    if (this.unknownCodes && this.unknownCodes.size > 0) {
+      this.addExpansionIssue(result, exp, [...this.unknownCodes.values()].map(u =>
+        new Issue('warning', 'code-invalid', null, u.msgId,
+          this.worker.i18n.translate(u.msgId, this.params.HTTPLanguages, u.params), 'invalid-code')));
+    }
     if (this.capCut) {
       this.addExpansionIssue(result, exp, new Issue('warning', 'business-rule', null, 'VALUESET_EXPANSION_CODESYSTEM_LIMITED',
         this.worker.i18n.translate('VALUESET_EXPANSION_CODESYSTEM_LIMITED', this.params.httpLanguages, [this.capCut.system, this.capCut.limit]), 'business-rule'));
@@ -2690,6 +2766,7 @@ class ValueSetExpander {
       await this.worker.checkAndYield('countListedCodes');
       const cctxt = await cs.locate(cc.code, prefetched);
       if (!cctxt || !cctxt.context) {
+        this.#unknownListedCode(cs, cc.code);
         continue;
       }
       const inactive = await cs.isInactive(cctxt.context);
@@ -2892,6 +2969,9 @@ class ExpandWorker extends TerminologyWorker {
     this.externalLimit = externalLimit;
     this.internalLimit = internalLimit;
     this.walkLimit = walkLimit;
+    // a code listed in an include that isn't in its code system: an error (the value set can't
+    // be expanded), or left out with a warning (modules.tx.errorsForInvalidCodes; false)
+    this.errorsForInvalidCodes = false;
   }
 
   /**
@@ -3231,5 +3311,7 @@ module.exports = {
   WALK_LIMIT_FACTOR,
   EXTERNAL_DEFAULT_LIMIT,
   TotalStatus,
-  DEFERRED_DETAILS
+  DEFERRED_DETAILS,
+  UNKNOWN_CONCEPT_FILTER_PROPS,
+  UNKNOWN_CONCEPT_FILTER_OPS
 };

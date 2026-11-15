@@ -121,8 +121,10 @@ describe('Tx Tests', () => {
     // Third pass: run everything again with the expansion cache forced on,
     // regardless of how long each expansion takes. This exercises cache
     // correctness (e.g. that language settings are part of the cache key) that
-    // the fast, normally-uncached runs above cannot.
-    output += `describe('cached (forced caching)', () => {\n`;
+    // the fast, normally-uncached runs above cannot. It also runs with
+    // errorsForInvalidCodes the other way round (see setForcedCaching), so tests
+    // that accept either behaviour ("200|4xx") are run both ways.
+    output += `describe('cached (forced caching, errorsForInvalidCodes switched)', () => {\n`;
     output += `  beforeAll(() => { setForcedCaching(true); });\n`;
     output += `  afterAll(() => { setForcedCaching(false); });\n\n`;
     output += emitSuites('-cached', true);
