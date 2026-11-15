@@ -5,7 +5,9 @@
 //
 
 /**
- * The nationality step - the first processing step: which nation an IPS document is from,
+ * The nationality step - the first processing step: which jurisdiction an IPS document is from
+ * (shown as "jurisdiction" in the HTML: IPS specifications exist for provinces and for regions
+ * like the EU, not just nations),
  * as far as the document itself says. Few national IGs give a way to tell, so this is a
  * short list of signs, to grow as more are found:
  *
@@ -101,9 +103,9 @@ function nationalityText(result) {
   }
   if (reasons.length > 0) {
     const nations = [...new Set(reasons.map(r => r.jurisdiction))];
-    return `Nationality unknown: the document has signs of more than one nation (${nations.map(n => `${n}: ${reasons.filter(r => r.jurisdiction === n).map(r => r.text).join('; ')}`).join(' - ')})`;
+    return `Jurisdiction unknown: the document has signs of more than one jurisdiction (${nations.map(n => `${n}: ${reasons.filter(r => r.jurisdiction === n).map(r => r.text).join('; ')}`).join(' - ')})`;
   }
-  return 'Nationality unknown: nothing in the document says which nation it is from (only US and Australian documents can be recognised so far)';
+  return 'Jurisdiction unknown: nothing in the document says which jurisdiction it is from (only US and Australian documents can be recognised so far)';
 }
 
 const nationalityStep = {
@@ -113,7 +115,7 @@ const nationalityStep = {
     const result = determineNationality(row.bundle);
     module.store.saveResult(row.id, 'nationality', { ms: Date.now() - started, ...result });
     module.store.setNationality(row.id, result.jurisdiction);
-    return `nationality: ${result.jurisdiction || 'unknown'}`;
+    return `jurisdiction: ${result.jurisdiction || 'unknown'}`;
   }
 };
 

@@ -72,13 +72,14 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
-| `xmlCacheMB`                    | integer | No       | Most XML, in MB, kept per process for large resources served as XML (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. The budget counts characters: XML with text outside Latin-1 (Chinese or Arabic displays, say) takes two bytes a character, so in the worst case the cache uses twice this. 0: none. Default: 256 |
+| `xmlCacheMB`                    | integer | No       | Most XML and JSON, in MB, kept per process for large resources (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. The budget counts characters: XML with text outside Latin-1 (Chinese or Arabic displays, say) takes two bytes a character, so in the worst case the cache uses twice this. 0: none. Default: 256 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
 | `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
 | `pruneTerminologyCache`        | boolean | No       | Once the library and every endpoint's core packages have loaded, delete what in `terminology-cache` wasn't used: the `.db` and `.cache` files (the downloaded databases and SNOMED CT caches of sources no longer in the library, and the fallback of an `a\|b` source whose first file is there), with their SQLite side files; and the package folders (`id#version`: packages no longer in the library, older versions of ones that are, the core packages of FHIR versions no endpoint has, and what failed downloads left), with the value set and concept map caches in them. Other files and folders (`vsac`, `ocl`, `syndication`, `folder-source-*`) are left alone, and so is anything changed in the last day (it may be being copied in for a library that doesn't name it yet). In a cluster, only the master deletes. Default: false: everything run from the same data directory (a development server and the tests, say) shares `terminology-cache`, and what one doesn't use another may |
 | `internalLimit`                 | integer | No       | Most codes in the expansion of a value set that an `$expand` imports (`compose.include.valueSet`). Default: 100000. Over it, the `$expand` fails with 422 too-costly. Also the most the `x-too-costly-threshold` header can ask for. Other internal expansions (in `$validate-code`, for one) use 10000 and don't read the setting |
 | `externalLimit`                 | integer | No       | Most codes an `$expand` returns. Default: 10000 (or `internalLimit`, if that is less). Over it, an expansion asked for without `count` fails with 422 too-costly (`VALUESET_TOO_COSTLY`, "... has too many codes to produce (>10000)"); a `count` bigger than it is cut down to it. A request can change it with the `x-too-costly-threshold` header (see below): the tx-ecosystem tests that depend on a limit set it |
 | `walkLimit`                     | integer | No       | How far a paged `$expand` (`count` and `offset`) may walk to reach its page: the most `offset + count`. Default: 10 x `internalLimit` (1000000). Only the page is built - the codes before it are passed keeping just their keys - so a page can lie well past `externalLimit`, which still caps `count`. Over it, the `$expand` fails with 422 too-costly (`VALUESET_TOO_COSTLY_PAGE`, "... can't be paged to offset ... with count ...: the server walks at most 1000000 codes to reach a page"); a value set that ends before the offset is an empty page, not a refusal. The walk is also bounded by `operationTimeLimit`. Any page, the first too, builds only its own codes; the codes after it are counted by key for the total, which is reported only when the whole expansion is within `externalLimit`, as for an unpaged one. Not for a request with a text filter: there, `offset + count` must still be within `externalLimit` |
+| `errorsForInvalidCodes`         | boolean | No       | What `$expand` does with a code that an include lists (`compose.include.concept`) that isn't in its code system. `false` (the default): the code is left out of the expansion, and the expansion says so - an `expansion-issue` extension referring to a contained OperationOutcome with a warning (`VALUESET_EXPANSION_INCLUDE_UNKNOWN_CODE`) for each such code. `true`: the value set can't be expanded - 422, `VALUESET_EXPANSION_INCLUDE_UNKNOWN_CODE_ERROR`. The same goes for an include filter that selects by concept (`is-a`, `descendent-of`, `child-of`, `descendent-leaf`, `generalizes`, `=` on `concept` or `code`) on a code that isn't there: the include adds no codes, with a warning (`VALUESET_EXPANSION_FILTER_UNKNOWN_CODE`), or the expansion fails (`..._ERROR`). A code missing from a fragment or example code system is only ever a warning. Applies to value sets an `$expand` imports too; the internal expansions of other operations (`$validate-code`) are not affected |
 | `operationTimeLimit`            | integer | No       | Seconds of compute one operation may use (sub-operations share it). Default: 20. Time spent waiting - for the event loop, or in a queue before the operation starts - doesn't count. Over it, the operation fails with 422 too-costly ("Operation exceeded time limit of 20 seconds at ..."). The default sits under common client timeouts (okhttp gives up after 10-30 s): with a limit at or over the client's, the client hangs up first and never sees the OperationOutcome |
 | `slowRequestSeconds`            | number  | No       | A request that takes at least this long (seconds) gets a second log line, a warning, saying what it asked: the method and url, the `Accept-Language`, and the body's parameters (a Coding as `system\|version#code 'display'`, a resource as its type, url and size), up to 4000 characters - enough to repeat it. Default: 30. 0: no such line |
 | `ecosystem`                     | object  | No       | Answering for code systems that aren't held here by asking other servers in the terminology ecosystem - see [Ecosystem Resolution](#ecosystem-resolution) below. Default: not used |
@@ -131,6 +132,13 @@ in the background: a request never waits for a refresh, only the first request f
 other servers' answers to `$lookup` and `$validate-code` are kept for an hour too (the most recent
 10,000), so the same question is only asked once. Requests that had to ask another server are
 counted, and graphed, separately on the home page (External requests).
+
+Only a code system that is a URI (`http://...`, `urn:oid:...`) is looked for: `1`, `LOINC` or a
+url with a version glued on aren't sent to the registry. A server registered as `http://` is asked
+over `https://` first, and over `http://` only if it doesn't answer on `https://` at all (no
+connection, a TLS failure, or no answer within 10 seconds); which one works is remembered for an
+hour. Redirects are followed (up to 5), every address under the same SSRF rules; a request that
+carries credentials is only followed to the same host.
 
 ### VSAC Configuration
 
@@ -504,6 +512,14 @@ Loads LOINC from a SQLite database file.
 The filename is downloaded from the base URL if not cached. Database files must be in the server's proprietary format.
 The file is built by importing LOINC (see [documentation](importers/readme.md))
 
+A text filter (`$expand` with `filter`) searches the database's text index: every name of a code in
+the search language - in English, the display and the other English names; never the RELATEDNAMES2
+keywords - by the rules every code system's text search follows (see [Text filters](#text-filters)).
+A database whose index is older (FHIRsmith 1.0.2 and earlier, or an early 1.0.3) is searched as
+before, for the whole filter text in the display, and the server says so once at startup; bring it
+up to date, while no server has it open, with `tx-import loinc upgrade-text-index -d <file>` (no new
+import needed).
+
 #### `rxnorm` - RxNorm
 
 Loads RxNorm drug terminology from a SQLite database file.
@@ -756,3 +772,34 @@ All errors are returned as FHIR OperationOutcome resources:
 - Write operations (PUT, POST, DELETE, PATCH) on resources are not supported and return 405 Method Not Allowed
 - The Library is loaded once at startup; changes to the YAML source require a server restart
 - Each endpoint has it's own Provider instance
+
+## Text filters
+
+A text filter (`$expand` with `filter`) matches by the same rules in every code system - SNOMED CT,
+LOINC, RxNorm, ICD-11, code systems from packages, and the supplements in use
+(`tx/library/text-match.js`):
+
+* **Names.** A code matches when one of its names in the search language (its display, or one
+  designation: the words can't be spread over two) has every word of the filter, in any order, each
+  as the start of one of its words or with the same stem. A code also matches when it starts with the
+  filter as given - a straight left match, without regard to case, but not split into words, stemmed
+  or folded: people search by code too.
+* **Words.** Text is folded - lower case, and accents dropped from Latin, Greek and Cyrillic letters
+  (in other scripts marks are part of the spelling, and are kept) - and its words are the runs of
+  Unicode letters, marks and digits. Numbers are words.
+* **Stems.** Each word is stemmed with the best stemmer there is for the language of its text: English,
+  French, German, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Russian, Ukrainian, Persian
+  and Indonesian. A language without one isn't stemmed.
+* **The filter.** Its first 100 characters, at most 10 words, each once. The stop words a, an, and, as,
+  at, by, for, from, in, into, of, on, or, the, to are left out, unless that leaves nothing. A single
+  letter or digit only matches that word: `hepatitis b` doesn't find hepatitis C.
+* **The language** is the first the request names (`displayLanguage`, else `Accept-Language`) that the
+  code system or a supplement in use has text in, else the code system's own, compared at the primary
+  language subtag.
+
+The code systems held in a database (LOINC, RxNorm, ICD-11) answer from a text index in it that holds
+each name's words and stems, made by FHIRsmith, so SQLite only looks them up; the importers build it,
+and each has a way to build it in an existing database without importing again (see
+[the importers](importers/readme.md)). The others answer from an index in memory, built the first time
+they are searched.
+

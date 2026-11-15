@@ -403,6 +403,14 @@ async function initializeModules() {
       if (config.modules.ips.shl && !config.modules.ips.shl.password && config.modules.shl?.password) {
         config.modules.ips.shl = { server: '/shl', ...config.modules.ips.shl, password: config.modules.shl.password };
       }
+      // the SHL viewer checks VHL signatures with the certificates it trusts: this server's own
+      // shl module's (it signs the VHLs the ips module shares), unless told otherwise
+      const ownCert = config.modules.shl?.enabled && config.modules.shl.certificates;
+      if (ownCert?.certFile && ownCert.kid && config.modules.ips.viewer?.trustOwnShl !== false) {
+        const viewer = config.modules.ips.viewer || {};
+        config.modules.ips.viewer = { ...viewer, trust: [...(Array.isArray(viewer.trust) ? viewer.trust : []),
+          { kid: ownCert.kid, name: 'this server\'s shl module', certFile: folders.filePath('shl', ownCert.certFile) }] };
+      }
       modules.ips = new IpsModule(stats.forModule('ips'));
       await modules.ips.initialize(config.modules.ips, app);
       app.use('/ips', modules.ips.router);

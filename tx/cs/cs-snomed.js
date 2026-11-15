@@ -1,4 +1,4 @@
-const { CodeSystemContentMode, CodeSystemFactoryProvider, cannotDetermineSubsumption} = require('./cs-api');
+const { CodeSystemContentMode, CodeSystemFactoryProvider, CodeSystemProvider, cannotDetermineSubsumption} = require('./cs-api');
 const {
   SnomedStrings, SnomedWords, SnomedStems, SnomedReferences,
   SnomedDescriptions, SnomedDescriptionIndex, SnomedConceptList,
@@ -17,7 +17,8 @@ const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType, wildTermMatcher} = requir
 const {Issue} = require("../library/operation-outcome");
 const {debugLog} = require("../operation-context");
 const {editionName, editionCode, SNOMED_LINKABLE_EDITIONS} = require("../sct/editions");
-const {SnomedTextIndex, rankMatches, filterTokens} = require("../sct/text-index");
+const {SnomedTextIndex, rankMatches} = require("../sct/text-index");
+const { TextQuery } = require("../library/text-match");
 const Logger = require("../../library/logger");
 const {Language} = require("../../library/languages");
 const regexUtilities = require("../../library/regex-utilities");
@@ -2489,21 +2490,62 @@ class SnomedServices {
    * @returns {Promise<SnomedFilterContext>}
    */
   async searchFilter(searchText, includeInactive = false, opContext = null, lang = null) {
-    const filterText = (searchText && searchText.filter ? searchText.filter : '').toLowerCase().trim();
-    const tokens = filterTokens(filterText);
+    const query = searchText && searchText.query ? searchText.query : new TextQuery(searchText && searchText.filter ? searchText.filter : '');
+    const langCode = (lang !== null && SCT_LANGUAGE_CODES[lang]) || 'en';
+    const tokens = query.tokens(langCode);
+    let result = null;
     if (tokens.length > 0) {
       const index = await this.getTextIndex(opContext, lang);
       if (index) {
-        const result = new SnomedFilterContext();
+        result = new SnomedFilterContext();
         const ordinals = index.search(tokens, opContext);
         if (opContext) {
           await opContext.checkAndYield('sct:searchFilter');
         }
-        result.matches = rankMatches(this, index, ordinals, filterText, tokens, includeInactive);
-        return result;
+        result.matches = await rankMatches(this, index, ordinals, query, langCode, lang, includeInactive, opContext);
       }
     }
-    return await this.scanSearch(filterText, includeInactive, opContext, lang);
+    if (!result) {
+      result = tokens.length > 0 ? await this.scanSearch(query.text, includeInactive, opContext, lang) : new SnomedFilterContext();
+      result.matches ??= [];
+    }
+    this.#addCodeMatches(result, query, includeInactive);
+    return result;
+  }
+
+  /**
+   * Add the concepts whose identifier starts with the filter (people search by code too), at
+   * the front: the concept itself (100), then those it is the start of (90), in identifier order
+   */
+  #addCodeMatches(result, query, includeInactive) {
+    if (!/^[0-9]{1,18}$/.test(query.code)) {
+      return;
+    }
+    const prefix = BigInt(query.code);
+    const size = this.concepts.constructor.CONCEPT_SIZE;
+    const count = this.concepts.count();
+    const found = [];
+    // identifiers are sorted as numbers: the ones that start with the digits are a range for
+    // each length an identifier can have
+    for (let length = query.code.length; length <= 18; length++) {
+      const scale = 10n ** BigInt(length - query.code.length);
+      const low = prefix * scale;
+      const high = (prefix + 1n) * scale;
+      for (let ordinal = this.concepts.findConcept(low).index / size; ordinal < count; ordinal++) {
+        const id = this.concepts.getConceptId(ordinal * size);
+        if (id >= high) {
+          break;
+        }
+        if (includeInactive || this.isActive(ordinal * size)) {
+          found.push({ index: ordinal * size, term: id, priority: query.codeRank(id.toString()) });
+        }
+      }
+    }
+    if (found.length === 0) {
+      return;
+    }
+    const have = new Set(found.map(m => m.index));
+    result.matches = found.sort((a, b) => b.priority - a.priority).concat(result.matches.filter(m => !have.has(m.index)));
   }
 
   // whether lang is the only language the edition has active descriptions in (then there is
@@ -2554,7 +2596,7 @@ class SnomedServices {
     // Logger fetched lazily: importers and tests require this module too
     const textIndexLog = Logger.getInstance().child({module: 'tx-sct'});
     const which = lang === null ? '' : ` (language ${lang})`;
-    return SnomedTextIndex.build(this, lang).then(index => {
+    return SnomedTextIndex.build(this, lang, SCT_LANGUAGE_CODES).then(index => {
       onBuilt(index);
       textIndexLog.info(`SNOMED text index for ${this.versionUri}${which}: ${index.words.length} words, built in ${Date.now() - started}ms`);
       return index;
@@ -3965,6 +4007,18 @@ class SnomedProvider extends BaseCSServices {
     set.populationDone = true;
   }
 
+  /**
+   * The concept's own display (the edition's preferred term), for leaving out what a supplement
+   * only copies (see CodeSystemProvider._rootDisplay)
+   */
+  async _rootDisplay(code) {
+    try {
+      return /^\d+$/.test(code) ? (this.sct.getDisplayName(code) || null) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Search filter
   // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
@@ -3976,12 +4030,14 @@ class SnomedProvider extends BaseCSServices {
     let f = await this.sct.searchFilter(filter, false, this.opContext, lang);
     if (this.supplements && this.supplements.length > 0) {
       const have = new Set(f.matches.map(m => m.index));
-      for (const code of this._supplementSearchCodes(filter, new Language(SCT_LANGUAGE_CODES[lang] || 'en'))) {
+      const sources = new Map();
+      for (const code of await this._supplementSearchCodes(filter, new Language(SCT_LANGUAGE_CODES[lang] || 'en'), sources)) {
         const id = this.sct.stringToIdOrZero(code);
         const r = id !== 0n ? this.sct.concepts.findConcept(id) : null;
         if (r && r.found && !have.has(r.index) && this.sct.isActive(r.index)) {
           f.matches.push({ index: r.index, term: this.sct.concepts.getConceptId(r.index), priority: 10 });
           have.add(r.index);
+          CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
         }
       }
     }

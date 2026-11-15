@@ -6,6 +6,7 @@ const readline = require('readline');
 const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
 const terminal = require('./terminal');
+const { buildTextIndex } = require('./loinc-text-index');
 
 class LoincModule extends BaseTerminologyModule {
   constructor() {
@@ -60,6 +61,15 @@ class LoincModule extends BaseTerminologyModule {
       .option('-s, --source <directory>', 'Source directory to validate')
       .action(async (options) => {
         await this.handleValidateCommand({...globalOptions, ...options});
+      });
+
+    // Upgrade the text index of an existing database (no new import)
+    terminologyCommand
+      .command('upgrade-text-index')
+      .description('Rebuild the text index of a LOINC database (stemmed, with every display), without importing again')
+      .option('-d, --dest <file>', 'Database file to upgrade')
+      .action(async (options) => {
+        await this.handleUpgradeTextIndexCommand({...globalOptions, ...options});
       });
 
     // Status command
@@ -199,6 +209,29 @@ class LoincModule extends BaseTerminologyModule {
 
     } catch (error) {
       this.logError(`Validation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Rebuild TextIndex in place (loinc-text-index.js): for a database imported before the index
+   * was stemmed and had every code's display. Run it while no server has the file open
+   */
+  async handleUpgradeTextIndexCommand(options) {
+    const dbPath = options.dest;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      this.logError(`Database not found: ${dbPath || '(give it with -d)'}`);
+      return;
+    }
+    this.logInfo(`Rebuilding the text index of ${dbPath}`);
+    const db = new sqlite3.Database(dbPath);
+    const start = Date.now();
+    try {
+      const rows = await buildTextIndex(db, (msg) => terminal.log(`  ${msg}`));
+      this.logSuccess(`Text index rebuilt: ${rows.toLocaleString()} names, in ${((Date.now() - start) / 1000).toFixed(0)} s`);
+    } catch (error) {
+      this.logError(`Rebuilding the text index failed: ${error.message}`);
+    } finally {
+      await new Promise((resolve) => db.close(() => resolve()));
     }
   }
 
@@ -680,6 +713,10 @@ class LoincDataMigrator {
       }
 
       await exec('COMMIT');
+
+      // the text index, from what's now in Codes and Descriptions (loinc-text-index.js)
+      this.updateProgress(0, 'Text Index');
+      await buildTextIndex(db, (msg) => options.verbose && terminal.log(msg));
       if (options.verbose) terminal.log('LOINC data migration completed successfully');
     } finally {
       await this.closeDatabase(db, options.verbose);
@@ -770,13 +807,8 @@ class LoincDataMigrator {
                                 AncestorKey INTEGER NOT NULL,
                                 DescendentKey INTEGER NOT NULL,
                                 PRIMARY KEY (AncestorKey, DescendentKey)
-       )`,
-      `CREATE VIRTUAL TABLE TextIndex USING fts5(
-        codekey UNINDEXED,
-        type UNINDEXED, 
-        lang UNINDEXED,
-        text
-      )`
+       )`
+      // TextIndex is built at the end, from Codes and Descriptions (loinc-text-index.js)
     ];
 
     return new Promise((resolve, reject) => {
@@ -1542,9 +1574,6 @@ class LoincDataMigrator {
     this.descKey++;
     db.run('INSERT INTO Descriptions (DescriptionKey, CodeKey, LanguageKey, DescriptionTypeKey, Value) VALUES (?, ?, ?, ?, ?)',
       [this.descKey, codeKey, languageKey, descriptionType, value]);
-
-    db.run('INSERT INTO TextIndex (codekey, type, lang, text) VALUES (?, ?, ?, ?)',
-      [codeKey, descriptionType, languageKey, value]);
   }
 
   addProperty(db, codeKey, propertyType, value) {

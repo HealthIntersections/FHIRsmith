@@ -41,6 +41,9 @@ function displayRank(tty) {
 // holds every source's (MTHSPL, VANDF...), and they are all imported
 const RELATIONSHIP_SAB = 'RXNORM';
 
+const { TEXT_INDEX_TABLE, isCurrentTextIndex } = require('../importers/rxnorm-text-index');
+const { TextQuery } = require('../library/text-match');
+
 // indexes the provider needs beyond what older imports made (see also import-rxnorm.module.js)
 const RXNORM_LOAD_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)',
@@ -116,6 +119,7 @@ class RxNormServices extends BaseCSServices {
     this.rels = sharedData.rels;
     this.reltypes = sharedData.reltypes;
     this.totalCodeCount = sharedData.totalCodeCount;
+    this.textIndex = !!sharedData.textIndex;
   }
 
   close() {
@@ -528,7 +532,16 @@ class RxNormServices extends BaseCSServices {
     return stem.length > 2 && /^[a-z]/.test(stem);
   }
 
+  /**
+   * A text filter matches, by the rules every provider's search follows (text-match.js), the
+   * concepts with a name (any of their RxNorm names) that has every word of the filter, and those
+   * whose code starts with it. Searched in RXNTEXT (rxnorm-text-index.js); a database made before
+   * it, in RXNSTEMS, as before
+   */
   async searchFilter(filterContext, filter, sort) {
+    if (this.textIndex && filter) {
+      return this.#textSearchFilter(filterContext, filter);
+    }
 
     if (!filter || !filter.stems || filter.stems.length === 0) {
       throw new Error('Invalid search filter');
@@ -557,6 +570,26 @@ class RxNormServices extends BaseCSServices {
     if (sort) {
       // TODO
     }
+  }
+
+  #textSearchFilter(filterContext, filter) {
+    const query = filter.query || new TextQuery(filter.filter || (filter.stems || []).join(' '));
+    const cf = this.getCodeField();
+    const n = filterContext.filters.length; // parameter names of their own
+    const rxnormFilter = new RxNormFilterHolder();
+    const conds = [];
+    const fts = query.ftsQuery('en');
+    if (fts) {
+      conds.push(`rxnconso.${cf} IN (SELECT cui FROM ${TEXT_INDEX_TABLE} WHERE ${TEXT_INDEX_TABLE} MATCH $text${n})`);
+      rxnormFilter.params[`text${n}`] = fts;
+    }
+    query.codeRanges(filter.filter).forEach(([low, high], i) => {
+      conds.push(`(rxnconso.${cf} >= $codeLow${n}_${i} AND rxnconso.${cf} < $codeHigh${n}_${i})`);
+      rxnormFilter.params[`codeLow${n}_${i}`] = low;
+      rxnormFilter.params[`codeHigh${n}_${i}`] = high;
+    });
+    rxnormFilter.sql = conds.length > 0 ? ` AND (${conds.join(' OR ')})` : ' AND 1 = 0';
+    filterContext.filters.push(rxnormFilter);
   }
 
   async executeFilters(filterContext) {
@@ -847,7 +880,9 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
       for (const sql of this.readOnly ? [] : RXNORM_LOAD_INDEXES) {
         await new Promise((resolve, reject) => {
           db.run(sql, guarded(reject, err => {
-            if (err && err.code === 'SQLITE_READONLY') {
+            if (err && /no such table: (main\.)?RXNSTEMS/i.test(err.message)) {
+              resolve(); // a database with the text index (RXNTEXT) has no RXNSTEMS
+            } else if (err && err.code === 'SQLITE_READONLY') {
               Logger.getInstance().child({module: 'tx-rxnorm'}).warn(`${this.dbPath} is read-only; lookups will be slower without: ${sql}`);
               resolve();
             } else if (err) {
@@ -863,8 +898,12 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
         version: '',
         rels: [],
         reltypes: [],
-        totalCodeCount: 0
+        totalCodeCount: 0,
+        textIndex: false
       };
+
+      // the text index (rxnorm-text-index.js), or a database made before it, searched in RXNSTEMS
+      this._sharedData.textIndex = await this.#checkTextIndex(db);
 
       // Load version
       this._sharedData.version = await this.#readVersion(db);
@@ -884,6 +923,23 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
       db.close();
     }
     this._loaded = true;
+  }
+
+  /**
+   * Whether the database has the current text index (RXNTEXT). One made before it is searched as
+   * before, in RXNSTEMS, and says once that it can be brought up to date
+   */
+  async #checkTextIndex(db) {
+    const row = await new Promise((resolve) => {
+      db.get(`SELECT sql FROM sqlite_master WHERE name = '${TEXT_INDEX_TABLE}'`, [], (err, r) => resolve(err ? null : r));
+    });
+    const current = isCurrentTextIndex(row && row.sql);
+    if (!current && !this.readOnly && !this.isNCI) {
+      Logger.getInstance().child({module: 'tx-rxnorm'}).warn(
+        `RxNorm: ${this.dbPath} has no text index (RXNTEXT), so a text filter matches as it did before, not as other code systems do. ` +
+        `Bring it up to date, while the server isn't using the file: tx-import rxnorm upgrade-text-index -d ${this.dbPath}`);
+    }
+    return current;
   }
 
   async #readVersion(db) {

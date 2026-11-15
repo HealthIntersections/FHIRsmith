@@ -840,6 +840,83 @@ describe('the processing queue', () => {
     expect(await mod.processQueue()).toBe(1);
   });
 
+  test('the queue page shows the document being processed, its step, and what is waiting', async () => {
+    await post(app, 'demo', ips());
+    mod.store.createProject('other', 'Other', null);
+    await post(app, 'other', ips());
+    await post(app, 'demo', ips());
+    // nothing running yet, and nothing measured
+    let page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toContain('<h3>How long the steps take</h3>');
+    expect(page.text).toContain('<tr><td>Jurisdiction</td><td colspan="4"><i>not measured yet</i></td></tr>');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('Processing is turned off on this server');
+    expect(page.text).toContain('No document is being processed.');
+    expect(page.text).toContain('<h3>Waiting (3)</h3>');
+    expect(page.text).toContain('<a href="/ips/demo">Demo</a> &raquo; <a href="/ips/demo/Bundle/1">Document 1</a>');
+    expect(page.text).toContain('<a href="/ips/other">Other</a> &raquo; <a href="/ips/other/Bundle/2">Document 2</a>');
+    // linked from the top menu, on every page
+    expect(page.text).toContain('<a href="/ips/queue" style="color: gold">Processing queue</a>');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('href="/ips/queue"');
+    // a step that waits to be let go, so the page can be looked at while it runs
+    let release;
+    let entered;
+    const inside = new Promise(r => { entered = r; });
+    mod.steps = [{ name: 'nationality', run: async () => 'first' }, { name: 'analysis', run: async (row) => {
+      if (row.id === 1) {
+        entered();
+        await new Promise(r => { release = r; });
+      }
+      return 'second';
+    } }];
+    const run = mod.processQueue();
+    await inside;
+    page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toContain('Processing is running.');
+    expect(page.text).toContain('<a href="/ips/demo">Demo</a> &raquo; <a href="/ips/demo/Bundle/1">Document 1</a>: <b>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="jurisdiction - done: first" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toContain('<a class="ips-step ips-step-running" title="analysis - running" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toMatch(/Up to: <b>Analysis<\/b> \(for \d+ s\); processing for \d+ s/);
+    expect(page.text).toContain('<h3>Waiting (2)</h3>');
+    expect(page.text).toMatch(/<tr><td>1<\/td><td><a href="\/ips\/other">Other<\/a> &raquo; <a href="\/ips\/other\/Bundle\/2">Document 2<\/a><\/td>/);
+    expect(page.text).toMatch(/<tr><td>2<\/td><td><a href="\/ips\/demo">Demo<\/a> &raquo; <a href="\/ips\/demo\/Bundle\/3">Document 3<\/a><\/td>/);
+    const json = await request(app).get('/ips/queue').set('Accept', 'application/json');
+    expect(json.body).toMatchObject({ state: 'running', processing: [{ id: 1, project: 'demo', step: 'analysis' }], waiting: [{ id: 2, project: 'other' }, { id: 3, project: 'demo' }], waitingTotal: 2 });
+    release();
+    expect(await run).toBe(3);
+    // each step's time was recorded, for each document
+    expect(mod.store.stepTimings()).toEqual({
+      nationality: { runs: 3, avgMs: expect.any(Number), msPerKb: expect.any(Number), last: expect.any(String) },
+      analysis: { runs: 3, avgMs: expect.any(Number), msPerKb: expect.any(Number), last: expect.any(String) }
+    });
+    page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toMatch(/<tr><td>Jurisdiction<\/td><td>\d+ ms<\/td><td>[\d.]+ ms\/KB<\/td><td>3<\/td>/);
+    expect((await request(app).get('/ips/queue').set('Accept', 'application/json')).body.steps).toEqual([
+      { step: 'nationality', runs: 3, averageMs: expect.any(Number), msPerKb: expect.any(Number) },
+      { step: 'analysis', runs: 3, averageMs: expect.any(Number), msPerKb: expect.any(Number) }
+    ]);
+    expect(page.text).toContain('No document is being processed.');
+    expect(page.text).toContain('Nothing is waiting to be processed.');
+    // 'queue' can't be a project's code
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await form(agent, '/ips/admin/projects', { code: 'queue', name: 'Queue' })).status).toBe(400);
+  });
+
+  test('step times: failed and skipped steps do not count, and only the most recent are kept and averaged', async () => {
+    const store = mod.store;
+    for (let i = 0; i < 1005; i++) {
+      store.recordStepTime('validation', 1, i < 905 ? 1000 : 10, 2048);
+    }
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM step_timings WHERE step = 'validation'").get().n).toBe(1000);
+    // the last 100: all 10 ms, for 2 KB
+    expect(store.stepTimings().validation).toMatchObject({ runs: 100, avgMs: 10, msPerKb: 5 });
+    await post(app, 'demo', ips());
+    mod.steps = [{ name: 'ai', run: async (row) => { mod.store.saveResult(row.id, 'ai', { skipped: 'not enabled' }); return 'ai: skipped'; } },
+      { name: 'analysis', run: async () => { throw new Error('boom'); } }];
+    await mod.processQueue();
+    expect(Object.keys(store.stepTimings())).toEqual(['validation']);
+  });
+
   test('documents left processing at shutdown are queued again at startup', async () => {
     await post(app, 'demo', ips());
     mod.store.claimNext();
@@ -1980,8 +2057,10 @@ describe('sharing as SHL / VHL', () => {
 
   test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
     await post(app, 'demo', ips());
-    const page = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
-    expect(page.text).toContain('<input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
+    // the buttons are on the source view, under the original / modified switch
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
     expect(page.text).toContain('Share as VHL</button>');
     expect(page.text).toContain('id="ips-share"');
     const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
@@ -2010,6 +2089,35 @@ describe('sharing as SHL / VHL', () => {
     expect(html.status).toBe(200);
     expect(html.text).toContain('<h3>Document 1 as an SHL</h3><div class="ips-share-code"><svg ');
     expect(html.text).toContain('<textarea class="ips-share-text" readonly rows="3">https://viewer.example.org/#shlink:/');
+  });
+
+  test('shares the modified copy of a document, once there is one', async () => {
+    await post(app, 'demo', ips());
+    const form = { kind: 'shl', source: 'modified' };
+    const share = () => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send(form);
+    // not processed: there is no modified copy
+    const none = await share();
+    expect(none.status).toBe(409);
+    expect(none.body.error).toMatch(/has not been processed yet/);
+    const empty = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
+    expect(empty.text).toContain('it has not been processed yet');
+    expect(empty.text).not.toContain('Share as SHL');
+    const modified = structuredClone(mod.store.read(1).bundle);
+    modified.id = 'modified-copy';
+    mod.store.saveAnalysed(1, modified);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=source&amp;source=modified" class="active"');
+    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('&quot;modified-copy&quot;');
+    const r = await share();
+    expect(r.status).toBe(200);
+    expect(r.body.source).toBe('modified');
+    const payload = JSON.parse(Buffer.from(r.body.text.substring(r.body.text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+    const jwe = Buffer.from(mod.shlEntries.get('u1').files[0].cnt, 'base64').toString('utf8');
+    const { plaintext } = await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'));
+    expect(JSON.parse(Buffer.from(plaintext).toString('utf8'))).toEqual(modified);
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'vhl', source: 'modified' });
+    expect(html.text).toContain('<h3>Document 1 (modified) as a VHL</h3>');
   });
 
   test('shares a document as a VHL: the link signed by the SHL server, the QR of HC1:', async () => {
@@ -2049,7 +2157,7 @@ describe('sharing as SHL / VHL', () => {
     const other = await makeApp();
     other.mod.store.createProject('demo', 'Demo', null);
     await post(other.app, 'demo', ips());
-    expect((await request(other.app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
     expect((await request(other.app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
     other.mod.shutdown();
   });
@@ -2893,12 +3001,12 @@ describe('the nationality step', () => {
     // nothing to go on
     const none = determineNationality(ips());
     expect(none).toEqual({ jurisdiction: null, reasons: [] });
-    expect(nationalityText(none)).toMatch(/^Nationality unknown: nothing in the document says which nation it is from/);
+    expect(nationalityText(none)).toMatch(/^Jurisdiction unknown: nothing in the document says which jurisdiction it is from/);
     // signs of two nations: unknown, and the reasons say which
     const both = determineNationality(ips({ meta: { profile: [AU_PS] }, patient: { extension: [{ url: RACE }] } }));
     expect(both.jurisdiction).toBeNull();
     expect(both.reasons.map(r => r.jurisdiction)).toEqual(['US', 'AU']);
-    expect(nationalityText(both)).toMatch(/^Nationality unknown: the document has signs of more than one nation \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
+    expect(nationalityText(both)).toMatch(/^Jurisdiction unknown: the document has signs of more than one jurisdiction \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
   });
 
   test('the step runs first, and the nation shows on the list, the document banner and the analysis', async () => {
@@ -2909,11 +3017,11 @@ describe('the nationality step', () => {
     await mod.processQueue();
     await mod.processQueue();
     expect(mod.store.read(1)).toMatchObject({ nationality: 'US' });
-    expect(mod.store.read(1).status_message).toMatch(/^nationality: US; analysis:/);
+    expect(mod.store.read(1).status_message).toMatch(/^jurisdiction: US; analysis:/);
     expect(mod.store.read(2)).toMatchObject({ nationality: null });
 
     const list = await request(app).get('/ips/demo').set('Accept', 'text/html');
-    expect(list.text).toContain('<th>Nation</th>');
+    expect(list.text).toContain('<th>Jurisdiction</th>');
     expect(list.text).toContain('<td title="United States of America">US</td>');
     expect(list.text).toContain('<td title="Not known">??</td>');
 
@@ -2921,7 +3029,7 @@ describe('the nationality step', () => {
     expect(page.text).toContain('<div class="ips-banner ips-banner-flagged"><img class="ips-flag" src="/assets/images/flags/us.svg"');
     expect(page.text).toContain('title="analysis - done');
     const unknown = await request(app).get('/ips/demo/Bundle/2').set('Accept', 'text/html');
-    expect(unknown.text).toContain('<img class="ips-flag" src="/assets/images/flags/unknown.svg" alt="Nationality unknown"');
+    expect(unknown.text).toContain('<img class="ips-flag" src="/assets/images/flags/unknown.svg" alt="Jurisdiction unknown"');
 
     const analysis = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
     expect(analysis.text).toContain(`<ul><li class="ips-an-nation">From US: the Bundle claims the US Patient Summary profile (${US_PCS})</li>`);
@@ -3035,5 +3143,240 @@ describe('the analysis step', () => {
     expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
     mod.validator = { isRunning: () => true };
     expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
+  });
+});
+
+describe('the SHL viewer', () => {
+  const http = require('http');
+  const crypto = require('crypto');
+  const jose = require('jose');
+  const CBOR = require('cbor');
+  const pako = require('pako');
+  const base45 = require('base45');
+  let app;
+  let mod;
+  let shl;
+  let shlUrl;
+  let links;
+  const seen = [];
+  const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+
+  // a fake SHL server: each link is { flag, passcode, files: [jwe], vhlStyle, attempts }
+  beforeAll(async () => {
+    const s = express();
+    s.use(express.json());
+    s.get('/access/:id', (req, res) => {
+      seen.push({ method: 'GET', url: req.url });
+      const l = links.get(req.params.id);
+      if (!l) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      res.set('Content-Type', 'application/jose').send(l.files[0]);
+    });
+    s.post('/access/:id', (req, res) => {
+      seen.push({ method: 'POST', url: req.url, body: req.body });
+      const l = links.get(req.params.id);
+      if (!l) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      if (l.passcode && req.body.passcode !== l.passcode) {
+        l.attempts--;
+        return res.status(401).json({ remainingAttempts: l.attempts });
+      }
+      const location = (i) => `${shlUrl}/file/${req.params.id}/${i}`;
+      if (l.vhlStyle) {
+        // as this server's shl module answers for a VHL: a Bundle of DocumentReferences
+        return res.json({ resourceType: 'Bundle', type: 'searchset', entry: l.files.map((f, i) => ({ resource: { resourceType: 'DocumentReference', id: `d${i}`, content: [{ url: location(i), contentType: 'application/fhir+json' }] } })) });
+      }
+      res.set('Access-Control-Allow-Origin', '*').json({ files: l.files.map((f, i) => (i === 0 ? { contentType: 'application/fhir+json', embedded: f } : { contentType: 'application/fhir+json', location: location(i) })) });
+    });
+    s.get('/file/:id/:n', (req, res) => {
+      seen.push({ method: 'GET', url: req.url });
+      res.set('Content-Type', 'application/jose').send(links.get(req.params.id).files[Number(req.params.n)]);
+    });
+    shl = http.createServer(s);
+    await new Promise(r => shl.listen(0, '127.0.0.1', r));
+    shlUrl = `http://127.0.0.1:${shl.address().port}`;
+  });
+  afterAll(() => new Promise(r => shl.close(r)));
+
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ viewer: { allowPrivateAddresses: true, trust: [{ kid: 'test-kid', name: 'the test issuer', certificate: keys.publicKey.export({ type: 'spki', format: 'pem' }) }] } }));
+    mod.store.createProject('demo', 'Demo', null);
+    mod.store.setProjectToken(mod.store.createProject('locked', 'Locked', null), 'the-token');
+    links = new Map();
+    seen.length = 0;
+  });
+  afterEach(() => mod.shutdown());
+
+  /** A link to a document on the fake server: the shlink payload, encoded. */
+  async function link(id, { docs = [ips()], flag, passcode, vhlStyle } = {}) {
+    const key = crypto.randomBytes(32);
+    const files = [];
+    for (const d of docs) {
+      files.push(await new jose.CompactEncrypt(new TextEncoder().encode(JSON.stringify(d)))
+        .setProtectedHeader({ alg: 'dir', enc: 'A256GCM', cty: 'application/fhir+json' }).encrypt(key));
+    }
+    links.set(id, { files, passcode, vhlStyle, attempts: 3 });
+    const payload = { url: `${shlUrl}/access/${id}`, key: key.toString('base64url'), label: 'Jane\'s summary', ...(flag ? { flag } : {}) };
+    return Buffer.from(JSON.stringify(payload)).toString('base64url');
+  }
+
+  /** Open a link in the viewer: the page it lands on. */
+  async function open(text, extra = {}) {
+    const r = await request(app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: text, ...extra });
+    expect(r.status).toBe(303);
+    const page = await request(app).get(r.headers.location).set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    return { url: r.headers.location, page: page.text };
+  }
+
+  test('the home page says how to make this server the viewer for an SHL or a VHL', async () => {
+    const home = await request(app).get('/ips').set('Accept', 'text/html').set('Host', 'example.org');
+    expect(home.text).toContain('<h3>Using this server as the viewer for your SMART Health Links</h3>');
+    expect(home.text).toContain('the link (and the QR code) is <code>http://example.org/ips/view#shlink:/{payload}</code>');
+    expect(home.text).toContain('or link to <code>http://example.org/ips/view#HC1:...</code> with the <code>HC1:...</code> text percent-encoded');
+    // not when there is no viewer
+    const off = await makeApp({ viewer: { enabled: false } });
+    try {
+      expect((await request(off.app).get('/ips').set('Accept', 'text/html')).text).not.toContain('Using this server as the viewer');
+    } finally {
+      off.mod.shutdown();
+    }
+  });
+
+  test('the first page takes the link from the address, or pasted in; the menu links to it', async () => {
+    const page = await request(app).get('/ips/view').set('Accept', 'text/html').set('Host', 'example.org');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<form method="post" action="/ips/view" id="ips-viewer-form">');
+    expect(page.text).toContain('put <code>http://example.org/ips/view#</code> in front of the <code>shlink:/...</code>');
+    expect(page.text).toContain('This is a public test service');
+    expect(page.text).toContain("hash.indexOf('shlink:/')");
+    expect(page.text).toContain('<a href="/ips/view" style="color: gold">SHL viewer</a>');
+    // nothing given, or not a link
+    expect((await request(app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: '' })).status).toBe(400);
+    const { page: junk } = await open('hello there');
+    expect(junk).toContain('The document could not be retrieved: This is not an SHL');
+  });
+
+  test('opens a U link: shows the narrative and every step, and adds the document to a project', async () => {
+    const { url, page } = await open(`https://example.org/ips/view#shlink:/${await link('u1', { flag: 'U' })}`);
+    expect(seen[0]).toEqual({ method: 'GET', url: `/access/u1?${new URLSearchParams({ recipient: 'FHIRsmith IPS viewer (example.org)' })}` });
+    expect(page).toContain('<b>Jane&#39;s summary</b>');
+    expect(page).toContain('flags: direct file');
+    expect(page).toContain('<p>Summary for <b>Jane Smith</b></p>');
+    expect(page).toContain('An SHL, opened with the viewer https://example.org/ips/view#');
+    expect(page).toContain('The key: ');
+    expect(page).toContain('The file (flag U): HTTP 200');
+    expect(page).toContain('there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('It is an IPS document: Composition.type is LOINC 60591-5');
+    // the decrypted content is in the log
+    expect(page).toContain('&quot;Patient Summary as of 1 March 2026&quot;');
+    expect(page).toContain('Adding the document to a project makes it visible to everyone');
+    expect(page).toContain('<option value="locked">Locked (needs a token)</option>');
+
+    const add = (data) => request(app).post(`${url}/add`).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send(data);
+    expect((await add({ doc: '0', project: 'locked' })).text).toContain('The submission token for Locked is missing or wrong');
+    expect((await add({ doc: '0', project: 'nope' })).status).toBe(400);
+    expect((await add({ doc: '5', project: 'demo' })).status).toBe(400);
+    const added = await add({ doc: '0', project: 'demo' });
+    expect(added.status).toBe(303);
+    expect(added.headers.location).toBe('/ips/demo/Bundle/1');
+    expect(mod.store.read(1)).toMatchObject({ source: 'shl', status: 'submitted', patient_name: 'Jane Alexandra Smith' });
+    // with the token
+    expect((await add({ doc: '0', project: 'locked', token: 'the-token' })).headers.location).toBe('/ips/locked/Bundle/2');
+    // the page says so, and that it is here already
+    const again = await request(app).get(url).set('Accept', 'text/html');
+    expect(again.text).toContain('Added to <a href="/ips/demo">Demo</a> as <a href="/ips/demo/Bundle/1">document 1</a>.');
+    expect(again.text).toContain('This document (the same Bundle.identifier) is already here: <a href="/ips/demo/Bundle/1">Demo, document 1</a>; <a href="/ips/locked/Bundle/2">Locked, document 2</a>.');
+  });
+
+  test('a manifest link: embedded files and locations; documents that are not IPS can be looked at, not added', async () => {
+    const other = ips();
+    other.entry[0].resource.type = { coding: [{ system: 'http://loinc.org', code: '34133-9' }] };
+    const { url, page } = await open(`shlink:/${await link('m1', { docs: [ips(), other, { resourceType: 'Patient' }] })}`);
+    expect(seen[0]).toEqual({ method: 'POST', url: '/access/m1', body: { recipient: 'FHIRsmith IPS viewer (example.org)' } });
+    expect(seen.slice(1).map(x => x.url)).toEqual(['/file/m1/1', '/file/m1/2']);
+    expect(page).toContain('The manifest lists 3 files');
+    // the manifest allows cross-origin reads; the files don't
+    expect(page).not.toContain('The manifest: there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('File 2 (location): there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('document 1 of 2');
+    expect(page).toContain('It is a Patient, not a Bundle: only IPS documents are supported here');
+    expect(page).toContain("so it can't be added to a project");
+    expect((await request(app).post(`${url}/add`).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ doc: '1', project: 'demo' })).text)
+      .toContain('Only an IPS document can be added to a project');
+  });
+
+  test('a link with a passcode asks for it, and says when it is wrong', async () => {
+    const { url, page } = await open(`shlink:/${await link('p1', { flag: 'P', passcode: 'open-sesame' })}`);
+    expect(page).toContain('This link needs a passcode');
+    expect(seen).toHaveLength(0);
+    const post = (passcode) => request(app).post(url).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ passcode });
+    expect((await post('wrong')).status).toBe(303);
+    let p = (await request(app).get(url).set('Accept', 'text/html')).text;
+    expect(p).toContain('The passcode was not accepted - 2 attempts left');
+    expect(seen[0].body).toEqual({ recipient: 'FHIRsmith IPS viewer (example.org)', passcode: 'wrong' });
+    await post('open-sesame');
+    p = (await request(app).get(url).set('Accept', 'text/html')).text;
+    expect(p).toContain('<p>Summary for <b>Jane Smith</b></p>');
+    // the log goes on from the first try
+    expect(p).toContain('The link needs a passcode (flag P): asking for it');
+    expect(p).toContain('Trying again, with the passcode the user gave');
+    // the passcode can be given up front too
+    const { page: direct } = await open(`shlink:/${await link('p2', { flag: 'P', passcode: 'pc' })}`, { passcode: 'pc' });
+    expect(direct).toContain('<p>Summary for <b>Jane Smith</b></p>');
+  });
+
+  test('a VHL: its signature is checked, and the DocumentReference Bundle a VHL server gives is read', async () => {
+    const shlink = `shlink://${await link('v1', { vhlStyle: true })}`;
+    const prot = CBOR.encode(new Map([[1, -7], [4, 'test-kid']]));
+    const payload = CBOR.encode(new Map([[1, 'XX'], [-260, new Map([[5, [shlink]]])]]));
+    const sig = crypto.sign('sha256', CBOR.encode(['Signature1', prot, Buffer.alloc(0), payload]), { key: keys.privateKey, dsaEncoding: 'ieee-p1363' });
+    const hc1 = 'HC1:' + base45.encode(Buffer.from(pako.deflate(CBOR.encode(new CBOR.Tagged(18, [prot, new Map(), payload, sig])))));
+    const { page } = await open(hc1);
+    expect(page).toContain('A Verifiable Health Link, issued by XX, <b>signature good</b> (the test issuer)');
+    expect(page).toContain('The manifest is a FHIR Bundle (as a VHL server gives it)');
+    expect(page).toContain('content.url is not a FHIR element - it should be content.attachment.url (used anyway)');
+    expect(page).toContain('<p>Summary for <b>Jane Smith</b></p>');
+  });
+
+  test('failures say what went wrong', async () => {
+    const gone = Buffer.from(JSON.stringify({ url: `${shlUrl}/access/nothing`, key: crypto.randomBytes(32).toString('base64url') })).toString('base64url');
+    const { page } = await open(`shlink:/${gone}`);
+    expect(page).toContain('The document could not be retrieved: The SHL server does not know the link');
+    expect(page).toContain('The manifest: HTTP 404');
+    // a wrong key
+    const l = JSON.parse(Buffer.from(await link('k1', { flag: 'U' }), 'base64url').toString('utf8'));
+    l.key = crypto.randomBytes(32).toString('base64url');
+    const { page: wrong } = await open(`shlink:/${Buffer.from(JSON.stringify(l)).toString('base64url')}`);
+    expect(wrong).toContain('Decryption failed: the key is wrong');
+    // an expired page
+    expect((await request(app).get('/ips/view/aaaaaaaaaaaaaaaaaaaaaaaa').set('Accept', 'text/html')).status).toBe(404);
+  });
+
+  test('private addresses are refused unless the configuration allows them', async () => {
+    const strict = await makeApp({});
+    try {
+      const payload = Buffer.from(JSON.stringify({ url: 'https://127.0.0.1:1/access/x', key: crypto.randomBytes(32).toString('base64url'), flag: 'U' })).toString('base64url');
+      const r = await request(strict.app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: `shlink:/${payload}` });
+      const page = await request(strict.app).get(r.headers.location).set('Accept', 'text/html');
+      expect(page.text).toContain('Blocked request to non-public address 127.0.0.1');
+      // and http
+      const http1 = Buffer.from(JSON.stringify({ url: `${shlUrl}/access/x`, key: crypto.randomBytes(32).toString('base64url') })).toString('base64url');
+      const r2 = await request(strict.app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: `shlink:/${http1}` });
+      expect((await request(strict.app).get(r2.headers.location).set('Accept', 'text/html')).text).toContain('The url must be https');
+    } finally {
+      strict.mod.shutdown();
+    }
+  });
+
+  test('turned off, there is no viewer, and shared links name the configured viewer', async () => {
+    const off = await makeApp({ viewer: { enabled: false } });
+    try {
+      expect((await request(off.app).get('/ips/view').set('Accept', 'text/html')).status).toBe(404);
+    } finally {
+      off.mod.shutdown();
+    }
   });
 });

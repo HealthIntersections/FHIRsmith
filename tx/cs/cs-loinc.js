@@ -10,6 +10,8 @@ const regexUtilities = require('../../library/regex-utilities');
 const {ConceptMap} = require("../library/conceptmap");
 const { guarded } = require('../library/sqlite-utilities');
 const { Issue } = require('../library/operation-outcome');
+const { isCurrentTextIndex } = require('../importers/loinc-text-index');
+const { languageOf } = require('../library/text-match');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -134,6 +136,8 @@ function ascending(keys) {
 const CODES_DESCRIPTION_INDEX = 'CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)';
 // the database files the missing-index hint has been given for (once per file, per process)
 const indexHintGiven = new Set();
+// the databases already told their text index is the old one (see #checkTextIndex)
+const textIndexHintGiven = new Set();
 
 /**
  * The answers to the lookups a filter can need before its SQL is written: the parts a
@@ -218,6 +222,8 @@ class LoincServices extends BaseCSServices {
     this.langs = sharedData.langs;
     this.codes = sharedData.codes;
     this.codeList = sharedData.codeList;
+    // whether TextIndex is the stemmed one (loinc-text-index.js): how a text filter is searched
+    this.currentTextIndex = !!sharedData.currentTextIndex;
     this.allKeys = sharedData.allKeys;
     this._version = sharedData._version;
     this.root = sharedData.root;
@@ -917,13 +923,15 @@ class LoincServices extends BaseCSServices {
   }
 
   /**
-   * A text filter matches the codes with a name in the search language (see searchLanguage:
-   * the request's language if LOINC has it, else English) that contains the text, and the
-   * codes that a supplement in use gives a matching designation in that language. In English
-   * the name is the display (scanning every English description - short names, consumer
-   * names - takes 2+ seconds, against 0.2 for the displays); in another language it is any
-   * description in it but RELATEDNAMES2, which is a list of keywords (a property), not a name.
-   * LOINC does not rate its matches, so sorted or not they come in display order
+   * A text filter matches, by the rules every provider's search follows (text-match.js), the codes
+   * that start with the filter, then those with a name in the search language (see searchLanguage:
+   * the request's language if LOINC has it, else English) that has every word of the filter, and
+   * the codes that a supplement in use gives a matching designation in that language. In English
+   * the names are the display and the other English names (long common name, short name, consumer
+   * name, display name); in another language, its names. Never RELATEDNAMES2, which is a list of
+   * keywords (a property), not a name. Searched in TextIndex (loinc-text-index.js); a database
+   * made before it is searched as before: the whole filter text in the display (in English) or in
+   * the language's names. The names' matches come in display order
    */
   async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
@@ -935,26 +943,51 @@ class LoincServices extends BaseCSServices {
         langKeys.push(key);
       }
     }
-    const text = sqlEscapeString(filterText.filter || '');
-    const conds = [];
-    if (english) {
-      conds.push(`Codes.Description like '%${text}%'`); // the display, which is English
-    }
-    if (langKeys.length > 0) {
-      conds.push(`Codes.CodeKey IN (SELECT CodeKey FROM Descriptions WHERE LanguageKey IN (${langKeys.join(',')})
-                   AND DescriptionTypeKey != 4 AND Value like '%${text}%')`);
-    }
-    if (conds.length > 0) {
-      await this.#executeSQL(`SELECT Codes.CodeKey as Key FROM Codes WHERE ${conds.join(' OR ')} ORDER BY Codes.Description ASC`, filter);
-    } else {
+    const query = filterText.query;
+    if (this.currentTextIndex) {
+      // the codes that start with the filter (codes are upper case; people type them in lower)
+      const ranges = query.codeRanges(filterText.filter);
+      const codeKeys = [];
+      if (ranges.length > 0) {
+        await this.#executeSQL(`SELECT CodeKey AS Key FROM Codes WHERE ${ranges.map(() => '(Code >= ? AND Code < ?)').join(' OR ')} ORDER BY Code`,
+          filter, ranges.flat());
+        codeKeys.push(...filter.keys);
+      }
+      // every name in the search language (in English, the display and the other English names)
+      const keys = english ? [...this.langs].filter(([code]) => CodeSystemProvider.inSearchLanguage(code, lang)).map(([, key]) => key) : langKeys;
+      const fts = query.ftsQuery(languageOf(lang));
       filter.keys = [];
+      if (fts && keys.length > 0) {
+        await this.#executeSQL(`SELECT t.codekey AS Key FROM TextIndex t JOIN Codes ON Codes.CodeKey = t.codekey
+                 WHERE TextIndex MATCH ? AND t.lang IN (${keys.map(k => Number(k)).join(',')})
+                 GROUP BY t.codekey ORDER BY Codes.Description ASC`, filter, [fts]);
+      }
+      const named = new Set(filter.keys);
+      filter.keys = codeKeys.filter(k => !named.has(k)).concat(filter.keys);
+    } else {
+      const text = sqlEscapeString(filterText.filter || '');
+      const conds = [];
+      if (english) {
+        conds.push(`Codes.Description like '%${text}%'`); // the display, which is English
+      }
+      if (langKeys.length > 0) {
+        conds.push(`Codes.CodeKey IN (SELECT CodeKey FROM Descriptions WHERE LanguageKey IN (${langKeys.join(',')})
+                     AND DescriptionTypeKey != 4 AND Value like '%${text}%')`);
+      }
+      if (conds.length > 0) {
+        await this.#executeSQL(`SELECT Codes.CodeKey as Key FROM Codes WHERE ${conds.join(' OR ')} ORDER BY Codes.Description ASC`, filter);
+      } else {
+        filter.keys = [];
+      }
     }
     const have = new Set(filter.keys);
-    for (const code of this._supplementSearchCodes(filterText, lang)) {
+    const sources = new Map();
+    for (const code of await this._supplementSearchCodes(filterText, lang, sources)) {
       const ctxt = this.codes.get(code);
       if (ctxt && !have.has(ctxt.key)) {
         filter.keys.push(ctxt.key);
         have.add(ctxt.key);
+        CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
       }
     }
     filter.lsql = 'text'; // checked by key (filterLocate needs it set)
@@ -1398,9 +1431,18 @@ class LoincServices extends BaseCSServices {
     return codes.join(',');
   }
 
-  async #executeSQL(sql, filter) {
+  /**
+   * The code's own display, for leaving out what a supplement only copies (see
+   * CodeSystemProvider._rootDisplay)
+   */
+  async _rootDisplay(code) {
+    const ctxt = this.codes.get(code);
+    return ctxt ? ctxt.desc || null : null;
+  }
+
+  async #executeSQL(sql, filter, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, guarded(reject, (err, rows) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1646,8 +1688,11 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         _version: '',
         root: '',
         firstCodeKey: 0,
-        filterLookups: new LoincFilterLookups()
+        filterLookups: new LoincFilterLookups(),
+        // whether TextIndex is the stemmed one, with every display (loinc-text-index.js)
+        currentTextIndex: false
       };
+      this._sharedData.currentTextIndex = await this.#checkTextIndex(db);
 
       // Load small lookup tables in parallel
       // eslint-disable-next-line no-unused-vars
@@ -1706,6 +1751,32 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
       `LOINC: ${this.dbPath} has no index on Codes.Description, so a filter that names a part ` +
       `(SCALE_TYP = Doc) reads every code the first time. Add it once, while the server isn't using the file: ` +
       `sqlite3 ${file} "${CODES_DESCRIPTION_INDEX}"`);
+  }
+
+  /**
+   * Whether the database's TextIndex is the stemmed one (loinc-text-index.js), which text filters
+   * search. A database made before it is still searched, as before - the display, for the whole
+   * filter text - and says once that it can be brought up to date
+   */
+  async #checkTextIndex(db) {
+    let row = null;
+    try {
+      row = await new Promise((resolve, reject) => {
+        db.get("SELECT sql FROM sqlite_master WHERE name = 'TextIndex'", [],
+          guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+      });
+    } catch (e) {
+      return false;
+    }
+    const current = isCurrentTextIndex(row && row.sql);
+    if (!current && !this.readOnly && !textIndexHintGiven.has(this.dbPath)) {
+      textIndexHintGiven.add(this.dbPath);
+      require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(
+        `LOINC: ${this.dbPath} has an old text index, so a text filter looks for the whole filter text in the display, ` +
+        `rather than for each word in every name, as other code systems do. Bring it up to date, while the server isn't using the file: ` +
+        `tx-import loinc upgrade-text-index -d ${this.dbPath}`);
+    }
+    return current;
   }
 
   async #optimizeDatabase(db) {

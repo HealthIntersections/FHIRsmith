@@ -44,6 +44,15 @@ const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kep
 const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
 const MAX_ANSWERS = 10000; // the most answers (to $lookup and $validate-code) kept
 const MAX_KNOWN = 1000; // the most entries kept in each of the caches of what the registry and the servers say (#known)
+const MAX_REDIRECTS = 5;
+// how long an https:// try may wait for the answer to start, for a server given as http://
+// whose https:// hasn't been tried yet: one that doesn't answer on https at all isn't waited on
+// for the whole TIMEOUT_MS before http:// is tried
+const HTTPS_PROBE_MS = 10000;
+// a system is only looked for in the ecosystem if it's a URI: a scheme, then the characters a
+// URI may have, and no white space. Not "1", "PRESCRIPTION_TYPE", "a uri with spaces", or a
+// system with its version glued on ("123|http://snomed.info/sct/...")
+const URI = /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
 
 class EcosystemResolver {
   /**
@@ -73,6 +82,15 @@ class EcosystemResolver {
     this.codes = new Map();
     // see sendCached: request -> {at, value} or {pending}, oldest first
     this.answers = new Map();
+    // see #request: host:port of a server given as http:// -> {scheme: 'https' or 'http', at}
+    this.schemes = new Map();
+  }
+
+  /**
+   * Whether a system can be looked for in the ecosystem: it's a URI (see URI)
+   */
+  static isUri(system) {
+    return typeof system === 'string' && URI.test(system);
   }
 
   /**
@@ -240,24 +258,87 @@ class EcosystemResolver {
   }
 
   /**
-   * Every request to another server goes through here: it's counted against the operation
+   * Every request to another server goes through here: it's counted against the operation.
+   *
+   * Redirects are followed (up to MAX_REDIRECTS), under the SSRF guard: the guarded agents check
+   * every address connected to, the redirect targets' included. A request with credentials
+   * (sameHost) is only followed to the same host, so the credentials go nowhere else.
+   *
+   * An http:// address is tried as https:// first, and as http:// only if https:// fails to
+   * answer at all (no connection, a TLS failure, no answer in time): an answer of any kind over
+   * https:// is the answer. Which one works is remembered for each host (for CACHE_MS), so a
+   * server that only has http:// costs the failed try once an hour, not every time.
+   *
+   * @param {OperationContext|null} opContext
+   * @param {Object} config - axios's
+   * @param {boolean} [sameHost] - redirects only to the host asked (the request has credentials)
    */
-  async #request(opContext, config) {
+  async #request(opContext, config, sameHost = false) {
     if (opContext && opContext.countExternalRequest) {
       opContext.countExternalRequest();
     }
+    const url = config.url;
+    if (!/^http:\/\//i.test(url)) {
+      return this.#send(config, sameHost);
+    }
+    const host = new URL(url).host;
+    const known = this.schemes.get(host);
+    const fresh = known && Date.now() - known.at < CACHE_MS;
+    if (fresh && known.scheme === 'http') {
+      return this.#send(config, sameHost);
+    }
+    const secure = { ...config, url: 'https://' + url.substring('http://'.length) };
+    try {
+      const response = await this.#send(secure, sameHost, fresh ? TIMEOUT_MS : HTTPS_PROBE_MS);
+      this.#remember(this.schemes, host, { scheme: 'https', at: Date.now() });
+      return response;
+    } catch (e) {
+      if (!EcosystemResolver.noAnswer(e.cause)) {
+        throw e;
+      }
+      const response = await this.#send(config, sameHost);
+      this.#remember(this.schemes, host, { scheme: 'http', at: Date.now() });
+      this.log.info(`${host} doesn't answer on https (${describeRequestFailure(e.cause, { timeoutMs: HTTPS_PROBE_MS, maxBytes: MAX_RESPONSE_BYTES })}): using http`);
+      return response;
+    }
+  }
+
+  /**
+   * Whether an error from axios means the server didn't answer at all (so the other scheme is
+   * worth trying): not an answer it didn't like, not a response that was too big, and not an
+   * address the SSRF guard refused (which the other scheme would be refused too)
+   */
+  static noAnswer(e) {
+    if (!e || e.response) {
+      return false;
+    }
+    const message = String(e.message || '');
+    if (/maxContentLength|Blocked request to non-public address/.test(message)) {
+      return false;
+    }
+    return true;
+  }
+
+  async #send(config, sameHost, headerTimeoutMs = TIMEOUT_MS) {
     // the deadline covers the whole request; axios's timeout only the wait for the headers
     const deadline = requestDeadline(TIMEOUT_MS);
+    const host = new URL(config.url).hostname;
     try {
       return await axios.request({
         ...config,
-        timeout: TIMEOUT_MS,
+        timeout: headerTimeoutMs,
         signal: deadline.signal,
-        maxContentLength: MAX_RESPONSE_BYTES
+        maxContentLength: MAX_RESPONSE_BYTES,
+        maxRedirects: MAX_REDIRECTS,
+        beforeRedirect: (options) => {
+          if (sameHost && options.hostname !== host) {
+            throw new Error(`${config.url} redirects to another host (${options.hostname}): not followed, since the request has credentials`);
+          }
+        }
       });
     } catch (e) {
       // the warnings that report this give the server's answer in words, not axios's
-      throw new Error(`${config.url}: ${describeRequestFailure(e, { timeoutMs: TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES, deadline })}`, { cause: e });
+      throw new Error(`${config.url}: ${describeRequestFailure(e, { timeoutMs: headerTimeoutMs, maxBytes: MAX_RESPONSE_BYTES, deadline })}`, { cause: e });
     }
   }
 
@@ -289,8 +370,8 @@ class EcosystemResolver {
   async send(server, url, body = null, opContext = null) {
     const code = await this.serverCode(server, opContext);
     const attempt = async (renew) => {
-      const headers = Object.assign({ 'Accept': 'application/fhir+json', [FORWARDED_HEADER]: 'true' },
-        code ? await this.credentials.headers(code, renew) : {});
+      const credentials = code ? await this.credentials.headers(code, renew) : {};
+      const headers = Object.assign({ 'Accept': 'application/fhir+json', [FORWARDED_HEADER]: 'true' }, credentials);
       if (body) {
         headers['Content-Type'] = 'application/fhir+json';
       }
@@ -300,10 +381,9 @@ class EcosystemResolver {
         headers,
         data: body ? JSON.stringify(body) : undefined,
         validateStatus: () => true,
-        maxRedirects: 0, // the credentials go where they were configured to, or nowhere
         httpAgent: this.agents.httpAgent,
         httpsAgent: this.agents.httpsAgent
-      });
+      }, Object.keys(credentials || {}).length > 0); // with credentials, a redirect is only followed on the same host
     };
     let response = await attempt(false);
     if (response.status === 401 && code && this.credentials.getOAuthConfig(code)) {
@@ -341,7 +421,7 @@ class EcosystemResolver {
    * @returns {Promise<{url: string, authoritative: boolean}[]|null>}
    */
   async findServers(system, version, fhirVersion, opContext = null) {
-    if (this.isExcludedSystem(system, version)) {
+    if (!EcosystemResolver.isUri(system) || this.isExcludedSystem(system, version)) {
       return null;
     }
     const key = system + (version ? '|' + version : '');

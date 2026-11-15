@@ -9,6 +9,7 @@ const {validateParameter} = require("../../library/utilities");
 const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
 const {CodeSystem} = require('../../tx/library/codesystem');
+const { Languages, Language } = require('../../library/languages');
 const { LOINC_TESTING_DB, importLoincTestingDb, loincTestingDbCopy } = require('../loinc-testing-db');
 
 describe('LOINC Module Import', () => {
@@ -1155,6 +1156,105 @@ describe('LOINC Provider', () => {
         }
         expect(displays.length).toBeGreaterThan(1);
         expect(displays).toEqual([...displays].sort());
+      }
+    });
+  });
+
+  // A text filter searches TextIndex (tx/importers/loinc-text-index.js): every name of a code in
+  // the search language - in English the display and the other English names, never the
+  // RELATEDNAMES2 keywords - for every word of the filter, as the start of a word or with the same
+  // stem, without regard to case or accents (text-match.js); and the codes, which start with it
+  describe('Text search (the text index)', () => {
+    let langDefs;
+    beforeAll(async () => {
+      langDefs = await TestUtilities.loadLanguageDefinitions();
+    });
+
+    async function textCodes(text, lang = null, prov = provider) {
+      const languages = lang ? Languages.fromAcceptLanguage(lang, langDefs, true) : null;
+      const filterContext = await prov.getPrepContext(true, languages);
+      await prov.searchFilter(filterContext, new SearchFilterText(text), false);
+      const filters = await prov.executeFilters(filterContext);
+      const codes = [];
+      while (await prov.filterMore(filterContext, filters[0])) {
+        codes.push(await prov.code(await prov.filterConcept(filterContext, filters[0])));
+      }
+      return codes;
+    }
+
+    test('the imported database has the current index', () => {
+      expect(factory._sharedData.currentTextIndex).toBe(true);
+    });
+
+    test('a code that starts with the filter, first', async () => {
+      expect((await textCodes('10332-5'))[0]).toBe('10332-5');
+      expect(await textCodes('10332')).toContain('10332-5');
+    });
+
+    test('every word, in any order, not only next to each other', async () => {
+      // "Cortisol [Mass/volume] in Serum or Plasma --pre 250 ug corticotropin IM"
+      expect(await textCodes('serum cortisol')).toContain('10332-5');
+      expect(await textCodes('cortisol serum')).toContain('10332-5');
+      expect(await textCodes('cortisol bilirubin')).not.toContain('10332-5');
+    });
+
+    test('each word as the start of a word, stemmed', async () => {
+      expect(await textCodes('cortisols serums')).toContain('10332-5');
+      expect(await textCodes('cort ser')).toContain('10332-5');
+    });
+
+    test('in English, the other English names too: the short name', async () => {
+      // short name "CASPR1 IgG SerPl Ql CBA IFA"; the display has neither word
+      expect(await textCodes('caspr1 serpl')).toEqual(['101448-9']);
+    });
+
+    test('never the RELATEDNAMES2 keywords', async () => {
+      // "Amikacin" is only in 100041-3's related names
+      expect(await textCodes('amikacin')).toEqual([]);
+    });
+
+    test('in another language, its names, without regard to accents', async () => {
+      // "Harnstoff-Stickstoff [Masse/Volumen] in Pleuraflüssigkeit"
+      expect(await textCodes('pleuraflussigkeit harnstoff', 'de')).toContain('14394-1');
+      // "Microorganisme [Identification] Cas index pour un évènement ; Résultat nominal"
+      expect(await textCodes('evenement microorganisme', 'fr')).toContain('89248-9');
+    });
+
+    test('a database with the old text index is searched as before, for the whole text in the display', async () => {
+      const old = path.join(dir, 'old-text-index.db');
+      fs.copyFileSync(testDbPath, old);
+      const db = new sqlite3.Database(old);
+      await new Promise((resolve, reject) => db.exec(`DROP TABLE TextIndex;
+        CREATE VIRTUAL TABLE TextIndex USING fts5(codekey UNINDEXED, type UNINDEXED, lang UNINDEXED, text);`, (err) => err ? reject(err) : resolve()));
+      await new Promise((resolve) => db.close(() => resolve()));
+      const oldFactory = new LoincServicesFactory(opContext.i18n, old);
+      const oldProvider = await oldFactory.build(opContext, []);
+      try {
+        expect(oldFactory._sharedData.currentTextIndex).toBe(false);
+        expect(await textCodes('serum cortisol', null, oldProvider)).toEqual([]);
+        expect(await textCodes('in Serum or Plasma --pre 250', null, oldProvider)).toContain('10332-5');
+      } finally {
+        oldProvider.close();
+      }
+    });
+
+    test('a supplement\'s text that only repeats the code\'s own display is left out', async () => {
+      const supplement = new CodeSystem({
+        resourceType: 'CodeSystem', url: 'http://example.org/loinc-uz', version: '1', status: 'active',
+        content: 'supplement', supplements: 'http://loinc.org', language: 'uz',
+        concept: [
+          // the English display, copied
+          { code: '10332-5', display: 'Kortizol', designation: [{ language: 'en', value: 'Cortisol [Mass/volume] in Serum or Plasma --pre 250 ug corticotropin IM' }] },
+          // English the code system doesn't have
+          { code: '101448-9', display: 'Kontaktin', designation: [{ language: 'en', value: 'Cortisol pre-dose marker' }] }
+        ]
+      });
+      const supplemented = await factory.build(opContext, [supplement]);
+      try {
+        const codes = await supplemented._supplementSearchCodes(new SearchFilterText('cortisol'), new Language('en'));
+        expect([...codes]).toEqual(['101448-9']);
+      } finally {
+        supplemented.close();
       }
     });
   });

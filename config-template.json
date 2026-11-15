@@ -320,6 +320,11 @@
       "usageTrackerMaxCodeLength": 100,
       // parsed language tags kept (least recently used dropped)
       "languageTagCacheSize": 1000,
+      // a code an include lists (compose.include.concept), or an include filter selects by
+      // (is-a etc.), that isn't in its code system: true
+      // - the value set can't be expanded ($expand fails with 422); false - the code is left
+      // out, and the expansion says so (an expansion-issue warning). Default false
+      "errorsForInvalidCodes": false,
       // Optional. A short code (1-16 letters and digits) naming this server instance. Every
       // cache-id the server issues then starts with "<code>.", so a proxy in front of
       // several instances can route cached requests back to the instance that holds the
@@ -365,7 +370,7 @@
       "expansionCacheMemoryThreshold": 0,
       // most codes the expansion caches hold in all (default: a quarter of the heap limit, at 1 KB a code)
       // "expansionCacheMaxCodes": 1000000,
-      // most XML, in MB, kept per process for large resources asked for as XML (0: none; default 256).
+      // most XML and JSON, in MB, kept per process for large resources (0: none; default 256).
       // Counted in characters: text outside Latin-1 takes two bytes each, so up to twice this
       // "xmlCacheMB": 256,
       "endpoints": [
@@ -481,8 +486,19 @@
       // signed as the GDHCN does it - through an SHL server: this server's own shl module
       // ("server": "/shl"; the password is taken from modules.shl when left out) or another
       // FHIRsmith's ("server": "https://host/shl", "password": its password). days: how long
-      // the shared copy lives (100); viewer: the SHL viewer the QR opens (viewer.tcpdev.org)
+      // the shared copy lives (100); viewer: the SHL viewer the QR opens (this server's own, /ips/view)
       // "shl": { "server": "/shl", "days": 100 },
+      // the SHL viewer at /ips/view (on unless enabled is false): other systems can name it as the
+      // viewer in their SHLs ({this server}/ips/view#shlink:/...), and the module's own shares
+      // use it unless shl.viewer names another. It retrieves the document on the server, and
+      // logs every step - key and content included - on the page, kept for keepMinutes (60).
+      // allowPrivateAddresses: let it reach private and loopback addresses, and http (false;
+      // for testing a local SHL server); timeout: seconds per request (30); maxMB: the most a
+      // response can be (10); recipient: what it tells the SHL server it is ("FHIRsmith IPS
+      // viewer ({host})"); trust: the certificates VHL signatures are checked with - [{ "kid",
+      // "name", "certFile" | "certificate" (PEM) }]; this server's own shl module's certificate is
+      // trusted too, unless trustOwnShl is false
+      // "viewer": { "keepMinutes": 60, "allowPrivateAddresses": false, "trust": [] },
       // the FHIR validator the processing pipeline validates documents with - the same
       // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
       // the data folder's bin directory), on its own port. Documents are validated against the

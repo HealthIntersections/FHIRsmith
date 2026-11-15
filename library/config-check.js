@@ -334,6 +334,8 @@ const MODULES = {
     expansionCacheMemoryThreshold: num({ min: 0 }),
     expansionCacheMaxCodes: count(),
     xmlCacheMB: num({ min: 0 }),
+    // an include that names a code the code system doesn't have: an error, rather than a warning
+    errorsForInvalidCodes: bool(),
     // the expansion limits: checked together below (TXModule.expansionLimits)
     internalLimit: int({ min: 1 }),
     externalLimit: int({ min: 1 }),
@@ -420,6 +422,16 @@ const MODULES = {
     }),
     aiKeySecret: str({ nonEmpty: true }),
     shl: obj({ server: str({ nonEmpty: true }), password: str(), days: positive(), viewer: str() }),
+    viewer: obj({
+      enabled: bool(),
+      keepMinutes: positive(),
+      allowPrivateAddresses: bool(),
+      timeout: positive(),
+      maxMB: positive(),
+      recipient: str({ nonEmpty: true }),
+      trustOwnShl: bool(),
+      trust: arr(obj({ kid: str({ nonEmpty: true }), name: str(), certFile: str({ nonEmpty: true }), certificate: str({ nonEmpty: true }) }))
+    }),
     validator: validatorSpec
   })
 };

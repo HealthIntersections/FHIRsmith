@@ -23,6 +23,11 @@ const { Issue } = require('../library/operation-outcome');
 const { DesignationUse } = require('../library/designations');
 const assert = require('assert');
 const { guarded } = require('../library/sqlite-utilities');
+const { TextQuery, languageOf } = require('../library/text-match');
+const { TEXT_INDEX_TABLE, isCurrentTextIndex } = require('../importers/icd11-text-index');
+
+// the databases already told they have no text index (see ICD11ServicesFactory.load)
+const textIndexHintGiven = new Set();
 
 // WHO's own vocabulary for the kinds of text an entity carries, used as designation.use.
 const SCHEMA_NS = 'http://id.who.int/icd/schema';
@@ -937,8 +942,10 @@ class ICD11Services extends BaseCSServices {
     return prop === 'concept' && (op === 'is-a' || op === 'descendent-of') && !!value;
   }
 
-  async getPrepContext(iterate) {
-    return new FilterExecutionContext(iterate);
+  async getPrepContext(iterate, languages = null) {
+    const result = new FilterExecutionContext(iterate);
+    result.languages = languages; // what the request asked for (a text filter searches one language)
+    return result;
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
@@ -960,13 +967,18 @@ class ICD11Services extends BaseCSServices {
   }
 
   /**
-   * A text filter over the classification's own search surface: titles, index terms and
-   * inclusions, which are what the ICD Browser matches on. A LIKE scan is honest but not
-   * fast; the designation table is the right place for an FTS index when it matters.
+   * A text filter over the classification's own search surface: titles, fully specified names,
+   * index terms and inclusions, which are what the ICD Browser matches on, in the search language
+   * (searchLanguage). By the rules every provider's search follows (text-match.js): a concept with
+   * such a name that has every word of the filter, or whose code starts with it. Searched in
+   * designation_text (icd11-text-index.js); a database made before it, by a LIKE scan for the
+   * whole filter text, as before
    */
   async searchFilter(filterContext, filter, sort) { // eslint-disable-line no-unused-vars
-    const text = (filter?.filter ?? filter ?? '').toString().toLowerCase();
-    const set = new ICD11FilterSet('search', { text });
+    const raw = (filter?.filter ?? filter ?? '').toString();
+    const query = filter && filter.query ? filter.query : new TextQuery(raw);
+    const lang = languageOf(this.searchLanguage(filterContext.languages));
+    const set = new ICD11FilterSet('search', { text: raw.toLowerCase(), query, lang });
     filterContext.filters.push(set);
     return set;
   }
@@ -983,6 +995,18 @@ class ICD11Services extends BaseCSServices {
         `SELECT c.* FROM concept_closure cl JOIN concept c ON c.id = cl.descendant
           WHERE cl.ancestor = ? AND cl.depth >= ?
           ORDER BY COALESCE(c.lft, c.id)`, [set.ancestorId, set.minDepth]);
+    } else if (this.shared.textIndex) {
+      // the start of a short code (searching 1A0 finds 1A00..1A09: the code is a uri now, so the
+      // short code is the one a person types), or a name with every word of the filter
+      const fts = set.query.ftsQuery(set.lang);
+      const code = set.query.code === '' ? null : set.query.code.replace(/[\\%_]/g, c => '\\' + c) + '%';
+      set.rows = await this.#all(
+        `SELECT c.* FROM concept c
+          WHERE c.system = ?
+            AND (${code ? "LOWER(c.code) LIKE ? ESCAPE '\\'" : '0'}
+              ${fts ? `OR c.id IN (SELECT concept FROM ${TEXT_INDEX_TABLE} WHERE ${TEXT_INDEX_TABLE} MATCH ? AND lang = ?)` : ''})
+          ORDER BY COALESCE(c.lft, c.id)`,
+        [this.shared.systemId, ...(code ? [code] : []), ...(fts ? [fts, set.lang] : [])]);
     } else {
       // the text, or the start of a short code (searching 1A0 finds 1A00..1A09): the code
       // is a uri now, so the short code is the one a person types
@@ -1121,7 +1145,16 @@ class ICD11ServicesFactory extends CodeSystemFactoryProvider {
         isTree: !!sys.is_tree,
         count: count.n,
         languages: (langs?.value || 'en').split(','),
+        // the text index (icd11-text-index.js); a database made before it is searched by a LIKE scan
+        textIndex: isCurrentTextIndex((await get("SELECT sql FROM sqlite_master WHERE name = ?", [TEXT_INDEX_TABLE]))?.sql),
       };
+      if (!this._shared.textIndex && !textIndexHintGiven.has(this.dbPath)) {
+        textIndexHintGiven.add(this.dbPath);
+        require('../../library/logger').getInstance().child({ module: 'tx-icd11' }).warn(
+          `ICD-11: ${this.dbPath} has no text index, so a text filter looks for the whole filter text in the names, ` +
+          `rather than for each word, as other code systems do. Bring it up to date, while the server isn't using the file: ` +
+          `node tx/importers/import-icd11.js --text-index-only --dest ${this.dbPath}`);
+      }
     } finally {
       db.close();
     }

@@ -125,6 +125,38 @@ describe('CountryCodeServices', () => {
     });
   });
 
+  describe('Reserved and formerly used codes', () => {
+    test('EU is an active code: a jurisdiction, exceptionally reserved but used', async () => {
+      const eu = (await provider.locate('EU')).context;
+      expect(eu).not.toBeNull();
+      expect(await provider.display(eu)).toBe('European Union');
+      expect(await provider.isInactive(eu)).toBe(false);
+      expect(await provider.getStatus(eu)).toBeNull();
+      expect(await provider.definition(eu)).toMatch(/^Exceptionally reserved in ISO 3166-1 for the European Union/);
+    });
+
+    test('formerly used codes are inactive, and say what they were', async () => {
+      for (const code of ['AN', 'BU', 'CS', 'NT', 'SU', 'TP', 'YU', 'ZR', 'DD', 'FX']) {
+        const c = (await provider.locate(code)).context;
+        expect(c).not.toBeNull();
+        expect(await provider.isInactive(c)).toBe(true);
+        expect(await provider.getStatus(c)).toBe('inactive');
+      }
+      const yu = (await provider.locate('YU')).context;
+      expect(await provider.display(yu)).toBe('Yugoslavia');
+      expect(await provider.definition(yu)).toBe('Formerly used for Yugoslavia, until 2003: no longer assigned (ISO 3166-3: YUCS)');
+    });
+
+    test('the other reserved codes are not codes', async () => {
+      for (const code of ['UK', 'EZ', 'UN', 'IC', 'EA', 'AC', 'TA', 'DG', 'CP']) {
+        expect((await provider.locate(code)).context).toBeNull();
+      }
+      // the user-assigned and X / Z arrangements are as they were
+      expect((await provider.locate('XK')).context.userDefined).toBe(true);
+      expect(await provider.display((await provider.locate('ZZ')).context)).toBe('Unknown or Invalid Territory');
+    });
+  });
+
   describe('Iterator Functionality', () => {
     test('should create iterator for all concepts', async () => {
       const iterator = await provider.iterator(null);
