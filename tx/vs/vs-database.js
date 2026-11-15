@@ -1369,6 +1369,13 @@ class ValueSetDatabase {
           params.push(value, value);
           break;
 
+        case 'url:contains':
+          // the url contains the value, without regard to case - what the HTML search form asks
+          // for (see SearchWorker.searchParamsFor)
+          conditions.push('instr(lower(v.url), lower(?)) > 0');
+          params.push(value);
+          break;
+
         case 'version':
           // version-aware matching (see VersionUtilities.versionSearchMatches): narrowed here to
           // the versions that could match, and matched on the results (see search)

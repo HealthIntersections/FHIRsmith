@@ -11,7 +11,7 @@ const {ConceptMap} = require("../library/conceptmap");
 const { guarded } = require('../library/sqlite-utilities');
 const { Issue } = require('../library/operation-outcome');
 const { isCurrentTextIndex } = require('../importers/loinc-text-index');
-const { languageOf } = require('../library/text-match');
+const { languageOf, bestRanks } = require('../library/text-match');
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -931,7 +931,7 @@ class LoincServices extends BaseCSServices {
    * name, display name); in another language, its names. Never RELATEDNAMES2, which is a list of
    * keywords (a property), not a name. Searched in TextIndex (loinc-text-index.js); a database
    * made before it is searched as before: the whole filter text in the display (in English) or in
-   * the language's names. The names' matches come in display order
+   * the language's names. The best match comes first (TextQuery.nameRank, codeRank), then display order
    */
   async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
@@ -946,24 +946,36 @@ class LoincServices extends BaseCSServices {
     const query = filterText.query;
     if (this.currentTextIndex) {
       // the codes that start with the filter (codes are upper case; people type them in lower)
-      const ranges = query.codeRanges(filterText.filter);
-      const codeKeys = [];
-      if (ranges.length > 0) {
-        await this.#executeSQL(`SELECT CodeKey AS Key FROM Codes WHERE ${ranges.map(() => '(Code >= ? AND Code < ?)').join(' OR ')} ORDER BY Code`,
-          filter, ranges.flat());
-        codeKeys.push(...filter.keys);
+      const ranks = new Map(); // code key -> rank
+      const descriptions = new Map(); // code key -> display, to order equal ranks
+      for (const range of query.codeRanges(filterText.filter)) {
+        for (const r of await this.#all('SELECT CodeKey, Code, Description FROM Codes WHERE Code >= ? AND Code < ?', range)) {
+          ranks.set(r.CodeKey, query.codeRank(r.Code));
+          descriptions.set(r.CodeKey, r.Description);
+        }
       }
-      // every name in the search language (in English, the display and the other English names)
+      // every name in the search language (in English, the display and the other English names),
+      // ranked by how closely it follows the filter (TextQuery.nameRank), from the words the
+      // index has for it
       const keys = english ? [...this.langs].filter(([code]) => CodeSystemProvider.inSearchLanguage(code, lang)).map(([, key]) => key) : langKeys;
-      const fts = query.ftsQuery(languageOf(lang));
-      filter.keys = [];
+      const searchLang = languageOf(lang);
+      const fts = query.ftsQuery(searchLang);
       if (fts && keys.length > 0) {
-        await this.#executeSQL(`SELECT t.codekey AS Key FROM TextIndex t JOIN Codes ON Codes.CodeKey = t.codekey
-                 WHERE TextIndex MATCH ? AND t.lang IN (${keys.map(k => Number(k)).join(',')})
-                 GROUP BY t.codekey ORDER BY Codes.Description ASC`, filter, [fts]);
+        const rows = await this.#all(`SELECT t.codekey AS key, t.words AS name, Codes.Description AS description
+                 FROM TextIndex t JOIN Codes ON Codes.CodeKey = t.codekey
+                 WHERE TextIndex MATCH ? AND t.lang IN (${keys.map(k => Number(k)).join(',')})`, [fts]);
+        for (const r of rows) {
+          descriptions.set(r.key, r.description);
+        }
+        for (const [key, rank] of await bestRanks(query, searchLang, rows)) {
+          if (rank > (ranks.get(key) ?? 0)) {
+            ranks.set(key, rank);
+          }
+        }
       }
-      const named = new Set(filter.keys);
-      filter.keys = codeKeys.filter(k => !named.has(k)).concat(filter.keys);
+      // the best first; then in display order
+      filter.keys = [...ranks.keys()].filter(k => k !== 0).sort((a, b) => (ranks.get(b) - ranks.get(a))
+        || String(descriptions.get(a) ?? '').localeCompare(String(descriptions.get(b) ?? '')) || (a - b));
     } else {
       const text = sqlEscapeString(filterText.filter || '');
       const conds = [];
@@ -1438,6 +1450,12 @@ class LoincServices extends BaseCSServices {
   async _rootDisplay(code) {
     const ctxt = this.codes.get(code);
     return ctxt ? ctxt.desc || null : null;
+  }
+
+  #all(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
+    });
   }
 
   async #executeSQL(sql, filter, params = []) {

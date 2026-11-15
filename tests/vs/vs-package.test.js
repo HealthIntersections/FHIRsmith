@@ -187,6 +187,20 @@ describe('PackageValueSetProvider', () => {
       expect((await provider.searchValueSets([{ name: 'url', value: 'HTTP://hl7.org/fhir/tools/ValueSet/primitive-types' }])).length).toBe(0);
     });
 
+    test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {
+      for (const value of ['tools/ValueSet/primitive-types', 'PRIMITIVE-TYPES', 'http://hl7.org/fhir/tools/ValueSet/primitive-types']) {
+        const results = await provider.searchValueSets([{ name: 'url:contains', value }]);
+        expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+        for (const r of results) {
+          expect(r.url.toLowerCase()).toContain(value.toLowerCase());
+        }
+      }
+      // with _elements (built from the indexed columns) too
+      const indexed = await provider.searchValueSets([{ name: 'url:contains', value: 'Primitive-Types' }], ['url']);
+      expect(indexed.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+      expect((await provider.searchValueSets([{ name: 'url:contains', value: 'no-such-value-set-anywhere' }])).length).toBe(0);
+    });
+
     test('version is matched version-aware, not as a substring (K8)', async () => {
       const url = 'http://hl7.org/fhir/tools/ValueSet/primitive-types';
       const search = async (version, elements = null) =>

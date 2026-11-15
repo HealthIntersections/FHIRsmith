@@ -333,6 +333,12 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               isMatch = false;
               break;
             }
+          } else if (param === 'url:contains') {
+            // the url contains the value, without regard to case (the value is lower cased above)
+            if (!(json.url || '').toLowerCase().includes(searchValue)) {
+              isMatch = false;
+              break;
+            }
           } else {
             // Standard partial text match on property
             const propValue = json[param];
