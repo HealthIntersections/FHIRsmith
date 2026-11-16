@@ -5,7 +5,7 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.3] - unreleased
+## [1.0.3] - 2026-11-16
 
 ### Added
 
@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The event loop held for 2 seconds or more (synchronous work during which the process answers nothing) is logged as a warning - "Event loop blocked for 12.3s; in flight when it began: ..." - with the requests that were in flight when it began, the one that finished as it ended first (most likely the one that held it); and counted, so the daily report's stability paragraph says how many times it happened (for 2, 5 and 10 seconds or more). The node blocking graph only showed the longest in each 10 minutes, and not what caused it (`library/block-monitor.js`)
 - XIG: each request is logged when it finishes, with its status, how long it took and the size of the response (`GET /xig?type=cs 200 42ms 5120b`), and "(client gone)" when the client hung up first. The XIG is most of npm.fhir.org's traffic (about a million requests a day) and logged nothing, so what held the server up couldn't be found
 - XIG: a resource is available as JSON (`_fmt=json`, or `Accept: application/json`), as stored - sent gzipped as it is held when the client takes that, so nothing is parsed or decompressed
+- OCL in cluster mode (PR #373): the master alone discovers the OCL sources and collections, and writes what it found to discovery snapshots (`data/terminology-cache/ocl/discovery-snapshot.json`, `vs-discovery-snapshot.json`: each source's metadata and CodeSystem, without its concepts); after each discovery or refresh it downloads every source's concepts into the cold cache files. The workers build the same code systems and value sets from the snapshots, load the concepts from the cold cache files, and pick up a snapshot or cache file the master rewrites - they never run the discovery or the downloads themselves. On a public OCL server the master's downloads take in every public organisation-owned source. See cluster.md
+- Tagalog (`tl`): the server's messages and the rendering phrases
 
 ### Changed
 
@@ -46,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - tx: a ConceptMap at the R4 and R3 endpoints is converted copy-on-write, as code systems and value sets are: it was deep-copied (a JSON round trip of the whole map) on every request, and as a new object each time, so its XML and JSON were never served from the cache. Parameters (the answers of $translate, $validate-code, batch validation) likewise. A ConceptMap's HTML page shows the first 1,000 elements, as a code system's does, with a link to the whole map as JSON; its Translate tab takes a typed code when the map has more than 1,000 codes, rather than listing them all
 - Publisher: the check for files too big for GitHub, before a publication is pushed, walks the web folder without holding the event loop (hl7.org/fhir's has hundreds of thousands of files), and asks git which are ignored, and moves them, the same way. The task page reads the build and publication logs the same way
 - packages: /npm-check works out the tarball's digests in slices, letting other work run between them, and reads its package.json from a streaming unzip that stops once it is found: the whole tarball (VSAC's are ~100 MB) was unzipped into memory and hashed in one go
+- tx: a designation with no language of its own is in its code system's language (`CodeSystem.language`), and `$lookup` and `$expand` say so (`"language": "en"`); a supplement's designation is in the supplement's language, and if the supplement has none either, its language is unknown, as before. The tx-ecosystem tests require this (fhir-tx-ecosystem-ig PR #104)
+- tx: `$validate-code`'s message for a display that isn't valid, when the code has displays in the requested language, is in the request's language (`Accept-Language`), as every other message is; it was in the display language
 
 ### Fixed
 
@@ -61,6 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ICD-11: a text filter searched the language of the request's `displayLanguage` header only, never `displayLanguage` or `Accept-Language` given as the request's language list: the provider dropped it
 - SHL: a VHL's signed claims (`/shl/sign`) had text keys (`"1"`, `"-260"`, `"5"`) where CWT and the GDHCN use integers (1, -260, 5): they are integers now
 - SHL: the Bundle a VHL link's manifest request returns is valid FHIR: type `searchset` (was `searchSet`), each DocumentReference has a status (`current`), and its file is `content.attachment.url` (was `content.url`, which isn't an element)
+- The translations of the server's messages and of the rendering phrases were never used, since 0.10.0: each file was loaded under the wrong name (`Messages-de`, not `de`), so a request in German, say, got English. A request's `Accept-Language` now gets them, in Arabic, Chinese, Dutch, French, German, Japanese, Portuguese, Russian, Spanish, Tagalog and Uzbek - tx.fhir.org's messages for a client that asks for another language will change accordingly
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.3 passed all 5362 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
 
 ## [1.0.2] - 2026-11-15
 

@@ -418,8 +418,9 @@ class CodeSystemProvider {
           if (concept.designation) {
             for (const designation of concept.designation) {
               if (CodeSystem.isUseADisplay(designation.use)) {
-                if (designation.language) {
-                  const designationLang = new Language(designation.language);
+                const lang = designation.language || supplement.jsonObj.language;
+                if (lang) {
+                  const designationLang = new Language(lang);
                   for (const requestedLang of languages) {
                     if (designationLang.matchesForDisplay(requestedLang)) {
                       return true;
@@ -672,7 +673,8 @@ class CodeSystemProvider {
           if (concept.designation) {
             for (const d of concept.designation) {
               let status = Extensions.readString(d, "http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status");
-              displays.addDesignation(false, status || 'active', d.language, d.use, d.value, d.extension?.length > 0 ? d.extension : []).supplement = supplement;
+              // a designation with no language is in the supplement's language (not the base code system's)
+              displays.addDesignation(false, status || 'active', d.language || supplement.jsonObj.language, d.use, d.value, d.extension?.length > 0 ? d.extension : []).supplement = supplement;
             }
           }
         }

@@ -741,12 +741,14 @@ class FhirCodeSystemProvider extends BaseCSServices {
       displays.addDesignation(true, 'active', displayLang, CodeSystem.makeUseForDisplay(), ctxt.concept.display);
     }
 
-    // Add concept designations
+    // Add concept designations. A designation with no language of its own is in the code
+    // system's language (CodeSystem.language), not in no language at all
     if (ctxt.concept.designation && Array.isArray(ctxt.concept.designation)) {
+      const csLang = this.defaultLanguage ? this.defaultLanguage.toString() : '';
       for (const designation of ctxt.concept.designation) {
         let status = Extensions.readString(designation, "http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status");
         displays.addDesignation(false, status || 'active',
-          designation.language || '',
+          designation.language || csLang,
           designation.use || null,
           designation.value,
           designation.extension?.length > 0 ? designation.extension : []
