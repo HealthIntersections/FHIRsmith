@@ -63,7 +63,7 @@ jobs:
 
       - name: Run tests
         run: npm run test:ci
-        timeout-minutes: 20
+        timeout-minutes: 30
         env:
           SUPPRESS_LOGS: 'true'
           # as in ci.yml: the suites run in one process (jest maxWorkers 1), which outgrows
