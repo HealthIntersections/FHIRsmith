@@ -1694,7 +1694,10 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   async #ensureLoaded() {
     if (!this._loaded) {
-      await this.load();
+      // one load, however many requests arrive before it is done: each load() rebuilds the
+      // shared tables, so loads running side by side left requests reading half-built ones
+      this._loading ??= this.load().finally(() => { this._loading = null; });
+      await this._loading;
     }
   }
 
