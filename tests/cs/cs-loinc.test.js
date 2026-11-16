@@ -1145,7 +1145,8 @@ describe('LOINC Provider', () => {
       }
     });
 
-    test('lists text filter matches in description order, sorted or not', async () => {
+    test('lists text filter matches best first, then in description order, sorted or not', async () => {
+      const lists = [];
       for (const sort of [false, true]) {
         const filterContext = await provider.getPrepContext(true);
         await provider.searchFilter(filterContext, new SearchFilterText('serum'), sort);
@@ -1155,8 +1156,28 @@ describe('LOINC Provider', () => {
           displays.push(await provider.display(await provider.filterConcept(filterContext, filters[0])));
         }
         expect(displays.length).toBeGreaterThan(1);
-        expect(displays).toEqual([...displays].sort());
+        lists.push(displays);
       }
+      expect(lists[1]).toEqual(lists[0]);
+    });
+
+    test('the filter\'s words in its order rank first (text-match.js, TextQuery.nameRank)', async () => {
+      const codesFor = async (text) => {
+        const filterContext = await provider.getPrepContext(true);
+        await provider.searchFilter(filterContext, new SearchFilterText(text), true);
+        const filters = await provider.executeFilters(filterContext);
+        const out = [];
+        while (await provider.filterMore(filterContext, filters[0])) {
+          out.push(await provider.code(await provider.filterConcept(filterContext, filters[0])));
+        }
+        return out;
+      };
+      // "Potassium [Mass or Moles/volume] in Serum or Plasma", and three "Potassium [Moles/mass] in ..."
+      const massMoles = await codesFor('mass moles');
+      const molesMass = await codesFor('moles mass');
+      expect(massMoles[0]).toBe('42569-4');
+      expect(molesMass[molesMass.length - 1]).toBe('42569-4');
+      expect([...massMoles].sort()).toEqual([...molesMass].sort());
     });
   });
 

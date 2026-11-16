@@ -126,6 +126,28 @@ describe('TextQuery', () => {
     expect(q.nameRank('Hypertension', 'en')).toBe(0);
   });
 
+  test('rank: the filter\'s words in its order come first', () => {
+    const q = new TextQuery('ac ap');
+    const ordered = q.nameRank('Acute appendicitis', 'en');
+    const other = q.nameRank('Applied action', 'en');
+    expect(other).toBeGreaterThan(0);
+    expect(ordered).toBeGreaterThan(other);
+    // in order with a word between, above out of order; below one after another
+    const between = q.nameRank('Acute perforated appendicitis', 'en');
+    expect(between).toBeGreaterThan(other);
+    expect(ordered).toBeGreaterThan(between);
+    // one after another, but not at the start
+    const later = q.nameRank('Suspected acute appendicitis', 'en');
+    expect(ordered).toBeGreaterThan(later);
+    expect(later).toBeGreaterThan(between);
+  });
+
+  test('rank: the name\'s stop words don\'t come between the filter\'s words', () => {
+    const q = new TextQuery('fracture femur');
+    expect(q.nameRank('Fracture of femur', 'en')).toBeGreaterThan(q.nameRank('Fracture of neck of femur', 'en'));
+    expect(q.nameRank('Fracture of femur', 'en')).toBeGreaterThanOrEqual(60);
+  });
+
   test('the FTS5 query', () => {
     expect(new TextQuery('hepatitis b').ftsQuery('en')).toBe('(words : "hepatitis"* OR stems : "hepat") AND words : "b"');
     expect(new TextQuery('-').ftsQuery('en')).toBeNull();

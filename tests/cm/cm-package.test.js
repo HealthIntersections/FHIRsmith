@@ -174,6 +174,15 @@ describe('PackageConceptMapProvider', () => {
       expect((await provider.searchConceptMaps([{ name: 'url', value: 'ConceptMap/bfs-encounter-class-to-fhir' }])).length).toBe(0);
     });
 
+    test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {
+      const url = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir';
+      for (const value of ['ConceptMap/bfs-encounter-class-to-fhir', 'BFS-ENCOUNTER', url]) {
+        const results = await provider.searchConceptMaps([{ name: 'url:contains', value }]);
+        expect(results.some(r => r.url === url)).toBe(true);
+      }
+      expect((await provider.searchConceptMaps([{ name: 'url:contains', value: 'no-such-concept-map-anywhere' }])).length).toBe(0);
+    });
+
     test('should search by url', async () => {
       const url = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir';
       const results = await provider.searchConceptMaps([

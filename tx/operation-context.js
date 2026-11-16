@@ -6,6 +6,7 @@ const {Issue} = require("./library/operation-outcome");
 const {CanonicalResource} = require("./library/canonical-resource");
 const Logger = require("../library/logger");
 const memoryGuard = require('../library/memory-guard');
+const { englishMessage } = require('../library/i18nsupport');
 
 // When this process started, in ms, and the compact form of it that cache-ids carry when
 // the server has an instance code ("<code>.<start>.<uuid>"): base 36, 8 characters until
@@ -1138,6 +1139,9 @@ class OperationContext {
     // Parameters (buildParameters, raw req.body, query/form). An explicit
     // cache-id *parameter* still takes precedence over this.
     this.cacheId = null;
+    // The operation the request is for ('ValueSet/$expand', '$versions'), named in the
+    // time-limit message; null when not known (no $operation in the path, or not a request)
+    this.operationName = null;
     this.ecosystemForwarded = false; // see EcosystemResolver
     // how many requests answering this one sent to other servers (EcosystemResolver): if any,
     // it's counted as an external request (ServerStats.countExternalRequest). Shared with the
@@ -1223,6 +1227,7 @@ class OperationContext {
     newContext.timeTracker = this.timeTracker.link();
     newContext.logEntries = [...this.logEntries];
     newContext.debugging = this.debugging;
+    newContext.operationName = this.operationName;
     newContext.cacheId = this.cacheId;
     newContext.usageTracker = this.usageTracker;
     newContext.ecosystemForwarded = this.ecosystemForwarded;
@@ -1239,6 +1244,28 @@ class OperationContext {
     // Share the compute clock: sub-operations spend the parent's budget.
     newContext._clock = this._clock;
     return newContext;
+  }
+
+  /**
+   * The operation a request path is for, as the time-limit message names it: the $operation,
+   * after the resource type when there is one ('ValueSet/$expand', 'ValueSet/123/$expand' ->
+   * 'ValueSet/$expand', '$versions'). Null for a path with no $operation (read, search,
+   * metadata). Only well-formed names are taken, as the path is client-supplied
+   * @param {string} path - the request path, relative to the endpoint
+   * @returns {string|null}
+   */
+  static operationNameFor(path) {
+    let segments;
+    try {
+      segments = String(path || '').split('/').filter(seg => seg.length > 0).map(seg => decodeURIComponent(seg));
+    } catch (e) {
+      return null; // malformed %-encoding
+    }
+    const i = segments.findIndex(seg => /^\$[a-zA-Z][a-zA-Z0-9-]{0,63}$/.test(seg));
+    if (i < 0) {
+      return null;
+    }
+    return i > 0 && /^[A-Z][a-zA-Z]{0,63}$/.test(segments[0]) ? segments[0] + '/' + segments[i] : segments[i];
   }
 
   /**
@@ -1277,8 +1304,13 @@ class OperationContext {
     if (elapsed > this.timeLimit) {
       const timeInSeconds = Math.round(this.timeLimit / 1000);
       this.log(`Operation took too long @ ${place} (${this.constructor.name})`);
-      const error = new Issue("error", "too-costly", null, null,
-          `Operation exceeded time limit of ${timeInSeconds} seconds at ${place}`, "too-costly", 422);
+      // CODESYSTEM_TOO_COSTLY_TIME names the operation and where it stopped; with no
+      // operation to name, the plainer REQUEST_TOO_COSTLY_TIME (place is still on the error)
+      const msgId = this.operationName ? 'CODESYSTEM_TOO_COSTLY_TIME' : 'REQUEST_TOO_COSTLY_TIME';
+      const params = this.operationName ? [timeInSeconds, this.operationName, place] : [timeInSeconds];
+      const message = this.i18n ? this.i18n.translate(msgId, this.langs, params) : englishMessage(msgId, params);
+      const error = new Issue("error", "too-costly", null, msgId, message, "too-costly", 422);
+      error.place = place;
       error.diagnostics = this.diagnostics();
       throw error;
     }

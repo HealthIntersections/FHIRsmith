@@ -71,8 +71,8 @@ describe('checkConceptSet deadline', () => {
     const took = performance.now() - start;
 
     expect(error).not.toBeNull();
-    expect(error.message).toContain('Operation exceeded time limit');
-    expect(error.message).toContain('checkConceptSet#3');
+    expect(error.msgId).toBe('REQUEST_TOO_COSTLY_TIME');
+    expect(error.place).toBe('checkConceptSet#3');
     // the check is sampled (every CHECK_FREQUENCY calls), so a few hundred lookups past
     // the limit, not all 3,000 of them
     expect(cs.locates).toBeLessThan(LISTED / 2);

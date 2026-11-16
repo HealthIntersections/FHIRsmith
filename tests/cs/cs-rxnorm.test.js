@@ -421,6 +421,13 @@ describe('RxNorm Provider', () => {
       expect(await textCodes('aspirin 150')).not.toContain('102603');
     });
 
+    testOrSkip('the best match first: the filter\'s words in its order (text-match.js, TextQuery.nameRank)', async () => {
+      // 370611 is "aspirin Oral Tablet" itself
+      expect((await textCodes('aspirin oral tablet'))[0]).toBe('370611');
+      // the other way round, a name with the words in that order comes first
+      expect((await textCodes('oral tablet aspirin'))[0]).toBe('1299853'); // acetaminophen Oral Tablet [Un-Aspirin]
+    });
+
     testOrSkip('a code that starts with the filter', async () => {
       expect(await textCodes('102603')).toContain('102603');
     });

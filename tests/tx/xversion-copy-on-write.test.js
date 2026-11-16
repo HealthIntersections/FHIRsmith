@@ -158,3 +158,107 @@ describe('valueSetFromR5', () => {
     expect(valueSetFromR5(vs, '4.0.1').expansion.contains).toBe(valueSetFromR5(vs, '4.0.1').expansion.contains);
   });
 });
+
+const { conceptMapFromR5 } = require('../../tx/xversion/xv-conceptmap');
+const { parametersFromR5 } = require('../../tx/xversion/xv-parameters');
+
+function conceptMap() {
+  return {
+    resourceType: 'ConceptMap', url: 'http://example.org/cm', status: 'active',
+    identifier: [{ system: 'urn:ietf:rfc:3986', value: 'urn:oid:1.2.3' }],
+    sourceScope: 'http://example.org/vs1|1.0', targetScope: 'http://example.org/vs2',
+    property: [{ code: 'p', type: 'string' }],
+    group: [
+      {
+        source: 'http://example.org/a', target: 'http://example.org/b',
+        element: [
+          { code: '1', target: [{ code: 'x', relationship: 'source-is-narrower-than-target' }] },
+          { code: '2', noMap: true }
+        ],
+        unmapped: { mode: 'use-source-code', relationship: 'related-to' }
+      },
+      // nothing to convert in this group
+      { source: 'http://example.org/c', target: 'http://example.org/d', element: [{ code: '3', noMap: true }] }
+    ]
+  };
+}
+
+describe('conceptMapFromR5', () => {
+  test('R4: the R5 parts are converted, and the stored map is not changed', () => {
+    const plain = conceptMapFromR5(conceptMap(), '4.0.1');
+    const r4 = conceptMapFromR5(deepFreeze(conceptMap()), '4.0.1');
+    expect(r4).toEqual(plain);
+    expect(r4.identifier).toEqual({ system: 'urn:ietf:rfc:3986', value: 'urn:oid:1.2.3' });
+    expect(r4).toMatchObject({ source: 'http://example.org/vs1', sourceVersion: '1.0', target: 'http://example.org/vs2' });
+    expect(r4.sourceScope).toBeUndefined();
+    expect(r4.property).toBeUndefined();
+    expect(r4.group[0].element[0].target[0]).toEqual({ code: 'x', equivalence: 'wider' });
+    expect(r4.group[0].unmapped).toEqual({ mode: 'provided',
+      extension: [{ url: 'http://hl7.org/fhir/5.0/StructureDefinition/extension-ConceptMap.group.unmapped.relationship', valueCode: 'related-to' }] });
+  });
+
+  test('groups and elements with nothing to convert are shared with the original', () => {
+    const cm = deepFreeze(conceptMap());
+    const r4 = conceptMapFromR5(cm, '4.0.1');
+    expect(r4.group[1]).toBe(cm.group[1]);
+    expect(r4.group[0].element[1]).toBe(cm.group[0].element[1]);
+  });
+
+  test('converting the same map again gives the same groups (so their XML can come from the cache)', () => {
+    const cm = deepFreeze(conceptMap());
+    expect(conceptMapFromR5(cm, '4.0.1').group).toBe(conceptMapFromR5(cm, '3.0.2').group);
+  });
+});
+
+function translateParameters() {
+  return {
+    resourceType: 'Parameters',
+    parameter: [
+      { name: 'result', valueBoolean: true },
+      { name: 'match', part: [
+        { name: 'relationship', valueCode: 'equivalent' },
+        { name: 'concept', valueCoding: { system: 'http://example.org/b', code: 'x' } },
+        { name: 'originMap', valueCanonical: 'http://example.org/cm' }
+      ] },
+      { name: 'map', resource: conceptMap() }
+    ]
+  };
+}
+
+describe('parametersFromR5', () => {
+  test('R4: a match gets its equivalence and source, and the original is not changed', () => {
+    const plain = parametersFromR5(translateParameters(), '4.0.1');
+    const r4 = parametersFromR5(deepFreeze(translateParameters()), '4.0.1');
+    expect(r4).toEqual(plain);
+    expect(r4.parameter[1].part.map(p => p.name)).toEqual(['concept', 'originMap', 'source', 'equivalence']);
+    expect(r4.parameter[1].part.find(p => p.name === 'equivalence').valueCode).toBe('equivalent');
+    expect(r4.parameter[2].resource.group[0].element[0].target[0].equivalence).toBe('wider');
+  });
+
+  test('R3: valueCanonical becomes valueUri at every level', () => {
+    const r3 = parametersFromR5(deepFreeze(translateParameters()), '3.0.2');
+    const om = r3.parameter[1].part.find(p => p.name === 'originMap');
+    expect(om).toEqual({ name: 'originMap', valueUri: 'http://example.org/cm' });
+    expect(r3.parameter[1].part.find(p => p.name === 'relationship')).toBeDefined();
+  });
+
+  test('parameters with nothing to convert are shared with the original', () => {
+    const p = deepFreeze(translateParameters());
+    expect(parametersFromR5(p, '4.0.1').parameter[0]).toBe(p.parameter[0]);
+    expect(parametersFromR5(p, '3.0.2').parameter[0]).toBe(p.parameter[0]);
+  });
+});
+
+describe('capResourceCodes on a ConceptMap', () => {
+  const { capResourceCodes } = require('../../tx/tx-html');
+  test('no more than the limit of elements, across the groups, and the map is not changed', () => {
+    const cm = deepFreeze({ resourceType: 'ConceptMap', group: [
+      { source: 'a', element: [{ code: '1' }, { code: '2' }, { code: '3' }] },
+      { source: 'b', element: [{ code: '4' }, { code: '5' }] }
+    ] });
+    const capped = capResourceCodes(cm, 4);
+    expect(capped).toMatchObject({ shown: 4, total: 5 });
+    expect(capped.resource.group.map(g => g.element.map(e => e.code))).toEqual([['1', '2', '3'], ['4']]);
+    expect(capResourceCodes(cm, 5).resource).toBe(cm);
+  });
+});

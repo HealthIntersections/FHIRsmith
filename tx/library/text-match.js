@@ -211,22 +211,66 @@ class TextQuery {
   }
 
   /**
-   * How well a name matches: 0 if it doesn't; else 90 the name is the filter, 50 it starts
-   * with the filter, 35 it has the filter's words together and in order, 20 it has them; to the
-   * last three, up to 10 for how much of the name the filter is (the shorter the name, the closer
-   * the match)
+   * How well a name matches: 0 if it doesn't. Otherwise, by how closely the name follows the
+   * filter, its words in the filter's order: 90 the name is the filter; 60 the filter's words
+   * start the name, one after another ("ac ap": Acute appendicitis); 45 they are one after
+   * another later in the name; 30 they are in order, with other words between; 20 they are all
+   * there, in another order ("ac ap": Applied action). The name's stop words don't come between
+   * (unless the filter has them), so "fracture femur" follows "Fracture of femur". To all but the
+   * first, up to 10 for how much of the name the filter's words are (the shorter the name, the
+   * closer the match)
    */
   nameRank(name, lang) {
-    if (!this.nameMatches(name, lang)) {
+    const tokens = this.tokens(lang);
+    if (tokens.length === 0 || !name) {
       return 0;
     }
-    const n = words(name).join(' ');
-    const f = this.allWords.join(' ');
-    const share = n.length === 0 ? 0 : Math.min(1, f.length / n.length);
-    if (n === f) {
+    const all = words(name);
+    if (all.join(' ') === this.allWords.join(' ')) {
       return 90;
     }
-    const base = n.startsWith(f) ? 50 : ((' ' + n).includes(' ' + f) ? 35 : 20);
+    const keepStops = tokens.some(t => STOP_WORDS.has(t.word));
+    const ws = keepStops ? all : all.filter(w => !STOP_WORDS.has(w));
+    const key = languageOf(lang);
+    let stems = null;
+    const matchesAt = (t, i) => {
+      const w = ws[i];
+      if (t.whole) {
+        return w === t.word;
+      }
+      if (w.startsWith(t.word)) {
+        return true;
+      }
+      stems ??= ws.map(x => stem(x, key));
+      return stems[i] === t.stem;
+    };
+    // every word of the filter somewhere in the name, or no match
+    if (!tokens.every(t => ws.some((w, i) => matchesAt(t, i)))) {
+      return 0;
+    }
+    // the filter's words in its order: each the first match after the one before
+    const positions = [];
+    for (const t of tokens) {
+      const from = positions.length === 0 ? 0 : positions[positions.length - 1] + 1;
+      let at = -1;
+      for (let i = from; i < ws.length; i++) {
+        if (matchesAt(t, i)) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0) {
+        positions.length = 0;
+        break;
+      }
+      positions.push(at);
+    }
+    let base = 20;
+    if (positions.length === tokens.length) {
+      const together = positions.every((p, k) => p === positions[0] + k);
+      base = together ? (positions[0] === 0 ? 60 : 45) : 30;
+    }
+    const share = ws.length === 0 ? 0 : Math.min(1, tokens.length / ws.length);
     return base + 10 * share;
   }
 
@@ -264,6 +308,33 @@ class TextQuery {
     }
     return [...forms].filter(f => f).map(f => [f, f + '\u{10FFFF}']);
   }
+}
+
+/**
+ * The best rank (TextQuery.nameRank) of each key, from its names that matched: for a provider
+ * that finds the matches in a database and ranks them here. Lets other work run every yieldMs
+ * (a broad filter can match a hundred thousand names)
+ *
+ * @param {TextQuery} query
+ * @param {string|Object|null} lang - the language searched
+ * @param {Array<{key: *, name: string}>} rows - a name may be a text index's words column
+ * @param {number} [yieldMs]
+ * @returns {Promise<Map<*, number>>} key -> its best rank
+ */
+async function bestRanks(query, lang, rows, yieldMs = 20) {
+  const ranks = new Map();
+  let last = performance.now();
+  for (let i = 0; i < rows.length; i++) {
+    if ((i & 0xFF) === 0 && performance.now() - last >= yieldMs) {
+      await new Promise(resolve => setImmediate(resolve));
+      last = performance.now();
+    }
+    const rank = query.nameRank(rows[i].name, lang);
+    if (rank > (ranks.get(rows[i].key) ?? 0)) {
+      ranks.set(rows[i].key, rank);
+    }
+  }
+  return ranks;
 }
 
 /**
@@ -478,5 +549,5 @@ function lowerBound(sorted, value) {
 module.exports = {
   STOP_WORDS, MAX_TEXT, MAX_WORDS, TEXT_INDEX_TOKENIZE,
   languageOf, stemmerFor, hasStemmer, fold, words, stem,
-  TextQuery, NameIndex, indexColumns, createTextIndexSql, isTextIndexSql, lowerBound
+  TextQuery, NameIndex, indexColumns, createTextIndexSql, isTextIndexSql, lowerBound, bestRanks
 };
