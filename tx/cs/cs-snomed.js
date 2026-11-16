@@ -191,7 +191,9 @@ class SnomedServices {
     this.isAIndex = sharedData.isAIndex;
     this.activeRoots = sharedData.activeRoots;
     this.inactiveRoots = sharedData.inactiveRoots;
-    this.defaultLanguage = sharedData.defaultLanguage;
+    // The edition's default description language, as a language byte (SCT_LANGUAGE_CODES):
+    // the language a text or display filter searches when the request names none.
+    this.defaultLanguage = this.#resolveDefaultLanguage(sharedData.defaultLanguage);
     this.isTesting = sharedData.isTesting;
 
     // Expression services
@@ -216,6 +218,38 @@ class SnomedServices {
 
     this.#loadIdentifiers(sharedData.identifiers || []);
     this.#loadConcreteValues(sharedData.concreteValues);
+  }
+
+  /**
+   * The cache's default-language slot, as a language byte. There are three conventions:
+   * - caches written by the importer here hold the edition's default language byte
+   *   (older ones hold 1, English, whatever the edition);
+   * - caches written by the original server hold the membersByRef offset of the edition's
+   *   default language reference set (51756144 - 900000000000509007, US English - in
+   *   sct_intl_20250201.cache; 10965809 - 450828004, Spanish - in sct_es_20250510.cache).
+   *   That reference set's language is the one most of the descriptions it holds are in -
+   *   a language reference set also lists some descriptions in other languages (450828004
+   *   has 42804 English ones beside 1136162 Spanish ones in the es cache).
+   * Anything else is read as English.
+   */
+  #resolveDefaultLanguage(slot) {
+    if (SCT_LANGUAGE_CODES[slot]) {
+      return slot;
+    }
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      const refSet = this.refSetIndex.getReferenceSet(i);
+      if (refSet.membersByRef === slot) {
+        let best = 1, most = 0;
+        for (const [lang, n] of this.refSetMembers.descriptionLanguages(slot, this.descriptions)) {
+          if (SCT_LANGUAGE_CODES[lang] && n > most) {
+            best = lang;
+            most = n;
+          }
+        }
+        return best;
+      }
+    }
+    return 1;
   }
 
   /**
@@ -3525,7 +3559,9 @@ class SnomedProvider extends BaseCSServices {
         return code;
       }
     }
-    return this.sct.defaultLanguage || 1;
+    // none named: the edition's default, if it has descriptions in it, else its first language
+    const fallback = this.sct.defaultLanguage;
+    return present.has(fallback) || present.size === 0 ? fallback : Math.min(...present);
   }
 
   // the concept index of 900000000000550004 |Definition|, or -1
