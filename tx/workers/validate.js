@@ -892,7 +892,10 @@ class ValueSetChecker {
             } else {
               let cs = await this.worker.findCodeSystem(cc.system, cc.version, this.params, ['complete', 'fragment'], op,true, true, false, this.worker.requiredSupplements);
               if (cs === null) {
-                throw new Issue('error', 'unknown', null, null, 'No Match for ' + cc.system + '|' + cc.version);
+                // the exclude can't be checked, so whether the code is in the value set can't be
+                // said: a problem with the request (the value set names a code system or version
+                // this server doesn't have), not with the server
+                throw await this.unknownExcludeSystem(cc);
               }
               await this.checkCanonicalStatus(path, op, cs, this.valueSet);
               this.worker.checkSupplements(cs, cc, this.worker.requiredSupplements, this.worker.usedSupplements);
@@ -2168,6 +2171,21 @@ class ValueSetChecker {
       }
     }
     return false;
+  }
+
+  /**
+   * The error when an exclude names a code system, or a version of one, that this server
+   * doesn't have (422, as for an expansion: see Worker.findCodeSystem)
+   */
+  async unknownExcludeSystem(cc) {
+    if (!cc.version) {
+      return new Issue('error', 'not-found', null, 'UNKNOWN_CODESYSTEM',
+        this.worker.i18n.translate('UNKNOWN_CODESYSTEM', this.params.HTTPLanguages, [cc.system]), 'not-found', 422);
+    }
+    const versions = await this.worker.listVersions(cc.system);
+    const mid = versions.length === 0 ? 'UNKNOWN_CODESYSTEM_VERSION_NONE' : 'UNKNOWN_CODESYSTEM_VERSION';
+    return new Issue('error', 'not-found', null, mid,
+      this.worker.i18n.translate(mid, this.params.HTTPLanguages, [cc.system, cc.version, this.worker.presentVersionList(versions)]), 'not-found', 422);
   }
 
   useThisVersion(cc, version) {
