@@ -11,6 +11,12 @@
 // the safe behaviour. `npm run dev` (node --watch) runs in development mode
 process.env.NODE_ENV ??= process.execArgv.includes('--watch') ? 'development' : 'production';
 
+// libuv's thread pool, which runs the sqlite3 queries (LOINC, RxNorm, ICD-11, VSAC, the packages
+// and XIG databases), file reads and async gzip, is 4 threads unless told otherwise: a few slow
+// queries take them all and everything else waits (npm.fhir.org, 2026-11). 16 unless the
+// environment says. libuv reads this when it first uses the pool, so it is set before anything does
+process.env.UV_THREADPOOL_SIZE ??= '16';
+
 // node server.js --check (or -t, as nginx has it): check the configuration - config.json, the
 // files it names, the folders the server writes to, and with --role what the role makes of it -
 // print what's wrong, and exit 0 if nothing is, 1 if something is. Before anything else, so
@@ -59,6 +65,7 @@ const { trimNativeMemory } = require('./library/native-memory');
 const { NpmAudit } = require('./library/npm-audit');
 const Mailer = require('./library/mailer');
 const DailyReport = require('./library/daily-report');
+const BlockMonitor = require('./library/block-monitor');
 const { maxBodyBytes } = require('./library/body-limit');
 
 // Load configuration (from the data directory)
@@ -182,6 +189,10 @@ const PORT = (role && role.port) || process.env.PORT || config.server.port || 30
 const HOST = role ? require('./library/role').bindAddress(config) : null;
 
 // Middleware
+// The event loop held for 2 seconds or more: logged with the requests in flight, and counted for
+// the daily report (library/block-monitor.js). It knows the requests from here on
+const blockMonitor = new BlockMonitor({ log: serverLog });
+app.use(blockMonitor.middleware());
 // The requests this process has in flight, for the status panel (library/cluster-status.js)
 let inFlight = 0;
 app.use((req, res, next) => {
@@ -253,6 +264,7 @@ let dailyReport = null;
 // Initialize modules based on configuration
 async function initializeModules() {
   stats = new ServerStats(config.stats, serverLog);
+  blockMonitor.stats = stats;
   if (role) {
     disconnectMetrics = connectMetrics(stats);
     // a worker's request counts go to the master's statistics (library/cluster-counts.js)
@@ -1047,6 +1059,7 @@ async function startServer() {
     // Start server
     const listening = () => {
       stats.markStarted(packageJson.version);
+      blockMonitor.start();
       // the event loop held for logging.stallReportSeconds: its stack goes to a file in the logs
       try {
         stallWatchdog = startStallWatchdog({
@@ -1129,6 +1142,7 @@ async function shutdown() {
   if (dailyReport) {
     dailyReport.stop();
   }
+  blockMonitor.stop();
   if (stallWatchdog) {
     await stallWatchdog.stop();
   }

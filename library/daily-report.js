@@ -28,6 +28,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const folders = require('./folder-setup');
+const { blockSummary } = require('./block-monitor');
+// the module the server's own counts are under (stats.js SERVER_MODULE)
+const SERVER_MODULE = '(server)';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // headings for the modules' paragraphs; a module not listed is headed by its key
@@ -296,7 +299,9 @@ class DailyReport {
   stabilityParagraph(since, now) {
     const runs = this.stats ? this.stats.runHistory(since, now) : null;
     if (!runs) {
-      return 'No run history is available (the statistics database is not in use), so the uptime over the period is unknown.';
+      const blocks = this.blocksSentence(since, now);
+      return 'No run history is available (the statistics database is not in use), so the uptime over the period is unknown.' +
+        (blocks ? ' ' + blocks : '');
     }
     const period = now - since;
     let running = 0;
@@ -345,7 +350,31 @@ class DailyReport {
     if (upgrades.length === 0) {
       sentences.push(`It was not upgraded (v${this.version}).`);
     }
+    const blocks = this.blocksSentence(since, now);
+    if (blocks) {
+      sentences.push(blocks);
+    }
     return sentences.join(' ');
+  }
+
+  /**
+   * How often the event loop was held for 2, 5 and 10 seconds or more (library/block-monitor.js);
+   * each one is in the log with the requests that were in flight
+   */
+  blocksSentence(since, now) {
+    if (!this.stats || typeof this.stats.countsSince !== 'function') {
+      return null;
+    }
+    const counts = this.stats.countsSince(since, now, SERVER_MODULE);
+    const {over2, over5, over10} = blockSummary(counts);
+    const partial = counts.persisted ? '' : ' (this run only: the statistics database is not in use)';
+    if (over2 === 0) {
+      return `The event loop was never blocked for 2 seconds or more${partial}.`;
+    }
+    const longer = over5 === 0 ? 'none of them for 5 seconds or more'
+      : `${over5} of them for 5 seconds or more, ${over10 === 0 ? 'none' : over10} for 10 seconds or more`;
+    return `The event loop was blocked for 2 seconds or more ${times(over2)} (${longer})${partial}; ` +
+      'each is in the log ("Event loop blocked"), with the requests that were in flight.';
   }
 
   /**

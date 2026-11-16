@@ -48,5 +48,12 @@ The database's HTML fragments are shown as they are, so the download URL is fixe
 | `GET /xig/cache` | Cache statistics, as JSON |
 | `POST /xig/update` | Download the database now (needs `updateToken`) |
 
-The list and resource pages can be asked for as JSON or CSV as well as HTML (`_fmt=json` or `_fmt=csv`, or an `Accept`
-header).
+The list can be asked for as JSON or CSV as well as HTML (`_fmt=json` or `_fmt=csv`, or an `Accept` header), and a
+resource as JSON - the resource as it is in its package, sent gzipped when the client takes that.
+
+No list has more than 200 rows. The rest are paged by `offset`: in the HTML, with Start / Prev / Next links; in the JSON
+and CSV, with an `X-Total-Count` header (how many rows the filter matches) and a `Link` header (`first`, `prev`, `next`,
+`last`). A resource page's lists are paged the same way, by `usedByOffset`, `usesOffset` and `examplesOffset`. A
+resource bigger than 1 MB (as JSON) has no narrative or source on its page, only a link to it as JSON.
+
+Each request is logged when it finishes, with its status, how long it took and the size of the response.
