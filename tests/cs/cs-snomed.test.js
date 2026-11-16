@@ -161,7 +161,53 @@ describe('SNOMED CT Module Import', () => {
     expect(Array.isArray(data.activeRoots)).toBe(true);
     expect(Array.isArray(data.inactiveRoots)).toBe(true);
     expect(data.activeRoots.length).toBeGreaterThan(0);
+
+    // the edition's default language (en-US), as a language byte
+    expect(data.defaultLanguage).toBe(1);
   });
+
+  test('records the edition\'s default language, and searches it when the request names none', async () => {
+    // The same source imported as an edition whose default is Dutch (its TEST1000003
+    // extension has Dutch descriptions and a Dutch language reference set)
+    const nlCachePath = folders.ensureFilePath('snomed-testing-nl.cache');
+    try {
+      const importer = new SnomedImporter({
+        source: testSourceDir, dest: nlCachePath, edition: '31000003106', version: '20250909',
+        uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'nl-NL',
+        verbose: false, overwrite: true, createIndexes: true
+      });
+      await importer.run();
+      expect((await new SnomedFileReader(nlCachePath).loadSnomedData()).defaultLanguage).toBe(3);
+
+      const langDefs = await TestUtilities.loadLanguageDefinitions();
+      const opContext = new OperationContext('en', await TestUtilities.loadTranslations(langDefs));
+      const factory = new SnomedServicesFactory(opContext.i18n, nlCachePath);
+      const provider = await factory.build(opContext, []);
+      try {
+        const text = async (filter, languages = null) => {
+          const prep = await provider.getPrepContext(true, languages);
+          const f = await provider.searchFilter(prep, new SearchFilterText(filter), null);
+          return f.matches.map(m => m.term.toString()).sort();
+        };
+        expect(await text('hematoom')).toEqual(['262798009', '35566002']);
+        expect(await text('appendicitis')).toEqual([]);
+        expect(await text('appendicitis', Languages.fromAcceptLanguage('en', langDefs, true))).toContain('74400008');
+
+        const prep = await provider.getPrepContext(true, null);
+        await provider.filter(prep, true, 'display', 'regex', '.*hematoom.*');
+        const [set] = await provider.executeFilters(prep);
+        const regex = [];
+        while (await provider.filterMore(prep, set)) {
+          regex.push(await provider.code(await provider.filterConcept(prep, set)));
+        }
+        expect(regex.sort()).toEqual(['262796008', '262797004', '262798009', '35566002']);
+      } finally {
+        provider.sct.close();
+      }
+    } finally {
+      fs.rmSync(nlCachePath, { force: true });
+    }
+  }, 300000);
 
   test('should have loaded core SNOMED structures', async () => {
     const reader = new SnomedFileReader(testCachePath);

@@ -1,7 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 
-const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
+const { SnomedServicesFactory, SnomedServices, SnomedProvider } = require('../../tx/cs/cs-snomed');
 const { SnomedTextIndex, filterTokens, tokenize } = require('../../tx/sct/text-index');
 const { OperationContext } = require('../../tx/operation-context');
 const { LanguageDefinitions } = require('../../library/languages');
@@ -139,6 +139,74 @@ describe('SNOMED text search', () => {
       expect(codes).toContain('6990005'); // Fracture of shaft of tibia
       const neither = await sct.scanSearch('fracture zzzz', false, null);
       expect(neither.matches).toEqual([]);
+    });
+
+    describe('the edition default language', () => {
+      // The language a text filter searches when the request names none comes from the
+      // cache's default-language slot. The test edition is English, plus Dutch descriptions
+      // of a few hematoma concepts and a Dutch language reference set (1000601000003105) in
+      // its TEST1000003 extension.
+      // the concepts with a Dutch description with the word "hematoom" ("hematoom",
+      // "intrahepatisch hematoom"; "leverhematoom" is one word)
+      const DUTCH = ['262798009', '35566002'];
+      const membersOf = (refsetId) => sct.refSetIndex.getMembersByConcept(sct.concepts.findConcept(refsetId).index);
+      const servicesWith = (slot) => new SnomedServices({ ...factory._sharedData, defaultLanguage: slot });
+      const codes = async (services, text, languages = null) => {
+        const provider = new SnomedProvider(new OperationContext('en', i18n), [], services);
+        const fc = await provider.getPrepContext(true, languages);
+        const f = await provider.searchFilter(fc, new SearchFilterText(text), null);
+        return f.matches.map(m => m.term.toString()).sort();
+      };
+
+      test('original-server cache: the slot names the default language reference set', async () => {
+        // the slot holds the reference set's membersByRef (51756144 - US English
+        // 900000000000509007 - in sct_intl_20250201.cache); its language is that of the
+        // descriptions it holds
+        const english = servicesWith(membersOf(900000000000509007n));
+        expect(english.defaultLanguage).toBe(1);
+        expect(await codes(english, 'appendicitis')).toContain('74400008');
+
+        const dutch = servicesWith(membersOf(1000601000003105n));
+        expect(dutch.defaultLanguage).toBe(3);
+        expect(await codes(dutch, 'hematoom')).toEqual(DUTCH);
+        expect(await codes(dutch, 'appendicitis')).toEqual([]);
+        // a request that names a language still gets that language
+        expect(await codes(dutch, 'appendicitis', [{ language: 'en' }])).toContain('74400008');
+        expect(await codes(dutch, 'hematoom', [{ language: 'en' }])).toEqual([]);
+      }, 60000);
+
+      test('importer cache: the slot holds the language', async () => {
+        const dutch = servicesWith(3);
+        expect(dutch.defaultLanguage).toBe(3);
+        expect(await codes(dutch, 'hematoom')).toEqual(DUTCH);
+        // older importer caches hold 1 whatever the edition: English
+        const english = servicesWith(1);
+        expect(english.defaultLanguage).toBe(1);
+        expect(await codes(english, 'hematoom')).toEqual([]);
+        expect(await codes(english, 'appendicitis')).toContain('74400008');
+      }, 60000);
+
+      test('descriptionLanguages counts what getMembers reads, with and without member ids', () => {
+        let withIds = 0;
+        for (let i = 0; i < sct.refSetIndex.count(); i++) {
+          const { membersByRef } = sct.refSetIndex.getReferenceSet(i);
+          const expected = new Map();
+          for (const m of sct.refSetMembers.getMembers(membersByRef) || []) {
+            if (m.kind !== 1) continue;
+            const lang = sct.descriptions.getDescription(m.ref).lang;
+            expected.set(lang, (expected.get(lang) || 0) + 1);
+          }
+          if (sct.refSetMembers.master.readUInt8(membersByRef + 4) !== 0) withIds++;
+          expect(sct.refSetMembers.descriptionLanguages(membersByRef, sct.descriptions)).toEqual(expected);
+        }
+        expect(withIds).toBeGreaterThan(0);
+      });
+
+      test('a slot that is neither is read as English', async () => {
+        const services = servicesWith(51756144); // no reference set's members start there
+        expect(services.defaultLanguage).toBe(1);
+        expect(await codes(services, 'appendicitis')).toContain('74400008');
+      }, 60000);
     });
 
     test('the scan yields through the operation context', async () => {

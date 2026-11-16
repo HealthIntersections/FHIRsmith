@@ -1565,6 +1565,19 @@ class SnomedImporter {
     return langMap[code] || 1;
   }
 
+  /**
+   * The edition's default description language, as the language byte the cache's
+   * default-language slot holds (the server searches it when a request names no
+   * language): config.language - the edition's language from the editions table, or
+   * --language - if the edition has active descriptions in it, else 1 (English).
+   * Caches imported before this hold 1 whatever the edition.
+   */
+  defaultLanguageByte() {
+    const code = String(this.config.language || '').split('-')[0].toLowerCase();
+    const lang = this.mapLanguageCode(code);
+    return this.descriptions.activeLanguages().has(lang) ? lang : 1;
+  }
+
   processWords() {
     const progressBar = this.progressReporter?.createTaskProgressBar('Processing Words');
     progressBar?.start(this.descriptionList.length, 0);
@@ -2905,7 +2918,7 @@ class SnomedImporter {
       isAIndex: this.isAIndex, // Simplified
       inactiveRoots: this.inactiveRoots || [],
       activeRoots: this.activeRoots || [],
-      defaultLanguage: 1
+      defaultLanguage: this.defaultLanguageByte()
     });
 
     if (this.progressReporter) {
