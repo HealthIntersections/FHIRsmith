@@ -1735,6 +1735,7 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.materializedConceptList = null;
     this.materializedConceptCount = -1;
     this._coldCacheLoadedMtimeMs = null;
+    this._coldCacheLoad = null; // the load in progress, if any (see #loadColdCache)
     OCLSourceCodeSystemFactory.factoriesByKey.set(this.#resourceKey(), this);
 
     const unversionedKey = `${this.system()}|`;
@@ -1745,10 +1746,28 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.#loadColdCache();
   }
 
-  async #loadColdCache() {
+  /**
+   * Load the concepts from the cold cache file. One load at a time: a follower calls this on
+   * requests (reloadColdCacheIfChanged), and the read and parse of a large source take a while -
+   * without this, every request that arrived while a load was going on started another, each
+   * parsing the whole file again (synchronously)
+   */
+  #loadColdCache() {
+    if (!this._coldCacheLoad) {
+      this._coldCacheLoad = this.#readColdCache().finally(() => {
+        this._coldCacheLoad = null;
+      });
+    }
+    return this._coldCacheLoad;
+  }
+
+  async #readColdCache() {
     const canonicalUrl = this.system();
     const version = this.version();
     const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, canonicalUrl, version);
+    // the modification time of the file as read: taken before reading it, so that if the master
+    // rewrites it while it is read, the newer file is still seen as newer next time
+    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
 
     try {
       const data = await fs.readFile(cacheFilePath, 'utf-8');
@@ -1775,7 +1794,6 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
       this.#applyConceptsToCodeSystemResource(this.meta?.codeSystem || null);
 
-      const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
       if (mtimeMs != null) {
         this._coldCacheLoadedMtimeMs = mtimeMs;
       }
@@ -1876,6 +1894,9 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     }
     if (this._coldCacheLoadedMtimeMs != null && mtimeMs <= this._coldCacheLoadedMtimeMs) {
       return false;
+    }
+    if (this._coldCacheLoad) {
+      return false; // a load is already going on; a newer file is picked up next time
     }
     this.#loadColdCache();
     return true;
