@@ -21,14 +21,26 @@ let forcedCaching = false;
 let configuredErrorsForInvalidCodes = undefined;
 // one entry per test run, for the TestReport written next to the summary
 let testResults = [];
+// why the server or the validator could not be started, if they couldn't (see startTxTests)
+let startupError = null;
+let startupErrorReported = false;
 
 function txTestModeSet() {
    return new Set(['tx.fhir.org', 'omop', 'general', 'snomed', 'mimetypes', 'icd-11', 'icf', 'closure', 'loinc']);
 }
 
+// If the server or the validator can't be started (a package server that doesn't answer, say), the
+// error is kept rather than thrown. Thrown from beforeAll, jest reports it - message, code frame and
+// stack - against every one of the 5000+ tests, twice over (once as they run and again in the
+// summary): a quarter of a million lines that GitHub truncates, so the cause can't be seen. Kept, it
+// is reported in full once, by the first test, and the rest fail with a one-line pointer to it
 async function startTxTests() {
-    await startServer();
-    await loadValidator();
+    try {
+        await startServer();
+        await loadValidator();
+    } catch (e) {
+        startupError = e;
+    }
 }
 
 /**
@@ -62,23 +74,32 @@ function setForcedCaching(enabled) {
     }
 }
 
+// Whatever happens writing the summary, the validator and the server are stopped: anything left
+// running keeps jest from exiting, and the CI job then hangs until its timeout
 async function  finishTxTests() {
-    console.log(txTestSummary());
-    let textfilename = path.join(__dirname, '../../test-cases-summary.txt');
-    fs.writeFileSync(textfilename, txTestSummary());
-    let reportfilename = path.join(__dirname, '../../test-cases-report.json');
-    fs.writeFileSync(reportfilename, JSON.stringify(txTestReport(), null, 2));
+    try {
+        console.log(txTestSummary());
+        let textfilename = path.join(__dirname, '../../test-cases-summary.txt');
+        fs.writeFileSync(textfilename, txTestSummary());
+        let reportfilename = path.join(__dirname, '../../test-cases-report.json');
+        fs.writeFileSync(reportfilename, JSON.stringify(txTestReport(), null, 2));
+    } finally {
+        await unloadValidator();
+        await stopServer();
+    }
+}
 
-    await unloadValidator();
-    await stopServer();
+// (null when the validator never started)
+function runnerVersion() {
+    return validator ? validator.jarVersion() : 'n/a';
 }
 
 function txTestSummary() {
     let set = Array.from(txTestModeSet()).join('+');
     if (error == 0) {
-      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
+      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
     } else {
-      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${validator.jarVersion()})`;
+      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
     }
 }
 
@@ -116,7 +137,7 @@ function txTestReport() {
         }, {
             type: 'test-engine',
             uri: 'https://github.com/hapifhir/org.hl7.fhir.core',
-            version: validator.jarVersion(),
+            version: runnerVersion(),
             display: 'HL7 Ecosystem Test Runner (modes ' + modes + ')'
         }],
         test: testResults.map(t => ({
@@ -149,6 +170,17 @@ async function runTest(test, version = true) {
         label: (VersionUtilities.isR5Plus(version) ? 'r5' : 'r4') + (forcedCaching ? '-cached' : '')
     };
     count++;
+    if (startupError) {
+        error++;
+        if (!startupErrorReported) {
+            startupErrorReported = true;
+            throw startupError;
+        }
+        // no stack, so jest prints just the message
+        const e = new Error('The tx test server did not start: see the first failing test for why');
+        e.stack = e.message;
+        throw e;
+    }
     const start = new Date().toISOString();
     const result = await validator.runTxTest(params);
     if (!result.result) { 
@@ -211,7 +243,9 @@ async function startServer() {
 }
 
 async function stopServer() {
-    stats.finishStats();
+    if (stats) {
+        stats.finishStats();
+    }
 
     if (txModule && typeof txModule.shutdown === 'function') {
         await txModule.shutdown();

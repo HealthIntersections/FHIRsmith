@@ -15,7 +15,7 @@
  *   { patient: { family, given, gender, birthDate, identifierSystem, identifier, phone, email, address },
  *     document: { title, author, authorType, custodian, date },
  *     sections: { <key>: { mode: 'data' | 'narrative' | 'empty' | 'omit', emptyReason, narrative, rows: [ { <field>: value, <sub>: [ {...} ] } ] } } }
- * A code value is { system, code, display, text }; a quantity is { value, unit }; a select
+ * A code value is { system, version, code, display, text }; a quantity is { value, unit }; a select
  * is its code; a list field holds an array of those.
  *
  * @module ips/composer
@@ -59,6 +59,9 @@ function codeableOf(v) {
   const cc = {};
   if (str(v.system) && str(v.code)) {
     const coding = { system: str(v.system), code: str(v.code) };
+    if (str(v.version)) {
+      coding.version = str(v.version);
+    }
     if (str(v.display)) {
       coding.display = str(v.display);
     }
@@ -103,7 +106,15 @@ function fhirValue(field, v) {
       if (!opt) {
         return undefined; // not one of the options
       }
-      return field.system ? { coding: [{ system: field.system, code: opt.code, display: opt.display }] } : opt.code;
+      if (!field.system) {
+        return opt.code;
+      }
+      // the code system's display on the coding; the form's label, where it is friendlier, as the text
+      const cc = { coding: [{ system: field.system, code: opt.code, display: opt.display }] };
+      if (opt.label) {
+        cc.text = opt.label;
+      }
+      return cc;
     }
     case 'date': {
       const d = str(v);
@@ -251,6 +262,9 @@ function formValue(field, v) {
         }
         const c = (Array.isArray(x.coding) ? x.coding : []).find(isObject) || {};
         const out = { system: str(c.system), code: str(c.code), display: str(c.display), text: str(x.text) };
+        if (str(c.version)) {
+          out.version = str(c.version);
+        }
         return out.code || out.text ? out : undefined;
       }
       case 'quantity': return isObject(x) && typeof x.value === 'number' ? { value: x.value, unit: str(x.unit) || str(x.code) } : undefined;
@@ -384,7 +398,7 @@ async function build(model, options = {}) {
       }
       continue;
     }
-    const section = { title: def.title, code: { coding: [{ system: LOINC, code: def.code, display: def.title }] } };
+    const section = { title: def.title, code: { coding: [{ system: LOINC, code: def.code, display: def.display || def.title }] } };
     composition.section.push(section);
     if (mode === 'empty') {
       const reason = EMPTY_REASONS.find(r => r.code === str(s.emptyReason));

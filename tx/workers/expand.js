@@ -1055,12 +1055,12 @@ class ValueSetExpander {
             // guard was silently dead.
             // (not when the provider will be handed the compose: it pages and counts the
             // selection itself - see processCodes)
-            if (!imp && !(vsInfo && vsInfo.handleByCS) && this.count !== 0 && this.limitCount > 0 && await cs.totalCount() > this.limitCount
-                && !this.#pageFits()) {
+            const csTotal = !imp && !(vsInfo && vsInfo.handleByCS) && this.count !== 0 && this.limitCount > 0 ? await cs.totalCount() : -1;
+            if (csTotal >= 0 && csTotal > this.limitCount && !this.#pageFits()) {
               // Report the versioned url (vurl), matching the message the
               // enumeration path produces when it hits the same limit - this
               // guard is just that refusal moved earlier.
-              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source && source.vurl ? source.vurl : srcURL, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+              throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(source && source.vurl ? source.vurl : srcURL, this.#exactSize(source.jsonObj.compose, cs, this.excludeInactives(source), csTotal), this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
             }
           }
         }
@@ -1126,7 +1126,7 @@ class ValueSetExpander {
     const wholeSystemInclude = includes.some(cset => !(cset.filter || []).length);
     if (wholeSystemInclude && this.count !== 0 && this.limitCount > 0 && selection.total > this.limitCount
         && !(this.count > 0 && this.count <= this.limitCount)) {
-      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.worker.i18n.translate('VALUESET_TOO_COSTLY', this.params.httpLanguages, [vsSrc.vurl || vsSrc.url, '>' + this.limitCount]), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(vsSrc.vurl || vsSrc.url, selection.total, this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     }
 
     for (const cset of [...includes, ...excludes]) {
@@ -1273,7 +1273,7 @@ class ValueSetExpander {
             } else {
               const iter = await cs.iterator(null);
               if (valueSets.length === 0 && this.count !== 0 && this.limitCount > 0 && (iter && iter.total > this.limitCount) && this.offset < 0) {
-                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+                throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(vsSrc.vurl, filters.length === 0 && filter.isNull ? this.#exactSize(compose, cs, excludeInactive, iter.total) : null, this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
 
               }
               if (this.paging && valueSets.length === 0 && filters.length === 0 && this.#sizeIsTotal(compose, cs, excludeInactive) && !this.params.excludeNotForUI
@@ -2080,6 +2080,33 @@ class ValueSetExpander {
       : this.worker.i18n.translate('VALUESET_TOO_COSTLY_REQUEST', this.params.httpLanguages, [limit]);
   }
 
+  /**
+   * The VALUESET_TOO_COSTLY_COUNT message, for where the expansion's size is known (the
+   * provider's total for the selection, the list built, or a whole code system that is the whole
+   * value set - see #exactSize): says how many codes there are, as well as the limit. With no
+   * size (null), or for a value set passed in the request with no url or id, it is
+   * tooCostlyMessage's. The message id reported is VALUESET_TOO_COSTLY either way
+   * @param {string} name - the url (|version) the caller has, if any
+   * @param {number|null} total - how many codes the expansion has, if known exactly
+   * @param {number} limit - the limit they are over
+   */
+  tooCostlyCountMessage(name, total, limit) {
+    const label = this.vsLabel(name);
+    return label && typeof total === 'number' && total >= 0
+      ? this.worker.i18n.translate('VALUESET_TOO_COSTLY_COUNT', this.params.httpLanguages, [label, limit, total])
+      : this.tooCostlyMessage(name, '>' + limit);
+  }
+
+  /**
+   * A code system's size, when it is the expansion's size: the code system is the whole value
+   * set (#sizeIsTotal), nothing would be left out for the UI, and it isn't a grammar (whose
+   * count isn't the codes it has). Else null - an exclude, say, would make the size overstate
+   * it, and another include understate it
+   */
+  #exactSize(compose, cs, excludeInactive, size) {
+    return compose && this.#sizeIsTotal(compose, cs, excludeInactive) && !this.params.excludeNotForUI && !cs.isNotClosed() ? size : null;
+  }
+
   excludeInactives(source) {
     return source.jsonObj.compose && source.jsonObj.compose.inactive != undefined && !source.jsonObj.compose.inactive;
   }
@@ -2310,7 +2337,7 @@ class ValueSetExpander {
     if (this.count < 0 && this.limitCount > 0 && this.fullList.length > this.limitCount) {
       // a backstop for an unpaged expansion: every path that adds a code checks the limit first
       // (#checkLimit). Not for count=0, which only counts, as far as the walk limit allows
-      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(source.vurl, '>' + this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(source.vurl, this.fullList.length, this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     } else {
       let t = 0;
       let o = 0;

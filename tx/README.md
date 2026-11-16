@@ -793,6 +793,11 @@ LOINC, RxNorm, ICD-11, code systems from packages, and the supplements in use
 * **The filter.** Its first 100 characters, at most 10 words, each once. The stop words a, an, and, as,
   at, by, for, from, in, into, of, on, or, the, to are left out, unless that leaves nothing. A single
   letter or digit only matches that word: `hepatitis b` doesn't find hepatitis C.
+* **Order.** The best matches come first: the code itself, then a code that starts with the filter;
+  a name that is the filter; then the filter's words in its order - starting the name, then together
+  later in it, then with other words between (the name's stop words don't count) - and last, all
+  there in another order. Between these, the shorter name first. `ac ap` lists Acute appendicitis
+  before Applied action.
 * **The language** is the first the request names (`displayLanguage`, else `Accept-Language`) that the
   code system or a supplement in use has text in, else the code system's own, compared at the primary
   language subtag.

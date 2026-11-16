@@ -30,6 +30,10 @@ module.exports = {
     '*.min.js',
     // vendored libraries
     'static/js/jquery*.js',
+    'ips/vendor/**',
+    // the patient IPS editor's browser scripts, as they came from healthintersections.com.au
+    // (globals shared between plain <script>s, which the rules can't see)
+    'ips/patient-editor/**',
     // the ESLint configs themselves (outside the TypeScript project the type-aware rules use)
     '.eslintrc*.js'
   ],

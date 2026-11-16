@@ -117,10 +117,42 @@ describe('OperationContext.checkAndYield', () => {
     // and its fifth is the message, and these sites used to pass the text as the fourth.
     // That left details.text empty, so the HTML rendering fell back to the timing trace
     // and the user was told "[too-costly] 0ms tx-op 1ms start working".
-    expect(error.message).toMatch(/exceeded time limit/);
-    expect(error.msgId).toBeFalsy();
-    expect(error.asIssue().details.text).toMatch(/exceeded time limit/);
+    // (no operation is known here, so the plain request message)
+    expect(error.message).toMatch(/Request took too long to process/);
+    expect(error.msgId).toBe('REQUEST_TOO_COSTLY_TIME');
+    expect(error.place).toBe('overrun-loop');
+    expect(error.asIssue().details.text).toMatch(/Request took too long to process/);
     expect(error.abandoned).toBeUndefined();
+  });
+
+  test('a compute overrun names the operation and the place when the operation is known', async () => {
+    const ctx = makeContext(0.15);
+    ctx.operationName = 'ValueSet/$expand';
+    let error = null;
+    try {
+      const guard = performance.now() + 10000;
+      while (performance.now() < guard) {
+        spin(5);
+        await ctx.checkAndYield('overrun-loop');
+      }
+    } catch (e) {
+      error = e;
+    }
+    expect(error).not.toBeNull();
+    expect(error.cause).toBe('too-costly');
+    expect(error.msgId).toBe('CODESYSTEM_TOO_COSTLY_TIME');
+    expect(error.message).toBe("The operation 'ValueSet/$expand' took too long to process (>0sec) (at overrun-loop)");
+  });
+
+  test('operationNameFor takes the $operation from the request path', () => {
+    expect(OperationContext.operationNameFor('/ValueSet/$expand')).toBe('ValueSet/$expand');
+    expect(OperationContext.operationNameFor('/ValueSet/123/$expand')).toBe('ValueSet/$expand');
+    expect(OperationContext.operationNameFor('/CodeSystem/%24lookup')).toBe('CodeSystem/$lookup');
+    expect(OperationContext.operationNameFor('/$versions')).toBe('$versions');
+    expect(OperationContext.operationNameFor('/ValueSet/123')).toBeNull();
+    expect(OperationContext.operationNameFor('/metadata')).toBeNull();
+    expect(OperationContext.operationNameFor('/$ex%0Apand')).toBeNull();
+    expect(OperationContext.operationNameFor('/%E0%A4%A')).toBeNull();
   });
 
   test('aborts at the next yield when the client has disconnected', async () => {

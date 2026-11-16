@@ -1644,10 +1644,10 @@ class ValueSetChecker {
           }
         }
       } else if (dc === 1) {
-        m = this.worker.i18n.translate(baseMsg + '_one', this.params.workingLanguages(),
+        m = this.worker.i18n.translate(baseMsg + '_one', this.params.HTTPLanguages,
           ['', c.system, c.code, list.present(this.params.workingLanguages(), defLang.value, dc > 0), c.display, this.params.langSummary()]);
       } else {
-        m = this.worker.i18n.translate(baseMsg + '_other', this.params.workingLanguages(),
+        m = this.worker.i18n.translate(baseMsg + '_other', this.params.HTTPLanguages,
           [dc.toString(), c.system, c.code, list.present(this.params.workingLanguages(), defLang.value, dc > 0), c.display, this.params.langSummary()]);
       }
       msg(m);

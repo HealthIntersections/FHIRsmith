@@ -2205,26 +2205,41 @@ describe('the editor', () => {
 
   const compose = (body, accept = 'application/json') => request(app).post('/ips/demo/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', accept).send(body);
 
-  test('the page carries the schema and the script, and the project links to it', async () => {
-    const page = await request(app).get('/ips/demo/compose').set('Accept', 'text/html');
+  test('compose lists the document creators; the general editor page carries the schema and the scripts', async () => {
+    const choice = await request(app).get('/ips/demo/compose').set('Accept', 'text/html');
+    expect(choice.status).toBe(200);
+    expect(choice.text).toContain('<h3>Compose a document</h3>');
+    expect(choice.text).toContain('<a class="btn btn-primary" href="/ips/demo/compose/general">General IPS editor</a>');
+    expect(choice.text).toContain('<a class="btn btn-primary" href="/ips/demo/compose/patient">Patient IPS editor</a>');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/compose">Compose a document</a>');
+    const page = await request(app).get('/ips/demo/compose/general').set('Accept', 'text/html');
     expect(page.status).toBe(200);
-    expect(page.text).toContain('<h3>Compose a document</h3>');
+    expect(page.text).toContain('<h3>General IPS editor</h3>');
     expect(page.text).toContain('<div id="ips-editor"></div>');
     // with its version, so a changed script isn't taken from a browser's cache
     expect(page.text).toMatch(/<script src="\/ips\/editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
-    expect(page.text).toContain('"urls":{"compose":"/ips/demo/compose","lookup":"/ips/demo/lookup","back":"/ips/demo"}');
+    expect(page.text).toMatch(/<script src="\/ips\/doc-actions\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
+    expect(page.text).toContain('"urls":{"build":"/ips/compose/build","model":"/ips/compose/model","lookup":"/ips/compose/lookup","back":"/ips/demo"}');
     expect(page.text).toContain('"key":"problems"');
-    expect(page.text).toContain('"needsToken":false');
+    expect(page.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
     expect(page.text).toContain('"model":null');
-    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/compose">Compose a document</a>');
+    // the test patients: documents to load
+    expect(page.text).toMatch(/"testPatients":\[\{"key":"1-retired-man","name":"Retired man","url":"\/ips\/assets\/test-patients\/1-retired-man\.json\?v=[A-Za-z0-9_-]{12}"\}/);
     const script = await request(app).get('/ips/editor.js');
     expect(script.status).toBe(200);
     expect(script.text).toContain('window.IPS_EDITOR');
+    expect((await request(app).get('/ips/doc-actions.js')).text).toContain('window.IpsDocActions');
+    // without a project: the user picks the project to submit to
+    const free = await request(app).get('/ips/compose/general').set('Accept', 'text/html');
+    expect(free.status).toBe(200);
+    expect(free.text).toContain('"project":null,"projects":[{"code":"demo","name":"Demo","needsToken":false}]');
+    expect((await request(app).get('/ips/compose').set('Accept', 'text/html')).text).toContain('<a class="btn btn-primary" href="/ips/compose/patient">Patient IPS editor</a>');
     // without a terminology server: no lookups
     const other = await makeApp();
     other.mod.store.createProject('demo', 'Demo', null);
-    expect((await request(other.app).get('/ips/demo/compose').set('Accept', 'text/html')).text).toContain('"lookup":null');
+    expect((await request(other.app).get('/ips/demo/compose/general').set('Accept', 'text/html')).text).toContain('"lookup":null');
     expect((await request(other.app).get('/ips/demo/lookup?vs=ips-condition-code&q=hyp')).status).toBe(503);
+    expect((await request(other.app).get('/ips/compose/lookup?vs=ips-condition-code&q=hyp')).status).toBe(503);
     other.mod.shutdown();
   });
 
@@ -2286,7 +2301,7 @@ describe('the editor', () => {
     expect((await compose({ action: 'submit', model: minimal() })).status).toBe(401);
     expect((await compose({ action: 'submit', model: minimal(), token: 'tok' })).status).toBe(201);
     expect((await compose({ action: 'download', model: minimal() }, 'application/fhir+json')).status).toBe(200);
-    expect((await request(app).get('/ips/demo/compose').set('Accept', 'text/html')).text).toContain('"needsToken":true');
+    expect((await request(app).get('/ips/demo/compose/general').set('Accept', 'text/html')).text).toContain('"needsToken":true');
     // cross-site: refused
     expect((await request(app).post('/ips/demo/compose').set('Origin', 'http://evil.example').set('Host', 'example.org').send({ action: 'submit', model: minimal() })).status).toBe(403);
   });
@@ -2294,14 +2309,195 @@ describe('the editor', () => {
   test('edits an existing document: the page starts from it', async () => {
     await compose({ action: 'submit', model: minimal() });
     const doc = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
-    expect(doc.text).toContain('<form method="get" action="/ips/demo/compose" class="ips-inline"><input type="hidden" name="from" value="1"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>');
-    const page = await request(app).get('/ips/demo/compose?from=1').set('Accept', 'text/html');
+    expect(doc.text).toContain('<form method="get" action="/ips/demo/compose/general" class="ips-inline"><input type="hidden" name="from" value="1"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>');
+    // the old address of the editor goes to the general editor
+    const old = await request(app).get('/ips/demo/compose?from=1').set('Accept', 'text/html');
+    expect(old.status).toBe(302);
+    expect(old.headers.location).toBe('/ips/demo/compose/general?from=1');
+    const page = await request(app).get('/ips/demo/compose/general?from=1').set('Accept', 'text/html');
     expect(page.status).toBe(200);
     expect(page.text).toContain('<h3>Edit document 1</h3>');
     expect(page.text).toContain('"model":{"patient":{"family":"Doe","given":"Jo","gender":"male","birthDate":"1980-01-01"}');
     expect(page.text).toContain('"medications":{"mode":"narrative","narrative":"none"}');
-    expect((await request(app).get('/ips/demo/compose?from=9').set('Accept', 'text/html')).status).toBe(404);
-    expect((await request(app).get('/ips/demo/compose?from=x').set('Accept', 'text/html')).status).toBe(200);
+    expect((await request(app).get('/ips/demo/compose/general?from=9').set('Accept', 'text/html')).status).toBe(404);
+    expect((await request(app).get('/ips/demo/compose/general?from=x').set('Accept', 'text/html')).status).toBe(200);
+  });
+});
+
+describe('the document creators: building, checking, loading, sharing and submitting', () => {
+  let app;
+  let mod;
+  const fs = require('fs');
+  const path = require('path');
+  const TP_DIR = path.join(__dirname, '../../ips/patient-editor/test-patients');
+  const testPatient = (name) => JSON.parse(fs.readFileSync(path.join(TP_DIR, name), 'utf8'));
+  const model = (meds = { mode: 'empty', emptyReason: 'nilknown' }) => ({
+    patient: { family: 'Doe', given: 'Jo', gender: 'male', birthDate: '1980-01-01' }, document: { author: 'Dr A' },
+    sections: { problems: { mode: 'data', rows: [{ code: { system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension' }, clinicalStatus: 'active' }] }, allergies: { mode: 'empty', emptyReason: 'nilknown' }, medications: meds }
+  });
+  const call = (url, body, origin = 'http://example.org') => request(app).post(url).set('Origin', origin).set('Host', 'example.org').set('Accept', 'application/json').send(body);
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('the general editor builds the document as it goes, and says what stops it being a minimal IPS', async () => {
+    const ok = await call('/ips/compose/build', { model: model() });
+    expect(ok.status).toBe(200);
+    expect(ok.body.problems).toEqual([]);
+    expect(ok.body.bundle.resourceType).toBe('Bundle');
+    // a narrative alone doesn't make the medications section
+    const narrative = await call('/ips/compose/build', { model: model({ mode: 'narrative', narrative: 'none' }) });
+    expect(narrative.body.bundle).toBeTruthy();
+    expect(narrative.body.problems).toEqual(["The medications section has no entries, and doesn't say why it is empty"]);
+    const empty = await call('/ips/compose/build', { model: { patient: {}, document: {}, sections: {} } });
+    expect(empty.body.bundle).toBeNull();
+    expect(empty.body.problems).toContain('The patient needs a family name');
+    expect((await call('/ips/compose/build', { model: model() }, 'http://evil.example')).status).toBe(403);
+  });
+
+  test('checks a document: a document Bundle, and a minimal IPS', async () => {
+    const bundle = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    expect((await call('/ips/compose/check', { bundle })).body).toEqual({ problems: [] });
+    expect((await call('/ips/compose/check', {})).body).toEqual({ problems: ['There is no document'] });
+    expect((await call('/ips/compose/check', { bundle: { resourceType: 'Patient' } })).body.problems).toEqual(['The resource must be a Bundle, not Patient']);
+    const comp = bundle.entry[0].resource;
+    const changed = JSON.parse(JSON.stringify(bundle));
+    changed.entry[0].resource = { ...comp, type: { coding: [{ system: 'http://loinc.org', code: '34133-9' }] }, section: comp.section.filter(x => x.code.coding[0].code !== '10160-0') };
+    expect((await call('/ips/compose/check', { bundle: changed })).body.problems).toEqual([
+      "The Composition's type must be the IPS code (LOINC 60591-5, Patient summary Document)",
+      'The document has no medications section (LOINC 10160-0); the IPS requires one'
+    ]);
+  });
+
+  test('loads a document into the general editor', async () => {
+    const bundle = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    const r = await call('/ips/compose/model', { bundle });
+    expect(r.status).toBe(200);
+    expect(r.body.model.patient).toMatchObject({ family: 'Doe', given: 'Jo' });
+    expect((await call('/ips/compose/model', { bundle: { resourceType: 'Bundle', type: 'collection' } })).status).toBe(400);
+  });
+
+  test("the test patients are minimal IPS documents: the general editor's (a GP's summaries, which it loads exactly) and the patient editor's", async () => {
+    const GENERAL = path.join(__dirname, '../../ips/general-editor/test-patients');
+    const { PATIENTS } = require('../../ips/general-editor/make-test-patients');
+    const files = fs.readdirSync(GENERAL).filter(f => f.endsWith('.json'));
+    expect(files).toHaveLength(5);
+    for (const f of files) {
+      const bundle = JSON.parse(fs.readFileSync(path.join(GENERAL, f), 'utf8'));
+      expect({ f, problems: (await call('/ips/compose/check', { bundle })).body.problems }).toEqual({ f, problems: [] });
+      // the editor reads back the model it was made from
+      const model = (await call('/ips/compose/model', { bundle })).body.model;
+      const source = PATIENTS.find(p => `${p.file}.json` === f).model;
+      expect(model.patient).toMatchObject({ family: source.patient.family, birthDate: source.patient.birthDate });
+      for (const [key, section] of Object.entries(source.sections)) {
+        expect({ f, key, rows: (model.sections[key].rows || []).length }).toEqual({ f, key, rows: (section.rows || []).length });
+      }
+      // functional status in ICF
+      const functional = bundle.entry.map(e => e.resource).filter(r => r.resourceType === 'Condition' && r.code?.coding?.[0]?.system === 'http://hl7.org/fhir/sid/icf');
+      expect(functional.length).toBeGreaterThan(3);
+      expect(functional[0].code.coding[0].version).toBe('2017a');
+    }
+    for (const f of fs.readdirSync(TP_DIR).filter(x => x.endsWith('.json'))) {
+      expect({ f, problems: (await call('/ips/compose/check', { bundle: testPatient(f) })).body.problems }).toEqual({ f, problems: [] });
+    }
+  });
+
+  test('submits a document from an editor to the project named, with its token', async () => {
+    const bundle = testPatient('2-new-mother.json');
+    expect((await call('/ips/compose/submit', { bundle })).status).toBe(404);
+    expect((await call('/ips/compose/submit', { bundle, project: 'nope' })).body.error).toBe("There is no project 'nope'");
+    const r = await call('/ips/compose/submit', { bundle, project: 'demo', editor: 'patient' });
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: 1, url: '/ips/demo/Bundle/1' });
+    expect(mod.store.read(1).source).toBe('patient-editor');
+    const general = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    expect((await call('/ips/compose/submit', { bundle: general, project: 'demo', editor: 'general' })).status).toBe(201);
+    expect(mod.store.read(2).source).toBe('editor');
+    // not a minimal IPS: refused, with the problems
+    const noMeds = JSON.parse(JSON.stringify(general));
+    noMeds.entry[0].resource.section = noMeds.entry[0].resource.section.filter(x => x.code.coding[0].code !== '10160-0');
+    const bad = await call('/ips/compose/submit', { bundle: noMeds, project: 'demo' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems).toEqual(['The document has no medications section (LOINC 10160-0); the IPS requires one']);
+    mod.store.setProjectToken(1, 'tok');
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo' })).status).toBe(401);
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' })).status).toBe(201);
+    const page = (await request(app).get('/ips/compose/general').set('Accept', 'text/html')).text;
+    expect(page).toContain('"projects":[{"code":"demo","name":"Demo","needsToken":true}]');
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' }, 'http://evil.example')).status).toBe(403);
+  });
+
+  test('sharing needs the SHL server to be configured', async () => {
+    const r = await call('/ips/compose/share', { bundle: testPatient('1-retired-man.json'), kind: 'shl' });
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('Sharing is not configured on this server (modules.ips.shl)');
+  });
+
+  test('the patient editor: its page, and the files it needs, served by the module', async () => {
+    const page = await request(app).get('/ips/compose/patient').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>Patient IPS editor</h3>');
+    expect(page.text).toContain('<form id="form" method="POST" onsubmit="event.preventDefault(); scheduleGenerate(0);">');
+    expect(page.text).not.toContain('Generate Document');
+    expect(page.text).toContain('window.PATIENT_EDITOR = {"assets":"/ips/assets/patient-editor","actions":{"editor":"patient","project":null,');
+    expect(page.text).toContain('<a href="/ips/view">SHL viewer</a>');
+    expect(page.text).toContain('url("/ips/assets/patient-editor/images/ui-anim_basic_16x16.gif")');
+    expect(page.text).not.toContain('{{');
+    // the scripts it loads: its own, and the libraries, all from this server
+    const srcs = [...page.text.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]).filter(u => u.startsWith('/ips/'));
+    expect(srcs.length).toBe(10);
+    expect(page.text).not.toMatch(/<script src="https?:/);
+    for (const u of srcs) {
+      const r = await request(app).get(u.replace(/&amp;/g, '&'));
+      expect({ u, status: r.status }).toEqual({ u, status: 200 });
+    }
+    const js = await request(app).get('/ips/assets/patient-editor/js/passport.js');
+    expect(js.headers['content-type']).toMatch(/^application\/javascript/);
+    expect(js.headers.etag).toBeTruthy();
+    expect((await request(app).get('/ips/assets/patient-editor/js/passport.js').set('If-None-Match', js.headers.etag)).status).toBe(304);
+    expect((await request(app).get('/ips/assets/patient-editor/i18n/en.json')).body.actions.testPatient5).toBe('Young woman');
+    expect((await request(app).get('/ips/assets/patient-editor/images/health-intersections.png')).headers['content-type']).toBe('image/png');
+    // only the files in the list
+    expect((await request(app).get('/ips/assets/patient-editor/page.html')).status).toBe(404);
+    expect((await request(app).get('/ips/assets/patient-editor/../ips.js')).status).toBe(404);
+    expect((await request(app).get('/ips/assets/nothing.js')).status).toBe(404);
+    // for a project: submits to it
+    const forProject = await request(app).get('/ips/demo/compose/patient').set('Accept', 'text/html');
+    expect(forProject.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
+  });
+});
+
+describe('the document creators: sharing', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ shl: { server: '/shl', password: 'shl-secret', days: 7 } }));
+    app.use('/shl', express.json({ limit: '5mb' }));
+    app.post('/shl/create', (req, res) => res.status(201).json({ uuid: 'u1', pword: 'pu1', link: `https://${req.get('host')}/shl/access/u1`, days: req.body.days }));
+    app.post('/shl/upload', (req, res) => res.json({ msg: 'ok' }));
+    app.post('/shl/sign', (req, res) => res.json({ signature: 'SIGNED' }));
+  });
+  afterEach(() => mod.shutdown());
+
+  test('shares a document from an editor: an SHL that opens in this server\'s viewer, or a VHL', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '../../ips/patient-editor/test-patients/1-retired-man.json'), 'utf8'));
+    const send = (body) => request(app).post('/ips/compose/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').send(body);
+    const r = await send({ bundle, kind: 'shl', days: 3 });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('shl');
+    expect(r.body.qr).toMatch(/^<svg /);
+    expect(r.body.text.startsWith('http://example.org/ips/view#shlink:/')).toBe(true);
+    expect(Date.parse(r.body.expires) - Date.now()).toBeLessThan(3 * 24 * 60 * 60 * 1000 + 60000);
+    const v = await send({ bundle, kind: 'vhl' });
+    expect(v.status).toBe(200);
+    expect(v.body.text).toBe('HC1:SIGNED');
+    // not a minimal IPS: not shared
+    const bad = await send({ bundle: { ...bundle, entry: [bundle.entry[0]] }, kind: 'shl' });
+    expect(bad.status).toBe(400);
   });
 });
 
@@ -3099,6 +3295,12 @@ describe('the analysis step', () => {
     // the Composition's negation is a note, unless there's more than one approach (attention)
     expect(analysisOk([ok, { kind: 'negation', text: 'Negation: none observed' }, has], false)).toBe(true);
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x' }, has], false)).toBe(false);
+    // a known extension is nothing to look at; an unknown one, or a modifier extension, is
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, has], false)).toBe(true);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: false }, has], false)).toBe(false);
+    expect(analysisOk([{ kind: 'modifier', url: 'http://example.org/x', found: true }, has], false)).toBe(false);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, none], true)).toBe(false);
+    expect(analysisOk([], false)).toBe(false);
     expect(analysisOk(undefined, false)).toBe(false);
   });
 
@@ -3378,5 +3580,167 @@ describe('the SHL viewer', () => {
     } finally {
       off.mod.shutdown();
     }
+  });
+});
+
+describe("a document's page title", () => {
+  test('IPS #{id}: the title, with the patient when the title lacks them; the patient and date when there is no title', async () => {
+    const { app, mod } = await makeApp();
+    try {
+      mod.store.createProject('demo', 'Demo', null);
+      await post(app, 'demo', ips());
+      const titleOf = async (id) => (await request(app).get(`/ips/demo/Bundle/${id}`).set('Accept', 'text/html')).text.match(/<title>([^<]*)<\/title>/)[1];
+      expect(await titleOf(1)).toBe('FHIRsmith: IPS #1: Patient Summary as of 1 March 2026 - Jane Alexandra Smith');
+      const untitled = ips();
+      delete untitled.entry[0].resource.title;
+      await post(app, 'demo', untitled);
+      expect(await titleOf(2)).toBe('FHIRsmith: IPS #2: Jane Alexandra Smith, 2026-03-01');
+    } finally {
+      mod.shutdown();
+    }
+  });
+});
+
+describe('patients: matching, the Patient endpoint, $summary', () => {
+  let app;
+  let mod;
+  // the fixture's document, with its Patient changed
+  const withPatient = (change) => {
+    const doc = ips();
+    const pat = doc.entry.find(e => e.resource.resourceType === 'Patient').resource;
+    change(pat);
+    return doc;
+  };
+  const json = (url) => request(app).get(url).set('Accept', 'application/fhir+json');
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.store.createProject('other', 'Other', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('matches by identifier, then by name and birth date; a conflicting birth date or gender makes a new patient', async () => {
+    await post(app, 'demo', ips());
+    expect(mod.store.read(1).patient_id).toBe(1);
+    expect(mod.store.read(1).match).toEqual({ method: 'new', detail: 'Not seen before' });
+    // the same identifier, another phone number
+    await post(app, 'demo', withPatient(p => { p.telecom = [{ system: 'phone', value: '0400 000 000' }]; }));
+    expect(mod.store.read(2)).toMatchObject({ patient_id: 1, match: { method: 'identifier' } });
+    // no identifier: the same name, as text and in another order, and the same birth date
+    await post(app, 'demo', withPatient(p => { delete p.identifier; p.name = [{ text: 'Smith, Jane Alexandra' }]; }));
+    expect(mod.store.read(3)).toMatchObject({ patient_id: 1, match: { method: 'demographics' } });
+    // the same identifier, but another birth date: someone else
+    await post(app, 'demo', withPatient(p => { p.birthDate = '1999-01-01'; }));
+    expect(mod.store.read(4).patient_id).toBe(2);
+    expect(mod.store.read(4).match.detail).toBe('Not seen before (patient 1 has the same identifier, but a different birth date)');
+    // the same name, no birth date: not enough
+    await post(app, 'demo', withPatient(p => { delete p.identifier; delete p.birthDate; }));
+    expect(mod.store.read(5).patient_id).toBe(3);
+    // the same name and birth date, another gender
+    await post(app, 'demo', withPatient(p => { delete p.identifier; p.gender = 'male'; }));
+    expect(mod.store.read(6).patient_id).toBe(4);
+    // another project: its own patients
+    await post(app, 'other', ips());
+    expect(mod.store.read(7)).toMatchObject({ patient_id: 5, match: { method: 'new' } });
+  });
+
+  test("the patient's resource is cumulative, with this server's id", async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => {
+      p.id = 'example';
+      p.telecom = [{ system: 'phone', value: '0400 000 000' }];
+      p.identifier.push({ system: 'http://ns.example.org/other', value: 'X1' });
+      p.generalPractitioner = [{ reference: 'urn:uuid:pract-1' }];
+    }));
+    const r = await json('/ips/demo/Patient/1');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ resourceType: 'Patient', id: '1', gender: 'female', birthDate: '1970-05-06' });
+    expect(r.body.telecom.map(t => t.value)).toEqual(['0400 000 000', '+61 3 9999 0000', 'jane@example.org']);
+    expect(r.body.identifier.map(i => i.value)).toEqual(['MRN-12345', 'X1']);
+    expect(r.body.generalPractitioner).toBeUndefined();
+    expect(r.body.text).toBeUndefined();
+    expect((await json('/ips/demo/Patient/9')).status).toBe(404);
+    expect((await json('/ips/demo/Patient/x')).status).toBe(404);
+    // the page: who, and the documents
+    const page = await request(app).get('/ips/demo/Patient/1').set('Accept', 'text/html');
+    expect(page.text).toContain('<title>FHIRsmith: Patient #1: Jane Alexandra Smith</title>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/2">2</a>');
+    expect(page.text).toContain('matched by identifier');
+    // and the document's page links to it
+    expect((await request(app).get('/ips/demo/Bundle/2').set('Accept', 'text/html')).text).toContain('Patient <a href="/ips/demo/Patient/1">#1</a>: matched by identifier');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/Patient">Patients</a>');
+  });
+
+  test('searches the patients', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.identifier = [{ system: 'urn:x', value: 'B' }]; p.name = [{ text: 'Bob Brown' }]; p.gender = 'male'; p.birthDate = '1980-02-03'; }));
+    const ids = async (q) => {
+      const r = await json(`/ips/demo/Patient${q}`);
+      return (r.body.entry || []).filter(e => e.search.mode === 'match').map(e => e.resource.id);
+    };
+    expect(await ids('')).toEqual(['2', '1']);
+    expect((await json('/ips/demo/Patient')).body.total).toBe(2);
+    expect(await ids('?name=jan')).toEqual(['1']);
+    expect(await ids('?family=smith')).toEqual(['1']);
+    expect(await ids('?family=brown')).toEqual(['2']); // a name that is only text
+    expect(await ids('?given=alex')).toEqual(['1']);
+    expect(await ids('?birthdate=1980')).toEqual(['2']);
+    expect(await ids('?birthdate=1970-05-06')).toEqual(['1']);
+    expect(await ids('?gender=female')).toEqual(['1']);
+    expect(await ids('?identifier=urn:oid:1.2.36.146.595.217.0.1|MRN-12345')).toEqual(['1']);
+    expect(await ids('?identifier=B')).toEqual(['2']);
+    expect(await ids('?_id=2')).toEqual(['2']);
+    expect(await ids('?_count=1')).toEqual(['2']);
+    expect((await json('/ips/demo/Patient?_count=1')).body.link.find(l => l.relation === 'next').url).toMatch(/\/ips\/demo\/Patient\?_count=1&_offset=1$/);
+    expect((await json('/ips/demo/Patient?birthdate=soon')).status).toBe(400);
+    const unknown = await json('/ips/demo/Patient?colour=blue');
+    expect(JSON.stringify(unknown.body.entry.find(e => e.search.mode === 'outcome').resource)).toContain("Unknown search parameter 'colour' was ignored");
+    const page = await request(app).get('/ips/demo/Patient?name=bob').set('Accept', 'text/html');
+    expect(page.text).toContain('<a href="/ips/demo/Patient/2">Bob Brown</a>');
+    expect(page.text).not.toContain('Jane Alexandra Smith</a>');
+  });
+
+  test('$summary: the latest document received - the modified copy, unless the setting says the original', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.telecom = []; }));
+    const r = await json('/ips/demo/Patient/1/$summary');
+    expect(r.status).toBe(200);
+    expect(r.body.id).toBe('2');
+    // processed: the modified copy
+    const modified = { ...mod.store.read(2).bundle, language: 'en-AU' };
+    mod.store.saveAnalysed(2, modified);
+    expect((await json('/ips/demo/Patient/1/$summary')).body.language).toBe('en-AU');
+    mod.config.summarySource = 'original';
+    expect((await json('/ips/demo/Patient/1/$summary')).body.language).toBeUndefined();
+    // by identifier
+    expect((await json('/ips/demo/Patient/$summary?identifier=urn:oid:1.2.36.146.595.217.0.1|MRN-12345')).body.id).toBe('2');
+    expect((await json('/ips/demo/Patient/$summary?identifier=nobody')).status).toBe(404);
+    expect((await json('/ips/demo/Patient/$summary')).status).toBe(400);
+    expect((await json('/ips/demo/Patient/7/$summary')).status).toBe(404);
+    // an identifier two patients have
+    await post(app, 'demo', withPatient(p => { p.birthDate = '2001-01-01'; }));
+    expect((await json('/ips/demo/Patient/$summary?identifier=MRN-12345')).status).toBe(422);
+  });
+
+  test('deleting documents rebuilds the patient, and the last one removes it; documents from before are matched at startup', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.telecom = [{ system: 'phone', value: '0400 000 000' }]; }));
+    expect(mod.store.patient(1, 1).resource.telecom).toHaveLength(3);
+    mod.store.delete(2, 1);
+    expect(mod.store.patient(1, 1).resource.telecom.map(t => t.value)).toEqual(['+61 3 9999 0000', 'jane@example.org']);
+    mod.store.delete(1, 1);
+    expect(mod.store.patient(1, 1)).toBeNull();
+    // documents with no patient yet (stored before patients were matched)
+    await post(app, 'demo', ips());
+    mod.store.db.exec('UPDATE documents SET patient_id = NULL, patient_match = NULL; DELETE FROM patients');
+    mod.store.matchUnmatched();
+    expect(mod.store.read(3)).toMatchObject({ patient_id: 3, match: { method: 'new' } });
+  });
+
+  test('the CapabilityStatement has the Patient endpoint and $summary', async () => {
+    const cs = (await json('/ips/demo/metadata')).body;
+    const p = cs.rest[0].resource.find(r => r.type === 'Patient');
+    expect(p.interaction.map(i => i.code)).toEqual(['read', 'search-type']);
+    expect(p.operation).toEqual([{ name: 'summary', definition: 'http://hl7.org/fhir/uv/ips/OperationDefinition/summary' }]);
   });
 });

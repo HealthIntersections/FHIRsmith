@@ -22,6 +22,8 @@ const MMS = 'http://id.who.int/icd/release/11/mms';
 
 // entity id, short code, [lang, kind, text]...
 const CONCEPTS = [
+  ['0900', 'XY99', [['en', 'title', 'Applied action']]],
+  ['0901', 'DB10', [['en', 'title', 'Acute appendicitis']]],
   ['1000', '1A00', [['en', 'title', 'Cholera'], ['es', 'title', 'Cólera']]],
   ['1001', '1A01', [['en', 'title', 'Intestinal infection due to other Vibrio']]],
   ['1002', '1A02', [['en', 'title', 'Intestinal infections due to Shigella'], ['en', 'indexTerm', 'Bacillary dysentery']]],
@@ -102,9 +104,16 @@ describe('ICD-11 text search', () => {
   });
 
   test('every word, in any order, as the start of a word or with the same stem', async () => {
-    expect(await codes('infection intestinal')).toEqual(['1A01', '1A02', '1A03']);
+    expect((await codes('infection intestinal')).sort()).toEqual(['1A01', '1A02', '1A03']);
     expect(await codes('intest shig')).toEqual(['1A02']);
     expect(await codes('intestinal infections shigella')).toEqual(['1A02']);
+  });
+
+  test('the best match first: the filter\'s words in its order, then the classification\'s order', async () => {
+    // Applied action comes first in the classification, but its words are the other way round
+    expect(await codes('ac ap')).toEqual(['DB10', 'XY99']);
+    // all three start with the filter's words; the shortest name is the closest match
+    expect(await codes('intestinal infection')).toEqual(['1A02', '1A01', '1A03']);
   });
 
   test('index terms are names; definitions are not', async () => {

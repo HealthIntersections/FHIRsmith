@@ -10,7 +10,10 @@ const folders = require('./folder-setup');
 
 const DEFAULTS = {
   level:          'info',       // error, warn, info, debug, verbose
-  console:        true,         // write to stdout/stderr
+  // write to stdout/stderr. Not when SUPPRESS_LOGS is set (CI runs the tests with it): the code
+  // under test logs everything it does, tens of thousands of lines that bury the test results
+  // and get the job log truncated. It still all goes to the log files in data/logs
+  console:        process.env.SUPPRESS_LOGS !== 'true',
   consoleErrors:  false,        // include error/warn on console (when running as service, these go to journal)
   maxFiles:       14,           // number of daily log files to keep
   maxSize:        0,            // max bytes per file (0 = unlimited)

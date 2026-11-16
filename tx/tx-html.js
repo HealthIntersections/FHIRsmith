@@ -252,8 +252,8 @@ function buildLibrarySourcePage(source, filename, endpointPath) {
 
 /**
  * A copy of a resource with no more than `limit` of its codes - a CodeSystem's concepts, a
- * ValueSet's include and exclude concept lists, its expansion's contains - counting nested
- * ones, depth first. What the JSON and XML tabs show: the whole resource is a link away, and a
+ * ValueSet's include and exclude concept lists, its expansion's contains, a ConceptMap's group
+ * elements - counting nested ones, depth first. What the JSON and XML tabs show: the whole resource is a link away, and a
  * page with all of ICD-10-CM in it held the event loop for seconds and helped no one. Only
  * what's cut is copied; the resource itself is not changed.
  *
@@ -307,6 +307,22 @@ function capResourceCodes(resource, limit) {
     if (Array.isArray(resource.expansion?.contains)) {
       lists.push({ get: r => r.expansion.contains, set: (r, v) => ({ ...r, expansion: { ...r.expansion, contains: v } }), child: 'contains' });
     }
+  }
+  if (resource?.resourceType === 'ConceptMap') {
+    (resource.group || []).forEach((grp, i) => {
+      if (Array.isArray(grp?.element)) {
+        lists.push({
+          get: r => r.group[i].element,
+          set: (r, v) => {
+            const groups = [...r.group];
+            groups[i] = { ...groups[i], element: v };
+            return { ...r, group: groups };
+          },
+          // elements don't nest
+          child: null
+        });
+      }
+    });
   }
   for (const l of lists) {
     budget.total += count(l.get(resource), l.child);
@@ -558,11 +574,20 @@ class TxHtmlRenderer {
     }
     uniqueFactories.sort((a, b) => a.name().localeCompare(b.name()));
 
+    // Where a system has more than one provider, mark the one an unversioned request gets:
+    // the factory registered under the bare system URL (see registerProvider in library.js)
+    const providersPerSystem = new Map();
     for (const factory of uniqueFactories) {
+      providersPerSystem.set(factory.system(), (providersPerSystem.get(factory.system()) || 0) + 1);
+    }
+
+    for (const factory of uniqueFactories) {
+      const isDefault = providersPerSystem.get(factory.system()) > 1 &&
+        provider.codeSystemFactories.get(factory.system()) === factory;
       html += '<tr>';
       html += `<td>${this.factoryLink(factory)}</td>`;
       html += `<td>${escape(factory.system())}</td>`;
-      html += `<td>${escape(factory.version() || '-')}</td>`;
+      html += `<td>${escape(factory.version() || '-')}${isDefault ? ' (default)' : ''}</td>`;
       html += `<td>${factory.useCount ? factory.useCount() : '-'}</td>`;
       html += '</tr>';
     }
@@ -1341,7 +1366,10 @@ class TxHtmlRenderer {
       html += `</ul>`;
 
       if (!_fmt || _fmt == 'html') {
-        html += await this.renderResourceWithNarrative(json, await this.renderer.renderConceptMap(json));
+        // no more than MAX_RENDERED_CONCEPTS elements, as for a code system's concepts
+        const capped = capResourceCodes(json, MAX_RENDERED_CONCEPTS);
+        html += this.cappedNote(json, capped, 'json', 'JSON');
+        html += await this.renderResourceWithNarrative(json, await this.renderer.renderConceptMap(capped.resource));
       } else if (_fmt == "html/json") {
         html += await this.renderResourceJson(json);
       } else if (_fmt == "html/narrative") {
@@ -1351,15 +1379,24 @@ class TxHtmlRenderer {
         const codeSet = new Set();
         const targetSet = new Set();
 
+        // the codes as a list to pick from, unless there are more than MAX_RENDERED_CONCEPTS:
+        // then the code is typed (and the list isn't built)
+        let tooManyCodes = false;
         for (const grp of json.group || []) {
           if (grp.source) sourceSet.add(`<option value="${escape(grp.source)}">${escape(grp.source)}</option>`);
           if (grp.target) targetSet.add(`<option value="${escape(grp.target)}">${escape(grp.target)}</option>`);
-          for (const elem of grp.element || []) {
-            if (elem.code) codeSet.add(`<option value="${escape(elem.code)}">${escape(elem.code)}</option>`);
+          for (const elem of tooManyCodes ? [] : grp.element || []) {
+            if (elem.code) {
+              codeSet.add(`<option value="${escape(elem.code)}">${escape(elem.code)}</option>`);
+              if (codeSet.size > MAX_RENDERED_CONCEPTS) {
+                tooManyCodes = true;
+                break;
+              }
+            }
           }
         }
         const sources = [...sourceSet];
-        const codes = [...codeSet];
+        const codes = tooManyCodes ? null : [...codeSet];
         const targets = [...targetSet];
 
         html += await this.liquid.renderFile('conceptmap-operations', {

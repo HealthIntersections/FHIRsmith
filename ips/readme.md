@@ -482,6 +482,192 @@ adds to or overrides them - else not known, and the totals say how many calls ha
 cost. The answer is the model's opinion, and the page
 says so.
 
+## Patients
+
+Each project has a Patient endpoint, `{project}/Patient`, for reading and searching the
+patients of the documents it has received, and IPS `$summary` for a patient's latest document.
+It supports development work: the matching is a reasonable guess, not a master patient index.
+
+When a document arrives, its Patient is matched to one the project has seen before
+(`ips/patients.js`):
+
+1. the same identifier (system and value) - unless the birth date or the gender says it is
+   someone else;
+2. otherwise the same name and the same full birth date, the gender not conflicting. Names are
+   compared as sets of words (two or more), without regard to case, accents, punctuation, order or
+   titles, so a name that is only text matches the same name in parts;
+3. otherwise it is a patient not seen before (and when an identifier or name matched someone with
+   a different birth date or gender, the document says so).
+
+The document's page says which patient it went to and how. A patient's resource has this
+server's id (documents can all call their Patient `example`) and is cumulative: the latest
+document's Patient, with what earlier documents said that it doesn't - identifiers, names,
+telecoms, addresses, languages, contacts, and any element it leaves out. References that only
+mean something inside a document (generalPractitioner, managingOrganization, link) are left
+out. Deleting a document makes its patient again from the rest, and removes the patient when
+there are none. Documents stored before there was matching are matched when the server starts.
+Patients can't be split or merged by hand (yet).
+
+- `GET {project}/Patient` - a searchset (or a page with a search form): `_id`, `identifier`
+  (`system|value`, or a value), `name`, `family`, `given` (each word starts a word of the name,
+  without regard to case or accents; a name that is only text is searched by `family` and
+  `given` too), `birthdate` (a date, or a year or year and month), `gender`, `_count` (50, at
+  most 200) and `_offset`
+- `GET {project}/Patient/{id}` - the patient's resource (or a page with their documents)
+- `GET {project}/Patient/{id}/$summary`, `GET {project}/Patient/$summary?identifier=system|value` -
+  the patient's most recently received document: the modified copy (what the processing made of
+  it; the original until it has been processed), or the original if `modules.ips.summarySource`
+  is `"original"`. An identifier that more than one patient has is an error (422)
+
+## Composing a document
+
+"Compose a document" (`/ips/{code}/compose` from a project's page, or `/ips/compose` from
+the top menu and the home page, for no project) lists the document creators - the ways to
+make an IPS in the browser: the **general IPS editor** (`.../compose/general`) and the
+**patient IPS editor** (`.../compose/patient`). Each ends with the same choices, the
+document actions (`ips/doc-actions.js`, served at `/ips/doc-actions.js`):
+
+- **Submit** to the project (from a project), or to the project the user picks (from no
+  project) - with the project's token if it has one. It is stored like any other document
+  (source `editor` or `patient-editor`). `POST /ips/compose/submit`, JSON `{ project, token, bundle, editor }`
+- **Download** as JSON, as a ZIP (the document, and anything attached), or as a PDF (the
+  document's narrative, with the document and anything attached attached to it), all made
+  in the browser
+- **QR Code** - a SMART Health Link, which opens in this server's SHL viewer
+  (`{host}/ips/view#shlink:/...`) unless `modules.ips.shl.viewer` says otherwise - or
+  **WHO QR Code** - a Verifiable Health Link, signed by the shl module; available for the
+  days the user chooses (5 by default). The document is not stored in a project. `POST /ips/compose/share`,
+  JSON `{ bundle, kind: 'shl' | 'vhl', days }`. Only when sharing is configured (`modules.ips.shl`)
+
+The choices are available only when the server says the document is a minimal IPS
+(`POST /ips/compose/check`, JSON `{ bundle }`, answers `{ problems: [...] }`; `ips/minimal.js`):
+it passes the submission checks (a document Bundle, the Composition first, its subject a
+Patient in the bundle, no active content in the narratives), its Composition has the IPS
+type (LOINC 60591-5), a title, a date and an author, the patient has a name, and the
+allergies (48765-2), problems (11450-4) and medications (10160-0) sections are there, each
+with entries or an emptyReason. Until then the page lists what is missing. These calls, like
+the submission form, start no session and carry no CSRF token; they must come from this
+server's pages (same origin). The checking, building and loading calls share the lookups'
+rate limit; sharing and submitting, the submissions'.
+
+`/ips/{code}/compose?from={id}` (the old address of the editor) now goes to the general
+editor.
+
+### The general IPS editor
+
+`/ips/{code}/compose/general` (or `/ips/compose/general`) is an editor for composing a
+document in the browser ("Edit" on a document's page opens it with what the form can hold
+of that document, and submitting makes a new document). The page is the
+patient and the document's header (title, author - a practitioner or an organization -
+custodian, date), then a panel per IPS section in the IPS order; the three the IPS requires
+(problems, allergies, medications) are open, the rest collapsed. Each section is filled one
+of three ways: entries - rows of the fields the presenter renders for that resource type,
+coded fields looking codes up as you type; a narrative written by hand (paragraphs at
+blank lines); or a reason it is empty (the `list-empty-reason` codes). Optional sections
+can also be left out. (A required section with only a narrative doesn't make a minimal IPS.)
+What the form holds is declared in `ips/editor-schema.js` (the
+fields, their types, the value set each coded field is bound to, where each lands in the
+resource) and drives the form (`ips/editor.js`, served at `/ips/editor.js`), the building
+of the document (`ips/composer.js`: the Bundle, the Composition with its sections, the
+Patient, the author, each row's resource - a blood pressure as components, a device as a
+Device and a DeviceUseStatement - and the narrative, generated by the presenter for the
+data sections) and the reading of a document back into the form.
+
+As the form changes, the server builds the document (`POST /ips/compose/build`, JSON
+`{ model }`, answers `{ bundle, problems }`: the problems with the model, then what stops it
+being a minimal IPS), and the document actions take it from there. A document can be loaded
+into the form - a file, or one of five test patients (`POST /ips/compose/model`, JSON
+`{ bundle }`, answers `{ model }`). The test patients are the patient editor's five people as
+their GP would summarise them - clinical rather than personal, with made-up detail to round
+out the picture, functional status in ICF (qualified codes, ICF 2017), and the story as the
+GP's summary and plan (Plan of Care). They are editor models, built into documents by the
+editor's own composer: `node ips/general-editor/make-test-patients.js` writes them to
+`ips/general-editor/test-patients/`. Their codes and displays were checked on tx.fhir.org.
+
+Lookups go to `/ips/compose/lookup?vs={value set id}&q={text}` (or `/ips/{code}/lookup`), which runs
+`ValueSet/$expand` with a filter on the terminology server against one of the module's
+own value sets (`ips/valuesets/`), returning up to 20 codes (rate-limited on their own:
+`rateLimit.lookupMax`, 600 a minute). Anything can also be entered as text. The browser
+keeps the model in localStorage until it is submitted. The older way to submit
+(`POST /ips/{code}/compose`, JSON `{ action: 'submit' | 'download', model, token }`) still
+builds the document, checks it as a submission is checked, and stores it, or hands it back
+as a file.
+
+### The patient IPS editor
+
+`/ips/{code}/compose/patient` (or `/ips/compose/patient`) is the form that was the Patient
+Document Generator on healthintersections.com.au (`passport.html`, which now goes here): a
+form for patients to fill in about themselves - about me, my story and goals, medical history,
+care planning, care needs, body parts, reproductive health - that the browser turns into an
+IPS document. Like the general editor, it has the upload (which reads an IPS document back
+into the form) and the five test patients at the top, and makes the document as the form
+changes - there is no Generate button - so the document actions always show what is still
+missing. It is translated (English and Tagalog, in its own files). Its files are in
+`ips/patient-editor/` - the form (`page.html`), its scripts, translations, images and test
+patients - and the libraries it uses (commonmark, and for the downloads jsPDF,
+html2canvas, pdf-lib and zip.js) are in `ips/vendor/`; the module serves them itself
+(`/ips/assets/...`, read once at startup and served from memory, `ips/assets.js`), not from
+CDNs. Its code lookups still go to tx.fhir.org and Ontoserver from the browser. Its old
+"Open Link" for SMART Health Links is now the SHL viewer, and its QR codes are made on the
+server (the shl module's password is no longer in the page). The test patients in
+`ips/patient-editor/test-patients/` were generated by the form's own test-patient buttons.
+
+## Clinical profiles
+
+The profiles step runs after the terminology check and before the AI assessment. It checks the document against every [clinical profile](#clinical-profiles). Each constraint is evaluated on the analysed copy of the document, so translated codings count. A constraint is met when its expression evaluates to `true`, and only `true`. For each profile, the step records one of three outcomes, along with the descriptions of the constraints the document doesn't meet:
+
+- **conforms:** every constraint is met.
+- **does not conform:** at least one constraint plainly fails.
+- **could not be fully checked:** the only failures are constraints that couldn't be decided. Either the expression couldn't be evaluated, or it uses a value set the terminology server couldn't answer for.
+
+Value set membership (`entryIn()`, `resourcesIn()`) is asked of the terminology server through one membership session for the whole document, so a question is asked once however many profiles use it. Definite answers are kept across documents. A constraint is given 60 seconds.
+
+The **Clinical Profiles** view lists each profile, linked to it, with its outcome and the constraints the document doesn't meet. A constraint that couldn't be decided is marked as such, and its reason is shown to the project's managers. The document is checked against the profiles as they were when it was processed; reprocess it to check against them as they are now.
+
+### AI assessment
+
+The last step, and off unless a project's managers turn it on (Settings → AI assessment),
+because it sends the document to a third party and costs money: the analysed copy of the
+document, as JSON, goes to an AI service with a prompt
+(`AI_SYSTEM_PROMPT` in pipeline.js) asking for two assessments - the document as a whole,
+for consistency and integrity (do its details agree with each other and the overall
+picture; is anything missing) and its terminology (are the codes consistent with each other
+and their text; are any wrong, contradictory or misplaced) - answered as JSON: a grade A-F,
+a summary, consistency findings (severity, finding, where), what is missing, and terminology
+findings (severity, finding, the codes). Whether the narrative goes is the project's choice
+(its setting, else the server's `sendNarrative`, else not): without it the document is
+smaller and cheaper; with it, the narratives are the ones the sender wrote (from the master -
+the analysed copy's were generated by the narrative step), and the prompt asks for a third
+assessment, what the narrative says that the structured data does not back up, and the
+reverse. The submission page says so when it is on. Attachments - Attachment and Binary
+`data` (not SampledData's), `valueBase64Binary`, and `data:` URIs in the narrative - are
+replaced with the placeholder `[attachment removed]` before the document is sent (most of a
+large document is usually its attachments), and the prompt tells the model to ignore them;
+how many were replaced is kept with the result, and shown on the view.
+
+The service is an account - provider, base URL, model, API key - of one of two shapes
+(`ips/ai-client.js`): `openai`, the chat-completions API that OpenAI, OpenRouter, LiteLLM,
+Groq, Ollama, Azure and others speak (so a routing service is just a base URL), or
+`anthropic`, the Messages API. A project may keep its own account (its managers enter it on
+the settings page; the key is encrypted at rest with AES-256-GCM under `modules.ips.aiKeySecret`,
+else the `sessionSecret`, so a copy of the database is not a copy of the account); a
+project with none uses the server's default, `modules.ips.ai`; with neither, the step is
+skipped. Each project may make `dailyCap` assessments in a rolling day (its own setting,
+else the server's, else 50; the calls are counted in `ai_calls`), and a document bigger
+than `maxBytes` (300000) is not sent; both are skips with a note, not failures. A service
+that fails is a failure (the document's status is `error`), and still counts against the
+cap. The result (model, token counts, cost, bytes sent, the tidied assessment and the
+model's raw answer) is the step's result; the `ai` view shows the grade, the summary, the
+findings as tables, and the raw answer behind a button. What each call used - model, tokens
+in and out, cost - is kept in `ai_calls`, and the settings page totals it for the project
+(today, the last 30 days, all time). The cost is what the service reports (OpenRouter's
+`usage.cost`), else worked out from a price list - USD per million tokens by model name or
+a prefix of it: Anthropic's current models are built in (`DEFAULT_PRICES` in ai-client.js,
+and they will go stale), and `modules.ips.ai.prices` (`"gpt-4o": { "input": 2.5, "output": 10 }`)
+adds to or overrides them - else not known, and the totals say how many calls had no known
+cost. The answer is the model's opinion, and the page
+says so.
+
 ## The editor
 
 `/ips/{code}/compose` is an editor for composing a document in the browser ("Compose a

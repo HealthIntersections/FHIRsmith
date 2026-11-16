@@ -80,7 +80,7 @@ describe('the composer', () => {
     expect(obs[0]).toMatchObject({ code: { coding: [{ code: '2339-0' }] }, valueQuantity: { value: 5.5, unit: 'mmol/L', system: 'http://unitsofmeasure.org', code: 'mmol/L' }, effectiveDateTime: '2026-01-01', referenceRange: [{ text: '3.9-6.1' }], status: 'final', category: [{ coding: [{ code: 'laboratory' }] }] });
     expect(obs[1]).toMatchObject({ code: { text: 'Culture' }, valueString: 'no growth' });
     // the blood pressure: components, the unit filled in
-    expect(obs[2]).toMatchObject({ code: { coding: [{ system: 'http://loinc.org', code: '85354-9', display: 'Blood pressure' }] }, component: [
+    expect(obs[2]).toMatchObject({ code: { coding: [{ system: 'http://loinc.org', code: '85354-9', display: 'Blood pressure panel with all children optional' }], text: 'Blood pressure' }, component: [
       { code: { coding: [{ code: '8480-6' }] }, valueQuantity: { value: 120, unit: 'mm[Hg]', code: 'mm[Hg]' } }, { code: { coding: [{ code: '8462-4' }] }, valueQuantity: { value: 80, unit: 'mm[Hg]' } }
     ], category: [{ coding: [{ code: 'vital-signs' }] }] });
     expect(obs[2].valueQuantity).toBeUndefined();

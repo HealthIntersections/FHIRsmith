@@ -42,7 +42,7 @@ function displayRank(tty) {
 const RELATIONSHIP_SAB = 'RXNORM';
 
 const { TEXT_INDEX_TABLE, isCurrentTextIndex } = require('../importers/rxnorm-text-index');
-const { TextQuery } = require('../library/text-match');
+const { TextQuery, bestRanks } = require('../library/text-match');
 
 // indexes the provider needs beyond what older imports made (see also import-rxnorm.module.js)
 const RXNORM_LOAD_INDEXES = [
@@ -589,7 +589,24 @@ class RxNormServices extends BaseCSServices {
       rxnormFilter.params[`codeHigh${n}_${i}`] = high;
     });
     rxnormFilter.sql = conds.length > 0 ? ` AND (${conds.join(' OR ')})` : ' AND 1 = 0';
+    // the matches are ranked once they are read (#rank)
+    rxnormFilter.ranking = { query, fts };
     filterContext.filters.push(rxnormFilter);
+  }
+
+  /**
+   * Put a text filter's matches in order: the best match first (TextQuery.nameRank of the
+   * concept's best matching name, or codeRank of its code), then as they were
+   */
+  async #rank(filter) {
+    const { query, fts } = filter.ranking;
+    const cf = this.getCodeField();
+    const ranks = fts ? await bestRanks(query, 'en',
+      await this.#dbAll(`SELECT cui AS key, words AS name FROM ${TEXT_INDEX_TABLE} WHERE ${TEXT_INDEX_TABLE} MATCH ?`, [fts])) : new Map();
+    const rankOf = (row) => Math.max(ranks.get(row[cf]) ?? 0, query.codeRank(row[cf]));
+    const ranked = filter.results.map((row, i) => ({ row, i, rank: rankOf(row) }));
+    ranked.sort((a, b) => (b.rank - a.rank) || (a.i - b.i));
+    filter.results = ranked.map(e => e.row);
   }
 
   async executeFilters(filterContext) {
@@ -642,6 +659,7 @@ class RxNormServices extends BaseCSServices {
     combinedFilter.from = sql2.substring('FROM rxnconso'.length);
     combinedFilter.sql = this.#conceptQuery(sql1, combinedFilter.from);
     combinedFilter.params = allParams;
+    combinedFilter.ranking = filterContext.filters.find(f => f.ranking)?.ranking ?? null;
 
     return [combinedFilter];
   }
@@ -699,19 +717,15 @@ class RxNormServices extends BaseCSServices {
   }
 
   async #executeFilter(filter) {
-    return new Promise((resolve, reject) => {
+    const rows = await new Promise((resolve, reject) => {
       const paramArray = this.#buildParamArray(filter.sql, filter.params);
-
-      this.db.all(filter.sql, paramArray, (err, rows) => {
-        if (err) {
-          reject(err);
-        } else {
-          filter.results = rows;
-          filter.executed = true;
-          resolve();
-        }
-      });
+      this.db.all(filter.sql, paramArray, (err, rows) => err ? reject(err) : resolve(rows));
     });
+    filter.results = rows;
+    if (filter.ranking) {
+      await this.#rank(filter);
+    }
+    filter.executed = true;
   }
 
   // Helper method to build parameter arrays for sqlite3

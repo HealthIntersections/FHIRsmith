@@ -408,6 +408,7 @@ const MODULES = {
     rateLimit: obj({ windowMinutes: positive(), max: count(), lookupMax: count() }),
     processing: obj({ enabled: bool(), intervalSeconds: positive() }),
     txServer: str({ nonEmpty: true }),
+    summarySource: str({ values: ['modified', 'original'] }),
     ai: obj({
       provider: str({ values: ['openai', 'anthropic'] }),
       model: str({ nonEmpty: true }),

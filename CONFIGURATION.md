@@ -227,6 +227,7 @@ counts in the statistics database for the period. The modules that report:
 | `FHIRSMITH_WORKERS` | How many tx-workers `node cluster.js` starts, as `--workers` (`server.cluster.workers`) | from the CPUs and memory |
 | `FHIRSMITH_CACHE_WAIT_MS` | How long a tx-worker waits for the master to build a cache it reads (see [cluster.md](cluster.md#what-runs-where)) | `300000` (5 minutes) |
 | `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |
+| `UV_THREADPOOL_SIZE` | Threads in libuv's pool, which runs the sqlite3 queries (LOINC, RxNorm, ICD-11, VSAC, the packages and XIG databases), file reads and async gzip. Node's own default is 4, which a few slow queries can fill, holding everything else up. Each process (each cluster worker) has its own pool | `16` |
 
 ## Modules
 
