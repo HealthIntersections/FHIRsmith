@@ -59,6 +59,27 @@
     "enabled": true,
     "to": ["ops@example.org"]
   },
+  // Logging (CONFIGURATION.md). The whole block is optional; these are the defaults
+  "logging": {
+    // error, warn, info, debug or verbose
+    "level": "info",
+    // log lines to stdout/stderr too (as a systemd service they go to the journal: set false)
+    "console": true,
+    // whether errors and warnings go to the console as well as the log file
+    "consoleErrors": false,
+    // daily log files kept
+    "maxFiles": 14,
+    // the size a log file is rotated at ("20m", "1g", or bytes); unset: no limit
+    // "maxSize": "50m",
+    // how often buffered lines are written (ms), and how many lines write them at once
+    "flushInterval": 2000,
+    "flushSize": 200,
+    // when the event loop hasn't run for this many seconds (a request holding the process),
+    // a watchdog reads the main thread's stack, and again while it lasts (up to 5 times):
+    // to logs/stall-<instance code or pid>-<time>.txt, and the log. 0: not watched. A small
+    // value (2) is cheap, and useful when hunting what blocks a server
+    "stallReportSeconds": 30
+  },
   // Accessibility. checkPanel adds a button to the bottom of every page that checks the page,
   // as it is in the browser, against WCAG 2.0 A/AA (using axe-core) and checks its heading
   // structure. axe-core is only loaded when the button is pressed. Optional.
@@ -103,11 +124,16 @@
       // shared secret for POST /xig/update, which re-downloads the database on demand. Send
       // it in the x-update-token header. Omit this and the endpoint is disabled entirely -
       // the scheduled update (autoUpdate) is unaffected either way.
-      "updateToken": "change-this-to-a-secure-random-string"
+      "updateToken": "change-this-to-a-secure-random-string",
+      // how many connections to the database: each runs one query at a time. Optional; 4
+      "connections": 4
     },
     "packages": {
       "enabled": false,
       "database": "/absolute/path/to/packages.db",
+      // how many connections requests read the database through (each runs one query at a
+      // time; the crawler writes through another). 0: everything through the one. Optional; 4
+      "readConnections": 4,
       "mirrorPath": "/absolute/path/to/mirror",
       // shared secret for POST /packages/crawl, which triggers a full registry crawl on
       // demand. Send it in the x-crawl-token header. Omit this and the endpoint is
@@ -373,6 +399,9 @@
       // most XML and JSON, in MB, kept per process for large resources (0: none; default 256).
       // Counted in characters: text outside Latin-1 takes two bytes each, so up to twice this
       // "xmlCacheMB": 256,
+      // how many connections to the LOINC database the requests share (each runs one query at
+      // a time); 0: each request opens its own. Optional; this is the default
+      // "loincConnections": 4,
       "endpoints": [
         {
           "path": "/tx/r5",

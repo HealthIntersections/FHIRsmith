@@ -336,6 +336,8 @@ class TXModule {
     // delete the .db and .cache files and package folders in terminology-cache that aren't used
     // (once the endpoints are set up: see below)
     this.library.pruneTerminologyCacheFiles = config.pruneTerminologyCache === true;
+    // how many connections LOINC requests share; 0: each opens its own
+    this.library.loincConnections = config.loincConnections;
     if (config.clusterRole) {
       // the folder:/file: source caches are the master's, under one name every process shares
       this.library.localSourceTag = 'master';

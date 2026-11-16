@@ -196,10 +196,11 @@ const MODULES = {
     validator: validatorSpec
   }),
   vcl: obj({ enabled: bool() }),
-  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: str({ nonEmpty: true }) }),
+  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: str({ nonEmpty: true }), connections: int({ min: 1 }) }),
   packages: obj({
     enabled: bool(),
     database: str({ nonEmpty: true, required: true }),
+    readConnections: int({ min: 0 }),
     mirrorPath: str(),
     bucketPath: str(),
     masterUrl: str({ nonEmpty: true }),
@@ -334,6 +335,7 @@ const MODULES = {
     expansionCacheMemoryThreshold: num({ min: 0 }),
     expansionCacheMaxCodes: count(),
     xmlCacheMB: num({ min: 0 }),
+    loincConnections: int({ min: 0 }),
     // an include that names a code the code system doesn't have: an error, rather than a warning
     errorsForInvalidCodes: bool(),
     // the expansion limits: checked together below (TXModule.expansionLimits)

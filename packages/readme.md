@@ -89,8 +89,9 @@ In the server config, under `modules.packages`:
 | Setting | |
 |---|---|
 | `database` | The SQLite database. A relative path is resolved against the data directory's `packages` folder. Created on first run. |
+| `readConnections` | Optional, default 4. How many connections requests (`/{id}`, downloads, the catalog and searches, `/updates`, `/broken`) read the database through. A connection runs one query at a time, so with one, every request waits behind any slow one - and behind the crawler's writes, which go through a connection of their own. `0`: everything goes through that one connection. |
 | `mirrorPath` | Directory where the crawler saves a copy of each tarball, as `{id}-{version}.tgz`. A scoped id `@scope/name` is saved as `$scope$name`. |
-| `bucketPath` | Optional. If set, downloads redirect to `{bucketPath}/{file}` and tarball URLs point there, instead of being served from the database. The file names are the mirror's, so the bucket is expected to be a copy of the mirror. |
+| `bucketPath` | Optional. If set, downloads redirect to `{bucketPath}/{file}` and tarball URLs point there, instead of being served from the database. The file names are the mirror's, so the bucket is expected to be a copy of the mirror. A redirected download is counted as one sent from here. |
 | `baseUrl` | Optional. The public base URL used when building package URLs. Defaults to the request's host. |
 | `crawlToken` | Shared secret for `POST /packages/crawl`. Omit it to disable that endpoint; the scheduled crawler is unaffected. |
 | `crawler.enabled` | Run the crawler at startup and on the schedule. |

@@ -191,7 +191,11 @@ class SnomedServices {
     this.isAIndex = sharedData.isAIndex;
     this.activeRoots = sharedData.activeRoots;
     this.inactiveRoots = sharedData.inactiveRoots;
-    this.defaultLanguage = sharedData.defaultLanguage;
+    // The language byte of the edition's descriptions to use when a request names none. Caches
+    // made by the Pascal importer hold something else here (51756144 in the 20250201
+    // International Edition), which made a text filter search a language no description is in -
+    // an empty index, and no matches - so anything that isn't a known language byte is English
+    this.defaultLanguage = SCT_LANGUAGE_CODES[sharedData.defaultLanguage] ? sharedData.defaultLanguage : 1;
     this.isTesting = sharedData.isTesting;
 
     // Expression services
@@ -1675,8 +1679,13 @@ class SnomedServices {
       }
     });
 
+    // Only the concepts the text index says could pass the term filters are looked at: reading
+    // and splitting every description of a big set (<< 138875005 is 380k concepts) is seconds of
+    // synchronous work on tx.fhir.org, and the index answers in milliseconds
+    const candidates = activeFilter ? null : this._eclTermCandidates(prepared, opContext);
     const matching = [];
     for (const conceptIdx of this._eclResolveSet(ctx, opContext)) {
+      if (candidates && !candidates.has(conceptIdx)) continue;
       if (opContext) opContext.deadCheck('ecl:descriptionFilter');
       const concept = this.concepts.getConcept(conceptIdx);
       const descIndices = concept.descriptions ? (this.refs.getReferences(concept.descriptions) || []) : [];
@@ -1695,6 +1704,70 @@ class SnomedServices {
     result.descendants = matching;
     return result;
   };
+
+  /**
+   * The concepts that could pass the term filters of one {{ D ... }} block, from the edition's
+   * text index (SnomedTextIndex), or null when it can't say (no index built yet, or no term
+   * filter it can narrow by) - then every concept is checked. A superset: each concept is still
+   * checked description by description (_eclDescriptionMatches), so the index only decides which
+   * concepts are looked at, never what matches.
+   *
+   * The index holds the words of active descriptions, folded, in every language, and finds the
+   * concepts with words that start with each search word - which every concept a "match" term
+   * can match has. Only search words of plain letters and digits (a-z, 0-9), at least 2 of them,
+   * are used: the index's folding and word breaks are the same as the ECL matcher's for those
+   * (others are left out, which only lets more concepts through). "wild:" terms and != filters
+   * don't narrow.
+   *
+   * Only the index already built is used: building it takes seconds, and ECL evaluation is
+   * synchronous. SnomedProvider builds it (yielding) before evaluating an ECL with a term
+   * filter.
+   *
+   * @param {object[]} prepared - the block's prepared filters
+   * @param {OperationContext|null} opContext
+   * @returns {Set<number>|null} concept indexes
+   */
+  _eclTermCandidates = function (prepared, opContext) {
+    const index = this._textIndex;
+    if (!index) {
+      return null;
+    }
+    let result = null;
+    for (const f of prepared) {
+      if (f.field !== 'term' || f.operator !== '=') {
+        continue;
+      }
+      // the values are alternatives: the union of what each can match, unless one can't be narrowed
+      let union = new Set();
+      for (const v of f.values) {
+        const tokens = v.kind === 'wild' ? [] : v.value.toLowerCase().split(/\s+/)
+          .filter(w => w.length >= 2 && /^[a-z0-9]+$/.test(w))
+          .map(word => ({ word, stem: null, whole: false }));
+        if (tokens.length === 0) {
+          union = null;
+          break;
+        }
+        for (const ordinal of index.search(tokens, opContext)) {
+          union.add(ordinal * index.conceptSize);
+        }
+      }
+      if (union) {
+        // several term filters in the block: a concept has to pass them all
+        result = result === null ? union : new Set([...union].filter(i => result.has(i)));
+      }
+    }
+    return result;
+  };
+
+  /**
+   * Whether an ECL expression has a description term filter, which _eclTermCandidates can use
+   * the text index for. A cheap look at the text: a false positive only builds the index
+   * @param {string} eclExpression
+   * @returns {boolean}
+   */
+  eclHasTermFilter(eclExpression) {
+    return /\{\{/.test(eclExpression) && /\bterm\s*!?=/i.test(eclExpression);
+  }
 
   /**
    * Does one description satisfy one prepared description filter?
@@ -3669,6 +3742,11 @@ class SnomedProvider extends BaseCSServices {
       if (cached) {
         filterContext.filters.push(cached);
         return null;
+      }
+      if (this.sct.eclHasTermFilter(value)) {
+        // a term filter uses the text index if it's there (_eclTermCandidates): build it now,
+        // yielding, rather than have the synchronous evaluation read every description
+        await this.sct.getTextIndex(this.opContext);
       }
       const resolved = await this.sct.filterECL(value, forIteration, this.opContext);
       this._cacheEcl(fc, resolved);

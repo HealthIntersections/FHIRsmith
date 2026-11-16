@@ -133,3 +133,53 @@ describe('block counts in the statistics and the daily report', () => {
       '(2 of them for 5 seconds or more, 1 for 10 seconds or more); each is in the log ("Event loop blocked"), with the requests that were in flight.');
   });
 });
+
+describe('block monitor: garbage collection', () => {
+  const { describeBlock } = require('../../library/block-monitor');
+
+  test('the line says how much of the block was garbage collection', () => {
+    expect(describeBlock(3900, 0, [], 3600)).toBe('Event loop blocked for 3.9s, of which 3.6s was garbage collection; no request was in flight when it began');
+    expect(describeBlock(2300, 0, [], 0)).toBe('Event loop blocked for 2.3s, none of it garbage collection; no request was in flight when it began');
+    expect(describeBlock(2300, 0, [])).toBe('Event loop blocked for 2.3s; no request was in flight when it began');
+  });
+
+  test('only the part of a collection inside the block counts', () => {
+    const monitor = new BlockMonitor({ log: { warn: jest.fn() } });
+    monitor.gcs = [{ start: 500, end: 1500 }, { start: 2000, end: 2400 }, { start: 5000, end: 6000 }];
+    expect(monitor.collectionTime(1000, 4000)).toBe(900);
+  });
+
+  test('while collections are watched, the block is logged a moment later, with them', () => {
+    jest.useFakeTimers();
+    try {
+      let clock = 1000000;
+      const log = { warn: jest.fn() };
+      const stats = { countEvent: jest.fn() };
+      const monitor = new BlockMonitor({ log, stats, now: () => clock });
+      monitor.lastTick = clock;
+      monitor.gcs = [];
+      clock += 100 + 3000;
+      // filed from the event loop after the block: 2.5s of the 3s
+      monitor.gcs.push({ start: 1000000 + 200, end: 1000000 + 2700 });
+      monitor.tick();
+      expect(stats.countEvent).toHaveBeenCalledWith('event loop blocked 2-5s', 3000);
+      expect(log.warn).not.toHaveBeenCalled();
+      jest.runOnlyPendingTimers();
+      expect(log.warn).toHaveBeenCalledWith('Event loop blocked for 3.0s, of which 2.5s was garbage collection; no request was in flight when it began');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('start() watches the collections, and stop() lets them go', () => {
+    const monitor = new BlockMonitor({ log: { warn: jest.fn() } });
+    monitor.start();
+    try {
+      expect(Array.isArray(monitor.gcs)).toBe(true);
+    } finally {
+      monitor.stop();
+    }
+    expect(monitor.gcs).toBeNull();
+    expect(monitor.gcObserver).toBeNull();
+  });
+});

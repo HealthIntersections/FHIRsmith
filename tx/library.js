@@ -174,6 +174,12 @@ class Library {
   terminologyDatabasesReadOnly = false;
 
   /**
+   * {number|undefined} modules.tx.loincConnections: how many connections LOINC requests share;
+   * 0, each request opens its own (LoincServicesFactory)
+   */
+  loincConnections = undefined;
+
+  /**
    * {string|null} 'leader', 'follower', or null (no cluster): how the OCL providers behave.
    * Set by tx.js after construction, analogous to the VSAC provider's config.cluster
    */
@@ -739,7 +745,7 @@ class Library {
       return;
     }
 
-    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly });
+    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly, connections: this.loincConnections });
     await loinc.load();
     this.registerProvider(loincFN, loinc, isDefault);
     this.#syndicateBinary('loinc', loincFN, loinc);
