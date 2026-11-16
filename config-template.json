@@ -499,6 +499,9 @@
       // "name", "certFile" | "certificate" (PEM) }]; this server's own shl module's certificate is
       // trusted too, unless trustOwnShl is false
       // "viewer": { "keepMinutes": 60, "allowPrivateAddresses": false, "trust": [] },
+      // which copy of a patient's latest document Patient/[id]/$summary returns: "modified" (what
+      // the processing made of it - the default; the original until it has been processed) or "original"
+      // "summarySource": "modified",
       // the FHIR validator the processing pipeline validates documents with - the same
       // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
       // the data folder's bin directory), on its own port. Documents are validated against the

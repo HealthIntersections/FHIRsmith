@@ -44,6 +44,8 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const scripts = require('./scripts');
+const assets = require('./assets');
+const { minimalIpsProblems } = require('./minimal');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
 const session = require('express-session');
@@ -57,6 +59,7 @@ const { requireSameOrigin } = require('../library/same-origin');
 const { checkNarrative, checkResourceNarratives } = require('../library/narrative-check');
 const packageJson = require('../package.json');
 const { IpsStore } = require('./store');
+const patients = require('./patients');
 const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, patientOf } = require('./search');
 const render = require('./render');
 const { TxClient } = require('./tx-client');
@@ -83,10 +86,52 @@ const TX_RECHECK_MS = 10 * 1000;
 const TX_STARTUP_GRACE_MS = 5 * 60 * 1000;
 const FHIR_JSON = 'application/fhir+json; charset=utf-8';
 const CODE_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
+// the document creators (the general and patient IPS editors), as the chooser lists them
+const EDITORS = [
+  { key: 'general', name: 'General IPS editor', description: 'An editor for the whole IPS: the patient, the author, and each section, with coded entries looked up on the terminology server. For people who know what goes in a patient summary.' },
+  { key: 'patient', name: 'Patient IPS editor', description: 'A form for patients to fill in about themselves - who they are, their story and goals, their medical history, care needs and preferences - that becomes an IPS document. It offers test patients, and can load an IPS document to edit.' }
+];
+/**
+ * A document's page title: IPS #{id}: what the document is - its title, with the patient's
+ * name if the title doesn't already have it (many say just "Patient Summary"), and its date
+ * when it has no title.
+ */
+function documentPageTitle(row) {
+  const title = String(row.comp_title || '').trim();
+  const patient = String(row.patient_name || '').trim();
+  const date = String(row.comp_date || '').substring(0, 10);
+  let what;
+  if (title && patient && !title.toLowerCase().includes(patient.toLowerCase())) {
+    what = `${title} - ${patient}`;
+  } else if (title) {
+    what = title;
+  } else if (patient) {
+    what = date ? `${patient}, ${date}` : patient;
+  } else {
+    what = date ? `Patient Summary, ${date}` : 'Patient Summary';
+  }
+  return `IPS #${row.id}: ${what.length > 120 ? what.substring(0, 117) + '...' : what}`;
+}
+
+/** The patient's name in a document, for a share's label: text, or given and family; '' if none. */
+function summaryOfName(bundle) {
+  const n = (patientOf(bundle) || {}).name;
+  const name = Array.isArray(n) ? n.find(x => x && typeof x === 'object') : null;
+  if (!name) {
+    return '';
+  }
+  if (typeof name.text === 'string' && name.text.trim()) {
+    return name.text.trim().substring(0, 100);
+  }
+  const given = Array.isArray(name.given) ? name.given.filter(g => typeof g === 'string') : [];
+  return [...given, typeof name.family === 'string' ? name.family : ''].join(' ').trim().substring(0, 100);
+}
+// how long a document shared from an editor stays available, by default (days)
+const DEFAULT_EDITOR_SHARE_DAYS = 5;
 // paths at the root that can't be project codes
 const { jurisdiction: jurisdictionOf } = require('./jurisdictions');
 const { SNOMED_LINKABLE_EDITIONS } = require('../tx/sct/editions');
-const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles', 'queue', 'view']);
+const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles', 'queue', 'view', 'compose']);
 // how long the SHL viewer keeps what it retrieved (modules.ips.viewer.keepMinutes)
 const DEFAULT_VIEW_KEEP_MINUTES = 60;
 // a viewer page's address
@@ -338,6 +383,7 @@ class IpsModule {
     this.setupProfileRoutes();
     this.setupNationalProfileRoutes();
     this.setupViewerRoutes();
+    this.setupComposeRoutes();
     this.setupProjectRoutes();
     this.setupValidator();
     this.setupValueSets();
@@ -573,6 +619,31 @@ class IpsModule {
     r.post('/view/:token/add', view, this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerAdd(req, res)));
   }
 
+  /**
+   * The document creators: a chooser, and the editors, with or without a project (from a
+   * project, they submit to it; without one, the user picks the project to submit to). The
+   * editors' calls (JSON) build, check, load, share and submit documents; the browser
+   * creates the downloads itself. The posts start no session and carry no CSRF token, like
+   * the submission form: anyone can use the editors, and submitting needs the project's token.
+   */
+  setupComposeRoutes() {
+    const r = this.router;
+    const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+    const posting = this.submissionLimiters();
+    const json = express.json({ limit: Math.max(2 * 1024 * 1024, Math.ceil(this.maxSize * 1.5)) });
+    r.get('/assets/*file', assets.handler);
+    r.get('/doc-actions.js', scripts.handler('doc-actions.js'));
+    r.get('/compose', ...this.web, h('compose', (req, res) => this.sendComposeChoice(req, res)));
+    r.get('/compose/general', ...this.web, h('compose', (req, res) => this.sendCompose(req, res)));
+    r.get('/compose/patient', ...this.web, h('compose', (req, res) => this.sendPatientEditor(req, res)));
+    r.get('/compose/lookup', ...this.lookups, h('lookup', (req, res) => this.lookup(req, res)));
+    r.post('/compose/build', this.sameOrigin, ...this.lookups, json, h('compose', (req, res) => this.composeBuild(req, res)));
+    r.post('/compose/check', this.sameOrigin, ...this.lookups, json, h('compose', (req, res) => this.composeCheck(req, res)));
+    r.post('/compose/model', this.sameOrigin, ...this.lookups, json, h('compose', (req, res) => this.composeModel(req, res)));
+    r.post('/compose/share', this.sameOrigin, ...posting, json, h('compose', (req, res) => this.composeShare(req, res)));
+    r.post('/compose/submit', this.sameOrigin, ...posting, json, h('compose', (req, res) => this.composeSubmit(req, res)));
+  }
+
   setupProjectRoutes() {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
@@ -613,7 +684,15 @@ class IpsModule {
     r.get('/:code/submit', project, ...this.web, h('submit', (req, res) => this.sendSubmit(req, res)));
     // the editor: the page, its script (served before the project routes catch the name),
     // the code lookups it makes, and what it posts
-    r.get('/:code/compose', project, ...this.web, h('compose', (req, res) => this.sendCompose(req, res)));
+    r.get('/:code/compose', project, ...this.web, h('compose', (req, res) => {
+      // the editor used to be here: links to edit a document go to the general editor
+      if (typeof req.query.from === 'string') {
+        return res.redirect(`${req.baseUrl}/${encodeURIComponent(req.project.code)}/compose/general?from=${encodeURIComponent(req.query.from)}`);
+      }
+      return this.sendComposeChoice(req, res);
+    }));
+    r.get('/:code/compose/general', project, ...this.web, h('compose', (req, res) => this.sendCompose(req, res)));
+    r.get('/:code/compose/patient', project, ...this.web, h('compose', (req, res) => this.sendPatientEditor(req, res)));
     r.get('/:code/lookup', project, ...this.lookups, h('lookup', (req, res) => this.lookup(req, res)));
     r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb' }), h('compose', (req, res) => this.compose(req, res)));
     r.post('/:code/submit', project, this.sameOrigin, ...posting, this.session, this.bigForm, h('submit', (req, res) => this.submitForm(req, res)));
@@ -631,6 +710,11 @@ class IpsModule {
     };
     const documentBody = express.raw({ type: ['application/fhir+json', 'application/json'], limit: this.maxSize });
     r.post('/:code/Bundle', project, ...posting, submitter, documentBody, h('create', (req, res) => this.create(req, res)));
+    // the project's patients (matched as documents arrive: patients.js), and IPS $summary
+    r.get('/:code/Patient', project, ...this.web, h('patient', (req, res) => this.patientSearch(req, res)));
+    r.get('/:code/Patient/\\$summary', project, h('summary', (req, res) => this.summary(req, res, null)));
+    r.get('/:code/Patient/:pid/\\$summary', project, h('summary', (req, res) => this.summary(req, res, req.params.pid)));
+    r.get('/:code/Patient/:pid', project, ...this.web, h('patient', (req, res) => this.patientRead(req, res)));
     r.get('/:code/Bundle', project, ...this.web, h('search', (req, res) =>
       wantsHtml(req) ? this.htmlList(req, res) : this.search(req, res)));
     r.get('/:code/Bundle/:id', project, ...this.web, h('read', (req, res) => this.read(req, res)));
@@ -1931,22 +2015,172 @@ class IpsModule {
 
   // ---- the editor ----
 
+  /** The projects an editor without a project can submit to: code, name, and whether it needs a token. */
+  submitTargets() {
+    // the list leaves the token out; whether there is one comes from the project itself
+    return this.store.projects().map(p => ({ code: p.code, name: p.name, needsToken: tokenConfigured(this.store.projectByCode(p.code)?.token) }));
+  }
+
+  /** What every editor page passes to the document actions (doc-actions.js). */
+  actionsConfig(req, editor) {
+    const base = req.baseUrl;
+    const p = req.project;
+    return {
+      editor,
+      project: p ? { code: p.code, name: p.name, needsToken: tokenConfigured(p.token) } : null,
+      projects: p ? [] : this.submitTargets(),
+      canShare: !!this.shl,
+      shareDays: DEFAULT_EDITOR_SHARE_DAYS,
+      urls: {
+        check: `${base}/compose/check`, share: `${base}/compose/share`, submit: `${base}/compose/submit`, viewer: this.viewer ? `${base}/view` : null,
+        vendor: {
+          jspdf: assets.src(base, 'vendor/jspdf.umd.min.js'), html2canvas: assets.src(base, 'vendor/html2canvas.min.js'),
+          pdflib: assets.src(base, 'vendor/pdf-lib.min.js'), zip: assets.src(base, 'vendor/zip.min.js')
+        }
+      }
+    };
+  }
+
+  /** The list of document creators, for a project or for none. */
+  sendComposeChoice(req, res) {
+    const p = req.project || null;
+    this.sendHtml(res, p ? `${p.name}: Compose a Document` : 'Compose a Document',
+      render.renderComposeChoice(p, this.ctx(req, res), { editors: EDITORS }), Date.now(), req);
+  }
+
+  /** The general IPS editor: empty, or holding a document of the project's (?from=). */
   sendCompose(req, res) {
     let model = null;
     let from = null;
-    if (typeof req.query.from === 'string' && /^\d{1,12}$/.test(req.query.from)) {
-      const row = this.store.read(parseInt(req.query.from, 10), req.project.id);
+    const p = req.project || null;
+    if (p && typeof req.query.from === 'string' && /^\d{1,12}$/.test(req.query.from)) {
+      const row = this.store.read(parseInt(req.query.from, 10), p.id);
       if (!row) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.query.from}'`), 404);
       }
       model = composer.modelOf(row.bundle);
       from = row.id;
     }
-    this.sendHtml(res, `${req.project.name}: ${from ? `Edit Document ${from}` : 'Compose a Document'}`,
-      render.renderCompose(req.project, this.ctx(req, res), {
-        schema: editorSchema.forBrowser(), model, from, needsToken: tokenConfigured(req.project.token),
-        aiEnabled: this.store.projectAi(req.project).enabled === true, canLookup: !!(this.tx && this.valueSets)
+    const title = from ? `Edit Document ${from}` : 'General IPS Editor';
+    this.sendHtml(res, p ? `${p.name}: ${title}` : title,
+      render.renderCompose(p, this.ctx(req, res), {
+        schema: editorSchema.forBrowser(), model, from,
+        aiEnabled: p ? this.store.projectAi(p).enabled === true : false, canLookup: !!(this.tx && this.valueSets),
+        actions: this.actionsConfig(req, 'general'),
+        testPatients: assets.testPatients(req.baseUrl)
       }), Date.now(), req);
+  }
+
+  /** The patient IPS editor (the form that was the Patient Document Generator on healthintersections.com.au). */
+  sendPatientEditor(req, res) {
+    const p = req.project || null;
+    this.sendHtml(res, p ? `${p.name}: Patient IPS Editor` : 'Patient IPS Editor',
+      render.renderPatientEditor(p, this.ctx(req, res), {
+        page: assets.text('patient-editor', 'page.html'),
+        actions: this.actionsConfig(req, 'patient'),
+        aiEnabled: p ? this.store.projectAi(p).enabled === true : false
+      }), Date.now(), req);
+  }
+
+  /** The bundle in an editor's call, or null. */
+  bundleIn(req) {
+    const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body.bundle : null;
+    return b && typeof b === 'object' && !Array.isArray(b) ? b : null;
+  }
+
+  /** What's wrong with the document for the editors' actions: not a document, not a minimal IPS, too big. */
+  editorProblems(bundle) {
+    const problems = validateDocument(bundle);
+    if (problems.length > 0) {
+      return problems;
+    }
+    const minimal = minimalIpsProblems(bundle);
+    if (minimal.length > 0) {
+      return minimal;
+    }
+    const size = Buffer.byteLength(JSON.stringify(bundle), 'utf8');
+    return size > this.maxSize ? [`The document is ${size} bytes; documents can't be bigger than ${this.maxSize} bytes`] : [];
+  }
+
+  /** The general editor: build the document from its model; the document and what's wrong with it. */
+  async composeBuild(req, res) {
+    const model = req.body && typeof req.body === 'object' ? req.body.model : null;
+    let built;
+    try {
+      built = await composer.build(model);
+    } catch (e) {
+      this.log.error(`IPS module: composing a document failed: ${e.message}`);
+      return res.status(500).json({ error: 'The document could not be built' });
+    }
+    if (!built.bundle) {
+      return res.json({ bundle: null, problems: built.problems });
+    }
+    res.json({ bundle: built.bundle, problems: [...built.problems, ...this.editorProblems(built.bundle)] });
+  }
+
+  /** Whether a document is ready for the editors' actions: what's wrong with it ([] if nothing). */
+  composeCheck(req, res) {
+    const bundle = this.bundleIn(req);
+    res.json({ problems: bundle ? this.editorProblems(bundle) : ['There is no document'] });
+  }
+
+  /** The general editor: a document, as the editor's model (for loading a document, or a test patient). */
+  composeModel(req, res) {
+    const bundle = this.bundleIn(req);
+    const problems = bundle ? validateDocument(bundle) : ['There is no document'];
+    if (problems.length > 0) {
+      return res.status(400).json({ error: 'That is not a document the editor can load', problems });
+    }
+    res.json({ model: composer.modelOf(bundle) });
+  }
+
+  /** Share a document from an editor as an SHL or VHL QR code. It isn't stored in a project. */
+  async composeShare(req, res) {
+    if (!this.shl) {
+      return res.status(404).json({ error: 'Sharing is not configured on this server (modules.ips.shl)' });
+    }
+    const bundle = this.bundleIn(req);
+    const problems = bundle ? this.editorProblems(bundle) : ['There is no document'];
+    if (problems.length > 0) {
+      return res.status(400).json({ error: 'The document is not ready to share', problems });
+    }
+    const kind = req.body.kind === 'vhl' ? 'vhl' : 'shl';
+    const days = parseInt(req.body.days, 10);
+    const name = summaryOfName(bundle);
+    let out;
+    try {
+      out = await this.shl.share(bundle, {
+        kind, host: req.get('host'), label: name ? `Patient Health Document for ${name}` : 'Patient Health Document',
+        days: Number.isInteger(days) && days >= 1 && days <= 365 ? days : DEFAULT_EDITOR_SHARE_DAYS,
+        viewer: this.viewer ? this.viewerUrl(req) : undefined
+      });
+    } catch (e) {
+      this.log.error(`IPS module: a document from an editor could not be shared as ${kind}: ${e.message}`);
+      return res.status(502).json({ error: e.message });
+    }
+    this.log.info(`IPS module: a document from an editor shared as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
+    res.json(out);
+  }
+
+  /** Submit a document from an editor to a project (the project's page names it; otherwise the user picked it). */
+  composeSubmit(req, res) {
+    const code = typeof req.body?.project === 'string' ? req.body.project : '';
+    const p = CODE_RE.test(code) && !RESERVED.has(code) ? this.store.projectByCode(code) : null;
+    if (!p) {
+      return res.status(404).json({ error: code ? `There is no project '${code}'` : 'Choose the project to submit the document to' });
+    }
+    const supplied = typeof req.body.token === 'string' ? req.body.token.trim() : '';
+    if (tokenConfigured(p.token) && !tokenMatches(p.token, supplied)) {
+      return res.status(401).json({ error: 'The submission token is missing or wrong' });
+    }
+    const bundle = this.bundleIn(req);
+    const problems = bundle ? this.editorProblems(bundle) : ['There is no document'];
+    if (problems.length > 0) {
+      return res.status(400).json({ error: 'The document could not be submitted', problems });
+    }
+    req.project = p;
+    const { id } = this.receive(req, bundle, req.body.editor === 'patient' ? 'patient-editor' : 'editor');
+    res.status(201).json({ id, url: `${req.baseUrl}/${encodeURIComponent(p.code)}/Bundle/${id}` });
   }
 
   /**
@@ -2162,7 +2396,7 @@ class IpsModule {
         narrative,
         source
       };
-      return this.sendHtml(res, `${req.project.name}: Document ${row.id}`, render.renderDocument(req.project, row, view, ctx), start, req);
+      return this.sendHtml(res, documentPageTitle(row), render.renderDocument(req.project, row, view, ctx), start, req);
     }
     if (!row) {
       return this.sendOutcome(res, 404, 'not-found', `No Bundle with id '${req.params.id}'`);
@@ -2172,6 +2406,166 @@ class IpsModule {
       res.set('Content-Disposition', `attachment; filename="ips-${req.project.code}-${row.id}.json"`);
     }
     return this.sendJson(res, 200, row.bundle);
+  }
+
+  // ---- patients ----
+
+  /**
+   * The project's patients that match a search: _id, identifier (system|value, or a value),
+   * name / family / given (starts a word of the name, without regard to case or accents; a name
+   * that is only text is searched by family and given too), birthdate (the date, or its year or
+   * year and month), gender. _count and _offset page it.
+   * @returns {{patients: Array, problems: string[], unknown: string[], count: number, offset: number}}
+   */
+  findPatients(req) {
+    const q = req.query || {};
+    const problems = [];
+    const unknown = [];
+    const one = (k) => (Array.isArray(q[k]) ? q[k][q[k].length - 1] : q[k]);
+    let list = this.store.patients(req.project.id);
+    const KNOWN = new Set(['_id', 'identifier', 'name', 'family', 'given', 'birthdate', 'gender', '_count', '_offset', '_format']);
+    for (const k of Object.keys(q)) {
+      if (!KNOWN.has(k)) {
+        unknown.push(k);
+      }
+    }
+    const value = (k) => (typeof one(k) === 'string' ? one(k).trim() : '');
+    if (value('_id')) {
+      const ids = new Set(value('_id').split(',').map(x => x.trim()));
+      list = list.filter(p => ids.has(String(p.id)));
+    }
+    if (value('identifier')) {
+      const ids = new Set(this.store.patientsByIdentifier(req.project.id, value('identifier')));
+      list = list.filter(p => ids.has(p.id));
+    }
+    const nameWords = (p, part) => (Array.isArray(p.resource.name) ? p.resource.name : []).flatMap(n => {
+      if (!n || typeof n !== 'object') {
+        return [];
+      }
+      const given = (Array.isArray(n.given) ? n.given : []).flatMap(patients.words);
+      const family = patients.words(n.family);
+      const text = patients.words(n.text);
+      if (part === 'family') {
+        return family.length ? family : (given.length ? [] : text);
+      }
+      if (part === 'given') {
+        return given.length ? given : (family.length ? [] : text);
+      }
+      return [...given, ...family, ...text];
+    });
+    for (const part of ['name', 'family', 'given']) {
+      if (value(part)) {
+        const want = patients.words(value(part));
+        list = list.filter(p => {
+          const have = nameWords(p, part);
+          return want.every(w => have.some(h => h.startsWith(w)));
+        });
+      }
+    }
+    if (value('birthdate')) {
+      const d = value('birthdate').replace(/^eq/, '');
+      if (!/^\d{4}(-\d{2}(-\d{2})?)?$/.test(d)) {
+        problems.push(`The birthdate '${value('birthdate')}' is not a date (YYYY, YYYY-MM or YYYY-MM-DD)`);
+      } else {
+        list = list.filter(p => typeof p.birth_date === 'string' && p.birth_date.startsWith(d));
+      }
+    }
+    if (value('gender')) {
+      list = list.filter(p => p.gender === value('gender'));
+    }
+    const count = Math.min(Math.max(parseInt(value('_count') || '50', 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(value('_offset') || '0', 10) || 0, 0);
+    return { all: list, patients: list.slice(offset, offset + count), problems, unknown, count, offset };
+  }
+
+  patientSearch(req, res) {
+    const start = Date.now();
+    const found = this.findPatients(req);
+    if (wantsHtml(req) && !/json/.test(String(req.query._format || ''))) {
+      return this.sendHtml(res, `${req.project.name}: Patients`, render.renderPatients(req.project, found, req.query, this.ctx(req, res)), start, req);
+    }
+    if (found.problems.length > 0) {
+      return this.sendOutcome(res, 400, 'invalid', found.problems);
+    }
+    const base = this.projectUrl(req);
+    const link = (offset) => {
+      const u = new URLSearchParams();
+      for (const [k, v] of Object.entries(req.query)) {
+        if (!['_count', '_offset', '_format'].includes(k) && typeof v === 'string') {
+          u.append(k, v);
+        }
+      }
+      u.append('_count', String(found.count));
+      u.append('_offset', String(offset));
+      return `${base}/Patient?${u.toString()}`;
+    };
+    const links = [{ relation: 'self', url: link(found.offset) }];
+    if (found.offset + found.count < found.all.length) {
+      links.push({ relation: 'next', url: link(found.offset + found.count) });
+    }
+    const bundle = {
+      resourceType: 'Bundle', id: crypto.randomUUID(), meta: { lastUpdated: new Date().toISOString() }, type: 'searchset',
+      total: found.all.length, link: links,
+      entry: found.patients.map(p => ({ fullUrl: `${base}/Patient/${p.id}`, resource: p.resource, search: { mode: 'match' } }))
+    };
+    if (found.unknown.length > 0) {
+      bundle.entry.push({ resource: operationOutcome('warning', 'not-supported', found.unknown.map(u => `Unknown search parameter '${u}' was ignored`)), search: { mode: 'outcome' } });
+    }
+    if (bundle.entry.length === 0) {
+      delete bundle.entry;
+    }
+    return this.sendJson(res, 200, bundle);
+  }
+
+  patientRead(req, res) {
+    const start = Date.now();
+    const pid = /^\d{1,12}$/.test(req.params.pid) ? parseInt(req.params.pid, 10) : NaN;
+    const p = this.store.patient(req.project.id, pid);
+    const html = wantsHtml(req) && !/json/.test(String(req.query._format || ''));
+    if (!p) {
+      return html ? htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No patient with id '${req.params.pid}'`), 404)
+        : this.sendOutcome(res, 404, 'not-found', `No Patient with id '${req.params.pid}'`);
+    }
+    if (html) {
+      const name = p.name || '(no name)';
+      return this.sendHtml(res, `Patient #${p.id}: ${name}`, render.renderPatient(req.project, p, this.store.patientDocuments(p.id), this.ctx(req, res)), start, req);
+    }
+    return this.sendJson(res, 200, p.resource);
+  }
+
+  /**
+   * IPS $summary: the patient's latest document (the most recently received) - the modified
+   * copy, unless modules.ips.summarySource is "original" (or it hasn't been processed yet).
+   * By the patient's id, or by an identifier (?identifier=system|value).
+   */
+  summary(req, res, pidText) {
+    let patientId;
+    if (pidText !== null) {
+      patientId = /^\d{1,12}$/.test(pidText) ? parseInt(pidText, 10) : NaN;
+      if (!this.store.patient(req.project.id, patientId)) {
+        return this.sendOutcome(res, 404, 'not-found', `No Patient with id '${pidText}'`);
+      }
+    } else {
+      const identifier = typeof req.query.identifier === 'string' ? req.query.identifier.trim() : '';
+      if (!identifier) {
+        return this.sendOutcome(res, 400, 'required', 'Patient/$summary needs the patient\'s id (Patient/[id]/$summary) or an identifier (?identifier=system|value)');
+      }
+      const ids = this.store.patientsByIdentifier(req.project.id, identifier);
+      if (ids.length === 0) {
+        return this.sendOutcome(res, 404, 'not-found', `No patient has the identifier '${identifier}'`);
+      }
+      if (ids.length > 1) {
+        return this.sendOutcome(res, 422, 'multiple-matches', `More than one patient has the identifier '${identifier}' (${ids.map(i => `Patient/${i}`).join(', ')})`);
+      }
+      patientId = ids[0];
+    }
+    const docs = this.store.patientDocuments(patientId);
+    const row = docs.length ? this.store.read(docs[0].id, req.project.id) : null;
+    if (!row) {
+      return this.sendOutcome(res, 404, 'not-found', `Patient ${patientId} has no documents`);
+    }
+    const doc = this.config.summarySource !== 'original' && row.analysed ? row.analysed : row.bundle;
+    return this.sendJson(res, 200, doc);
   }
 
   async search(req, res) {
@@ -2270,6 +2664,20 @@ class IpsModule {
           readHistory: false,
           updateCreate: false,
           searchParam: capabilitySearchParams()
+        }, {
+          type: 'Patient',
+          documentation: 'The patients of the documents received: each document\'s Patient is matched to one seen before ' +
+            '(the same identifier, or the same name and birth date) or is a new one; the resource is what the documents have said about them, cumulatively, ' +
+            'with this server\'s id. $summary returns the patient\'s latest document',
+          interaction: [{ code: 'read' }, { code: 'search-type' }],
+          versioning: 'no-version',
+          readHistory: false,
+          updateCreate: false,
+          searchParam: [
+            { name: '_id', type: 'token' }, { name: 'identifier', type: 'token' }, { name: 'name', type: 'string' },
+            { name: 'family', type: 'string' }, { name: 'given', type: 'string' }, { name: 'birthdate', type: 'date' }, { name: 'gender', type: 'token' }
+          ],
+          operation: [{ name: 'summary', definition: 'http://hl7.org/fhir/uv/ips/OperationDefinition/summary' }]
         }]
       }]
     };

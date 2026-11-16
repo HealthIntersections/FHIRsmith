@@ -32,7 +32,6 @@ const fs = require('fs');
 const zlib = require('zlib');
 const axios = require('axios');
 const CBOR = require('cbor');
-const pako = require('pako');
 const base45 = require('base45');
 const { createGuardedAgents } = require('../library/ssrf-guard');
 const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
@@ -41,6 +40,9 @@ const LOINC = 'http://loinc.org';
 const IPS_CODE = '60591-5';
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const DEFAULT_MAX_MB = 10;
+// The most a compressed payload (a VHL's COSE, an SHL's zip DEF content) may inflate to: a small
+// payload can be made to inflate to gigabytes, holding the server while it does (a zip bomb)
+const MAX_INFLATED_BYTES = DEFAULT_MAX_MB * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 // the most of one thing (a body, a document) the log keeps
 const MAX_DETAIL = 1024 * 1024;
@@ -271,9 +273,12 @@ function decodeVhl(text, trust, trace) {
   const deflated = base45.decode(body);
   let cose;
   try {
-    cose = Buffer.from(pako.inflate(deflated));
+    cose = zlib.unzipSync(Buffer.from(deflated), { maxOutputLength: MAX_INFLATED_BYTES });
     trace.ok(`Base45 decoded (${deflated.length} bytes) and inflated (${cose.length} bytes)`);
   } catch (e) {
+    if (e.code === 'ERR_BUFFER_TOO_LARGE') {
+      trace.fail(`Base45 decoded (${deflated.length} bytes), but it inflates to more than ${MAX_INFLATED_BYTES / (1024 * 1024)} MB`);
+    }
     trace.warning(`Base45 decoded (${deflated.length} bytes), but it does not inflate (${e.message || e}): trying it as it is`);
     cose = Buffer.from(deflated);
   }
@@ -361,7 +366,7 @@ function decodeVhl(text, trust, trace) {
  * Decrypt a JWE (compact; dir / A256GCM; zip DEF allowed) with the key.
  * @returns {{text: string, header: Object}}
  */
-function decryptJwe(jwe, key, trace) {
+function decryptJwe(jwe, key, trace, maxBytes = MAX_INFLATED_BYTES) {
   const s = typeof jwe === 'string' ? jwe.trim() : '';
   const parts = s.split('.');
   if (parts.length !== 5) {
@@ -402,8 +407,11 @@ function decryptJwe(jwe, key, trace) {
   }
   if (header.zip === 'DEF') {
     try {
-      plain = zlib.inflateRawSync(plain);
+      plain = zlib.inflateRawSync(plain, { maxOutputLength: maxBytes });
     } catch (e) {
+      if (e.code === 'ERR_BUFFER_TOO_LARGE') {
+        trace.fail(`Decrypted, but zip DEF inflates to more than ${Math.round(maxBytes / (1024 * 1024))} MB`);
+      }
       trace.fail(`Decrypted, but zip DEF does not inflate: ${e.message}`);
     }
   } else if (header.zip !== undefined) {
@@ -628,7 +636,7 @@ class ShlViewer {
             }
             jwe = r.text;
           }
-          const { text: plain, header } = decryptJwe(jwe, payload.key, trace);
+          const { text: plain, header } = decryptJwe(jwe, payload.key, trace, this.maxBytes);
           if (header.cty && header.cty !== f.contentType) {
             trace.warning(`The JWE's cty (${header.cty}) is not the manifest's content type (${f.contentType})`);
           }

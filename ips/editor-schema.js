@@ -14,10 +14,12 @@
  *
  * A field is { name, label, type, ... }:
  *   text, textarea, date, datetime      strings
- *   select                               one of options [{ code, display }]; `system` makes it a
- *                                        CodeableConcept, else it is a code
+ *   select                               one of options [{ code, display, label }]; `system` makes it a
+ *                                        CodeableConcept, else it is a code. display is the
+ *                                        code system's display; label, if there is one, is
+ *                                        what the form shows instead
  *   code                                 a coding looked up in `valueSet` (an id in ips/valuesets/),
- *                                        or typed as text; { system, code, display, text }
+ *                                        or typed as text; { system, version, code, display, text }
  *   quantity                             { value, unit }
  * and `path` says where it goes in the resource: an element name, with [x] for a choice
  * (onset[x] takes the type from the field: date -> onsetDateTime; the composer decides) and
@@ -89,7 +91,7 @@ const HEADER = {
 /** The sections, in the IPS order. */
 const SECTIONS = [
   {
-    key: 'problems', code: '11450-4', title: 'Problem List', required: true, resourceType: 'Condition', label: 'Problem',
+    key: 'problems', code: '11450-4', display: 'Problem list - Reported', title: 'Problem List', required: true, resourceType: 'Condition', label: 'Problem',
     fields: [
       code('code', 'Problem', 'ips-condition-code', { path: 'code', required: true }),
       sel('clinicalStatus', 'Clinical status', CLINICAL_STATUS.options, { system: CLINICAL_STATUS.system, path: 'clinicalStatus', default: 'active' }),
@@ -103,7 +105,7 @@ const SECTIONS = [
     fixed: { category: [{ coding: [{ system: THO + 'condition-category', code: 'problem-list-item', display: 'Problem List Item' }] }] }
   },
   {
-    key: 'allergies', code: '48765-2', title: 'Allergies and Intolerances', required: true, resourceType: 'AllergyIntolerance', label: 'Allergy / intolerance',
+    key: 'allergies', code: '48765-2', display: 'Allergies and adverse reactions Document', title: 'Allergies and Intolerances', required: true, resourceType: 'AllergyIntolerance', label: 'Allergy / intolerance',
     fields: [
       code('code', 'Allergy / intolerance', 'ips-allergy-code', { path: 'code', required: true }),
       sel('type', 'Type', [{ code: 'allergy', display: 'Allergy' }, { code: 'intolerance', display: 'Intolerance' }], { path: 'type' }),
@@ -125,7 +127,7 @@ const SECTIONS = [
     }]
   },
   {
-    key: 'medications', code: '10160-0', title: 'Medication Summary', required: true, resourceType: 'MedicationStatement', label: 'Medication',
+    key: 'medications', code: '10160-0', display: 'History of Medication use Narrative', title: 'Medication Summary', required: true, resourceType: 'MedicationStatement', label: 'Medication',
     fields: [
       code('medication', 'Medication', 'ips-medication', { path: 'medication[x]', required: true }),
       sel('status', 'Status', [{ code: 'active', display: 'Active' }, { code: 'completed', display: 'Completed' }, { code: 'intended', display: 'Intended' }, { code: 'stopped', display: 'Stopped' }, { code: 'on-hold', display: 'On hold' }, { code: 'not-taken', display: 'Not taken' }], { path: 'status', default: 'active', required: true }),
@@ -138,7 +140,7 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'immunizations', code: '11369-6', title: 'Immunizations', resourceType: 'Immunization', label: 'Immunization',
+    key: 'immunizations', code: '11369-6', display: 'History of Immunization note', title: 'Immunizations', resourceType: 'Immunization', label: 'Immunization',
     fields: [
       code('vaccine', 'Vaccine', 'ips-vaccine', { path: 'vaccineCode', required: true }),
       sel('status', 'Status', [{ code: 'completed', display: 'Completed' }, { code: 'not-done', display: 'Not done' }, { code: 'entered-in-error', display: 'Entered in error' }], { path: 'status', default: 'completed', required: true }),
@@ -152,7 +154,7 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'procedures', code: '47519-4', title: 'History of Procedures', resourceType: 'Procedure', label: 'Procedure',
+    key: 'procedures', code: '47519-4', display: 'History of Procedures Document', title: 'History of Procedures', resourceType: 'Procedure', label: 'Procedure',
     fields: [
       code('code', 'Procedure', 'ips-procedure', { path: 'code', required: true }),
       sel('status', 'Status', [{ code: 'completed', display: 'Completed' }, { code: 'in-progress', display: 'In progress' }, { code: 'not-done', display: 'Not done' }, { code: 'stopped', display: 'Stopped' }], { path: 'status', default: 'completed', required: true }),
@@ -164,7 +166,7 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'devices', code: '46264-8', title: 'Medical Devices', resourceType: 'DeviceUseStatement', label: 'Device',
+    key: 'devices', code: '46264-8', display: 'History of medical device use', title: 'Medical Devices', resourceType: 'DeviceUseStatement', label: 'Device',
     fields: [
       text('device', 'Device', { path: '$device.deviceName.name', required: true }),
       text('deviceType', 'Type', { path: '$device.type', as: 'codeable', placeholder: 'as text' }),
@@ -176,7 +178,7 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'results', code: '30954-2', title: 'Results', resourceType: 'Observation', label: 'Result',
+    key: 'results', code: '30954-2', display: 'Relevant diagnostic tests/laboratory data note', title: 'Results', resourceType: 'Observation', label: 'Result',
     fields: [
       code('code', 'Test', 'ips-observation-code', { path: 'code', required: true }),
       { name: 'value', label: 'Value', type: 'quantity', path: 'value[x]' },
@@ -192,11 +194,11 @@ const SECTIONS = [
     key: 'vitals', code: '8716-3', title: 'Vital Signs', resourceType: 'Observation', label: 'Vital sign',
     fields: [
       sel('code', 'Vital sign', [
-        { code: '85354-9', display: 'Blood pressure', units: 'mm[Hg]', components: [{ code: '8480-6', display: 'Systolic blood pressure' }, { code: '8462-4', display: 'Diastolic blood pressure' }] },
+        { code: '85354-9', display: 'Blood pressure panel with all children optional', label: 'Blood pressure', units: 'mm[Hg]', components: [{ code: '8480-6', display: 'Systolic blood pressure' }, { code: '8462-4', display: 'Diastolic blood pressure' }] },
         { code: '8867-4', display: 'Heart rate', units: '/min' }, { code: '9279-1', display: 'Respiratory rate', units: '/min' },
-        { code: '8310-5', display: 'Body temperature', units: 'Cel' }, { code: '2708-6', display: 'Oxygen saturation', units: '%' },
+        { code: '8310-5', display: 'Body temperature', units: 'Cel' }, { code: '2708-6', display: 'Oxygen saturation in Arterial blood', label: 'Oxygen saturation', units: '%' },
         { code: '29463-7', display: 'Body weight', units: 'kg' }, { code: '8302-2', display: 'Body height', units: 'cm' },
-        { code: '39156-5', display: 'Body mass index', units: 'kg/m2' }, { code: '9843-4', display: 'Head circumference', units: 'cm' }
+        { code: '39156-5', display: 'Body mass index', units: 'kg/m2' }, { code: '9843-4', display: 'Head Occipital-frontal circumference', label: 'Head circumference', units: 'cm' }
       ], { system: LOINC, path: 'code', required: true }),
       { name: 'value', label: 'Value', type: 'quantity', path: 'value[x]', hint: 'for blood pressure, systolic' },
       { name: 'value2', label: 'Diastolic', type: 'quantity', path: '$diastolic', hint: 'blood pressure only' },
@@ -206,7 +208,7 @@ const SECTIONS = [
     fixed: { status: 'final', category: [{ coding: [{ system: THO + 'observation-category', code: 'vital-signs', display: 'Vital Signs' }] }] }
   },
   {
-    key: 'pastProblems', code: '11348-0', title: 'History of Past Problems', resourceType: 'Condition', label: 'Past problem',
+    key: 'pastProblems', code: '11348-0', display: 'History of Past illness note', title: 'History of Past Problems', resourceType: 'Condition', label: 'Past problem',
     fields: [
       code('code', 'Problem', 'ips-condition-code', { path: 'code', required: true }),
       sel('clinicalStatus', 'Clinical status', CLINICAL_STATUS.options, { system: CLINICAL_STATUS.system, path: 'clinicalStatus', default: 'resolved' }),
@@ -217,9 +219,9 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'pregnancy', code: '10162-6', title: 'Pregnancy History', resourceType: 'Observation', label: 'Pregnancy',
+    key: 'pregnancy', code: '10162-6', display: 'History of pregnancies Narrative', title: 'Pregnancy History', resourceType: 'Observation', label: 'Pregnancy',
     fields: [
-      sel('code', 'Observation', [{ code: '82810-3', display: 'Pregnancy status' }, { code: '11778-8', display: 'Estimated date of delivery' }, { code: '11636-8', display: 'Births, live (reported)' }], { system: LOINC, path: 'code', required: true }),
+      sel('code', 'Observation', [{ code: '82810-3', display: 'Pregnancy status' }, { code: '11778-8', display: 'Delivery date Estimated', label: 'Estimated date of delivery' }, { code: '11636-8', display: '[#] Births.live', label: 'Live births' }], { system: LOINC, path: 'code', required: true }),
       sel('status', 'Pregnancy status', [{ code: '77386006', display: 'Pregnant' }, { code: '60001007', display: 'Not pregnant' }, { code: '102874004', display: 'Possible pregnancy' }], { system: SCT, path: 'value[x]', hint: 'for pregnancy status' }),
       date('valueDate', 'Date (EDD)', { path: 'value[x]', hint: 'for the estimated date of delivery' }),
       { name: 'value', label: 'Number', type: 'quantity', path: 'value[x]', hint: 'for a count' },
@@ -229,11 +231,11 @@ const SECTIONS = [
     fixed: { status: 'final', category: [{ coding: [{ system: THO + 'observation-category', code: 'social-history', display: 'Social History' }] }] }
   },
   {
-    key: 'social', code: '29762-2', title: 'Social History', resourceType: 'Observation', label: 'Social history',
+    key: 'social', code: '29762-2', display: 'Social history note', title: 'Social History', resourceType: 'Observation', label: 'Social history',
     fields: [
-      sel('code', 'Observation', [{ code: '72166-2', display: 'Tobacco smoking status' }, { code: '74013-4', display: 'Alcoholic drinks per week' }, { code: '11331-4', display: 'History of alcohol use' }], { system: LOINC, path: 'code', required: true }),
-      sel('smoking', 'Smoking status', [{ code: '449868002', display: 'Current every day smoker' }, { code: '428041000124106', display: 'Current some day smoker' }, { code: '8517006', display: 'Ex-smoker' }, { code: '266919005', display: 'Never smoked tobacco' }, { code: '77176002', display: 'Smoker' }, { code: '266927001', display: 'Tobacco smoking consumption unknown' }], { system: SCT, path: 'value[x]', hint: 'for smoking status' }),
-      { name: 'value', label: 'Amount', type: 'quantity', path: 'value[x]', hint: 'for drinks per week' },
+      sel('code', 'Observation', [{ code: '72166-2', display: 'Tobacco smoking status' }, { code: '74013-4', display: 'Alcoholic drinks per day' }, { code: '11331-6', display: 'History of Alcohol use' }], { system: LOINC, path: 'code', required: true }),
+      sel('smoking', 'Smoking status', [{ code: '449868002', display: 'Smokes tobacco daily', label: 'Current every day smoker' }, { code: '428041000124106', display: 'Occasional tobacco smoker', label: 'Current some day smoker' }, { code: '8517006', display: 'Ex-smoker' }, { code: '266919005', display: 'Never smoked tobacco' }, { code: '77176002', display: 'Smoker' }, { code: '266927001', display: 'Tobacco smoking consumption unknown' }], { system: SCT, path: 'value[x]', hint: 'for smoking status' }),
+      { name: 'value', label: 'Amount', type: 'quantity', path: 'value[x]', hint: 'for drinks per day' },
       text('valueText', 'Value (text)', { path: 'value[x]' }),
       date('date', 'Date', { path: 'effective[x]' }),
       note
@@ -241,7 +243,7 @@ const SECTIONS = [
     fixed: { status: 'final', category: [{ coding: [{ system: THO + 'observation-category', code: 'social-history', display: 'Social History' }] }] }
   },
   {
-    key: 'functional', code: '47420-5', title: 'Functional Status', resourceType: 'Condition', label: 'Functional status',
+    key: 'functional', code: '47420-5', display: 'Functional Status Assessment Note', title: 'Functional Status', resourceType: 'Condition', label: 'Functional status',
     fields: [
       code('code', 'Condition', 'ips-condition-code', { path: 'code', required: true }),
       sel('clinicalStatus', 'Clinical status', CLINICAL_STATUS.options, { system: CLINICAL_STATUS.system, path: 'clinicalStatus', default: 'active' }),
@@ -250,7 +252,7 @@ const SECTIONS = [
     ]
   },
   {
-    key: 'planOfCare', code: '18776-5', title: 'Plan of Care', resourceType: 'CarePlan', label: 'Plan',
+    key: 'planOfCare', code: '18776-5', display: 'Plan of Care Note', title: 'Plan of Care', resourceType: 'CarePlan', label: 'Plan',
     fields: [
       text('title', 'Title', { path: 'title', required: true }),
       { name: 'description', label: 'Description', type: 'textarea', path: 'description' },
@@ -261,7 +263,7 @@ const SECTIONS = [
     fixed: { intent: 'plan' }
   },
   {
-    key: 'directives', code: '42348-3', title: 'Advance Directives', resourceType: 'Consent', label: 'Directive',
+    key: 'directives', code: '42348-3', display: 'Advance Healthcare Directives', title: 'Advance Directives', resourceType: 'Consent', label: 'Directive',
     fields: [
       text('category', 'Directive', { path: 'category', as: 'codeable', required: true, placeholder: 'e.g. Do not resuscitate' }),
       sel('status', 'Status', [{ code: 'active', display: 'Active' }, { code: 'inactive', display: 'Inactive' }, { code: 'draft', display: 'Draft' }], { path: 'status', default: 'active', required: true }),
@@ -271,7 +273,7 @@ const SECTIONS = [
     fixed: { scope: { coding: [{ system: THO + 'consentscope', code: 'adr', display: 'Advanced Care Directive' }] } }
   },
   {
-    key: 'alerts', code: '104605-1', title: 'Alerts', resourceType: 'Flag', label: 'Alert',
+    key: 'alerts', code: '104605-1', display: 'Alert', title: 'Alerts', resourceType: 'Flag', label: 'Alert',
     fields: [
       text('code', 'Alert', { path: 'code', as: 'codeable', required: true }),
       sel('status', 'Status', [{ code: 'active', display: 'Active' }, { code: 'inactive', display: 'Inactive' }], { path: 'status', default: 'active', required: true }),

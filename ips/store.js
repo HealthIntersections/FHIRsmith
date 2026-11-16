@@ -19,6 +19,7 @@
 
 const Database = require('better-sqlite3');
 const { indexDocument, parseSearch, compositionOf, patientOf, identifierClause } = require('./search');
+const patients = require('./patients');
 
 // the most document JSON one search page carries
 const MAX_PAGE_BYTES = 32 * 1024 * 1024;
@@ -73,6 +74,28 @@ const SCHEMA = `
     -- the analysed copy: the document as the processing steps adorned it (pipeline.js)
     analysed_json   TEXT
   );
+
+  -- the project's patients: each document's Patient is matched to one (patients.js), and the
+  -- patient's resource is what the documents have said about them, cumulatively
+  CREATE TABLE IF NOT EXISTS patients (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_ms  INTEGER NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    name        TEXT,
+    birth_date  TEXT,
+    gender      TEXT,
+    json        TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS patients_project ON patients (project_id);
+  -- what a patient is matched on: kind 'id' (system|value) or 'name' (the name's key)
+  CREATE TABLE IF NOT EXISTS patient_keys (
+    patient_id  INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    PRIMARY KEY (patient_id, kind, key)
+  );
+  CREATE INDEX IF NOT EXISTS patient_keys_key ON patient_keys (kind, key);
 
   -- what each processing step made of a document (see pipeline.js): one row per step
   CREATE TABLE IF NOT EXISTS document_results (
@@ -238,7 +261,7 @@ class IpsStore {
       insertIndex: this.db.prepare(`
         INSERT INTO ips_index (doc_id, res, param, type, str, str_lc, sys, code, lo, hi, ref)
         VALUES (@doc_id, @res, @param, @type, @str, @str_lc, @sys, @code, @lo, @hi, @ref)`),
-      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, json, analysed_json FROM documents WHERE id = ?'),
+      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, json, analysed_json FROM documents WHERE id = ?'),
       saveAnalysed: this.db.prepare('UPDATE documents SET analysed_json = ? WHERE id = ?'),
       deleteDoc: this.db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?'),
       countDocs: this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE project_id = ?'),
@@ -260,6 +283,7 @@ class IpsStore {
       interruptRuns: this.db.prepare("UPDATE pipeline_runs SET outcome = 'interrupted', ended_ms = ? WHERE outcome = 'running'"),
       countRuns: this.db.prepare('SELECT outcome, COUNT(*) AS n FROM pipeline_runs WHERE started_ms > ? AND started_ms <= ? GROUP BY outcome')
     };
+    this.matchUnmatched();
   }
 
   /** Bring a database made by an earlier version of the module up to date. */
@@ -268,6 +292,12 @@ class IpsStore {
     if (!has('documents', 'analysed_json')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN analysed_json TEXT');
     }
+    if (!has('documents', 'patient_id')) {
+      // the project patient the document's Patient was matched to, and how (JSON)
+      this.db.exec('ALTER TABLE documents ADD COLUMN patient_id INTEGER');
+      this.db.exec('ALTER TABLE documents ADD COLUMN patient_match TEXT');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS documents_patient ON documents (patient_id)');
     if (!has('documents', 'nationality')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN nationality TEXT');
     }
@@ -561,6 +591,7 @@ class IpsStore {
       for (const row of indexDocument(stored)) {
         this.stmts.insertIndex.run({ doc_id: id, ...row });
       }
+      this.matchPatient(projectId, id, stored, info.receivedMs);
       // give the caller what was stored
       for (const k of Object.keys(bundle)) {
         delete bundle[k];
@@ -587,6 +618,8 @@ class IpsStore {
     delete row.json;
     row.analysed = row.analysed_json ? JSON.parse(row.analysed_json) : null;
     delete row.analysed_json;
+    row.match = row.patient_match ? JSON.parse(row.patient_match) : null;
+    delete row.patient_match;
     return row;
   }
 
@@ -597,7 +630,153 @@ class IpsStore {
 
   /** @returns {boolean} whether there was such a document in the project */
   delete(id, projectId) {
-    return Number.isInteger(id) && this.stmts.deleteDoc.run(id, projectId).changes > 0;
+    if (!Number.isInteger(id)) {
+      return false;
+    }
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT patient_id FROM documents WHERE id = ? AND project_id = ?').get(id, projectId);
+      const done = this.stmts.deleteDoc.run(id, projectId).changes > 0;
+      if (done && row && row.patient_id) {
+        this.rebuildPatient(row.patient_id);
+      }
+      return done;
+    })();
+  }
+
+  // ---- patients ----
+
+  /**
+   * Match a document's Patient to one of the project's patients (patients.js), or make a new
+   * one; link the document to it, and add what the document says to the patient's resource.
+   * Part of storing the document (call it in the insert's transaction).
+   */
+  matchPatient(projectId, docId, bundle, receivedMs) {
+    const resource = patientOf(bundle);
+    if (!resource) {
+      this.db.prepare('UPDATE documents SET patient_id = NULL, patient_match = ? WHERE id = ?').run(JSON.stringify({ method: 'none', detail: 'The document has no Patient' }), docId);
+      return null;
+    }
+    const keys = patients.keysOf(resource);
+    let match = null;
+    const conflicts = [];
+    // 1. an identifier
+    if (keys.identifiers.length > 0) {
+      const ph = keys.identifiers.map(() => '?').join(',');
+      const found = this.db.prepare(`SELECT DISTINCT p.id, p.json, p.updated_ms FROM patient_keys k JOIN patients p ON p.id = k.patient_id
+        WHERE p.project_id = ? AND k.kind = 'id' AND k.key IN (${ph}) ORDER BY p.updated_ms DESC`).all(projectId, ...keys.identifiers);
+      for (const f of found) {
+        const why = patients.conflict(keys, patients.keysOf(JSON.parse(f.json)));
+        if (why) {
+          conflicts.push(`patient ${f.id} has the same identifier, but a different ${why}`);
+        } else if (!match) {
+          match = { patientId: f.id, method: 'identifier', detail: 'The same identifier' };
+        }
+      }
+    }
+    // 2. the name and the birth date
+    if (!match && keys.names.length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(keys.birthDate)) {
+      const ph = keys.names.map(() => '?').join(',');
+      const found = this.db.prepare(`SELECT DISTINCT p.id, p.json, p.updated_ms FROM patient_keys k JOIN patients p ON p.id = k.patient_id
+        WHERE p.project_id = ? AND p.birth_date = ? AND k.kind = 'name' AND k.key IN (${ph}) ORDER BY p.updated_ms DESC`).all(projectId, keys.birthDate, ...keys.names);
+      for (const f of found) {
+        const why = patients.conflict(keys, patients.keysOf(JSON.parse(f.json)));
+        if (why) {
+          conflicts.push(`patient ${f.id} has the same name and birth date, but a different ${why}`);
+        } else if (!match) {
+          match = { patientId: f.id, method: 'demographics', detail: 'The same name and birth date' };
+        }
+      }
+    }
+    const lastUpdated = new Date(receivedMs).toISOString();
+    let patientId;
+    let previous = null;
+    if (match) {
+      patientId = match.patientId;
+      previous = JSON.parse(this.db.prepare('SELECT json FROM patients WHERE id = ?').get(patientId).json);
+    } else {
+      patientId = Number(this.db.prepare("INSERT INTO patients (project_id, created_ms, updated_ms, json) VALUES (?, ?, ?, '{}')").run(projectId, receivedMs, receivedMs).lastInsertRowid);
+      match = { method: 'new', detail: conflicts.length > 0 ? `Not seen before (${conflicts.join('; ')})` : 'Not seen before' };
+    }
+    this.savePatient(patientId, patients.mergePatient(previous, resource, patientId, lastUpdated), receivedMs);
+    const record = { method: match.method, detail: match.detail };
+    this.db.prepare('UPDATE documents SET patient_id = ?, patient_match = ? WHERE id = ?').run(patientId, JSON.stringify(record), docId);
+    return { patientId, ...record };
+  }
+
+  /** Store a patient's cumulative resource, and the keys it is matched on. */
+  savePatient(patientId, resource, updatedMs) {
+    const keys = patients.keysOf(resource);
+    this.db.prepare('UPDATE patients SET updated_ms = ?, name = ?, birth_date = ?, gender = ?, json = ? WHERE id = ?')
+      .run(updatedMs, patients.displayName(resource) || null, keys.birthDate || null, keys.gender || null, JSON.stringify(resource), patientId);
+    this.db.prepare('DELETE FROM patient_keys WHERE patient_id = ?').run(patientId);
+    const add = this.db.prepare('INSERT OR IGNORE INTO patient_keys (patient_id, kind, key) VALUES (?, ?, ?)');
+    for (const k of keys.identifiers) {
+      add.run(patientId, 'id', k);
+    }
+    for (const k of keys.names) {
+      add.run(patientId, 'name', k);
+    }
+  }
+
+  /** Make a patient's resource again from its documents (one of them was deleted); remove it if it has none. */
+  rebuildPatient(patientId) {
+    const docs = this.db.prepare('SELECT json, received_ms FROM documents WHERE patient_id = ? ORDER BY received_ms, id').all(patientId);
+    if (docs.length === 0) {
+      this.db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+      return;
+    }
+    let resource = null;
+    let last = 0;
+    for (const d of docs) {
+      const p = patientOf(JSON.parse(d.json));
+      if (p) {
+        resource = patients.mergePatient(resource, p, patientId, new Date(d.received_ms).toISOString());
+        last = d.received_ms;
+      }
+    }
+    this.savePatient(patientId, resource || { resourceType: 'Patient', id: String(patientId) }, last);
+  }
+
+  /** Match the documents that have not been (received before patients were matched), oldest first. */
+  matchUnmatched() {
+    const rows = this.db.prepare('SELECT id, project_id, received_ms, json FROM documents WHERE patient_match IS NULL ORDER BY received_ms, id').all();
+    if (rows.length === 0) {
+      return;
+    }
+    this.db.transaction(() => {
+      for (const r of rows) {
+        this.matchPatient(r.project_id, r.id, JSON.parse(r.json), r.received_ms);
+      }
+    })();
+  }
+
+  /** The project's patients: id, name, birth date, gender, when last updated, how many documents. */
+  patients(projectId) {
+    return this.db.prepare(`SELECT p.id, p.name, p.birth_date, p.gender, p.created_ms, p.updated_ms, p.json,
+        (SELECT COUNT(*) FROM documents d WHERE d.patient_id = p.id) AS documents
+      FROM patients p WHERE p.project_id = ? ORDER BY p.updated_ms DESC, p.id DESC`).all(projectId)
+      .map(r => ({ ...r, resource: JSON.parse(r.json) }));
+  }
+
+  /** One of the project's patients, or null. */
+  patient(projectId, patientId) {
+    const r = Number.isInteger(patientId) ? this.db.prepare('SELECT * FROM patients WHERE id = ? AND project_id = ?').get(patientId, projectId) : null;
+    return r ? { ...r, resource: JSON.parse(r.json) } : null;
+  }
+
+  /** A patient's documents, the most recently received first: id, received, title, date, how matched. */
+  patientDocuments(patientId) {
+    return this.db.prepare('SELECT id, received, received_ms, status, comp_title, comp_date, patient_match FROM documents WHERE patient_id = ? ORDER BY received_ms DESC, id DESC').all(patientId)
+      .map(r => ({ ...r, match: r.patient_match ? JSON.parse(r.patient_match) : null }));
+  }
+
+  /** The project's patients with an identifier (system|value, or just a value). */
+  patientsByIdentifier(projectId, identifier) {
+    const i = identifier.indexOf('|');
+    const rows = i >= 0
+      ? this.db.prepare("SELECT DISTINCT k.patient_id AS id FROM patient_keys k JOIN patients p ON p.id = k.patient_id WHERE p.project_id = ? AND k.kind = 'id' AND k.key = ?").all(projectId, identifier)
+      : this.db.prepare("SELECT DISTINCT k.patient_id AS id FROM patient_keys k JOIN patients p ON p.id = k.patient_id WHERE p.project_id = ? AND k.kind = 'id' AND k.key LIKE ? ESCAPE '\\'").all(projectId, '%|' + identifier.replace(/[\\%_]/g, c => '\\' + c));
+    return rows.map(r => r.id);
   }
 
   count(projectId) {

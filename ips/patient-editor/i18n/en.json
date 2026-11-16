@@ -1,0 +1,382 @@
+{
+  "__lang": "en",
+  "__note": "Canonical English message catalog. To add a language: copy this file to <lang>.json, translate values, and add the code to SUPPORTED in assets/js/i18n.js.",
+
+  "tabs": {
+    "notes": "Notes",
+    "aboutMe": "About Me",
+    "myStory": "My Story",
+    "medical": "Medical",
+    "carePlanning": "Care Planning",
+    "careNeeds": "Care Needs",
+    "bodyParts": "Body Parts",
+    "reproductive": "Reproductive"
+  },
+
+  "notes": {
+    "welcomeHtml": "<b>Welcome to the Patient Document Generator</b>.",
+    "intro1Html": "This website allows a patient to provide a health summary and summary of care needs to the healthcare system using the <a href=\"https://international-patient-summary.net\">International Patient Summary</a> Standard",
+    "intro2": "This is not a medical history and is not intended to be complete enough to enable disability/impairment related care (or any other kind of care) by itself",
+    "intro3": "This is not a beautifully crafted user interface; it's a sample interface intended to help people discuss/describe the requirements for these kind of statements.",
+    "intro4": "The form is processed locally in your browser; no information is shared with any other system or server, but in general, this form is intended for test data, not real protected health PHI.",
+    "ipsToggleLabel": " I'm an IPS nerd, show me IPS mappings."
+  },
+
+  "aboutMe": {
+    "patientDetails": "Patient Details",
+    "nextOfKin": "Next of Kin",
+    "culturalIdentity": "Cultural Identity",
+    "genderSection": "Gender",
+    "authorSection": "Author",
+
+    "nameLabel": "Consumer Name",
+    "nameHint": " (mandatory)",
+    "dobLabel": "Date of Birth",
+    "dobHint": " (mandatory, YYYY-MM-DD)",
+    "nhiLabel": "National Health Identifier",
+    "nhiHint": " (if you know it; in some countries you will)",
+    "countryLabel": "Country Code",
+    "countryHint": " (2 or 3 letter code e.g. US, AU, NZ)",
+    "emailLabel": "Email",
+    "mobileLabel": "Mobile Phone",
+
+    "nokName": "Name",
+    "nokEmail": "Email",
+    "nokMobile": "Mobile Phone",
+
+    "cultureLabel": "Your Culture",
+    "cultureHint": " (if you think this is relevant)",
+    "communityLabel": "Your place",
+    "communityHelp": "Your country and/or community, if important / relevant",
+    "languageLabel": "Preferred Language",
+    "englishCheckbox": " I can get by in English (e.g. or the local official language)",
+    "religionLabel": "Religion",
+    "religionDetails": ". Details:",
+
+    "religionOpts": {
+      "notImportant": "Not important",
+      "christian": "Christian",
+      "muslim": "Muslim",
+      "hindu": "Hindu",
+      "buddhist": "Buddhist",
+      "other": "Other"
+    },
+
+    "genderLabel": "Gender",
+    "genderOr": " or ",
+    "genderOpts": {
+      "female": "Female",
+      "male": "Male",
+      "nonBinary": "Non-binary",
+      "decline": "Decline to answer"
+    },
+
+    "pronounsLabel": "Pronouns",
+    "pronounsOr": " or ",
+    "pronounsOpts": {
+      "sheHer": "she/her",
+      "heHim": "he/him",
+      "theyThem": "they/them"
+    },
+
+    "sexCharLabel": "Sex characteristics ",
+    "sexCharDetails": "Details: ",
+    "sexCharOpts": {
+      "typical": "I have typical characteristics for my sex",
+      "variation": "I have variations from typical characteristics",
+      "unsure": "Not sure"
+    },
+
+    "authorNameLabel": "Name",
+    "authorNameHint": " leave this blank if self-authored"
+  },
+
+  "myStory": {
+    "header": "My Story",
+    "prompt": "Who are you? How would you describe your health? What matters to you?",
+    "markdownHintHtml": "(note for techies: this can be <a href=\"https://commonmark.org\">markdown</a>)",
+    "goalsHeader": "My Goals",
+    "goalsPrompt": "What specific outcomes are important to you from your care?",
+    "goalProgress": " Making Progress",
+    "addGoal": "Add another Goal"
+  },
+
+  "carePlan": {
+    "heading": "Care Planning / Advance Directives",
+    "advocateSection": "Care Advocate",
+    "advocateName": "Name",
+    "advocateNameHint": "(optional - leave all blank if no care advocate)",
+    "advocateEmail": "Email",
+    "advocateMobile": "Mobile Phone",
+    "advocateStatus": "Status",
+    "advocateLegal": " Legal Power of Attorney",
+    "advocateLegalHint": "(check if care advocate has legal rights)",
+    "avoidancePrompt": "Is there anyone we should avoid contacting, or speaking to, on your behalf - for example, due to an avoidance relationship / family issues?",
+    "avoidanceHint": "Note: Providing Names + Relationship works best (one per line)",
+    "checkPrompt": "Check any appropriate:",
+    "dnrConsent": " I consent to all treatments aimed at sustaining or prolonging my life OR",
+    "dnrRefuse": " I refuse any treatments aimed at sustaining or prolonging my life (DNR) ",
+    "donorYes": " I am willing to be an organ donor OR",
+    "donorNo": " I am NOT willing to be an organ donor",
+    "bloodYes": " I consent to receive a blood transfusion OR",
+    "bloodNo": " I do not consent to a blood transfusion ",
+    "acdPromptHtml": "If you have a full Advance Care Directive, attach it here (as a .pdf): "
+  },
+
+  "history": {
+    "allergiesSection": "Allergies",
+    "allergyCol": "Allergy",
+    "manifestationCol": "Manifestation",
+    "addAllergy": "Add another Allergy",
+    "allergyOpts": {
+      "skin": "Skin Problems",
+      "gastro": "Gastro (vomiting, diarrhea etc)",
+      "eye": "Eye problems",
+      "wheeze": "Wheezing/breathing difficulties ",
+      "anaphylaxis": "Anaphylaxis",
+      "cardiac": "Cardiac Arrest"
+    },
+
+    "issuesSection": "Ongoing Health Issues",
+    "issueCol": "Health Issue",
+    "levelCol": "Level",
+    "addIssue": "Add another Issue",
+    "issueOpts": {
+      "major": "Major Life Challenge",
+      "troublesome": "Troublesome",
+      "managed": "Background but managed"
+    },
+
+    "medsSection": "Medications",
+    "medsCol": "Medication",
+    "dosageCol": "Dosage",
+    "addMedication": "Add another Medication",
+
+    "eventsSection": "Past Events/Illnesses",
+    "eventCol": "Event",
+    "whenCol": "When",
+    "addEvent": "Add another Event",
+    "eventsHelp": "Common events include serious illnesses, operations, pregnancy/births, marriages and deaths. For when, a year is generally enough, but you can provide month/day using yyyy-mm-dd if desired"
+  },
+
+  "needs": {
+    "heading": "My functional and identity needs",
+    "uncheckedNote": "Note: You don't tick the boxes if they're not appropriate for you.",
+    "flagsPromptHtml": "<b>Functional / Identity Flags</b> I would like my carers to be aware of my concerns around:",
+    "flag": {
+      "vision": " Vision ",
+      "hearing": " Hearing / Listening ",
+      "cognition": " Cognition  / thinking / understanding / information processing ",
+      "speaking": " Speaking / communicating / Conversation / Verbal interactions ",
+      "mobility": " Mobility / moving myself around ",
+      "genderAreas": " Use of gender specific areas ",
+      "memory": " Memory ",
+      "trauma": " Past Trauma  ",
+      "focus": " Staying focused / Concentration ",
+      "addiction": " Managing my addiction(s) ",
+      "smallCommunity": " I am from a small and/or remote community and cities and/or lots of people are an unfamiliar environment for me. "
+    },
+    "helpPromptHtml": "<b>I may need help with</b>",
+    "help": {
+      "eating": " Eating / Drinking ",
+      "toileting": " Toileting ",
+      "bedExit": " Getting out of bed ",
+      "bedIn": " Moving in bed ",
+      "orientation": " Getting orientated in a new environment ",
+      "dressing": " Dressing ",
+      "bathing": " Bathing / Cleaning ",
+      "meds": " Taking my medications ",
+      "reading": " Reading Documentation "
+    },
+    "havePrompt": "I have:",
+    "have": {
+      "guideDog": " A Guide Dog / Service Animal ",
+      "wheelchair": " A Wheelchair ",
+      "commDevice": " A Communication Device "
+    },
+    "haveNotes": "Notes: other possible candidates = Hearing aid or cochlear implant, Walking stick, Prosthetic leg (….this list goes on and on)?",
+    "freeTextPromptHtml": "Anything else you want to say about your general care needs or anxieties, or to explain any of the boxes you ticked above:",
+    "freeTextPlaceholder": "Anything else you want to say about your general care needs or anxieties"
+  },
+
+  "census": {
+    "intro": "Due to congenital birth variations, accidents or medical treatment, you might be missing organs or limbs that might impact your treatment or care, or have replacements.",
+    "organCol": "Organ",
+    "statusCol": "Status ",
+    "defaultsBtn": "Default Values for Gender",
+    "left": "L:",
+    "right": "R:",
+
+    "organ": {
+      "arm": "Arm",
+      "hand": "Hand",
+      "fingers": "Fingers",
+      "leg": "Leg",
+      "calf": "Calf",
+      "foot": "Foot",
+      "toe": "Toe",
+      "hip": "Hip",
+      "eye": "Eye",
+      "hypothalamus": "Hypothalamus",
+      "pituitary": "Pituitary",
+      "tongue": "Tongue",
+      "jaw": "Jaw",
+      "salivary": "Salivary Glands",
+      "oesophagus": "Oesophagus",
+      "largeColon": "Large Colon",
+      "stomach": "Stomach",
+      "gallBladder": "Gall Bladder",
+      "kidney": "Kidney",
+      "liver": "Liver",
+      "bladder": "Bladder",
+      "lung": "Lung",
+      "breasts": "Breasts",
+      "ovary": "Ovary",
+      "uterus": "Uterus",
+      "cervix": "Cervix",
+      "vagina": "Vagina",
+      "penis": "Penis",
+      "prostate": "Prostate",
+      "testis": "Testis"
+    },
+
+    "status": {
+      "notStated": "Not Stated",
+      "notRelevant": "Not Relevant",
+      "present": "Present",
+      "transplanted": "Transplanted In /(re)constructed",
+      "implant": "Implant / Prosthesis",
+      "missing": "Missing",
+      "notAtBirth": "Not Present at Birth",
+      "partialRemoved": "Partially Surgically Removed",
+      "surgicalRemoved": "Surgically Removed",
+      "lostAccident": "Lost in accident/attack"
+    }
+  },
+
+  "womens": {
+    "pregnancySection": "Pregnancy",
+    "pregnancyStatus": "Status",
+    "pregnancyOpts": {
+      "noAnswer": "--",
+      "pregnant": "Pregnant",
+      "notPregnant": "Not pregnant",
+      "possible": "Possible pregnancy"
+    },
+    "lmpLabel": "LMP",
+    "lmpHint": " (YYYY-MM(-DD))",
+    "eddLabel": "Estimated Del. Date",
+    "eddHint": " (YYY-MM(-DD))",
+
+    "menstruationSection": "Menstruation",
+    "menstruationStatus": "Status",
+    "menstruationOpts": {
+      "noAnswer": "--",
+      "future": "Not (yet) a thing",
+      "current": "A current thing",
+      "past": "In my past"
+    },
+
+    "frequencyLabel": "Frequency",
+    "frequencyOpts": {
+      "noAnswer": "--",
+      "absent": "Absent",
+      "frequent": "Frequent (<24 days)",
+      "normal": "Normal (24-38 days)",
+      "infrequent": "Infrequent (>38 days)"
+    },
+
+    "durationLabel": "Duration",
+    "durationOpts": {
+      "noAnswer": "--",
+      "normal": "Normal (up to 8 days)",
+      "prolonged": "Prolonged (> 8 days)"
+    },
+
+    "regularityLabel": "Regularity",
+    "regularityOpts": {
+      "noAnswer": "--",
+      "regular": "Regular Variation (shortest to longest < 9 days)",
+      "irregular": "Irregular  (shortest to longest > 9 days)"
+    },
+
+    "volumeLabel": "Flow Volume",
+    "volumeOpts": {
+      "noAnswer": "--",
+      "heavy": "Heavy",
+      "normal": "Normal",
+      "light": "Light"
+    },
+
+    "bleedingLabel": "Intermenstrual Bleeding",
+    "bleedingOpts": {
+      "noAnswer": "--",
+      "none": "None",
+      "random": "Random",
+      "predictable": "Predictable"
+    },
+
+    "ironLabel": "Iron Status",
+    "ironOpts": {
+      "noAnswer": "--",
+      "checked": "Checked - OK",
+      "unsure": "Not Sure",
+      "low": "Low"
+    },
+
+    "mensSection": "Men's Health",
+    "edLabel": "Erectile Function",
+    "edOpts": {
+      "noAnswer": "--",
+      "fine": "Working Fine",
+      "mild": "Not working as desired",
+      "problem": "A real problem"
+    },
+
+    "urinationLabel": "Urination",
+    "urinationOpts": {
+      "noAnswer": "--",
+      "fine": "No Problem",
+      "medium": "A little difficult",
+      "serious": "Quite the problem"
+    },
+
+    "prostateLabel": "Prostate Cancer",
+    "prostateOpts": {
+      "noAnswer": "--",
+      "never": "Not Done in the past",
+      "recent": "Done in the last two years",
+      "older": "Done more than two years ago",
+      "unsure": "Not sure"
+    }
+  },
+
+  "actions": {
+    "testPatientsLabel": "Test patients: ",
+    "testPatient1": "Retired man",
+    "testPatient2": "New mother",
+    "testPatient3": "Grandmother",
+    "testPatient4": "Teenage boy",
+    "testPatient5": "Young woman",
+    "uploadIps": "Load an IPS document...",
+    "generate": "Generate Document",
+    "generatedLabel": " Generated. Download ",
+    "generatedSee": "Generated. See the document as ",
+    "downloadJson": "JSON",
+    "downloadZip": "ZIP",
+    "downloadPdf": "PDF",
+    "orSee": " or see ",
+    "showJson": "JSON",
+    "showHtml": "User View",
+    "genQr": "QR Code",
+    "genQrX": "GDHCN QR Code",
+    "qrNotesHtml": "QR Code notes: QR Code is an <a href=\"https://build.fhir.org/ig/HL7/smart-health-cards-and-links/links-user-stories.html\">SHL Link</a>. GDHCN QR Code is a <a href=\"https://build.fhir.org/ig/IHE/ITI.VHL/\">VHDC</a>. Document will available on line for ",
+    "qrNotesHtml2": " days. The document is encrypted on the server using a key only found in the QR Code",
+    "errorPanel": "The document isn't generated yet...",
+    "jsonSourceHtml": "<b>JSON Document Source</b> ",
+    "hideJson": "Hide this Source",
+    "htmlPreviewHtml": "<b>HTML Preview</b> ",
+    "hideHtml": "Hide this preview",
+    "viewerText": "Or, if you have a QR Code or a SMART Health Link for an existing document, open it in the"
+  }
+}

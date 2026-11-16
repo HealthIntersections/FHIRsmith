@@ -45,6 +45,7 @@ function nationalityFlag(result) {
 const { dateText } = require('./presenter');
 const { structureTree, flatten } = require('./structure');
 const scripts = require('./scripts');
+const assets = require('./assets');
 const { LOINC } = require('./editor-schema');
 
 const STATUS_COLOURS = {
@@ -361,7 +362,8 @@ function renderHome(projects, ctx) {
     '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
     `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain, and ` +
     `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define. ` +
-    `The <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents.</p>`;
+    `The <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents. ` +
+    `To make an IPS document - to download, share as a QR code, or submit to a project - <a href="${escape(ctx.base)}/compose">compose a document</a>.</p>`;
   if (projects.length === 0) {
     h += '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
   } else {
@@ -509,7 +511,7 @@ function select(query, name, values, label, anyLabel) {
 /** The links under a project's title. */
 function projectNav(project, ctx) {
   const purl = projectUrl(ctx, project);
-  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a> <a class="btn btn-default" href="${purl}/compose">Compose a document</a>`;
+  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a> <a class="btn btn-default" href="${purl}/compose">Compose a document</a> <a class="btn btn-default" href="${purl}/Patient">Patients</a>`;
   if (ctx.canManage) {
     h += ` <a class="btn btn-default" href="${purl}/settings">Settings</a>`;
   }
@@ -943,10 +945,13 @@ function findingHtml(f) {
  * and the Composition's negation (unless there's more than one approach: that's attention).
  */
 function analysisOk(findings, isSection) {
-  if (!Array.isArray(findings) || !findings.some(f => f && f.kind === 'ok')) {
+  if (!Array.isArray(findings) || findings.length === 0) {
     return false;
   }
-  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
+  // nothing that needs looking at: All OK, how negation is done, narrative (but a section
+  // needs some), and extensions the validator knows - an unknown or modifier extension is a problem
+  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || (f.kind === 'extension' && f.found) ||
+    (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
 }
 
 /**
@@ -1013,7 +1018,7 @@ function renderAnalysis(row, options = {}) {
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
     '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), values given as an extension instead (a data-absent-reason, say), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
     'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the jurisdiction of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
-    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK - and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
+    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK, or has nothing more to say than known extensions - an unknown extension, or a modifier extension, is a problem; and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
   h += `<script>
 (function () {
   var KEY = 'fhirsmith.ips.analysis.problemsOnly';
@@ -1577,25 +1582,179 @@ function renderNational(row, options = {}) {
 }
 
 /** The editor page: a container the script fills, and what it needs. */
+/** JSON for a page's script block: </script> and the like must not end the block. */
+function scriptJson(v) {
+  return JSON.stringify(v).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
+
+/** Where the editors are: the project's, or the module's (no project). */
+function composeBase(ctx, project) {
+  return project ? `${projectUrl(ctx, project)}/compose` : `${escape(ctx.base)}/compose`;
+}
+
+/** What a page with an editor says about what happens to what's entered. */
+function composeNotes(project, options) {
+  return 'What you enter stays in this browser until you submit, download or share the document. ' +
+    'Submitting, downloading and sharing become available once what you have entered makes a minimal IPS ' +
+    '(a patient with a name, an author, and the allergies, problems and medications sections, each with entries or saying why it is empty). ' +
+    (project ? `Submitting adds the document to ${escape(project.name)}, where everyone can see it` : 'Submitting adds the document to the project you choose, where everyone can see it') +
+    (options.aiEnabled ? ', and sends it to an external AI service for assessment' : '') + '; ' +
+    'sharing as a QR code stores it, encrypted, on this server for the days you choose.';
+}
+
+/** The document creators to choose from (for a project, or none). */
+function renderComposeChoice(project, ctx, options) {
+  const base = composeBase(ctx, project);
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Compose');
+  h += '<h3>Compose a document</h3>';
+  h += '<p>Choose how to make the International Patient Summary. Each way ends with the same choices: ' +
+    (project ? `submit it to ${escape(project.name)}, ` : 'submit it to a project, ') +
+    'download it (as JSON, a ZIP, or a PDF with the document attached), or share it as a QR code (a SMART Health Link, or a WHO/GDHCN QR code).</p>';
+  h += '<table class="table ips-table" style="max-width: 60em">';
+  for (const e of options.editors) {
+    h += `<tr><td style="white-space: nowrap"><a class="btn btn-primary" href="${base}/${e.key}">${escape(e.name)}</a></td><td>${escape(e.description)}</td></tr>`;
+  }
+  h += '</table>';
+  if (project) {
+    h += `<p class="ips-small">Or <a href="${projectUrl(ctx, project)}/submit">submit a document</a> you already have.</p>`;
+  }
+  return h;
+}
+
+/** The general IPS editor, for a project or none. */
 function renderCompose(project, ctx, options) {
-  const purl = projectUrl(ctx, project);
-  let h = STYLE + userBar(ctx) + crumbs(ctx, project, options.from ? `Edit document ${options.from}` : 'Compose');
-  h += `<h3>${options.from ? `Edit document ${options.from}` : 'Compose a document'}</h3>`;
+  const base = composeBase(ctx, project);
+  const title = options.from ? `Edit document ${options.from}` : 'General IPS editor';
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, title);
+  h += `<h3>${title}</h3>`;
   h += '<p>Build an International Patient Summary here: the patient, the document\'s author, and the sections. ' +
     (options.from ? 'The form holds what it can of the original document; submitting makes a new document in the project. ' : '') +
     (options.canLookup ? 'Coded fields look codes up on the terminology server as you type (in the value sets this server holds the element to); ' : 'This server has no terminology server to look codes up on (modules.ips.txServer), so coded fields take text only; ') +
-    'anything can also be entered as plain text. What you enter stays in this browser until you submit it' +
-    (options.aiEnabled ? '; submitted documents are sent to an external AI service for assessment' : '') + '.</p>';
-  h += '<noscript><div class="alert alert-warning">The editor needs scripts; without them, use the <a href="' + purl + '/submit">submission form</a>.</div></noscript>';
+    'anything can also be entered as plain text. ' + composeNotes(project, options) + '</p>';
+  h += '<noscript><div class="alert alert-warning">The editor needs scripts' + (project ? `; without them, use the <a href="${projectUrl(ctx, project)}/submit">submission form</a>` : '') + '.</div></noscript>';
   h += '<div id="ips-editor"></div>';
   const cfg = {
-    project: project.code, projectName: project.name, schema: options.schema, model: options.model, needsToken: !!options.needsToken,
-    urls: { compose: `${purl}/compose`, lookup: options.canLookup ? `${purl}/lookup` : null, back: purl }
+    project: project ? project.code : '', schema: options.schema, model: options.model, testPatients: options.testPatients || [],
+    urls: { build: `${ctx.base}/compose/build`, model: `${ctx.base}/compose/model`, lookup: options.canLookup ? `${ctx.base}/compose/lookup` : null, back: project ? `${ctx.base}/${encodeURIComponent(project.code)}` : base },
+    actions: options.actions
   };
-  // JSON in a script: </script> and the like must not end the block
-  h += `<script>window.IPS_EDITOR = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
+  h += `<script>window.IPS_EDITOR = ${scriptJson(cfg)};</script>`;
+  h += `<script src="${escape(scripts.src(ctx.base, 'doc-actions.js'))}"></script>`;
   h += `<script src="${escape(scripts.src(ctx.base, 'editor.js'))}"></script>`;
   return h;
+}
+
+/**
+ * The patient IPS editor: the form (patient-editor/page.html) and its scripts, which build
+ * the document in the browser; the document actions (doc-actions.js) take it from there.
+ */
+function renderPatientEditor(project, ctx, options) {
+  const a = (key) => escape(assets.src(ctx.base, key));
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Patient IPS editor');
+  h += '<h3>Patient IPS editor</h3>';
+  h += `<p class="ips-small">${composeNotes(project, options)}</p>`;
+  h += '<noscript><div class="alert alert-warning">The editor needs scripts.</div></noscript>';
+  const cfg = {
+    assets: `${ctx.base}/assets/patient-editor`,
+    actions: options.actions
+  };
+  h += `<script>window.PATIENT_EDITOR = ${scriptJson(cfg)};</script>`;
+  for (const lib of ['vendor/commonmark.min.js']) {
+    h += `<script src="${a(lib)}"></script>`;
+  }
+  h += `<script src="${escape(scripts.src(ctx.base, 'doc-actions.js'))}"></script>`;
+  for (const js of ['i18n.js', 'html.js', 'ips-coverage.js', 'ips.js', 'ips-parser.js', 'passport.js', 'people.js', 'events.js']) {
+    h += `<script src="${a(`patient-editor/js/${js}`)}"></script>`;
+  }
+  const page = options.page.split('{{viewer}}').join(escape(`${ctx.base}/view`)).split('{{assets}}').join(escape(cfg.assets));
+  h += '<div class="patient-editor">' + page + '</div>';
+  return h;
+}
+
+// ---- patients --------------------------------------------------------------------------
+
+// how a document's patient was matched (patients.js), in words
+const MATCH_WORDS = { identifier: 'matched by identifier', demographics: 'matched by name and birth date', new: 'a patient not seen before', none: 'the document has no Patient' };
+
+/** A patient's identifiers, as text. */
+function identifiersText(resource) {
+  return (Array.isArray(resource.identifier) ? resource.identifier : []).filter(i => i && i.value)
+    .map(i => `${i.value}${i.system ? ` (${i.system})` : ''}`);
+}
+
+/** The project's patients, with a search form. */
+function renderPatients(project, found, query, ctx) {
+  const purl = projectUrl(ctx, project);
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Patients');
+  h += '<h3>Patients</h3>';
+  h += '<p>Each document\'s patient is matched to a patient already seen in the project - the same identifier (system and value), or the same name and birth date, ' +
+    'unless the birth date or gender says otherwise - or is a new one. A patient\'s record is what all their documents say, the latest first. ' +
+    `It is a reasonable guess, not a master patient index. FHIR: <code>${purl}/Patient</code> (read and search), and <code>Patient/[id]/$summary</code> for the latest document.</p>`;
+  const v = (k) => escape(typeof query[k] === 'string' ? query[k] : '');
+  h += `<form method="get" action="${purl}/Patient" class="form-inline ips-filter mb-2">` +
+    `<input class="form-control" name="name" placeholder="Name" value="${v('name')}" aria-label="Name"/> ` +
+    `<input class="form-control" name="birthdate" placeholder="Birth date (YYYY-MM-DD)" value="${v('birthdate')}" aria-label="Birth date"/> ` +
+    `<input class="form-control" name="identifier" placeholder="Identifier (system|value)" value="${v('identifier')}" aria-label="Identifier"/> ` +
+    '<button type="submit" class="btn btn-default">Search</button></form>';
+  if (found.problems.length > 0) {
+    h += `<div class="alert alert-warning">${found.problems.map(escape).join('<br/>')}</div>`;
+  }
+  if (found.all.length === 0) {
+    return h + '<p><i>No patients.</i></p>';
+  }
+  h += `<p class="ips-small">${found.all.length} patient${found.all.length === 1 ? '' : 's'}${found.all.length > found.patients.length ? `, showing ${found.offset + 1}-${found.offset + found.patients.length}` : ''}</p>`;
+  h += '<table class="table table-sm table-striped ips-table"><tr><th>Id</th><th>Name</th><th>Gender</th><th>Born</th><th>Identifiers</th><th>Documents</th><th>Last document</th></tr>';
+  for (const p of found.patients) {
+    h += `<tr><td><a href="${purl}/Patient/${p.id}">${p.id}</a></td><td><a href="${purl}/Patient/${p.id}">${escape(p.name || '(no name)')}</a></td>` +
+      `<td>${escape(p.gender || '')}</td><td>${escape(p.birth_date || '')}</td><td>${identifiersText(p.resource).map(escape).join('<br/>')}</td>` +
+      `<td>${p.documents}</td><td>${escape(new Date(p.updated_ms).toISOString().substring(0, 16).replace('T', ' '))}</td></tr>`;
+  }
+  h += '</table>';
+  if (found.offset + found.count < found.all.length) {
+    const u = new URLSearchParams();
+    for (const [k, val] of Object.entries(query)) {
+      if (k !== '_offset' && typeof val === 'string') {
+        u.append(k, val);
+      }
+    }
+    u.append('_offset', String(found.offset + found.count));
+    h += `<p><a href="${purl}/Patient?${escape(u.toString())}">More</a></p>`;
+  }
+  return h;
+}
+
+/** A patient: what their documents say about them, and the documents. */
+function renderPatient(project, p, docs, ctx) {
+  const purl = projectUrl(ctx, project);
+  const r = p.resource;
+  const url = `${purl}/Patient/${p.id}`;
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, `Patient ${p.id}`);
+  h += '<div class="ips-banner"><div>';
+  h += `<div class="ips-patient"><b>${escape(p.name || '(no name)')}</b>` + (p.gender ? `, ${escape(p.gender)}` : '') + (p.birth_date ? `, born ${escape(p.birth_date)}` : '') + '</div>';
+  h += `<div class="ips-facts">Patient #${p.id} &nbsp;|&nbsp; <a href="${url}?_format=json">FHIR JSON</a>` +
+    (docs.length ? ` &nbsp;|&nbsp; <a href="${url}/$summary">Latest document ($summary)</a>` : '') + '</div>';
+  h += '</div></div>';
+  const rows = [];
+  const add = (label, values) => {
+    if (values.length) {
+      rows.push(`<tr><th>${label}</th><td>${values.map(escape).join('<br/>')}</td></tr>`);
+    }
+  };
+  add('Identifiers', identifiersText(r));
+  add('Names', (Array.isArray(r.name) ? r.name : []).map(n => n && (n.text || [...(n.given || []), n.family].filter(Boolean).join(' '))).filter(Boolean));
+  add('Telecom', (Array.isArray(r.telecom) ? r.telecom : []).filter(t => t && t.value).map(t => `${t.system ? t.system + ': ' : ''}${t.value}`));
+  add('Address', (Array.isArray(r.address) ? r.address : []).map(a => a && (a.text || [...(a.line || []), a.city, a.state, a.postalCode, a.country].filter(Boolean).join(', '))).filter(Boolean));
+  add('Language', (Array.isArray(r.communication) ? r.communication : []).map(c => c && c.language && (c.language.text || c.language.coding?.[0]?.display || c.language.coding?.[0]?.code)).filter(Boolean));
+  if (rows.length) {
+    h += `<table class="table table-sm ips-table" style="max-width: 60em">${rows.join('')}</table>`;
+  }
+  h += '<h4>Documents</h4>';
+  h += '<table class="table table-sm table-striped ips-table"><tr><th>Document</th><th>Received</th><th>Title</th><th>Date</th><th>Matched</th></tr>';
+  for (const d of docs) {
+    h += `<tr><td><a href="${purl}/Bundle/${d.id}">${d.id}</a></td><td>${escape(d.received)}</td><td>${escape(d.comp_title || '')}</td><td>${escape(d.comp_date || '')}</td>` +
+      `<td>${escape(d.match ? (MATCH_WORDS[d.match.method] || d.match.method) : '')}${d.match && d.match.method === 'new' && d.match.detail !== 'Not seen before' ? `<br/><span class="ips-small">${escape(d.match.detail)}</span>` : ''}</td></tr>`;
+  }
+  return h + '</table>';
 }
 
 // ---- national profiles -----------------------------------------------------------------
@@ -2424,6 +2583,10 @@ function renderDocument(project, row, view, ctx) {
     (row.comp_date ? `Document date ${escape(row.comp_date)} &nbsp;|&nbsp; ` : '') +
     `Received ${escape(row.received)} (${escape(row.source)}) &nbsp;|&nbsp; ${row.size.toLocaleString()} bytes` +
     ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a> &nbsp;|&nbsp; <a href="${durl}?download=1">Download</a></div>`;
+  if (row.patient_id) {
+    h += `<div class="ips-facts">Patient <a href="${purl}/Patient/${row.patient_id}">#${row.patient_id}</a>` +
+      (row.match ? `: ${escape(MATCH_WORDS[row.match.method] || row.match.method)}${row.match.method === 'new' && row.match.detail !== 'Not seen before' ? ` - ${escape(row.match.detail.replace(/^Not seen before \((.*)\)$/, '$1'))}` : ''}` : '') + '</div>';
+  }
   h += '</div></div>';
 
   // the steps, then (on a line of their own) what can be done
@@ -2431,7 +2594,7 @@ function renderDocument(project, row, view, ctx) {
   {
     h += '<div class="ips-doc-actions">';
     // a form like the others, so it looks like them
-    h += `<form method="get" action="${purl}/compose" class="ips-inline"><input type="hidden" name="from" value="${row.id}"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>`;
+    h += `<form method="get" action="${purl}/compose/general" class="ips-inline"><input type="hidden" name="from" value="${row.id}"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>`;
     if (ctx.canManage) {
       h += `<form method="post" action="${durl}/requeue" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-default">Process again</button></form>` +
         `<form method="post" action="${durl}/delete" class="ips-inline" data-confirm="${escape(`Delete document ${row.id}?`)}">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-danger">Delete</button></form>`;
@@ -2475,6 +2638,6 @@ function renderDocument(project, row, view, ctx) {
 module.exports = {
   analysisOk,
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
-  assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderProfileChecks,
+  assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
   renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };
