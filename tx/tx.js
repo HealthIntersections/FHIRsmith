@@ -75,6 +75,25 @@ const { EcosystemResolver, FORWARDED_HEADER } = require('./ecosystem-resolver');
 const { summariseBody } = require('./library/request-summary');
 // const {writeFileSync} = require("fs");
 
+/**
+ * For the tx daily report: the SNOMED CT caches loaded that should be imported again (an
+ * older cache format - see staleCacheReasons in tx/sct/structures.js), or ''. Said every day
+ * until they are, since the administrator may not read the log
+ * @param {Library} library
+ * @returns {string}
+ */
+function staleSnomedCaches(library) {
+  const {plural} = require('../library/daily-report');
+  const warnings = library?.snomedCacheWarnings || [];
+  if (warnings.length === 0) {
+    return '';
+  }
+  const list = warnings.map(w => `${w.file} (format ${w.cacheVersion})`).join(', ');
+  return `\n\n${plural(warnings.length, 'SNOMED CT cache')} should be imported again with this version's importer: ${list}. ` +
+    'Caches written by older importers may have effective dates a day early, descriptions in some languages labelled English, ' +
+    'and search in English rather than the edition\'s own language when a request names no language; the log says which applies to each.';
+}
+
 class TXModule {
   timers = [];
 
@@ -1611,8 +1630,9 @@ class TXModule {
       return null;
     }
     const counts = this.stats.countsSince(since, now);
+    const stale = staleSnomedCaches(this.library);
     if (counts.total === 0) {
-      return 'No requests were served.';
+      return 'No requests were served.' + stale;
     }
     // the FHIR operations first, busiest first, then the rest (pages, metadata, reads)
     const names = Object.keys(counts.operations).sort((a, b) => {
@@ -1623,7 +1643,7 @@ class TXModule {
     const list = names.map(n => `${n} ${counts.operations[n].toLocaleString('en-US')}`).join(', ');
     const endpoints = Object.keys(counts.endpoints).filter(e => e).length;
     const where = endpoints > 1 ? ` over ${plural(endpoints, 'endpoint')}` : '';
-    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.`;
+    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.` + stale;
   }
 
   /**

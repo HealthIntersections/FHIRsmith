@@ -246,7 +246,8 @@ class LoincServices extends BaseCSServices {
   }
 
   close() {
-    if (this.ownsDb) {
+    // not the factory's pool, which stays open for the other requests
+    if (this.ownsDb !== false) {
       this.closeDb();
     }
   }

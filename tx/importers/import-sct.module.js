@@ -13,6 +13,7 @@ const {
 } = require('../sct/structures');
 const {SnomedExpressionServices} = require("../sct/expressions");
 const terminal = require('./terminal');
+const { languageByte } = require('../sct/languages');
 
 // definitionStatusId values from the RF2 concept file
 const SNOMED_DEFINITION_STATUS_PRIMITIVE = 900000000000074008n;
@@ -1547,22 +1548,26 @@ class SnomedImporter {
     return daysDiff;
   }
 
+  /**
+   * The byte a description's language is stored as (tx/sct/languages.js). RF2 language codes
+   * are ISO 639-1, which the table covers; anything else is recorded as English, and said so
+   * once per code
+   * @param {string} code
+   * @returns {number}
+   */
   mapLanguageCode(code) {
-    // Map language codes to bytes - simplified
-    const langMap = {
-      'en': 1,
-      'en-US': 1,
-      'en-GB': 1,
-      'fr': 2,
-      'nl': 3,
-      'es': 4,
-      'sv': 5,
-      'da': 6,
-      'de': 7,
-      'it': 8,
-      'cs': 9
-    };
-    return langMap[code] || 1;
+    const b = languageByte(code);
+    if (b) {
+      return b;
+    }
+    if (!this._unknownLanguages) {
+      this._unknownLanguages = new Set();
+    }
+    if (!this._unknownLanguages.has(code)) {
+      this._unknownLanguages.add(code);
+      terminal.warn(`Warning: description language "${code}" is not an ISO 639-1 code; recorded as English`);
+    }
+    return 1;
   }
 
   /**
@@ -1573,9 +1578,8 @@ class SnomedImporter {
    * Caches imported before this hold 1 whatever the edition.
    */
   defaultLanguageByte() {
-    const code = String(this.config.language || '').split('-')[0].toLowerCase();
-    const lang = this.mapLanguageCode(code);
-    return this.descriptions.activeLanguages().has(lang) ? lang : 1;
+    const lang = languageByte(this.config.language);
+    return lang && this.descriptions.activeLanguages().has(lang) ? lang : 1;
   }
 
   processWords() {
@@ -2896,9 +2900,12 @@ class SnomedImporter {
     const concreteValues = this.concreteValues || [];
     await writer.writeCache({
       // 17 = the base format; 18 = 17 plus the alternate identifiers; 19 = 18 plus
-      // the concrete value relationships. Each is only used when it has something
-      // to carry, so that caches without them stay readable by older servers.
-      version: concreteValues.length > 0 ? '19' : identifiers.length > 0 ? '18' : '17',
+      // the concrete value relationships (each was only used when it had something to
+      // carry, so that caches stayed readable by older servers). 20 = 19 plus every ISO 639-1 language (tx/sct/languages.js), the edition's language
+      // in the default-language slot, and effective dates that don't depend on the time
+      // zone of the import: the server asks for caches older than 20 to be imported again.
+      // A 20 always carries both sections, empty or not.
+      version: '20',
       identifiers: identifiers,
       concreteValues: concreteValues,
       versionUri: this.isTesting ? this.config.uri.replace("/sct/", "/xsct/") : this.config.uri,
@@ -2987,11 +2994,11 @@ class SnomedCacheWriter {
     }
     buffers.push(this.writeInteger(data.defaultLanguage));
 
-    if (data.version === '18' || data.version === '19') {
+    if (data.version === '18' || data.version === '19' || data.version === '20') {
       // alternate identifiers, as JSON: [[scheme, module, code, conceptId], ...]
       buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.identifiers || []), 'utf8')));
     }
-    if (data.version === '19') {
+    if (data.version === '19' || data.version === '20') {
       // concrete value relationships, as JSON: [[sourceId, typeId, group, value], ...]
       buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.concreteValues || []), 'utf8')));
     }

@@ -1538,7 +1538,7 @@ class SnomedFileReader {
     await this.load();
 
     const result = {
-      cacheVersion: this.readString(),  // This is "16" or "17" - the cache format version
+      cacheVersion: this.readString(),  // the cache format version: "16" to "20" (see staleCacheReasons)
       versionUri: this.readString(),
       versionDate: this.readString(),
       isTesting: false,
@@ -1579,7 +1579,7 @@ class SnomedFileReader {
     }
 
     // Determine settings based on cache version string (matching Pascal logic)
-    if (result.cacheVersion === '17' || result.cacheVersion === '18' || result.cacheVersion === '19') { // 18 = 17 + alternate identifiers; 19 = 18 + concrete values
+    if (['17', '18', '19', '20'].includes(result.cacheVersion)) { // 18 = 17 + alternate identifiers; 19 = 18 + concrete values; 20 - see staleCacheReasons
       result.hasLangs = true;
     } else if (result.cacheVersion === '16') { // Assuming this is UTF8 version for now
       result.isUTF16 = false;
@@ -1605,14 +1605,14 @@ class SnomedFileReader {
 
     // Alternate identifiers (version 18): [[scheme, module, code, conceptId], ...]
     result.identifiers = [];
-    if (result.cacheVersion === '18' || result.cacheVersion === '19') {
+    if (['18', '19', '20'].includes(result.cacheVersion)) {
       result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
     }
     // Concrete value relationships (version 19): [[sourceId, typeId, group, value], ...].
     // null (not []) when the cache predates them, so the server can tell "none" from
     // "not loaded".
     result.concreteValues = null;
-    if (result.cacheVersion === '19') {
+    if (['19', '20'].includes(result.cacheVersion)) {
       result.concreteValues = JSON.parse(this.readBytes().toString('utf8'));
     }
 
@@ -1620,7 +1620,38 @@ class SnomedFileReader {
   }
 }
 
+/**
+ * Why a SNOMED CT cache in an older format should be imported again with the current
+ * importer, or [] if it shouldn't. The server logs these when it loads the cache, and puts
+ * them in the daily report.
+ *
+ * Format 20 (November 2026) is the first written by an importer with all of: every ISO 639-1
+ * description language (tx/sct/languages.js; before, any language beyond en, fr, nl, es, sv,
+ * da, de, it and cs was recorded as English), the edition's language in the default-language
+ * slot (before, English whatever the edition), and effective dates that don't depend on the
+ * time zone the import ran in (before, a cache built ahead of UTC had every date a day early).
+ * Caches older than 19 also have no concrete values.
+ *
+ * @param {string} cacheVersion - as the cache file records it
+ * @returns {string[]}
+ */
+function staleCacheReasons(cacheVersion) {
+  const v = parseInt(cacheVersion, 10);
+  if (!(v < 20)) {
+    return [];
+  }
+  const reasons = [];
+  if (v < 19) {
+    reasons.push('it has no concrete values (an ECL refinement on one is reported as unsupported)');
+  }
+  reasons.push('descriptions in languages other than en, fr, nl, es, sv, da, de, it and cs may be labelled English');
+  reasons.push('a text or display filter with no request language may search English rather than the edition\'s own language');
+  reasons.push('if it was built in a time zone ahead of UTC, its effective dates are a day early');
+  return reasons;
+}
+
 module.exports = {
+  staleCacheReasons,
   SnomedStrings,
   SnomedWords,
   SnomedStems,

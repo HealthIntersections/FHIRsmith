@@ -48,22 +48,9 @@ const IDENTIFIER_SCHEMES = {
 const MAPPED_FILTER_PREFIX = 'mapped:';
 const SNOMED_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'descendent-leaf', 'is-not-a', 'in']);
 
-// Description language index -> language code. The index is assigned at import
-// time by SnomedImporter.mapLanguageCode(); this table is its inverse and must
-// be kept in step with it.
-const SCT_LANGUAGE_CODES = {
-  1: 'en',
-  2: 'fr',
-  3: 'nl',
-  4: 'es',
-  5: 'sv',
-  6: 'da',
-  7: 'de',
-  8: 'it',
-  9: 'cs'
-};
-
-const SCT_LANGUAGE_BYTES = Object.fromEntries(Object.entries(SCT_LANGUAGE_CODES).map(([b, c]) => [c, Number(b)]));
+// Description language byte -> ISO 639-1 code: the one table, shared with the importer
+// (tx/sct/languages.js)
+const { LANGUAGE_CODES: SCT_LANGUAGE_CODES, languageBytesFor } = require('../sct/languages');
 
 // ECL dialect aliases (ECL specification, appendix "Dialect aliases") to the
 // language reference set they denote. Used by {{ D dialect = en-gb }}.
@@ -191,11 +178,9 @@ class SnomedServices {
     this.isAIndex = sharedData.isAIndex;
     this.activeRoots = sharedData.activeRoots;
     this.inactiveRoots = sharedData.inactiveRoots;
-    // The language byte of the edition's descriptions to use when a request names none. Caches
-    // made by the Pascal importer hold something else here (51756144 in the 20250201
-    // International Edition), which made a text filter search a language no description is in -
-    // an empty index, and no matches - so anything that isn't a known language byte is English
-    this.defaultLanguage = SCT_LANGUAGE_CODES[sharedData.defaultLanguage] ? sharedData.defaultLanguage : 1;
+    // The edition's default description language, as a language byte (SCT_LANGUAGE_CODES):
+    // the language a text or display filter searches when the request names none.
+    this.defaultLanguage = this.#resolveDefaultLanguage(sharedData.defaultLanguage, sharedData.cacheVersion);
     this.isTesting = sharedData.isTesting;
 
     // Expression services
@@ -234,8 +219,10 @@ class SnomedServices {
    *   has 42804 English ones beside 1136162 Spanish ones in the es cache).
    * Anything else is read as English.
    */
-  #resolveDefaultLanguage(slot) {
-    if (SCT_LANGUAGE_CODES[slot]) {
+  #resolveDefaultLanguage(slot, cacheVersion) {
+    // before format 20 an importer only wrote 1-9; a bigger number is a reference set's offset
+    const maxByte = parseInt(cacheVersion, 10) >= 20 ? 255 : 9;
+    if (slot <= maxByte && SCT_LANGUAGE_CODES[slot]) {
       return slot;
     }
     for (let i = 0; i < this.refSetIndex.count(); i++) {
@@ -3625,9 +3612,10 @@ class SnomedProvider extends BaseCSServices {
     }
     const present = this.sct._activeDescLanguages;
     for (const lang of languages || []) {
-      const code = SCT_LANGUAGE_BYTES[(lang.language || '').toLowerCase()];
-      if (code !== undefined && present.has(code)) {
-        return code;
+      for (const code of languageBytesFor(lang.language)) {
+        if (present.has(code)) {
+          return code;
+        }
       }
     }
     // none named: the edition's default, if it has descriptions in it, else its first language

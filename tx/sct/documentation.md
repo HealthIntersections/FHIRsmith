@@ -215,11 +215,20 @@ role group pairing.
 
 ### Language and display
 
-- Description languages are mapped to a small fixed set at import
-  (`mapLanguageCode`); an unknown language is recorded as English. Norwegian
-  or Finnish descriptions, say, would be labelled `en`.
-- `SnomedExpressionServices.codeForLanguage` has a stale language map that
-  disagrees with the importer; only the term is read from it today.
+- A description's language is stored as one byte; `tx/sct/languages.js` is
+  the one table of what each byte means (importer, server and expression
+  services). 1-9 are en, fr, nl, es, sv, da, de, it, cs, as earlier importers
+  and the original server wrote them; the rest of ISO 639-1 follows from 10.
+  Caches before format 20 were written with only 1-9, and any other language
+  recorded as English (Norwegian or Finnish descriptions labelled `en`); the
+  importer now records anything that isn't ISO 639-1 as English, with a
+  warning.
+- Cache format 20 (November 2026) is the first written with every language,
+  the edition's language in the default-language slot, and effective dates
+  that don't depend on the time zone the import ran in. When a cache older
+  than 20 loads, the server logs that it should be imported again, and why
+  (`staleCacheReasons` in `structures.js`), and the tx module's daily report
+  says so too. A format 20 cache can't be read by an older server.
 - With no `displayLanguage`, every edition defaults to US then GB English
   preferred synonyms. A concept whose only English description is its FSN
   gets its national-language preferred synonym instead.
