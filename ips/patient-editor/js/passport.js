@@ -317,10 +317,11 @@ async function generate() {
 
 function attachmentInfo() {
   var html = "<h2>Attachments</h2>\r\n<ul>\r\n";
-  html += ' <ul>IPS-Document.json: The information here entered in a computer processible form for the health system</ul>\r\n';
+  html += ' <li>IPS-Document.json: The information here entered in a computer processible form for the health system</li>\r\n';
   const acFile = document.querySelector('#myfile').files[0];
   if (acFile) {
-    html += ' <ul>'+acFile.name+': full Advance Care Directive</ul>\r\n';
+    // the file's name is whatever the user's file is called: text, not HTML
+    html += ' <li>'+escapeText(acFile.name)+': full Advance Care Directive</li>\r\n';
   } 
   html += '</ul>\r\n';
   return html;
