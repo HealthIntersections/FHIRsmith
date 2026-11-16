@@ -1084,7 +1084,7 @@ class PublisherModule {
       return;
     }
     const root = website.git_root || website.local_folder;
-    const oversized = this.findLargeFiles(root, GITHUB_MAX_FILE_SIZE);
+    const oversized = await this.findLargeFiles(root, GITHUB_MAX_FILE_SIZE);
     if (oversized.length === 0) {
       return;
     }
@@ -1097,9 +1097,9 @@ class PublisherModule {
     }
 
     for (const file of oversized) {
-      const sizeMB = Math.round(fs.statSync(file).size / (1024 * 1024));
+      const sizeMB = Math.round((await fs.promises.stat(file)).size / (1024 * 1024));
       const dest = this.nonClashingPath(archiveDir, path.basename(file));
-      this.moveFile(file, dest);
+      await this.moveFile(file, dest);
       await this.logTaskMessage(task.id, 'warn', 'Large file ' + path.relative(root, file) + ' (' + sizeMB +
           ' MB) is over the 100 MB GitHub limit - moved to ' + dest + ' instead of being published');
     }
@@ -1125,12 +1125,15 @@ class PublisherModule {
   // Files in the web folder that are too big to push. Never descends into .git: a pack file over the
   // limit is perfectly normal there, and moving it would destroy the repository. Files git is already
   // ignoring are left alone, since they were never going to be pushed anyway.
-  findLargeFiles(root, limit) {
+  //
+  // The web folder can hold hundreds of thousands of files (hl7.org/fhir), so the walk is
+  // asynchronous: each directory is read, and each file's size taken, without holding the event loop
+  async findLargeFiles(root, limit) {
     const found = [];
-    const walk = (dir) => {
+    const walk = async (dir) => {
       let entries;
       try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
       } catch (err) {
         this.logger.warn('Large file scan could not read ' + dir + ': ' + err.message);
         return;
@@ -1139,11 +1142,11 @@ class PublisherModule {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           if (entry.name !== '.git') {
-            walk(full);
+            await walk(full);
           }
         } else if (entry.isFile()) {
           try {
-            if (fs.statSync(full).size > limit) {
+            if ((await fs.promises.stat(full)).size > limit) {
               found.push(full);
             }
           } catch (err) {
@@ -1152,25 +1155,43 @@ class PublisherModule {
         }
       }
     };
-    walk(root);
+    await walk(root);
     return found.length === 0 ? found : this.removeGitIgnored(root, found);
   }
 
+  // The files git isn't ignoring, from `git check-ignore --stdin` (run without waiting on it)
   removeGitIgnored(root, files) {
-    try {
-      const result = require('child_process').spawnSync('git', ['check-ignore', '--stdin'],
-          { cwd: root, input: files.join('\n'), encoding: 'utf8' });
-      // exit 0: at least one path is ignored. 1: none are. anything else: git could not tell us,
-      // in which case treat everything as pushable rather than leaving a file that breaks the push.
-      if (result.status !== 0 || !result.stdout) {
-        return files;
+    return new Promise((resolve) => {
+      const keepAll = (why) => {
+        // git could not tell us: treat everything as pushable rather than leaving a file that breaks the push
+        if (why) {
+          this.logger.warn('Could not check the gitignore status of large files: ' + why);
+        }
+        resolve(files);
+      };
+      let child;
+      try {
+        child = require('child_process').spawn('git', ['check-ignore', '--stdin'], { cwd: root });
+      } catch (err) {
+        keepAll(err.message);
+        return;
       }
-      const ignored = new Set(result.stdout.split('\n').map((s) => s.trim()).filter((s) => s));
-      return files.filter((f) => !ignored.has(f));
-    } catch (err) {
-      this.logger.warn('Could not check the gitignore status of large files: ' + err.message);
-      return files;
-    }
+      let stdout = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.on('error', (err) => keepAll(err.message));
+      child.stdin.on('error', () => { /* git went away; 'close' or 'error' says what happened */ });
+      child.on('close', (status) => {
+        // exit 0: at least one path is ignored. 1: none are. anything else: git could not tell us
+        if (status !== 0 || !stdout) {
+          keepAll(null);
+          return;
+        }
+        const ignored = new Set(stdout.split('\n').map((s) => s.trim()).filter((s) => s));
+        resolve(files.filter((f) => !ignored.has(f)));
+      });
+      child.stdin.end(files.join('\n'));
+    });
   }
 
   nonClashingPath(dir, name) {
@@ -1189,15 +1210,16 @@ class PublisherModule {
   }
 
   // rename() fails across filesystems, and the archive folder will not always be on the same one
-  moveFile(src, dest) {
+  // (these are files over 100 MB: copied without holding the event loop)
+  async moveFile(src, dest) {
     try {
-      fs.renameSync(src, dest);
+      await fs.promises.rename(src, dest);
     } catch (err) {
       if (err.code !== 'EXDEV') {
         throw err;
       }
-      fs.copyFileSync(src, dest);
-      fs.unlinkSync(src);
+      await fs.promises.copyFile(src, dest);
+      await fs.promises.unlink(src);
     }
   }
 
@@ -2069,12 +2091,15 @@ class PublisherModule {
         const logs = await this.getTaskLogs(taskId);
 
         // Get build log if available
+        // (the logs can be many MB: read without holding the event loop)
         let buildLog = '';
-        if (task.build_output_path && fs.existsSync(task.build_output_path)) {
+        if (task.build_output_path) {
           try {
-            buildLog = fs.readFileSync(task.build_output_path, 'utf8');
+            buildLog = await fs.promises.readFile(task.build_output_path, 'utf8');
           } catch (error) {
-            buildLog = 'Error reading build log: ' + error.message;
+            if (error.code !== 'ENOENT') {
+              buildLog = 'Error reading build log: ' + error.message;
+            }
           }
         }
 
@@ -2082,10 +2107,10 @@ class PublisherModule {
         let publishLog = '';
         if (task.local_folder) {
           const publishLogPath = path.join(task.local_folder, 'publication.log');
-          if (fs.existsSync(publishLogPath)) {
-            try {
-              publishLog = fs.readFileSync(publishLogPath, 'utf8');
-            } catch (error) {
+          try {
+            publishLog = await fs.promises.readFile(publishLogPath, 'utf8');
+          } catch (error) {
+            if (error.code !== 'ENOENT') {
               publishLog = 'Error reading publication log: ' + error.message;
             }
           }

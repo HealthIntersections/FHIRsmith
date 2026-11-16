@@ -107,33 +107,36 @@ describe('documents', () => {
   });
 
   test('an administrator user edits, renames, and the log keeps every version', async () => {
+    // its own document, so that it runs on its own (jest -t) as well as after the others
+    const created = await form(admin, '/tx-reg/docs', { name: 'charter', type: 'md', public: '1', content: '# Charter\n\nBe <b>nice</b>.\n' }, '/tx-reg/docs/new');
+    expect(created.status).toBe(302);
     const { agent: editor } = await loginAs(app, 'editor', 'password-2');
-    const page = await html(editor.get('/tx-reg/docs/policy'));
-    expect(page.text).toContain('/tx-reg/docs/policy/edit"');
-    const edit = await html(editor.get('/tx-reg/docs/policy/edit'));
+    const page = await html(editor.get('/tx-reg/docs/charter'));
+    expect(page.text).toContain('/tx-reg/docs/charter/edit"');
+    const edit = await html(editor.get('/tx-reg/docs/charter/edit'));
     expect(edit.status).toBe(200);
     expect(edit.text).toContain('Be &lt;b&gt;nice&lt;/b&gt;.');
 
-    let r = await form(editor, '/tx-reg/docs/policy', { name: 'policy', type: 'md', public: '1', content: '# Policy v2\n' }, '/tx-reg/docs/policy/edit');
+    let r = await form(editor, '/tx-reg/docs/charter', { name: 'charter', type: 'md', public: '1', content: '# Charter v2\n' }, '/tx-reg/docs/charter/edit');
     expect(r.status).toBe(302);
-    expect((await request(app).get('/tx-reg/docs/policy')).text).toBe('# Policy v2\n');
+    expect((await request(app).get('/tx-reg/docs/charter')).text).toBe('# Charter v2\n');
 
-    r = await form(editor, '/tx-reg/docs/policy', { name: 'policies', type: 'md', content: '# Policy v3\n' }, '/tx-reg/docs/policy/edit');
-    expect(r.headers.location).toBe('/tx-reg/docs/policies');
-    expect((await request(app).get('/tx-reg/docs/policy')).status).toBe(404);
-    expect((await request(app).get('/tx-reg/docs/policies')).status).toBe(404); // no longer public
-    expect((await editor.get('/tx-reg/docs/policies')).text).toBe('# Policy v3\n');
+    r = await form(editor, '/tx-reg/docs/charter', { name: 'charters', type: 'md', content: '# Charter v3\n' }, '/tx-reg/docs/charter/edit');
+    expect(r.headers.location).toBe('/tx-reg/docs/charters');
+    expect((await request(app).get('/tx-reg/docs/charter')).status).toBe(404);
+    expect((await request(app).get('/tx-reg/docs/charters')).status).toBe(404); // no longer public
+    expect((await editor.get('/tx-reg/docs/charters')).text).toBe('# Charter v3\n');
 
-    const history = await html(editor.get('/tx-reg/docs/policies/history'));
+    const history = await html(editor.get('/tx-reg/docs/charters/history'));
     expect(history.status).toBe(200);
     const rows = history.text.split('<tr>').slice(2);
     expect(rows.map(x => x.match(/<td>(created|edited|renamed|deleted)<\/td>/)[1])).toEqual(['renamed', 'edited', 'created']);
     expect(rows[0]).toContain('<td>editor</td>');
     expect(rows[2]).toContain('<td>admin</td>');
     const first = history.text.match(/history\/(\d+)">[^<]+<\/a><\/td><td>admin/)[1];
-    const version = await html(editor.get(`/tx-reg/docs/policies/history/${first}`));
-    expect(version.text).toContain('<h1>Policy</h1>');
-    expect(version.text).toContain('then named <code>policy</code>');
+    const version = await html(editor.get(`/tx-reg/docs/charters/history/${first}`));
+    expect(version.text).toContain('<h1>Charter</h1>');
+    expect(version.text).toContain('then named <code>charter</code>');
   });
 
   test('a document bigger than the auth forms\' 64kb can be saved, up to the 2 MB limit', async () => {

@@ -195,9 +195,14 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     expect(calls).toHaveLength(1);
     behaviour = 'off';
     const usual = await refuse(vs);
-    expect(handled.details.text).toEqual(usual.details.text);
-    expect(handled.details.text).toContain(vs.url + '|1.0.0');
-    expect(handled.details.text).toContain('>5');
+    // the same message, each with the size it knows: the provider's total for the selection,
+    // and the code system's size on the usual path
+    // (not the wording after the count: core's Messages.properties says 'produce', this copy 'display')
+    const start = (n) => "The value set '" + vs.url + "|1.0.0' expansion has " + n + " codes, which is too many";
+    expect(handled.details.text.startsWith(start(1000000))).toBe(true);
+    expect(handled.details.text.endsWith('(5)')).toBe(true);
+    expect(usual.details.text.startsWith(start(12))).toBe(true);
+    expect(usual.details.text.endsWith('(5)')).toBe(true);
   });
 
   test('the provider is told which value set the compose belongs to', async () => {

@@ -94,6 +94,22 @@ describe('the SHL viewer, piece by piece', () => {
     expect(() => decryptJwe(rsa, KEY, new Trace())).toThrow(/alg must be dir/);
   });
 
+  test('a compressed payload that inflates past the limit is refused (a zip bomb)', () => {
+    // zip DEF content that inflates to 20 MB, against a limit of 1 MB
+    const header = Buffer.from(JSON.stringify({ alg: 'dir', enc: 'A256GCM', zip: 'DEF' })).toString('base64url');
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(KEY, 'base64url'), iv);
+    cipher.setAAD(Buffer.from(header, 'ascii'));
+    const ct = Buffer.concat([cipher.update(zlib.deflateRawSync(Buffer.alloc(20 * 1024 * 1024, ' '))), cipher.final()]);
+    const bomb = [header, '', iv.toString('base64url'), ct.toString('base64url'), cipher.getAuthTag().toString('base64url')].join('.');
+    expect(() => decryptJwe(bomb, KEY, new Trace(), 1024 * 1024)).toThrow('Decrypted, but zip DEF inflates to more than 1 MB');
+
+    // a VHL whose COSE inflates past 10 MB
+    const trace = new Trace();
+    const hc1 = 'HC1:' + base45.encode(Buffer.from(pako.deflate(Buffer.alloc(11 * 1024 * 1024))));
+    expect(() => decodeVhl(hc1, [], trace)).toThrow(/inflates to more than 10 MB/);
+  });
+
   test('says what a resource is: an IPS document, another document, or something else', () => {
     const doc = (type) => ({ resourceType: 'Bundle', type: 'document', entry: [{ resource: { resourceType: 'Composition', type: { coding: [{ system: 'http://loinc.org', code: type }] } } }] });
     expect(examine(doc('60591-5'), new Trace())).toMatchObject({ ips: true, document: true });

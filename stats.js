@@ -361,6 +361,19 @@ class ServerStats {
     counter.timeTotal = counter.timeTotal + tat;
   }
 
+  /**
+   * Count something that happened to the server that isn't a request (an event-loop block:
+   * library/block-monitor.js), under the (server) module, with how long it took. Persisted and
+   * merged like the request counts, but kept out of the request count and turnaround time.
+   */
+  countEvent(name, ms = 0) {
+    const counter = this.counterFor(SERVER_MODULE, NO_ENDPOINT, name || '(unnamed)');
+    counter.countDelta++;
+    counter.countTotal++;
+    counter.timeDelta = counter.timeDelta + ms;
+    counter.timeTotal = counter.timeTotal + ms;
+  }
+
   // The memory guard runs before routing and body parsing. Keep its refusals
   // separate from completed module work and its turnaround-time denominator.
   countRefusedRequest() {

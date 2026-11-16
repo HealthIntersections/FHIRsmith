@@ -279,30 +279,37 @@ const CHECKS = [
   {
     step: 'tarball', uses: ['tarball', 'packument'], title: 'matches the checksums in the package document',
     run(c) {
-      const body = c.response('tarball').body;
+      const tarball = c.response('tarball');
       const dist = c.json('packument').versions?.[c.version]?.dist || {};
+      // the digests were worked out before the checks ran (digestsOf)
+      const digest = (alg) => {
+        const d = tarball.digests?.get(alg);
+        if (d && !Buffer.isBuffer(d)) {
+          throw d; // crypto doesn't know the algorithm
+        }
+        return d || crypto.createHash(alg).update(tarball.body).digest();
+      };
       if (dist.shasum) {
-        c.eq(crypto.createHash('sha1').update(body).digest('hex'), dist.shasum, 'the sha1 of the tarball (dist.shasum)');
+        c.eq(digest('sha1').toString('hex'), dist.shasum, 'the sha1 of the tarball (dist.shasum)');
       }
       if (dist.integrity) {
-        const [alg, digest] = dist.integrity.split(/-(.*)/s);
-        c.eq(crypto.createHash(alg).update(body).digest('base64'), digest, `the ${alg} of the tarball (dist.integrity)`);
+        const [alg, value] = dist.integrity.split(/-(.*)/s);
+        c.eq(digest(alg).toString('base64'), value, `the ${alg} of the tarball (dist.integrity)`);
       }
     }
   },
   {
     step: 'tarball', uses: ['tarball'], title: 'contains package/package.json for this name and version',
     run(c) {
-      let files;
-      try {
-        files = untar(zlib.gunzipSync(c.response('tarball').body));
-      } catch (e) {
-        c.fail(`can't unpack the tarball: ${e.message}`);
+      // read from the tarball before the checks ran (readPackageJson)
+      const found = c.response('tarball').packageJson;
+      if (found.error) {
+        c.fail(`can't unpack the tarball: ${found.error.message}`);
       }
-      c.ok(files['package/package.json'], 'there is no package/package.json');
+      c.ok(found.data, 'there is no package/package.json');
       let manifest;
       try {
-        manifest = JSON.parse(files['package/package.json'].toString('utf8'));
+        manifest = JSON.parse(found.data.toString('utf8'));
       } catch (e) {
         c.fail(`package/package.json isn't valid JSON: ${e.message}`);
       }
@@ -358,6 +365,126 @@ const CHECKS = [
     }
   }
 ];
+
+const HASH_SLICE = 4 * 1024 * 1024;
+
+/**
+ * The digests (Buffers) of buffer for each algorithm, hashed in slices with the event loop let
+ * run between them. An algorithm crypto doesn't know gives the error instead.
+ * @returns {Promise<Map<string, Buffer|Error>>}
+ */
+async function digestsOf(buffer, algs) {
+  const hashes = new Map(); // alg -> {hash} or {error}
+  for (const alg of new Set(algs)) {
+    try {
+      hashes.set(alg, { hash: crypto.createHash(alg) });
+    } catch (e) {
+      hashes.set(alg, { error: e });
+    }
+  }
+  for (let i = 0; i < buffer.length; i += HASH_SLICE) {
+    const slice = buffer.subarray(i, i + HASH_SLICE);
+    for (const h of hashes.values()) {
+      if (h.hash) {
+        h.hash.update(slice);
+      }
+    }
+    if (i + HASH_SLICE < buffer.length) {
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  }
+  const out = new Map();
+  for (const [alg, h] of hashes) {
+    out.set(alg, h.hash ? h.hash.digest() : h.error);
+  }
+  return out;
+}
+
+/**
+ * package/package.json from a .tgz: unzipped as a stream (on libuv's pool, not the event
+ * loop), the tar read as it comes, and stopped as soon as it's found - the rest of the package
+ * is never held in memory.
+ * @returns {Promise<{data: Buffer|null}|{error: Error}>} data null: not in the tarball
+ */
+function readPackageJson(tgz) {
+  return new Promise((resolve) => {
+    const gunzip = zlib.createGunzip();
+    let buf = Buffer.alloc(0);
+    let skip = 0;        // bytes of the current entry (and its padding) still to pass over
+    let want = null;     // {kind: 'L' (a long name) | 'file', size, pad}: an entry being read
+    let longName = null;
+    let done = false;
+    const finish = (result) => {
+      if (!done) {
+        done = true;
+        gunzip.destroy();
+        resolve(result);
+      }
+    };
+    const field = (header, off, len) => header.subarray(off, off + len).toString('utf8').replace(/\0.*$/s, '');
+    gunzip.on('data', (chunk) => {
+      buf = buf.length > 0 ? Buffer.concat([buf, chunk]) : chunk;
+      while (!done) {
+        if (skip > 0) {
+          const n = Math.min(skip, buf.length);
+          buf = buf.subarray(n);
+          skip -= n;
+          if (skip > 0) {
+            return;
+          }
+        }
+        if (want) {
+          if (buf.length < want.size) {
+            return;
+          }
+          const data = buf.subarray(0, want.size);
+          if (want.kind === 'file') {
+            finish({ data: Buffer.from(data) });
+            return;
+          }
+          longName = data.toString('utf8').replace(/\0.*$/s, '');
+          buf = buf.subarray(want.size);
+          skip = want.pad;
+          want = null;
+          continue;
+        }
+        if (buf.length < 512) {
+          return;
+        }
+        const header = buf.subarray(0, 512);
+        buf = buf.subarray(512);
+        if (header.every(b => b === 0)) {
+          finish({ data: null });
+          return;
+        }
+        let name = field(header, 0, 100);
+        const prefix = field(header, 345, 155);
+        if (prefix) {
+          name = `${prefix}/${name}`;
+        }
+        const size = parseInt(field(header, 124, 12).trim() || '0', 8);
+        const type = field(header, 156, 1);
+        const pad = Math.ceil(size / 512) * 512 - size;
+        if (type === 'L') {
+          want = { kind: 'L', size, pad };
+          continue;
+        }
+        if (longName) {
+          name = longName;
+          longName = null;
+        }
+        if ((type === '0' || type === '') && name === 'package/package.json') {
+          want = { kind: 'file', size, pad };
+        } else {
+          skip = size + pad;
+        }
+      }
+    });
+    gunzip.on('end', () => finish({ data: null }));
+    gunzip.on('error', (e) => finish({ error: e }));
+    gunzip.end(tgz);
+  });
+}
 
 // Minimal ustar reader: returns { path: Buffer } for regular files
 function untar(buf) {
@@ -477,6 +604,23 @@ async function runNpmCheck(target, get) {
     }
   }
 
+  // The tarball's digests and its package.json, worked out here, without holding the event loop
+  // (a package can be ~100 MB, and the checks themselves are synchronous)
+  if (r.tarball && !r.tarball.error && Buffer.isBuffer(r.tarball.body)) {
+    let dist = {};
+    try {
+      dist = JSON.parse(r.packument.body.toString('utf8')).versions?.[version]?.dist || {};
+    } catch (e) {
+      // the package document checks report it
+    }
+    const algs = ['sha1'];
+    if (typeof dist.integrity === 'string' && dist.integrity.includes('-')) {
+      algs.push(dist.integrity.split(/-(.*)/s)[0]);
+    }
+    r.tarball.digests = await digestsOf(r.tarball.body, algs);
+    r.tarball.packageJson = await readPackageJson(r.tarball.body);
+  }
+
   const c = context({ pkg, version }, r);
   const results = CHECKS.map(check => {
     try {
@@ -506,4 +650,4 @@ async function runNpmCheck(target, get) {
   };
 }
 
-module.exports = { runNpmCheck, makeGetter, CHECKS, STEPS, untar, packageUrl };
+module.exports = { runNpmCheck, makeGetter, CHECKS, STEPS, untar, packageUrl, readPackageJson, digestsOf };

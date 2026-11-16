@@ -793,6 +793,11 @@ LOINC, RxNorm, ICD-11, code systems from packages, and the supplements in use
 * **The filter.** Its first 100 characters, at most 10 words, each once. The stop words a, an, and, as,
   at, by, for, from, in, into, of, on, or, the, to are left out, unless that leaves nothing. A single
   letter or digit only matches that word: `hepatitis b` doesn't find hepatitis C.
+* **Order.** The best matches come first: the code itself, then a code that starts with the filter;
+  a name that is the filter; then the filter's words in its order - starting the name, then together
+  later in it, then with other words between (the name's stop words don't count) - and last, all
+  there in another order. Between these, the shorter name first. `ac ap` lists Acute appendicitis
+  before Applied action.
 * **The language** is the first the request names (`displayLanguage`, else `Accept-Language`) that the
   code system or a supplement in use has text in, else the code system's own, compared at the primary
   language subtag.
@@ -803,3 +808,23 @@ and each has a way to build it in an existing database without importing again (
 [the importers](importers/readme.md)). The others answer from an index in memory, built the first time
 they are searched.
 
+
+## Languages
+
+The server's messages - the text of the issues in an OperationOutcome, and the messages
+`$validate-code` and `$expand` return - and the phrases the HTML pages use when they render
+resources are translated (`translations/Messages_*.properties` and
+`translations/rendering-phrases_*.properties`): Arabic, Chinese, Dutch, French, German, Japanese,
+Portuguese, Russian, Spanish, Tagalog and Uzbek. A message is in the first language of the
+request's `Accept-Language` that has it - the language as given (`fr-CA`), then its primary
+subtag (`fr`) - and otherwise in English, so a message no translation has yet is in English too.
+The message id (`message-id` extension) and the issue codes don't change with the language.
+
+`displayLanguage` is a different thing: it chooses the displays of the codes, not the language of
+the messages.
+
+To add a language, add a `Messages_xx.properties` and a `rendering-phrases_xx.properties` (`xx`
+the language code, with `_` for `-`: `Messages_pt_BR.properties` is `pt-BR`) beside the others.
+The English files list every message; a translation can have only some of them. org.hl7.fhir.core's
+`Messages.properties` (in org.hl7.fhir.utilities) is the master: a message id added to FHIRsmith's
+has to be added there too.

@@ -34,6 +34,12 @@ const TEMPLATE_PATH = path.join(__dirname, 'xig-template.html');
 // Global database instance
 let xigDb = null;
 
+// The most rows any list returns at once (HTML, JSON or CSV); the rest are paged by offset
+const PAGE_SIZE = 200;
+// Resources bigger than this (uncompressed JSON) are not shown inline on their page - building
+// and rendering them blocks the server - but they are available as JSON (_fmt=json)
+const MAX_INLINE_RESOURCE = 1024 * 1024;
+
 // Request tracking
 let requestStats = {
   total: 0,
@@ -373,41 +379,72 @@ function hasTerminologySource(sourceCode) {
 
 // Resource List Table Functions
 
-function buildPaginationControls(count, offset, baseUrl, queryParams) {
-  if (count <= 200) {
-    return ''; // No pagination needed
+// Start / Prev / Next links for a list of count rows shown PAGE_SIZE at a time from offset.
+// urlFor(offset) gives the link to the page starting at offset. Nothing when it fits on one page
+function buildPager(count, offset, urlFor) {
+  if (count <= PAGE_SIZE) {
+    return '';
   }
 
   let html = '<p>';
-
-  // Start link
-  if (offset > 200) {
-    const startParams = { ...queryParams };
-    delete startParams.offset; // Remove offset to go to start
-    const startUrl = buildPaginationUrl(baseUrl, startParams);
-    html += `<a href="${startUrl}">Start</a> `;
+  if (offset > PAGE_SIZE) {
+    html += `<a href="${escape(urlFor(0))}">Start</a> `;
   }
-
-  // Prev link
-  if (offset >= 200) {
-    const prevParams = { ...queryParams, offset: (offset - 200).toString() };
-    const prevUrl = buildPaginationUrl(baseUrl, prevParams);
-    html += `<a href="${prevUrl}">Prev</a> `;
+  if (offset >= PAGE_SIZE) {
+    html += `<a href="${escape(urlFor(offset - PAGE_SIZE))}">Prev</a> `;
   }
-
-  // Current range
-  const endRange = Math.min(offset + 200, count);
-  html += `<b>Rows ${offset} - ${endRange}</b>`;
-
-  // Next link (only if there are more results)
-  if (offset + 200 < count) {
-    const nextParams = { ...queryParams, offset: (offset + 200).toString() };
-    const nextUrl = buildPaginationUrl(baseUrl, nextParams);
-    html += ` <a href="${nextUrl}">Next</a>`;
+  html += `<b>Rows ${offset} - ${Math.min(offset + PAGE_SIZE, count)} of ${count.toLocaleString()}</b>`;
+  if (offset + PAGE_SIZE < count) {
+    html += ` <a href="${escape(urlFor(offset + PAGE_SIZE))}">Next</a>`;
   }
-
   html += '</p>';
   return html;
+}
+
+function buildPaginationControls(count, offset, baseUrl, queryParams) {
+  return buildPager(count, offset, o => {
+    const params = { ...queryParams, offset: o ? o.toString() : '' };
+    return buildPaginationUrl(baseUrl, params);
+  });
+}
+
+// An offset from the request: a whole number, 0 or more
+function parseOffset(value) {
+  const n = parseInt(Array.isArray(value) ? value[0] : value, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// The Link header (RFC 8288) for a paged JSON or CSV list: first, prev, next and last pages.
+// Empty when it all fits on one page
+function buildPageLinks(count, offset, urlFor) {
+  if (count <= PAGE_SIZE && offset === 0) {
+    return '';
+  }
+  const links = [`<${urlFor(0)}>; rel="first"`];
+  if (offset > 0) {
+    links.push(`<${urlFor(Math.max(0, offset - PAGE_SIZE))}>; rel="prev"`);
+  }
+  if (offset + PAGE_SIZE < count) {
+    links.push(`<${urlFor(offset + PAGE_SIZE)}>; rel="next"`);
+  }
+  const last = count > 0 ? Math.floor((count - 1) / PAGE_SIZE) * PAGE_SIZE : 0;
+  links.push(`<${urlFor(last)}>; rel="last"`);
+  return links.join(', ');
+}
+
+// How many resources the list's filter matches
+function countResources(queryParams) {
+  const { query, params } = buildSecureResourceCountQuery(queryParams);
+  return new Promise((resolve, reject) => {
+    if (!xigDb) {
+      resolve(0);
+      return;
+    }
+    xigDb.get(query, params, guarded(reject, (err, row) => {
+      if (err) reject(err);
+      else resolve(row ? row.total : 0);
+    }));
+  });
 }
 
 function buildPaginationUrl(baseUrl, params) {
@@ -474,7 +511,7 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
     parts.push(buildPaginationControls(resourceCount, offset, '/xig', queryParams));
 
     // Get resource data with pagination
-    const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, 200);
+    const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, PAGE_SIZE);
 
     // Add SQL query as HTML comment for debugging/transparency
     const escapedQuery = resourceQuery
@@ -692,7 +729,7 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
   }
 }
 
-async function fetchResourceRows(queryParams, offset = 0, limit = 200) {
+async function fetchResourceRows(queryParams, offset = 0, limit = PAGE_SIZE) {
   const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, limit);
   return new Promise((resolve, reject) => {
     xigDb.all(resourceQuery, qp, guarded(reject, (err, rows) => {
@@ -754,13 +791,15 @@ function rowToObject(row, queryParams) {
   return obj;
 }
 
-async function buildResourceJson(queryParams) {
+// One page (PAGE_SIZE rows from offset) of the list as JSON
+async function buildResourceJson(queryParams, offset = 0) {
   if (!xigDb) return [];
-  const rows = await fetchResourceRows(queryParams, 0, 1000000);
+  const rows = await fetchResourceRows(queryParams, offset, PAGE_SIZE);
   return rows.map(row => rowToObject(row, queryParams));
 }
 
-async function buildResourceCsv(queryParams) {
+// One page (PAGE_SIZE rows from offset) of the list as CSV
+async function buildResourceCsv(queryParams, offset = 0) {
   if (!xigDb) return '';
   const { type, ver, realm, auth, rt } = queryParams;
 
@@ -788,7 +827,7 @@ async function buildResourceCsv(queryParams) {
       ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
-  const rows = await fetchResourceRows(queryParams, 0, 1000000);
+  const rows = await fetchResourceRows(queryParams, offset, PAGE_SIZE);
   const lines = [headers.join(',')];
 
   for (const row of rows) {
@@ -1828,6 +1867,17 @@ async function updateXigDatabase(trigger = 'manual') {
   }
 }
 
+// One log line for a finished request: what was asked, the status, how long it took and how big
+// the response was. The xig module serves most of the server's traffic, so this is how its slow
+// or huge requests are found
+function describeRequest(req, res, ms) {
+  const url = (req.originalUrl || req.url || '').substring(0, 300);
+  const length = res.getHeader('Content-Length');
+  const size = length !== undefined ? `${length}b` : '-';
+  const gone = res.writableFinished ? '' : ' (client gone)';
+  return `${req.method} ${url} ${res.statusCode} ${ms}ms ${size}${gone}`;
+}
+
 // Request tracking middleware
 function trackRequest(req, res, next) {
   requestStats.total++;
@@ -1846,49 +1896,42 @@ function trackRequest(req, res, next) {
     }
   }
 
+  const start = Date.now();
+  res.once('close', () => xigLog.info(describeRequest(req, res, Date.now() - start)));
+
   next();
 }
 
 router.use(trackRequest);
 
 // Statistics functions
+// The table counts shown on every page. They only change when a new database is swapped in, so
+// they are counted once per database (a promise, so concurrent first requests share the count)
+let tableCountCache = { db: null, counts: null };
+
 function getDatabaseTableCounts() {
-  return new Promise((resolve, reject) => {
-    if (!xigDb) {
-      resolve({ packages: 0, resources: 0 });
-      return;
-    }
-
-    const counts = {};
-    let completedQueries = 0;
-    const totalQueries = 2;
-
-    xigDb.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
-      if (err) {
-        counts.packages = 0;
-      } else {
-        counts.packages = row.count;
-      }
-
-      completedQueries++;
-      if (completedQueries === totalQueries) {
-        resolve(counts);
-      }
-    }));
-
-    xigDb.get('SELECT COUNT(*) as count FROM Resources', [], guarded(reject, (err, row) => {
-      if (err) {
-        counts.resources = 0;
-      } else {
-        counts.resources = row.count;
-      }
-
-      completedQueries++;
-      if (completedQueries === totalQueries) {
-        resolve(counts);
-      }
-    }));
-  });
+  if (!xigDb) {
+    return Promise.resolve({ packages: 0, resources: 0 });
+  }
+  if (tableCountCache.db !== xigDb) {
+    const db = xigDb;
+    let failed = false;
+    const count = (table) => new Promise((resolve) => {
+      db.get(`SELECT COUNT(*) as count FROM ${table}`, [], (err, row) => {
+        failed = failed || Boolean(err) || !row;
+        resolve(err || !row ? 0 : row.count);
+      });
+    });
+    const counts = Promise.all([count('Packages'), count('Resources')])
+      .then(([packages, resources]) => {
+        if (failed && tableCountCache.counts === counts) {
+          tableCountCache = { db: null, counts: null }; // count again next time
+        }
+        return { packages, resources };
+      });
+    tableCountCache = { db, counts };
+  }
+  return tableCountCache.counts;
 }
 
 function getRequestStats() {
@@ -2193,18 +2236,25 @@ router.get('/', async (req, res) => {
       };
 
       // Parse offset for pagination
-      const offset = parseInt(queryParams.offset) || 0;
+      const offset = parseOffset(queryParams.offset);
 
       // ── Format negotiation ──────────────────────────────────────
       const fmt = getRequestedFormat(req);
 
-      if (fmt === 'json') {
-        const data = await buildResourceJson(queryParams, offset);
-        res.setHeader('Content-Type', 'application/json');
-        return res.send(JSON.stringify(data, null, 2));
-      }
-
-      if (fmt === 'csv') {
+      if (fmt === 'json' || fmt === 'csv') {
+        // One page at a time; the headers say how many there are and where the other pages are
+        const total = await countResources(queryParams);
+        res.setHeader('X-Total-Count', String(total));
+        const links = buildPageLinks(total, offset, o => buildPaginationUrl('/xig',
+          { ...queryParams, _fmt: req.query._fmt === fmt ? fmt : '', offset: o ? o.toString() : '' }));
+        if (links) {
+          res.setHeader('Link', links);
+        }
+        if (fmt === 'json') {
+          const data = await buildResourceJson(queryParams, offset);
+          res.setHeader('Content-Type', 'application/json');
+          return res.send(JSON.stringify(data, null, 2));
+        }
         const csv = await buildResourceCsv(queryParams, offset);
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', 'attachment; filename="xig-resources.csv"');
@@ -2409,8 +2459,19 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
           `<div class="alert alert-danger">Unknown Resource: ${escape(resourceType)}/${escape(resourceId)} in package ${escape(packagePid)}</div>`));
       }
 
+      const fmt = getRequestedFormat(req);
+      if (fmt === 'json') {
+        await sendResourceJson(req, res, resourceData);
+        return;
+      }
+      if (fmt === 'csv') {
+        res.status(406).type('text/plain').send('A resource is available as HTML or JSON, not CSV');
+        return;
+      }
+
       // Build the resource detail page
-      const content = await buildResourceDetailPage(packageObj, resourceData, req.secure);
+      const paging = { path: req.originalUrl.split('?')[0], query: req.query };
+      const content = await buildResourceDetailPage(packageObj, resourceData, paging);
       const title = `${resourceType}/${resourceId}`;
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
@@ -2428,6 +2489,24 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
   }
 });
 
+// The resource as stored: the JSON from the package. Sent still gzipped when the client takes that,
+// so nothing is parsed or even decompressed here
+async function sendResourceJson(req, res, resourceData) {
+  const blob = await loadResourceBlob(resourceData.ResourceKey);
+  if (!blob) {
+    res.status(404).type('text/plain').send('No content is available for this resource');
+    return;
+  }
+  res.setHeader('Content-Type', 'application/fhir+json');
+  res.setHeader('Vary', 'Accept, Accept-Encoding');
+  if (gzipSize(blob) >= 0 && req.acceptsEncodings('gzip')) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.send(blob);
+  } else {
+    res.send(await gunzipAsync(blob));
+  }
+}
+
 // Helper function to get package by PID
 function getPackageByPid(pid) {
   if (!configCache.loaded || !configCache.maps.packagesById) {
@@ -2442,7 +2521,8 @@ function getPackageByPid(pid) {
 }
 
 // Main function to build resource detail page content
-async function buildResourceDetailPage(packageObj, resourceData, secure = false) {
+// paging: {path, query} - the page's path and query, for the links that page its lists
+async function buildResourceDetailPage(packageObj, resourceData, paging = {}) {
   let html = '';
 
   try {
@@ -2450,13 +2530,10 @@ async function buildResourceDetailPage(packageObj, resourceData, secure = false)
     html += await buildResourceMetadataTable(packageObj, resourceData);
 
     // Build dependencies sections
-    html += await buildResourceDependencies(resourceData, secure);
+    html += await buildResourceDependencies(resourceData, paging);
 
-    // Build narrative section (if available)
-    html += await buildResourceNarrative(resourceData.ResourceKey, packageObj);
-
-    // Build source section
-    html += await buildResourceSource(resourceData.ResourceKey);
+    // Build narrative and source sections
+    html += await buildResourceContent(resourceData.ResourceKey, packageObj, (paging.path || '') + '?_fmt=json');
 
   } catch (error) {
     xigLog.error(`Error building resource detail content: ${error.message}`);
@@ -2534,58 +2611,89 @@ async function buildResourceMetadataTable(packageObj, resourceData) {
 }
 
 // Build resources that use this resource (dependencies pointing TO this resource)
-async function buildResourceDependencies(resourceData, secure = false) {
-  let html = '<hr/><h3>Resources that use this resource</h3>';
+// The resource page's paged lists: the anchor each is shown under, and the request parameter
+// that gives its offset
+const RESOURCE_LISTS = {
+  usedBy: 'usedByOffset',
+  uses: 'usesOffset',
+  examples: 'examplesOffset'
+};
+
+function dbGet(sql, params) {
+  return new Promise((resolve, reject) => {
+    xigDb.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row)));
+  });
+}
+
+function dbAll(sql, params) {
+  return new Promise((resolve, reject) => {
+    xigDb.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
+  });
+}
+
+// One page of a list: how many rows there are, and the PAGE_SIZE of them from offset.
+// fromWhere is the query's FROM and WHERE; orderBy must give a stable order for paging
+async function fetchPage(columns, fromWhere, orderBy, params, offset) {
+  const total = (await dbGet(`SELECT COUNT(*) AS total ${fromWhere}`, params)).total;
+  const rows = total > offset
+    ? await dbAll(`SELECT ${columns} ${fromWhere} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, PAGE_SIZE, offset])
+    : [];
+  return { total, rows };
+}
+
+// The link to the resource page with one of its lists at offset, keeping the others where they are.
+// paging: {path, query} - the page's path (as requested, so already encoded) and its query
+function resourceListUrl(paging, list, offset) {
+  const params = {};
+  for (const name of Object.values(RESOURCE_LISTS)) {
+    const value = parseOffset(paging.query ? paging.query[name] : undefined);
+    if (value) {
+      params[name] = value.toString();
+    }
+  }
+  params[RESOURCE_LISTS[list]] = offset ? offset.toString() : '';
+  return buildPaginationUrl(paging.path || '', params) + '#' + list;
+}
+
+function resourceListOffset(paging, list) {
+  return parseOffset(paging.query ? paging.query[RESOURCE_LISTS[list]] : undefined);
+}
+
+const DEPENDENCY_COLUMNS = 'Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title';
+const DEPENDENCY_ORDER = 'Resources.ResourceType, Resources.ResourceKey';
+
+// One of the two dependency lists, a page at a time. from is the DependencyList column that is this
+// resource, to the one that is the resource listed
+async function buildDependencySection(list, heading, from, to, resourceData, paging) {
+  let html = `<hr/><h3 id="${list}">${heading}</h3>`;
+  const offset = resourceListOffset(paging, list);
+  const { total, rows } = await fetchPage(DEPENDENCY_COLUMNS,
+    `FROM DependencyList, Resources, Packages
+     WHERE DependencyList.${from} = ?
+       AND DependencyList.${to} = Resources.ResourceKey
+       AND Resources.PackageKey = Packages.PackageKey`,
+    DEPENDENCY_ORDER, [resourceData.ResourceKey], offset);
+
+  if (total === 0) {
+    return html + '<p style="color: #808080">No resources found</p>';
+  }
+  const pager = buildPager(total, offset, o => resourceListUrl(paging, list, o));
+  html += pager;
+  html += rows.length > 0 ? buildDependencyTable(rows) : '<p style="color: #808080">No resources on this page</p>';
+  if (rows.length > 20) {
+    html += pager;
+  }
+  return html;
+}
+
+async function buildResourceDependencies(resourceData, paging = {}) {
+  let html = '';
 
   try {
-    const dependenciesQuery = `
-        SELECT Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title
-        FROM DependencyList, Resources, Packages
-        WHERE DependencyList.TargetKey = ?
-          AND DependencyList.SourceKey = Resources.ResourceKey
-          AND Resources.PackageKey = Packages.PackageKey
-        ORDER BY ResourceType
-    `;
-
-    const dependencies = await new Promise((resolve, reject) => {
-      xigDb.all(dependenciesQuery, [resourceData.ResourceKey], guarded(reject, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }));
-    });
-
-    if (dependencies.length === 0) {
-      html += '<p style="color: #808080">No resources found</p>';
-    } else {
-      html += buildDependencyTable(dependencies, secure);
-    }
-
-    // Build resources that this resource uses (dependencies FROM this resource)
-    html += '<hr/><h3>Resources that this resource uses</h3>';
-
-    const usesQuery = `
-        SELECT Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title
-        FROM DependencyList, Resources, Packages
-        WHERE DependencyList.SourceKey = ?
-          AND DependencyList.TargetKey = Resources.ResourceKey
-          AND Resources.PackageKey = Packages.PackageKey
-        ORDER BY ResourceType
-    `;
-
-    const uses = await new Promise((resolve, reject) => {
-      xigDb.all(usesQuery, [resourceData.ResourceKey], guarded(reject, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }));
-    });
-
-    if (uses.length === 0) {
-      html += '<p style="color: #808080">No resources found</p>';
-    } else {
-      html += buildDependencyTable(uses, secure);
-    }
+    html += await buildDependencySection('usedBy', 'Resources that use this resource', 'TargetKey', 'SourceKey', resourceData, paging);
+    html += await buildDependencySection('uses', 'Resources that this resource uses', 'SourceKey', 'TargetKey', resourceData, paging);
     if (resourceData && resourceData.ResourceType === 'StructureDefinition' && resourceData.Type === 'Extension') {
-      html += await buildExtensionExamplesSection(resourceData.Url);
+      html += await buildExtensionExamplesSection(resourceData.Url, paging);
     }
   } catch (error) {
     html += `<div class="alert alert-warning">Error loading dependencies: ${escape(error.message)}</div>`;
@@ -2593,8 +2701,9 @@ async function buildResourceDependencies(resourceData, secure = false) {
 
   return html;
 }
-async function buildExtensionExamplesSection(resourceUrl) {
-  let html = '<hr/><h3>Examples of Use for Extension</h3>';
+
+async function buildExtensionExamplesSection(resourceUrl, paging = {}) {
+  let html = '<hr/><h3 id="examples">Examples of Use for Extension</h3>';
 
   try {
     if (!xigDb) {
@@ -2602,42 +2711,37 @@ async function buildExtensionExamplesSection(resourceUrl) {
       return html;
     }
 
-    // Query to find extension examples using the resource URL
-    const extensionExamplesQuery = `
-        SELECT eu.Url, eu.Name, eu.Version
-        FROM ExtensionDefns ed
-                 JOIN ExtensionUsages eusage ON ed.ExtensionDefnKey = eusage.ExtensionDefnKey
-                 JOIN ExtensionUsers eu ON eusage.ExtensionUserKey = eu.ExtensionUserKey
-        WHERE ed.Url = ?
-        ORDER BY eu.Name
-    `;
+    const offset = resourceListOffset(paging, 'examples');
+    const { total, rows } = await fetchPage('eu.Url, eu.Name, eu.Version',
+      `FROM ExtensionDefns ed
+         JOIN ExtensionUsages eusage ON ed.ExtensionDefnKey = eusage.ExtensionDefnKey
+         JOIN ExtensionUsers eu ON eusage.ExtensionUserKey = eu.ExtensionUserKey
+       WHERE ed.Url = ?`,
+      'eu.Name, eu.ExtensionUserKey', [resourceUrl], offset);
 
-    const extensionExamples = await new Promise((resolve, reject) => {
-      xigDb.all(extensionExamplesQuery, [resourceUrl], guarded(reject, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }));
-    });
-
-    if (extensionExamples.length === 0) {
+    if (total === 0) {
       html += '<p style="color: #808080">No extension usage examples found</p>';
     } else {
+      const pager = buildPager(total, offset, o => resourceListUrl(paging, 'examples', o));
+      html += pager;
       html += '<table class="table table-bordered table-striped">';
       html += '<thead><tr><th>Resource</th><th>Version</th></tr></thead>';
       html += '<tbody>';
 
-      extensionExamples.forEach(example => {
-        const versionMap = { 1: 'R2', 2: 'R2B', 3: 'R3', 4: 'R4', 5: 'R4B', 6: 'R5' };
+      const versionMap = { 1: 'R2', 2: 'R2B', 3: 'R3', 4: 'R4', 5: 'R4B', 6: 'R5' };
+      for (const example of rows) {
         const versionName = example.Version ? (versionMap[example.Version] || example.Version.toString()) : '';
-
         html += '<tr>';
         html += `<td><a href="${escape(example.Url || '')}">${escape(example.Name || '')}</a></td>`;
         html += `<td>${escape(versionName)}</td>`;
         html += '</tr>';
-      });
+      }
 
       html += '</tbody>';
       html += '</table>';
+      if (rows.length > 20) {
+        html += pager;
+      }
     }
 
   } catch (error) {
@@ -2700,120 +2804,85 @@ function buildDependencyTable(dependencies) {
   return html;
 }
 
-// Build narrative section (simplified - full implementation would need BLOB decompression)
-async function buildResourceNarrative(resourceKey, packageObj) {
-  let html = '';
+// The resource's stored JSON, still gzipped, or null
+async function loadResourceBlob(resourceKey) {
+  const row = await dbGet('SELECT Json FROM Contents WHERE ResourceKey = ?', [resourceKey]);
+  return row && row.Json ? row.Json : null;
+}
 
-  try {
-    html += '<hr/><h3>Narrative</h3>';
-
-    if (!xigDb) {
-      html += '<p style="color: #808080"><em>Database not available</em></p>';
-      return html;
-    }
-
-    // Get the BLOB data from Contents table
-    const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
-
-    const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], guarded(reject, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      }));
-    });
-
-    if (!blobData || !blobData.Json) {
-      html += '<p style="color: #808080"><em>No content data available</em></p>';
-      return html;
-    }
-
-    // Decompress the GZIP data
-    const decompressedData = await new Promise((resolve, reject) => {
-      zlib.gunzip(blobData.Json, (err, result) => {
-        if (err) reject(err);
-        else resolve(result);
-      });
-    });
-
-    // Parse as JSON
-    const jsonData = JSON.parse(decompressedData.toString('utf8'));
-
-    // Extract narrative from text.div
-    if (jsonData.text && jsonData.text.div) {
-      let narrativeDiv = jsonData.text.div;
-
-      // Fix narrative links to be relative to the package canonical base
-      if (packageObj && packageObj.Web) {
-        const baseUrl = packageObj.Web.substring(0, packageObj.Web.lastIndexOf('/'));
-        narrativeDiv = fixNarrative(narrativeDiv, baseUrl);
-      }
-
-      html += '<p style="color: maroon">Note: links and images are rebased to the (stated) source</p>';
-      html += narrativeDiv;
-    } else {
-      html += '<p style="color: #808080"><em>No narrative content found in resource</em></p>';
-    }
-
-  } catch (error) {
-    xigLog.error(`Error loading narrative: ${error.message}`);
-    html += `<div class="alert alert-warning">Error loading narrative: ${escape(error.message)}</div>`;
+// The uncompressed size of gzipped data, from its trailer (the size mod 2^32, which is
+// plenty for resources); -1 when it isn't gzip
+function gzipSize(blob) {
+  if (!Buffer.isBuffer(blob) || blob.length < 18 || blob[0] !== 0x1f || blob[1] !== 0x8b) {
+    return -1;
   }
+  return blob.readUInt32LE(blob.length - 4);
+}
 
+function gunzipAsync(blob) {
+  return new Promise((resolve, reject) => {
+    zlib.gunzip(blob, (err, result) => err ? reject(err) : resolve(result));
+  });
+}
+
+function formatMB(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function buildResourceNarrative(jsonData, packageObj) {
+  let html = '<hr/><h3>Narrative</h3>';
+  if (jsonData.text && jsonData.text.div) {
+    let narrativeDiv = jsonData.text.div;
+
+    // Fix narrative links to be relative to the package canonical base
+    if (packageObj && packageObj.Web) {
+      const baseUrl = packageObj.Web.substring(0, packageObj.Web.lastIndexOf('/'));
+      narrativeDiv = fixNarrative(narrativeDiv, baseUrl);
+    }
+
+    html += '<p style="color: maroon">Note: links and images are rebased to the (stated) source</p>';
+    html += narrativeDiv;
+  } else {
+    html += '<p style="color: #808080"><em>No narrative content found in resource</em></p>';
+  }
   return html;
 }
 
-// Build source section (simplified - full implementation would need BLOB decompression)
-async function buildResourceSource(resourceKey) {
-  let html = '';
-
-  try {
-    html += '<hr/><h3>Source1</h3>';
-
-    if (!xigDb) {
-      html += '<p style="color: #808080"><em>Database not available</em></p>';
-      return html;
-    }
-
-    // Get the BLOB data from Contents table
-    const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
-
-    const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], guarded(reject, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      }));
-    });
-
-    if (!blobData || !blobData.Json) {
-      html += '<p style="color: #808080"><em>No content data available</em></p>';
-      return html;
-    }
-
-    // Decompress the GZIP data
-    const decompressedData = await new Promise((resolve, reject) => {
-      zlib.gunzip(blobData.Json, (err, result) => {
-        if (err) reject(err);
-        else resolve(result);
-      });
-    });
-
-    // Parse and format as JSON
-    const jsonData = JSON.parse(decompressedData.toString('utf8'));
-    if (jsonData.text && jsonData.text.div) {
-      jsonData.text.div = "<!-- snip (see above) -->";
-    }
-    const formattedJson = JSON.stringify(jsonData, null, 2);
-
-    html += '<pre>';
-    html += escape(formattedJson);
-    html += '</pre>';
-
-  } catch (error) {
-    xigLog.error(`Error loading source: ${error.message}`);
-    html += `<div class="alert alert-warning">Error loading source: ${escape(error.message)}</div>`;
+function buildResourceSource(jsonData) {
+  let html = '<hr/><h3>Source</h3>';
+  const source = { ...jsonData };
+  if (source.text && source.text.div) {
+    source.text = { ...source.text, div: '<!-- snip (see above) -->' };
   }
-
+  html += '<pre>';
+  html += escape(JSON.stringify(source, null, 2));
+  html += '</pre>';
   return html;
+}
+
+// The narrative and source sections. The content is read and parsed once, and not at all
+// when it is too big to show (it is then only offered as JSON, from jsonUrl)
+async function buildResourceContent(resourceKey, packageObj, jsonUrl) {
+  try {
+    if (!xigDb) {
+      return '<hr/><h3>Narrative</h3><p style="color: #808080"><em>Database not available</em></p>';
+    }
+    const blob = await loadResourceBlob(resourceKey);
+    if (!blob) {
+      return '<hr/><h3>Narrative</h3><p style="color: #808080"><em>No content data available</em></p>';
+    }
+    const size = gzipSize(blob);
+    if (size > MAX_INLINE_RESOURCE) {
+      return '<hr/><h3>Narrative and Source</h3>'
+        + `<p style="color: #808080"><em>This resource is too big to show here (${formatMB(size)}). `
+        + `<a href="${escape(jsonUrl)}">Get it as JSON</a>.</em></p>`;
+    }
+    const jsonData = JSON.parse((await gunzipAsync(blob)).toString('utf8'));
+    return buildResourceNarrative(jsonData, packageObj) + buildResourceSource(jsonData);
+  } catch (error) {
+    xigLog.error(`Error loading resource content: ${error.message}`);
+    return `<hr/><div class="alert alert-warning">Error loading resource content: ${escape(error.message)}</div>`;
+  }
 }
 
 function fixNarrative(narrativeHtml, baseUrl) {
@@ -3194,6 +3263,20 @@ module.exports = {
   describeUpdates,
   scheduledUpdatesBetween,
 
+  // Paging, and the request log
+  PAGE_SIZE,
+  MAX_INLINE_RESOURCE,
+  buildPager,
+  buildPageLinks,
+  parseOffset,
+  describeRequest,
+  gzipSize,
+  buildResourceContent,
+  sendResourceJson,
+
   // Event emitter
-  cacheEmitter
+  cacheEmitter,
+
+  // Tests only: use this database (and its counts) without downloading one
+  setDatabaseForTests: (db) => { xigDb = db; }
 };

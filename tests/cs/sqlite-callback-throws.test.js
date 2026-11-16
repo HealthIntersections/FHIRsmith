@@ -54,7 +54,7 @@ describe('a throw inside a sqlite3 callback', () => {
     `);
     expect(r.stderr).not.toMatch(/FATAL/);
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/rejected: Operation exceeded time limit/);
+    expect(r.stdout).toMatch(/rejected: Request took too long to process/);
   });
 
   test('an OMOP lookup whose callback throws rejects', () => {

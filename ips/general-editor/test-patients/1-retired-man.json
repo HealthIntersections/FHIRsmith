@@ -1,0 +1,2135 @@
+{
+  "resourceType": "Bundle",
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:be7aa30d-1aff-48dd-af1d-798dbab0db96"
+  },
+  "type": "document",
+  "timestamp": "2025-01-14T00:00:00.000Z",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:960597ee-47de-4aae-b088-df48c71acebc",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "769f32e7-e1f6-4b09-8dc8-654a62e17536",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "60591-5",
+              "display": "Patient summary Document"
+            }
+          ]
+        },
+        "date": "2025-01-14",
+        "title": "Patient Summary - William McKenzie",
+        "section": [
+          {
+            "title": "Problem List",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11450-4",
+                  "display": "Problem list - Reported"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:5d7abcf3-0295-4f73-be1d-9d825dbb9c95"
+              },
+              {
+                "reference": "urn:uuid:4eb835a7-29eb-40ab-8da3-8a34a538c32d"
+              },
+              {
+                "reference": "urn:uuid:1e70f3a8-530a-4232-96a2-cd01fe497b65"
+              },
+              {
+                "reference": "urn:uuid:eda34c2a-f88b-4c81-8c27-dbcd91535646"
+              },
+              {
+                "reference": "urn:uuid:1d2b26e7-3cac-4c01-ac7b-f7713fd6120d"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Category</th><th>Severity</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Osteoarthritis of knee</td><td>Problem List Item</td><td>Moderate severity</td><td>Active / Confirmed</td><td>2012</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Bilateral, right worse than left. X-ray 2023: moderate medial tibiofemoral joint space narrowing both knees. Orthopaedic review 2023: elected conservative management; knee replacement to be reconsidered if walking tolerance falls below 500 m.</li></ul></td></tr><tr><td>Chronic low back pain</td><td>Problem List Item</td><td>Mild</td><td>Active / Confirmed</td><td>2008</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Mechanical, no red flags. CT 2021: lumbar spondylosis L4-5, L5-S1, no canal stenosis.</li></ul></td></tr><tr><td>Sensorineural hearing loss</td><td>Problem List Item</td><td>Moderate severity</td><td>Active / Confirmed</td><td>2010</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Bilateral noise-induced (occupational) loss. Audiogram Sept 2024: moderate to severe high-frequency loss. Bilateral hearing aids fitted Oct 2024.</li></ul></td></tr><tr><td>Hypertensive disorder, systemic arterial</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2016</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Controlled on amlodipine. Home BP average 132/80.</li></ul></td></tr><tr><td>Hyperlipidemia</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2016</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Allergies and Intolerances",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "48765-2",
+                  "display": "Allergies and adverse reactions Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:02ff319e-7508-44ea-b104-897e7b728e63"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Allergy / intolerance</th><th>Type</th><th>Category</th><th>Criticality</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Allergy to penicillin</td><td>allergy</td><td>medication</td><td>low</td><td>Active / Confirmed</td><td>1985</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"5\"><b>Reactions</b><ul><li>Urticaria (moderate) - Generalised urticarial rash 2 days into a course of amoxicillin, 1985. No angioedema or anaphylaxis.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Medication Summary",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10160-0",
+                  "display": "History of Medication use Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:6b6f4647-a107-4b1f-a998-3e476001cdbd"
+              },
+              {
+                "reference": "urn:uuid:1466277c-dbe5-48a4-a026-ea113df1a7be"
+              },
+              {
+                "reference": "urn:uuid:1ec61144-536a-4f55-a176-d3b7cea0e8c7"
+              },
+              {
+                "reference": "urn:uuid:6643890b-ec89-442d-9ed4-c51a62fb5c94"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Medication</th><th>Status</th><th>Reason</th><th>Effective</th><th>Dosage</th></tr></thead><tbody><tr><td>Paracetamol</td><td>active</td><td>Osteoarthritis of knee</td><td>from 01-Mar 15</td><td>1 g twice daily, up to 4 g a day</td></tr><tr><td>Ibuprofen</td><td>active</td><td>Osteoarthritis of knee</td><td>from 01-Jun 18</td><td>400 mg three times daily with food when needed, for no more than 5 days at a time</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Intermittent use only: watch blood pressure and renal function.</li></ul></td></tr><tr><td>Amlodipine</td><td>active</td><td>Hypertensive disorder, systemic arterial</td><td>from 10-May 16</td><td>5 mg once daily</td></tr><tr><td>Atorvastatin</td><td>active</td><td>Hyperlipidemia</td><td>from 10-May 16</td><td>20 mg at night</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Immunizations",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11369-6",
+                  "display": "History of Immunization note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:c3c904b7-8d07-41cb-9281-642b783062d4"
+              },
+              {
+                "reference": "urn:uuid:b0566f10-f301-476b-b2a3-adb46c69382f"
+              },
+              {
+                "reference": "urn:uuid:9701d084-68b1-42f2-accc-988e538039d0"
+              },
+              {
+                "reference": "urn:uuid:a55a58f5-26fa-46d6-9def-fd7453678dc6"
+              },
+              {
+                "reference": "urn:uuid:cc1e593e-e68e-4371-b74e-7ba88204374f"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Vaccine</th><th>Status</th><th>Date</th><th>Target disease</th><th>Dose</th></tr></thead><tbody><tr><td>Influenza virus antigen-containing vaccine product</td><td>completed</td><td>16-Apr 24</td><td>Influenza</td><td>--</td></tr><tr><td>SARS-CoV-2 mRNA vaccine</td><td>completed</td><td>20-May 24</td><td>Disease caused by severe acute respiratory syndrome coronavirus 2</td><td>6</td></tr><tr><td>Streptococcus pneumoniae antigen-containing vaccine product</td><td>completed</td><td>02-Jun 20</td><td>Pneumococcal infectious disease</td><td>--</td></tr><tr><td>Zoster vaccine, recombinant (Shingrix)</td><td>completed</td><td>11-May 23</td><td>Herpes zoster</td><td>2</td></tr><tr><td>Diphtheria, tetanus and pertussis vaccine (dTpa)</td><td>completed</td><td>03-Sep 19</td><td>Tetanus</td><td>--</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Procedures",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47519-4",
+                  "display": "History of Procedures Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:3c5ed1b2-b1ed-4899-a575-a5e865cc86b7"
+              },
+              {
+                "reference": "urn:uuid:52fc09da-103e-427c-a822-285aaf67f599"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Procedure</th><th>Status</th><th>Performed</th></tr></thead><tbody><tr><td>Amputation of left ring and little fingers</td><td>completed</td><td>12-Jun 78</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Crush injury at work: completion amputation of the left ring and little fingers at the proximal phalanges.</li></ul></td></tr><tr><td>Excision of appendix</td><td>completed</td><td>12-Jun 78</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Same admission: laparotomy for blunt abdominal trauma, appendix removed.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Medical Devices",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "46264-8",
+                  "display": "History of medical device use"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:e610a1b5-9b34-4f36-b232-272b0a16a5be"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Device</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Behind-the-ear hearing aids, both ears</td><td>active</td><td>from 08-Oct 24</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Results",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "30954-2",
+                  "display": "Relevant diagnostic tests/laboratory data note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:d2bb011d-4377-42be-95aa-461a9cd01651"
+              },
+              {
+                "reference": "urn:uuid:2ca47d0c-5db8-4f16-a9e9-98750e3f4328"
+              },
+              {
+                "reference": "urn:uuid:b641de2e-63b8-40dd-b36e-59813eaa18e8"
+              },
+              {
+                "reference": "urn:uuid:6b274fc3-58ec-4e7e-bfe0-31d688642182"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Interpretation</th><th>Reference range</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Glomerular filtration rate [Volume Rate/Area] in Serum, Plasma or Blood by Creatinine-based formula (CKD-EPI)/1.73 sq M</td><td>78 mL/min/{1.73_m2}</td><td>Normal</td><td>&gt;60</td><td>02-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Creatinine [Moles/volume] in Serum or Plasma</td><td>88 umol/L</td><td>Normal</td><td>60-110</td><td>02-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Cholesterol [Moles/volume] in Serum or Plasma</td><td>4.6 mmol/L</td><td>--</td><td>&lt;5.5</td><td>02-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Cholesterol in LDL [Moles/volume] in Serum or Plasma</td><td>2.4 mmol/L</td><td>High</td><td>&lt;2.0 (treatment target)</td><td>02-Dec 24</td><td>final</td><td>Laboratory</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Vital Signs",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8716-3",
+                  "display": "Vital Signs"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:128e4d77-105f-4b19-a0db-76fe9a58b615"
+              },
+              {
+                "reference": "urn:uuid:9b21dad4-c215-4567-95ce-3eaa9c99b367"
+              },
+              {
+                "reference": "urn:uuid:528bdccc-8c65-4050-b5b6-1b0095578967"
+              },
+              {
+                "reference": "urn:uuid:7a1ce66c-0469-44c3-b666-ec27443aa622"
+              },
+              {
+                "reference": "urn:uuid:a1de8e1b-eac0-4dbd-879c-0a425b66f283"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Blood pressure</td><td>138/84 mm[Hg]</td><td>14-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Heart rate</td><td>72 /min</td><td>14-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body weight</td><td>96 kg</td><td>14-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body height</td><td>178 cm</td><td>14-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body mass index</td><td>30.3 kg/m2</td><td>14-Jan 25</td><td>final</td><td>Vital Signs</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Past Problems",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11348-0",
+                  "display": "History of Past illness note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:70122906-cb41-469c-a0da-99552b978935"
+              },
+              {
+                "reference": "urn:uuid:941efbd5-1f37-4a20-8778-928c58a65fd8"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th><th>Abatement</th></tr></thead><tbody><tr><td>Crush injury of left hand with traumatic amputation of fingers</td><td>Resolved</td><td>12-Jun 78</td><td>Sep 78</td></tr><tr><td>Blunt abdominal trauma</td><td>Resolved</td><td>12-Jun 78</td><td>Jul 78</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Social History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "29762-2",
+                  "display": "Social history note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:84be51b7-ac77-45ab-a229-d877eb2801de"
+              },
+              {
+                "reference": "urn:uuid:99c7ced5-ff56-4b34-8c1e-a80e65bef2de"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Tobacco smoking status</td><td>Ex-smoker</td><td>14-Jan 25</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Stopped 2005; about 30 pack-years before that.</li></ul></td></tr><tr><td>Alcoholic drinks per day</td><td>1.5 /d</td><td>14-Jan 25</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>About 10 standard drinks a week, mostly beer at weekends.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Functional Status",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47420-5",
+                  "display": "Functional Status Assessment Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:76371f0f-0ac3-4c3b-8cd7-8d5cc9e4974d"
+              },
+              {
+                "reference": "urn:uuid:56361004-9203-47ae-ac39-995e71b116e7"
+              },
+              {
+                "reference": "urn:uuid:8c394d39-97cd-4613-8825-d97c54f6cdac"
+              },
+              {
+                "reference": "urn:uuid:c8d39f19-3d75-4398-a909-77150b71ec75"
+              },
+              {
+                "reference": "urn:uuid:a5da6868-af59-487c-adbf-9a0196bc937b"
+              },
+              {
+                "reference": "urn:uuid:bd596bb1-491e-4df4-aed5-1005895636c6"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Hearing functions: MODERATE impairment</td><td>Active</td><td>2010</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>With hearing aids. Face him, speak clearly, and confirm complex information in writing.</li></ul></td></tr><tr><td>Sensation of pain: MODERATE impairment</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Knees and lower back; worse on stairs and after standing.</li></ul></td></tr><tr><td>Walking: performance MILD problem, capacity MODERATE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Walks about 1 km before knee pain stops him; no walking aid.</li></ul></td></tr><tr><td>Lifting and carrying objects: performance MODERATE problem</td><td>Active</td><td>--</td></tr><tr><td>Fine hand use: performance MILD problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Partial loss of the left ring and little fingers.</li></ul></td></tr><tr><td>Immediate family: SUBSTANTIAL facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Wife Margaret manages his medications.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Plan of Care",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "18776-5",
+                  "display": "Plan of Care Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:43aac4c4-4646-4d5e-85db-8ed6ae5dc1d6"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Title</th><th>Status</th><th>Intent</th><th>Period</th><th>Description</th></tr></thead><tbody><tr><td>GP chronic disease management plan</td><td>active</td><td>plan</td><td>14-Jan 25 - 14-Jan 26</td><td>Recently retired (45 years in construction and heavy industry). Main problems are bilateral knee osteoarthritis and chronic mechanical low back pain, limiting walking and lifting, and noise-induced hearing loss, now aided. Cardiovascular risk: treated hypertension and hyperlipidaemia, ex-smoker, BMI 30; LDL above target.\n\nPlan: exercise physiology and physiotherapy under a GP management plan; weight loss to 90 kg; keep NSAID use intermittent (blood pressure, renal function); increase atorvastatin to 40 mg if LDL still above 2.0 in 3 months; annual audiology review; review in 3 months with blood pressure, lipids and renal function. He wants to stay active for his grandchildren and his garden.</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Advance Directives",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "42348-3",
+                  "display": "Advance Healthcare Directives"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a7cb8dc3-509a-48f0-9399-613229ca0a25"
+              },
+              {
+                "reference": "urn:uuid:d5fce86e-99aa-4a09-a6a8-1a7466410244"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Scope</th><th>Category</th><th>Status</th><th>Date</th></tr></thead><tbody><tr><td>Advanced Care Directive</td><td>Enduring power of attorney (medical treatment)</td><td>active</td><td>20-Aug 19</td></tr><tr><td>Advanced Care Directive</td><td>Advance care plan</td><td>active</td><td>02-Dec 24</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Alerts",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "104605-1",
+                  "display": "Alert"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:f2d4e44c-8001-43d1-bbfc-4d45f386eb7f"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Flag</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Hearing impaired: face the patient, speak clearly, and give written instructions</td><td>active</td><td>from 08-Oct 24</td></tr></tbody></table></div>"
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3",
+          "display": "William Robert McKenzie"
+        },
+        "author": [
+          {
+            "reference": "urn:uuid:603933f1-5b93-4af1-a06a-015e0639e875",
+            "display": "Dr Helen Fraser"
+          }
+        ],
+        "custodian": {
+          "reference": "urn:uuid:788bc992-e3fe-43ee-8d3f-de0c7178a4df",
+          "display": "Belmont Family Medical Centre"
+        },
+        "text": {
+          "status": "generated",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p class=\"ips-patient\"><b>William Robert McKenzie</b>, male, DoB: 15-Mar 55</p><table class=\"ips-facts\"><tr><td><b>Contact details</b></td><td>phone: 0429876543; email: bill.mckenzie@bigpond.com</td></tr><tr><td><b>Address</b></td><td>14 Banksia Street, Belmont, 3216, AU</td></tr></table><table class=\"ips-facts\"><tr><td><b>Date</b></td><td>14-Jan 25</td></tr><tr><td><b>Status</b></td><td>final</td></tr><tr><td><b>Type</b></td><td>Patient summary Document</td></tr><tr><td><b>Author</b></td><td>Dr Helen Fraser</td></tr><tr><td><b>Custodian</b></td><td>Belmont Family Medical Centre</td></tr></table></div>"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "94e4d78b-5f77-47aa-8693-618ec6418b26",
+        "name": [
+          {
+            "family": "McKenzie",
+            "given": [
+              "William",
+              "Robert"
+            ]
+          }
+        ],
+        "gender": "male",
+        "birthDate": "1955-03-15",
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "0429876543"
+          },
+          {
+            "system": "email",
+            "value": "bill.mckenzie@bigpond.com"
+          }
+        ],
+        "address": [
+          {
+            "text": "14 Banksia Street, Belmont, 3216, AU"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:603933f1-5b93-4af1-a06a-015e0639e875",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "71c6980f-1228-4b1b-a004-b2210b37bf56",
+        "name": [
+          {
+            "text": "Dr Helen Fraser"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:788bc992-e3fe-43ee-8d3f-de0c7178a4df",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "b3874460-616c-4c55-a79c-804f67c85ca3",
+        "name": "Belmont Family Medical Centre"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5d7abcf3-0295-4f73-be1d-9d825dbb9c95",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "4d16bb1b-2be1-4ab2-a197-194b99152dfc",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "239873007",
+              "display": "Osteoarthritis of knee"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "6736007",
+              "display": "Moderate severity"
+            }
+          ]
+        },
+        "onsetDateTime": "2012",
+        "note": [
+          {
+            "text": "Bilateral, right worse than left. X-ray 2023: moderate medial tibiofemoral joint space narrowing both knees. Orthopaedic review 2023: elected conservative management; knee replacement to be reconsidered if walking tolerance falls below 500 m."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4eb835a7-29eb-40ab-8da3-8a34a538c32d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "fd7a668d-d454-4ef4-99c7-0b798797c2e2",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "278860009",
+              "display": "Chronic low back pain"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "255604002",
+              "display": "Mild"
+            }
+          ]
+        },
+        "onsetDateTime": "2008",
+        "note": [
+          {
+            "text": "Mechanical, no red flags. CT 2021: lumbar spondylosis L4-5, L5-S1, no canal stenosis."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1e70f3a8-530a-4232-96a2-cd01fe497b65",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0c152c32-db2d-4dce-9ff0-69cec291368d",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "60700002",
+              "display": "Sensorineural hearing loss"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "6736007",
+              "display": "Moderate severity"
+            }
+          ]
+        },
+        "onsetDateTime": "2010",
+        "note": [
+          {
+            "text": "Bilateral noise-induced (occupational) loss. Audiogram Sept 2024: moderate to severe high-frequency loss. Bilateral hearing aids fitted Oct 2024."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:eda34c2a-f88b-4c81-8c27-dbcd91535646",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "9070dbd3-6ad7-4785-b6a5-28cfa7d67dd1",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "38341003",
+              "display": "Hypertensive disorder, systemic arterial"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2016",
+        "note": [
+          {
+            "text": "Controlled on amlodipine. Home BP average 132/80."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1d2b26e7-3cac-4c01-ac7b-f7713fd6120d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "efab5c68-766d-4415-9650-cc26ddb5c2c2",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "55822004",
+              "display": "Hyperlipidemia"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2016",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:02ff319e-7508-44ea-b104-897e7b728e63",
+      "resource": {
+        "resourceType": "AllergyIntolerance",
+        "id": "900cf2d9-3610-44f6-9d02-48be5a1a21d8",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "91936005",
+              "display": "Allergy to penicillin"
+            }
+          ]
+        },
+        "type": "allergy",
+        "category": [
+          "medication"
+        ],
+        "criticality": "low",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "1985",
+        "reaction": [
+          {
+            "manifestation": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "126485001",
+                    "display": "Urticaria"
+                  }
+                ]
+              }
+            ],
+            "severity": "moderate",
+            "description": "Generalised urticarial rash 2 days into a course of amoxicillin, 1985. No angioedema or anaphylaxis."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6b6f4647-a107-4b1f-a998-3e476001cdbd",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "71108f67-3775-45b2-9b6e-2883c19340d9",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "387517004",
+              "display": "Paracetamol"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2015-03-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "239873007",
+                "display": "Osteoarthritis of knee"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "1 g twice daily, up to 4 g a day",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1466277c-dbe5-48a4-a026-ea113df1a7be",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "7db11451-baed-4c5c-9bc5-052ad1297273",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "387207008",
+              "display": "Ibuprofen"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2018-06-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "239873007",
+                "display": "Osteoarthritis of knee"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "400 mg three times daily with food when needed, for no more than 5 days at a time",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "Intermittent use only: watch blood pressure and renal function."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1ec61144-536a-4f55-a176-d3b7cea0e8c7",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "6df5ed29-3215-4166-8ec2-ccd0ef7b983a",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "386864001",
+              "display": "Amlodipine"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2016-05-10"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "38341003",
+                "display": "Hypertensive disorder, systemic arterial"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "5 mg once daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6643890b-ec89-442d-9ed4-c51a62fb5c94",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "859dda9e-1276-428f-b660-9ba231a88fa7",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "373444002",
+              "display": "Atorvastatin"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2016-05-10"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "55822004",
+                "display": "Hyperlipidemia"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "20 mg at night",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c3c904b7-8d07-41cb-9281-642b783062d4",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "d43b985b-9e6a-4f5e-a7c1-f586be685151",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836377006",
+              "display": "Influenza virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-04-16",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "6142004",
+                    "display": "Influenza"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:b0566f10-f301-476b-b2a3-adb46c69382f",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "614c595a-fc4a-435b-a470-05242232a310",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "1119349007",
+              "display": "SARS-CoV-2 mRNA vaccine"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-05-20",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "840539006",
+                    "display": "Disease caused by severe acute respiratory syndrome coronavirus 2"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "6"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9701d084-68b1-42f2-accc-988e538039d0",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "f751750f-f373-4bfe-ab31-27a1ff409e4f",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836398006",
+              "display": "Streptococcus pneumoniae antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2020-06-02",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "16814004",
+                    "display": "Pneumococcal infectious disease"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a55a58f5-26fa-46d6-9def-fd7453678dc6",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "5c3abb13-c22e-4774-9729-cdd56bcae93a",
+        "vaccineCode": {
+          "text": "Zoster vaccine, recombinant (Shingrix)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2023-05-11",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "4740000",
+                    "display": "Herpes zoster"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "2"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:cc1e593e-e68e-4371-b74e-7ba88204374f",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "0b65d015-9c11-4ba6-97e0-60a5365e3499",
+        "vaccineCode": {
+          "text": "Diphtheria, tetanus and pertussis vaccine (dTpa)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2019-09-03",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "76902006",
+                    "display": "Tetanus"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3c5ed1b2-b1ed-4899-a575-a5e865cc86b7",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "cebd245e-ff55-467f-87e3-5faca446b061",
+        "code": {
+          "text": "Amputation of left ring and little fingers"
+        },
+        "status": "completed",
+        "performedDateTime": "1978-06-12",
+        "note": [
+          {
+            "text": "Crush injury at work: completion amputation of the left ring and little fingers at the proximal phalanges."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:52fc09da-103e-427c-a822-285aaf67f599",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "f799d576-419f-41c2-a764-9361787e0451",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "80146002",
+              "display": "Excision of appendix"
+            }
+          ]
+        },
+        "status": "completed",
+        "performedDateTime": "1978-06-12",
+        "note": [
+          {
+            "text": "Same admission: laparotomy for blunt abdominal trauma, appendix removed."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c330fa1d-6b7c-46d7-b8c0-5125527aa51d",
+      "resource": {
+        "resourceType": "Device",
+        "id": "9fdb4345-f099-4a85-af1e-eaa0158be465",
+        "deviceName": [
+          {
+            "name": "Behind-the-ear hearing aids, both ears",
+            "type": "user-friendly-name"
+          }
+        ],
+        "type": {
+          "text": "Hearing aid"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e610a1b5-9b34-4f36-b232-272b0a16a5be",
+      "resource": {
+        "resourceType": "DeviceUseStatement",
+        "id": "cadd9da6-1602-4913-a949-978ff60a479b",
+        "status": "active",
+        "timingPeriod": {
+          "start": "2024-10-08"
+        },
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        },
+        "device": {
+          "reference": "urn:uuid:c330fa1d-6b7c-46d7-b8c0-5125527aa51d",
+          "display": "Behind-the-ear hearing aids, both ears"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d2bb011d-4377-42be-95aa-461a9cd01651",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "f4d20b79-03ec-404e-84ba-b35f30446415",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "62238-1",
+              "display": "Glomerular filtration rate [Volume Rate/Area] in Serum, Plasma or Blood by Creatinine-based formula (CKD-EPI)/1.73 sq M"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 78,
+          "unit": "mL/min/{1.73_m2}",
+          "system": "http://unitsofmeasure.org",
+          "code": "mL/min/{1.73_m2}"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-02",
+        "referenceRange": [
+          {
+            "text": ">60"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:2ca47d0c-5db8-4f16-a9e9-98750e3f4328",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "556811bb-63b5-40f9-8c31-8b2af082b308",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "14682-9",
+              "display": "Creatinine [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 88,
+          "unit": "umol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "umol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-02",
+        "referenceRange": [
+          {
+            "text": "60-110"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:b641de2e-63b8-40dd-b36e-59813eaa18e8",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "a4653426-8a37-455b-b30c-226d87cc0181",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "14647-2",
+              "display": "Cholesterol [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 4.6,
+          "unit": "mmol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mmol/L"
+        },
+        "effectiveDateTime": "2024-12-02",
+        "referenceRange": [
+          {
+            "text": "<5.5"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6b274fc3-58ec-4e7e-bfe0-31d688642182",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "57fb474a-3da7-4144-92be-77b4c20c6fbe",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "22748-8",
+              "display": "Cholesterol in LDL [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 2.4,
+          "unit": "mmol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mmol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-02",
+        "referenceRange": [
+          {
+            "text": "<2.0 (treatment target)"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:128e4d77-105f-4b19-a0db-76fe9a58b615",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "e256d1b4-e023-4c19-b27d-ddc510d5f5d9",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel with all children optional"
+            }
+          ],
+          "text": "Blood pressure"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        },
+        "component": [
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6",
+                  "display": "Systolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 138,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4",
+                  "display": "Diastolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 84,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9b21dad4-c215-4567-95ce-3eaa9c99b367",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "85df193f-ffa5-48c1-8d11-ff81f733d9e8",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 72,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:528bdccc-8c65-4050-b5b6-1b0095578967",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "f1406160-de31-4b2e-94eb-1c553c0a64fe",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "29463-7",
+              "display": "Body weight"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 96,
+          "unit": "kg",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7a1ce66c-0469-44c3-b666-ec27443aa622",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "a38e1cf4-4e2d-412b-8f6e-37aca8e7cf79",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8302-2",
+              "display": "Body height"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 178,
+          "unit": "cm",
+          "system": "http://unitsofmeasure.org",
+          "code": "cm"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a1de8e1b-eac0-4dbd-879c-0a425b66f283",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "0f99baaf-b452-425a-9c5a-6ce303059814",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "39156-5",
+              "display": "Body mass index"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 30.3,
+          "unit": "kg/m2",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg/m2"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:70122906-cb41-469c-a0da-99552b978935",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "7535946e-36e4-4791-867e-1ded08651fcc",
+        "code": {
+          "text": "Crush injury of left hand with traumatic amputation of fingers"
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "resolved",
+              "display": "Resolved"
+            }
+          ]
+        },
+        "onsetDateTime": "1978-06-12",
+        "abatementDateTime": "1978-09",
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:941efbd5-1f37-4a20-8778-928c58a65fd8",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "d9fe3528-d17b-4c53-ba2e-96c0c8f5f805",
+        "code": {
+          "text": "Blunt abdominal trauma"
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "resolved",
+              "display": "Resolved"
+            }
+          ]
+        },
+        "onsetDateTime": "1978-06-12",
+        "abatementDateTime": "1978-07",
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:84be51b7-ac77-45ab-a229-d877eb2801de",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "8a87d5a0-7ea0-4e6b-8c76-5f62c56e128c",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "72166-2",
+              "display": "Tobacco smoking status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "8517006",
+              "display": "Ex-smoker"
+            }
+          ]
+        },
+        "effectiveDateTime": "2025-01-14",
+        "note": [
+          {
+            "text": "Stopped 2005; about 30 pack-years before that."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:99c7ced5-ff56-4b34-8c1e-a80e65bef2de",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "5746029c-3bbe-4787-ac63-aa455a9bf568",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "74013-4",
+              "display": "Alcoholic drinks per day"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 1.5,
+          "unit": "/d",
+          "system": "http://unitsofmeasure.org",
+          "code": "/d"
+        },
+        "effectiveDateTime": "2025-01-14",
+        "note": [
+          {
+            "text": "About 10 standard drinks a week, mostly beer at weekends."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:76371f0f-0ac3-4c3b-8cd7-8d5cc9e4974d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0434a1ca-1590-4957-8b61-5611a8780cb4",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b230.2",
+              "version": "2017a",
+              "display": "Hearing functions: MODERATE impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2010",
+        "note": [
+          {
+            "text": "With hearing aids. Face him, speak clearly, and confirm complex information in writing."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:56361004-9203-47ae-ac39-995e71b116e7",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "f71c186c-7cb9-4b92-9c05-16b3afd446a0",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b280.2",
+              "version": "2017a",
+              "display": "Sensation of pain: MODERATE impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Knees and lower back; worse on stairs and after standing."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:8c394d39-97cd-4613-8825-d97c54f6cdac",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "5c7b2f70-54c2-4b3c-b9c0-c206a3b2f45a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d450.12",
+              "version": "2017a",
+              "display": "Walking: performance MILD problem, capacity MODERATE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Walks about 1 km before knee pain stops him; no walking aid."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c8d39f19-3d75-4398-a909-77150b71ec75",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "695733f7-ada5-473b-ad0c-1a3cbc845b13",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d430.2",
+              "version": "2017a",
+              "display": "Lifting and carrying objects: performance MODERATE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a5da6868-af59-487c-adbf-9a0196bc937b",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "58921749-fcf8-4d8c-9461-b76268acdd72",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d440.1",
+              "version": "2017a",
+              "display": "Fine hand use: performance MILD problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Partial loss of the left ring and little fingers."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:bd596bb1-491e-4df4-aed5-1005895636c6",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "671382ce-b921-46b1-b2cc-73746e4a22c4",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e310+3",
+              "version": "2017a",
+              "display": "Immediate family: SUBSTANTIAL facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Wife Margaret manages his medications."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:43aac4c4-4646-4d5e-85db-8ed6ae5dc1d6",
+      "resource": {
+        "resourceType": "CarePlan",
+        "id": "f35b9602-6e94-4113-a88c-4f14a41acc49",
+        "title": "GP chronic disease management plan",
+        "description": "Recently retired (45 years in construction and heavy industry). Main problems are bilateral knee osteoarthritis and chronic mechanical low back pain, limiting walking and lifting, and noise-induced hearing loss, now aided. Cardiovascular risk: treated hypertension and hyperlipidaemia, ex-smoker, BMI 30; LDL above target.\n\nPlan: exercise physiology and physiotherapy under a GP management plan; weight loss to 90 kg; keep NSAID use intermittent (blood pressure, renal function); increase atorvastatin to 40 mg if LDL still above 2.0 in 3 months; annual audiology review; review in 3 months with blood pressure, lipids and renal function. He wants to stay active for his grandchildren and his garden.",
+        "status": "active",
+        "period": {
+          "start": "2025-01-14",
+          "end": "2026-01-14"
+        },
+        "intent": "plan",
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a7cb8dc3-509a-48f0-9399-613229ca0a25",
+      "resource": {
+        "resourceType": "Consent",
+        "id": "bef2f0a8-48bf-4a0e-a568-97795cb07fc8",
+        "category": [
+          {
+            "text": "Enduring power of attorney (medical treatment)"
+          }
+        ],
+        "status": "active",
+        "dateTime": "2019-08-20",
+        "text": {
+          "status": "additional",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Medical treatment decision maker: Margaret McKenzie (wife).</p></div>"
+        },
+        "scope": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+              "code": "adr",
+              "display": "Advanced Care Directive"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d5fce86e-99aa-4a09-a6a8-1a7466410244",
+      "resource": {
+        "resourceType": "Consent",
+        "id": "d449b00a-58ec-42e9-8d2d-e1c2241a3d27",
+        "category": [
+          {
+            "text": "Advance care plan"
+          }
+        ],
+        "status": "active",
+        "dateTime": "2024-12-02",
+        "text": {
+          "status": "additional",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>For full active treatment, including resuscitation. Registered organ donor. Accepts blood transfusion.</p></div>"
+        },
+        "scope": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+              "code": "adr",
+              "display": "Advanced Care Directive"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f2d4e44c-8001-43d1-bbfc-4d45f386eb7f",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "601a4ffc-e7a0-4f8e-9e37-ac3c794c1f56",
+        "code": {
+          "text": "Hearing impaired: face the patient, speak clearly, and give written instructions"
+        },
+        "status": "active",
+        "period": {
+          "start": "2024-10-08"
+        },
+        "subject": {
+          "reference": "urn:uuid:95d8fa48-e96a-4e05-8d4c-d5e0990222a3"
+        }
+      }
+    }
+  ]
+}

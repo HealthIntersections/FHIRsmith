@@ -1,6 +1,6 @@
 {
   "name": "fhirsmith",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "txVersion": "1.11.1-snapshot",
   "description": "A Node.js server that provides a collection of tools to serve the FHIR ecosystem",
   "main": "server.js",
@@ -14,7 +14,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:ci": "jest --ci --coverage --watchAll=false --reporters=default --reporters=jest-junit --verbose",
+    "test:ci": "jest --ci --coverage --watchAll=false --reporters=default --reporters=jest-junit",
     "test:shl": "jest --testPathPatterns=shl",
     "test:vcl": "jest --testPathPatterns=vcl",
     "test:xig": "jest --testPathPatterns=xig",

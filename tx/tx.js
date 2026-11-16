@@ -346,6 +346,7 @@ class TXModule {
       // the LOINC, RxNorm, NDC, UNII, CPT and OMOP databases are the master's; a worker opens
       // them read-only
       this.library.terminologyDatabasesReadOnly = config.clusterRole === 'tx-worker';
+      this.library.oclCluster = config.clusterRole === 'master' ? 'leader' : 'follower';
     }
 
     // The syndication feed: content is recorded in the store as the library loads it, from
@@ -559,6 +560,8 @@ class TXModule {
       // others read req.body / query directly). An explicit cache-id parameter
       // on the request still wins (see setupAdditionalResources).
       opContext.cacheId = req.get('X-Cache-Id') || null;
+      // named in the message if the operation runs out of time
+      opContext.operationName = OperationContext.operationNameFor(req.path);
       // a request another server sent on while resolving a code system through the ecosystem
       // isn't resolved through the ecosystem again (see EcosystemResolver)
       opContext.ecosystemForwarded = !!req.get(FORWARDED_HEADER);

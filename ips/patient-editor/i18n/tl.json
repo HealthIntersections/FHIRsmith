@@ -1,0 +1,380 @@
+{
+  "__lang": "tl",
+  "__note": "Rough Tagalog translation. Many medical terms are English loanwords as is standard in Filipino clinical writing. Needs review by a native speaker before production use.",
+
+  "tabs": {
+    "notes": "Mga Tala",
+    "aboutMe": "Tungkol sa Akin",
+    "myStory": "Aking Kuwento",
+    "medical": "Medikal",
+    "carePlanning": "Pagpaplano ng Pangangalaga",
+    "careNeeds": "Mga Pangangailangan",
+    "bodyParts": "Mga Bahagi ng Katawan",
+    "reproductive": "Reproduktibo"
+  },
+
+  "notes": {
+    "welcomeHtml": "<b>Maligayang pagdating sa Patient Document Generator</b>.",
+    "intro1Html": "Pinapayagan ng website na ito ang pasyente na magbigay ng buod ng kalusugan at mga pangangailangan sa pangangalaga gamit ang <a href=\"https://international-patient-summary.net\">International Patient Summary</a> na pamantayan",
+    "intro2": "Hindi ito kumpletong medikal na kasaysayan at hindi sapat upang magbigay ng pangangalagang pangkapansanan (o anumang ibang uri ng pangangalaga) nang nag-iisa",
+    "intro3": "Hindi ito magandang ginawang user interface; ito ay halimbawang interface na nakatutulong sa mga tao na talakayin/ilarawan ang mga pangangailangan para sa ganitong uri ng mga pahayag.",
+    "intro4": "Pinoproseso ang form na ito nang lokal sa iyong browser; walang impormasyong ipinapadala sa anumang ibang sistema o server, ngunit sa pangkalahatan, ang form na ito ay para sa test data, hindi para sa totoong PHI.",
+    "ipsToggleLabel": " IPS nerd ako, ipakita ang mga IPS mapping."
+  },
+
+  "aboutMe": {
+    "patientDetails": "Detalye ng Pasyente",
+    "nextOfKin": "Pinakamalapit na Kamag-anak",
+    "culturalIdentity": "Pagkakakilanlang Kultural",
+    "genderSection": "Kasarian",
+    "authorSection": "May-akda",
+
+    "nameLabel": "Pangalan ng Pasyente",
+    "nameHint": " (kailangan)",
+    "dobLabel": "Petsa ng Kapanganakan",
+    "dobHint": " (kailangan, YYYY-MM-DD)",
+    "nhiLabel": "Pambansang Health Identifier",
+    "nhiHint": " (kung alam mo; sa ilang bansa ay alam)",
+    "countryLabel": "Country Code",
+    "countryHint": " (2 o 3 letrang code hal. US, AU, NZ)",
+    "emailLabel": "Email",
+    "mobileLabel": "Mobile",
+
+    "nokName": "Pangalan",
+    "nokEmail": "Email",
+    "nokMobile": "Mobile",
+
+    "cultureLabel": "Iyong Kultura",
+    "cultureHint": " (kung sa tingin mo ito ay mahalaga)",
+    "communityLabel": "Iyong Lugar",
+    "communityHelp": "Iyong bansa at/o komunidad, kung mahalaga / kaugnay",
+    "languageLabel": "Nais na Wika",
+    "englishCheckbox": " Kaya kong makipag-usap sa English (o sa lokal na opisyal na wika)",
+    "religionLabel": "Relihiyon",
+    "religionDetails": ". Detalye:",
+
+    "religionOpts": {
+      "notImportant": "Hindi mahalaga",
+      "christian": "Kristiyano",
+      "muslim": "Muslim",
+      "hindu": "Hindu",
+      "buddhist": "Budista",
+      "other": "Iba pa"
+    },
+
+    "genderLabel": "Kasarian",
+    "genderOr": " o ",
+    "genderOpts": {
+      "female": "Babae",
+      "male": "Lalaki",
+      "nonBinary": "Non-binary",
+      "decline": "Ayaw sagutin"
+    },
+
+    "pronounsLabel": "Mga Panghalip",
+    "pronounsOr": " o ",
+    "pronounsOpts": {
+      "sheHer": "siya/sa kanya (babae)",
+      "heHim": "siya/sa kanya (lalaki)",
+      "theyThem": "sila/sa kanila"
+    },
+
+    "sexCharLabel": "Mga katangian ng kasarian ",
+    "sexCharDetails": "Detalye: ",
+    "sexCharOpts": {
+      "typical": "May tipikal akong katangian para sa aking kasarian",
+      "variation": "May kaibahan ako sa tipikal na katangian",
+      "unsure": "Hindi sigurado"
+    },
+
+    "authorNameLabel": "Pangalan",
+    "authorNameHint": " iwanang blangko kung ikaw mismo ang may-akda"
+  },
+
+  "myStory": {
+    "header": "Aking Kuwento",
+    "prompt": "Sino ka? Paano mo ilalarawan ang iyong kalusugan? Ano ang mahalaga sa iyo?",
+    "markdownHintHtml": "(tala para sa techies: maaari itong nasa <a href=\"https://commonmark.org\">markdown</a>)",
+    "goalsHeader": "Aking mga Layunin",
+    "goalsPrompt": "Anong mga partikular na resulta ang mahalaga sa iyo mula sa iyong pangangalaga?",
+    "goalProgress": " Umuusad",
+    "addGoal": "Magdagdag pa ng Layunin"
+  },
+
+  "carePlan": {
+    "heading": "Pagpaplano ng Pangangalaga / Advance Directives",
+    "advocateSection": "Tagapagtaguyod",
+    "advocateName": "Pangalan",
+    "advocateNameHint": "(opsyonal — iwanang blangko ang lahat kung walang tagapagtaguyod)",
+    "advocateEmail": "Email",
+    "advocateMobile": "Mobile",
+    "advocateStatus": "Katayuan",
+    "advocateLegal": " Legal na Power of Attorney",
+    "advocateLegalHint": "(lagyan ng tsek kung may legal na karapatan ang tagapagtaguyod)",
+    "avoidancePrompt": "May sinuman bang dapat iwasang kontakin o kausapin sa ngalan mo — halimbawa, dahil sa mga isyu sa pamilya o relasyon?",
+    "avoidanceHint": "Tala: Pinakamabuting maglista ng Pangalan + Relasyon (isa bawat linya)",
+    "checkPrompt": "Lagyan ng tsek ang naaangkop:",
+    "dnrConsent": " Pumapayag ako sa lahat ng paggamot na naglalayong panatilihin o pahabain ang aking buhay O",
+    "dnrRefuse": " Tinatanggihan ko ang anumang paggamot na naglalayong panatilihin o pahabain ang aking buhay (DNR) ",
+    "donorYes": " Handa akong maging organ donor O",
+    "donorNo": " HINDI ako handang maging organ donor",
+    "bloodYes": " Pumapayag akong tumanggap ng blood transfusion O",
+    "bloodNo": " Hindi ako pumapayag sa blood transfusion ",
+    "acdPromptHtml": "Kung mayroon kang kumpletong Advance Care Directive, ilakip ito dito (bilang .pdf): "
+  },
+
+  "history": {
+    "allergiesSection": "Mga Allergy",
+    "allergyCol": "Allergy",
+    "manifestationCol": "Reaksyon",
+    "addAllergy": "Magdagdag pa ng Allergy",
+    "allergyOpts": {
+      "skin": "Problema sa Balat",
+      "gastro": "Gastro (pagsusuka, pagtatae, atbp.)",
+      "eye": "Problema sa Mata",
+      "wheeze": "Wheezing/hirap sa paghinga ",
+      "anaphylaxis": "Anaphylaxis",
+      "cardiac": "Cardiac Arrest"
+    },
+
+    "issuesSection": "Patuloy na Problemang Pangkalusugan",
+    "issueCol": "Problemang Pangkalusugan",
+    "levelCol": "Antas",
+    "addIssue": "Magdagdag pa ng Isyu",
+    "issueOpts": {
+      "major": "Malaking Hamon sa Buhay",
+      "troublesome": "Nakakaabala",
+      "managed": "May nakaraan pero kontrolado"
+    },
+
+    "medsSection": "Mga Gamot",
+    "medsCol": "Gamot",
+    "dosageCol": "Dosis",
+    "addMedication": "Magdagdag pa ng Gamot",
+
+    "eventsSection": "Mga Nakaraang Pangyayari/Sakit",
+    "eventCol": "Pangyayari",
+    "whenCol": "Kailan",
+    "addEvent": "Magdagdag pa ng Pangyayari",
+    "eventsHelp": "Karaniwang mga pangyayari: malulubhang sakit, operasyon, pagbubuntis/panganganak, kasal, at pagkamatay. Para sa kailan, sapat na ang taon, ngunit pwede ring buwan/araw gamit ang yyyy-mm-dd kung gusto."
+  },
+
+  "needs": {
+    "heading": "Aking mga pangangailangan sa paggana at pagkakakilanlan",
+    "uncheckedNote": "Tala: Huwag lagyan ng tsek ang mga kahon kung hindi ito angkop para sa iyo.",
+    "flagsPromptHtml": "<b>Functional / Identity Flags</b> Nais kong malaman ng aking mga tagapag-alaga ang aking mga alalahanin tungkol sa:",
+    "flag": {
+      "vision": " Paningin ",
+      "hearing": " Pandinig / Pakikinig ",
+      "cognition": " Pag-iisip / pang-unawa / pagproseso ng impormasyon ",
+      "speaking": " Pagsasalita / pakikipag-usap / pakikipag-ugnayang pasalita ",
+      "mobility": " Paggalaw / pag-aalis ng sarili ",
+      "genderAreas": " Paggamit ng mga lugar na nakatakda sa kasarian ",
+      "memory": " Memorya ",
+      "trauma": " Nakaraang Trauma ",
+      "focus": " Konsentrasyon / pananatiling nakapokus ",
+      "addiction": " Pagharap sa aking mga adiksyon ",
+      "smallCommunity": " Galing ako sa maliit at/o malayong komunidad at hindi pamilyar sa akin ang mga lungsod at/o maraming tao. "
+    },
+    "helpPromptHtml": "<b>Maaaring kailangan ko ng tulong sa</b>",
+    "help": {
+      "eating": " Pagkain / Pag-inom ",
+      "toileting": " Pagbabanyo ",
+      "bedExit": " Pagbangon mula sa kama ",
+      "bedIn": " Paggalaw sa kama ",
+      "orientation": " Pagsasanay sa bagong kapaligiran ",
+      "dressing": " Pagbibihis ",
+      "bathing": " Paliligo / Paglilinis ",
+      "meds": " Pag-inom ng aking mga gamot ",
+      "reading": " Pagbabasa ng dokumentasyon "
+    },
+    "havePrompt": "Mayroon ako:",
+    "have": {
+      "guideDog": " Guide Dog / Service Animal ",
+      "wheelchair": " Wheelchair ",
+      "commDevice": " Communication Device "
+    },
+    "haveNotes": "Tala: iba pang posibleng kandidato = hearing aid o cochlear implant, tungkod, prosthetic na binti (….patuloy ang listahang ito)?",
+    "freeTextPromptHtml": "Mayroon ka bang ibang nais sabihin tungkol sa iyong mga pangangailangan sa pangangalaga o pag-aalala, o ipaliwanag ang mga kahong tinikan sa itaas:",
+    "freeTextPlaceholder": "Mayroon ka bang ibang nais sabihin tungkol sa iyong mga pangangailangan o pag-aalala"
+  },
+
+  "census": {
+    "intro": "Dahil sa mga congenital variation, aksidente o medikal na paggamot, maaaring may mga organo o paa kang nawawala na maaaring makaapekto sa iyong paggamot o pangangalaga, o may mga kapalit.",
+    "organCol": "Organo",
+    "statusCol": "Katayuan ",
+    "defaultsBtn": "Default na Halaga para sa Kasarian",
+    "left": "L:",
+    "right": "R:",
+
+    "organ": {
+      "arm": "Braso",
+      "hand": "Kamay",
+      "fingers": "Mga Daliri",
+      "leg": "Binti",
+      "calf": "Bintot ng Binti",
+      "foot": "Paa",
+      "toe": "Mga Daliri ng Paa",
+      "hip": "Balakang",
+      "eye": "Mata",
+      "hypothalamus": "Hypothalamus",
+      "pituitary": "Pituitary",
+      "tongue": "Dila",
+      "jaw": "Panga",
+      "salivary": "Mga Glandula ng Laway",
+      "oesophagus": "Lalamunan (Esophagus)",
+      "largeColon": "Malaking Bituka",
+      "stomach": "Tiyan",
+      "gallBladder": "Apdo",
+      "kidney": "Bato",
+      "liver": "Atay",
+      "bladder": "Pantog",
+      "lung": "Baga",
+      "breasts": "Suso",
+      "ovary": "Obaryo",
+      "uterus": "Matris",
+      "cervix": "Cervix",
+      "vagina": "Puwerta",
+      "penis": "Ari (lalaki)",
+      "prostate": "Prostate",
+      "testis": "Bayag"
+    },
+
+    "status": {
+      "notStated": "Hindi Nakasaad",
+      "notRelevant": "Hindi Naaangkop",
+      "present": "Naroon",
+      "transplanted": "Naipasok / Naipanumbalik",
+      "implant": "Implant / Prosthesis",
+      "missing": "Wala",
+      "notAtBirth": "Wala mula sa pagkapanganak",
+      "partialRemoved": "Bahagyang Tinanggal sa Operasyon",
+      "surgicalRemoved": "Tinanggal sa Operasyon",
+      "lostAccident": "Nawala sa aksidente/pananakit"
+    }
+  },
+
+  "womens": {
+    "pregnancySection": "Pagbubuntis",
+    "pregnancyStatus": "Katayuan",
+    "pregnancyOpts": {
+      "noAnswer": "--",
+      "pregnant": "Buntis",
+      "notPregnant": "Hindi buntis",
+      "possible": "Posibleng buntis"
+    },
+    "lmpLabel": "Huling Regla (LMP)",
+    "lmpHint": " (YYYY-MM(-DD))",
+    "eddLabel": "Inaasahang Petsa ng Panganganak",
+    "eddHint": " (YYY-MM(-DD))",
+
+    "menstruationSection": "Regla",
+    "menstruationStatus": "Katayuan",
+    "menstruationOpts": {
+      "noAnswer": "--",
+      "future": "Wala pa",
+      "current": "Kasalukuyang nagaganap",
+      "past": "Nakaraan na"
+    },
+
+    "frequencyLabel": "Dalas",
+    "frequencyOpts": {
+      "noAnswer": "--",
+      "absent": "Wala",
+      "frequent": "Madalas (<24 araw)",
+      "normal": "Normal (24-38 araw)",
+      "infrequent": "Hindi madalas (>38 araw)"
+    },
+
+    "durationLabel": "Tagal",
+    "durationOpts": {
+      "noAnswer": "--",
+      "normal": "Normal (hanggang 8 araw)",
+      "prolonged": "Mahaba (>8 araw)"
+    },
+
+    "regularityLabel": "Regularidad",
+    "regularityOpts": {
+      "noAnswer": "--",
+      "regular": "Regular na pagkakaiba (pinakamaikli hanggang pinakamahaba <9 araw)",
+      "irregular": "Hindi regular (pinakamaikli hanggang pinakamahaba >9 araw)"
+    },
+
+    "volumeLabel": "Dami ng Daloy",
+    "volumeOpts": {
+      "noAnswer": "--",
+      "heavy": "Marami",
+      "normal": "Normal",
+      "light": "Kaunti"
+    },
+
+    "bleedingLabel": "Pagdurugo sa pagitan ng regla",
+    "bleedingOpts": {
+      "noAnswer": "--",
+      "none": "Wala",
+      "random": "Pasumpong-sumpong",
+      "predictable": "Mahuhulaan"
+    },
+
+    "ironLabel": "Antas ng Iron",
+    "ironOpts": {
+      "noAnswer": "--",
+      "checked": "Nasuri — OK",
+      "unsure": "Hindi sigurado",
+      "low": "Mababa"
+    },
+
+    "mensSection": "Kalusugan ng Lalaki",
+    "edLabel": "Erectile Function",
+    "edOpts": {
+      "noAnswer": "--",
+      "fine": "Maayos",
+      "mild": "Hindi gaanong gumagana",
+      "problem": "Tunay na problema"
+    },
+
+    "urinationLabel": "Pag-ihi",
+    "urinationOpts": {
+      "noAnswer": "--",
+      "fine": "Walang Problema",
+      "medium": "Medyo mahirap",
+      "serious": "Talagang problema"
+    },
+
+    "prostateLabel": "Prostate Cancer",
+    "prostateOpts": {
+      "noAnswer": "--",
+      "never": "Hindi pa nasusuri",
+      "recent": "Nasuri sa loob ng huling dalawang taon",
+      "older": "Nasuri mahigit dalawang taon na ang nakalipas",
+      "unsure": "Hindi sigurado"
+    }
+  },
+
+  "actions": {
+    "testPatientsLabel": "Mga Test Patient: ",
+    "testPatient1": "Retiradong lalaki",
+    "testPatient2": "Bagong ina",
+    "testPatient3": "Lola",
+    "testPatient4": "Binatilyo",
+    "testPatient5": "Dalagita",
+    "uploadIps": "Mag-upload ng IPS Document",
+    "generate": "Bumuo ng Dokumento",
+    "generatedLabel": " Nabuo na. I-download ang ",
+    "downloadJson": "JSON",
+    "downloadZip": "ZIP",
+    "downloadPdf": "PDF",
+    "orSee": " o tingnan ang ",
+    "showJson": "JSON",
+    "showHtml": "Tingnan ng User",
+    "genQr": "QR Code",
+    "genQrX": "GDHCN QR Code",
+    "qrNotesHtml": "Tala sa QR Code: Ang QR Code ay isang <a href=\"https://build.fhir.org/ig/HL7/smart-health-cards-and-links/links-user-stories.html\">SHL Link</a>. Ang GDHCN QR Code ay isang <a href=\"https://build.fhir.org/ig/IHE/ITI.VHL/\">VHDC</a>. Magagamit ang dokumento online sa loob ng ",
+    "qrNotesHtml2": " araw. Ang dokumento ay naka-encrypt sa server gamit ang isang key na tanging nasa QR Code lamang",
+    "errorPanel": "Hindi pa nababuo ang dokumento...",
+    "jsonSourceHtml": "<b>JSON Document Source</b> ",
+    "hideJson": "Itago ang Pinagmulan",
+    "htmlPreviewHtml": "<b>HTML Preview</b> ",
+    "hideHtml": "Itago ang preview"
+  }
+}

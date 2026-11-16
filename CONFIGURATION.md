@@ -157,6 +157,13 @@ Add a `logging` section to `config.json` to control log behaviour. All fields ar
 | `flushSize` | `200` | Number of buffered log lines that trigger an immediate flush regardless of the timer |
 | `stallReportSeconds` | `30` | When the event loop hasn't run for this long (seconds) - a request holding the process with code that never yields - a watchdog thread reads the main thread's stack, and again every as long while the stall lasts (up to 5 times). The stacks go to `logs/stall-<instance code or pid>-<time>.txt` straight away, and into the log as a warning once the event loop runs again. 0: not watched |
 
+The event loop held for 2 seconds or more - synchronous work during which the process answers
+nothing - is logged as a warning, with the requests that were in flight when it began, those that
+finished as it ended first (most likely the one that held it):
+`Event loop blocked for 12.3s; in flight when it began: GET /r4/CodeSystem?url=... (finished as it ended), ...`.
+Each one is counted too, for the daily report (below). This isn't configurable; `stallReportSeconds`
+is for the long ones, while they are still going on (`library/block-monitor.js`).
+
 Errors that are the answer to a request - a client error (4xx) such as an unknown code, an unknown code system or cache-id, or a bad `Accept-Language` - aren't logged: the request's own log line has its status. They are logged (with their stack) when `level` is `debug`.
 
 Log files are written to the `logs/` subdirectory of the data directory as `server-YYYY-MM-DD.log`. A `server.log` symlink always points to the current day's file, so `tail -f data/logs/server.log` tracks the active log without needing to know the date.
@@ -188,8 +195,9 @@ to STARTTLS otherwise. Without an `email` block nothing is emailed, and without
 The report, titled "`{hostName}` daily report", goes out at midnight (the server's local
 time), or as soon as the server is up again if it was down at midnight. It has a paragraph
 on the server's stability since the last report - how much of the time it was up, restarts,
-the longest outage, and any upgrade (from the run history in the statistics database, so
-`stats.enabled: false` leaves the uptime unknown); under the launcher (`cluster.js`), a
+the longest outage, any upgrade (from the run history in the statistics database, so
+`stats.enabled: false` leaves the uptime unknown), and how many times the event loop was held
+for 2, 5 and 10 seconds or more (see [Logging](#logging)); under the launcher (`cluster.js`), a
 paragraph on the cluster - processes that exited or were recycled, how long they were
 unavailable, and the requests the launcher refused or abandoned itself (see
 [cluster.md](cluster.md#the-daily-report)); a paragraph from each running module that
@@ -227,6 +235,8 @@ counts in the statistics database for the period. The modules that report:
 | `FHIRSMITH_WORKERS` | How many tx-workers `node cluster.js` starts, as `--workers` (`server.cluster.workers`) | from the CPUs and memory |
 | `FHIRSMITH_CACHE_WAIT_MS` | How long a tx-worker waits for the master to build a cache it reads (see [cluster.md](cluster.md#what-runs-where)) | `300000` (5 minutes) |
 | `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |
+| `SUPPRESS_LOGS` | `true`: the log isn't written to the console unless `logging.console` says it is - this changes the default (the log files are written either way). CI runs the tests with it: the code under test logs tens of thousands of lines, which bury the results and get the job's log truncated | not set |
+| `UV_THREADPOOL_SIZE` | Threads in libuv's pool, which runs the sqlite3 queries (LOINC, RxNorm, ICD-11, VSAC, the packages and XIG databases), file reads and async gzip. Node's own default is 4, which a few slow queries can fill, holding everything else up. Each process (each cluster worker) has its own pool | `16` |
 
 ## Modules
 

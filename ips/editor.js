@@ -8,15 +8,17 @@
  * The IPS editor, in the browser. The page gives it window.IPS_EDITOR: the schema
  * (ips/editor-schema.js, as JSON), a model to start from (empty, or an existing document's),
  * and the URLs it works with. The model is the editor's state: the form is drawn from it, the
- * inputs write into it, and it is kept in localStorage so a reload doesn't lose it; submitting
- * posts it to the server, which builds the document (ips/composer.js).
+ * inputs write into it, and it is kept in localStorage so a reload doesn't lose it. As it
+ * changes, the server builds the document from it (ips/composer.js) and says whether it is a
+ * minimal IPS yet; the document actions (doc-actions.js) offer to submit, download or share
+ * it once it is. A document file, or a test patient, can be loaded into the editor.
  */
 (function () {
   'use strict';
   var cfg = window.IPS_EDITOR;
   var schema = cfg.schema;
   var root = document.getElementById('ips-editor');
-  var draftKey = 'ips-editor:' + cfg.project;
+  var draftKey = 'ips-editor:' + (cfg.project || '-');
   var model = cfg.model || loadDraft() || emptyModel();
   var open = {};
   var dirty = false;
@@ -32,6 +34,7 @@
   function saveDraft() {
     dirty = true;
     try { localStorage.setItem(draftKey, JSON.stringify(model)); } catch (e) { /* no storage: the page still works */ }
+    rebuild();
   }
   function clearDraft() {
     try { localStorage.removeItem(draftKey); } catch (e) { /* nothing to do */ }
@@ -57,7 +60,7 @@
   }
   function selectInput(obj, name, field) {
     var select = el('select', { class: 'form-control ips-ed-input' }, [el('option', { value: '', text: '' })]);
-    field.options.forEach(function (o) { select.appendChild(el('option', { value: o.code, text: o.display })); });
+    field.options.forEach(function (o) { select.appendChild(el('option', { value: o.code, text: o.label || o.display })); });
     if (field.list) {
       select.multiple = true;
       select.size = Math.min(4, field.options.length);
@@ -227,64 +230,89 @@
     }
     return el('div', { class: 'ips-ed-section' + (def.required ? ' ips-ed-section-required' : '') }, [head, body]);
   }
+  // ---- the document: built on the server as the model changes ----
+
+  var docActions = null;
+  var buildTimer = null;
+  var building = 0;
+  function rebuild() {
+    if (!docActions) { return; }
+    if (buildTimer) { clearTimeout(buildTimer); }
+    buildTimer = setTimeout(function () {
+      var mine = ++building;
+      fetch(cfg.urls.build, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ model: model }), credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { if (mine === building) { docActions.setBundle(j.bundle || null, j.problems || (j.error ? [j.error] : [])); } })
+        .catch(function (e) { if (mine === building) { docActions.setBundle(null, [e.message]); } });
+    }, 700);
+  }
+
+  // ---- loading a document: a file, or a test patient ----
+
+  var loadMessages = el('div', {});
+  function loadBundle(bundle, what) {
+    loadMessages.innerHTML = '<p><i>Loading ' + escapeHtml(what) + '...</i></p>';
+    return fetch(cfg.urls.model, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ bundle: bundle }), credentials: 'same-origin' })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) { var e = new Error(j.error || ('HTTP ' + r.status)); e.problems = j.problems; throw e; } return j; }); })
+      .then(function (j) {
+        model = j.model;
+        open = {};
+        saveDraft();
+        draw();
+        loadMessages.innerHTML = '<p class="text-success">Loaded ' + escapeHtml(what) + '. Anything in it the editor cannot hold is not here.</p>';
+      })
+      .catch(function (e) {
+        loadMessages.innerHTML = '<div class="alert alert-danger"><b>Could not load ' + escapeHtml(what) + ':</b> ' + escapeHtml(e.message) +
+          (e.problems && e.problems.length ? '<ul>' + e.problems.map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') + '</ul>' : '') + '</div>';
+      });
+  }
+  function loadPanel() {
+    var file = el('input', { type: 'file', accept: '.json,application/json,application/fhir+json', style: 'display: none' });
+    file.addEventListener('change', function () {
+      var f = file.files[0];
+      if (!f) { return; }
+      f.text().then(function (text) {
+        var b;
+        try { b = JSON.parse(text); } catch (e) { loadMessages.innerHTML = '<div class="alert alert-danger">' + escapeHtml(f.name) + ' is not JSON: ' + escapeHtml(e.message) + '</div>'; return; }
+        return loadBundle(b, f.name);
+      }).catch(function (e) { loadMessages.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message) + '</div>'; });
+      file.value = '';
+    });
+    var parts = [file, el('button', { type: 'button', class: 'btn btn-default btn-sm', onclick: function () { if (!dirty || window.confirm('Replace what is entered with the document?')) { file.click(); } } }, ['Load an IPS document...'])];
+    if ((cfg.testPatients || []).length) {
+      parts.push(' Test patients: ');
+      cfg.testPatients.forEach(function (tp) {
+        parts.push(el('button', { type: 'button', class: 'btn btn-default btn-sm', onclick: function () {
+          if (dirty && !window.confirm('Replace what is entered with the test patient?')) { return; }
+          fetch(tp.url).then(function (r) { return r.json(); }).then(function (b) { return loadBundle(b, 'the test patient (' + tp.name + ')'); })
+            .catch(function (e) { loadMessages.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message) + '</div>'; });
+        } }, [tp.name]), ' ');
+      });
+    }
+    return el('div', { class: 'ips-ed-load' }, [el('p', {}, parts), loadMessages]);
+  }
+
   function actions() {
-    var messages = el('div', { class: 'ips-ed-messages' });
-    var busy = false;
-    function send(action) {
-      if (busy) { return; }
-      busy = true;
-      messages.innerHTML = '<p><i>' + (action === 'download' ? 'Building the document...' : 'Submitting...') + '</i></p>';
-      var body = { action: action, model: model };
-      var tokenInput = root.querySelector('[name=token]');
-      if (tokenInput) { body.token = tokenInput.value; }
-      fetch(cfg.urls.compose, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: action === 'download' ? 'application/fhir+json' : 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' })
-        .then(function (r) {
-          if (action === 'download' && r.ok) {
-            return r.blob().then(function (b) {
-              var a = el('a', { href: URL.createObjectURL(b), download: 'ips.json' });
-              document.body.appendChild(a); a.click(); document.body.removeChild(a);
-              messages.innerHTML = '<p class="text-success">The document was built; it is downloading.</p>';
-            });
-          }
-          return r.json().then(function (j) {
-            if (!r.ok) {
-              var problems = j.problems && j.problems.length ? j.problems : [j.error || ('HTTP ' + r.status)];
-              messages.innerHTML = '<div class="alert alert-danger"><b>Not ' + (action === 'download' ? 'built' : 'submitted') + ':</b><ul>' + problems.map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('') + '</ul></div>';
-              return;
-            }
-            clearDraft();
-            dirty = false;
-            messages.innerHTML = '<p class="text-success">Submitted as document ' + escapeHtml(String(j.id)) + '. Opening it...</p>';
-            window.location.href = j.url;
-          });
-        })
-        .catch(function (e) { messages.innerHTML = '<div class="alert alert-danger">' + escapeHtml(e.message) + '</div>'; })
-        .finally(function () { busy = false; });
-    }
-    var parts = [];
-    if (cfg.needsToken) {
-      parts.push(el('div', { class: 'ips-ed-field' }, [el('label', { text: 'Submission token *' }), el('input', { type: 'password', name: 'token', class: 'form-control ips-ed-input', autocomplete: 'off' })]));
-    }
-    parts.push(el('p', {}, [
-      el('button', { type: 'button', class: 'btn btn-primary', onclick: function () { send('submit'); } }, ['Submit to ' + cfg.projectName]), ' ',
-      el('button', { type: 'button', class: 'btn btn-default', onclick: function () { send('download'); } }, ['Download JSON']), ' ',
-      el('button', { type: 'button', class: 'btn btn-link', onclick: function () { if (window.confirm('Clear everything entered?')) { model = emptyModel(); open = {}; clearDraft(); draw(); } } }, ['Start again'])
-    ]));
-    parts.push(messages);
-    return el('div', { class: 'ips-ed-actions' }, parts);
+    var holder = el('div', {});
+    docActions = window.IpsDocActions.create(holder, cfg.actions, { onSubmitted: function () { clearDraft(); dirty = false; } });
+    var again = el('p', {}, [el('button', { type: 'button', class: 'btn btn-link', onclick: function () { if (window.confirm('Clear everything entered?')) { model = emptyModel(); open = {}; clearDraft(); dirty = false; draw(); rebuild(); } } }, ['Start again'])]);
+    return el('div', {}, [holder, again]);
   }
   function escapeHtml(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
   function draw() {
     var scroll = window.scrollY;
     root.innerHTML = '';
+    root.appendChild(loadPanel());
     root.appendChild(headerPanel());
     root.appendChild(el('h3', { text: 'Sections' }));
     root.appendChild(el('p', { class: 'ips-small', text: 'The sections in the IPS order; the three the IPS requires are open. For each, enter its entries, write its narrative, or say why it is empty.' }));
     schema.sections.forEach(function (def) { root.appendChild(sectionPanel(def)); });
-    root.appendChild(actions());
+    root.appendChild(actionsPanel || (actionsPanel = actions()));
     window.scrollTo(0, scroll);
   }
+  var actionsPanel = null;
   window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
   draw();
+  rebuild();
 })();

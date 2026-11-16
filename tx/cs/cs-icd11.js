@@ -23,7 +23,7 @@ const { Issue } = require('../library/operation-outcome');
 const { DesignationUse } = require('../library/designations');
 const assert = require('assert');
 const { guarded } = require('../library/sqlite-utilities');
-const { TextQuery, languageOf } = require('../library/text-match');
+const { TextQuery, languageOf, bestRanks } = require('../library/text-match');
 const { TEXT_INDEX_TABLE, isCurrentTextIndex } = require('../importers/icd11-text-index');
 
 // the databases already told they have no text index (see ICD11ServicesFactory.load)
@@ -1007,6 +1007,13 @@ class ICD11Services extends BaseCSServices {
               ${fts ? `OR c.id IN (SELECT concept FROM ${TEXT_INDEX_TABLE} WHERE ${TEXT_INDEX_TABLE} MATCH ? AND lang = ?)` : ''})
           ORDER BY COALESCE(c.lft, c.id)`,
         [this.shared.systemId, ...(code ? [code] : []), ...(fts ? [fts, set.lang] : [])]);
+      // the best match first (TextQuery.nameRank of the concept's best matching name, or codeRank
+      // of its short code), then in the classification's order
+      const ranks = fts ? await bestRanks(set.query, set.lang,
+        await this.#all(`SELECT concept AS key, words AS name FROM ${TEXT_INDEX_TABLE} WHERE ${TEXT_INDEX_TABLE} MATCH ? AND lang = ?`, [fts, set.lang])) : new Map();
+      const ranked = set.rows.map((row, i) => ({ row, i, rank: Math.max(ranks.get(row.id) ?? 0, set.query.codeRank(row.code)) }));
+      ranked.sort((a, b) => (b.rank - a.rank) || (a.i - b.i));
+      set.rows = ranked.map(e => e.row);
     } else {
       // the text, or the start of a short code (searching 1A0 finds 1A00..1A09): the code
       // is a uri now, so the short code is the one a person types
