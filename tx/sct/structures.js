@@ -1150,6 +1150,35 @@ class SnomedReferenceSetMembers {
     return result;
   }
 
+  /**
+   * The languages of the descriptions a reference set's members point at, as
+   * language byte -> member count. Reads the member records in place (a language
+   * reference set has a member per description, over a million in the
+   * International Edition), skipping members that are not descriptions.
+   *
+   * @param {number} index - the reference set's membersByRef
+   * @param {SnomedDescriptions} descriptions
+   * @returns {Map<number, number>}
+   */
+  descriptionLanguages(index, descriptions) {
+    const result = new Map();
+    if (index === SnomedReferenceSetMembers.MAGIC_NO_CHILDREN || index + 5 > this.master.length) {
+      return result;
+    }
+    const count = this.master.readUInt32LE(index);
+    const ids = this.master.readUInt8(index + 4) !== 0;
+    const size = ids ? 35 : 9; // [id 16, module 4, date 2] kind 1, ref 4, values 4
+    let offset = index + 5 + (ids ? 22 : 0);
+    for (let i = 0; i < count && offset + 5 <= this.master.length; i++, offset += size) {
+      if (this.master.readUInt8(offset) !== 1) continue; // 1 = description
+      const ref = this.master.readUInt32LE(offset + 1);
+      if (ref + SnomedDescriptions.DESC_SIZE > descriptions.master.length) continue;
+      const lang = descriptions.master.readUInt8(ref + 31);
+      result.set(lang, (result.get(lang) || 0) + 1);
+    }
+    return result;
+  }
+
   startBuild() {
     checkWritable(this);
     this.builder = [];

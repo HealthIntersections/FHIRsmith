@@ -223,12 +223,22 @@ role group pairing.
 - With no `displayLanguage`, every edition defaults to US then GB English
   preferred synonyms. A concept whose only English description is its FSN
   gets its national-language preferred synonym instead.
-- `sharedData.defaultLanguage` is hard-coded to 1 at import and
-  `getDisplayName` ignores the language argument it is passed. Caches
-  written by the original server hold the default language refset's
-  `membersByRef` offset in that slot instead; `SnomedServices` reads any
-  value that is not a language byte as 1 (English). It is the language a
-  text filter searches when the request names none.
+- `sharedData.defaultLanguage` is the edition's default description
+  language: the language a text or display regex filter searches when the
+  request names none. `getDisplayName` ignores the language argument it is
+  passed. The cache slot it comes from has three conventions, which
+  `SnomedServices` resolves to a language byte:
+  - the importer writes the language byte of the edition's language
+    (`config.language`: the editions table, or `--language`), or 1 if the
+    edition has no active descriptions in it. Caches imported before that
+    hold 1 whatever the edition, and are read as English.
+  - the original server wrote the `membersByRef` offset of the edition's
+    default language refset. It is read as the language most of that
+    refset's member descriptions are in (450828004 -> es in
+    `sct_es_20250510.cache`; 900000000000509007 -> en in the
+    International Edition and in the original server's national caches
+    that name it).
+  - anything else is read as 1 (English).
 
 ### Filters and implicit resources
 
