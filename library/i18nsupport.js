@@ -39,7 +39,7 @@ class I18nSupport {
       for (const file of messageFiles) {
         // Extract language code from filename: Messages_fr_FR.properties -> fr-FR
         const langCode = file
-          .substring(name+'_'.length, file.length - '.properties'.length)
+          .substring((name + '_').length, file.length - '.properties'.length)
           .replace(/_/g, '-');
 
         await this._loadBundle(bundles, langCode, file);
