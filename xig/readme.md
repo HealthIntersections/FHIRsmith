@@ -28,6 +28,7 @@ In `config.json`, under `modules`:
 | `enabled` | false | Run the module, at `/xig` |
 | `autoUpdate` | true | Download the database again every night at 02:00 (server time). `false` keeps whatever is there |
 | `updateToken` | none | A shared secret for `POST /xig/update`, which downloads the database now. Send it in the `x-update-token` header (or from the form on `/xig/stats`). Without it, that endpoint is turned off. The nightly update doesn't need it |
+| `connections` | 4 | How many read-only connections to the database are kept open. A connection runs one query at a time, so with one, every XIG request waits behind any slow page (a crawler paging deep into a list). Each query goes to the least busy connection (`library/sqlite-pool.js`) |
 
 The database is kept at `xig/xig.db` in the data directory. If it isn't there at startup, it is
 downloaded a few seconds after the server starts; until then the pages say there's no

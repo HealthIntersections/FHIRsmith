@@ -147,6 +147,9 @@ describe('packages module: GET /{id}/{version} content negotiation', () => {
     ['application/json, */*;q=0.1'],
     ['application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*; q=0.5']
   ])('Accept: %s gets the version document', async (accept) => {
+    // the earlier downloads' counts are written fire-and-forget, through the writing connection,
+    // and requests read through others: wait for them, so both documents have the same count
+    await module.dbGet('SELECT 1');
     const res = await get(`${PKG}/1.0.0`, { accept });
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/^application\/json/);

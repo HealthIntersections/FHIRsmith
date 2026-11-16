@@ -22,7 +22,7 @@ const {RxNormServicesFactory} = require("./cs/cs-rxnorm");
 const {NdcServicesFactory} = require("./cs/cs-ndc");
 const {UniiServicesFactory} = require("./cs/cs-unii");
 const {SnomedServicesFactory} = require("./cs/cs-snomed");
-const {SnomedFileReader} = require("./sct/structures");
+const {SnomedFileReader, staleCacheReasons} = require("./sct/structures");
 const {SnomedLoadConfig} = require("./sct/load-config");
 const {CPTServicesFactory} = require("./cs/cs-cpt");
 const {OMOPServicesFactory} = require("./cs/cs-omop");
@@ -174,6 +174,12 @@ class Library {
   terminologyDatabasesReadOnly = false;
 
   /**
+   * {number|undefined} modules.tx.loincConnections: how many connections LOINC requests share;
+   * 0, each request opens its own (LoincServicesFactory)
+   */
+  loincConnections = undefined;
+
+  /**
    * {string|null} 'leader', 'follower', or null (no cluster): how the OCL providers behave.
    * Set by tx.js after construction, analogous to the VSAC provider's config.cluster
    */
@@ -246,6 +252,8 @@ class Library {
     this.oclProviderSets = new Map();
     this.oclConfig = {};
     this.ignored = new Set();
+    // SNOMED CT caches that should be imported again: {file, versionUri, cacheVersion, reasons}
+    this.snomedCacheWarnings = [];
 
     // Create package manager for FHIR packages
     const packageServers = ['https://packages2.fhir.org/packages'];
@@ -739,7 +747,7 @@ class Library {
       return;
     }
 
-    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly });
+    const loinc = new LoincServicesFactory(this.i18n, loincFN, { readOnly: this.terminologyDatabasesReadOnly, connections: this.loincConnections });
     await loinc.load();
     this.registerProvider(loincFN, loinc, isDefault);
     this.#syndicateBinary('loinc', loincFN, loinc);
@@ -795,8 +803,26 @@ class Library {
       memoryGuard.measureExcludingFileBacked();
       this.log.info(`SNOMED CT cache files are memory-mapped. ${memoryGuard.describe()}`);
     }
+    this.#checkSnomedCacheFormat(sctFN, sct);
     this.registerProvider(sctFN, sct, isDefault);
     this.#syndicateBinary('snomed', sctFN, sct);
+  }
+
+  /**
+   * A SNOMED CT cache in an older format is still served, but the administrator is told,
+   * when it loads and in the daily report, that it should be imported again, and why
+   * (staleCacheReasons). They import their own editions, and can't otherwise know.
+   */
+  #checkSnomedCacheFormat(sctFN, sct) {
+    const data = sct._sharedData;
+    const reasons = staleCacheReasons(data.cacheVersion);
+    if (reasons.length === 0) {
+      return;
+    }
+    const warning = { file: path.basename(sctFN), versionUri: data.versionUri, cacheVersion: data.cacheVersion, reasons };
+    this.snomedCacheWarnings.push(warning);
+    this.log.warn(`SNOMED CT ${warning.file} (${warning.versionUri}) is in cache format ${warning.cacheVersion}, ` +
+      `written by an older importer: import it again with this version's importer (format 20). Until then, ${reasons.join('; ')}`);
   }
 
   async loadCpt(details, isDefault, mode) {

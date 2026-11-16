@@ -7,6 +7,7 @@
  */
 
 const { SnomedConceptList } = require('./structures');
+const { languageCode } = require('./languages');
 
 const MAX_TERM_LENGTH = 1024;
 // The most an expression may be: real ones are a few hundred characters. A bound on the input
@@ -2506,19 +2507,10 @@ class SnomedExpressionServices {
   }
 
   /**
-   * Get language code from internal language index
+   * The language code of a description's language byte (tx/sct/languages.js)
    */
   codeForLanguage(langIndex) {
-    // Simplified mapping - could be enhanced with proper language reference
-    const languageMap = {
-      1: 'en-US',
-      2: 'en-GB',
-      3: 'es',
-      4: 'fr',
-      5: 'de'
-    };
-
-    return languageMap[langIndex] || 'en-US';
+    return languageCode(langIndex) || 'en';
   }
 
   /**

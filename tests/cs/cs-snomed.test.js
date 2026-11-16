@@ -151,7 +151,7 @@ describe('SNOMED CT Module Import', () => {
     const data = await reader.loadSnomedData();
 
     // Verify basic metadata
-    expect(data.cacheVersion).toBeDefined();
+    expect(data.cacheVersion).toBe('20');
     expect(data.versionUri).toBe('http://snomed.info/xsct/31000003106/version/20250909');
     expect(data.versionDate).toBe('20250909');
     expect(data.edition).toBeDefined();

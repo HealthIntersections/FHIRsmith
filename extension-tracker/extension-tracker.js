@@ -103,6 +103,7 @@ class ExtensionTrackerModule {
     this.stats = stats;
     this.db = null;
     this.urlBase = '/ext-tracker';
+    this.usageCache = null; // the page of all usages (handleUsage), until the next submission
   }
 
   initialize(config, app) {
@@ -420,6 +421,7 @@ class ExtensionTrackerModule {
     });
 
     ingest();
+    this.usageCache = null; // the aggregated usage page (handleUsage) is out of date now
   }
 
   // ---- GET handlers ----
@@ -607,18 +609,37 @@ class ExtensionTrackerModule {
     }
   }
 
+  /**
+   * Usages, aggregated across packages: of one extension (?url=, as the package pages link
+   * to), or of all of them. The query is synchronous (better-sqlite3), and all of them is the
+   * whole table: 2 s and 800 KB on tx.fhir.org, which a spider following the package pages'
+   * links asked for 500 times a day, as the url was ignored. All of them is kept until the next
+   * submission (usageCache).
+   */
   handleUsage(req, res) {
     const startTime = Date.now();
     try {
+      const filterUrl = typeof req.query.url === 'string' && req.query.url !== '' ? req.query.url : null;
+      if (!filterUrl && this.usageCache) {
+        this.stats.countRequest('handleUsage', Date.now() - startTime);
+        this.sendHtmlResponse(res, 'Extension Usage', this.usageCache, startTime);
+        return;
+      }
       // Aggregate usages by extension_url + location, counting distinct packages
       const rows = this.db.prepare(`
         SELECT u.extension_url, u.location, COUNT(DISTINCT u.package_id) as package_count
         FROM usages u
+        ${filterUrl ? 'WHERE u.extension_url = ?' : ''}
         GROUP BY u.extension_url, u.location
         ORDER BY u.extension_url, u.location
-      `).all();
+      `).all(...(filterUrl ? [filterUrl] : []));
 
-      let content = `<p><span id="usage-table-count">${rows.length}</span> usage entries (aggregated across packages)</p>`;
+      let content = '';
+      if (filterUrl) {
+        content += `<p><a href="${this.urlBase}/usage">&laquo; All extensions</a></p>`;
+        content += `<p>Where <code>${escape(filterUrl)}</code> is used</p>`;
+      }
+      content += `<p><span id="usage-table-count">${rows.length}</span> usage entries (aggregated across packages)</p>`;
       content += '<table class="grid" id="usage-table"><tr><th>Extension</th><th>Used on</th><th>Packages</th></tr>';
       for (const r of rows) {
         content += '<tr>';
@@ -632,6 +653,9 @@ class ExtensionTrackerModule {
       content += this.buildColumnFilters('usage-table', [
         { type: 'text' }, { type: 'text' }, { type: 'text' }
       ], 'usagef');
+      if (!filterUrl) {
+        this.usageCache = content;
+      }
 
       this.stats.countRequest('handleUsage', Date.now() - startTime);
       this.sendHtmlResponse(res, 'Extension Usage', content, startTime);

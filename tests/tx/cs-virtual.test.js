@@ -90,6 +90,58 @@ describe('VirtualCodeSystemProvider', () => {
     expect(result.parameter.find(x => x.name === 'display').valueString).toBe('Type 1 diabetes mellitus');
   });
 
+  // tx.hl7.cz's web server refuses $lookup (403, an HTML page) but lets $validate-code through:
+  // that says nothing about the code, so the code is asked about by $validate-code instead
+  const FORBIDDEN = '<html><head><title>403 Forbidden</title></head><body><h1>Forbidden</h1></body></html>';
+  const validateCode = (code, reply, status = 200) => nock('https://other.example')
+    .post('/fhir/CodeSystem/$validate-code', b => b.parameter.some(p => p.name === 'code' && p.valueCode === code) &&
+      b.parameter.some(p => p.name === 'version' && p.valueString === EDITION))
+    .reply(status, reply);
+
+  test('a server that refuses $lookup is asked by $validate-code, and only once refused', async () => {
+    const p = provider();
+    nock('https://other.example').get('/fhir/CodeSystem/$lookup').query(true).reply(403, FORBIDDEN, { 'Content-Type': 'text/html' });
+    validateCode('46635009', { resourceType: 'Parameters', parameter: [
+      { name: 'result', valueBoolean: true }, { name: 'display', valueString: 'Type 1 diabetes mellitus' }] });
+    validateCode('73211009', { resourceType: 'Parameters', parameter: [
+      { name: 'result', valueBoolean: true }, { name: 'display', valueString: 'Diabetes mellitus' }, { name: 'inactive', valueBoolean: true }] });
+    const loc = await p.locate('46635009');
+    expect(loc.context.display).toBe('Type 1 diabetes mellitus');
+    expect(loc.context.inactive).toBe(false);
+    // no second $lookup: there is no interceptor for one
+    const loc2 = await p.locate('73211009');
+    expect(loc2.context.display).toBe('Diabetes mellitus');
+    expect(loc2.context.inactive).toBe(true);
+    expect(nock.isDone()).toBe(true);
+  });
+
+  test('a code $validate-code says isn\'t there is not found, with the server\'s message', async () => {
+    const p = provider();
+    nock('https://other.example').get('/fhir/CodeSystem/$lookup').query(true).reply(403, FORBIDDEN, { 'Content-Type': 'text/html' });
+    validateCode('99999999', { resourceType: 'Parameters', parameter: [
+      { name: 'result', valueBoolean: false }, { name: 'message', valueString: 'Unknown code \'99999999\'' }] });
+    const loc = await p.locate('99999999');
+    expect(loc.context).toBeNull();
+    expect(loc.message).toBe('Unknown code \'99999999\'');
+  });
+
+  test('a code $lookup says isn\'t there is not found, without asking again', async () => {
+    const p = provider();
+    nock('https://other.example').get('/fhir/CodeSystem/$lookup').query(true).reply(404, { resourceType: 'OperationOutcome',
+      issue: [{ severity: 'error', code: 'not-found', details: { text: 'Unknown code \'99999999\'' } }] });
+    const loc = await p.locate('99999999');
+    expect(loc.context).toBeNull();
+    expect(loc.message).toBe('Unknown code \'99999999\'');
+    expect(nock.isDone()).toBe(true);
+  });
+
+  test('when neither $lookup nor $validate-code gets an answer, the code can\'t be checked: an error, not an unknown code', async () => {
+    const p = provider();
+    nock('https://other.example').get('/fhir/CodeSystem/$lookup').query(true).reply(403, FORBIDDEN, { 'Content-Type': 'text/html' });
+    validateCode('46635009', 'Bad gateway', 502);
+    await expect(p.locate('46635009')).rejects.toThrow(/Unable to look up '46635009'.*\$lookup returned 403, not a FHIR response, and \$validate-code returned 502/);
+  });
+
   function virtualProvider(resolver) {
     const provider = Object.create(Provider.prototype);
     provider.ecosystem = resolver;

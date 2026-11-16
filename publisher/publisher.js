@@ -1005,6 +1005,21 @@ class PublisherModule {
     });
   }
 
+  // Discard everything a failed publication run left in the web folder (modified and untracked
+  // files; ignored files are kept). Failures here are logged, not thrown, so the original error
+  // is the one the task reports.
+  async resetWebFolder(task, website) {
+    try {
+      await this.runCommand('git', ['reset', '--hard', 'HEAD'], { cwd: website.git_root }, task.id,
+          'Resetting web folder after failed publication');
+      await this.runCommand('git', ['clean', '-fd'], { cwd: website.git_root }, task.id,
+          'Removing untracked files from web folder');
+    } catch (e) {
+      await this.logTaskMessage(task.id, 'error', 'Web folder ' + website.git_root +
+          ' could not be reset and must be cleaned up by hand before the next publication: ' + e.message);
+    }
+  }
+
   // Confirm the package.tgz files that landed in the web tree are publication builds,
   // not the draft. Throws (failing the task) if a draft package was published.
   async verifyPublishedPackage(task, website, draftDir) {
@@ -1034,10 +1049,12 @@ class PublisherModule {
 
     const relVer = pubPath.substring(baseUrl.length).replace(/^\/+/, '');
     const relCur = relVer.replace(/\/[^/]+\/?$/, ''); // strip the version segment for the "current" copy
-    const candidates = [
-      path.join(website.local_folder, relVer, 'package.tgz'),
-      path.join(website.local_folder, relCur, 'package.tgz')
-    ];
+    const candidates = [path.join(website.local_folder, relVer, 'package.tgz')];
+    // The IG Publisher only replaces the root ("current") copy for milestone and technical correction
+    // runs; a working-mode publication (e.g. a ballot) leaves the current release in place there.
+    if (pr.mode === 'milestone' || pr.mode === 'technical-correction') {
+      candidates.push(path.join(website.local_folder, relCur, 'package.tgz'));
+    }
 
     let checked = 0;
     for (const pkgPath of candidates) {
@@ -1316,7 +1333,14 @@ class PublisherModule {
     // If the IG Publisher's publication run skipped package regeneration (e.g. a Jekyll
     // or template failure), the draft package - flagged notForPublication with a file://
     // url - can survive into the web tree. Catch that here, before anything is committed.
-    await this.verifyPublishedPackage(task, website, draftDir);
+    // If the check fails, the go-publish output is left uncommitted in the web folder, where the
+    // next publication's 'git add .' would sweep it up - so put the web folder back as it was.
+    try {
+      await this.verifyPublishedPackage(task, website, draftDir);
+    } catch (err) {
+      await this.resetWebFolder(task, website);
+      throw err;
+    }
 
     // Step 5c: Move anything too big for GitHub out of the web folder, before it gets staged
     await this.archiveLargeFiles(task, website);

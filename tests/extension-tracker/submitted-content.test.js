@@ -149,3 +149,45 @@ describe('extension tracker: submitting', () => {
     expect(module.db.prepare('SELECT COUNT(*) AS n FROM packages WHERE package = ?').get('other.pkg').n).toBe(0);
   });
 });
+
+describe('extension tracker: usage of one extension', () => {
+  let dir, app, module;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-tracker-usage-'));
+    app = express();
+    module = new ExtensionTrackerModule({ countRequest() {} });
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    module.initialize({ database: path.join(dir, 'ext.db') }, app);
+    module.ingestData({
+      package: 'a.b', version: '1.0.0', fhirVersion: '4.0.1', extensions: [], profiles: {},
+      usage: { 'http://x/one': ['Patient', 'Observation'], 'http://x/two': ['Patient'] }
+    });
+  });
+
+  afterAll(() => {
+    module.db.close();
+    jest.restoreAllMocks();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const count = (html) => Number(/<span id="usage-table-count">(\d+)<\/span>/.exec(html)[1]);
+
+  test('?url= lists that extension\'s usages, not every one (the package pages link to it)', async () => {
+    const res = await request(app).get('/ext-tracker/usage?url=' + encodeURIComponent('http://x/one'));
+    expect(res.status).toBe(200);
+    expect(count(res.text)).toBe(2);
+    expect(res.text).not.toContain('http://x/two');
+  });
+
+  test('all of them, kept until the next submission', async () => {
+    expect(count((await request(app).get('/ext-tracker/usage')).text)).toBe(3);
+    expect(module.usageCache).not.toBeNull();
+    module.ingestData({
+      package: 'c.d', version: '1.0.0', fhirVersion: '4.0.1', extensions: [], profiles: {},
+      usage: { 'http://x/three': ['Encounter'] }
+    });
+    expect(module.usageCache).toBeNull();
+    expect(count((await request(app).get('/ext-tracker/usage')).text)).toBe(4);
+  });
+});

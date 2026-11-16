@@ -273,7 +273,8 @@ describe('Library: SNOMED CT load mode from config', () => {
       expect(log.info).toHaveBeenCalledWith(expect.stringMatching(
         CAN_MAP ? /snomed-testing.cache: load \w+, memory-mapped$/ : /snomed-testing.cache: load \w+, not mapped, read into memory$/));
     }
-    if (CAN_MAP) expect(log.warn).not.toHaveBeenCalled();
+    // nothing about mapping (the committed test cache is in an old format, which is warned about too)
+    if (CAN_MAP) expect(log.warn.mock.calls.filter(c => !/is in cache format/.test(c[0]))).toEqual([]);
   }, 30000);
 
   test('load mmap where mapping fails: read instead, and the server log says so', async () => {

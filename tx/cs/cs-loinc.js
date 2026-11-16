@@ -12,6 +12,10 @@ const { guarded } = require('../library/sqlite-utilities');
 const { Issue } = require('../library/operation-outcome');
 const { isCurrentTextIndex } = require('../importers/loinc-text-index');
 const { languageOf, bestRanks } = require('../library/text-match');
+const { SqlitePool } = require('../../library/sqlite-pool');
+
+// how many connections the requests share (LoincServicesFactory.#pool), unless the library says
+const DEFAULT_CONNECTIONS = 4;
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -214,9 +218,14 @@ class LoincPrep {
 }
 
 class LoincServices extends BaseCSServices {
-  constructor(opContext, supplements, db, sharedData) {
+  /**
+   * @param db - a connection of its own (closed with it), or the factory's pool (left open)
+   * @param {boolean} [ownsDb] - false: db is the factory's pool
+   */
+  constructor(opContext, supplements, db, sharedData, ownsDb = true) {
     super(opContext, supplements);
     this.db = db;
+    this.ownsDb = ownsDb;
 
     // Shared data from factory
     this.langs = sharedData.langs;
@@ -237,7 +246,10 @@ class LoincServices extends BaseCSServices {
   }
 
   close() {
-    this.closeDb();
+    // not the factory's pool, which stays open for the other requests
+    if (this.ownsDb !== false) {
+      this.closeDb();
+    }
   }
 
   // Metadata methods
@@ -1660,6 +1672,9 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     super(i18n);
     this.dbPath = dbPath;
     this.readOnly = !!options.readOnly;
+    // how many connections the requests share (#pool); 0: each request opens its own, as before
+    this.connections = Number.isInteger(options.connections) && options.connections >= 0 ? options.connections : DEFAULT_CONNECTIONS;
+    this._poolPromise = null;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -1679,7 +1694,10 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   async #ensureLoaded() {
     if (!this._loaded) {
-      await this.load();
+      // one load, however many requests arrive before it is done: each load() rebuilds the
+      // shared tables, so loads running side by side left requests reading half-built ones
+      this._loading ??= this.load().finally(() => { this._loading = null; });
+      await this._loading;
     }
   }
 
@@ -2121,6 +2139,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     await this.#ensureLoaded();
     this.recordUse();
 
+    if (this.connections > 0) {
+      const pool = await this.#pool();
+      if (pool) {
+        return new LoincServices(opContext, supplements, pool, this._sharedData, false);
+      }
+    }
+
     // Create read-only database connection for this provider instance
     const db = await new Promise((resolve, reject) => {
       const conn = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
@@ -2141,6 +2166,45 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     });
 
     return new LoincServices(opContext, supplements, db, this._sharedData);
+  }
+
+  /**
+   * The connections the requests share, opened on first use. A request used to open a
+   * connection of its own and close it at the end: opening it, setting it up, and starting
+   * with an empty page cache, every time - a share of a LOINC $validate-code, which takes 4ms
+   * on tx.fhir.org. Several, because a connection runs one query at a time
+   * (library/sqlite-pool.js). Nothing LOINC does needs a connection to itself (no
+   * transactions or temporary tables), so any query can go to any of them. If they can't be
+   * opened, requests open their own as before, and the next request tries again.
+   * @returns {Promise<SqlitePool|null>}
+   */
+  #pool() {
+    if (!this._poolPromise) {
+      this._poolPromise = SqlitePool.open(this.dbPath, {
+        size: this.connections,
+        configure: (db) => new Promise((resolve, reject) => {
+          db.serialize(() => {
+            db.run('PRAGMA cache_size = 10000');
+            db.run('PRAGMA temp_store = MEMORY');
+            db.run('PRAGMA mmap_size = 268435456', (err) => err ? reject(err) : resolve());
+          });
+        })
+      }).catch((error) => {
+        this._poolPromise = null;
+        require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(`Unable to open the LOINC connections (${this.dbPath}), so each request opens its own: ${error.message}`);
+        return null;
+      });
+    }
+    return this._poolPromise;
+  }
+
+  async close() {
+    const promise = this._poolPromise;
+    this._poolPromise = null;
+    const pool = promise ? await promise : null;
+    if (pool && !pool.closed) {
+      await new Promise((resolve) => pool.close(() => resolve()));
+    }
   }
 
   useCount() {

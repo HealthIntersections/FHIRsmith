@@ -17,6 +17,7 @@ const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const { guarded } = require('../library/sqlite-utilities');
+const { SqlitePool } = require('../library/sqlite-pool');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
@@ -1766,20 +1767,19 @@ function initializeDatabase() {
       return;
     }
 
-    xigDb = new sqlite3.Database(XIG_DB_PATH, sqlite3.OPEN_READONLY, async (err) => {
-      if (err) {
-        xigLog.error(`Failed to open XIG database: ${err.message}`);
-        reject(err);
-      } else {
-
-        try {
-          await loadConfigCache();
-        } catch (cacheError) {
-          xigLog.warn(`Failed to load config cache: ${cacheError.message}`);
-        }
-
-        resolve();
+    // Several connections (library/sqlite-pool.js): one runs one query at a time, and a crawler
+    // paging deep into the lists queued every XIG request behind its slow pages (npm.fhir.org)
+    SqlitePool.open(XIG_DB_PATH, { size: xigSettings.connections }).then(async (pool) => {
+      xigDb = pool;
+      try {
+        await loadConfigCache();
+      } catch (cacheError) {
+        xigLog.warn(`Failed to load config cache: ${cacheError.message}`);
       }
+      resolve();
+    }, (err) => {
+      xigLog.error(`Failed to open XIG database: ${err.message}`);
+      reject(err);
     });
   });
 }

@@ -7,7 +7,8 @@ const { DesignationUse } = require('../library/designations');
  * modules.tx.ecosystem in README.md).
  *
  * This is deliberately minimal: only what $validate-code against a value set needs, and with no
- * regard for performance (every concept is a $lookup, every filter check a $validate-code). Every
+ * regard for performance (every concept is a $lookup - or a $validate-code, where the server won't
+ * answer $lookup - and every filter check a $validate-code). Every
  * other method of the code system provider API throws, saying so - the defaults that
  * CodeSystemProvider provides would otherwise give plausible but wrong answers (not abstract, not
  * inactive, no designations...) for a code system that isn't here
@@ -91,10 +92,21 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
     // asking for properties gets only those, so designation too: any designation is a valid
     // display (see designations()), not just the preferred term
     url = url + '&property=inactive&property=notSelectable&property=status&property=designation';
+    if (this._lookupRefused) {
+      return this.#locateByValidateCode(code, this._lookupRefused);
+    }
     const { status, json } = await this.#send(url);
     if (status >= 300 || !json || json.resourceType !== 'Parameters') {
-      const msg = json && json.resourceType === 'OperationOutcome' ? VirtualCodeSystemProvider.#outcomeText(json) : null;
-      return { context: null, message: msg || `Code '${code}' not found on ${this.server}` };
+      if (VirtualCodeSystemProvider.#isAnAnswer(status, json)) {
+        // the server says the code isn't there
+        const msg = VirtualCodeSystemProvider.#outcomeText(json);
+        return { context: null, message: msg || `Code '${code}' not found on ${this.server}` };
+      }
+      // the server didn't answer the question - it refused $lookup (tx.hl7.cz's web server does,
+      // with a 403), failed, or what came back isn't FHIR. That says nothing about the code, so
+      // ask the other way, and for the rest of this request don't ask $lookup again
+      this._lookupRefused = '$lookup ' + VirtualCodeSystemProvider.#describeFailure(status, json);
+      return this.#locateByValidateCode(code, this._lookupRefused);
     }
     const ctxt = { code, display: null, inactive: false, abstract: false, status: null, designations: [] };
     for (const p of json.parameter || []) {
@@ -125,6 +137,57 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
       }
     }
     return { context: ctxt, message: null };
+  }
+
+  /**
+   * Whether a response that isn't a Parameters is the server's answer - an OperationOutcome
+   * saying the code (or code system) isn't there, or the request is wrong - rather than a refusal
+   * or a failure to answer at all (401, 403, 405, 429, 5xx, or not FHIR)
+   */
+  static #isAnAnswer(status, json) {
+    return status >= 400 && status < 500 && ![401, 403, 405, 429].includes(status) &&
+      !!json && json.resourceType === 'OperationOutcome';
+  }
+
+  static #describeFailure(status, json) {
+    if (json && json.resourceType === 'OperationOutcome') {
+      const text = VirtualCodeSystemProvider.#outcomeText(json);
+      return `returned ${status}` + (text ? `: ${text}` : '');
+    }
+    return `returned ${status}` + (json ? '' : ', not a FHIR response');
+  }
+
+  /**
+   * Find a concept with CodeSystem/$validate-code, when the other server won't answer $lookup.
+   * It says whether the code is there, its display, and whether it's inactive - not its other
+   * designations, so only its display is known to be a valid one. If that can't be had either,
+   * the code can't be checked at all, and that is an error: not that the code doesn't exist
+   *
+   * @param {string} code
+   * @param {string} why - what went wrong with $lookup
+   */
+  async #locateByValidateCode(code, why) {
+    const parameters = { resourceType: 'Parameters', parameter: [
+      { name: 'url', valueUri: this.systemUrl },
+      { name: 'code', valueCode: code }
+    ]};
+    if (this.versionId) {
+      parameters.parameter.push({ name: 'version', valueString: this.versionId });
+    }
+    const { status, json } = await this.#send(this.server + '/CodeSystem/$validate-code', parameters);
+    if (status < 300 && json && json.resourceType === 'Parameters') {
+      const param = (name) => (json.parameter || []).find(p => p.name === name);
+      if (param('result')?.valueBoolean !== true) {
+        return { context: null, message: param('message')?.valueString || `Code '${code}' not found on ${this.server}` };
+      }
+      return { context: { code, display: param('display')?.valueString || null,
+        inactive: param('inactive')?.valueBoolean === true, abstract: false, status: null, designations: [] }, message: null };
+    }
+    if (VirtualCodeSystemProvider.#isAnAnswer(status, json)) {
+      return { context: null, message: VirtualCodeSystemProvider.#outcomeText(json) || `Code '${code}' not found on ${this.server}` };
+    }
+    throw new Error(`Unable to look up '${code}' in ${this.vurl()} on ${this.server}: ${why}, and ` +
+      `$validate-code ${VirtualCodeSystemProvider.#describeFailure(status, json)}`);
   }
 
   async code(context) { return typeof context === 'string' ? context : context.code; }

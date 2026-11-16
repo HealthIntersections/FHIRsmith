@@ -6,6 +6,7 @@
 
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
+const { SqlitePool } = require('../library/sqlite-pool');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -198,6 +199,7 @@ class PackagesModule {
     this.router = express.Router();
     this.config = null;
     this.db = null;
+    this.readers = null; // the read connections (openReaders)
     this.crawlerJob = null;
     this.crawler = null;
     this.lastRunTime = null;
@@ -452,7 +454,7 @@ class PackagesModule {
 
         const { query, params: queryParams } = this.buildSecureQuery(baseQuery, conditions);
 
-        this.db.all(query + ' ORDER BY PubDate', queryParams, guarded(reject, (err, rows) => {
+        this.reader.all(query + ' ORDER BY PubDate', queryParams, guarded(reject, (err, rows) => {
           if (err) {
             reject(err);
             return;
@@ -682,7 +684,7 @@ class PackagesModule {
       let completedQueries = 0;
       const totalQueries = 2;
 
-      this.db.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packages = 0;
         } else {
@@ -695,7 +697,7 @@ class PackagesModule {
         }
       }));
 
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packageVersions = 0;
         } else {
@@ -770,6 +772,7 @@ class PackagesModule {
     await this.initializeDatabase();
     await this.dbRun(PACKAGE_DIST_TABLE);
     await this.dbRun(PACKAGE_SIGNATURES_TABLE);
+    await this.openReaders();
 
     // Ensure mirror directory exists
     await this.ensureMirrorDirectory();
@@ -995,6 +998,36 @@ class PackagesModule {
       this.db.run('PRAGMA journal_mode = WAL');
       this.db.run('PRAGMA busy_timeout = 5000');
     });
+  }
+
+  /**
+   * The connections the requests read through (this.reader). A connection runs one query at a
+   * time (library/sqlite-pool.js), and with one for everything, /id, /download (which reads the
+   * tarball out of the database), the catalog and the crawler's writes all queued behind each
+   * other. this.db stays the only one that writes; the readers are opened once the tables are
+   * made, read-write but only read through (WAL: they don't wait for the writer, nor it for
+   * them). Without them (they couldn't be opened, or readConnections is 0) this.db reads too.
+   */
+  async openReaders() {
+    const size = this.config.readConnections ?? 4;
+    if (!(size > 0)) {
+      return;
+    }
+    try {
+      this.readers = await SqlitePool.open(this.getDatabasePath(), {
+        size,
+        mode: sqlite3.OPEN_READWRITE,
+        configure: (db) => new Promise((resolve, reject) => db.run('PRAGMA busy_timeout = 5000', err => err ? reject(err) : resolve()))
+      });
+    } catch (e) {
+      pckLog.warn(`Unable to open the packages database's read connections, so it is read through the one connection: ${e.message}`);
+      this.readers = null;
+    }
+  }
+
+  /** What requests read through: the read connections, or the one connection without them */
+  get reader() {
+    return this.readers || this.db;
   }
 
   async createTables() {
@@ -2073,7 +2106,7 @@ class PackagesModule {
                    WHERE PubDate >= ?
                    ORDER BY PubDate DESC`;
 
-      this.db.all(sql, [date], guarded(reject, (err, rows) => {
+      this.reader.all(sql, [date], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2390,12 +2423,15 @@ class PackagesModule {
         }
       }
 
-      // First try exact version match
-      let packageData = await this.findPackageVersion(id, version, true);
+      // First try exact version match. The tarball itself is only read when it is sent from
+      // here: npm.fhir.org redirects every download to the bucket (35k a day), and read each
+      // one's Content - megabytes - out of the database just to see that it was there
+      const withContent = !this.config.bucketPath;
+      let packageData = await this.findPackageVersion(id, version, true, withContent);
 
       // If not found, try fuzzy match (version + '-%' for pre-release versions)
       if (!packageData) {
-        packageData = await this.findPackageVersion(id, version, false);
+        packageData = await this.findPackageVersion(id, version, false, withContent);
       }
 
       if (!packageData) {
@@ -2411,6 +2447,8 @@ class PackagesModule {
         let bucketUrl = this.getBucketUrl(secure);
         const redirectUrl = `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
         res.redirect(redirectUrl);
+        // a download, though the bucket sends it (npm.fhir.org: all of them)
+        void this.incrementDownloadCounts(packageData.PackageVersionKey, id); // fire-and-forget; errors handled internally
         return;
       }
 
@@ -2433,16 +2471,20 @@ class PackagesModule {
     return bucketUrl;
   }
 
-  async findPackageVersion(id, version, exactMatch) {
+  /**
+   * @param {boolean} [withContent] - false: not the tarball (Content), just whether there is one
+   */
+  async findPackageVersion(id, version, exactMatch, withContent = true) {
+    const columns = withContent ? 'PackageVersionKey, Content' : 'PackageVersionKey';
     return new Promise((resolve, reject) => {
       let sql;
       if (exactMatch) {
-        sql = `SELECT PackageVersionKey, Content
+        sql = `SELECT ${columns}
                FROM PackageVersions
                WHERE Id = ?
                  AND Version = ?`;
       } else {
-        sql = `SELECT PackageVersionKey, Content
+        sql = `SELECT ${columns}
                FROM PackageVersions
                WHERE Id = ?
                  AND Version LIKE ?
@@ -2453,7 +2495,7 @@ class PackagesModule {
         ? [id, version]
         : [id, `${version}-%`];
 
-      this.db.get(sql, params, guarded(reject, (err, row) => {
+      this.reader.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
@@ -2587,7 +2629,7 @@ class PackagesModule {
                    WHERE Id = ?
                    ORDER BY PubDate DESC`;  // Changed from ASC to DESC for most recent first
 
-      this.db.all(sql, [id], guarded(reject, (err, rows) => {
+      this.reader.all(sql, [id], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2606,7 +2648,7 @@ class PackagesModule {
                    FROM PackageDependencies
                    WHERE PackageVersionKey IN (${placeholders})`;
 
-      this.db.all(sql, packageVersionKeys, guarded(reject, (err, rows) => {
+      this.reader.all(sql, packageVersionKeys, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -3057,7 +3099,7 @@ class PackagesModule {
 
   async getTotalPackageCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
@@ -3069,7 +3111,7 @@ class PackagesModule {
 
   async getTotalDownloadCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], guarded(reject, (err, row) => {
+      this.reader.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
@@ -3373,6 +3415,17 @@ class PackagesModule {
       await this.distBackfill;
     }
 
+    if (this.readers) {
+      const readers = this.readers;
+      this.readers = null;
+      await new Promise((resolve) => readers.close((err) => {
+        if (err) {
+          pckLog.error('Error closing the packages database read connections:', err.message);
+        }
+        resolve();
+      }));
+    }
+
     // Close database connection
     if (this.db) {
       return new Promise((resolve, reject) => {
@@ -3428,7 +3481,7 @@ class PackagesModule {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT Id, Version FROM PackageVersions';
 
-      this.db.all(sql, [], guarded(reject, (err, rows) => {
+      this.reader.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -3455,7 +3508,7 @@ class PackagesModule {
                         PackageVersions
                    WHERE PackageDependencies.PackageVersionKey = PackageVersions.PackageVersionKey`;
 
-      this.db.all(sql, [], guarded(reject, (err, rows) => {
+      this.reader.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {

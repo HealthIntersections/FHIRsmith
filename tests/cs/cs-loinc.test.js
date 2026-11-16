@@ -854,14 +854,19 @@ describe('LOINC Provider', () => {
       // CLASS part. One provider per request, as the server does
       const f = new LoincServicesFactory(opContext.i18n, testDbPath);
       const statements = [];
+      const counted = new Set();
       async function validate(property, operator, value, code) {
         const p = await f.build(opContext, []);
-        for (const method of ['all', 'get', 'each']) {
-          const original = p.db[method];
-          p.db[method] = function (sql, ...args) {
-            statements.push(sql);
-            return original.call(p.db, sql, ...args);
-          };
+        // the requests share the factory's connections: count each one's queries once
+        if (!counted.has(p.db)) {
+          counted.add(p.db);
+          for (const method of ['all', 'get', 'each']) {
+            const original = p.db[method];
+            p.db[method] = function (sql, ...args) {
+              statements.push(sql);
+              return original.call(p.db, sql, ...args);
+            };
+          }
         }
         try {
           const prep = await p.getPrepContext(false);

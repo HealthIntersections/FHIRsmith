@@ -5,6 +5,19 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- SNOMED CT: **import your SNOMED CT editions again** with this version's importer. It writes cache format 20, and the server now says, when it loads a cache in an older format and in the daily report every day, that the cache should be imported again, and why. Older caches still load and are served as before, but, depending on the importer that wrote them:
+  - effective dates are a day early, if the cache was built in a time zone ahead of UTC (fixed in 1.0.0, but the cache format didn't change, so the server couldn't tell)
+  - descriptions in any language other than English, French, Dutch, Spanish, Swedish, Danish, German, Italian and Czech are labelled English: Norwegian, Finnish, Estonian, Korean, Portuguese... The importer now records every ISO 639-1 language (`tx/sct/languages.js`), and any other code as English with a warning
+  - a text or display regex filter with no request language searches English, not the edition's own language: the importer now records the edition's language (from its editions table, or `--language`)
+  - caches older than format 19 have no concrete values (ECL concrete value refinements are reported as unsupported)
+
+  A format 20 cache can't be read by an older server
+- SNOMED CT: a request in Norwegian finds descriptions under either `no` or `nb`/`nn`
+
 ## [1.0.3] - 2026-11-16
 
 ### Added

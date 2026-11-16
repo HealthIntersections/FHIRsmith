@@ -44,7 +44,9 @@ function all(dbPath, sql) {
 const indexes = async (dbPath) => (await all(dbPath, "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%'")).map(r => r.name);
 const journalMode = async (dbPath) => (await all(dbPath, 'PRAGMA journal_mode'))[0].journal_mode;
 const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-const tryWrite = (db) => new Promise(resolve => db.run('CREATE TABLE write_test (x)', err => resolve(err ? err.code : null)));
+// all(), not run(): a LOINC provider's db is the factory's connection pool (library/sqlite-pool.js),
+// which only has get() and all(); a write through all() is refused the same way
+const tryWrite = (db) => new Promise(resolve => db.all('CREATE TABLE write_test (x)', [], err => resolve(err ? err.code : null)));
 
 /** A copy of the LOINC test database in rollback-journal mode, with or without the load indexes. */
 async function loincCopy(dir, withIndexes) {
@@ -97,6 +99,7 @@ describe('LOINC and RxNorm databases in a tx-worker', () => {
       expect(await tryWrite(provider.db)).toBe('SQLITE_READONLY');
     } finally {
       provider.close();
+      await worker.close(); // the pool's connections
     }
     expect(sha(dbPath)).toBe(before);
     expect(await indexes(dbPath)).toEqual(expect.not.arrayContaining(LOINC_INDEXES));
