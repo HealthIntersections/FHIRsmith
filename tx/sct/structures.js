@@ -1167,7 +1167,7 @@ class SnomedReferenceSetMembers {
     }
     const count = this.master.readUInt32LE(index);
     const ids = this.master.readUInt8(index + 4) !== 0;
-    const size = ids ? 35 : 9; // [id 16, module 4, date 2] kind 1, ref 4, values 4
+    const size = ids ? 31 : 9; // [id 16, module 4, date 2] kind 1, ref 4, values 4
     let offset = index + 5 + (ids ? 22 : 0);
     for (let i = 0; i < count && offset + 5 <= this.master.length; i++, offset += size) {
       if (this.master.readUInt8(offset) !== 1) continue; // 1 = description

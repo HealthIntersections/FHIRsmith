@@ -186,6 +186,22 @@ describe('SNOMED text search', () => {
         expect(await codes(english, 'appendicitis')).toContain('74400008');
       }, 60000);
 
+      test('descriptionLanguages counts what getMembers reads, with and without member ids', () => {
+        let withIds = 0;
+        for (let i = 0; i < sct.refSetIndex.count(); i++) {
+          const { membersByRef } = sct.refSetIndex.getReferenceSet(i);
+          const expected = new Map();
+          for (const m of sct.refSetMembers.getMembers(membersByRef) || []) {
+            if (m.kind !== 1) continue;
+            const lang = sct.descriptions.getDescription(m.ref).lang;
+            expected.set(lang, (expected.get(lang) || 0) + 1);
+          }
+          if (sct.refSetMembers.master.readUInt8(membersByRef + 4) !== 0) withIds++;
+          expect(sct.refSetMembers.descriptionLanguages(membersByRef, sct.descriptions)).toEqual(expected);
+        }
+        expect(withIds).toBeGreaterThan(0);
+      });
+
       test('a slot that is neither is read as English', async () => {
         const services = servicesWith(51756144); // no reference set's members start there
         expect(services.defaultLanguage).toBe(1);
