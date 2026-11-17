@@ -151,7 +151,7 @@ class PackageCrawler {
 
     this.log.info('Running web crawler for packages using master URL: '+ this.config.masterUrl);
     try {
-      this.cleanMirrorTempFiles();
+      await this.cleanMirrorTempFiles();
     } catch (e) {
       this.log.warn(`Could not clean the package mirror: ${e.message}`);
     }
@@ -1003,21 +1003,25 @@ class PackageCrawler {
   // Removes mirror files that a crawler stopped before renaming into place. Only files old
   // enough that nothing can still be writing them: the mirror may be shared, and in a
   // container the pid in the name is no guide.
-  cleanMirrorTempFiles(maxAgeMs = MIRROR_TMP_MAX_AGE_MS) {
+  //
+  // Asynchronous: the mirror holds every package (tens of thousands of files), and listing it
+  // with readdirSync at the start of a crawl, on a server just started (nothing of the folder
+  // in the disk cache), held npm.fhir.org's event loop for 2.3 s (2026-11-16).
+  async cleanMirrorTempFiles(maxAgeMs = MIRROR_TMP_MAX_AGE_MS) {
     if (!this.config.mirrorPath || !fs.existsSync(this.config.mirrorPath)) {
       return 0;
     }
     const cutoff = Date.now() - maxAgeMs;
     let removed = 0;
-    for (const name of fs.readdirSync(this.config.mirrorPath)) {
+    for (const name of await fs.promises.readdir(this.config.mirrorPath)) {
       if (!name.includes(MIRROR_TMP_MARKER)) {
         continue;
       }
       const file = path.join(this.config.mirrorPath, name);
       try {
-        const stat = fs.statSync(file);
+        const stat = await fs.promises.stat(file);
         if (stat.isFile() && stat.mtimeMs < cutoff) {
-          fs.rmSync(file, { force: true });
+          await fs.promises.rm(file, { force: true });
           removed++;
         }
       } catch (e) {
