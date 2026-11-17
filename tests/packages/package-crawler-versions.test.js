@@ -212,7 +212,7 @@ describe('crawler: one copy of each id#version', () => {
     expect(tmpFiles()).toEqual([]);
   });
 
-  test('stale temporary mirror files are cleaned up, recent ones and packages are left', () => {
+  test('stale temporary mirror files are cleaned up, recent ones and packages are left', async () => {
     const dir = path.join(env.tmp, 'mirror');
     const stale = path.join(dir, 'ex.x-1.0.0.tgz.tmp-1');
     const recent = path.join(dir, 'ex.y-1.0.0.tgz.tmp-1');
@@ -223,7 +223,7 @@ describe('crawler: one copy of each id#version', () => {
     const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
     fs.utimesSync(stale, old, old);
     fs.utimesSync(pkg, old, old);
-    expect(env.crawler.cleanMirrorTempFiles()).toBe(1);
+    expect(await env.crawler.cleanMirrorTempFiles()).toBe(1);
     expect(fs.readdirSync(dir).sort()).toEqual(['ex.y-1.0.0.tgz.tmp-1', 'ex.z-1.0.0.tgz']);
   });
 

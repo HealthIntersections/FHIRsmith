@@ -553,6 +553,11 @@ class PackageManager {
             const result = await new CIBuildClient().loadFromCIBuild(packageId);
             return result.stream;
         }
+        if (version && version.startsWith('current$')) {
+            // the CI build of a branch
+            const result = await new CIBuildClient().loadFromCIBuild(packageId, version.substring('current$'.length));
+            return result.stream;
+        }
         for (const server of this.packageServers) {
             try {
                 const packageData = await this.fetchFromServer(server, packageId, version);

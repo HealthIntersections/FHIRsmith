@@ -60,7 +60,11 @@ const STYLE = `
   .ips-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; color: white; font-size: 85%; white-space: nowrap; }
   .ips-table { font-size: 90%; }
   .ips-table td, .ips-table th { vertical-align: top; }
+  .ips-entry:target { background: #fff3cd; outline: 2px solid #ffc107; }
+  details.ips-sql { display: inline-block; margin-left: 8px; font-size: 80%; font-weight: normal; }
+  details.ips-sql summary { cursor: pointer; color: #0056b3; }
   .ips-json { white-space: pre-wrap; word-break: break-all; font-size: 85%; background: #f8f9fa; padding: 8px; border: 1px solid #dee2e6; font-family: monospace; }
+  .ips-userbar { float: right; font-size: 85%; background: #eef3f8; border: 1px solid #c5d3e0; border-radius: 4px; padding: 3px 10px; margin: 0 0 8px 12px; }
   .ips-banner { background: #ede7f6; border: 1px solid #d1c4e9; border-radius: 4px; padding: 10px 14px; margin-bottom: 10px; }
   .ips-banner-flagged { display: flex; align-items: center; gap: 14px; }
   .ips-flag { height: 40px; width: auto; max-width: 80px; border: 1px solid #d1c4e9; flex: none; }
@@ -321,7 +325,7 @@ function userBar(ctx) {
   const base = escape(ctx.base);
   const u = ctx.user;
   if (!u) {
-    return `<div style="float: right; font-size: 85%"><a href="${base}/login">Login</a></div>`;
+    return `<div class="ips-userbar"><a href="${base}/login">Login</a></div>`;
   }
   const parts = [`Logged in as <b>${escape(u.name)}</b>`];
   if (u.isAdmin) {
@@ -329,9 +333,10 @@ function userBar(ctx) {
     parts.push(`<a href="${base}/admin/users">Users</a>`);
     parts.push(`<a href="${base}/StructureDefinition">Clinical profiles</a>`);
     parts.push(`<a href="${base}/national-profiles">National profiles</a>`);
+    parts.push(`<a href="${base}/reports">Reports</a>`);
   }
   parts.push(`<form method="post" action="${base}/logout" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
-  return `<div style="float: right; font-size: 85%">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
+  return `<div class="ips-userbar">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
 }
 
 function projectUrl(ctx, project) {
@@ -362,6 +367,7 @@ function renderHome(projects, ctx) {
     '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
     `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain, and ` +
     `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define. ` +
+    `<a href="${escape(ctx.base)}/reports">Reports</a> are tables of data drawn from the documents, with SQL statements summarising them, shown in each project. ` +
     `The <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents. ` +
     `To make an IPS document - to download, share as a QR code, or submit to a project - <a href="${escape(ctx.base)}/compose">compose a document</a>.</p>`;
   if (projects.length === 0) {
@@ -511,7 +517,7 @@ function select(query, name, values, label, anyLabel) {
 /** The links under a project's title. */
 function projectNav(project, ctx) {
   const purl = projectUrl(ctx, project);
-  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a> <a class="btn btn-default" href="${purl}/compose">Compose a document</a> <a class="btn btn-default" href="${purl}/Patient">Patients</a>`;
+  let h = `<div class="ips-actions-line"><a class="btn btn-primary" href="${purl}/submit">Submit a document</a> <a class="btn btn-default" href="${purl}/compose">Compose a document</a> <a class="btn btn-default" href="${purl}/Patient">Patients</a> <a class="btn btn-default" href="${purl}/reports">Reports</a>`;
   if (ctx.canManage) {
     h += ` <a class="btn btn-default" href="${purl}/settings">Settings</a>`;
   }
@@ -1070,23 +1076,7 @@ function conceptHtml(cc, codeSystemLink) {
     if (!isObject(c)) {
       continue;
     }
-    const sys = systemName(c.system);
-    const parts = [];
-    const external = isExternalSystem(c.system);
-    if (sys) {
-      const href = external ? linkForSystem(c.system) : (codeSystemLink ? codeSystemLink(c.system) : null);
-      let h = linked(escape(sys), href, text(c.system));
-      if (text(c.version)) {
-        const v = describeVersion(c.version);
-        h += ` <small>[${linked(escape(v.text), null, v.title ? `${v.title} (${c.version})` : c.version)}]</small>`;
-      }
-      parts.push(h);
-    }
-    const codeHref = external ? linkForCode(c.system, c.version, c.code) : null;
-    parts.push(`<code>${linked(escape(text(c.code)), codeHref, null)}</code>`);
-    if (text(c.display)) {
-      parts.push(`"${escape(c.display)}"`);
-    }
+    const parts = [codingHtml(c, codeSystemLink)];
     // a coding the translate step added (in the analysed copy)
     const tr = translationOf(c);
     if (tr) {
@@ -1099,6 +1089,37 @@ function conceptHtml(cc, codeSystemLink) {
     return '<i>(empty)</i>';
   }
   return `<ul>${items.join('')}</ul>`;
+}
+
+/**
+ * A coding, as the terminology view shows one: the code system by name (the URL on hover; an
+ * external system links to its own browser, any other to the code system on the terminology
+ * server), the version if there is one, the code (linked, for an external system), the display.
+ *
+ * @param {Object} c - {system, version, code, display}
+ * @param {Function|null} codeSystemLink - system URL -> href on the tx server, or null for no server
+ */
+function codingHtml(c, codeSystemLink) {
+  const sys = systemName(c.system);
+  const parts = [];
+  const external = isExternalSystem(c.system);
+  if (sys) {
+    const href = external ? linkForSystem(c.system) : (codeSystemLink ? codeSystemLink(c.system) : null);
+    let h = linked(escape(sys), href, text(c.system));
+    if (text(c.version)) {
+      const v = describeVersion(c.version);
+      h += ` <small>[${linked(escape(v.text), null, v.title ? `${v.title} (${c.version})` : c.version)}]</small>`;
+    }
+    parts.push(h);
+  } else if (text(c.system)) {
+    parts.push(escape(c.system));
+  }
+  const codeHref = external ? linkForCode(c.system, c.version, c.code) : null;
+  parts.push(`<code>${linked(escape(text(c.code)), codeHref, null)}</code>`);
+  if (text(c.display)) {
+    parts.push(`"${escape(c.display)}"`);
+  }
+  return parts.join(' ');
 }
 
 /**
@@ -2396,11 +2417,44 @@ function renderSource(row, durl, ctx) {
       form('vhl', `A Verifiable Health Link (GDHCN) to ${what}, as a QR code`, 'Share as VHL') + '</div>';
     h += sharePanelScript();
   }
-  h += `<pre class="ips-json">${escape(JSON.stringify(doc, null, 2))}</pre>`;
+  h += `<pre class="ips-json">${sourceJsonHtml(doc)}</pre>`;
   h += '<div class="ips-explain"><p class="ips-small">Original is the document as it was submitted. Modified is what the processing ended up with: ' +
     'codings added to CodeableConcepts by translation (marked with an extension saying where they came from), the narrative generated by this server, ' +
     'and an extension on each CodeableConcept recording the terminology check. The original is never changed. Either can be shared, as a SMART Health Link or a Verifiable Health Link.</p></div>';
   return h;
+}
+
+/**
+ * The anchor for a document entry in the source view: the resource's type/id, or the entry's
+ * fullUrl when the resource has no id - the resource part of the key a report gives it
+ * (reports.js keyFor), so a report row can link to its resource.
+ */
+function entryAnchor(entry) {
+  const r = isObject(entry) && isObject(entry.resource) ? entry.resource : null;
+  if (r && text(r.resourceType) && text(r.id)) {
+    return `${r.resourceType}/${r.id}`;
+  }
+  return isObject(entry) && text(entry.fullUrl) ? entry.fullUrl : null;
+}
+
+/**
+ * A Bundle as pretty-printed JSON, each entry wrapped in a span with the entry's anchor as its
+ * id (highlighted when it is the page's target).
+ */
+function sourceJsonHtml(doc) {
+  if (!isObject(doc) || !Array.isArray(doc.entry) || doc.entry.length === 0) {
+    return escape(JSON.stringify(doc, null, 2));
+  }
+  // each entry's place is held by a marker string, replaced by the entry - indented to fit - in its span
+  const markers = doc.entry.map((e, i) => `\u0000entry${i}\u0000`);
+  const json = escape(JSON.stringify({ ...doc, entry: markers }, null, 2));
+  // (escape() has made the marker's quotes &quot;)
+  return json.replace(/^( *)(?:"|&quot;)\\u0000entry(\d+)\\u0000(?:"|&quot;)(,?)$/gm, (m, indent, n, comma) => {
+    const entry = doc.entry[Number(n)];
+    const body = escape(JSON.stringify(entry, null, 2)).split('\n').map((l, i) => (i === 0 ? l : indent + l)).join('\n');
+    const anchor = entryAnchor(entry);
+    return indent + (anchor ? `<span class="ips-entry" id="${escape(anchor)}">${body}</span>` : body) + comma;
+  });
 }
 
 /** The QR code and its links, as the share page and the panel show them. */
@@ -2547,7 +2601,8 @@ const STEP_LABELS = {
   national: ['National Profiles', 'view=national'],
   terminology: ['Terminology', 'view=terminology'],
   profiles: ['Clinical Profiles', 'view=profiles'],
-  ai: ['AI Assessment', 'view=ai']
+  ai: ['AI Assessment', 'view=ai'],
+  reports: ['Reports', null]
 };
 
 /**
@@ -2635,9 +2690,300 @@ function renderDocument(project, row, view, ctx) {
   return h;
 }
 
+// ---- reports -------------------------------------------------------------------------------
+
+function reportCrumbs(ctx, extra) {
+  let h = `<p class="ips-small"><a href="${escape(ctx.base)}">IPS projects</a> &raquo; <a href="${escape(ctx.base)}/reports">Reports</a>`;
+  return h + (extra ? ` &raquo; ${escape(extra)}` : '') + '</p>';
+}
+
+/** Where a report's table is up to, in words. */
+function reportStateText(build) {
+  if (!build) {
+    return '';
+  }
+  const docs = (n) => `${n} document${n === 1 ? '' : 's'}`;
+  let t;
+  if (build.state === 'ready') {
+    t = `Ready (${docs(build.docs)})`;
+  } else if (build.state === 'building') {
+    t = `Being built: ${build.docs} of ${docs(build.total)} done`;
+  } else {
+    t = 'Waiting to be built';
+  }
+  if (build.state !== 'ready' && build.live) {
+    t += ' - the previous table is shown meanwhile';
+  }
+  if (build.errors) {
+    t += `; the view failed on ${docs(build.errors)}`;
+  }
+  return t;
+}
+
+const REPORT_EXPLANATION = 'A report is a table of data drawn from every document in a project by a SQL on FHIR ' +
+  '<a href="https://sql-on-fhir.org/ig/StructureDefinition-ViewDefinition.html">ViewDefinition</a>, run over the documents as submitted, ' +
+  'the documents as processed, or their validation outcomes, and SQL statements that summarise the table. The administrator defines the reports; ' +
+  'each project shows them for its own documents.';
+
+/** The list of reports (the administrator can add them). */
+function renderReports(list, ctx, sources) {
+  const base = escape(ctx.base);
+  let h = STYLE + userBar(ctx) + `<p class="ips-small"><a href="${base}">IPS projects</a> &raquo; Reports</p>`;
+  h += '<div class="ips-banner"><b class="ips-project-name">Reports</b></div>';
+  h += `<p>${REPORT_EXPLANATION}${ctx.user?.isAdmin ? '' : ' Only the administrator can change them.'}</p>`;
+  if (ctx.user?.isAdmin) {
+    h += `<div class="ips-actions-line"><a class="btn btn-primary" href="${base}/reports/new">Add a report</a></div>`;
+  }
+  if (list.length === 0) {
+    return h + '<p>There are no reports yet.</p>';
+  }
+  h += '<table class="table table-sm table-striped ips-table"><tr><th>Report</th><th>Table</th><th>Runs over</th><th>Statements</th><th>Table state</th></tr>';
+  for (const r of list) {
+    h += `<tr><td><a href="${base}/reports/${encodeURIComponent(r.id)}">${escape(r.title)}</a>` +
+      (r.description ? `<br/><span class="ips-small">${escape(r.description)}</span>` : '') + '</td>' +
+      `<td><code>${escape(r.id)}</code></td><td>${escape(sources[r.source] || r.source)}</td><td>${r.statements.length}</td>` +
+      `<td>${escape(reportStateText(r.build))}</td></tr>`;
+  }
+  return h + '</table>';
+}
+
+/** A report's definition: everyone can see it; the administrator can edit, download and delete it. */
+function renderReportDefinition(report, ctx, sources) {
+  const base = escape(ctx.base);
+  const rurl = `${base}/reports/${encodeURIComponent(report.id)}`;
+  let h = STYLE + userBar(ctx) + reportCrumbs(ctx, report.title);
+  h += `<div class="ips-banner"><div class="ips-project-name"><b>${escape(report.title)}</b></div>` +
+    (report.description ? `<div class="ips-facts">${escape(report.description)}</div>` : '') + '</div>';
+  h += '<div class="ips-actions-line">';
+  if (ctx.user?.isAdmin) {
+    h += `<a class="btn btn-primary" href="${rurl}/edit">Edit</a> ` +
+      `<form method="post" action="${rurl}/delete" class="ips-inline" data-confirm="${escape(`Delete the report '${report.title}' and its table?`)}">${csrfField(ctx.csrf)}` +
+      '<button type="submit" class="btn btn-default">Delete</button></form> ';
+  }
+  h += `<a class="btn btn-default" href="${rurl}?download=1">Download</a></div>`;
+  h += '<table class="table table-sm ips-table">' +
+    `<tr><td>Table</td><td><code>${escape(report.id)}</code></td></tr>` +
+    `<tr><td>Runs over</td><td>${escape(sources[report.source] || report.source)}</td></tr>` +
+    `<tr><td>Table state</td><td>${escape(reportStateText(report.build))}</td></tr></table>`;
+  h += '<p class="ips-small">Each project shows this report for its own documents, under its Reports.</p>';
+  h += '<h3>SQL statements</h3>';
+  if (report.statements.length === 0) {
+    h += '<p>None: the report is its table.</p>';
+  }
+  for (const s of report.statements) {
+    h += `<h4>${escape(s.name)}</h4><pre class="ips-json">${escape(s.sql)}</pre>`;
+  }
+  h += '<h3>ViewDefinition</h3>' + `<pre class="ips-json">${escape(JSON.stringify(report.view, null, 2))}</pre>`;
+  return h;
+}
+
+/**
+ * The administrator's form for a report. form is what was posted (when it is being shown again
+ * with its problems), else it is filled from the report.
+ */
+function renderReportEditor(report, form, issues, ctx, sources) {
+  const base = escape(ctx.base);
+  const f = form || (report ? {
+    title: report.title, description: report.description || '', source: report.source,
+    view: JSON.stringify(report.view, null, 2), statements: report.statements
+  } : { title: '', description: '', source: 'uploaded', view: '', statements: [] });
+  const action = report ? `${base}/reports/${encodeURIComponent(report.id)}` : `${base}/reports`;
+  let h = STYLE + userBar(ctx) + reportCrumbs(ctx, report ? `Edit ${report.title}` : 'New report');
+  h += `<div class="ips-banner"><b class="ips-project-name">${report ? `Edit report: ${escape(report.title)}` : 'New report'}</b></div>`;
+  if (issues && issues.length > 0) {
+    h += '<div class="alert alert-danger"><b>The report can\'t be saved:</b><ul>' + issues.map(i => `<li>${escape(i)}</li>`).join('') + '</ul></div>';
+  }
+  h += `<form method="post" action="${action}">${csrfField(ctx.csrf)}`;
+  h += '<div class="mb-2"><label for="r-title"><b>Title</b></label>' +
+    `<input id="r-title" name="title" type="text" class="form-control" required value="${escape(f.title)}"/></div>`;
+  h += '<div class="mb-2"><label for="r-description"><b>Description</b></label>' +
+    `<textarea id="r-description" name="description" class="form-control" rows="2">${escape(f.description)}</textarea></div>`;
+  h += '<div class="mb-2"><label for="r-source"><b>Runs over</b></label> <select id="r-source" name="source">' +
+    Object.entries(sources).map(([k, v]) => `<option value="${escape(k)}"${k === f.source ? ' selected' : ''}>${escape(v)}</option>`).join('') + '</select></div>';
+  h += '<div class="mb-2"><label for="r-view"><b>ViewDefinition</b> (JSON)</label>' +
+    '<p class="ips-small">An R4 ViewDefinition (SQL on FHIR). Its name names the report\'s table' + (report ? ', and can\'t be changed' : '') +
+    '. Every column needs a type. Over the documents, it is a view of Bundle - the document - that walks to what it wants ' +
+    '(<code>"forEach": "entry.resource.ofType(Condition)"</code>, say), with references resolved inside the document; over the validation outcomes, it is a view of OperationOutcome. ' +
+    'getResourceKey() and getReferenceKey() keys are the document id, then the resource\'s. The FHIR validator checks the view (with the SQL on FHIR IG) before it is saved. ' +
+    'When the view or what it runs over changes, the table is rebuilt from every document, in the background.</p>' +
+    `<textarea id="r-view" name="view" class="form-control ips-json" rows="24" spellcheck="false" style="font-family: monospace; font-size: 85%">${escape(f.view)}</textarea></div>`;
+  h += '<h4>SQL statements</h4><p class="ips-small">Each is a SELECT, shown with its output on the report. A statement sees each report\'s table under its name, ' +
+    'with the view\'s columns, <code>_document</code> (the document\'s id) and <code>_project</code> - holding only the rows of the project the report is being looked at in. ' +
+    'Collection and complex columns hold JSON (SQLite\'s <code>json_each()</code> can unpack them). Leave a statement\'s name and SQL empty to remove it.</p>' +
+    '<p class="ips-small">How tables are shown: a <code>resource_key</code> column (from <code>getResourceKey()</code>) links to the resource in its document\'s source; ' +
+    '<code>X_system</code> + <code>X_code</code> (+ <code>X_display</code>) columns are shown as one column <code>X</code>, the coding as the terminology view shows it.</p>';
+  const statements = [...(f.statements || []), { name: '', sql: '' }, { name: '', sql: '' }];
+  statements.forEach((s, i) => {
+    h += '<div class="mb-2 ips-statement">' +
+      `<input name="stmt_name" type="text" class="form-control" placeholder="Statement ${i + 1}: its name" aria-label="Statement ${i + 1} name" value="${escape(s.name || '')}" style="margin-bottom: 2px"/>` +
+      `<textarea name="stmt_sql" class="form-control" rows="4" spellcheck="false" placeholder="SELECT ..." aria-label="Statement ${i + 1} SQL" style="font-family: monospace; font-size: 85%">${escape(s.sql || '')}</textarea></div>`;
+  });
+  h += '<button type="submit" class="btn btn-primary">Save</button> ' +
+    `<a class="btn btn-default" href="${report ? `${base}/reports/${encodeURIComponent(report.id)}` : `${base}/reports`}">Cancel</a></form>`;
+  return h;
+}
+
+/** A project's reports. */
+function renderProjectReports(project, list, ctx, sources) {
+  const purl = projectUrl(ctx, project);
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Reports');
+  h += `<div class="ips-banner"><div class="ips-project-name"><b>${escape(project.name)}</b>: Reports</div></div>`;
+  h += projectNav(project, ctx);
+  h += `<p>${REPORT_EXPLANATION} <a href="${escape(ctx.base)}/reports">All the reports</a>.</p>`;
+  if (list.length === 0) {
+    return h + '<p>There are no reports yet.</p>';
+  }
+  h += '<table class="table table-sm table-striped ips-table"><tr><th>Report</th><th>Runs over</th><th>Table state</th></tr>';
+  for (const r of list) {
+    h += `<tr><td><a href="${purl}/reports/${encodeURIComponent(r.id)}">${escape(r.title)}</a>` +
+      (r.description ? `<br/><span class="ips-small">${escape(r.description)}</span>` : '') + '</td>' +
+      `<td>${escape(sources[r.source] || r.source)}</td><td>${escape(reportStateText(r.build))}</td></tr>`;
+  }
+  return h + '</table>';
+}
+
+function reportCell(v) {
+  if (v === null || v === undefined) {
+    return '<td class="ips-null"></td>';
+  }
+  return `<td>${escape(String(v))}</td>`;
+}
+
+/**
+ * Where a resource in a document is shown, for a report's resource_key: the document's source
+ * (original or modified, as the report runs over), at the resource's anchor; for the
+ * validation outcomes, the validation view.
+ */
+function resourceLink(purl, key, source) {
+  const m = /^(\d+)\/(.+)$/.exec(String(key));
+  if (!m) {
+    return escape(String(key));
+  }
+  const durl = `${purl}/Bundle/${m[1]}`;
+  const href = source === 'outcomes' ? `${durl}?view=validation`
+    : `${durl}?view=source${source === 'transformed' ? '&amp;source=modified' : ''}#${encodeURIComponent(m[2]).replace(/%2F/g, '/')}`;
+  return `<a href="${href}">${escape(`#${m[1]} ${m[2]}`)}</a>`;
+}
+
+/**
+ * How a report table is presented, from its column names (conventions the administrator can
+ * write views to):
+ *   resource_key            - a link to the resource in its document (resourceLink); the
+ *                             _document column, which it already says, isn't shown
+ *   _document               - otherwise, a link to the document
+ *   X_system + X_code       - one column X, the coding as the terminology view shows one
+ *     (+ X_display)           (codingHtml), with its display when there is an X_display
+ *   ViewRowKey, _project    - not shown
+ * @returns {Array<{title: string, cell: function(row): string}>}
+ */
+function reportColumns(columns, purl, source, codeSystemLink) {
+  const index = new Map(columns.map((c, i) => [c, i]));
+  const used = new Set(['ViewRowKey', '_project']);
+  if (index.has('resource_key')) {
+    used.add('_document');
+  }
+  const out = [];
+  for (const c of columns) {
+    if (used.has(c)) {
+      continue;
+    }
+    const pair = /^(.+)_system$/.exec(c);
+    if (pair && index.has(`${pair[1]}_code`)) {
+      const x = pair[1];
+      const [si, ci, di] = [index.get(c), index.get(`${x}_code`), index.get(`${x}_display`)];
+      used.add(`${x}_code`);
+      if (di !== undefined) {
+        used.add(`${x}_display`);
+      }
+      out.push({
+        title: x,
+        cell: (row) => (row[si] === null && row[ci] === null ? '<td class="ips-null"></td>'
+          : `<td>${codingHtml({ system: row[si], code: row[ci], display: di === undefined ? null : row[di] }, codeSystemLink)}</td>`)
+      });
+      continue;
+    }
+    if (/^.+_code$/.test(c) && index.has(c.replace(/_code$/, '_system'))) {
+      continue; // shown with its _system
+    }
+    const i = index.get(c);
+    if (c === 'resource_key') {
+      out.push({ title: 'resource', cell: (row) => (row[i] === null ? '<td class="ips-null"></td>' : `<td>${resourceLink(purl, row[i], source)}</td>`) });
+    } else if (c === '_document') {
+      out.push({ title: 'document', cell: (row) => (Number.isInteger(row[i]) ? `<td><a href="${purl}/Bundle/${row[i]}">${row[i]}</a></td>` : reportCell(row[i])) });
+    } else {
+      out.push({ title: c, cell: (row) => reportCell(row[i]) });
+    }
+  }
+  return out;
+}
+
+/** A statement's output, or the table's rows, as a table (reportColumns says how). */
+function reportTable(result, purl, source, codeSystemLink) {
+  if (result.error) {
+    return alert(result.error, 'danger');
+  }
+  if (result.rows.length === 0) {
+    return '<p class="ips-small">No rows.</p>';
+  }
+  const cols = reportColumns(result.columns, purl, source, codeSystemLink);
+  let h = '<div style="overflow-x: auto"><table class="table table-sm table-striped ips-table ips-report"><tr>' +
+    cols.map(c => `<th>${escape(c.title)}</th>`).join('') + '</tr>';
+  for (const row of result.rows) {
+    h += '<tr>' + cols.map(c => c.cell(row)).join('') + '</tr>';
+  }
+  return h + '</table></div>';
+}
+
+/**
+ * A report for a project: each statement (name, SQL, output), then the table itself (its first
+ * rows), and the documents the view failed on.
+ */
+function renderProjectReport(project, report, out, problem, errors, ctx, maxRows) {
+  const purl = projectUrl(ctx, project);
+  const rurl = `${purl}/reports/${encodeURIComponent(report.id)}`;
+  let h = STYLE + userBar(ctx) + crumbs(ctx, project, null).replace(/<\/p>$/, '') +
+    ` &raquo; <a href="${purl}/reports">Reports</a> &raquo; ${escape(report.title)}</p>`;
+  h += `<div class="ips-banner"><div class="ips-project-name"><b>${escape(report.title)}</b></div>` +
+    (report.description ? `<div class="ips-facts">${escape(report.description)}</div>` : '') + '</div>';
+  h += projectNav(project, ctx);
+  if (report.build && report.build.state !== 'ready') {
+    h += alert(reportStateText(report.build), 'info');
+  }
+  h += alert(problem, 'danger');
+  if (!out) {
+    return h;
+  }
+  const link = ctx.codeSystemLink || null;
+  for (const s of out.statements) {
+    // the SQL is behind its own link: the output is what matters here
+    const sql = (report.statements.find(x => x.name === s.name) || {}).sql || '';
+    h += `<h3>${escape(s.name)} <details class="ips-sql"><summary>source</summary><pre class="ips-json">${escape(sql)}</pre></details></h3>`;
+    h += reportTable(s, purl, report.source, link);
+    if (s.more) {
+      h += `<p class="ips-small">Only the first ${maxRows} rows are shown.</p>`;
+    }
+  }
+  h += `<h3>The table: <code>${escape(report.id)}</code></h3>`;
+  if (!out.raw) {
+    h += '<p>The table has not been built yet.</p>';
+  } else if (out.raw.error) {
+    h += alert(out.raw.error, 'danger');
+  } else {
+    const shown = out.raw.rows.length;
+    h += `<p class="ips-small">${shown < out.raw.total ? `The first ${shown} of ${out.raw.total} rows` : `${out.raw.total} row${out.raw.total === 1 ? '' : 's'}`} ` +
+      `(<a href="${rurl}/csv">download them all as CSV</a>). <a href="${escape(ctx.base)}/reports/${encodeURIComponent(report.id)}">The report's definition</a>.</p>`;
+    h += reportTable(out.raw, purl, report.source, link);
+  }
+  if (errors && errors.length > 0) {
+    h += '<h3>Documents the view failed on</h3><table class="table table-sm ips-table"><tr><th>Document</th><th>Why</th></tr>' +
+      errors.map(e => `<tr><td><a href="${purl}/Bundle/${e.doc_id}">${e.doc_id}</a></td><td>${escape(e.message)}</td></tr>`).join('') + '</table>';
+  }
+  return h;
+}
+
 module.exports = {
   analysisOk,
   renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
-  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
+  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };

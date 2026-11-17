@@ -196,7 +196,7 @@ const MODULES = {
     validator: validatorSpec
   }),
   vcl: obj({ enabled: bool() }),
-  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: str({ nonEmpty: true }), connections: int({ min: 1 }) }),
+  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: str({ nonEmpty: true }), connections: int({ min: 1 }), baseUrl: str({ nonEmpty: true }) }),
   packages: obj({
     enabled: bool(),
     database: str({ nonEmpty: true, required: true }),

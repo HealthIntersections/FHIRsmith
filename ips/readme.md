@@ -187,7 +187,7 @@ message of the step that failed. Each step's own state (`waiting`, `running`, `d
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
 document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
-**national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI. Translation, the narrative,
+**national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI; and run it into the [**reports**](#reports). Translation, the narrative,
 validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
 document in `document_results` (one row per step - the validation outcome), or in the
 **analysed copy** - a second copy of the document (`documents.analysed_json`) that the steps
@@ -482,6 +482,16 @@ adds to or overrides them - else not known, and the totals say how many calls ha
 cost. The answer is the model's opinion, and the page
 says so.
 
+### Reports
+
+The last step (`reports`): the document's rows are deleted from every [report](#reports) table, and the document is run
+through every report's ViewDefinition again - the document as submitted, as processed (the analysed copy, as this run
+left it), or its validation outcome, as each report says. The rows go into each report's table when it is built for the
+report's current definition, and into a table being rebuilt when the rebuild has already got past the document (it will
+reach the others itself). A view that fails on the document (a column given more values than it allows, say) leaves no
+rows from the document in that table; the failure is recorded against the report and shown with it in the project -
+the report is what needs fixing - and the step's note says which reports failed. With no reports, the step is skipped.
+
 ## Patients
 
 Each project has a Patient endpoint, `{project}/Patient`, for reading and searching the
@@ -759,6 +769,67 @@ dots), the version a package version (`1.0.0`, `1.1.0-ballot`), and the profile 
 The SNOMED CT edition is chosen from a list - the editions in `SNOMED_LINKABLE_EDITIONS` (`tx/sct/editions.js`, the
 editions snomed.info can link to), by name - and kept as the edition's module id (`900000000000207008` for the
 International Edition, `32506021000036107` for the Australian), the id in its edition URI `http://snomed.info/sct/{id}`.
+
+## Reports
+
+A report is a table of data drawn from every document by a [SQL on FHIR](https://sql-on-fhir.org) ViewDefinition, and
+zero or more SQL statements that summarise it. The administrator defines them (`/ips/reports`; everyone can see the
+definitions, and download them as JSON); each project shows them for its own documents (`/ips/{code}/reports`): each
+statement's name, SQL and output (the first 1000 rows), then the table's own rows (the first 1000, and how many there
+are), a CSV download of all the project's rows (up to 100000), and the documents the view failed on.
+
+A report has a title, a description, what it runs over, the ViewDefinition and its statements:
+
+- **Runs over** - *the documents as submitted*, *the documents as processed* (the analysed copy: translations,
+  generated narrative), or *the validation outcomes*. Over the documents, the view is of Bundle - the document - and
+  walks to what it wants (`"forEach": "entry.resource.ofType(Condition)"`), with references resolved inside the
+  document (`library/sql/memory-provider.js`: `urn:uuid:` and RESTful fullUrls, then type and id). Over the validation
+  outcomes, the view is of OperationOutcome, and sees the validation step's outcome for each document. National profile
+  outcomes are not included.
+- **The ViewDefinition** - R4 (the documents are R4: `fhirVersion` is set to `4.0.1` when it isn't given, and must
+  include it when it is). Its name names the report and its table, so it can't be changed once the report is made, and must
+  be unique. Every column needs a type. It is checked first for what the runner needs (`library/sql`), then by the FHIR
+  validator, with the SQL on FHIR IG loaded (`modules.ips.reports.package`, `org.sql-on-fhir.ig#2.0.0` by default),
+  against the IG's ViewDefinition logical model; its errors stop the report being saved. `getResourceKey()` and
+  `getReferenceKey()` give the document's id, then the resource's key (`1234/Patient/p1`; a resource with no id is
+  known by its entry's fullUrl), since the same `Patient/p1` turns up in many documents.
+- **The statements** - each a named SELECT (only statements that read are accepted: each is prepared against every
+  report's table when it is saved). A statement sees each report's table by name, holding only the rows of the project
+  it is being looked at in: each table has the view's columns and `_document` (the document id) and `_project`, and the
+  statement runs with a TEMP VIEW of each table's project rows in front of the table. Collection and complex columns
+  hold JSON (SQLite's `json_each()` unpacks them).
+
+How a project shows a report: each statement by its name, with its output - the SQL is behind a "source" link
+beside the name - then the table. Tables (a statement's output, or the report's own) are presented by their column
+names, so views and statements can be written to these conventions:
+
+- `resource_key` (a `getResourceKey()` column) - a link to the resource in its document: the document's Source tab
+  (Original, or Modified for a report over the processed documents) at the resource's entry, which is highlighted;
+  for a report over the validation outcomes, the document's Validation tab. The `_document` column, which the key
+  already says, isn't shown. The Source tab has an anchor on every entry: the resource's type/id, or the entry's
+  fullUrl when the resource has no id - the key without its document id.
+- `_document` (when there is no `resource_key`) - a link to the document.
+- `X_system` and `X_code` - one column, `X`, showing the coding as the terminology view does: the code system by
+  name (the URL on hover, linked to its browser or to the code system on the terminology server), then the code;
+  with `X_display` too when there is one. Empty when both are null.
+- `ViewRowKey` and `_project` aren't shown.
+
+The CSV download has the columns as they are.
+
+The tables are in a SQLite database of their own (`modules.ips.reports.database`, by default `ips-reports.db` beside the
+IPS database), so that rebuilding one, or a statement gone wrong, can't touch anything else. Each has a `ViewRowKey`,
+`_project`, `_document`, then the view's columns, typed as library/sql's SQLite storage types them. When a report is
+added, or its view or what it runs over changes, its table is rebuilt in the background: the processing queue, after
+the documents waiting, builds a new table (`_build_{name}`) from every document the pipeline has finished with, a few at
+a time (`buildBudgetMs`, 2000 ms a turn), then swaps it in for the old one - which is shown meanwhile, with a note.
+Changing only the title, description or statements rebuilds nothing. Where a build is up to is kept (`_builds`), so it
+carries on after a restart; a report whose table isn't built for its definition when the server starts (the reports
+database was deleted, say) is built again, and tables of reports that no longer exist are dropped. Deleting a document
+or a project deletes its rows; deleting a report drops its table.
+
+The statements run in a child process, on a read-only connection, killed after `queryTimeoutSeconds` (10): better-sqlite3
+runs a statement synchronously to the end and can't interrupt it, and a worker thread can't be stopped inside one, so a
+runaway statement would otherwise hold the server.
 
 ## FHIRPath functions
 

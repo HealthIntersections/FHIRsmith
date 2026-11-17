@@ -1506,7 +1506,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -3003,7 +3003,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai']);
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
   });
 });
 

@@ -19,6 +19,7 @@
  *   7. piqi          measure the quality of the document with PIQI                        (not yet)
  *   8. profiles      check the document against each clinical profile (profiles.js)
  *   9. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
+ *  10. reports       run the document through every report's ViewDefinition, into the report tables (reports.js)
  *
  * Each step is { name, run(row, project, module) -> result }. A step keeps what it finds in
  * one of two places: as a result stored against the document (store.saveResult - the
@@ -1164,10 +1165,34 @@ const aiStep = {
 };
 
 /** The steps, in order. Only the ones that exist yet. */
-const STEPS = [nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep];
+/**
+ * Reports: the document's rows are deleted from every report table, and it is run through
+ * every report's ViewDefinition again (reports.js) - the document as submitted, as processed,
+ * or its validation outcome, as the report says. Last, so the processed copy and the outcome
+ * are there. A view that fails on the document is recorded against the report (and shown with
+ * it), not against the document: the report is what needs fixing.
+ */
+const reportsStep = {
+  name: 'reports',
+  async run(row, project, module) {
+    const reports = module.reports;
+    if (!reports || reports.count() === 0) {
+      module.store.saveResult(row.id, 'reports', { ms: 0, skipped: 'no reports' });
+      return 'reports: none';
+    }
+    const started = Date.now();
+    const outcome = module.store.readResult(row.id, 'validation')?.result?.outcome || null;
+    const r = await reports.processDocument({ id: row.id, projectId: row.project_id, bundle: row.bundle, analysed: row.analysed, outcome });
+    module.store.saveResult(row.id, 'reports', { ms: Date.now() - started, ...r });
+    return `reports: ${r.rows} row${r.rows === 1 ? '' : 's'} in ${r.reports} table${r.reports === 1 ? '' : 's'}` +
+      (r.errors.length ? `; ${r.errors.length} failed (${r.errors.map(e => e.report).join(', ')})` : '');
+  }
+};
+
+const STEPS = [nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
 
 module.exports = {
-  STEPS, analysis: analysisStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
+  STEPS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

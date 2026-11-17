@@ -47,6 +47,14 @@ HEADING=$(grep -E "^## \[v?${VERSION//./\\.}\]" CHANGELOG.md || true)
 SECTION=$(sed -n "/^## \[v\{0,1\}${VERSION//./\\.}\]/,/^## \[/p" CHANGELOG.md | sed '$d')
 ! grep -qx '(paste)' <<<"$SECTION" || fail "the Tx Conformance Statement for $VERSION hasn't been pasted into CHANGELOG.md"
 
+# --- the tests: generated from, and run against, the tx-ecosystem's current build ---------
+# Not a branch build (current$<branch>, which a PR uses to test against a tx-ecosystem PR
+# that isn't merged yet: see tx/tests/tx-tests-package.js): a release passes the tests as
+# they are on main
+TESTS_BUILD=$(node -p "(require('./tx/tests/test-cases-version').txTestsBuild || (() => '(not recorded)'))()")
+[ "$TESTS_BUILD" = "current" ] \
+  || fail "the tx tests were generated from the tx-ecosystem build '$TESTS_BUILD', not 'current' - unset FHIRSMITH_TX_TESTS_VERSION, regenerate them (node tx/tests/testcases-generator.js), commit, and run them again"
+
 # --- the test report: this version, passed, and run on what is being released ----------
 REPORT=test-cases-report.json
 [ -f "$REPORT" ] || fail "no $REPORT - run the tx tests first (npx jest tests/tx/test-cases.test.js)"
@@ -62,6 +70,10 @@ if (!fhirsmith || fhirsmith.version !== version) {
 }
 if (report.result !== 'pass') {
   problems.push(`its result is '${report.result}', not 'pass'`);
+}
+const script = typeof report.testScript === 'string' ? report.testScript : '';
+if (!script.includes('/blob/main/')) {
+  problems.push(`it was run against the tests of a tx-ecosystem branch, not current (${script || 'no testScript'}) - unset FHIRSMITH_TX_TESTS_VERSION`);
 }
 if (!report.issued || new Date(report.issued) < new Date(committed)) {
   problems.push(`it was run (${report.issued}) before the last change to the code (${committed})`);
