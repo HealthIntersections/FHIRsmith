@@ -148,10 +148,11 @@ class CodeSystemProvider {
    * (ICD-11: two values on an axis that takes one).
    *
    * @param {CodeSystemProviderContext} context the concept the code located
+   * @param {string} code the code as the client wrote it
    * @returns {Promise<{severity: string, msgId: string, params: string[]}[]>} none by default
    */
   // eslint-disable-next-line no-unused-vars
-  async codeIssues(context) { return []; }
+  async codeIssues(context, code) { return []; }
 
   /**
    * @returns {string} uri for the code system

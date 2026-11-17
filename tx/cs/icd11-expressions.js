@@ -249,7 +249,11 @@ async function bindQualifiers(ctx, stem, tail) {
   }
 }
 
-/** What validation has to say about a stem: several values on an axis that takes one. */
+/**
+ * What validation has to say about a stem: several values on an axis that takes one, and a
+ * required axis with no value. WHO's "required" means strongly encouraged - the code is still
+ * valid without it, just not complete - so that is a warning (decided 2026-11-17).
+ */
 function axisIssues(stem, issues) {
   for (const axis of stem.axes) {
     if ((stem.used.get(axis.id) || 0) > 1 && axis.allow_multiple === 'NotAllowed') {
@@ -258,7 +262,32 @@ function axisIssues(stem, issues) {
         params: [stem.stem.text, axis.axis_name, values.join(', ')] });
     }
   }
+  requiredAxisIssues(stem.axes, stem.used, stem.written, issues);
 }
+
+/**
+ * A warning for each required axis with no value on it. `written` names the stem as the
+ * client wrote it, with its own qualifiers, so two members on the same stem code are told
+ * apart.
+ */
+function requiredAxisIssues(axes, used, written, issues) {
+  for (const axis of axes) {
+    if (axis.required && !used.has(axis.id)) {
+      issues.push({ severity: 'warning', msgId: 'ICD11_PC_REQUIRED_AXIS_EMPTY',
+        params: [written, axis.axis_name] });
+    }
+  }
+}
+
+/** The issues for a code given on its own: any required axis is necessarily empty. */
+async function plainCodeIssues(ctx, concept, written) {
+  const issues = [];
+  requiredAxisIssues(await axesOf(ctx, concept), new Map(), written, issues);
+  return issues;
+}
+
+/** A group as written: its head, then its qualifiers with their separators. */
+const writtenGroup = g => g.head.text + g.tail.map(t => t.sep + t.text).join('');
 
 /**
  * Parse, bind and normalise. Returns an ICD11Expression, or null when the text does not
@@ -300,7 +329,7 @@ async function parseExpression(ctx, text) {
   // semantics: the root's qualifiers, then the members, go on the root's axes; each member's
   // own qualifiers go on its axes. All in id order, so the order written changes nothing.
   const issues = [];
-  const rootStem = { stem: root.head, axes: await axesOf(ctx, root.head.concept), bindings: [], used: new Map() };
+  const rootStem = { stem: root.head, written: writtenGroup(root), axes: await axesOf(ctx, root.head.concept), bindings: [], used: new Map() };
   await bindQualifiers(ctx, rootStem, root.tail);
   for (const g of [...others].sort((a, b) => byId(a.head, b.head))) {
     await bind(ctx, rootStem, g.head);            // may fit no axis of the root: that is allowed
@@ -308,11 +337,19 @@ async function parseExpression(ctx, text) {
   // every member is a code in its own right, with its own axes (and its qualifiers on them)
   const stems = [rootStem];
   for (const g of others) {
-    const st = { stem: g.head, axes: await axesOf(ctx, g.head.concept), bindings: [], used: new Map() };
+    const st = { stem: g.head, written: writtenGroup(g), axes: await axesOf(ctx, g.head.concept), bindings: [], used: new Map() };
     await bindQualifiers(ctx, st, g.tail);
     stems.push(st);
   }
   for (const st of stems) axisIssues(st, issues);
+  // a member given twice is deleted from the normal form, and is warned about once
+  const seen = new Set();
+  const unique = issues.filter(i => {
+    const k = i.msgId + '|' + i.params.join('|');
+    return seen.has(k) ? false : (seen.add(k), true);
+  });
+  issues.length = 0;
+  issues.push(...unique);
 
   // the normal form
   const memberKey = g => g.head.concept.entityId + orderGroup(g.tail).map(t => t.sep + t.concept.entityId).join('');
@@ -352,4 +389,4 @@ function axisLabel(name) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-module.exports = { ICD11Expression, ExpressionToken, parseExpression, tokenize, axisLabel, SCHEMA_NS };
+module.exports = { ICD11Expression, ExpressionToken, parseExpression, plainCodeIssues, tokenize, axisLabel, SCHEMA_NS };

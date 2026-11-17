@@ -1587,7 +1587,7 @@ class ValueSetChecker {
     if (!loc.context) {
       return;
     }
-    for (const p of await cs.codeIssues(loc.context)) {
+    for (const p of await cs.codeIssues(loc.context, c.code)) {
       const m = this.worker.i18n.translate(p.msgId, this.params.HTTPLanguages, p.params);
       if (p.severity === 'error') {
         msg(m);

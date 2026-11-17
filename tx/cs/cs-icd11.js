@@ -18,7 +18,7 @@ const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemFactoryProvider, FilterExecutionContext } = require('./cs-api');
 const { BaseCSServices } = require('./cs-base');
 const { validateArrayParameter } = require('../../library/utilities');
-const { ICD11Expression, parseExpression, axisLabel } = require('./icd11-expressions');
+const { ICD11Expression, parseExpression, plainCodeIssues, axisLabel } = require('./icd11-expressions');
 const { Issue } = require('../library/operation-outcome');
 const { DesignationUse } = require('../library/designations');
 const assert = require('assert');
@@ -399,10 +399,16 @@ class ICD11Services extends BaseCSServices {
     return idForm ? this.classificationCode(ctxt) : null;
   }
 
-  /** A postcoordinated expression's parse records what validation should say about it. */
-  async codeIssues(context) {
+  /**
+   * A postcoordinated expression's parse records what validation should say about it. A code
+   * on its own that declares a required axis is not complete without it: a warning, naming
+   * the code as the client wrote it.
+   */
+  async codeIssues(context, code) {
     const ctxt = await this.#ensureContext(context);
-    return ctxt instanceof ICD11Expression ? ctxt.issues : [];
+    if (ctxt instanceof ICD11Expression) return ctxt.issues;
+    if (!(ctxt instanceof ICD11Concept)) return [];
+    return plainCodeIssues(this.#expressionContext(), ctxt, code || ctxt.canonicalCode);
   }
 
   /**
