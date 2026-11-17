@@ -83,10 +83,22 @@ describe('a slow request', () => {
 
   test('its log line says what it asked', async () => {
     getTxModule().config.slowRequestSeconds = 0.000001;
-    const { logged } = await send('POST', '/tx/r5/ValueSet/$validate-code', P([
-      { name: 'url', valueUri: 'http://hl7.org/fhir/ValueSet/administrative-gender' },
-      { name: 'coding', valueCoding: { system: 'http://hl7.org/fhir/administrative-gender', code: 'male', display: 'Male' } }]),
-      { 'Accept-Language': 'de' });
+    // a request's time is in whole milliseconds (Date.now), and this one can take less than one,
+    // which isn't slower than any threshold: the clock moves on a millisecond each time it is read
+    const realNow = Date.now;
+    let ticks = 0;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + ++ticks);
+    let res;
+    let logged;
+    try {
+      ({ res, logged } = await send('POST', '/tx/r5/ValueSet/$validate-code', P([
+        { name: 'url', valueUri: 'http://hl7.org/fhir/ValueSet/administrative-gender' },
+        { name: 'coding', valueCoding: { system: 'http://hl7.org/fhir/administrative-gender', code: 'male', display: 'Male' } }]),
+        { 'Accept-Language': 'de' }));
+    } finally {
+      clock.mockRestore();
+    }
+    expect(res.status).toBe(200);
     const slow = logged.filter(l => l.includes('slow request'));
     expect(slow).toHaveLength(1);
     expect(slow[0]).toContain(' warn ');
