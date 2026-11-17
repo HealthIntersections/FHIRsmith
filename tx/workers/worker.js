@@ -198,22 +198,7 @@ class TerminologyWorker {
       return provider;
     };
 
-    const supplements = this.loadSupplements(url, version, statedSupplements);
-    let provider = await build(supplements);
-
-    // The supplements were chosen for the version asked for. When no version was asked for (or
-    // only part of one), it's the version the provider turned out to be that decides which apply:
-    // a supplement pinned to another version of the code system (supplements = url|2.80 on
-    // LOINC 2.83) is not used - so a value set that requires it fails - and one pinned to this
-    // version is
-    const actual = provider ? provider.version() : null;
-    if (actual && actual !== version) {
-      const fitting = this.loadSupplements(url, actual, statedSupplements);
-      const key = (list) => list.map(cs => cs.vurl || cs.url).sort().join(' ');
-      if (key(fitting) !== key(supplements)) {
-        provider = await build(fitting);
-      }
-    }
+    let provider = await this.buildWithSupplements(url, version, statedSupplements, build);
 
     if (!provider && !nullOk) {
       if (!version) {
@@ -231,6 +216,37 @@ class TerminologyWorker {
       this.checkVersion(url, provider.version(), params, provider.versionAlgorithm(), op);
     }
 
+    return provider;
+  }
+
+  /**
+   * Build a code system provider with the supplements that apply to it.
+   *
+   * The supplements are first chosen for the version asked for. When no version was asked for
+   * (or only part of one), it's the version the provider turned out to be that decides which
+   * apply: a supplement pinned to another version of the code system (supplements = url|2.80 on
+   * LOINC 2.83) is not used - so an operation that requires it fails - and one pinned to this
+   * version is (the server's own supplements aren't found at all when there's no version to
+   * match them against - #387)
+   *
+   * @param {string} url - Code system URL
+   * @param {string} version - the version asked for, if any
+   * @param {Set<string>} statedSupplements - Supplements invoked in context
+   * @param {function(CodeSystem[]): Promise<CodeSystemProvider|null>} build - makes the provider
+   *   with the given supplements (and registers it for release at the end of the operation)
+   * @returns {Promise<CodeSystemProvider|null>}
+   */
+  async buildWithSupplements(url, version, statedSupplements, build) {
+    const supplements = this.loadSupplements(url, version, statedSupplements);
+    let provider = await build(supplements);
+    const actual = provider ? provider.version() : null;
+    if (actual && actual !== version) {
+      const fitting = this.loadSupplements(url, actual, statedSupplements);
+      const key = (list) => list.map(cs => cs.vurl || cs.url).sort().join(' ');
+      if (key(fitting) !== key(supplements)) {
+        provider = await build(fitting);
+      }
+    }
     return provider;
   }
 

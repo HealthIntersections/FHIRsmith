@@ -1325,6 +1325,22 @@ describe('global-lang-pack', () => {
     await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version-required"}, "4.0");
   });
 
+  it("glp-cs-validate-pinned-other-version-required" + 'R5', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-pinned-other-version-required"}, "5.0");
+  });
+
+  it("glp-cs-validate-pinned-other-version-required" + 'R4', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-pinned-other-version-required"}, "4.0");
+  });
+
+  it("glp-cs-validate-server-supplement" + 'R5', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-server-supplement"}, "5.0");
+  });
+
+  it("glp-cs-validate-server-supplement" + 'R4', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-server-supplement"}, "4.0");
+  });
+
 });
 
 describe('extension-codes', () => {
@@ -15198,6 +15214,14 @@ describe('global-lang-pack', () => {
 
   it("glp-expand-pinned-other-version-required" + 'R5-cached', async () => {
     await runTest({"suite":"global-lang-pack","test":"glp-expand-pinned-other-version-required"}, "5.0");
+  });
+
+  it("glp-cs-validate-pinned-other-version-required" + 'R5-cached', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-pinned-other-version-required"}, "5.0");
+  });
+
+  it("glp-cs-validate-server-supplement" + 'R5-cached', async () => {
+    await runTest({"suite":"global-lang-pack","test":"glp-cs-validate-server-supplement"}, "5.0");
   });
 
 });

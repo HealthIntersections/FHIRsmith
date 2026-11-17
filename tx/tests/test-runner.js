@@ -7,6 +7,7 @@ const TXModule = require('../tx.js');
 const ServerStats = require("../../stats");
 const Logger = require("../../library/logger");
 const {txTestVersion} = require("./test-cases-version");
+const { PACKAGE_ID, txTestsPackageVersion, txTestsBranch, txTestsSource } = require('./tx-tests-package');
 const folders = require('../../library/folder-setup');
 const {VersionUtilities} = require("../../library/version-utilities");
 const packageJson = require('../../package.json');
@@ -89,6 +90,17 @@ async function  finishTxTests() {
     }
 }
 
+// ", from the tx-ecosystem branch <branch>" when the tests didn't come from main's build: a run
+// that passed against a branch mustn't look like one that passed against main
+function testsFrom() {
+    try {
+        const branch = txTestsBranch(txTestsPackageVersion());
+        return branch ? `, from the tx-ecosystem branch ${branch}` : '';
+    } catch (e) {
+        return ''; // a bad FHIRSMITH_TX_TESTS_VERSION: the tests never started, and said why
+    }
+}
+
 // (null when the validator never started)
 function runnerVersion() {
     return validator ? validator.jarVersion() : 'n/a';
@@ -97,9 +109,9 @@ function runnerVersion() {
 function txTestSummary() {
     let set = Array.from(txTestModeSet()).join('+');
     if (error == 0) {
-      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
     } else {
-      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
     }
 }
 
@@ -124,7 +136,7 @@ function txTestReport() {
         resourceType: 'TestReport',
         name: 'TxEcosystemTests',
         status: 'completed',
-        testScript: 'https://github.com/HL7/fhir-tx-ecosystem-ig/blob/main/tests/test-cases.json|' + txTestVersion(),
+        testScript: txTestsSource(txTestsPackageVersion()) + '|' + txTestVersion(),
         result: error == 0 ? 'pass' : 'fail',
         score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
         tester: 'FHIRsmith build (modes ' + Array.from(txTestModeSet()).join(', ') + ')',
@@ -340,7 +352,10 @@ async function loadValidator() {
         skipUpdateCheck: inCI || !!localJar
     }
     await validator.start(validatorConfig);
-    await validator.loadIG("hl7.fhir.uv.tx-ecosystem", "current");
+    // FHIRSMITH_TX_TESTS_VERSION (tx-tests-package.js): current, or a branch's CI build in a PR
+    const testsVersion = txTestsPackageVersion();
+    log.info(`Loading the terminology tests: ${PACKAGE_ID}#${testsVersion}`);
+    await validator.loadIG(PACKAGE_ID, testsVersion);
 }
 
 

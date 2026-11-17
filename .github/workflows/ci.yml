@@ -23,6 +23,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A PR whose tests need changes to the tx-ecosystem IG is tested against the tx-ecosystem PR
+      # that makes them: if HL7/fhir-tx-ecosystem-ig has an open PR from a branch with the same
+      # name as this one, and there is a CI build of that branch, the terminology tests come from
+      # it (FHIRSMITH_TX_TESTS_VERSION=current$<branch>; see tx/tests/tx-tests-package.js).
+      # Otherwise, and for every build that isn't a PR, from the CI build of main. The
+      # tx-ecosystem branch has to be built before this runs: if it isn't yet, run this again.
+      # Branch names with a / in them aren't supported
+      - name: Choose the tx-ecosystem build to test against
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Branch '$BRANCH' can't be matched to a tx-ecosystem branch: the tests come from the build of main"
+            exit 0
+          fi
+          open=$(gh api --paginate "repos/HL7/fhir-tx-ecosystem-ig/pulls?state=open&per_page=100" --jq ".[] | select(.head.ref == \"$BRANCH\") | .number")
+          if [ -z "$open" ]; then
+            echo "No open tx-ecosystem PR from a branch '$BRANCH': the tests come from the build of main"
+            exit 0
+          fi
+          url="https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/branches/$BRANCH/package.tgz"
+          if ! curl -sfIL -o /dev/null "$url"; then
+            echo "::warning::tx-ecosystem PR #$open is open from '$BRANCH', but there is no CI build of it yet ($url): the tests come from the build of main. Run this again once it is built"
+            exit 0
+          fi
+          echo "The tests come from tx-ecosystem PR #$open, branch '$BRANCH'"
+          echo "FHIRSMITH_TX_TESTS_VERSION=current\$$BRANCH" >> "$GITHUB_ENV"
+
       - name: Run tests
         run: npm run test:ci
         timeout-minutes: 30
