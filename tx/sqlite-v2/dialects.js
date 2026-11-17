@@ -2,7 +2,7 @@
 // Per-system filter rules on top of the generic compiler (compile.js), matching what the
 // upstream providers (cs-loinc.js, cs-rxnorm.js, cs-snomed.js) accept and report.
 
-const { FilterError, Unsupported, splitList, litSets } = require('./engine/compile');
+const { FilterError, Unsupported, splitList } = require('./engine/compile');
 const { KIND } = require('./store');
 const { requiredLiterals } = require('./engine/regex-literals');
 const regexUtilities = require('../../library/regex-utilities');
