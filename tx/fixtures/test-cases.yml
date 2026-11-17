@@ -18,3 +18,4 @@ sources:
   - icd11:icd11-2026-01-c.db
   - npm:hl7.terminology=tho
   - npm:fhir.tx.support=tx
+  - npm:fhir.tx.support.tests

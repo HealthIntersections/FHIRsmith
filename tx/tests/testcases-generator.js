@@ -4,6 +4,7 @@ const { PackageManager} = require("../../library/package-manager");
 const {txTestModeSet} = require("./test-runner");
 const folders = require('../../library/folder-setup');
 const { passesModes, testVersions } = require('./test-case-gates');
+const { PACKAGE_ID, txTestsPackageVersion } = require('./tx-tests-package');
 
 const OUTPUT_FILE1 = path.join(__dirname, '../..', 'tests/tx/test-cases.test.js');
 const OUTPUT_FILE2 = path.join(__dirname, 'test-cases-version.js');
@@ -15,12 +16,15 @@ const OUTPUT_FILE2 = path.join(__dirname, 'test-cases-version.js');
 // the tests
 let npm;
 let testCases;
+let build;
 
 async function load() {
     const packageServers = ['https://packages2.fhir.org/packages'];
     const cacheFolder = folders.ensureFolder('terminology-cache');
     const packageManager = new PackageManager(packageServers, cacheFolder);
-    const packagePath = await packageManager.fetch("hl7.fhir.uv.tx-ecosystem", "current");
+    // FHIRSMITH_TX_TESTS_VERSION, as the tests are run (tx-tests-package.js)
+    build = txTestsPackageVersion();
+    const packagePath = await packageManager.fetch(PACKAGE_ID, build);
     const fullPackagePath = path.join(cacheFolder, packagePath);
     npm = JSON.parse(fs.readFileSync(path.join(fullPackagePath, "package", "package.json"), 'utf8'));
     testCases = JSON.parse(fs.readFileSync(path.join(fullPackagePath, "package", "tests", "test-cases.json"), 'utf8'));
@@ -36,7 +40,13 @@ function generate() {
 function txTestVersion() {
   return '${npm.version}';
 }
-module.exports = { txTestVersion };
+
+// the build of ${PACKAGE_ID} the tests were generated from: "current", "current$<branch>" (a
+// tx-ecosystem PR's branch - release.sh won't release on tests generated from one), or a version
+function txTestsBuild() {
+  return ${JSON.stringify(build)};
+}
+module.exports = { txTestVersion, txTestsBuild };
 `;
 
     // Emit the per-suite describe blocks. `suffix` is appended to each it()

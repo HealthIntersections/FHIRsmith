@@ -37,6 +37,7 @@ sources:
   - omop:omop_v20250227.db
   - npm:hl7.terminology=tho
   - npm:fhir.tx.support=tx
+  - npm:fhir.tx.support.tests
   - npm:ihe.formatcode.fhir=ihe
   - npm:fhir.dicom=dicom
   - npm:hl7.fhir.us.core=us

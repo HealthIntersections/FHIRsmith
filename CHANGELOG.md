@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A format 20 cache can't be read by an older server
 - SNOMED CT: a request in Norwegian finds descriptions under either `no` or `nb`/`nn`
 
+### Fixed
+
+- tx: CodeSystem `$validate-code` with `useSupplement` and no version: a supplement the server holds, pinned to the version of the code system it has (`supplements = url|version`), was reported as missing (`VALUESET_SUPPLEMENT_MISSING`), and a supplement passed in `tx-resource` pinned to another version was used. Which supplements apply now depends on the version the code system turns out to be, as it already did for value sets (#387)
+
 ## [1.0.3] - 2026-11-16
 
 ### Added

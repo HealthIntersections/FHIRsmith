@@ -528,6 +528,13 @@
       // "name", "certFile" | "certificate" (PEM) }]; this server's own shl module's certificate is
       // trusted too, unless trustOwnShl is false
       // "viewer": { "keepMinutes": 60, "allowPrivateAddresses": false, "trust": [] },
+      // reports (ips/readme.md#reports): their tables are in a database of their own (relative paths
+      // resolve under the databases directory; default ips-reports.db beside the IPS database).
+      // package: the SQL on FHIR IG the validator checks ViewDefinitions with; queryTimeoutSeconds:
+      // how long a report's statements may run (10); maxRows: the rows shown of a statement or the
+      // table (1000); csvMaxRows: the rows in a CSV download (100000); buildBudgetMs: how long the
+      // queue spends building tables each turn (2000)
+      // "reports": { "database": "ips/ips-reports.db", "package": "org.sql-on-fhir.ig#2.0.0", "queryTimeoutSeconds": 10 },
       // which copy of a patient's latest document Patient/[id]/$summary returns: "modified" (what
       // the processing made of it - the default; the original until it has been processed) or "original"
       // "summarySource": "modified",

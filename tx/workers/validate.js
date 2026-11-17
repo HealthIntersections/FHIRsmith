@@ -2532,18 +2532,21 @@ class ValidateWorker extends TerminologyWorker {
     }
     version = this.determineVersionBase(url, version, txParams);
 
-    let supplements = this.loadSupplements(url, version, this.requiredSupplements);
-
-    // First check additional resources
+    // First check additional resources. Either way, the supplements are the ones that fit the
+    // version the code system turns out to be, not just the version asked for (#387)
     const fromAdditional = this.findInAdditionalResources(url, version, 'CodeSystem', false);
     if (fromAdditional) {
-      return this.provider.createCodeSystemProvider(this.opContext, fromAdditional, supplements);
+      return this.buildWithSupplements(url, version, this.requiredSupplements,
+        (supplements) => this.provider.createCodeSystemProvider(this.opContext, fromAdditional, supplements));
     } else {
 
-      let csp = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
-      if (csp) {
+      let csp = await this.buildWithSupplements(url, version, this.requiredSupplements, async (supplements) => {
+        const p = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
         // released at the end of the operation, like the providers findCodeSystem() returns
-        this.opContext.registerProvider(csp);
+        this.opContext.registerProvider(p);
+        return p;
+      });
+      if (csp) {
         return csp;
       } else {
         let vs = await this.findValueSet(url, version, null);

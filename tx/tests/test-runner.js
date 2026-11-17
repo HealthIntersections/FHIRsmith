@@ -7,7 +7,9 @@ const TXModule = require('../tx.js');
 const ServerStats = require("../../stats");
 const Logger = require("../../library/logger");
 const {txTestVersion} = require("./test-cases-version");
+const { PACKAGE_ID, txTestsPackageVersion, txTestsBranch, txTestsSource } = require('./tx-tests-package');
 const folders = require('../../library/folder-setup');
+const { PackageManager } = require('../../library/package-manager');
 const {VersionUtilities} = require("../../library/version-utilities");
 const packageJson = require('../../package.json');
 const axios = require('axios');
@@ -24,6 +26,10 @@ let testResults = [];
 // why the server or the validator could not be started, if they couldn't (see startTxTests)
 let startupError = null;
 let startupErrorReported = false;
+// the validator's test sessions, one for each endpoint (r5, r4), made by startTxTests: a session
+// fixes the run - the server, the version of the test cases, the externals and the output folder.
+// The cached pass runs in the same sessions, with its own label
+let sessions = {};
 
 function txTestModeSet() {
    return new Set(['tx.fhir.org', 'omop', 'general', 'snomed', 'mimetypes', 'icd-11', 'icf', 'closure', 'loinc']);
@@ -38,6 +44,7 @@ async function startTxTests() {
     try {
         await startServer();
         await loadValidator();
+        await setUpSessions();
     } catch (e) {
         startupError = e;
     }
@@ -84,8 +91,20 @@ async function  finishTxTests() {
         let reportfilename = path.join(__dirname, '../../test-cases-report.json');
         fs.writeFileSync(reportfilename, JSON.stringify(txTestReport(), null, 2));
     } finally {
+        await tearDownSessions();
         await unloadValidator();
         await stopServer();
+    }
+}
+
+// ", from the tx-ecosystem branch <branch>" when the tests didn't come from main's build: a run
+// that passed against a branch mustn't look like one that passed against main
+function testsFrom() {
+    try {
+        const branch = txTestsBranch(txTestsPackageVersion());
+        return branch ? `, from the tx-ecosystem branch ${branch}` : '';
+    } catch (e) {
+        return ''; // a bad FHIRSMITH_TX_TESTS_VERSION: the tests never started, and said why
     }
 }
 
@@ -97,9 +116,9 @@ function runnerVersion() {
 function txTestSummary() {
     let set = Array.from(txTestModeSet()).join('+');
     if (error == 0) {
-      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
     } else {
-      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
     }
 }
 
@@ -124,7 +143,7 @@ function txTestReport() {
         resourceType: 'TestReport',
         name: 'TxEcosystemTests',
         status: 'completed',
-        testScript: 'https://github.com/HL7/fhir-tx-ecosystem-ig/blob/main/tests/test-cases.json|' + txTestVersion(),
+        testScript: txTestsSource(txTestsPackageVersion()) + '|' + txTestVersion(),
         result: error == 0 ? 'pass' : 'fail',
         score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
         tester: 'FHIRsmith build (modes ' + Array.from(txTestModeSet()).join(', ') + ')',
@@ -153,21 +172,18 @@ function txTestReport() {
 
 async function runTest(test, version = true) {
     version = version || "5.0";
+    const endpoint = VersionUtilities.isR5Plus(version) ? 'r5' : 'r4';
     const params = {
-        server: 'http://localhost:'+TEST_PORT+(VersionUtilities.isR5Plus(version) ? "/r5" : "/r4"),
+        session: sessions[endpoint],
         suiteName: test.suite,
         testName: test.test,
-        version: version,
         // the modes have to travel with the request. Without them the validator falls back to
         // its own default set, which is not this one, and every test in a mode it does not
         // have comes back "n/a" - which the runner counts as a failure, not a skip
         modes: Array.from(txTestModeSet()).join(','),
-        // name the output folder ourselves rather than letting the validator name it after the
-        // server, and give each pass its own subfolder. All three passes are the same server
-        // and produce the same two filenames, so without this the R4, R5 and cached runs write
-        // over each other and the diff left on disk is from whichever finished last
-        folder: 'fhirsmith',
-        label: (VersionUtilities.isR5Plus(version) ? 'r5' : 'r4') + (forcedCaching ? '-cached' : '')
+        // each pass gets its own subfolder of the session's output folder: the cached pass runs
+        // in the same session as the uncached one, and would otherwise write over its diffs
+        label: endpoint + (forcedCaching ? '-cached' : '')
     };
     count++;
     if (startupError) {
@@ -340,7 +356,58 @@ async function loadValidator() {
         skipUpdateCheck: inCI || !!localJar
     }
     await validator.start(validatorConfig);
-    await validator.loadIG("hl7.fhir.uv.tx-ecosystem", "current");
+}
+
+/**
+ * The externals the tests are compared with: the tx.fhir.org messages file in the test package.
+ * A session takes the content, not a file name, and with none the expected responses that use
+ * $external$ can't match. Taken from the same build of the tests the validator runs.
+ */
+async function txTestExternals(testsVersion) {
+    const cacheFolder = folders.ensureFolder('terminology-cache');
+    const packageManager = new PackageManager(['https://packages2.fhir.org/packages'], cacheFolder);
+    const packagePath = await packageManager.fetch(PACKAGE_ID, testsVersion);
+    return JSON.parse(fs.readFileSync(path.join(cacheFolder, packagePath, 'package', 'tests', 'messages-tx.fhir.org.json'), 'utf8'));
+}
+
+/**
+ * A test session for each endpoint. The session fixes the version of the test cases the validator
+ * runs - FHIRSMITH_TX_TESTS_VERSION (tx-tests-package.js): current, or a branch's CI build in a PR.
+ * (The older way of running a test, with a server and no session, always runs the tests in
+ * #current, whatever IG the validator has loaded.) The validator loads that build of the tests
+ * itself, and the FHIR version of each session is the endpoint's.
+ */
+async function setUpSessions() {
+    const testsVersion = txTestsPackageVersion();
+    log.info(`Loading the terminology tests: ${PACKAGE_ID}#${testsVersion}`);
+    const externals = await txTestExternals(testsVersion);
+    for (const endpoint of ['r5', 'r4']) {
+        const res = await validator.txTestSetup({
+            server: 'http://localhost:' + TEST_PORT + '/' + endpoint,
+            testVersion: testsVersion,
+            externals,
+            // name the output folder ourselves rather than letting the validator name it after
+            // the server: both sessions are the same host. Each pass is a subfolder (its label)
+            folder: 'fhirsmith-' + endpoint,
+            tester: 'FHIRsmith build'
+        });
+        sessions[endpoint] = res.session;
+        log.info(`Terminology test session for /${endpoint}: tests ${res['test-version']}, FHIR ${res.fhirVersion}, output in ${res.output}`);
+    }
+}
+
+// Ends the sessions, which has the validator write its own reports for each (test-results.json and
+// report.json, in the session's output folder). A session left open would never write them
+async function tearDownSessions() {
+    for (const endpoint of Object.keys(sessions)) {
+        try {
+            const res = await validator.txTestTeardown(sessions[endpoint]);
+            log.info(`Terminology test session for /${endpoint} ended: reports in ${res.output}`);
+        } catch (e) {
+            log.warn(`Ending the terminology test session for /${endpoint} failed: ${e.message}`);
+        }
+    }
+    sessions = {};
 }
 
 

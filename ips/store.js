@@ -126,6 +126,19 @@ const SCHEMA = `
     json        TEXT NOT NULL
   );
 
+  -- reports (reports.js): a ViewDefinition run over every document, into a table of its own in the
+  -- reports database, and SQL statements over that table; across all projects
+  CREATE TABLE IF NOT EXISTS reports (
+    id          TEXT PRIMARY KEY,   -- the ViewDefinition's name, which is also its table's name
+    title       TEXT NOT NULL,
+    description TEXT,
+    source      TEXT NOT NULL,      -- what the view runs over: uploaded | transformed | outcomes
+    view_json   TEXT NOT NULL,      -- the ViewDefinition
+    sql_json    TEXT NOT NULL,      -- the statements: [{name, sql}]
+    generation  INTEGER NOT NULL,   -- goes up when the view or source changes: the table is rebuilt
+    updated_ms  INTEGER NOT NULL
+  );
+
   -- national profiles: the profile a national IG defines for an IPS document (the Bundle), across all projects
   CREATE TABLE IF NOT EXISTS national_profiles (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,6 +252,13 @@ const STEP_TIMINGS_KEPT = 1000;
 /** A national_profiles row, as the store gives it. */
 function nationalProfileOf(r) {
   return { id: r.id, jurisdiction: r.jurisdiction || null, packageId: r.package_id, version: r.version, url: r.url, snomedEdition: r.snomed_edition || null, updated_ms: r.updated_ms };
+}
+
+function reportOf(r) {
+  return {
+    id: r.id, title: r.title, description: r.description || null, source: r.source,
+    view: JSON.parse(r.view_json), statements: JSON.parse(r.sql_json), generation: r.generation, updated_ms: r.updated_ms
+  };
 }
 
 class IpsStore {
@@ -399,6 +419,54 @@ class IpsStore {
 
   deleteNationalProfile(id) {
     return this.db.prepare('DELETE FROM national_profiles WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- reports (reports.js) ----
+
+  /** All reports, by id: {id, title, description, source, view, statements, generation, updated_ms} */
+  reports() {
+    return this.db.prepare('SELECT * FROM reports ORDER BY id').all().map(reportOf);
+  }
+
+  /** @returns {Object|null} */
+  report(id) {
+    const r = this.db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    return r ? reportOf(r) : null;
+  }
+
+  saveReport(report) {
+    this.db.prepare(`INSERT INTO reports (id, title, description, source, view_json, sql_json, generation, updated_ms)
+      VALUES (@id, @title, @description, @source, @view_json, @sql_json, @generation, @updated_ms)
+      ON CONFLICT (id) DO UPDATE SET title = excluded.title, description = excluded.description, source = excluded.source,
+        view_json = excluded.view_json, sql_json = excluded.sql_json, generation = excluded.generation, updated_ms = excluded.updated_ms`).run({
+      id: report.id,
+      title: report.title,
+      description: report.description || null,
+      source: report.source,
+      view_json: JSON.stringify(report.view),
+      sql_json: JSON.stringify(report.statements || []),
+      generation: report.generation,
+      updated_ms: Date.now()
+    });
+  }
+
+  deleteReport(id) {
+    return this.db.prepare('DELETE FROM reports WHERE id = ?').run(id).changes > 0;
+  }
+
+  /**
+   * The documents a report table is built from, in id order after afterId: those the pipeline
+   * has finished with (processed, or stopped by an error). One being processed, or waiting,
+   * gets its rows from the pipeline's reports step when it gets there.
+   */
+  reportDocuments(afterId, limit) {
+    return this.db.prepare(`SELECT id, project_id, json, analysed_json FROM documents
+      WHERE id > ? AND status IN ('processed', 'error') ORDER BY id LIMIT ?`).all(afterId, limit);
+  }
+
+  /** How many documents reportDocuments() goes through, all told. */
+  countReportDocuments() {
+    return this.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status IN ('processed', 'error')").get().n;
   }
 
   // ---- projects ----

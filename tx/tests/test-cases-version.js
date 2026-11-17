@@ -5,4 +5,10 @@
 function txTestVersion() {
   return '1.11.1-snapshot';
 }
-module.exports = { txTestVersion };
+
+// the build of hl7.fhir.uv.tx-ecosystem the tests were generated from: "current", "current$<branch>" (a
+// tx-ecosystem PR's branch - release.sh won't release on tests generated from one), or a version
+function txTestsBuild() {
+  return "current";
+}
+module.exports = { txTestVersion, txTestsBuild };

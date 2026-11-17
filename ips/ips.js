@@ -64,6 +64,7 @@ const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, p
 const render = require('./render');
 const { TxClient } = require('./tx-client');
 const { STEPS, stripChecks } = require('./pipeline');
+const { Reports, SOURCES: REPORT_SOURCES } = require('./reports');
 
 // the extension definitions remembered from the validator (the analysis step)
 const MAX_CACHED_EXTENSIONS = 5000;
@@ -131,7 +132,7 @@ const DEFAULT_EDITOR_SHARE_DAYS = 5;
 // paths at the root that can't be project codes
 const { jurisdiction: jurisdictionOf } = require('./jurisdictions');
 const { SNOMED_LINKABLE_EDITIONS } = require('../tx/sct/editions');
-const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles', 'queue', 'view', 'compose']);
+const RESERVED = new Set(['login', 'logout', 'admin', 'metadata', 'openapi', 'static', 'assets', 'lookup', 'national-profiles', 'queue', 'view', 'compose', 'reports']);
 // how long the SHL viewer keeps what it retrieved (modules.ips.viewer.keepMinutes)
 const DEFAULT_VIEW_KEEP_MINUTES = 60;
 // a viewer page's address
@@ -302,6 +303,11 @@ class IpsModule {
       fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     }
     this.store = new IpsStore(dbPath);
+    // reports (reports.js): their tables are in a database of their own, beside this one
+    const rcfg = this.config.reports || {};
+    const rdb = rcfg.database || (dbPath === ':memory:' ? ':memory:' : path.join(path.dirname(dbPath), 'ips-reports.db'));
+    const reportsPath = rdb === ':memory:' || path.isAbsolute(rdb) ? rdb : path.join(folders.databasesDir(), rdb);
+    this.reports = new Reports({ store: this.store, dbPath: reportsPath, log: this.log, config: rcfg });
     // clinical profiles were once on Composition: they are on Bundle now
     for (const p of this.store.profiles()) {
       const moved = profiles.migrate(this.store.profile(p.id));
@@ -382,6 +388,7 @@ class IpsModule {
     this.setupRootRoutes();
     this.setupProfileRoutes();
     this.setupNationalProfileRoutes();
+    this.setupReportRoutes();
     this.setupViewerRoutes();
     this.setupComposeRoutes();
     this.setupProjectRoutes();
@@ -471,6 +478,7 @@ class IpsModule {
     r.post('/admin/projects/:id/delete', this.sameOrigin, this.session, this.form, this.csrf, admin, h('projects', (req, res) => {
       const p = this.store.projectById(parseInt(req.params.id, 10));
       if (p && this.store.deleteProject(p.id)) {
+        this.reports.deleteProject(p.id);
         this.log.info(`IPS module: project '${p.code}' deleted by the administrator`);
       }
       res.redirect(req.baseUrl + '/admin/projects');
@@ -566,6 +574,38 @@ class IpsModule {
         this.log.info(`IPS module: national profile ${np.packageId}#${np.version} deleted`);
       }
       res.redirect(req.baseUrl + '/national-profiles');
+    }));
+  }
+
+  /**
+   * Reports, across all projects (reports.js): everyone can see their definitions, only the
+   * administrator adds, edits and deletes them. Before the project routes, so /reports isn't
+   * taken for a project code; each project shows them under {code}/reports.
+   */
+  setupReportRoutes() {
+    const r = this.router;
+    const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
+    const admin = this.adminOnly;
+    // a ViewDefinition and its statements are more than the usual form
+    const reportForm = express.urlencoded({ extended: false, limit: '1mb' });
+    const report = (req, res, next) => {
+      const rep = this.reports.get(req.params.id);
+      if (!rep) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`There is no report '${req.params.id}'`), 404);
+      }
+      req.report = rep;
+      next();
+    };
+    r.get('/reports', ...this.web, h('reports', (req, res) => this.sendReports(req, res)));
+    r.get('/reports/new', this.session, this.csrf, admin, h('reports', (req, res) => this.sendReportEditor(req, res, null)));
+    r.post('/reports', this.sameOrigin, this.session, reportForm, this.csrf, admin, h('reports', (req, res) => this.saveReport(req, res, null)));
+    r.get('/reports/:id', report, ...this.web, h('report', (req, res) => this.sendReportDefinition(req, res)));
+    r.get('/reports/:id/edit', report, this.session, this.csrf, admin, h('report', (req, res) => this.sendReportEditor(req, res, req.report)));
+    r.post('/reports/:id', report, this.sameOrigin, this.session, reportForm, this.csrf, admin, h('report', (req, res) => this.saveReport(req, res, req.report)));
+    r.post('/reports/:id/delete', report, this.sameOrigin, this.session, this.form, this.csrf, admin, h('report', (req, res) => {
+      this.reports.delete(req.report.id);
+      this.log.info(`IPS module: report '${req.report.id}' deleted`);
+      res.redirect(req.baseUrl + '/reports');
     }));
   }
 
@@ -697,6 +737,10 @@ class IpsModule {
     r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb' }), h('compose', (req, res) => this.compose(req, res)));
     r.post('/:code/submit', project, this.sameOrigin, ...posting, this.session, this.bigForm, h('submit', (req, res) => this.submitForm(req, res)));
     r.get('/:code/settings', project, this.session, this.csrf, manager, h('settings', (req, res) => this.sendSettings(req, res)));
+    // the reports (reports.js), for this project's documents
+    r.get('/:code/reports', project, ...this.web, h('reports', (req, res) => this.sendProjectReports(req, res)));
+    r.get('/:code/reports/:id', project, ...this.web, h('report', (req, res) => this.sendProjectReport(req, res)));
+    r.get('/:code/reports/:id/csv', project, h('report', (req, res) => this.sendReportCsv(req, res)));
     r.post('/:code/settings', project, this.sameOrigin, this.session, this.form, this.csrf, manager, h('settings', (req, res) => this.saveSettings(req, res)));
 
     // the token before the body: a submission without it is refused before anything is read,
@@ -726,6 +770,7 @@ class IpsModule {
       if (!this.store.delete(id, req.project.id)) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
       }
+      this.reports.deleteDocument(id);
       this.log.info(`IPS module: document ${id} in '${req.project.code}' deleted by ${req.user.name}`);
       res.redirect(`${req.baseUrl}/${encodeURIComponent(req.project.code)}`);
     }));
@@ -805,13 +850,34 @@ class IpsModule {
       this.log.info('IPS module: the FHIR validator is running');
       // documents wait for this too, so the analysis step - which looks up extensions before
       // the national step would load the packages - finds what the national IGs define
-      return this.loadNationalPackages();
+      return this.loadNationalPackages().then(() => this.loadReportsPackage());
     }).catch(e => {
       this.log.error('IPS module: the FHIR validator failed to start: ' + e.message);
       this.validatorError = e.message;
     }).finally(() => {
       this.validatorStarting = null;
     });
+  }
+
+  /**
+   * Load the SQL on FHIR IG into the validator, so it can check the reports' ViewDefinitions
+   * (modules.ips.reports.package; org.sql-on-fhir.ig#2.0.0 by default). A failure is logged,
+   * and saving a report then fails at the validator.
+   * @returns {Promise<void>}
+   */
+  async loadReportsPackage() {
+    const spec = this.config.reports?.package || 'org.sql-on-fhir.ig#2.0.0';
+    const [packageId, version] = spec.split('#');
+    try {
+      const outcome = await this.validator.loadIG(packageId, version || 'current');
+      const bad = (Array.isArray(outcome?.issue) ? outcome.issue : []).filter(i => i && (i.severity === 'error' || i.severity === 'fatal'));
+      if (bad.length > 0) {
+        throw new Error(bad.map(i => i.details?.text || i.diagnostics || i.code).join('; '));
+      }
+      this.log.info(`IPS module: ${spec} loaded into the validator, for the reports' ViewDefinitions`);
+    } catch (e) {
+      this.log.warn(`IPS module: the validator could not load ${spec}, so report ViewDefinitions can't be checked: ${e.message}`);
+    }
   }
 
   /**
@@ -1054,10 +1120,10 @@ class IpsModule {
     let n = 0;
     try {
       await this.checkTxServer();
-      if (!this.pipelineReady()) {
-        return 0;
-      }
       for (;;) {
+        if (!this.pipelineReady()) {
+          break;
+        }
         const row = this.store.claimNext();
         if (!row) {
           break;
@@ -1081,6 +1147,15 @@ class IpsModule {
       }
       if (n > 0 && this.stats) {
         this.stats.taskDone('IPS processing', `${n} processed`);
+      }
+      // then report tables waiting to be built (or rebuilt): a little at a time, after the
+      // documents, so a document that arrives meanwhile doesn't wait long
+      if (this.reports && this.reports.building()) {
+        try {
+          await this.reports.buildStep(this.config.reports?.buildBudgetMs || 2000);
+        } catch (e) {
+          this.log.error(`IPS module: building report tables failed: ${e.stack || e.message}`);
+        }
       }
     } finally {
       this.processing = false;
@@ -1187,6 +1262,10 @@ class IpsModule {
         this.log.error('IPS module: stopping the validator failed: ' + e.message);
       }
       this.validator = null;
+    }
+    if (this.reports) {
+      this.reports.close();
+      this.reports = null;
     }
     if (this.store) {
       this.store.close();
@@ -1809,6 +1888,107 @@ class IpsModule {
     res.status(status);
     this.sendHtml(res, `${req.project.name}: Submit a Document`,
       render.renderSubmit(req.project, this.ctx(req, res), { needsToken: tokenConfigured(req.project.token), aiEnabled: this.store.projectAi(req.project).enabled === true, ...options }), Date.now(), req);
+  }
+
+  // ---- reports ----
+
+  sendReports(req, res) {
+    this.sendHtml(res, 'Reports', render.renderReports(this.reports.list(), this.ctx(req, res), REPORT_SOURCES), Date.now(), req);
+  }
+
+  /** A report's definition: the page, or (download) the definition as JSON. */
+  sendReportDefinition(req, res) {
+    const r = req.report;
+    if (req.query.download !== undefined) {
+      res.setHeader('Content-Disposition', `attachment; filename="report-${r.id}.json"`);
+      res.type('application/json');
+      return res.send(JSON.stringify({ title: r.title, description: r.description, source: r.source, view: r.view, statements: r.statements }, null, 2));
+    }
+    this.sendHtml(res, `Report: ${r.title}`, render.renderReportDefinition(r, this.ctx(req, res), REPORT_SOURCES), Date.now(), req);
+  }
+
+  sendReportEditor(req, res, report, form = null, issues = null, status = 200) {
+    res.status(status);
+    this.sendHtml(res, report ? `Edit Report: ${report.title}` : 'New Report',
+      render.renderReportEditor(report, form, issues, this.ctx(req, res), REPORT_SOURCES), Date.now(), req);
+  }
+
+  /**
+   * Save a report from the administrator's form: checked (reports.check - the validator last),
+   * then saved; a new or changed view means its table is rebuilt in the background.
+   */
+  async saveReport(req, res, existing) {
+    const b = req.body || {};
+    const str = (v) => (typeof v === 'string' ? v : '');
+    const list = (v) => (Array.isArray(v) ? v : (v === undefined ? [] : [v])).map(str);
+    const names = list(b.stmt_name);
+    const sqls = list(b.stmt_sql);
+    const statements = [];
+    for (let i = 0; i < Math.max(names.length, sqls.length); i++) {
+      const name = (names[i] || '').trim();
+      const sql = (sqls[i] || '').trim();
+      if (name || sql) {
+        statements.push({ name, sql });
+      }
+    }
+    const form = { title: str(b.title), description: str(b.description), source: str(b.source), view: str(b.view), statements };
+    let view = null;
+    let issues = [];
+    try {
+      view = JSON.parse(form.view);
+    } catch (e) {
+      issues.push(`The ViewDefinition is not valid JSON: ${e.message}`);
+    }
+    if (view) {
+      issues = await this.reports.check({ ...form, view }, existing, this.validator);
+    }
+    if (issues.length > 0) {
+      return this.sendReportEditor(req, res, existing, form, issues, 400);
+    }
+    const rebuild = this.reports.save({ ...form, view }, existing);
+    this.log.info(`IPS module: report '${view.name}' ${existing ? 'saved' : 'added'}${rebuild ? '; its table will be built' : ''}`);
+    res.redirect(`${req.baseUrl}/reports/${encodeURIComponent(view.name)}`);
+  }
+
+  sendProjectReports(req, res) {
+    this.sendHtml(res, `${req.project.name}: Reports`,
+      render.renderProjectReports(req.project, this.reports.list(), this.ctx(req, res), REPORT_SOURCES), Date.now(), req);
+  }
+
+  /** A report for the project: its statements' output, then the table's first rows. */
+  async sendProjectReport(req, res) {
+    const report = this.reports.get(req.params.id);
+    if (!report) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`There is no report '${req.params.id}'`), 404);
+    }
+    let out = null;
+    let problem = null;
+    try {
+      out = await this.reports.query(report, req.project.id);
+    } catch (e) {
+      problem = e.message;
+    }
+    this.sendHtml(res, `${req.project.name}: ${report.title}`,
+      render.renderProjectReport(req.project, report, out, problem, this.reports.errors(report, req.project.id),
+        { ...this.ctx(req, res), codeSystemLink: this.tx ? (system) => this.tx.codeSystemLink(system) : null }, this.reports.maxRows),
+      Date.now(), req);
+  }
+
+  /** The project's rows of a report's table, as CSV. */
+  async sendReportCsv(req, res) {
+    const report = this.reports.get(req.params.id);
+    if (!report) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`There is no report '${req.params.id}'`), 404);
+    }
+    let csv;
+    try {
+      csv = await this.reports.csv(report, req.project.id);
+    } catch (e) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, e, 409);
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="${req.project.code}-${report.id}.csv"`);
+    res.type('text/csv');
+    res.send(csv);
   }
 
   // ---- national profiles ----
