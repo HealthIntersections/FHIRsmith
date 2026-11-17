@@ -2373,7 +2373,14 @@ function xmlEscape(s) {
 // the public address the sitemap's URLs start with
 function sitemapBase(req) {
   const configured = xigSettings && typeof xigSettings.baseUrl === 'string' ? xigSettings.baseUrl : '';
-  return (configured || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const base = configured || `${req.protocol}://${req.get('host')}`;
+  // without the trailing /s: one scan back from the end. Not with /\/+$/, which on a Host header
+  // of many /s takes time in the square of their number (CodeQL js/polynomial-redos)
+  let end = base.length;
+  while (end > 0 && base[end - 1] === '/') {
+    end--;
+  }
+  return base.substring(0, end);
 }
 
 // the first key of each sitemap file: the key at place 0, SITEMAP_SIZE, 2 * SITEMAP_SIZE ...
