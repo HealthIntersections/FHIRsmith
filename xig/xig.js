@@ -2341,6 +2341,155 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ---- Sitemap ----
+//
+// Every resource page, for crawlers: /xig/sitemap.xml is a sitemap index naming the files
+// /xig/sitemap-1.xml.gz, /xig/sitemap-2.xml.gz ..., SITEMAP_SIZE resource pages each (the
+// protocol's most; 282,291 resources in 2026-11 makes six). Crawlers find the resource pages here
+// rather than by paging through the lists, which robots.txt can then keep them out of: on
+// npm.fhir.org they were paging through every combination of the list filters, 40,000 database-
+// heavy pages in a few hours (2026-11).
+//
+// A file holds the resources from one key to the next boundary (the key at each SITEMAP_SIZE-th
+// place, found once). Built when first asked for, gzipped, and kept until the database is replaced
+// (the nightly update), for at most SITEMAP_BASES public addresses (the URLs in a sitemap are
+// absolute: from xig.baseUrl, else the request's own address).
+const SITEMAP_SIZE = 50000;
+const SITEMAP_BASES = 2;
+let sitemapSize = SITEMAP_SIZE; // smaller in the tests
+let sitemapCache = { db: null, boundaries: null, files: new Map() };
+
+function sitemapState() {
+  if (sitemapCache.db !== xigDb) {
+    sitemapCache = { db: xigDb, boundaries: null, files: new Map() };
+  }
+  return sitemapCache;
+}
+
+function xmlEscape(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+}
+
+// the public address the sitemap's URLs start with
+function sitemapBase(req) {
+  const configured = xigSettings && typeof xigSettings.baseUrl === 'string' ? xigSettings.baseUrl : '';
+  return (configured || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+}
+
+// the first key of each sitemap file: the key at place 0, SITEMAP_SIZE, 2 * SITEMAP_SIZE ...
+function sitemapBoundaries() {
+  const state = sitemapState();
+  if (!state.boundaries) {
+    state.boundaries = (async () => {
+      const keys = [];
+      for (let place = 0; ; place += sitemapSize) {
+        const row = await dbGet('SELECT ResourceKey FROM Resources ORDER BY ResourceKey LIMIT 1 OFFSET ?', [place]);
+        if (!row) {
+          return keys;
+        }
+        keys.push(row.ResourceKey);
+      }
+    })();
+    state.boundaries.catch(() => {
+      if (sitemapCache === state) {
+        state.boundaries = null; // try again next time
+      }
+    });
+  }
+  return state.boundaries;
+}
+
+// a file of the sitemap, built once (per address) and kept: {body, type}
+function sitemapFile(name, base, build) {
+  const state = sitemapState();
+  const key = base + ' ' + name;
+  let entry = state.files.get(key);
+  if (!entry) {
+    entry = build();
+    const bases = new Set([...state.files.keys()].map(k => k.split(' ')[0]));
+    if (bases.has(base) || bases.size < SITEMAP_BASES) {
+      state.files.set(key, entry);
+      entry.catch(() => state.files.delete(key));
+    }
+  }
+  return entry;
+}
+
+async function buildSitemapIndex(base) {
+  const boundaries = await sitemapBoundaries();
+  const parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'];
+  for (let n = 1; n <= boundaries.length; n++) {
+    parts.push(`<sitemap><loc>${xmlEscape(`${base}/xig/sitemap-${n}.xml.gz`)}</loc></sitemap>\n`);
+  }
+  parts.push('</sitemapindex>\n');
+  return { body: parts.join(''), type: 'application/xml' };
+}
+
+async function buildSitemapPart(base, n) {
+  const boundaries = await sitemapBoundaries();
+  if (n < 1 || n > boundaries.length) {
+    return null;
+  }
+  const from = boundaries[n - 1];
+  const to = n < boundaries.length ? boundaries[n] : null;
+  const rows = await dbAll(`SELECT r.ResourceType, r.Id, p.PID FROM Resources r JOIN Packages p ON p.PackageKey = r.PackageKey
+      WHERE r.ResourceKey >= ?${to === null ? '' : ' AND r.ResourceKey < ?'} ORDER BY r.ResourceKey`, to === null ? [from] : [from, to]);
+  const parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'];
+  for (const row of rows) {
+    if (!row.PID || !row.ResourceType || !row.Id) {
+      continue;
+    }
+    // as the lists link to it (buildResourceTable)
+    const url = `${base}/xig/resource/${encodeURIComponent(row.PID.replace(/#/g, '|'))}/${encodeURIComponent(row.ResourceType)}/${encodeURIComponent(row.Id)}`;
+    parts.push(`<url><loc>${xmlEscape(url)}</loc></url>\n`);
+  }
+  parts.push('</urlset>\n');
+  const body = await new Promise((resolve, reject) => zlib.gzip(parts.join(''), (err, out) => err ? reject(err) : resolve(out)));
+  return { body, type: 'application/gzip' };
+}
+
+async function sendSitemap(res, file) {
+  if (!xigDb) {
+    res.status(503).type('text/plain').send('The XIG database is not available');
+    return;
+  }
+  const result = await file;
+  if (!result) {
+    res.status(404).type('text/plain').send('No such sitemap file');
+    return;
+  }
+  res.setHeader('Content-Type', result.type);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(result.body);
+}
+
+router.get('/sitemap.xml', async (req, res) => {
+  const start = Date.now();
+  try {
+    const base = sitemapBase(req);
+    await sendSitemap(res, xigDb ? sitemapFile('index', base, () => buildSitemapIndex(base)) : null);
+  } catch (error) {
+    xigLog.error(`Error building the sitemap index: ${error.message}`);
+    res.status(500).type('text/plain').send('Unable to build the sitemap');
+  } finally {
+    globalStats?.countRequest('sitemap', Date.now() - start);
+  }
+});
+
+router.get(/^\/sitemap-(\d+)\.xml\.gz$/, async (req, res) => {
+  const start = Date.now();
+  try {
+    const base = sitemapBase(req);
+    const n = Number(req.params[0]);
+    await sendSitemap(res, xigDb ? sitemapFile(String(n), base, () => buildSitemapPart(base, n)) : null);
+  } catch (error) {
+    xigLog.error(`Error building sitemap file ${req.params[0]}: ${error.message}`);
+    res.status(500).type('text/plain').send('Unable to build the sitemap');
+  } finally {
+    globalStats?.countRequest('sitemap', Date.now() - start);
+  }
+});
+
 // Stats endpoint
 router.get('/stats', async (req, res) => {
   const start = Date.now();
@@ -3186,6 +3335,8 @@ function shutdown() {
 // Export everything
 module.exports = {
   router,
+  SITEMAP_SIZE,
+  setSitemapSizeForTests: (n) => { sitemapSize = n; sitemapCache = { db: null, boundaries: null, files: new Map() }; },
   setXigSettings,
   updateXigDatabase,
   getDatabaseInfo,
