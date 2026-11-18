@@ -414,6 +414,7 @@ const MODULES = {
     processing: obj({ enabled: bool(), intervalSeconds: positive() }),
     txServer: str({ nonEmpty: true }),
     summarySource: str({ values: ['modified', 'original'] }),
+    reports: obj({ database: str({ nonEmpty: true }), package: str({ nonEmpty: true }), profile: str({ nonEmpty: true }), queryTimeoutSeconds: positive(), maxRows: int({ min: 1 }), csvMaxRows: int({ min: 1 }), buildBudgetMs: positive() }),
     ai: obj({
       provider: str({ values: ['openai', 'anthropic'] }),
       model: str({ nonEmpty: true }),

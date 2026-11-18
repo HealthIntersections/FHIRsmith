@@ -125,6 +125,9 @@
       // it in the x-update-token header. Omit this and the endpoint is disabled entirely -
       // the scheduled update (autoUpdate) is unaffected either way.
       "updateToken": "change-this-to-a-secure-random-string",
+      // the public address the sitemap's URLs (/xig/sitemap.xml) start with. Optional; without
+      // it, the request's own address - only right behind a proxy that passes the host and scheme on
+      // "baseUrl": "https://npm.fhir.org",
       // how many connections to the database: each runs one query at a time. Optional; 4
       "connections": 4
     },
@@ -341,6 +344,12 @@
       // concepts an endpoint's client side caches hold between them; the least recently used
       // caches are dropped (their cache-id then gets a 404 cache-id-unknown)
       "cacheMaxTotalConcepts": 1000000,
+      // concepts the filter results remembered on package value sets hold between them (a
+      // resolved ECL expression, the concepts a full scan found); least recently used dropped
+      "filterMemoMaxConcepts": 10000000,
+      // the password for emptying the caches on the caches page (/{path}/caches). Without it, the
+      // page lists the caches and can't empty them
+      // "adminPassword": "<!-- secret -->",
       // distinct codes, and longest code (characters), counted for usage-count; others aren't counted
       "usageTrackerMaxCodes": 1000000,
       "usageTrackerMaxCodeLength": 100,
