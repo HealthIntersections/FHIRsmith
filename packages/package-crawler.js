@@ -6,7 +6,7 @@
 
 const axios = require('axios');
 const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
-const {XMLParser} = require('fast-xml-parser');
+const { parseXmlOffThread } = require('../library/xml-off-thread');
 const crypto = require('crypto');
 const zlib = require('zlib');
 const fs = require('fs');
@@ -405,29 +405,23 @@ class PackageCrawler {
   }
 
   async fetchXml(url) {
+    // parsed in a worker thread: a big feed (hl7.org's) held the event loop for seconds
+    const options = {
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      textNodeName: '#text',
+      entityExpansionLimit: 100000
+    };
     try {
       if (url.startsWith("/")) {
         const content = await fs.promises.readFile(this.resolveLocalReadPath(url), 'utf8');
-        const parser = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: '@_',
-          textNodeName: '#text',
-          entityExpansionLimit: 100000
-        });
-        return parser.parse(content);
+        return await parseXmlOffThread(content, options);
       } else {
         const response = await this.getRemote(url, {
           timeout: 30000,
           maxContentLength: crawlerLimits(this.config).maxFeedBytes
         });
-
-        const parser = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: '@_',
-          textNodeName: '#text',
-          entityExpansionLimit: 100000
-        });
-        return parser.parse(response.data);
+        return await parseXmlOffThread(response.data, options);
       }
     } catch (error) {
       debugLog(`Failed to fetch XML from ${url}: ${error.message}`);
