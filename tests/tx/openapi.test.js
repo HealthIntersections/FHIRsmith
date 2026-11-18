@@ -28,6 +28,8 @@ const EXCLUDED = {
   'GET /problems.html': 'the problems page (HTML)',
   'GET /info/{id}': 'an external source\'s page (HTML)',
   'POST /info/{id}': 'an external source\'s page (HTML form)',
+  'GET /caches': 'the caches page (HTML)',
+  'POST /caches': 'the caches page (HTML form)',
   'GET /library': 'the library source (HTML, or the operator\'s YAML)',
   'GET /openapi': 'the description itself',
   'GET /openapi.json': 'the description itself',

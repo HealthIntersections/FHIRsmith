@@ -5,6 +5,27 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-mm-dd
+
+### Added
+
+- tx: a caches page, `/{path}/caches`: every cache the tx module keeps, with how many entries each holds and its limit, and the process's memory. With `modules.tx.adminPassword`, it empties all but the client caches, or all of them (back to what the server held when it had started), then runs a full GC and `malloc_trim`, and shows RSS before and after. Under the cluster launcher it is server wide: it shows every process, with a column for each and the total, and empties the caches of every process. Listed are the endpoint and process caches (expansions, the XML of large arrays, recently read VSAC value sets, LOINC filter lookups, what the ecosystem said, language tags, regular expressions), what is kept with loaded content (the SNOMED CT history and MRCM range indexes), and the client caches
+- tx: the text indexes of the code systems and supplements loaded at startup (from packages and folders) are kept in SQLite (`terminology-cache/text-indexes/text-indexes.db`), not in the heap, and from one run to the next: each is keyed on a hash of what it indexes, so only new or changed content is indexed. The server waits for them as it starts (the first start with a big library takes a while); then the indexes nothing loads any more are deleted. In a cluster the master builds them and the tx-workers use them. Code systems and supplements from a request are indexed in memory, as before
+
+### Changed
+
+- The event loop watchdog's stall files say, on Linux, what the kernel says about the main thread for each second of a stall, and over it (in the log too): its state and what it waits in, the CPU time it used, the major page faults it took, RSS and swap, and the machine's pressure (PSI) and free memory. On npm.fhir.org eight of nine stalls in a day had an empty stack and no garbage collection - the main thread wasn't running JavaScript at all - and a stack can't say why
+- packages: the crawler parses the feeds (XML) in a worker thread when they are bigger than 256 KB: the hl7.org package feed held npm.fhir.org's event loop for 2-3 seconds each time it was read
+- tx: what providers remember on the filters of value sets (a resolved ECL expression, the concepts a full scan or a SNOMED CT display regex found, for each code system version and language) had no limit on the value sets of packages, which are held for the life of the server: one result for each version a filter was resolved against, forever. They are now kept least recently used first within `filterMemoMaxConcepts` (default 10,000,000 concepts, about 80 MB), and the memory guard can let them go. On the value sets a client cache holds they now count as concepts the cache holds, under `cacheMaxConcepts` and `cacheMaxTotalConcepts` (a result that would take a cache over its limit isn't kept), and go with it
+- SNOMED CT: **import your SNOMED CT editions again** with this version's importer: the server now only reads cache format 21, and refuses to start with a cache in any other format (1.0.4 asked for format 20, but still read older ones). Format 21 adds:
+  - the license the edition is distributed under: the importer has a new, required parameter, `--license <file>`, and puts the file in the cache, near the start, so that the license goes wherever the cache goes. The server doesn't read it. For the tx-ecosystem test subset, use its `license.txt` (in `tx/data/snomed` here)
+  - the text indexes that `$expand` filters and ECL term filters search - one for all the edition's languages and, when it has descriptions in more than one, one for each - built at import. The server reads them where they are in the cache file (memory-mapped, or read in with the rest), so nothing is built when a cache loads or is first searched (it took seconds for a full edition, and memory beside the cache), and the caches page no longer lists SNOMED CT text indexes
+  - and drops the old words and stems sections, which nothing read (they took most of an import's word processing, and space in every cache)
+
+  The server no longer reports caches in older formats in its log and daily report (it doesn't load them). The committed test cache, `tx/data/snomed-testing.cache`, is rebuilt from the RF2 subset in `tx/data/snomed`, and the tests that relied on its older content (no concrete values, module ids or MRCM) now use what the subset has
+- tx: the usage tracker (the `usage-count` expansion property) is off for now: nothing uses its counts yet, so the server no longer scans every value set at startup for it, nor counts the codes `$validate-code` sees, and `usage-count` is 0. An `$expand` asking for `usage-count` on a code system the tracker had no counts for failed; it now gives 0
+- tx: the memory guard empties every endpoint and process cache while it refuses requests for memory (it emptied the XML cache only), and the client caches too, but last: only at a later look, if emptying the rest wasn't enough
+
 ## [1.0.4] - 2026-11-17
 
 ### Changed

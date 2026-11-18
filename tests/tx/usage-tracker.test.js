@@ -14,15 +14,23 @@ const CS = {
 };
 
 describe('ConceptUsageTracker', () => {
-  test('counts the codes it sees', () => {
+  test('off (the default): counts nothing, and scans nothing', async () => {
     const t = new ConceptUsageTracker();
+    expect(t.enabled).toBe(false);
+    t.seeConcept('http://a', 'x');
+    expect(t.usages('http://a')).toBeNull();
+    expect(await t.scanValueSets({ valueSetProviders: [{ scanAllValueSets: () => { throw new Error('scanned'); } }] })).toBe(0);
+  });
+
+  test('counts the codes it sees', () => {
+    const t = new ConceptUsageTracker(undefined, undefined, true);
     t.seeConcept('http://a', 'x');
     t.seeConcept('http://a', 'x');
     expect(t.usages('http://a').get('x').count).toBe(2);
   });
 
   test('stops adding codes at its limits, but still counts the ones it has', () => {
-    const t = new ConceptUsageTracker();
+    const t = new ConceptUsageTracker(undefined, undefined, true);
     t.seeConcept('http://a', 'x'.repeat(ConceptUsageTracker.MAX_CODE_LENGTH + 1));
     expect(t.usages('http://a')).toBeNull();
     t.seeConcept('http://a', 'x');

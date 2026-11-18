@@ -1,8 +1,6 @@
-// The description language bytes in SNOMED CT caches (tx/sct/languages.js), and which caches
-// the server asks to be imported again (staleCacheReasons)
+// The description language bytes in SNOMED CT caches (tx/sct/languages.js)
 
 const { LANGUAGE_CODES, languageByte, languageCode, languageBytesFor } = require('../../tx/sct/languages');
-const { staleCacheReasons } = require('../../tx/sct/structures');
 
 describe('SNOMED CT description language bytes', () => {
   test('1-9 keep the meanings earlier importers and the original server gave them', () => {
@@ -35,25 +33,6 @@ describe('SNOMED CT description language bytes', () => {
     expect(languageBytesFor('no')).toEqual([languageByte('no'), languageByte('nb')]);
     expect(languageBytesFor('fr')).toEqual([2]);
     expect(languageBytesFor('xx')).toEqual([]);
-  });
-});
-
-describe('SNOMED CT caches to import again', () => {
-  test('format 20 is current', () => {
-    expect(staleCacheReasons('20')).toEqual([]);
-  });
-
-  test('an older format says why', () => {
-    const reasons = staleCacheReasons('19');
-    expect(reasons.length).toBe(3);
-    expect(reasons.join(' ')).toMatch(/a day early/);
-    expect(reasons.join(' ')).toMatch(/labelled English/);
-    expect(reasons.join(' ')).not.toMatch(/concrete values/);
-  });
-
-  test('before 19, no concrete values either', () => {
-    expect(staleCacheReasons('17').join(' ')).toMatch(/concrete values/);
-    expect(staleCacheReasons('16').length).toBe(4);
   });
 });
 

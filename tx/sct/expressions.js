@@ -957,8 +957,6 @@ class SnomedExpressionServices {
 
   constructor(snomedStructures, isAIndex) {
     this.strings = snomedStructures.strings;
-    this.words = snomedStructures.words;
-    this.stems = snomedStructures.stems;
     this.refs = snomedStructures.refs;
     this.descriptions = snomedStructures.descriptions;
     this.descriptionIndex = snomedStructures.descriptionIndex;
@@ -1063,10 +1061,10 @@ class SnomedExpressionServices {
   /**
    * Parse expression string
    */
-  parseExpression(source) {
+  async parseExpression(source) {
     const parser = new SnomedExpressionParser();
     const result = parser.parse(source);
-    this.checkExpression(result);
+    await this.checkExpression(result);
     return result;
   }
 
@@ -1701,16 +1699,16 @@ class SnomedExpressionServices {
   /**
    * Validate expression structure and concept references
    */
-  checkExpression(expression) {
+  async checkExpression(expression) {
     for (const concept of expression.concepts) {
       this.checkConcept(concept);
     }
 
     if (expression.hasRefinements()) {
       for (const refinement of expression.refinements) {
-        this.checkRefinement(refinement);
+        await this.checkRefinement(refinement);
         this.checkRefinementDomain(expression, refinement);
-        this.checkRefinementRange(refinement);
+        await this.checkRefinementRange(refinement);
       }
       this.selfGroupRefinements(expression);
     }
@@ -1718,9 +1716,9 @@ class SnomedExpressionServices {
     if (expression.hasRefinementGroups()) {
       for (const group of expression.refinementGroups) {
         for (const refinement of group.refinements) {
-          this.checkRefinement(refinement);
+          await this.checkRefinement(refinement);
           this.checkRefinementDomain(expression, refinement);
-          this.checkRefinementRange(refinement);
+          await this.checkRefinementRange(refinement);
         }
       }
     }
@@ -1994,14 +1992,15 @@ class SnomedExpressionServices {
   /**
    * Check one refinement's value against the MRCM attribute range: the range is
    * an ECL constraint, so this only runs when an evaluator has been injected
-   * (`eclConstraintMatcher`, set by SnomedServices, which owns the ECL engine).
+   * (`eclConstraintMatcher`, set by SnomedServices, which owns the ECL engine; it is
+   * async, as ECL evaluation is).
    * A matcher that returns null - an unparseable or unsupported constraint, such
    * as the concrete-value ranges "dec(>#0..)" - leaves the value unchecked
    * rather than rejecting it.
    *
    * @param {SnomedRefinement} refinement
    */
-  checkRefinementRange(refinement) {
+  async checkRefinementRange(refinement) {
     const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
     if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
       return;
@@ -2024,7 +2023,7 @@ class SnomedExpressionServices {
       return;
     } else {
       try {
-        ok = this.eclConstraintMatcher(constraint, refinement.value);
+        ok = await this.eclConstraintMatcher(constraint, refinement.value);
       } catch (error) {
         ok = null; // the evaluator could not decide; do not invent a violation
       }
@@ -2516,13 +2515,13 @@ class SnomedExpressionServices {
   /**
    * Validate refinement
    */
-  checkRefinement(refinement) {
+  async checkRefinement(refinement) {
     // Only concept model attributes (410662002) may be used as attributes. The wider
     // 106237007 |Linkage concept| used to be allowed too, which let in things like
     // 20401003 |With| and 280452008 |Interpretation| that are not attributes in the
     // concept model (and could never have an MRCM rule anyway).
     this.checkConcept(refinement.name, ['410662002']);
-    this.checkExpression(refinement.value);
+    await this.checkExpression(refinement.value);
   }
 
   /**

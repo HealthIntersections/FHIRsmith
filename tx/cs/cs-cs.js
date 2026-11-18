@@ -8,6 +8,7 @@ const {Extensions} = require("../library/extensions");
 const {BaseCSServices} = require("./cs-base");
 const regexUtilities = require("../../library/regex-utilities");
 const { NameIndex } = require("../library/text-match");
+const { TextIndexStore } = require("../library/text-index-store");
 
 // Symbol key under which resolved filter analysis is memoised directly on the
 // ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
@@ -18,7 +19,7 @@ const { NameIndex } = require("../library/text-match");
 // computed against. Only the expensive full-scan / subtree-walk filters are
 // cached (see _isCacheableFilter); cheap ones (=, in, child-of) are not. cs-cs
 // filter results do not depend on forIteration, so one form is stored per version.
-const FILTER_ANALYSIS = Symbol('filterAnalysis');
+const { FILTER_ANALYSIS, recall, remember } = require('../library/filter-memo');
 
 // The standard concept properties (http://hl7.org/fhir/concept-properties)
 const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
@@ -1376,18 +1377,15 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * other work run while it is; built again if the concepts change
    */
   async #textIndex(allConcepts) {
+    // a code system loaded as the server started has its index in the store (text-index-store.js)
+    const stored = TextIndexStore.indexFor(this.codeSystem);
+    if (stored && stored.size === allConcepts.length) {
+      return stored;
+    }
     let entry = TEXT_INDEXES.get(this.codeSystem);
     if (!entry || entry.size !== allConcepts.length) {
-      const csLang = this.defLang();
       const index = new NameIndex();
-      for (let ordinal = 0; ordinal < allConcepts.length; ordinal++) {
-        const concept = allConcepts[ordinal];
-        index.addCode(ordinal, concept.code);
-        index.add(ordinal, csLang, concept.display);
-        for (const d of concept.designation || []) {
-          index.add(ordinal, d.language || csLang, d.value);
-        }
-      }
+      TextIndexStore.fillCodeSystem(allConcepts, this.defLang(), index);
       entry = { size: allConcepts.length, promise: index.build() };
       entry.promise.catch(() => TEXT_INDEXES.delete(this.codeSystem));
       TEXT_INDEXES.set(this.codeSystem, entry);
@@ -1452,8 +1450,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     const vkey = fc ? this._filterCacheVersionKey() : null;
     const cacheable = vkey !== null && this._isCacheableFilter(prop, op);
     if (cacheable) {
-      const byVersion = fc[FILTER_ANALYSIS];
-      const cachedConcepts = byVersion ? byVersion.get(vkey) : null;
+      const cachedConcepts = recall(fc, FILTER_ANALYSIS, vkey);
       if (cachedConcepts) {
         results = new FhirCodeSystemProviderFilterContext();
         results.concepts = cachedConcepts; // immutable: read-only from here
@@ -1495,12 +1492,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
       // Store a private copy of the resolved concept list for reuse. A slice
       // isolates the cache from any later mutation of this request's context.
       if (cacheable) {
-        let byVersion = fc[FILTER_ANALYSIS];
-        if (!byVersion) {
-          byVersion = new Map();
-          Object.defineProperty(fc, FILTER_ANALYSIS, { value: byVersion, enumerable: false, configurable: true, writable: true });
-        }
-        byVersion.set(vkey, results.concepts.slice());
+        remember(fc, FILTER_ANALYSIS, vkey, results.concepts.slice());
       }
     }
 
@@ -1949,7 +1941,26 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
 
 }
 
+/**
+ * Whether a code system has a text index built in memory (for the caches page)
+ * @param {CodeSystem} codeSystem
+ */
+function hasMemoryTextIndex(codeSystem) {
+  return TEXT_INDEXES.has(codeSystem);
+}
+
+/**
+ * Let go of a code system's in-memory text index (it is built again when next searched)
+ * @param {CodeSystem} codeSystem
+ * @returns {boolean} whether it had one
+ */
+function dropMemoryTextIndex(codeSystem) {
+  return TEXT_INDEXES.delete(codeSystem);
+}
+
 module.exports = {
+  hasMemoryTextIndex,
+  dropMemoryTextIndex,
   FhirCodeSystemFactory,
   FhirCodeSystemProvider,
   FhirCodeSystemProviderContext,

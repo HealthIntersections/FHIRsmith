@@ -433,6 +433,16 @@ is ready again. So:
   stability paragraph;
 * **without the launcher** (roles behind nginx), there is no Cluster paragraph.
 
+### The caches page
+
+The tx caches page (`/{path}/caches`, see [tx/README.md](tx/README.md#the-caches-page)) is server
+wide: whichever process a request reaches asks the launcher, the launcher asks every process
+that is ready, and the page shows each process's caches and memory, with a column for each and
+the total. Emptying the caches (with `modules.tx.adminPassword`) empties them in every process;
+each then runs a full GC. A process that doesn't answer in 30 seconds is shown as not answering,
+one that isn't ready as not running (`library/cluster-caches.js`). Without the launcher (roles
+behind nginx), the page shows, and empties, only the process the request reached.
+
 ## Configuration
 
 ```json

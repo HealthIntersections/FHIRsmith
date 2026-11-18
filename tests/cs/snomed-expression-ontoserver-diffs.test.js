@@ -30,13 +30,13 @@ describeIfCache('expressions where Ontoserver disagreed with us', () => {
   }, 300000);
 
   /** Validate exactly as locate() does - parser with no concept list, then checkExpression. */
-  function check(expression) {
-    services.checkExpression(new SnomedExpressionParser().parse(expression));
+  async function check(expression) {
+    await services.checkExpression(new SnomedExpressionParser().parse(expression));
   }
 
-  function messageOf(expression) {
+  async function messageOf(expression) {
     try {
-      check(expression);
+      await check(expression);
     } catch (e) {
       return e.message;
     }
@@ -52,24 +52,24 @@ describeIfCache('expressions where Ontoserver disagreed with us', () => {
     // Ontoserver rejects all of them; until Oct 2026 we accepted all of them, because
     // an attribute with no rule was not checked at all.
 
-    test('|Has definitional manifestation| on a finding', () => {
-      expect(messageOf('698595002:363705008=125149003')).toMatch(/does not define any domain for the attribute 363705008/);
+    test('|Has definitional manifestation| on a finding', async () => {
+      expect(await messageOf('698595002:363705008=125149003')).toMatch(/does not define any domain for the attribute 363705008/);
     });
 
-    test('|Permanence| on a finding', () => {
-      expect(messageOf('249943000:260868000=6934004')).toMatch(/260868000/); // not a concept model attribute
+    test('|Permanence| on a finding', async () => {
+      expect(await messageOf('249943000:260868000=6934004')).toMatch(/260868000/); // not a concept model attribute
     });
 
-    test('|With| on a person', () => {
-      expect(messageOf('116154003:20401003=(404684003)')).toMatch(/20401003/);
+    test('|With| on a person', async () => {
+      expect(await messageOf('116154003:20401003=(404684003)')).toMatch(/20401003/);
     });
 
-    test('|Interpretation| (not |Has interpretation|) on a finding - difficulty', () => {
-      expect(messageOf('365031000:280452008=371157007')).toMatch(/280452008/);
+    test('|Interpretation| (not |Has interpretation|) on a finding - difficulty', async () => {
+      expect(await messageOf('365031000:280452008=371157007')).toMatch(/280452008/);
     });
 
-    test('|Interpretation| (not |Has interpretation|) on a finding - unable', () => {
-      expect(messageOf('365031000:280452008=371151008')).toMatch(/280452008/);
+    test('|Interpretation| (not |Has interpretation|) on a finding - unable', async () => {
+      expect(await messageOf('365031000:280452008=371151008')).toMatch(/280452008/);
     });
   });
 
@@ -80,9 +80,9 @@ describeIfCache('expressions where Ontoserver disagreed with us', () => {
     // grouped are self-grouped when the expression is transformed to its normal
     // form). Until Oct 2026 we rejected it, insisting on {47429007 = ...}; now the
     // attribute is self-grouped (see selfGroupRefinements).
-    test('413350009 context with a nested finding refined by |Associated with|', () => {
+    test('413350009 context with a nested finding refined by |Associated with|', async () => {
       const e = new SnomedExpressionParser().parse('413350009:{246090004=(404684003:47429007=63653004),408729009=261665006,408732007=410604004,408731000=410512000}');
-      expect(() => services.checkExpression(e)).not.toThrow();
+      await expect(services.checkExpression(e)).resolves.not.toThrow();
       const nested = e.refinementGroups[0].refinements[0].value;
       expect(nested.refinements).toHaveLength(0);
       expect(nested.refinementGroups).toHaveLength(1);

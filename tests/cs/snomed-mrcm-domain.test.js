@@ -42,13 +42,13 @@ describeIfCache('MRCM attribute domains', () => {
   }, 120000);
 
   /** Validate exactly as locate() does - parser with no concept list, then checkExpression. */
-  function check(expression) {
-    services.checkExpression(new SnomedExpressionParser().parse(expression));
+  async function check(expression) {
+    await services.checkExpression(new SnomedExpressionParser().parse(expression));
   }
 
-  function messageOf(expression) {
+  async function messageOf(expression) {
     try {
-      check(expression);
+      await check(expression);
     } catch (e) {
       return e.message;
     }
@@ -56,34 +56,34 @@ describeIfCache('MRCM attribute domains', () => {
   }
 
   describe('an attribute with several mandatory domains is valid in any of them', () => {
-    test('|Due to| on a clinical finding', () => {
-      expect(() => check('197270009:{42752001=789750003}')).not.toThrow();
+    test('|Due to| on a clinical finding', async () => {
+      await expect(check('197270009:{42752001=789750003}')).resolves.not.toThrow();
     });
 
-    test('|Due to| on an event', () => {
-      expect(() => check('789750003:{42752001=197270009}')).not.toThrow();
+    test('|Due to| on an event', async () => {
+      await expect(check('789750003:{42752001=197270009}')).resolves.not.toThrow();
     });
 
-    test('|Due to| on a procedure is outside every domain, and the message names them all', () => {
-      const message = messageOf('367430006:{42752001=789750003}');
+    test('|Due to| on a procedure is outside every domain, and the message names them all', async () => {
+      const message = await messageOf('367430006:{42752001=789750003}');
       expect(message).toContain('does not allow the attribute 42752001');
       expect(message).toMatch(/in the domain 404684003 [^,]*, or in the domain 272379006/);
     });
   });
 
   describe('an optional rule still narrows the mandatory one', () => {
-    test('|Laterality| on a lateralizable body structure', () => {
-      expect(() => check('85562004:272741003=24028007')).not.toThrow();
+    test('|Laterality| on a lateralizable body structure', async () => {
+      await expect(check('85562004:272741003=24028007')).resolves.not.toThrow();
     });
 
-    test('|Laterality| on a body structure that is not lateralizable', () => {
-      const message = messageOf('10200004:272741003=24028007');
+    test('|Laterality| on a body structure that is not lateralizable', async () => {
+      const message = await messageOf('10200004:272741003=24028007');
       expect(message).toContain('only valid for concepts in 723264001');
       expect(message).not.toContain('in the domain 91723000');
     });
 
-    test('|Laterality| on a disorder breaks both the domain and the restriction', () => {
-      const message = messageOf('197270009:272741003=24028007');
+    test('|Laterality| on a disorder breaks both the domain and the restriction', async () => {
+      const message = await messageOf('197270009:272741003=24028007');
       expect(message).toContain('in the domain 91723000');
       expect(message).toContain('for concepts in 723264001');
     });
@@ -109,12 +109,12 @@ describeIfCache('MRCM attribute domains', () => {
       rules.forEach((rule, i) => Object.assign(rule, saved[i]));
     });
 
-    test('a finding gets the finding limit', () => {
-      expect(() => check('197270009:{42752001=789750003,42752001=773760007}')).not.toThrow();
+    test('a finding gets the finding limit', async () => {
+      await expect(check('197270009:{42752001=789750003,42752001=773760007}')).resolves.not.toThrow();
     });
 
-    test('an event gets the event limit', () => {
-      expect(messageOf('789750003:{42752001=197270009,42752001=773760007}'))
+    test('an event gets the event limit', async () => {
+      expect(await messageOf('789750003:{42752001=197270009,42752001=773760007}'))
         .toMatch(/at most 1 time\(s\) in one relationship group/);
     });
   });

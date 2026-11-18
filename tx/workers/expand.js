@@ -569,7 +569,9 @@ class ValueSetExpander {
           this.defineProperty(expansion, n, 'http://hl7.org/fhir/concept-properties#definition', pn, "valueString", definition);
         }
       } else if (pn === 'usage-count') {
-        let counter = cs.usages().get(code);
+        // nothing, when the tracker has no counts for the code system (or is off)
+        const usages = cs.usages();
+        const counter = usages ? usages.get(code) : null;
         this.defineProperty(expansion, n, 'http://fhir.org/FHIRsmith/CodeSystem/concept-properties#usage-count', pn, "valueInteger", counter ? counter.count : 0);
       } else if (csProps != null && cs != null) {
         for (const cp of csProps) {

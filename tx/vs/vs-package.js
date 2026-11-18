@@ -10,6 +10,7 @@ const {validateParameter} = require("../../library/utilities");
 const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
 const { keepForPinnedReference } = require('../library/tho-precedence');
 const { waitForCache } = require('../library/wait-for-cache');
+const { markFilters, libraryFilterMemos } = require('../library/filter-memo');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -102,6 +103,8 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
         // non-enumerable: internal marker only, must never serialise into a
         // response or be copied by structuredClone/spread when a VS is cloned.
         Object.defineProperty(vs, 'isCached', { value: true, enumerable: false, configurable: true, writable: true });
+        // what providers remember on its filters is kept within a budget (library/filter-memo.js)
+        markFilters(vs, libraryFilterMemos);
       }
     }
     // nothing, unless the spaceId was assigned before the provider was initialized

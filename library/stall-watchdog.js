@@ -24,9 +24,20 @@
  * What it finds goes to a file in the log folder straight away (the main thread may
  * never recover: the process can run out of memory), and into the log as a warning once
  * the main thread is running again.
+ *
+ * A stack can't say why the main thread isn't running JavaScript at all: a sample that only
+ * lands when the loop runs again, on an empty stack, with no garbage collection going on
+ * (npm.fhir.org, Nov 2026), is native code, or the kernel holding the process. So on Linux,
+ * every second of a stall, it also writes what /proc says (readProcState): the main thread's
+ * state (R running, D waiting on the disk, S sleeping) and what it waits in, the CPU time it
+ * used and the major page faults it took meanwhile, the process's RSS and swap, and the
+ * machine's pressure (PSI: cpu, io, memory) and free memory. CPU time going up is native work;
+ * D with page faults is the disk or memory; R with little CPU time is a starved machine.
  */
 
+const path = require('path');
 const { Worker } = require('worker_threads');
+const { readProcState, describeProcState } = require('./proc-state');
 
 const MAX_SAMPLES = 5;
 const MAX_FRAMES = 40;
@@ -54,86 +65,6 @@ const STACK_EXPRESSION = '(() => {' +
   ' }' +
   '})()';
 
-// the watcher, run as a worker thread (eval: it has to be a string)
-const WATCHER = `
-const { parentPort, workerData } = require('worker_threads');
-const fs = require('fs');
-const path = require('path');
-const inspector = require('inspector');
-
-const beat = new BigInt64Array(workerData.buffer);
-const { thresholdMs, dir, label, maxSamples, sampleTimeoutMs, stackExpression } = workerData;
-
-let stall = null; // { since, samples, file }
-let busy = false;
-
-function sample(done) {
-  const session = new inspector.Session();
-  let finished = false;
-  const finish = (frames, error) => {
-    if (finished) return;
-    finished = true;
-    try { session.disconnect(); } catch (e) { /* already gone */ }
-    done(frames, error);
-  };
-  try {
-    session.connectToMainThread();
-  } catch (e) {
-    done(null, e.message);
-    return;
-  }
-  session.post('Runtime.evaluate', { expression: stackExpression, returnByValue: true, silent: true }, (err, res) => {
-    if (err) {
-      finish(null, err.message);
-    } else if (res.exceptionDetails || !res.result || !Array.isArray(res.result.value)) {
-      finish(null, 'the stack could not be read: ' + ((res.exceptionDetails && res.exceptionDetails.text) || 'no value'));
-    } else {
-      finish(res.result.value, null);
-    }
-  });
-  // a sample that never lands (a garbage collection that doesn't end): give up on this one
-  setTimeout(() => finish(null, 'no answer from the main thread'), sampleTimeoutMs);
-}
-
-function write(text) {
-  try {
-    fs.appendFileSync(stall.file, text);
-  } catch (e) {
-    fs.writeSync(2, 'stall watchdog: unable to write ' + stall.file + ': ' + e.message + '\\n');
-  }
-}
-
-setInterval(() => {
-  if (busy) return;
-  const now = Date.now();
-  const last = Number(Atomics.load(beat, 0));
-  const blocked = now - last;
-  if (blocked < thresholdMs) {
-    if (stall) {
-      write('\\n' + new Date(now).toISOString() + ' the event loop is running again, ' + Math.round(blocked / 1000) + 's after the heartbeat\\n');
-      parentPort.postMessage({ since: stall.since, until: now, samples: stall.samples, file: stall.file });
-      stall = null;
-    }
-    return;
-  }
-  if (!stall) {
-    const stamp = new Date(last).toISOString().replace(/[:.]/g, '-');
-    stall = { since: last, samples: [], file: path.join(dir, 'stall-' + label + '-' + stamp + '.txt'), next: now };
-    write('The event loop of process ' + process.pid + ' (' + label + ') has not run since ' + new Date(last).toISOString() + '\\n');
-  }
-  if (stall.samples.length >= maxSamples || now < stall.next) return;
-  busy = true;
-  sample((frames, error) => {
-    busy = false;
-    const at = Date.now();
-    stall.next = at + thresholdMs;
-    const s = { at, blockedMs: at - Number(Atomics.load(beat, 0)), frames, error };
-    stall.samples.push(s);
-    write('\\n' + new Date(at).toISOString() + ' blocked ' + Math.round(s.blockedMs / 1000) + 's' +
-      (frames ? ':\\n  at ' + frames.join('\\n  at ') : ': no stack (' + error + ')') + '\\n');
-  });
-}, 1000);
-`;
 
 /**
  * Start watching this process's event loop.
@@ -157,8 +88,7 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
   const timer = setInterval(tick, 1000);
   timer.unref();
 
-  const worker = new Worker(WATCHER, {
-    eval: true,
+  const worker = new Worker(path.join(__dirname, 'stall-watchdog-worker.js'), {
     workerData: { buffer, thresholdMs, dir, label: String(label).replace(/[^A-Za-z0-9_-]/g, '_'), maxSamples: MAX_SAMPLES, sampleTimeoutMs: SAMPLE_TIMEOUT_MS,
       stackExpression: STACK_EXPRESSION.replaceAll('MAX_FRAMES', String(MAX_FRAMES)) }
   });
@@ -167,7 +97,7 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
     const secs = Math.round((m.until - m.since) / 1000);
     const top = m.samples.filter(s => s.frames).map(s => '  ' + Math.round(s.blockedMs / 1000) + 's: ' + s.frames.slice(0, 6).join(' < '));
     log.warn(`The event loop was blocked for about ${secs}s (from ${new Date(m.since).toISOString()}). ` +
-      `${m.samples.length} stack sample(s) in ${m.file}` + (top.length ? '\n' + top.join('\n') : ''));
+      `${m.samples.length} stack sample(s) in ${m.file}` + (m.proc ? '\n  over the stall: ' + m.proc : '') + (top.length ? '\n' + top.join('\n') : ''));
   });
   worker.on('error', (e) => log.error(`The event loop watchdog failed: ${e.message}`));
 
@@ -179,4 +109,4 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
   };
 }
 
-module.exports = { startStallWatchdog };
+module.exports = { startStallWatchdog, readProcState, describeProcState };

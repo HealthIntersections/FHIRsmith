@@ -6,4 +6,4 @@ base:
   url: https://storage.googleapis.com/tx-fhir-org
 
 sources:
-  - snomed:snomed-testing.cache
+  - snomed:sct_test_20250909-21.cache

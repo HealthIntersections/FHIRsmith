@@ -1103,7 +1103,7 @@ async function startServer() {
       modules.packages.startInitialCrawler();
     }
     // Run usage tracker in background after startup
-    if (modules.tx && modules.tx.library) {
+    if (modules.tx && modules.tx.library && modules.tx.usageTracker.enabled) {
       setImmediate(async () => {
         try {
           serverLog.info('Starting ConceptUsageTracker scan...');

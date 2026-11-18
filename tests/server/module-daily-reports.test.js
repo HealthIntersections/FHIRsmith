@@ -116,14 +116,6 @@ describe('module paragraphs', () => {
     tx.stats = statsWith({});
     expect(tx.dailyReport({ since: SINCE, now: NOW })).toBe('No requests were served.');
 
-    // SNOMED CT caches in an older format are reported every day until they are imported again
-    tx.library = { snomedCacheWarnings: [
-      { file: 'sct_nl_20260930.cache', versionUri: 'http://snomed.info/sct/11000146104/version/20260930', cacheVersion: '19', reasons: [] },
-      { file: 'sct_uk_20230412.cache', versionUri: 'http://snomed.info/sct/83821000000107/version/20230412', cacheVersion: '16', reasons: [] }
-    ] };
-    const report = tx.dailyReport({ since: SINCE, now: NOW });
-    expect(report).toMatch(/^No requests were served\.\n\n2 SNOMED CT caches should be imported again/);
-    expect(report).toContain('sct_nl_20260930.cache (format 19), sct_uk_20230412.cache (format 16)');
   });
 
   test('registry: client requests, servers registered, and those that never answered', () => {

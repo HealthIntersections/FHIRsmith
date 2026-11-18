@@ -10,13 +10,15 @@ const Logger = require('../../library/logger');
 const { ResourceCache } = require('../../tx/operation-context');
 const ConceptUsageTracker = require('../../tx/usage-tracker');
 const { LanguageDefinitions } = require('../../library/languages');
+const { LibraryFilterMemos } = require('../../tx/library/filter-memo');
 
 const DEFAULTS = {
   cacheMaxConcepts: ResourceCache.MAX_CONCEPTS_PER_CACHE,
   cacheMaxTotalConcepts: ResourceCache.MAX_TOTAL_CONCEPTS,
   usageTrackerMaxCodes: ConceptUsageTracker.MAX_CODES,
   usageTrackerMaxCodeLength: ConceptUsageTracker.MAX_CODE_LENGTH,
-  languageTagCacheSize: LanguageDefinitions.MAX_PARSED
+  languageTagCacheSize: LanguageDefinitions.MAX_PARSED,
+  filterMemoMaxConcepts: LibraryFilterMemos.DEFAULT_MAX_CONCEPTS
 };
 
 describe('TXModule.resourceLimits', () => {
@@ -24,17 +26,18 @@ describe('TXModule.resourceLimits', () => {
     expect(TXModule.resourceLimits({})).toEqual(DEFAULTS);
     expect(TXModule.resourceLimits({ cacheMaxConcepts: null, languageTagCacheSize: undefined })).toEqual(DEFAULTS);
     expect(DEFAULTS).toEqual({ cacheMaxConcepts: 250000, cacheMaxTotalConcepts: 1000000,
-      usageTrackerMaxCodes: 1000000, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000 });
+      usageTrackerMaxCodes: 1000000, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000, filterMemoMaxConcepts: 10000000 });
   });
 
   test('set values are used; 0 = no limit; anything not a number = the default', () => {
     expect(TXModule.resourceLimits({ cacheMaxConcepts: 7, cacheMaxTotalConcepts: 0, usageTrackerMaxCodes: '3',
-      usageTrackerMaxCodeLength: 'lots', languageTagCacheSize: -1 })).toEqual({ cacheMaxConcepts: 7,
-      cacheMaxTotalConcepts: Infinity, usageTrackerMaxCodes: 3, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000 });
+      usageTrackerMaxCodeLength: 'lots', languageTagCacheSize: -1, filterMemoMaxConcepts: 0 })).toEqual({ cacheMaxConcepts: 7,
+      cacheMaxTotalConcepts: Infinity, usageTrackerMaxCodes: 3, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000,
+      filterMemoMaxConcepts: Infinity });
   });
 
   test('no limit really is none', () => {
-    const tracker = new ConceptUsageTracker(Infinity, Infinity);
+    const tracker = new ConceptUsageTracker(Infinity, Infinity, true);
     tracker.codes = ConceptUsageTracker.MAX_CODES;
     tracker.seeConcept('http://a', 'x'.repeat(ConceptUsageTracker.MAX_CODE_LENGTH + 1));
     expect(tracker.usages('http://a').size).toBe(1);

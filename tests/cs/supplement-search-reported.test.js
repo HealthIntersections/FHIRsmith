@@ -17,7 +17,9 @@ const folders = require('../../library/folder-setup');
 
 const testCachePath = folders.ensureFilePath('snomed-testing.cache');
 const committedCachePath = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
-const cacheFile = fs.existsSync(testCachePath) ? testCachePath
+// (the scratch copy only if it's in the current cache format: one from an older version's run isn't)
+const { SnomedFileReader } = require('../../tx/sct/structures');
+const cacheFile = fs.existsSync(testCachePath) && SnomedFileReader.isCurrent(testCachePath) ? testCachePath
   : (fs.existsSync(committedCachePath) ? committedCachePath : null);
 
 const CONCEPT = '11687002'; // in the test edition, found by a search for "diabetes"
