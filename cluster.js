@@ -50,6 +50,7 @@ const { spawn } = require('child_process');
 const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS, COUNTS_INTERVAL_MS } = require('./library/cluster-counts');
+const { CacheFanout, ASK: CACHES_ASK, DONE: CACHES_DONE } = require('./library/cluster-caches');
 const { PendingClusterEvents, CLUSTER_EVENTS, KINDS } = require('./library/cluster-events');
 const { readCgroupAnon, readCgroupStat, readProcessMemory } = require('./library/cgroup-memory');
 const { buildSnapshot, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS } = require('./library/cluster-status');
@@ -407,6 +408,8 @@ function createLauncher(settings) {
   });
   // the workers' request counts, on their way to the master's statistics
   const pendingCounts = new PendingCounts();
+  // the caches page, server wide: every process's caches (library/cluster-caches.js)
+  const cacheFanout = new CacheFanout(procs, { timeoutMs: settings.cachesTimeoutMs });
   // what the launcher saw, on its way to the master's daily report (library/cluster-events.js)
   const pendingEvents = new PendingClusterEvents();
   let eventsTimer = null;
@@ -570,6 +573,10 @@ function createLauncher(settings) {
           publishMetrics();
         } else if (proc.child === child && message && message.type === STATUS && message.figures) {
           proc.statusFigures = message.figures;
+        } else if (proc.child === child && message && message.type === CACHES_ASK) {
+          cacheFanout.ask(proc, message);
+        } else if (proc.child === child && message && message.type === CACHES_DONE) {
+          cacheFanout.done(proc, message);
         } else if (message && message.type === COUNTS && proc.role !== 'master') {
           // real requests, even from a child that is going away
           pendingCounts.add(message.rows);

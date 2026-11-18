@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { startStallWatchdog } = require('../../library/stall-watchdog');
+const { startStallWatchdog, readProcState, describeProcState } = require('../../library/stall-watchdog');
 
 // holds the event loop until the watchdog has written a stack sample (or 20 s): a sample that
 // lands after the loop is free again doesn't show this function
@@ -43,11 +43,33 @@ describe('stall watchdog', () => {
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(/The event loop was blocked for about \d+s/);
       expect(warnings[0]).toContain('heldHere (');
+      if (fs.existsSync('/proc/self/stat')) {
+        // on Linux, what the kernel says over the stall: the thread was running, on the CPU
+        expect(text).toMatch(/over the stall: main thread R; cpu \d+\.\d\ds in \d+\.\d\ds; major faults \+\d+/);
+        expect(warnings[0]).toContain('over the stall: main thread R');
+      }
     } finally {
       await wd.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 40000);
+
+  test('what /proc says, and what changed (Linux only)', () => {
+    const before = readProcState(process.pid);
+    if (!before) {
+      expect(fs.existsSync('/proc/self/stat')).toBe(false);
+      return;
+    }
+    expect(before.state).toMatch(/^[A-Za-z]$/);
+    expect(Number.isFinite(before.cpuMs)).toBe(true);
+    expect(Number.isFinite(before.majflt)).toBe(true);
+    const after = { ...before, at: before.at + 2000, cpuMs: before.cpuMs + 1500, majflt: before.majflt + 12, state: 'D', wchan: 'folio_wait_bit',
+      pressure: { io: { some: { avg10: 40.5, total: 1000000 }, full: { avg10: 30, total: 900000 } } } };
+    const before2 = { ...before, pressure: { io: { some: { avg10: 0, total: 0 }, full: { avg10: 0, total: 0 } } } };
+    const line = describeProcState(before2, after);
+    expect(line).toMatch(/^main thread D in folio_wait_bit; cpu 1\.50s in 2\.00s; major faults \+12; rss \d+ MB, swap /);
+    expect(line).toContain('pressure some/full avg10: io 40.5%/30% (+1.00s)');
+  });
 
   test('0: not started', () => {
     expect(startStallWatchdog({ thresholdSeconds: 0, dir: os.tmpdir(), label: 'x', log: {} })).toBeNull();

@@ -204,17 +204,32 @@ function shouldReject() {
 
 let gcFn;
 
-// caches to let go of while refusing, by name: each returns the bytes it let go (see addReliever)
+// caches to let go of while refusing, by name: {relieve, last} (see addReliever)
 const relievers = new Map();
 
 /**
  * A cache the guard can empty while it refuses requests for memory, before it forces a GC.
  * Registering again under the same name replaces the earlier one.
+ *
+ * A cache registered as `last` (the tx client caches: emptying them costs the clients) is
+ * only emptied once the others have been, and the memory is still over the threshold at the
+ * guard's next look.
  * @param {string} name - what it is, for the log ("XML cache")
- * @param {Function} relieve - empties it; returns about how many bytes that let go
+ * @param {Function} relieve - empties it; returns about how many bytes that let go: 0 if there
+ *   was nothing to let go, null if it let go of something of a size it doesn't know
+ * @param {Object} [options]
+ * @param {boolean} [options.last] - empty it only when emptying the rest wasn't enough
  */
-function addReliever(name, relieve) {
-  relievers.set(name, relieve);
+function addReliever(name, relieve, options = {}) {
+  relievers.set(name, { relieve, last: options.last === true });
+}
+
+/**
+ * Remove a reliever (a cache that is gone)
+ * @param {string} name
+ */
+function removeReliever(name) {
+  relievers.delete(name);
 }
 
 /**
@@ -327,6 +342,7 @@ function middleware(opts = {}) {
   let lastLog = 0;
   let lastGc = 0;
   let lastTrim = 0;
+  let relievedThisSpell = false; // whether the caches (but the last ones) were let go in this spell
 
   const secs = (ms) => Math.round(ms / 1000);
 
@@ -355,17 +371,26 @@ function middleware(opts = {}) {
       // a group: every process refusing does this, so each need only free its share
       const share = state.group ? Math.max(1, readCgroupProcessRss(state.group).size) : 1;
       const done = [];
-      // caches that can be let go first, for the GC below to take back
-      for (const [name, relieve] of relievers) {
+      // caches that can be let go first, for the GC below to take back; the `last` ones only
+      // once the others have been let go at an earlier look in this spell, and that wasn't
+      // enough
+      const lastToo = relievedThisSpell;
+      for (const [name, { relieve, last }] of relievers) {
+        if (last && !lastToo) {
+          continue;
+        }
         try {
           const freed = relieve();
           if (freed > 0) {
             done.push(`dropped the ${name} (${gb(freed)} GB)`);
+          } else if (freed === null) {
+            done.push(`dropped the ${name}`);
           }
         } catch {
           // ignore
         }
       }
+      relievedThisSpell = true;
       if (!state.lastResortGc && heap < excess / share) {
         if (log) {
           log.info(`Memory: no forced GC - the JS heap (${gb(heap)} GB) is less than the ${gb(excess)} GB over the threshold`);
@@ -411,6 +436,7 @@ function middleware(opts = {}) {
 
     if (!over) {
       gcWait = gcInterval;
+      relievedThisSpell = false;
       if (refusingSince) {
         if (log) {
           log.warn(`Memory recovered: ${gb(state.sampleRss)} GB of ${gb(state.limit)} GB - accepting requests again after ${secs(now - refusingSince)}s (${refused} refused)`);
@@ -449,4 +475,4 @@ function middleware(opts = {}) {
 
 configure();
 
-module.exports = { addReliever, thresholds, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state };
+module.exports = { addReliever, removeReliever, thresholds, configure, measureExcludingFileBacked, shouldReject, overAbortThreshold, describe, middleware, gb, getGc, _state: state, _relievers: relievers };

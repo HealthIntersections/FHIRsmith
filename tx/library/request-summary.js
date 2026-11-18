@@ -37,10 +37,31 @@ function resourceText(r) {
     const inc = (r.compose.include || []).length;
     const exc = (r.compose.exclude || []).length;
     s += ` (${inc} include${inc === 1 ? '' : 's'}${exc ? `, ${exc} exclude${exc === 1 ? '' : 's'}` : ''})`;
+    // the filters are what makes an expansion costly (an ECL constraint, say), and what
+    // is needed to repeat it
+    const filters = composeFilters(r.compose);
+    if (filters) {
+      s += ' ' + filters;
+    }
   } else if (r.resourceType === 'Parameters' && Array.isArray(r.parameter)) {
     s += ` (${r.parameter.length} parameters)`;
   }
   return s;
+}
+
+function composeFilters(compose) {
+  const parts = [];
+  for (const [kind, list] of [['include', compose.include], ['exclude', compose.exclude]]) {
+    for (const cs of Array.isArray(list) ? list : []) {
+      if (!cs || !Array.isArray(cs.filter) || cs.filter.length === 0) {
+        continue;
+      }
+      const system = (cs.system || '') + (cs.version ? '|' + cs.version : '');
+      const f = cs.filter.map(x => `${x && x.property} ${x && x.op} ${x && x.value}`).join(' & ');
+      parts.push(`${kind} ${system} ${f}`);
+    }
+  }
+  return parts.length ? '[' + parts.join('; ') + ']' : '';
 }
 
 function valueText(p) {

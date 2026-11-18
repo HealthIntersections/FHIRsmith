@@ -23,6 +23,7 @@
  */
 
 const { NameIndex, languageOf } = require('./text-match');
+const { TextIndexStore } = require('./text-index-store');
 
 const YIELD_MS = 25;
 
@@ -41,6 +42,16 @@ class SupplementTextIndex {
     // the code system's language only matters to a supplement that doesn't say its own
     const lang = supplement.jsonObj && supplement.jsonObj.language ? '' : (defLang || 'en');
     const size = SupplementTextIndex.#size(supplement);
+    // a supplement loaded as the server started has its index in the store (text-index-store.js)
+    const stored = TextIndexStore.indexFor(supplement);
+    if (stored && stored.lang === lang && stored.size === size) {
+      let index = indexes.get(supplement);
+      if (!index || index.stored !== stored) {
+        index = new SupplementTextIndex(supplement, defLang, size, stored);
+        indexes.set(supplement, index);
+      }
+      return index;
+    }
     if (supplement.vurl && typeof supplement.isGlobalSupplement === 'function' && supplement.isGlobalSupplement()) {
       const key = supplement.vurl + '#' + lang;
       let index = shared.get(key);
@@ -68,17 +79,89 @@ class SupplementTextIndex {
     await SupplementTextIndex.of(supplement, defLang).#ensureBuilt();
   }
 
+  /** The size an index of the supplement is checked against (its concepts) */
+  static sizeOf(supplement) {
+    return SupplementTextIndex.#size(supplement);
+  }
+
   static #size(supplement) {
     return supplement.codeMap instanceof Map ? supplement.codeMap.size : supplement.getAllConcepts().length;
   }
 
-  constructor(supplement, defLang, size) {
+  /**
+   * The indexer's input for a supplement: each display and designation, keyed by code
+   * @param {CodeSystem} supplement
+   * @param {string} defLang - the language of a supplement that doesn't say (the code system's)
+   * @param {Object} sink - add(key, lang, text)
+   */
+  static fill(supplement, defLang, sink) {
+    const suppLang = languageOf(supplement.jsonObj.language, defLang);
+    for (const concept of supplement.getAllConcepts()) {
+      if (concept.display) {
+        sink.add(concept.code, suppLang, concept.display);
+      }
+      for (const d of concept.designation || []) {
+        if (d.value) {
+          sink.add(concept.code, languageOf(d.language, suppLang), d.value);
+        }
+      }
+    }
+  }
+
+  /**
+   * The language a supplement's index is built for: '' for a supplement that says its own
+   * (the code system's language doesn't matter to it), otherwise defLang
+   */
+  static indexLanguage(supplement, defLang) {
+    return supplement.jsonObj && supplement.jsonObj.language ? '' : (defLang || 'en');
+  }
+
+  /**
+   * How many supplement text indexes are held in memory (for the caches page): the shared ones,
+   * and those of the supplements given that aren't
+   * @param {Iterable<CodeSystem>} supplements
+   */
+  static memoryCount(supplements) {
+    let count = shared.size;
+    for (const s of supplements) {
+      const index = indexes.get(s);
+      if (index && !index.stored && index._built) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Let go of the supplement text indexes held in memory (they are built again when next
+   * searched): the shared ones, and those of the supplements given
+   * @param {Iterable<CodeSystem>} supplements
+   * @returns {number} how many
+   */
+  static clearMemory(supplements) {
+    let count = shared.size;
+    shared.clear();
+    for (const s of supplements) {
+      const index = indexes.get(s);
+      if (index && !index.stored) {
+        if (index._built) {
+          count++;
+        }
+        indexes.delete(s);
+      }
+    }
+    return count;
+  }
+
+  constructor(supplement, defLang, size, stored = null) {
     this.supplement = supplement;
     this.defLang = defLang;
-    this.lang = supplement.jsonObj && supplement.jsonObj.language ? '' : (defLang || 'en');
+    this.lang = SupplementTextIndex.indexLanguage(supplement, defLang);
     this.size = size;
-    this._languages = null;
-    this._built = null; // Promise of a NameIndex
+    // the index kept in the store, if there is one
+    this.stored = stored;
+    this._languages = stored ? stored.languages() : null;
+    this._built = stored ? Promise.resolve(stored) : null; // Promise of a NameIndex
   }
 
   /**
@@ -92,17 +175,7 @@ class SupplementTextIndex {
    * Each text of the supplement: fn(code, language subtag, text)
    */
   #eachText(fn) {
-    const suppLang = SupplementTextIndex.languageOf(this.supplement.jsonObj.language, this.defLang);
-    for (const concept of this.supplement.getAllConcepts()) {
-      if (concept.display) {
-        fn(concept.code, suppLang, concept.display);
-      }
-      for (const d of concept.designation || []) {
-        if (d.value) {
-          fn(concept.code, SupplementTextIndex.languageOf(d.language, suppLang), d.value);
-        }
-      }
-    }
+    SupplementTextIndex.fill(this.supplement, this.defLang, { add: fn });
   }
 
   /**

@@ -158,6 +158,12 @@ class LoincFilterLookups {
     this.keyCount = 0;
   }
 
+  /** Let go of every lookup (the caches page) */
+  clear() {
+    this.entries.clear();
+    this.keyCount = 0;
+  }
+
   async get(key, lookup) {
     let keys = this.entries.get(key);
     if (keys !== undefined) {

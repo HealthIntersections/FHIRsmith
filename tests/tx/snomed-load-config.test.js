@@ -173,7 +173,7 @@ describe('SnomedFileReader: memory mapping', () => {
     expect(mapped.reader.mapped).toBe(true);
 
     // the structures, byte for byte, and everything else in the header
-    const sections = ['strings', 'refs', 'desc', 'words', 'stems', 'concept', 'rel', 'refSetIndex', 'refSetMembers', 'descRef'];
+    const sections = ['license', 'strings', 'refs', 'desc', 'concept', 'rel', 'refSetIndex', 'refSetMembers', 'descRef', 'textIndexes'];
     const rest = (d) => Object.fromEntries(Object.entries(d).filter(([k]) => !sections.includes(k)));
     for (const k of sections) {
       expect(mapped.data[k].length).toBe(read.data[k].length);
@@ -182,7 +182,7 @@ describe('SnomedFileReader: memory mapping', () => {
     expect(rest(mapped.data)).toEqual(rest(read.data));
 
     // and what the services make of them: counts, and every concept's descriptions and relationships
-    for (const what of ['concepts', 'descriptions', 'relationships', 'words', 'stems', 'refSetIndex']) {
+    for (const what of ['concepts', 'descriptions', 'relationships', 'refSetIndex']) {
       expect(mapped.services[what].count()).toBe(read.services[what].count());
     }
     const n = read.services.concepts.count();
@@ -231,7 +231,7 @@ describe('Library: SNOMED CT load mode from config', () => {
 
   beforeAll(() => {
     const target = path.join(folders.subDir('terminology-cache'), 'snomed-testing.cache');
-    if (!fs.existsSync(target)) {
+    if (!fs.existsSync(target) || !SnomedFileReader.isCurrent(target)) {
       fs.copyFileSync(COMMITTED, target);
     }
   });

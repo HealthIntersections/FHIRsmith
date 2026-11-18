@@ -7,9 +7,9 @@ a limitation is a deliberate decision rather than unfinished work, it says so.
 
 The import pipeline (`tx/importers/import-sct.module.js`) reads the RF2 snapshot
 concept, description (including text definitions, which share the description
-file layout), inferred relationship, and reference set files. It does not read
-stated relationships, the OWL axiom reference sets, or the concrete value
-relationship file; several of the limitations below follow from that.
+file layout), inferred relationship, concrete value relationship, identifier and
+reference set files. It does not read stated relationships or the OWL axiom
+reference sets; several of the limitations below follow from that.
 
 ## ECL
 
@@ -103,10 +103,24 @@ that the server does not use. `filterECL` is the one that matters.
 
 ### Other ECL notes
 
-- Description filter term matching walks the descriptions of every concept in
-  the result set rather than using the text index, so `* {{ D term = "x" }}`
-  on a full edition scans every description. It yields to the event loop via
-  the operation's dead-check but is not fast.
+- Description filter term matching uses the text index to pick the concepts
+  that could match a plain-word `match:` term, then checks their descriptions;
+  a `wild:` term, `!=`, or a one-letter word walks the descriptions of every
+  concept in the result set, so `* {{ D term = wild:"x*" }}` on a full
+  edition scans every description. It yields to the event loop (see below)
+  but is not fast.
+- Evaluation is async: the evaluator (`_evalECLNode` and the functions it
+  calls) awaits `opContext.checkAndYield` every few hundred iterations of its
+  loops (`_eclTick`), so an expensive expression uses its compute time without
+  holding the event loop. The test of each concept against a refinement stays
+  synchronous: the refinement's attribute values are evaluated first
+  (`_eclPrepareRefinement`). The MRCM range check in post-coordinated
+  expression validation runs ECL too, so `checkExpression` and
+  `parseExpression` are async as well.
+- Refinements test only the concepts that have a relationship to one of an
+  attribute's values (found through the values' inbound relationships), when
+  that is fewer than the base set; a chain of ORs is gathered into one set.
+  Running out of time is reported as too-costly, not `UNSUPPORTED_ECL`.
 - A `dialect` alias the server does not know is reported as unsupported, not
   invalid; the alias table is `ECL_DIALECT_ALIASES` in `cs-snomed.js`.
 
@@ -204,14 +218,9 @@ role group pairing.
 
 - Stated relationships and the OWL axiom reference sets. Everything is driven
   by the distributed inferred relationships; there is no classification.
-- Concrete value relationships are read into cache version 19 (October 2026);
-  caches built before that have none, and a concrete-value ECL refinement on
-  them is reported as unsupported.
+- Concrete value relationships are read (since cache version 19, October 2026).
 - Inactive reference set member rows (only active rows are stored).
-- Module ids and definition status on concepts are recorded by the current
-  importer; caches built before mid-2026 have neither (every concept looks
-  fully defined, module is 0). The jest cache `tx/data/snomed-testing.cache`
-  is one of those.
+- Module ids and definition status on concepts are recorded.
 
 ### Language and display
 
@@ -223,31 +232,25 @@ role group pairing.
   recorded as English (Norwegian or Finnish descriptions labelled `en`); the
   importer now records anything that isn't ISO 639-1 as English, with a
   warning.
-- Cache format 20 (November 2026) is the first written with every language,
+- Cache format 20 (November 2026) was the first written with every language,
   the edition's language in the default-language slot, and effective dates
-  that don't depend on the time zone the import ran in. When a cache older
-  than 20 loads, the server logs that it should be imported again, and why
-  (`staleCacheReasons` in `structures.js`), and the tx module's daily report
-  says so too. A format 20 cache can't be read by an older server.
+  that don't depend on the time zone the import ran in. Format 21 (November
+  2026) adds the edition's license (the importer's `--license` file, carried
+  in the cache, not read by the server) and the text indexes, built at import,
+  and drops the old words and stems sections, which nothing read.
+  The server reads format 21 only (`SNOMED_CACHE_VERSION` in
+  `structures.js`): any other cache is refused when it loads, and has to be
+  imported again.
 - With no `displayLanguage`, every edition defaults to US then GB English
   preferred synonyms. A concept whose only English description is its FSN
   gets its national-language preferred synonym instead.
 - `sharedData.defaultLanguage` is the edition's default description
   language: the language a text or display regex filter searches when the
   request names none. `getDisplayName` ignores the language argument it is
-  passed. The cache slot it comes from has three conventions, which
-  `SnomedServices` resolves to a language byte:
-  - the importer writes the language byte of the edition's language
-    (`config.language`: the editions table, or `--language`), or 1 if the
-    edition has no active descriptions in it. Caches imported before that
-    hold 1 whatever the edition, and are read as English.
-  - the original server wrote the `membersByRef` offset of the edition's
-    default language refset. It is read as the language most of that
-    refset's member descriptions are in (450828004 -> es in
-    `sct_es_20250510.cache`; 900000000000509007 -> en in the
-    International Edition and in the original server's national caches
-    that name it).
-  - anything else is read as 1 (English).
+  passed. The importer writes the language byte of the edition's language
+  (`config.language`: the editions table, or `--language`), or 1 if the
+  edition has no active descriptions in it; anything that isn't a language
+  byte is read as 1 (English).
 
 ### Filters and implicit resources
 
@@ -280,19 +283,24 @@ role group pairing.
 
 ### Text search
 
-- The `filter` parameter on `$expand` uses an in-memory word index built the
-  first time an edition is searched (`tx/sct/text-index.js`): every token of
-  every active description, matched by prefix and by Porter stem. The stemmer
-  is English, so in other languages only prefix matching helps. Inactive
-  descriptions are not indexed.
+- The `filter` parameter on `$expand` uses the edition's word indexes
+  (`tx/sct/text-index.js`), which the importer builds and the cache carries -
+  one for all its languages and, when it has descriptions in more than one,
+  one for each - and the server reads where they are in the file (nothing is
+  built when the cache loads or is searched): every token of every active
+  description, matched by prefix and by stem, in the description's language.
+  Inactive descriptions are not indexed. A change to what decides the words
+  or stems (`text-match.js`) means a new `TEXT_INDEX_VERSION`, and every
+  edition imported again.
 
 ### Known data quality traps
 
 - The three copies of the tx-ecosystem SNOMED test edition
   (`data/terminology-cache/sct_test_*.cache`, `tx/data/snomed-testing.cache`,
-  `data/snomed-testing.cache`) drift. The committed jest cache is older than
-  the RF2 subset in `tx/data/snomed` and lacks module ids, definition status
-  and some concepts; rebuilding it changes test expectations.
+  `data/snomed-testing.cache`) can drift. The committed jest cache was rebuilt
+  from the RF2 subset in `tx/data/snomed` (with `tx/data/snomed/license.txt`)
+  for cache format 21; rebuild it with:
+  `node tx/importers/tx-import.js snomed import -s tx/data/snomed -d tx/data/snomed-testing.cache -e 31000003106 -v 20250909 -u http://snomed.info/sct/31000003106/version/20250909 --license tx/data/snomed/license.txt -y`
 - `tx.fhir.org` (the Java server) and FHIRsmith disagree on a few expected
   results in the tx-ecosystem suite (display selection, MRCM); the suite
   records FHIRsmith's reading where Grahame has decided it.

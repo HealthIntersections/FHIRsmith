@@ -27,6 +27,11 @@ const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
 const { resourceToJson } = require('./json-serialise');
 const { SupplementTextIndex } = require('./library/supplement-text-index');
 const memoryGuard = require('../library/memory-guard');
+const { prepareTextIndexes, registerCaches, buildCachesPage } = require('./tx-caches');
+const { tokenMatches, tokenConfigured } = require('../library/request-token');
+const { trimNativeMemory } = require('../library/native-memory');
+const { connectCaches } = require('../library/cluster-caches');
+const { LibraryFilterMemos, libraryFilterMemos } = require('./library/filter-memo');
 const { storedResourceETag } = require('../library/etags');
 const txHtml = require('./tx-html');
 const { Liquid } = require('liquidjs');
@@ -74,25 +79,6 @@ const syndicationFeed = require('./syndication/syndication-feed');
 const { EcosystemResolver, FORWARDED_HEADER } = require('./ecosystem-resolver');
 const { summariseBody } = require('./library/request-summary');
 // const {writeFileSync} = require("fs");
-
-/**
- * For the tx daily report: the SNOMED CT caches loaded that should be imported again (an
- * older cache format - see staleCacheReasons in tx/sct/structures.js), or ''. Said every day
- * until they are, since the administrator may not read the log
- * @param {Library} library
- * @returns {string}
- */
-function staleSnomedCaches(library) {
-  const {plural} = require('../library/daily-report');
-  const warnings = library?.snomedCacheWarnings || [];
-  if (warnings.length === 0) {
-    return '';
-  }
-  const list = warnings.map(w => `${w.file} (format ${w.cacheVersion})`).join(', ');
-  return `\n\n${plural(warnings.length, 'SNOMED CT cache')} should be imported again with this version's importer: ${list}. ` +
-    'Caches written by older importers may have effective dates a day early, descriptions in some languages labelled English, ' +
-    'and search in English rather than the edition\'s own language when a request names no language; the log says which applies to each.';
-}
 
 class TXModule {
   timers = [];
@@ -189,7 +175,8 @@ class TXModule {
       cacheMaxTotalConcepts: limit('cacheMaxTotalConcepts', ResourceCache.MAX_TOTAL_CONCEPTS),
       usageTrackerMaxCodes: limit('usageTrackerMaxCodes', ConceptUsageTracker.MAX_CODES),
       usageTrackerMaxCodeLength: limit('usageTrackerMaxCodeLength', ConceptUsageTracker.MAX_CODE_LENGTH),
-      languageTagCacheSize: limit('languageTagCacheSize', LanguageDefinitions.MAX_PARSED)
+      languageTagCacheSize: limit('languageTagCacheSize', LanguageDefinitions.MAX_PARSED),
+      filterMemoMaxConcepts: limit('filterMemoMaxConcepts', LibraryFilterMemos.DEFAULT_MAX_CONCEPTS)
     };
   }
 
@@ -246,6 +233,8 @@ class TXModule {
     this.limits = TXModule.resourceLimits(config);
     this.expansionLimitValues = TXModule.expansionLimits(config);
     this.usageTracker = new ConceptUsageTracker(this.limits.usageTrackerMaxCodes, this.limits.usageTrackerMaxCodeLength);
+    // what providers remember on the filters of the packages' value sets (library/filter-memo.js)
+    libraryFilterMemos.maxConcepts = this.limits.filterMemoMaxConcepts;
 
     this.log.info('Initializing TX module');
     this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
@@ -388,6 +377,14 @@ class TXModule {
     for (const endpoint of config.endpoints) {
       await this.setupEndpoint(endpoint, app);
     }
+    // the text indexes of the code systems and supplements just loaded: kept in SQLite from
+    // one run to the next, and built now if they aren't there (tx-caches.js)
+    this.textIndexStore = await prepareTextIndexes(this);
+    // every cache, for the caches page and the memory guard
+    this.caches = registerCaches(this);
+    // the caches page asks every process, under the launcher (library/cluster-caches.js)
+    this.cachesChannel = connectCaches(action => this.localCaches(action), process,
+      { cluster: !!config.clusterRole && typeof process.send === 'function' });
     // everything the library and the endpoints use is loaded: with pruneTerminologyCache, the
     // rest of terminology-cache can go
     await this.library.pruneUnusedCaches();
@@ -471,8 +468,8 @@ class TXModule {
     if (!FhirXmlBase.fragmentCache && this.config.xmlCacheMB !== 0) {
       const mb = this.config.xmlCacheMB ?? DEFAULT_XML_CACHE_MB;
       const cache = new XmlFragmentCache({ budgetBytes: mb * 1024 * 1024 });
+      // emptied by the memory guard and the caches page (tx-caches.js registerCaches)
       FhirXmlBase.setFragmentCache(cache);
-      memoryGuard.addReliever('XML cache', () => cache.clear());
       this.log.info(`XML (and JSON) cache: at most ${mb} MB`);
     }
 
@@ -1488,6 +1485,50 @@ class TXModule {
     router.get('/info/:id', infoHandler);
     router.post('/info/:id', infoHandler);
 
+    // The caches page: what each cache holds; and, with modules.tx.adminPassword, emptying them
+    // (all but the client caches, or all of them). This process's caches only (tx-caches.js)
+    const cachesHandler = async (req, res) => {
+      const start = Date.now();
+      try {
+        let message = null;
+        let action = 'report';
+        if (req.method === 'POST') {
+          const body = req.body || {};
+          if (!tokenConfigured(this.config.adminPassword)) {
+            message = 'No password is configured (modules.tx.adminPassword): nothing was emptied';
+          } else if (!tokenMatches(this.config.adminPassword, typeof body.password === 'string' ? body.password : null)) {
+            message = 'Incorrect password: nothing was emptied';
+          } else if (body.action !== 'unload' && body.action !== 'unload-all') {
+            message = 'Unknown action: nothing was emptied';
+          } else {
+            action = body.action;
+          }
+        }
+        // every process, under the launcher (library/cluster-caches.js); else this one
+        const answer = await this.cachesChannel.ask(action);
+        if (action !== 'report') {
+          const done = answer.results.filter(r => r.result);
+          const entries = done.reduce((t, r) => t + r.result.cleared.reduce((u, c) => u + (c.entries || 0), 0), 0);
+          message = `Emptied the caches of ${done.length} process${done.length === 1 ? '' : 'es'} (${entries} entries)` +
+            (action === 'unload-all' ? ', client caches included' : ', not the client caches');
+          this.log.info(`Caches page: ${message}`);
+        }
+        const content = buildCachesPage({
+          answer, message,
+          passwordConfigured: tokenConfigured(this.config.adminPassword)
+        });
+        let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+        const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(html);
+      } finally {
+        this.countRequest(endpointPath, 'caches', Date.now() - start, req);
+      }
+    };
+    router.get('/caches', cachesHandler);
+    router.post('/caches', cachesHandler);
+
     // ===== Fallbacks - keep these last =====
 
     // Nothing above matched. Without this, Express answers with its own HTML
@@ -1630,9 +1671,8 @@ class TXModule {
       return null;
     }
     const counts = this.stats.countsSince(since, now);
-    const stale = staleSnomedCaches(this.library);
     if (counts.total === 0) {
-      return 'No requests were served.' + stale;
+      return 'No requests were served.';
     }
     // the FHIR operations first, busiest first, then the rest (pages, metadata, reads)
     const names = Object.keys(counts.operations).sort((a, b) => {
@@ -1643,7 +1683,7 @@ class TXModule {
     const list = names.map(n => `${n} ${counts.operations[n].toLocaleString('en-US')}`).join(', ');
     const endpoints = Object.keys(counts.endpoints).filter(e => e).length;
     const where = endpoints > 1 ? ` over ${plural(endpoints, 'endpoint')}` : '';
-    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.` + stale;
+    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.`;
   }
 
   /**
@@ -1682,6 +1722,39 @@ class TXModule {
   /**
    * Shutdown the module
    */
+  /**
+   * This process's caches, for the caches page (tx-caches.js): what each holds, after emptying
+   * them if the action says so (all but the client caches, or all), then a full GC and
+   * malloc_trim, so RSS shows what was let go
+   * @param {string} action - 'report', 'unload' or 'unload-all'
+   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}}
+   */
+  async localCaches(action) {
+    let cleared = null;
+    let before = null;
+    if (action === 'unload' || action === 'unload-all') {
+      before = process.memoryUsage().rss;
+      cleared = this.caches ? this.caches.clear(action === 'unload-all' ? ['cache', 'content', 'client'] : ['cache', 'content']) : [];
+      const gc = memoryGuard.getGc();
+      if (gc) {
+        try {
+          gc();
+        } catch (e) {
+          // RSS shows what it shows
+        }
+      }
+      trimNativeMemory();
+      this.log.info(`Caches emptied (${action}): RSS ${(before / 2 ** 30).toFixed(2)} GB -> ${(process.memoryUsage().rss / 2 ** 30).toFixed(2)} GB`);
+    }
+    const mem = process.memoryUsage();
+    return {
+      process: `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`,
+      report: this.caches ? this.caches.report() : [],
+      cleared,
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external, before }
+    };
+  }
+
   async shutdown() {
     this.log.info('Shutting down TX module');
     for (const timer of this.timers) {
@@ -1704,6 +1777,13 @@ class TXModule {
     if (this.closureStore) {
       this.closureStore.close();
       this.closureStore = null;
+    }
+    if (this.cachesChannel) {
+      this.cachesChannel.disconnect();
+    }
+    if (this.textIndexStore) {
+      this.textIndexStore.close();
+      this.textIndexStore = null;
     }
     this.log.info('TX module shut down');
   }

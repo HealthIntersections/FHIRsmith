@@ -2,8 +2,6 @@ const path = require('path');
 const fs = require('fs');
 const {
   SnomedStrings,
-  SnomedWords,
-  SnomedStems,
   SnomedReferences,
   SnomedDescriptions,
   SnomedDescriptionIndex,
@@ -40,7 +38,7 @@ const committedCachePath = path.resolve(__dirname, '../../tx/data/snomed-testing
 const fallbackCachePath = folders.ensureFilePath('sct_intl_20250201.cache');
 
 function findAvailableCacheFile() {
-  if (fs.existsSync(testCachePath)) {
+  if (fs.existsSync(testCachePath) && SnomedFileReader.isCurrent(testCachePath)) {
     return testCachePath;
   } else if (fs.existsSync(committedCachePath)) {
     return committedCachePath;
@@ -55,6 +53,7 @@ let globalCacheFilePath = null;
 
 describe('SNOMED CT Module Import', () => {
   const testSourceDir = path.resolve(__dirname, '../../tx/data/snomed');
+  const testLicensePath = path.resolve(__dirname, '../../tx/data/snomed/license.txt');
 
   beforeAll(() => {
     // Ensure data directory exists
@@ -128,6 +127,7 @@ describe('SNOMED CT Module Import', () => {
       version: '20250909',
       uri: 'http://snomed.info/sct/31000003106/version/20250909',
       language: 'en-US',
+      license: testLicensePath,
       verbose: false, // Suppress console output during tests
       overwrite: true,
       createIndexes: true,
@@ -151,7 +151,7 @@ describe('SNOMED CT Module Import', () => {
     const data = await reader.loadSnomedData();
 
     // Verify basic metadata
-    expect(data.cacheVersion).toBe('20');
+    expect(data.cacheVersion).toBe('21');
     expect(data.versionUri).toBe('http://snomed.info/xsct/31000003106/version/20250909');
     expect(data.versionDate).toBe('20250909');
     expect(data.edition).toBeDefined();
@@ -173,7 +173,7 @@ describe('SNOMED CT Module Import', () => {
     try {
       const importer = new SnomedImporter({
         source: testSourceDir, dest: nlCachePath, edition: '31000003106', version: '20250909',
-        uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'nl-NL',
+        uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'nl-NL', license: testLicensePath,
         verbose: false, overwrite: true, createIndexes: true
       });
       await importer.run();
@@ -217,8 +217,8 @@ describe('SNOMED CT Module Import', () => {
     expect(data.strings).toBeDefined();
     expect(data.refs).toBeDefined();
     expect(data.desc).toBeDefined();
-    expect(data.words).toBeDefined();
-    expect(data.stems).toBeDefined();
+    expect(data.license.length).toBeGreaterThan(0);
+    expect(data.textIndexes.length).toBeGreaterThan(0);
     expect(data.concept).toBeDefined();
     expect(data.rel).toBeDefined();
     expect(data.descRef).toBeDefined();
@@ -259,8 +259,6 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
     // Create structure instances with the loaded data
     structures = {
       strings: new SnomedStrings(snomedData.strings),
-      words: new SnomedWords(snomedData.words),
-      stems: new SnomedStems(snomedData.stems),
       refs: new SnomedReferences(snomedData.refs),
       descriptions: new SnomedDescriptions(snomedData.desc),
       descriptionIndex: new SnomedDescriptionIndex(snomedData.descRef),
@@ -368,7 +366,7 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
       expect(expressionServices.strings).toBeDefined();
     });
 
-    test('should validate expressions with real concept data', () => {
+    test('should validate expressions with real concept data', async () => {
       // Try to find a concept that should exist in most SNOMED datasets
       const commonConcepts = ['138875005', '404684003', '64572001']; // SNOMED CT Concept, Clinical finding, Disease
 
@@ -376,7 +374,7 @@ describe('SNOMED CT Expression Processing (File-based Tests)', () => {
         const result = structures.concepts.findConcept(BigInt(conceptId));
         if (result.found) {
           // Test parsing with this real concept
-          const parsed = expressionServices.parseExpression(conceptId);
+          const parsed = await expressionServices.parseExpression(conceptId);
           expect(parsed.concepts).toHaveLength(1);
           expect(parsed.concepts[0].code).toBe(conceptId);
           break; // Exit after first successful test

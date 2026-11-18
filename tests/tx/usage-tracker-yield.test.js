@@ -23,7 +23,7 @@ function libraryOf(count) {
 
 describe('ConceptUsageTracker scan', () => {
   test('other work runs during the scan, and the counts are unchanged', async () => {
-    const tracker = new ConceptUsageTracker();
+    const tracker = new ConceptUsageTracker(undefined, undefined, true);
     let ranDuringScan = 0;
     let scanning = true;
     const tick = () => { if (scanning) { ranDuringScan++; setImmediate(tick); } };

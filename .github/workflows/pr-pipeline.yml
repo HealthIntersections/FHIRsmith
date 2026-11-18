@@ -57,13 +57,14 @@ jobs:
         run: npm ci
 
       - name: Run npm audit
-        # Everything, dev tooling included. These all have fixes at the time of writing, so fail on
-        # high/critical; moderate and low are reported here but don't fail the build
-        run: npm audit --audit-level=high
+        # Everything, dev tooling included: fail on high/critical; moderate and low are reported
+        # here but don't fail the build. utilities/audit-check.js is npm audit with the accepted
+        # advisories in audit-allowlist.json (each with a reason and an expiry date) left out
+        run: node utilities/audit-check.js --audit-level=high
 
       - name: Check what ships for known vulnerabilities
         # What the Docker image gets (it is built with npm ci --omit=dev): fail on anything moderate or worse
-        run: npm audit --omit=dev --audit-level=moderate
+        run: node utilities/audit-check.js --omit=dev --audit-level=moderate
 
       - name: Audit a fresh install of the published package
         # npm ignores package.json "overrides" when FHIRsmith is installed (npm install -g fhirsmith)
@@ -76,7 +77,7 @@ jobs:
           cd "$RUNNER_TEMP/fresh-install"
           npm init -y > /dev/null
           npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/fhirsmith-*.tgz
-          npm audit --omit=dev --audit-level=moderate
+          node "$GITHUB_WORKSPACE/utilities/audit-check.js" --omit=dev --audit-level=moderate
 
   dependency-check:
     name: Dependency Analysis

@@ -23,6 +23,7 @@ const cors = require('cors');
 const request = require('supertest');
 const TXModule = require('../../tx/tx');
 const folders = require('../../library/folder-setup');
+const { SnomedFileReader } = require('../../tx/sct/structures');
 
 const SNOMED_URI = 'http://snomed.info/sct';
 
@@ -73,7 +74,7 @@ describe('Whole-code-system SNOMED expansion', () => {
     const committed = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
     const cacheFolder = folders.subDir('terminology-cache');
     const target = path.join(cacheFolder, 'snomed-testing.cache');
-    if (!fs.existsSync(target)) {
+    if (!fs.existsSync(target) || !SnomedFileReader.isCurrent(target)) {
       fs.copyFileSync(committed, target);
     }
 

@@ -315,6 +315,7 @@ const MODULES = {
     usageTrackerMaxCodes: count(),
     usageTrackerMaxCodeLength: count(),
     languageTagCacheSize: count(),
+    filterMemoMaxConcepts: count(),
     instanceCode: str({ pattern: /^[A-Za-z0-9]{1,16}$/, patternText: '1-16 letters and digits' }),
     syndication: obj({ enabled: bool() }),
     closure: obj({
@@ -335,6 +336,8 @@ const MODULES = {
     expansionCacheMemoryThreshold: num({ min: 0 }),
     expansionCacheMaxCodes: count(),
     xmlCacheMB: num({ min: 0 }),
+    // the password of the caches page's actions (/caches): none, and caches can't be emptied there
+    adminPassword: str({ nonEmpty: true }),
     loincConnections: int({ min: 0 }),
     // an include that names a code the code system doesn't have: an error, rather than a warning
     errorsForInvalidCodes: bool(),
@@ -411,6 +414,7 @@ const MODULES = {
     processing: obj({ enabled: bool(), intervalSeconds: positive() }),
     txServer: str({ nonEmpty: true }),
     summarySource: str({ values: ['modified', 'original'] }),
+    reports: obj({ database: str({ nonEmpty: true }), package: str({ nonEmpty: true }), profile: str({ nonEmpty: true }), queryTimeoutSeconds: positive(), maxRows: int({ min: 1 }), csvMaxRows: int({ min: 1 }), buildBudgetMs: positive() }),
     ai: obj({
       provider: str({ values: ['openai', 'anthropic'] }),
       model: str({ nonEmpty: true }),

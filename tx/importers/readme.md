@@ -243,6 +243,7 @@ tx-import snomed import
 tx-import snomed import \
   --source /path/to/rf2/files \
   --dest ./data/snomed.cache \
+  --license /path/to/license.txt \
   --yes
 
 # Manual edition/version specification
@@ -251,6 +252,7 @@ tx-import snomed import \
   --dest ./data/snomed.cache \
   --edition "900000000000207008" \
   --version "20250801" \
+  --license /path/to/license.txt \
   --yes
 
 # With custom URI (overrides edition/version)
@@ -258,8 +260,19 @@ tx-import snomed import \
   --source /path/to/rf2/files \
   --dest ./data/snomed.cache \
   --uri "http://snomed.info/sct/900000000000207008/version/20250301" \
+  --license /path/to/license.txt \
   --yes
 ```
+
+**License:** `--license` is required: a text file with the license the edition is distributed
+under (for the tx-ecosystem test subset, its `license.txt`). The importer puts it in the cache
+file, so that it goes wherever the cache goes; the server doesn't read it. The interactive mode
+asks for it if it isn't given.
+
+**Cache format:** the importer writes cache format 21, which is the only format the server reads:
+an edition imported by an earlier version has to be imported again. Format 21 carries the license
+and the text indexes that `$expand` filters and ECL term filters search, built at import, so the
+server builds nothing when the cache loads or is searched.
 
 **Auto-Detection:**
 The importer automatically detects the edition and version from RF2 files by:

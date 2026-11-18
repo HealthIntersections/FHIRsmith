@@ -5,6 +5,43 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-11-18
+
+### Added
+
+- tx: a caches page, `/{path}/caches`: every cache the tx module keeps, with how many entries each holds and its limit, and the process's memory. With `modules.tx.adminPassword`, it empties all but the client caches, or all of them (back to what the server held when it had started), then runs a full GC and `malloc_trim`, and shows RSS before and after. Under the cluster launcher it is server wide: it shows every process, with a column for each and the total, and empties the caches of every process. Listed are the endpoint and process caches (expansions, the XML of large arrays, recently read VSAC value sets, LOINC filter lookups, what the ecosystem said, language tags, regular expressions), what is kept with loaded content (the SNOMED CT history and MRCM range indexes), and the client caches
+- tx: the text indexes of the code systems and supplements loaded at startup (from packages and folders) are kept in SQLite (`terminology-cache/text-indexes/text-indexes.db`), not in the heap, and from one run to the next: each is keyed on a hash of what it indexes, so only new or changed content is indexed. The server waits for them as it starts (the first start with a big library takes a while); then the indexes nothing loads any more are deleted. In a cluster the master builds them and the tx-workers use them. Code systems and supplements from a request are indexed in memory, as before
+- XIG: a sitemap, `/xig/sitemap.xml`: an index of files of 50,000 resource pages each (`sitemap-1.xml.gz`, ...), built when first asked for and kept until the database is next updated. Crawlers that follow the lists' filter links ask for every combination of version, authority, realm and type - tens of thousands of pages, each a dozen database queries; with the sitemap they can find every resource page without them, and robots.txt can keep them off the lists (`Disallow: /xig?`: see xig/readme.md, "Crawlers"). `modules.xig.baseUrl` is the public address the sitemap's URLs start with (default: the request's own)
+- IPS: reports - a table of data drawn from every document by a [SQL on FHIR](https://sql-on-fhir.org) ViewDefinition, and SQL statements that summarise it. The administrator defines them (`/ips/reports`); each project shows them for its own documents (`/ips/{code}/reports`), with a CSV download of the table. A report runs over the documents as submitted, as processed, or their validation outcomes; the ViewDefinition is checked by the FHIR validator against the SQL on FHIR IG. Settings: `modules.ips.reports` (see the configuration template, and ips/readme.md, "Reports")
+- SQL on FHIR: a ViewDefinition runner, `library/sql`, with SQLite, CSV and JSON output; the IPS reports use it
+
+### Changed
+
+- The event loop watchdog's stall files say, on Linux, what the kernel says about the main thread for each second of a stall, and over it (in the log too): its state and what it waits in, the CPU time it used, the major page faults it took, RSS and swap, and the machine's pressure (PSI) and free memory. On npm.fhir.org eight of nine stalls in a day had an empty stack and no garbage collection - the main thread wasn't running JavaScript at all - and a stack can't say why
+- packages: the crawler parses the feeds (XML) in a worker thread when they are bigger than 256 KB: the hl7.org package feed held npm.fhir.org's event loop for 2-3 seconds each time it was read
+- tx: what providers remember on the filters of value sets (a resolved ECL expression, the concepts a full scan or a SNOMED CT display regex found, for each code system version and language) had no limit on the value sets of packages, which are held for the life of the server: one result for each version a filter was resolved against, forever. They are now kept least recently used first within `filterMemoMaxConcepts` (default 10,000,000 concepts, about 80 MB), and the memory guard can let them go. On the value sets a client cache holds they now count as concepts the cache holds, under `cacheMaxConcepts` and `cacheMaxTotalConcepts` (a result that would take a cache over its limit isn't kept), and go with it
+- SNOMED CT: **import your SNOMED CT editions again** with this version's importer: the server now only reads cache format 21, and refuses to start with a cache in any other format (1.0.4 asked for format 20, but still read older ones). Format 21 adds:
+  - the license the edition is distributed under: the importer has a new, required parameter, `--license <file>`, and puts the file in the cache, near the start, so that the license goes wherever the cache goes. The server doesn't read it. For the tx-ecosystem test subset, use its `license.txt` (in `tx/data/snomed` here)
+  - the text indexes that `$expand` filters and ECL term filters search - one for all the edition's languages and, when it has descriptions in more than one, one for each - built at import. The server reads them where they are in the cache file (memory-mapped, or read in with the rest), so nothing is built when a cache loads or is first searched (it took seconds for a full edition, and memory beside the cache), and the caches page no longer lists SNOMED CT text indexes
+  - and drops the old words and stems sections, which nothing read (they took most of an import's word processing, and space in every cache)
+
+  The server no longer reports caches in older formats in its log and daily report (it doesn't load them). The committed test cache, `tx/data/snomed-testing.cache`, is rebuilt from the RF2 subset in `tx/data/snomed`, and the tests that relied on its older content (no concrete values, module ids or MRCM) now use what the subset has
+- tx: the usage tracker (the `usage-count` expansion property) is off for now: nothing uses its counts yet, so the server no longer scans every value set at startup for it, nor counts the codes `$validate-code` sees, and `usage-count` is 0. An `$expand` asking for `usage-count` on a code system the tracker had no counts for failed; it now gives 0
+- tx: the memory guard empties every endpoint and process cache while it refuses requests for memory (it emptied the XML cache only), and the client caches too, but last: only at a later look, if emptying the rest wasn't enough
+- SNOMED CT: ECL evaluation no longer holds the event loop. On tx.fhir.org (2026-11-18) a script sending ECL expansions three at a time held each tx-worker for 20 s - the operation time limit - at a time. Evaluation is now asynchronous, and gives the event loop a turn every few hundred steps (`checkAndYield`), so an expensive expression uses its compute time while the process goes on answering other requests. And it is faster:
+  - a refinement (`A : attribute = X`) tests only the concepts with a relationship to a value in X, when there are fewer of them than in A, and gathers only the relationships it looks at (a concept's inbound relationships only for a reversed attribute, `R`)
+  - a chain of ORs is gathered into one set (each OR copied everything before it)
+
+  On the US edition, ten finding-site refinements joined by OR went from 2.9 s to 0.13 s, and 220 `<<` subtrees joined by OR from 970 ms to 16 ms. `checkExpression` and `parseExpression` (SNOMED CT expressions, `tx/sct/expressions.js`) are asynchronous too: the MRCM range check runs ECL
+- tx: the slow request log line (`slowRequestSeconds`) gives the filters of the value sets in the request - an ECL constraint, say - so that an expensive expansion can be repeated: the value set was only `ValueSet (1 include)`
+- ICD-11: `$validate-code` warns when a code - on its own, or a stem in a postcoordinated expression - has no value on an axis WHO marks as required (`ICD11_PC_REQUIRED_AXIS_EMPTY`). WHO's "required" means strongly encouraged: the code is valid without it, just not complete
+- packages: the crawler lists the mirror folder asynchronously when it removes what an interrupted crawl left: listing tens of thousands of files with `readdirSync`, on a server just started, held npm.fhir.org's event loop for 2.3 s
+
+### Fixed
+
+- tx: CodeSystem `$validate-code` with `useSupplement` and no version: a supplement the server holds, pinned to the version of the code system it has (`supplements = url|version`), was reported as missing (`VALUESET_SUPPLEMENT_MISSING`), and a supplement passed in `tx-resource` pinned to another version was used. Which supplements apply now depends on the version the code system turns out to be, as it already did for value sets (#387)
+- SNOMED CT: an ECL expression that ran out of time (or memory, or whose client went away) was reported as `UNSUPPORTED_ECL` (400); it is now too-costly (422), like any other operation that does
+
 ## [1.0.4] - 2026-11-17
 
 ### Changed
@@ -17,10 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A format 20 cache can't be read by an older server
 - SNOMED CT: a request in Norwegian finds descriptions under either `no` or `nb`/`nn`
+- SQLite connection pools: the XIG (`modules.xig.connections`), the packages module's reads (`modules.packages.readConnections`) and LOINC (`modules.tx.loincConnections`; 0, a connection per request, as before) read their databases through several connections, 4 by default, and a connection is given one query at a time: a query waits for one that is free (`library/sqlite-pool.js`). node-sqlite3 runs one query at a time on a connection, and finishes each on the main thread, so on npm.fhir.org a quick XIG query ending while a slow one ran on the same connection held the event loop for 2-6 s at a time
+- SNOMED CT: an ECL description filter (`{{ term = "..." }}`) uses the text index to find the concepts that can match, rather than reading every description of every concept in the set
+- packages: downloads redirected to the mirror are counted, as the ones served are
+- The event loop block warnings say how much of a block was garbage collection
 
 ### Fixed
 
-- tx: CodeSystem `$validate-code` with `useSupplement` and no version: a supplement the server holds, pinned to the version of the code system it has (`supplements = url|version`), was reported as missing (`VALUESET_SUPPLEMENT_MISSING`), and a supplement passed in `tx-resource` pinned to another version was used. Which supplements apply now depends on the version the code system turns out to be, as it already did for value sets (#387)
+- tx: a code system on another server (`cs-virtual`) whose server won't answer `$lookup` (401, 403, 405, 429, or not a FHIR response) is checked with `$validate-code` instead: every code was reported as unknown
+- extension tracker: the usage page honours its `url` filter (it built the page for every extension, each time), and shows what was submitted since it was last built
+- publisher: a publication that failed its package check left the go-publish output uncommitted in the web folder, for the next publication to commit with its own; and for a working-mode publication (a ballot) the check looked at the root `package.tgz`, which only milestone and technical correction runs replace
 
 ## [1.0.3] - 2026-11-16
 

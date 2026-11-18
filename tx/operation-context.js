@@ -7,6 +7,11 @@ const {CanonicalResource} = require("./library/canonical-resource");
 const Logger = require("../library/logger");
 const memoryGuard = require('../library/memory-guard');
 const { englishMessage } = require('../library/i18nsupport');
+const { markFilters } = require('./library/filter-memo');
+
+// on a resource a client cache holds: the concepts of what providers remembered on its filters
+// (see ResourceCache._noteMemo)
+const MEMO_CONCEPTS = Symbol('memoConcepts');
 
 // When this process started, in ms, and the compact form of it that cache-ids carry when
 // the server has an instance code ("<code>.<start>.<uuid>"): base 36, 8 characters until
@@ -453,7 +458,44 @@ class ResourceCache {
    * @returns {number}
    */
   _conceptsOf(resource) {
-    return resource && typeof resource.conceptCount === 'function' ? resource.conceptCount() : 0;
+    if (!resource) {
+      return 0;
+    }
+    return (typeof resource.conceptCount === 'function' ? resource.conceptCount() : 0) + (resource[MEMO_CONCEPTS] || 0);
+  }
+
+  /**
+   * Make this cache the keeper of what providers remember on the filters of a resource it
+   * holds (library/filter-memo.js): they count as concepts the cache holds, so they come under
+   * its limits, and go when it goes
+   * @param {string} cacheId
+   * @param {Object} resource
+   */
+  _keepFilterMemos(cacheId, resource) {
+    const cache = this;
+    markFilters(resource, {
+      note: (fc, sym, key, size) => cache._noteMemo(cacheId, resource, size),
+      touch: () => {}
+    });
+  }
+
+  /**
+   * A provider wants to remember a result of size concepts on a filter of resource: kept
+   * (counted) unless the resource is no longer in the cache, or it would take the cache over
+   * its limit (the result is then worked out again when next needed)
+   * @returns {boolean}
+   */
+  _noteMemo(cacheId, resource, size) {
+    const entry = this.cache.get(cacheId);
+    if (!entry || !entry.resources.includes(resource) || entry.concepts + size > this.maxConceptsPerCache) {
+      return false;
+    }
+    Object.defineProperty(resource, MEMO_CONCEPTS, { value: (resource[MEMO_CONCEPTS] || 0) + size, enumerable: false, configurable: true, writable: true });
+    entry.concepts += size;
+    this.totalConcepts += size;
+    this._evict(cacheId);
+    this._trackMax();
+    return true;
   }
 
   /**
@@ -585,6 +627,11 @@ class ResourceCache {
     this.totalConcepts += concepts - entry.concepts;
     entry.resources = merged;
     entry.concepts = concepts;
+    for (const resource of resources) {
+      if (resource) {
+        this._keepFilterMemos(cacheId, resource);
+      }
+    }
 
     entry.lastUsed = Date.now();
     this.cache.set(cacheId, entry);
@@ -630,6 +677,11 @@ class ResourceCache {
       concepts,
       sealed: !!sealed
     });
+    for (const resource of resources) {
+      if (resource) {
+        this._keepFilterMemos(cacheId, resource);
+      }
+    }
     // This id is alive again, so any record of its previous death is now wrong.
     this.tombstones.delete(cacheId);
     this._evict(cacheId);
@@ -1074,6 +1126,18 @@ class ExpansionCache {
     for (const entry of [...this.cache.values()]) {
       this.evictEntry(entry);
     }
+  }
+
+  /**
+   * The codes the entries hold between them (what the budget counts)
+   * @returns {number}
+   */
+  codeCount() {
+    let count = 0;
+    for (const entry of this.cache.values()) {
+      count += entry.codes || 0;
+    }
+    return count;
   }
 
   /**

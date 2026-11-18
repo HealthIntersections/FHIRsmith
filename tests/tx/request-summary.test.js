@@ -36,6 +36,23 @@ describe('summariseBody', () => {
       .toBe('ValueSet http://example.org/vs (1 include)');
   });
 
+  test('a value set: its filters, so an expensive ECL can be repeated', () => {
+    const vs = {
+      resourceType: 'ValueSet',
+      compose: {
+        include: [
+          { system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/731000124108',
+            filter: [{ property: 'constraint', op: '=', value: '<< 404684003 : 363698007 = << 39057004' }] },
+          { system: 'http://loinc.org', concept: [{ code: '1-8' }] },
+        ],
+        exclude: [{ system: 'http://snomed.info/sct', filter: [{ property: 'concept', op: 'is-a', value: '40733004' }, { property: 'inactive', op: '=', value: 'false' }] }],
+      },
+    };
+    expect(summariseBody({ resourceType: 'Parameters', parameter: [{ name: 'valueSet', resource: vs }, { name: 'count', valueInteger: 10 }] }))
+      .toBe('valueSet=ValueSet (2 includes, 1 exclude) [include http://snomed.info/sct|http://snomed.info/sct/731000124108 constraint = << 404684003 : 363698007 = << 39057004; ' +
+        'exclude http://snomed.info/sct concept is-a 40733004 & inactive = false]; count=10');
+  });
+
   test('a body that was not parsed: its size', () => {
     expect(summariseBody(Buffer.from('<Parameters/>'))).toBe('(13 bytes, not parsed)');
   });
