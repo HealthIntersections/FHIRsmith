@@ -1046,6 +1046,118 @@ describe('SNOMED CT display language selection', () => {
     expect(ex.term.length).toBeGreaterThan(0);
     expect(ex.lang).toBe('en');
   });
+
+  // English dialects. 262797004 has two preferred synonyms in language 'en': 390820015
+  // "Subcapsular liver haematoma" (GB English refset 900000000000508004), stored first, and
+  // 390821016 "Subcapsular liver hematoma" (US English refset 900000000000509007). 35566002
+  // has "Hematoma" (US) stored before "Haematoma" (GB). 64572001 "Disease" is preferred in both.
+  describe('English dialects', () => {
+    let langDefs;
+    beforeAll(async () => {
+      langDefs = await TestUtilities.loadLanguageDefinitions();
+    });
+
+    // the designations the provider reports, and the display each language gets from them
+    async function designationsFor(code, significantOnly) {
+      const { context } = await provider.locate(code);
+      const list = new Designations(langDefs);
+      await provider.designations(context, list, significantOnly);
+      list.source = provider;
+      return list;
+    }
+    async function display(code, lang, significantOnly) {
+      const list = await designationsFor(code, significantOnly);
+      const pd = list.preferredDesignation(lang ? Languages.fromAcceptLanguage(lang, langDefs, false) : null);
+      return pd ? pd.value : null;
+    }
+    const tagged = (list) => list.designations.map(d => d.language.code + ': ' + d.value);
+
+    // run fn as an edition whose display language reference set is GB English (the UK editions)
+    async function asUkEdition(fn) {
+      const sct = provider.sct;
+      const savedEdition = sct.edition;
+      const savedOrder = sct._dispOrder;
+      try {
+        sct.edition = '83821000000107';
+        sct._dispOrder = null;
+        return await fn();
+      } finally {
+        sct.edition = savedEdition;
+        sct._dispOrder = savedOrder;
+      }
+    }
+
+    for (const significantOnly of [true, false]) {
+      const op = significantOnly ? '$expand' : '$lookup';
+
+      test(op + ' designations: en and en-US get the US preferred term whichever synonym is stored first', async () => {
+        for (const lang of [null, 'en', 'en-US']) {
+          expect(await display('262797004', lang, significantOnly)).toBe('Subcapsular liver hematoma');
+          expect(await display('35566002', lang, significantOnly)).toBe('Hematoma');
+          expect(await display('64572001', lang, significantOnly)).toBe('Disease');
+        }
+      });
+
+      test(op + ' designations: en-GB gets the GB preferred term', async () => {
+        expect(await display('262797004', 'en-GB', significantOnly)).toBe('Subcapsular liver haematoma');
+        expect(await display('35566002', 'en-GB', significantOnly)).toBe('Haematoma');
+        expect(await display('64572001', 'en-GB', significantOnly)).toBe('Disease');
+      });
+
+      test(op + ' designations: a GB English edition gives the GB term for en and en-GB, the US term for en-US', async () => {
+        await asUkEdition(async () => {
+          for (const lang of [null, 'en', 'en-GB']) {
+            expect(await display('262797004', lang, significantOnly)).toBe('Subcapsular liver haematoma');
+            expect(await display('35566002', lang, significantOnly)).toBe('Haematoma');
+          }
+          expect(await display('262797004', 'en-US', significantOnly)).toBe('Subcapsular liver hematoma');
+          expect(await display('35566002', 'en-US', significantOnly)).toBe('Hematoma');
+          expect(await display('64572001', 'en-US', significantOnly)).toBe('Disease');
+        });
+      });
+
+      test(op + ' designations: other languages are reported as before', async () => {
+        expect(await display('262797004', 'nl', significantOnly)).toBe('subcapsulair leverhematoom');
+        const list = tagged(await designationsFor('262797004', significantOnly));
+        expect(list).toContain('nl: subcapsulair leverhematoom');
+        expect(list.filter(d => /^nl-/.test(d))).toEqual([]);
+      });
+    }
+
+    test('$expand designations: the display, one FSN and one synonym per language, and the other dialect where it differs', async () => {
+      expect(tagged(await designationsFor('262797004', true))).toEqual([
+        'en-US: Subcapsular liver hematoma',
+        'en: Subcapsular liver hematoma (disorder)',
+        'en: Subcapsular liver hematoma',
+        'nl: subcapsulair leverhematoom',
+        'en-GB: Subcapsular liver haematoma'
+      ]);
+      // one preferred term for both dialects: nothing added
+      expect(tagged(await designationsFor('64572001', true))).toEqual([
+        'en-US: Disease',
+        'en: Disease (disorder)',
+        'en: Disease'
+      ]);
+      await asUkEdition(async () => {
+        expect(tagged(await designationsFor('262797004', true))).toEqual([
+          'en-GB: Subcapsular liver haematoma',
+          'en: Subcapsular liver hematoma (disorder)',
+          'en: Subcapsular liver haematoma',
+          'nl: subcapsulair leverhematoom',
+          'en-US: Subcapsular liver hematoma'
+        ]);
+      });
+    });
+
+    test('getDisplayNameEx reports the dialect of the reference set the display comes from', async () => {
+      const sct = provider.sct;
+      const r = sct.concepts.findConcept(262797004n);
+      expect(sct.getDisplayNameEx(r.index)).toEqual({ term: 'Subcapsular liver hematoma', lang: 'en', dialect: 'en-US' });
+      await asUkEdition(async () => {
+        expect(sct.getDisplayNameEx(r.index)).toEqual({ term: 'Subcapsular liver haematoma', lang: 'en', dialect: 'en-GB' });
+      });
+    });
+  });
 });
 
 // Inactive relationship rows are imported but ignored altogether (agreed with the SNOMED
