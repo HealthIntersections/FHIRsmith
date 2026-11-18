@@ -66,12 +66,14 @@ Add the `tx` section to your `config.json`:
 | `cacheTimeout`                  | integer | No       | How many minutes to keep client side caches (for cache-id parameter). Default: 30                       |
 | `cacheMaxConcepts`              | integer | No       | Concepts one client side cache (cache-id) may hold. Default: 250000, about 10x the largest IG Publisher session measured on build.fhir.org (24,048). A request that would take a cache over it is not performed: the server drops the cache and answers 404, an OperationOutcome with one issue coded `tx-issue-type#cache-id-unknown` (message id `CACHE_ID_DISCARDED_TOO_BIG`, saying the cache grew too large), as for any cache that is gone. The client starts a new cache and sends the request again; later requests with the old id get the same 404 `cache-id-unknown`, saying why it was dropped (`CACHE_ID_DISCARDED`). A request whose own resources hold more than this, so that no cache could take them, is refused instead (422 too-costly) and the cache is kept, as is a new cache too big to start. 0 = no limit |
 | `cacheMaxTotalConcepts`         | integer | No       | Concepts all the client side caches of an endpoint may hold between them (about 250 bytes of heap each). Default: 1000000, 4 full caches, about 40x the largest session measured (24,048). The least recently used caches are dropped to stay under it; a request with a dropped cache-id gets a 404 `cache-id-unknown`, saying it was dropped to make room. 0 = no limit |
-| `usageTrackerMaxCodes`          | integer | No       | Distinct codes the usage tracker (`usage-count` expansion property) keeps. Default: 1000000, 2x the about 500,000 codes the value sets of a full library list. Codes beyond it aren't counted (no error); codes already tracked still are. 0 = no limit |
+| `usageTrackerMaxCodes`          | integer | No       | Distinct codes the usage tracker (`usage-count` expansion property) keeps, when it is on (it is off for now: nothing uses the counts yet, and `usage-count` is 0). Default: 1000000, 2x the about 500,000 codes the value sets of a full library list. Codes beyond it aren't counted (no error); codes already tracked still are. 0 = no limit |
 | `usageTrackerMaxCodeLength`     | integer | No       | Longest code, in characters, the usage tracker keeps. Default: 100, 2.5x the longest code those value sets list (40). Longer codes aren't counted (no error). 0 = no limit |
+| `filterMemoMaxConcepts`         | integer | No       | Concepts the filter results remembered on package value sets may hold between them (one result for each filter, for each code system version, and language for a SNOMED CT display regex, it was resolved against: the ECL, or the concepts a full scan found). The least recently used are dropped to stay under it; one bigger than it isn't kept. About 8 bytes a concept. Default: 10000000 (about 80 MB). 0 = no limit. On the value sets a client cache holds, the results count as concepts the cache holds (`cacheMaxConcepts`, `cacheMaxTotalConcepts`), and go with it |
 | `languageTagCacheSize`          | integer | No       | Parsed language tags kept (least recently used dropped). Default: 1000; an 8 KB private use tag takes about 46 KB parsed, so at most about 46 MB. Clients see nothing but a re-parse. 0 = no limit (unique tags in requests then grow the heap forever) |
 | `expansionCacheSize`            | integer | No       | Maximum number of expanded ValueSets to cache. Default: 1000                                            |
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
+| `adminPassword`                 | string  | No       | The password for emptying the caches on the caches page (`/{path}/caches`). Not set: the page lists the caches, and can't empty them |
 | `xmlCacheMB`                    | integer | No       | Most XML and JSON, in MB, kept per process for large resources (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. The budget counts characters: XML with text outside Latin-1 (Chinese or Arabic displays, say) takes two bytes a character, so in the worst case the cache uses twice this. 0: none. Default: 256 |
 | `loincConnections`              | integer | No       | How many connections to the LOINC database the requests share. A connection runs one query at a time, so there are several; each query goes to the least busy. 0: each request opens a connection of its own and closes it at the end, as it used to (if the shared ones can't be opened, that is what happens too). In a cluster, each process has its own. Default: 4 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
@@ -240,6 +242,35 @@ Each endpoint also provides:
 - `GET /{path}/metadata` - Returns a CapabilityStatement describing the endpoint's capabilities
 - `GET /{path}/` - Returns basic endpoint information
 - `GET /{path}/library` - Returns the library source YAML, if `publishLibrarySource` is set
+- `GET /{path}/caches` - The caches page (see below)
+
+### The caches page
+
+`/{path}/caches` lists every cache the tx module keeps (`tx/tx-caches.js`),
+with how many entries each holds, more about what it holds, and its limit, and the process's memory
+(RSS, the JS heap, and what is outside it). There are three kinds:
+
+* **Endpoint and process caches**: the expansion caches, the XML of large arrays, the recently read
+  VSAC value sets, the filter results on package value sets (see below), the LOINC filter lookups,
+  what the ecosystem registry and servers said, parsed language tags, compiled regular expressions.
+  The usage tracker is listed, but not emptied
+* **Kept with loaded content**, built as it is used: the SNOMED CT history and MRCM range indexes, the text indexes built in memory. The text index store is
+  listed, but not emptied: it is on disk, and built as the server starts
+* **Client caches**: the `$cache-control` cache-ids (a shared cache, `sharedCache`, is listed, but not
+  emptied: it is on disk, and the other processes' too)
+
+With `adminPassword` set, the page can empty all but the client caches, or all of them, client caches
+too - back to what the server held when it had started. Everything is built again as it is needed;
+emptying the client caches makes every client start its cache again (they are told the cache-id is
+unknown). A full garbage collection and `malloc_trim` follow, and the page shows RSS before and after.
+
+Under the cluster launcher the page is server wide: it shows every process (a column for each, and
+the total, then each process in full), and empties the caches of every process (see
+[cluster.md](../cluster.md#the-caches-page)). Without it (one process, or roles behind nginx), only
+the process the request reached.
+
+When memory is short, the memory guard empties the endpoint and process caches before it forces a
+GC, and the client caches only at a later look, if that wasn't enough.
 
 ### Publishing the library source
 
@@ -551,6 +582,9 @@ The file is built by importing UNII (see [documentation](importers/readme.md))
 #### `snomed` - SNOMED CT
 
 Loads SNOMED CT from a cache file. Multiple editions and versions can be loaded simultaneously.
+The cache files are made by the SNOMED CT importer (see [documentation](importers/readme.md)), and
+must be in the format of this version's importer (cache format 21): the server refuses to start
+with a cache in any other format, which has to be imported again.
 
 ```yaml
 - snomed!:sct_intl_20250201.cache  # International edition (default)
@@ -806,8 +840,18 @@ LOINC, RxNorm, ICD-11, code systems from packages, and the supplements in use
 The code systems held in a database (LOINC, RxNorm, ICD-11) answer from a text index in it that holds
 each name's words and stems, made by FHIRsmith, so SQLite only looks them up; the importers build it,
 and each has a way to build it in an existing database without importing again (see
-[the importers](importers/readme.md)). The others answer from an index in memory, built the first time
-they are searched.
+[the importers](importers/readme.md)).
+
+The code systems and supplements defined as resources that the server loads as it starts (from
+packages and folders) answer from the **text index store**, a SQLite database of the same kind in
+`terminology-cache/text-indexes/text-indexes.db` (`tx/library/text-index-store.js`). The server
+waits for it as it starts: each index is keyed on a hash of what it indexes, so one built in an
+earlier run for the same content is used as it is, and only new or changed content is indexed (the
+first start with a big library takes a while; the log says how long, and how many were built). When
+the server has started, the indexes nothing loaded any more are deleted. In a cluster the master
+builds them, and the tx-workers use what it built. Code systems and supplements that come later (in a
+request, `tx-resource`) are indexed in memory the first time they are searched, as is anything the
+store doesn't have (if it can't be opened, everything is).
 
 
 ## Languages

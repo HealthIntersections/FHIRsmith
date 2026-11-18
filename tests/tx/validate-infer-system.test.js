@@ -11,6 +11,7 @@ const express = require('express');
 const request = require('supertest');
 const TXModule = require('../../tx/tx');
 const folders = require('../../library/folder-setup');
+const { SnomedFileReader } = require('../../tx/sct/structures');
 const { ValueSetExpander } = require('../../tx/workers/expand');
 const { Issue } = require('../../tx/library/operation-outcome');
 
@@ -56,7 +57,7 @@ describe('$validate-code with inferSystem', () => {
   beforeAll(async () => {
     const committed = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
     const target = path.join(folders.subDir('terminology-cache'), 'snomed-testing.cache');
-    if (!fs.existsSync(target)) {
+    if (!fs.existsSync(target) || !SnomedFileReader.isCurrent(target)) {
       fs.copyFileSync(committed, target);
     }
     app = express();

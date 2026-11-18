@@ -139,10 +139,38 @@ describe('memory-guard', () => {
     try {
       memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 2 * GB, gc: () => order.push('gc') })({ path: '/r4/x' }, fakeRes(), () => {});
     } finally {
-      memoryGuard.addReliever('test cache', () => 0);
+      memoryGuard.removeReliever('test cache');
     }
     expect(order).toEqual(['relieve', 'gc']);
     expect(lines.join('\n')).toMatch(/dropped the test cache \(1(\.0+)? GB\)/);
+  });
+
+  test('a reliever registered as last is only emptied at a later look, if the others were not enough', () => {
+    setRss(8.5 * GB);
+    rssSpy.mockImplementation(() => 8.5 * GB); // nothing gets memory back
+    memoryGuard._state.sampleRss = 8.5 * GB;
+    memoryGuard._state.sampleTime = Date.now();
+    const order = [];
+    memoryGuard.addReliever('first cache', () => { order.push('first'); return null; });
+    memoryGuard.addReliever('client cache', () => { order.push('client'); return GB; }, { last: true });
+    const lines = [];
+    const log = { info: (m) => lines.push(m), warn: () => {} };
+    let now = 1000000;
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const mw = memoryGuard.middleware({ log, gcInterval: 1000, heapUsed: () => 2 * GB, gc: () => order.push('gc'), trim: () => null });
+      mw({ path: '/r4/x' }, fakeRes(), () => {});
+      expect(order).toEqual(['first', 'gc']);
+      now += 5000;
+      mw({ path: '/r4/x' }, fakeRes(), () => {});
+      expect(order).toEqual(['first', 'gc', 'first', 'client', 'gc']);
+    } finally {
+      nowSpy.mockRestore();
+      memoryGuard.removeReliever('first cache');
+      memoryGuard.removeReliever('client cache');
+    }
+    expect(lines.join('\n')).toMatch(/dropped the first cache and forced/);
+    expect(lines.join('\n')).toMatch(/dropped the client cache \(1(\.0+)? GB\)/);
   });
 
   test('the forced GC is a last-resort one on this runtime (V8 12 on), which gives back the pages V8 keeps', () => {

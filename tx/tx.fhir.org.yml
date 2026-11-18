@@ -24,15 +24,15 @@ sources:
   - rxnorm:rxnorm_20261005-a.cache
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
-  - snomed:sct_intl_20250201.cache
-  - snomed!:Snomed_Intl_20260701-a.cache
-  - snomed:snomed-nl-20260930-a.cache
-  - snomed:sct_uk_20230412.cache
-  - snomed:sct_us_20230301.cache
-  - snomed:sct_us_20240301.cache
-  - snomed:sct_us_20250901-c.cache
-  - snomed:Snomed_loinc_20261021-a.cache
-  - snomed:sct_test_20250909i.cache
+  - snomed:sct_intl_20250201-21.cache
+  - snomed!:sct_intl_20260701-21.cache
+  - snomed:sct_nl_20260930-21.cache
+  - snomed:sct_uk_20261021-21.cache
+  - snomed:sct_us_20240301-21.cache
+  - snomed:sct_us_20250901-21.cache
+  - snomed:sct_us_20260901-21.cache
+  - snomed:sct_loinc_20261021-21.cache
+  - snomed:sct_test_20250909-21.cache
   - cpt:CodeSystem-cpt.db|cpt-2023-fragment-0.1.db
   - omop:omop_v20250227.db
   - npm:hl7.terminology=tho

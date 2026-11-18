@@ -87,6 +87,27 @@ class EcosystemResolver {
   }
 
   /**
+   * How many entries the caches of what the registry and the servers said hold (the caches page)
+   * @returns {number}
+   */
+  cacheCount() {
+    return this.servers.size + this.versions.size + this.searched.size + this.codes.size + this.answers.size + this.schemes.size;
+  }
+
+  /**
+   * Forget what the registry and the servers said: it is asked again when next needed. A
+   * request under way still answers whoever is waiting for it
+   * @returns {number} the entries let go
+   */
+  clearCaches() {
+    const count = this.cacheCount();
+    for (const cache of [this.servers, this.versions, this.searched, this.codes, this.answers, this.schemes]) {
+      cache.clear();
+    }
+    return count;
+  }
+
+  /**
    * Whether a system can be looked for in the ecosystem: it's a URI (see URI)
    */
   static isUri(system) {

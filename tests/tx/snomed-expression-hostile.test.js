@@ -11,6 +11,7 @@ const cors = require('cors');
 const request = require('supertest');
 const TXModule = require('../../tx/tx');
 const folders = require('../../library/folder-setup');
+const { SnomedFileReader } = require('../../tx/sct/structures');
 
 const SCT = 'http://snomed.info/sct';
 let app;
@@ -19,7 +20,7 @@ let txModule;
 beforeAll(async () => {
   const committed = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
   const target = path.join(folders.subDir('terminology-cache'), 'snomed-testing.cache');
-  if (!fs.existsSync(target)) {
+  if (!fs.existsSync(target) || !SnomedFileReader.isCurrent(target)) {
     fs.copyFileSync(committed, target);
   }
   app = express();
@@ -88,7 +89,7 @@ test('$subsumes of a concept and a refined expression', async () => {
 });
 
 test('$subsumes of two large expressions within the limits is prompt', async () => {
-  const a = '64572001:' + Array.from({ length: 120 }, (_, i) => `{363698007=${['39607008', '10200004'][i % 2]},116676008=24028007}`).join('');
+  const a = '64572001:' + Array.from({ length: 120 }, (_, i) => `{363698007=${['39607008', '10200004'][i % 2]},116676008=57977008}`).join('');
   const { res, ms } = await timed(() => request(app).post('/tx/r5/CodeSystem/$subsumes').set('Content-Type', 'application/json').send({
     resourceType: 'Parameters',
     parameter: [{ name: 'system', valueUri: SCT }, { name: 'codeA', valueCode: '404684003' }, { name: 'codeB', valueCode: a }]

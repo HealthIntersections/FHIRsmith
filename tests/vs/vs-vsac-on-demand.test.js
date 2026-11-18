@@ -172,7 +172,7 @@ describe('VSAC value sets read on demand', () => {
   test('the usage tracker counts the codes of the latest version of each url, once', async () => {
     const ConceptUsageTracker = require('../../tx/usage-tracker');
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601'), vs(URL1, '20230101'), vs(URL2, '20200101')]);
-    const tracker = new ConceptUsageTracker();
+    const tracker = new ConceptUsageTracker(undefined, undefined, true);
     expect(await tracker.scanValueSets({ valueSetProviders: [provider] })).toBe(2);
     // both urls list it: once each (it was 4, once for each stored version)
     expect(tracker.usages('http://snomed.info/sct').get('73211009').count).toBe(2);

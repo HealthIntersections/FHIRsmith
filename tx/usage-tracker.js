@@ -17,15 +17,23 @@ class ConceptUsageTracker {
   /**
    * @param {number} [maxCodes] - most codes tracked; Infinity = no limit
    * @param {number} [maxCodeLength] - longest code tracked; Infinity = no limit
+   * @param {boolean} [enabled] - whether it counts anything. Off for now: nothing uses the
+   *   counts yet, so the server neither scans the value sets at startup nor counts what
+   *   $validate-code sees, and usage-count is 0 for every code. The infrastructure stays, to be
+   *   turned on when the counts are put to use
    */
-  constructor(maxCodes = ConceptUsageTracker.MAX_CODES, maxCodeLength = ConceptUsageTracker.MAX_CODE_LENGTH) {
+  constructor(maxCodes = ConceptUsageTracker.MAX_CODES, maxCodeLength = ConceptUsageTracker.MAX_CODE_LENGTH, enabled = false) {
     this.map = new Map();
     this.codes = 0;
     this.maxCodes = maxCodes;
     this.maxCodeLength = maxCodeLength;
+    this.enabled = enabled === true;
   }
 
   async scanValueSets(library) {
+    if (!this.enabled) {
+      return 0;
+    }
     let c = 0;
     let sliceStart = Date.now();
     for (let vsp of library.valueSetProviders) {
@@ -64,6 +72,9 @@ class ConceptUsageTracker {
   }
 
   seeConcept(system, code) {
+    if (!this.enabled) {
+      return;
+    }
     let cs = this.map.get(system);
     let ci = cs ? cs.get(code) : null;
     if (!ci) {
