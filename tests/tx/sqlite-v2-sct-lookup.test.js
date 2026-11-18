@@ -112,7 +112,7 @@ describe('sqlite-v2 SNOMED CT $lookup and implicit value sets, as main', () => {
 
   test('main\'s ECL over the file: refinements see the relationships', async () => {
     const { evaluateEcl } = require('../../tx/sqlite-v2/sct-main-ecl');
-    const bm = evaluateEcl(factory.store, '< 64572001 : 363698007 = << 10200004', null);
+    const bm = await evaluateEcl(factory.store, '< 64572001 : 363698007 = << 10200004', null);
     expect(bm.size).toBeGreaterThan(0);
   });
 });

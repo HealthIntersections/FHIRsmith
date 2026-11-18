@@ -270,10 +270,12 @@ const snomed = {
   },
   /** ECL the engine refuses: evaluated by main's ECL (cs-snomed.js) over this file, as ids */
   eclFallback(c, text, e) {
-    let bm;
-    try {
-      bm = require('./sct-main-ecl').evaluateEcl(c.store, text, null);
-    } catch (err) {
+    const M = require('./sct-main-ecl');
+    const kept = M.mainEclResult(c.store, text);
+    if (kept === undefined) throw new M.NeedsMainEcl(c.store, text);
+    const bm = kept.bm;
+    if (kept.err) {
+      const err = kept.err;
       const msg = err && err.message ? err.message : String(err);
       if ((err && err.eclInvalid) || /is not known/.test(msg)) throw new FilterError(msg, { eclUnknown: true });
       throw new Unsupported('ecl-feature', msg);

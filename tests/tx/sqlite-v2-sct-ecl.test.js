@@ -11,6 +11,8 @@ const os = require('os');
 const path = require('path');
 const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
+// main's importer requires the license the edition is distributed under (cache format 21)
+const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
 const { loadSqliteV2Factory } = require('../../tx/sqlite-v2');
 const { OperationContext } = require('../../tx/operation-context');
@@ -40,7 +42,7 @@ async function mainCache(snap, dest, language) {
   const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
   try {
     await new SnomedImporter({ source: snap, dest, edition: '31000003106', version: '20250909',
-      uri: 'http://snomed.info/sct/31000003106/version/20250909', language, verbose: false, overwrite: true }).run();
+      uri: 'http://snomed.info/sct/31000003106/version/20250909', language, license: SCT_LICENSE, verbose: false, overwrite: true }).run();
   } finally { quiet.mockRestore(); }
 }
 
@@ -96,5 +98,23 @@ describe('SNOMED CT ECL description filters and compound ECL, as cs-snomed.js', 
       '<< 159033005 AND *', '* AND << 159033005', '<< 159033005 MINUS << 309413008', '<<! 159033005', '<< 159033005', '< 159033005',
       '(<< 159033005 {{ term = "renal" }}) OR (<< 159033005 {{ term = "liver" }})', '<< 159033005 MINUS (<< 159033005 {{ term = "renal" }})']) await same(e);
     expect((await same('<< 309413008 OR << 159033005'))[0]).toBe('309413008');
+  });
+});
+
+describe('SNOMED CT ECL the engine hands to main\'s ECL (sct-main-ecl.js)', () => {
+  test('evaluated by main\'s (async) ECL first, then compiled: the same codes as cs-snomed.js', async () => {
+    const texts = ['< 404684003 : { [1..1] 363698007 = << 123037004 }', '< 404684003 : { [0..1] 363698007 = * }'];
+    for (const text of texts) {
+      const want = await same(text);
+      expect([text, want.length > 0]).toEqual([text, true]);
+      // the engine did not evaluate it: main's result is kept for the file
+      expect(engine.store._mainEcl && engine.store._mainEcl.has(text)).toBe(true);
+    }
+  });
+
+  test('an unknown concept in such ECL is reported as before (a filter error, at compile)', async () => {
+    const p = await engine.build(op, []);
+    const prep = await p.getPrepContext(true, null);
+    await expect(p.filter(prep, true, 'constraint', '=', '< 404684003 : { [1..1] 363698007 = << 999999999999 }')).rejects.toThrow();
   });
 });

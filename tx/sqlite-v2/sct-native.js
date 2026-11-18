@@ -244,14 +244,22 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
   // ---- ECL through the engine -----------------------------------------------------------
 
   /** the concepts an ECL constraint selects (engine), or null when the engine cannot say */
-  eclSet(text) {
+  async eclSet(text) {
     if (this.ecl.has(text)) return this.ecl.get(text);
     let bm = null;
-    try {
-      const c = this.compilerFor();
-      bm = c.engineFor().evaluate(c.ecl(text));
-    } catch (e) {
-      bm = null;
+    for (let tries = 0; ; tries++) {
+      try {
+        const c = this.compilerFor();
+        bm = c.engineFor().evaluate(c.ecl(text));
+      } catch (e) {
+        // ECL only main's (async) evaluator answers: evaluate it, then compile again
+        if (e && e.needsMainEcl && tries < 16) {
+          await e.resolve();
+          continue;
+        }
+        bm = null;
+      }
+      break;
     }
     this.ecl.set(text, bm);
     return bm;
@@ -263,8 +271,8 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
   }
 
   /** does a refinement value satisfy an MRCM range constraint? null: cannot say (a concrete range) */
-  rangeSatisfied(constraint, value) {
-    const set = this.eclSet(constraint);
+  async rangeSatisfied(constraint, value) { // awaited by main's checkRefinementRange (1.0.5)
+    const set = await this.eclSet(constraint);
     if (!set) return null;
     const concepts = (value.concepts || []).filter((c) => c.reference != null && c.reference !== NO_REFERENCE);
     const refined = value.hasRefinements() || value.hasRefinementGroups();

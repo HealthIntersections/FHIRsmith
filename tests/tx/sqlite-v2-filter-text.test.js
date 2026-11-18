@@ -24,6 +24,8 @@ const { Languages } = require('../../library/languages');
 const { TestUtilities } = require('../test-utilities');
 
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
+// main's importer requires the license the edition is distributed under (cache format 21)
+const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 
 const SRC = path.resolve(__dirname, '../../tx/data/snomed');
 let dir, op, langDefs, main, stored, memory, rxMain, rxV2;
@@ -92,7 +94,7 @@ beforeAll(async () => {
   const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
   try {
     await new SnomedImporter({ source: snap, dest: cache, edition: '31000003106', version: '20250909',
-      uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'en-US', verbose: false, overwrite: true }).run();
+      uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'en-US', license: SCT_LICENSE, verbose: false, overwrite: true }).run();
   } finally { quiet.mockRestore(); }
   main = new SnomedServicesFactory(op.i18n, cache);
   await main.load();

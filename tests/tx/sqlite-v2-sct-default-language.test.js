@@ -14,6 +14,8 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
+// main's importer requires the license the edition is distributed under (cache format 21)
+const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 const { importSnomedV2FromCache, cacheDefaultLanguage } = require('../../tx/importers/import-sct-v2-cache.module');
 const { importSnomedV2, rf2DefaultLanguage } = require('../../tx/importers/import-sct-v2.module');
 const { SnomedFileReader } = require('../../tx/sct/structures');
@@ -48,7 +50,7 @@ async function mainCache(snap, dest, language) {
   const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
   try {
     await new SnomedImporter({ source: snap, dest, edition: '31000003106', version: '20250909',
-      uri: 'http://snomed.info/sct/31000003106/version/20250909', language, verbose: false, overwrite: true }).run();
+      uri: 'http://snomed.info/sct/31000003106/version/20250909', language, license: SCT_LICENSE, verbose: false, overwrite: true }).run();
   } finally { quiet.mockRestore(); }
 }
 
@@ -105,7 +107,7 @@ async function same(how, header = null, m = main, engines = [fromCache, fromRf2]
 describe('SNOMED CT default language', () => {
   test('main\'s importer writes the edition\'s language; the engine\'s files record the same', async () => {
     const d = await new SnomedFileReader(path.join(dir, 'nl.cache')).loadSnomedData();
-    expect(d.cacheVersion).toBe('20');
+    expect(d.cacheVersion).toBe('21');
     expect(d.defaultLanguage).toBe(languageByte('nl'));
     expect(main.snomedServices.defaultLanguage).toBe(languageByte('nl'));
     expect(cacheDefaultLanguage(d)).toBe(languageByte('nl'));
@@ -115,16 +117,22 @@ describe('SNOMED CT default language', () => {
     expect(config(path.join(dir, 'en-cache.db'))).toBe('en-US');
   });
 
-  test('a language reference set\'s offset in the slot (the original server\'s caches) is read as main reads it', async () => {
-    const d = await new SnomedFileReader(path.join(dir, 'en.cache')).loadSnomedData();
+  test('an older cache: a language reference set\'s offset in the slot (the original server\'s caches) is read as main read it up to 1.0.4', async () => {
+    const d = await new SnomedFileReader(path.join(dir, 'nl.cache')).loadSnomedData();
     const svc = main.snomedServices;
-    // the offset of each language reference set the test edition has: main's answer, whatever it is
+    // main up to 1.0.4: the language most of that reference set's descriptions are in; any
+    // other value English. Main's server now reads only format 21 (a language byte).
+    let seen = 0;
     for (let i = 0; i < svc.refSetIndex.count(); i++) {
       const offset = svc.refSetIndex.getReferenceSet(i).membersByRef;
-      const legacy = { ...d, cacheVersion: '16', defaultLanguage: offset };
-      const { SnomedServices } = require('../../tx/cs/cs-snomed');
-      expect(cacheDefaultLanguage(legacy)).toBe(new SnomedServices(legacy).defaultLanguage);
+      const counts = [...svc.refSetMembers.descriptionLanguages(offset, svc.descriptions)].sort((a, b) => b[1] - a[1]);
+      const want = counts.length ? counts[0][0] : 1;
+      if (counts.length) seen++;
+      expect(cacheDefaultLanguage({ ...d, cacheVersion: '16', defaultLanguage: offset })).toBe(want);
     }
+    expect(seen).toBeGreaterThan(0); // the test edition has language reference sets
+    expect(cacheDefaultLanguage({ ...d, cacheVersion: '19', defaultLanguage: languageByte('nl') })).toBe(languageByte('nl'));
+    expect(cacheDefaultLanguage({ ...d, cacheVersion: '20', defaultLanguage: 999999 })).toBe(1);
   });
 
   test('the RF2 importer: --language, else the edition\'s language, if the edition has descriptions in it', () => {

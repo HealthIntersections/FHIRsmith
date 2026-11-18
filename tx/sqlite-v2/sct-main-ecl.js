@@ -6,7 +6,12 @@
 // ECL reads (tx/sct/structures.js) are replaced by read-through views of the store that answer the
 // same calls. Post-coordination does not come here: it is native (sct-native.js).
 //
-// Built per call and kept nowhere: what it reads stays in this call's memo maps.
+// Built per call: what it reads stays in this call's memo maps. Main's ECL evaluation is async
+// (1.0.5), and the engine compiles synchronously, so the result is evaluated first and kept per
+// file (resolveMainEcl: the file is read-only, so a result never goes stale); the compiler then
+// reads it (mainEclResult). A compile that needs one not evaluated yet throws NeedsMainEcl, which
+// the provider's async entry points answer by evaluating it and compiling again
+// (provider.js _compiled).
 //
 // Addresses: a concept's "index" is (concept_id - 1) * 56, as main's fixed-size records;
 // a description's is designation_id * 40; a relationship gets an index the first time it is read.
@@ -14,6 +19,7 @@
 
 const { SnomedServices } = require('../cs/cs-snomed');
 const { SnomedExpressionServices } = require('../sct/expressions');
+const { SnomedTextIndexes } = require('../sct/text-index');
 const { KIND } = require('./store');
 const { RoaringBitmap32 } = require('roaring');
 // a description's language, as main's language byte (the one table, shared with main's importer)
@@ -273,6 +279,11 @@ function concepts(v) {
 function relationships(v) {
   return {
     getRelationship: (index) => v.relationship(index),
+    // the fields relationship matching needs (main's getRelationshipCore, 1.0.5)
+    getRelationshipCore: (index) => {
+      const r = v.relationship(index);
+      return { source: r.source, target: r.target, relType: r.relType, active: r.active, group: r.group };
+    },
     // main's getConceptRelationships keeps active rows only (cs-snomed.js, #331)
     isActive: (index) => v.relationship(index).active,
     count: () => v.rels.length
@@ -394,7 +405,7 @@ function servicesFor(factory) {
   if (!factory.version) factory = { store, version: () => store.version, edition: () => store.cs.edition };
   const v = new V2View(store);
   // a real (empty) instance, for its class-field methods; its structures are replaced below
-  const sv = new SnomedServices({ identifiers: [], concreteValues: null });
+  const sv = new SnomedServices({ identifiers: [], concreteValues: null, textIndexes: noTextIndexes() });
   sv.strings = strings(v);
   sv.words = { getEntry: () => null, getString: () => '', count: () => 0 };
   sv.stems = { getEntry: () => null, getString: () => '', count: () => 0 };
@@ -497,13 +508,51 @@ function loadConcreteValues(sv, v) {
  * An ECL expression the engine does not evaluate itself, by main's ECL over this file: the concept
  * ids (a bitmap). Errors are main's (INVALID_ECL / UNSUPPORTED_ECL).
  */
-function evaluateEcl(store, text, opContext) {
+/** an empty text index section (main's ECL only uses it to narrow term filters: none, no narrowing) */
+let NO_TEXT_INDEXES = null;
+function noTextIndexes() {
+  return NO_TEXT_INDEXES || (NO_TEXT_INDEXES = new SnomedTextIndexes([], new Map()).serialize());
+}
+
+async function evaluateEcl(store, text, opContext) {
   const { ECLLexer, ECLParser } = require('../sct/ecl');
   const sv = servicesFor({ store });
   const ast = new ECLParser(new ECLLexer(text).tokenize()).parse();
-  const ctx = sv._evalECLNode(ast, opContext || null);
+  const ctx = await sv._evalECLNode(ast, opContext || null);
   if (ctx.eclWildcard && !(ctx.descendants && ctx.descendants.length)) return store.all();
   return new RoaringBitmap32(sv._eclToIndexArray(ctx).map((i) => i / CONCEPT_SIZE + 1));
 }
 
-module.exports = { evaluateEcl };
+// ---- results kept per file, for the synchronous compiler ------------------------------------
+
+const KEPT_RESULTS = 64; // per file; the oldest is let go first
+
+/** A compile needs main's ECL result for `text`, not evaluated yet: resolve() it and compile again */
+class NeedsMainEcl extends Error {
+  constructor(store, text) {
+    super(`main's ECL has not evaluated ${text.slice(0, 60)} yet`);
+    this.needsMainEcl = true;
+    this.resolve = () => resolveMainEcl(store, text);
+  }
+}
+
+/** the kept result for `text`: {bm} or {err}; undefined if not evaluated */
+function mainEclResult(store, text) {
+  return store._mainEcl ? store._mainEcl.get(text) : undefined;
+}
+
+/** evaluate `text` with main's ECL and keep the result (or the error it throws) */
+async function resolveMainEcl(store, text) {
+  const kept = store._mainEcl || (store._mainEcl = new Map());
+  if (kept.has(text)) return;
+  let entry;
+  try {
+    entry = { bm: await evaluateEcl(store, text, null) };
+  } catch (err) {
+    entry = { err };
+  }
+  if (kept.size >= KEPT_RESULTS) kept.delete(kept.keys().next().value);
+  kept.set(text, entry);
+}
+
+module.exports = { evaluateEcl, mainEclResult, resolveMainEcl, NeedsMainEcl };

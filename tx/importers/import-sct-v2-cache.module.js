@@ -28,7 +28,7 @@ const { BaseTerminologyModule } = require('./tx-import-base');
 const { V2Builder } = require('./sqlite-v2/builder');
 const {
   SnomedStrings, SnomedReferences, SnomedDescriptions, SnomedConceptList, SnomedRelationshipList,
-  SnomedReferenceSetMembers, SnomedReferenceSetIndex, SnomedFileReader,
+  SnomedReferenceSetMembers, SnomedReferenceSetIndex, SnomedFileReader, SNOMED_CACHE_VERSION,
 } = require('../sct/structures');
 const { applySnomedConfig, storeNormalForms, concrete, isoDate, idLess } = require('./import-sct-v2.module');
 const { editionName } = require('../sct/editions');
@@ -61,10 +61,77 @@ function view(Cls, buf, ...args) {
   return o;
 }
 
-/** the cache's default description language, as main's server resolves its slot (a language byte) */
+/**
+ * The cache's default description language (a language byte). The current format (21): as main's
+ * server resolves its slot. An older format (main's server no longer reads them, but this importer
+ * does): as main's server read it, up to 1.0.4 - a language byte (only 1-9 before format 20), else
+ * the membersByRef offset of the edition's default language reference set (the original server's
+ * caches), read as the language most of that reference set's descriptions are in; else English.
+ */
 function cacheDefaultLanguage(d) {
-  const { SnomedServices } = require('../cs/cs-snomed');
-  return new SnomedServices(d).defaultLanguage;
+  if (d.cacheVersion === SNOMED_CACHE_VERSION) {
+    const { SnomedServices } = require('../cs/cs-snomed');
+    return new SnomedServices(d).defaultLanguage;
+  }
+  const slot = d.defaultLanguage;
+  const maxByte = parseInt(d.cacheVersion, 10) >= 20 ? 255 : 9;
+  if (slot <= maxByte && LANGUAGE[slot]) return slot;
+  const rsIndex = view(SnomedReferenceSetIndex, d.refSetIndex, d.hasLangs);
+  const rsMembers = view(SnomedReferenceSetMembers, d.refSetMembers);
+  const descs = view(SnomedDescriptions, d.desc);
+  for (let i = 0; i < rsIndex.count(); i++) {
+    if (rsIndex.getReferenceSet(i).membersByRef !== slot) continue;
+    let best = 1, most = 0;
+    for (const [lang, n] of rsMembers.descriptionLanguages(slot, descs)) {
+      if (LANGUAGE[lang] && n > most) { best = lang; most = n; }
+    }
+    return best;
+  }
+  return 1;
+}
+
+// The cache formats before 21 this importer still reads. Main's server reads only the current
+// format (1.0.5); an edition whose release is not at hand may only exist as an older cache.
+const OLDER_FORMATS = ['16', '17', '18', '19', '20'];
+
+/**
+ * A cache's sections, as SnomedFileReader.loadSnomedData returns them: from main's reader for the
+ * current format; for an older one, read here in its layout (the words and stems sections, which
+ * nothing read, are skipped; no license, no text indexes).
+ * @param {string} file
+ */
+async function readCache(file) {
+  if (SnomedFileReader.isCurrent(file)) return new SnomedFileReader(file).loadSnomedData();
+  const r = new SnomedFileReader(file);
+  await r.load();
+  const cacheVersion = r.readString();
+  if (!OLDER_FORMATS.includes(cacheVersion)) {
+    throw new Error(`${path.basename(file)}: SNOMED CT cache format ${cacheVersion} is not one this importer reads (${[...OLDER_FORMATS, SNOMED_CACHE_VERSION].join(', ')})`);
+  }
+  const v = parseInt(cacheVersion, 10);
+  const d = { cacheVersion, versionUri: r.readString(), versionDate: r.readString(), hasLangs: v >= 17, license: null, textIndexes: null };
+  d.isTesting = d.versionUri.includes('/xsct/');
+  const parts = d.versionUri.split('/');
+  if (parts.length >= 7) { d.edition = parts[4]; d.version = parts[6]; }
+  d.strings = r.readBytes();
+  d.refs = r.readBytes();
+  d.desc = r.readBytes();
+  r.readBytes(); // words
+  r.readBytes(); // stems
+  d.concept = r.readBytes();
+  d.rel = r.readBytes();
+  d.refSetIndex = r.readBytes();
+  d.refSetMembers = r.readBytes();
+  d.descRef = r.readBytes();
+  d.isAIndex = r.readInteger();
+  d.inactiveRoots = [];
+  for (let i = r.readInteger(); i > 0; i--) d.inactiveRoots.push(r.readUInt64());
+  d.activeRoots = [];
+  for (let i = r.readInteger(); i > 0; i--) d.activeRoots.push(r.readUInt64());
+  d.defaultLanguage = r.readInteger();
+  d.identifiers = v >= 18 ? JSON.parse(r.readBytes().toString('utf8')) : [];
+  d.concreteValues = v >= 19 ? JSON.parse(r.readBytes().toString('utf8')) : null;
+  return d;
 }
 
 /** days since 1899-12-30 -> YYYYMMDD */
@@ -79,8 +146,7 @@ function sctDate(days) {
 async function importSnomedV2FromCache(cfg) {
   const log = cfg.log || console.log;
   const t0 = Date.now();
-  const reader = new SnomedFileReader(cfg.source);
-  const d = await reader.loadSnomedData();
+  const d = await readCache(cfg.source);
   log(`cache v${d.cacheVersion} ${d.versionUri} loaded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 
   const strings = view(SnomedStrings, d.strings);
@@ -443,4 +509,4 @@ class SnomedV2FromCacheModule extends BaseTerminologyModule {
   }
 }
 
-module.exports = { SnomedV2FromCacheModule, importSnomedV2FromCache, cacheDefaultLanguage };
+module.exports = { SnomedV2FromCacheModule, importSnomedV2FromCache, cacheDefaultLanguage, readCache };

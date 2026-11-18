@@ -9,12 +9,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
+// main's importer requires the license the edition is distributed under (cache format 21)
+const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
-const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { importSnomedV2FromCache, readCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { SnomedFileReader } = require('../../tx/sct/structures');
 const { diffV2 } = require('../../tx/importers/sqlite-v2/diff');
 
 const SRC = path.resolve(__dirname, '../../tx/data/snomed');
-let dir, report, cacheSummary;
+let dir, report, cacheSummary, olderSummary, olderReport;
 
 function walk(d) {
   return fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
@@ -46,18 +49,62 @@ beforeAll(async () => {
   const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
   try {
     await new SnomedImporter({ source: snap, dest: path.join(dir, 't.cache'), edition: '31000003106', version: '20250909',
-      uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'en-US', verbose: false, overwrite: true }).run();
+      uri: 'http://snomed.info/sct/31000003106/version/20250909', language: 'en-US', license: SCT_LICENSE, verbose: false, overwrite: true }).run();
   } finally { quiet.mockRestore(); }
   await importSnomedV2({ source: snap, dest: path.join(dir, 'rf2.db'), edition: '31000003106', version: '20250909', overwrite: true, log: () => {} });
   cacheSummary = await importSnomedV2FromCache({ source: path.join(dir, 't.cache'), dest: path.join(dir, 'rev.db'), overwrite: true, log: () => {} });
   report = diffV2(path.join(dir, 'rf2.db'), path.join(dir, 'rev.db'), { examples: 50 });
+  // the same edition in cache format 20 (main's server reads only 21; this importer reads both)
+  writeFormat20(await new SnomedFileReader(path.join(dir, 't.cache')).loadSnomedData(), path.join(dir, 't20.cache'));
+  olderSummary = await importSnomedV2FromCache({ source: path.join(dir, 't20.cache'), dest: path.join(dir, 'rev20.db'), overwrite: true, log: () => {} });
+  olderReport = diffV2(path.join(dir, 'rev.db'), path.join(dir, 'rev20.db'), { examples: 50 });
 }, 120000);
+
+/**
+ * A cache in format 20's layout (tx/sct/structures.js before 1.0.5), from a format-21 cache's
+ * sections: no license or text indexes; empty words and stems sections (nothing read them)
+ */
+function writeFormat20(d, file) {
+  const out = [];
+  const str = (t) => { const b = Buffer.from(t, 'utf8'); out.push(Buffer.from([6, b.length]), b); };
+  const int = (n) => { const b = Buffer.alloc(5); b.writeUInt8(4, 0); b.writeInt32LE(n, 1); out.push(b); };
+  const bytes = (b) => { int(b.length); out.push(Buffer.from(b)); };
+  const u64 = (n) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); out.push(b); };
+  str('20'); str(d.versionUri); str(d.versionDate);
+  bytes(d.strings); bytes(d.refs); bytes(d.desc); bytes(Buffer.alloc(0)); bytes(Buffer.alloc(0));
+  bytes(d.concept); bytes(d.rel); bytes(d.refSetIndex); bytes(d.refSetMembers); bytes(d.descRef);
+  int(d.isAIndex);
+  int(d.inactiveRoots.length); d.inactiveRoots.forEach(u64);
+  int(d.activeRoots.length); d.activeRoots.forEach(u64);
+  int(d.defaultLanguage);
+  bytes(Buffer.from(JSON.stringify(d.identifiers)));
+  bytes(Buffer.from(JSON.stringify(d.concreteValues)));
+  fs.writeFileSync(file, Buffer.concat(out));
+}
 
 afterAll(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
 
 test('the current cache format carries everything else', () => {
-  expect(cacheSummary.importer.cacheVersion).toBe('20');
+  expect(cacheSummary.importer.cacheVersion).toBe('21');
   expect(cacheSummary.importer.cacheWarnings).toEqual([]);
+});
+
+test('an older cache format (20, which main\'s server no longer reads) gives the same file', async () => {
+  expect(SnomedFileReader.isCurrent(path.join(dir, 't20.cache'))).toBe(false);
+  await expect(new SnomedFileReader(path.join(dir, 't20.cache')).loadSnomedData()).rejects.toThrow(/only reads format 21/);
+  const d = await readCache(path.join(dir, 't20.cache'));
+  expect([d.cacheVersion, d.hasLangs, d.concreteValues !== null]).toEqual(['20', true, true]);
+  expect(olderSummary.importer.cacheVersion).toBe('20');
+  expect(olderSummary.importer.cacheWarnings).toEqual([]);
+  for (const [f, x] of Object.entries(olderReport.facts)) expect([f, x.onlyA, x.onlyB]).toEqual([f, 0, 0]);
+  expect(olderReport.sets.identicalNumbering).toBe(true);
+  for (const [kind, x] of Object.entries(olderReport.sets.byKind)) expect([kind, x.differ, x.onlyA, x.onlyB]).toEqual([kind, 0, 0, 0]);
+});
+
+test('a cache format this importer does not know is refused', async () => {
+  const bad = path.join(dir, 'bad.cache');
+  fs.writeFileSync(bad, Buffer.concat([Buffer.from([6, 2]), Buffer.from('15'), Buffer.alloc(16)]));
+  await expect(readCache(bad)).rejects.toThrow(/format 15 is not one this importer reads/);
 });
 
 test('concepts, links, literals, designations, acceptability and identifiers are identical', () => {

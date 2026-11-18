@@ -290,7 +290,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     const svc = this._native();
     try {
       const exp = new E.SnomedExpressionParser().parse(code);
-      svc.checkExpression(exp);
+      await svc.checkExpression(exp); // async in main since 1.0.5 (the MRCM range check runs ECL)
       if (exp.isSimple() && !exp.concepts[0].literal) {
         // a single concept (with its term, say): the concept itself
         return super._locate(exp.concepts[0].code);
@@ -346,7 +346,7 @@ class SnomedV2Provider extends SqliteV2Provider {
         continue;
       }
       // any other filter: its focus concept is tested (as main does)
-      const node = this._compiler().filter(f.prop, f.op, f.value);
+      const node = await this._compiled(() => this._compiler().filter(f.prop, f.op, f.value));
       if (!this.engine.contains(node, ctxt.getReference(), this._trace)) return false;
     }
     return true;

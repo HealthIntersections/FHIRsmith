@@ -809,6 +809,21 @@ class SqliteV2Provider extends BaseCSServices {
 
   // ---- filters --------------------------------------------------------------------------------
 
+  /**
+   * fn() (a compile), again after evaluating what it needs evaluated first: ECL that only main's
+   * (async) evaluator answers (sct-main-ecl.js NeedsMainEcl)
+   */
+  async _compiled(fn) {
+    for (let tries = 0; ; tries++) {
+      try {
+        return fn();
+      } catch (e) {
+        if (!e || !e.needsMainEcl || tries >= 16) throw e;
+        await e.resolve();
+      }
+    }
+  }
+
   _compiler(stats) {
     const provider = this;
     let lang;
@@ -866,7 +881,7 @@ class SqliteV2Provider extends BaseCSServices {
 
   async doesFilter(prop, op, value) {
     try {
-      this._compiler().filter(prop, op, value);
+      await this._compiled(() => this._compiler().filter(prop, op, value));
       return true;
     } catch (e) {
       return false;
@@ -898,7 +913,7 @@ class SqliteV2Provider extends BaseCSServices {
   async filter(prep, forIteration, prop, op, value) {
     let node;
     try {
-      node = this._compiler().filter(prop, op, value);
+      node = await this._compiled(() => this._compiler().filter(prop, op, value));
     } catch (e) {
       throw this.filterError(e, prop, op, value);
     }
@@ -1137,7 +1152,7 @@ class SqliteV2Provider extends BaseCSServices {
     let sel;
     try {
       const compile = () => this._compiler(trace ? trace.stats : null).selection(includes, excludes, excludeInactive || (params && params.activeOnly));
-      sel = trace ? trace.span('compile compose', 'sql', this.system(), compile) : compile();
+      sel = await this._compiled(() => (trace ? trace.span('compile compose', 'sql', this.system(), compile) : compile()));
     } catch (e) {
       if (trace) trace.span('fallback: ' + e.message, 'set', this.system(), () => null);
       if (e.unsupported) return null;
