@@ -1,0 +1,440 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const Database = require('better-sqlite3');
+
+const ServerStats = require('../../stats');
+
+describe('server statistics', () => {
+  let dir;
+  let dbPath;
+  let log;
+  let running;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fhirsmith-stats-'));
+    dbPath = path.join(dir, 'stats.db');
+    log = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+    running = [];
+  });
+
+  afterEach(() => {
+    // every ServerStats holds an interval timer, so they all have to be closed
+    // or jest won't exit
+    for (const stats of running) {
+      stats.finishStats();
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function newStats(config) {
+    const stats = new ServerStats({ database: dbPath, ...config }, log);
+    running.push(stats);
+    return stats;
+  }
+
+  function readRows() {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      return db.prepare('SELECT * FROM request_counts ORDER BY id').all();
+    } finally {
+      db.close();
+    }
+  }
+
+  test('a late graph sample divides by the time that actually passed', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      stats.markStarted();
+      stats.countRequest('$expand', 10);
+      stats.countRequest('$expand', 30);
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, rpm:60, tat:20 });
+      for (let i = 0; i < 4; i++) stats.countRequest('$lookup', 10);
+      now += 4000; // the next nominal two-second sample is delayed by a stall
+      stats.recordMetrics();
+      // 4 requests in 4 s, not in the nominal 2 s (which would show 120)
+      expect(stats.history.at(-1)).toMatchObject({ time:now, rpm:60, tat:10 });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('graph samples record their interval and keep refusals out of work and latency counts', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      // under the launcher (with no launcher, the samples are main's: no interval or refusals)
+      const sent = [];
+      stats.onMetric = point => sent.push(point);
+      stats.markStarted();
+      stats.countRequest('$expand', 10);
+      stats.countRequest('$expand', 30);
+      for (let i = 0; i < 3; i++) stats.countRefusedRequest();
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 2000, refused:3, rpm:60, tat:20 });
+      for (let i = 0; i < 4; i++) stats.countRequest('$lookup', 10);
+      now += 4000; // The next nominal two-second sample is delayed by a stall.
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ time:now, intervalStart:now - 4000, refused:0, tat:10 });
+      expect(stats.requestCount).toBe(6);
+      expect(stats.refusedCount).toBe(3);
+      expect(sent).toHaveLength(3);
+      stats.onMetric = null;
+      now += 2000;
+      stats.recordMetrics();
+      // without the launcher: no refusals counted, but where the interval began and the private memory
+      expect(Object.keys(stats.history.at(-1)).sort()).toEqual(['anon', 'block', 'blockMax', 'clientConcepts', 'ext', 'extTat', 'intervalStart', 'mem', 'rpm', 'tat', 'time']);
+      if (process.platform === 'linux') {
+        expect(stats.history.at(-1).anon).toBeGreaterThan(0);
+      }
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('external requests are sampled separately, and kept out of the turnaround time', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ enabled:false, intervalMinutes:2 / 60 });
+      stats.markStarted();
+      const tx = stats.forModule('tx');
+      tx.countRequest('$validate-code', 10, '/r5');
+      tx.countRequest('$validate-code', 30, '/r5');
+      tx.countExternalRequest('$validate-code', 4000, '/r5');
+      tx.countExternalRequest('$validate-code', 6000, '/r5');
+      now += 2000;
+      stats.recordMetrics();
+      // in the request rate, but not the turnaround time
+      expect(stats.history.at(-1)).toMatchObject({ rpm:120, tat:20, ext:2, extTat:5000 });
+      expect(stats.requestCount).toBe(4);
+      // and counted under their own operation
+      expect(stats.counterFor('tx', '/r5', '$validate-code')).toMatchObject({ countTotal:2, timeTotal:40 });
+      expect(stats.counterFor('tx', '/r5', '$validate-code (external)')).toMatchObject({ countTotal:2, timeTotal:10000 });
+      // none in the next interval: no turnaround
+      tx.countRequest('$lookup', 8, '/r5');
+      now += 2000;
+      stats.recordMetrics();
+      expect(stats.history.at(-1)).toMatchObject({ tat:8, ext:0, extTat:null });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('graphs sample every sampleSeconds, the counters are written every intervalMinutes; under the launcher each sample has the private memory', () => {
+    let now = 1800000000000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const stats = newStats({ intervalMinutes:10, sampleSeconds:60 });
+      expect([stats.intervalMs, stats.flushMs]).toEqual([60000, 600000]);
+      const sent = [];
+      stats.onMetric = point => sent.push(point);
+      const writes = jest.spyOn(stats, 'flushCounters');
+      stats.markStarted(); // a sample at once
+      for (let i = 0; i < 25; i++) {
+        stats.countRequest('$expand', 10);
+        now += 60000;
+        stats.recordMetrics();
+      }
+      expect(stats.history).toHaveLength(26);
+      // at the first sample, then every ten minutes
+      expect(writes.mock.calls.map(c => (c[0] - 1800000000000) / 60000)).toEqual([0, 10, 20]);
+      expect(writes.mock.calls.every(c => c[1] === 600000)).toBe(true);
+      expect(readRows().reduce((a, r) => a + r.count_delta, 0)).toBe(20);
+      if (process.platform === 'linux') {
+        expect(sent.every(p => p.anon > 0)).toBe(true);
+      }
+      // no sampleSeconds: one interval for both, as before
+      const plain = newStats({ intervalMinutes:5, enabled:false });
+      expect([plain.intervalMs, plain.flushMs]).toEqual([300000, 300000]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('counts are attributed by module, endpoint and operation', () => {
+    const stats = newStats();
+    const tx = stats.forModule('tx');
+    const token = stats.forModule('token');
+
+    for (let i = 0; i < 5; i++) {
+      tx.countRequest('$expand', 10, '/tx/r4');
+    }
+    tx.countRequest('$expand', 30, '/tx/r5');
+    tx.countRequest('$validate', 7, '/tx/r4');
+    token.countRequest('login', 3);
+    stats.countRequest('dashboard', 1);
+
+    expect(stats.flushCounters(1000, 600000)).toBe(5);
+    const rows = readRows();
+
+    const r4expand = rows.find(r => r.endpoint === '/tx/r4' && r.operation === '$expand');
+    expect(r4expand.module).toBe('tx');
+    expect(r4expand.count_delta).toBe(5);
+    expect(r4expand.time_delta).toBe(50);
+    expect(rows.find(r => r.endpoint === '/tx/r5' && r.operation === '$expand').count_delta).toBe(1);
+    expect(rows.find(r => r.operation === '$validate').endpoint).toBe('/tx/r4');
+
+    // modules with a single endpoint don't carry one
+    expect(rows.find(r => r.module === 'token').endpoint).toBe('');
+    // and anything counted on the server itself is attributed to the server
+    expect(rows.find(r => r.operation === 'dashboard').module).toBe('(server)');
+
+    // the server-wide counters still see every request
+    expect(stats.requestCount).toBe(9);
+    expect(rows.every(r => r.interval_ms === 600000)).toBe(true);
+  });
+
+  test('a worker\'s counts, merged on the master, are in its database and its daily report, once each', () => {
+    // a tx-worker: no database (library/role.js turns it off)
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    const workerTx = worker.forModule('tx');
+    for (let i = 0; i < 4; i++) {
+      workerTx.countRequest('$expand', 10, '/r4');
+    }
+    workerTx.countRequest('$lookup', 2, '/r4');
+
+    const master = newStats();
+    const masterTx = master.forModule('tx');
+    masterTx.countRequest('$expand', 5, '/r4');
+
+    const sent = worker.takeCounts();
+    expect(sent).toEqual(expect.arrayContaining([
+      { module: 'tx', endpoint: '/r4', operation: '$expand', count: 4, time: 40 },
+      { module: 'tx', endpoint: '/r4', operation: '$lookup', count: 1, time: 2 }
+    ]));
+    // taken: nothing is sent twice
+    expect(worker.takeCounts()).toEqual([]);
+    expect(master.mergeCounts(sent)).toBe(5);
+    // malformed rows are ignored
+    expect(master.mergeCounts([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: -1, time: 0 }, null, 'x'])).toBe(0);
+
+    // before any flush: the daily report's numbers already include the worker
+    const now = Date.now();
+    expect(masterTx.countsSince(0, now)).toMatchObject({ total: 6, operations: { '$expand': 5, '$lookup': 1 } });
+    // the master's own figures for its graphs are unchanged; the page's total adds the worker's
+    expect(master.requestCount).toBe(1);
+    expect(master.mergedRequestCount).toBe(5);
+
+    // written out with the master's next interval
+    expect(master.flushCounters(now, 600000)).toBe(2);
+    const rows = readRows();
+    expect(rows.find(r => r.operation === '$expand')).toMatchObject({ module: 'tx', count_delta: 5, time_delta: 45 });
+    expect(rows.find(r => r.operation === '$lookup')).toMatchObject({ module: 'tx', count_delta: 1 });
+    expect(masterTx.countsSince(0, now + 1)).toMatchObject({ total: 6, persisted: true });
+
+    // the tx module's paragraph of the daily report
+    const TXModule = require('../../tx/tx');
+    const paragraph = TXModule.prototype.dailyReport.call({ stats: masterTx }, { since: 0, now: now + 1 });
+    expect(paragraph).toContain('$expand 5');
+    expect(paragraph).toContain('$lookup 1');
+  });
+
+  test('counts a worker could not send are sent with the next lot', () => {
+    const worker = new ServerStats({ enabled: false }, log);
+    running.push(worker);
+    worker.forModule('tx').countRequest('$expand', 10, '/r4');
+    const lot = worker.takeCounts();
+    worker.forModule('tx').countRequest('$expand', 5, '/r4');
+    worker.restoreCounts(lot);
+    expect(worker.takeCounts()).toEqual([{ module: 'tx', endpoint: '/r4', operation: '$expand', count: 2, time: 15 }]);
+  });
+
+  test('only keys with traffic in the interval are written', () => {
+    const stats = newStats();
+    const tx = stats.forModule('tx');
+    tx.countRequest('$expand', 10, '/tx/r4');
+    tx.countRequest('$lookup', 2, '/tx/r4');
+    expect(stats.flushCounters(1000, 600000)).toBe(2);
+
+    tx.countRequest('$expand', 4, '/tx/r4');
+    expect(stats.flushCounters(2000, 600000)).toBe(1);
+    expect(stats.flushCounters(3000, 600000)).toBe(0);
+
+    expect(readRows().length).toBe(3);
+  });
+
+  test('totals survive a restart, deltas do not', () => {
+    const first = newStats();
+    first.forModule('tx').countRequest('$expand', 10, '/tx/r4');
+    first.flushCounters(1000, 600000);
+    first.finishStats();
+
+    const second = newStats();
+    second.forModule('tx').countRequest('$expand', 5, '/tx/r4');
+    second.flushCounters(2000, 600000);
+
+    const last = readRows().pop();
+    expect(last.count_delta).toBe(1);
+    expect(last.count_total).toBe(2);
+    expect(last.time_delta).toBe(5);
+    expect(last.time_total).toBe(15);
+  });
+
+  test('the last partial interval is written on shutdown', () => {
+    const stats = newStats();
+    stats.markStarted();
+    stats.forModule('tx').countRequest('$expand', 10, '/tx/r4');
+    stats.finishStats();
+
+    const rows = readRows().filter(r => r.operation === '$expand');
+    expect(rows.length).toBe(1);
+    expect(rows[0].count_total).toBe(1);
+  });
+
+  function readRuns() {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      return db.prepare('SELECT * FROM server_runs ORDER BY id').all();
+    } finally {
+      db.close();
+    }
+  }
+
+  // a run that started at `started` and was last seen alive at `lastSeen`,
+  // as a previous process would have left it
+  function priorRun(started, lastSeen) {
+    const db = new Database(dbPath);
+    try {
+      db.prepare('INSERT INTO server_runs (started, last_seen) VALUES (?, ?)').run(started, lastSeen);
+    } finally {
+      db.close();
+    }
+  }
+
+  test('each run is recorded, and kept alive by the heartbeat', () => {
+    const stats = newStats();
+    stats.markStarted();
+    let runs = readRuns();
+    expect(runs.length).toBe(1);
+    expect(runs[0].started).toBe(stats.startTime);
+    expect(runs[0].last_seen).toBe(stats.startTime);
+
+    stats.touchRun();
+    runs = readRuns();
+    expect(runs[0].last_seen).toBeGreaterThanOrEqual(stats.startTime);
+
+    // the shutdown is a final heartbeat
+    stats.finishStats();
+    const finished = readRuns()[0].last_seen;
+    expect(finished).toBeGreaterThanOrEqual(runs[0].last_seen);
+    expect(readRuns().length).toBe(1);
+  });
+
+  test('overall uptime is the time known running over the time since the first run', () => {
+    const hour = 60 * 60 * 1000;
+    // two earlier runs: the first ran for 8 hours, then a gap, then 1 hour
+    newStats(); // creates the schema
+    priorRun(1000, 1000 + 8 * hour);
+    priorRun(1000 + 10 * hour, 1000 + 11 * hour);
+
+    const stats = newStats();
+    stats.markStarted();
+    stats.startTime = 1000 + 12 * hour;
+
+    const now = 1000 + 14 * hour;
+    const uptime = stats.overallUptime(now);
+    // 8 + 1 + 2 hours running, out of 14
+    expect(uptime.since).toBe(1000);
+    expect(uptime.percent).toBeCloseTo((11 / 14) * 100, 6);
+
+    // the first run ever has nothing before it, so it's 100% up
+    const fresh = newStats({ database: path.join(dir, 'fresh.db') });
+    fresh.markStarted();
+    expect(fresh.overallUptime(fresh.startTime + hour).percent).toBe(100);
+  });
+
+  test('overall uptime is not available without the database', () => {
+    const stats = newStats({ enabled: false });
+    stats.markStarted();
+    expect(stats.runId).toBeNull();
+    expect(stats.overallUptime()).toBeNull();
+    expect(stats.heartbeat).toBeNull();
+  });
+
+  test('failedTasks lists the background tasks whose last run failed', () => {
+    const stats = newStats();
+    stats.addTask('crawl', '1 hr');
+    stats.addTask('audit', '24 hr');
+    stats.addTask('cleanup', '1 hr');
+    stats.taskDone('crawl', 'ok');
+    stats.taskError('audit', 'registry unreachable');
+    expect(stats.failedTasks().map(t => t.name)).toEqual(['audit']);
+    expect(stats.failedTasks()[0].state).toBe('registry unreachable');
+    expect(stats.failedTasks()[0].date).toBeGreaterThan(0);
+    stats.taskDone('audit', 'ok');
+    expect(stats.failedTasks()).toEqual([]);
+  });
+
+  test('taskSummary: the tasks at work in full, the names of those that failed and of the rest', () => {
+    const stats = newStats();
+    stats.addTask('crawl', '1 hr');
+    stats.addTask('audit', '24 hr');
+    stats.addTask('cleanup', '1 hr');
+    stats.addTask('sync', '6 hours');
+    stats.taskDone('crawl', 'ok');
+    stats.taskError('audit', 'registry unreachable');
+    stats.task('sync', 'Sync: 10 of 20');
+    const summary = stats.taskSummary();
+    expect(summary.working.map(t => [t.name, t.state, t.frequency])).toEqual([['sync', 'Sync: 10 of 20', '6 hours']]);
+    expect(summary.working[0].ago.length).toBeGreaterThan(0);
+    expect(summary.failed).toEqual(['audit']);
+    // resting, and not run yet
+    expect(summary.idle).toEqual(['crawl', 'cleanup']);
+  });
+
+  test('statistics never take the server down', () => {
+    // a database that cannot be opened is logged and then ignored. A plain
+    // file where a directory should be is a portable way to make that happen
+    const blocker = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(blocker, 'x');
+    const stats = newStats({ database: path.join(blocker, 'stats.db') });
+    stats.forModule('tx').countRequest('$expand', 10, '/tx/r4');
+
+    expect(stats.db).toBeNull();
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Unable to open the statistics database'));
+    expect(stats.requestCount).toBe(1);
+    expect(stats.flushCounters(1000, 600000)).toBe(0);
+  });
+
+  test('statistics can be turned off', () => {
+    const stats = newStats({ enabled: false });
+    stats.forModule('tx').countRequest('$expand', 10, '/tx/r4');
+
+    expect(stats.db).toBeNull();
+    expect(fs.existsSync(dbPath)).toBe(false);
+    // still counted in memory, for the status page
+    expect(stats.requestCount).toBe(1);
+    expect(stats.counterFor('tx', '/tx/r4', '$expand').countTotal).toBe(1);
+  });
+
+  test('a module view cannot be told apart from the stats themselves', () => {
+    const stats = newStats();
+    const tx = stats.forModule('tx');
+
+    tx.addTask('Client Cache', '5 min');
+    tx.task('Client Cache', 'working');
+    expect(stats.taskDetails()).toContain('Client Cache');
+
+    const cachingModule = { expansionItemCount: () => 3 };
+    tx.cachingModules.push(cachingModule);
+    expect(stats.expansionItems()).toBe(3);
+  });
+
+  test('closureStats comes from the module that keeps closure tables, or is null', () => {
+    const stats = newStats();
+    expect(stats.closureStats()).toBeNull();
+    stats.cachingModules.push({ closureStats: () => null }); // closure turned off
+    expect(stats.closureStats()).toBeNull();
+    const figures = { tables: 2, concepts: 5, entries: 4, bytes: 4096, retentionDays: null };
+    stats.cachingModules.push({ closureStats: () => figures });
+    expect(stats.closureStats()).toBe(figures);
+  });
+});

@@ -39,7 +39,7 @@ class I18nSupport {
       for (const file of messageFiles) {
         // Extract language code from filename: Messages_fr_FR.properties -> fr-FR
         const langCode = file
-          .substring(name+'_'.length, file.length - '.properties'.length)
+          .substring((name + '_').length, file.length - '.properties'.length)
           .replace(/_/g, '-');
 
         await this._loadBundle(bundles, langCode, file);
@@ -254,6 +254,28 @@ class I18nSupport {
   }
 }
 
+let english = null;
+
+/**
+ * A message from translations/Messages.properties, in English, with its parameters, as
+ * I18nSupport.translate gives it: for code with no request languages to hand (the shared
+ * cache store's lazy reads, the launcher). The message id goes with it, so a client (or a
+ * caller that has the languages: msgParams) can render it in another language.
+ * @param {string} messageId
+ * @param {Array} [parameters]
+ */
+function englishMessage(messageId, parameters = []) {
+  if (!english) {
+    english = getProperties(fs.readFileSync(path.join(__dirname, '..', 'translations', 'Messages.properties'), 'utf8'));
+  }
+  const message = english[messageId];
+  if (!message) {
+    return messageId;
+  }
+  return I18nSupport.prototype._substituteParameters(message.trim(), parameters).replaceAll("''", "'");
+}
+
 module.exports = {
-  I18nSupport
+  I18nSupport,
+  englishMessage
 };

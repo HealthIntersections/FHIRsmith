@@ -21,9 +21,7 @@ describe('PackageConceptMapProvider', () => {
 
     try {
       // Fetch the test package
-      console.log(`Fetching package ${packageId}#${packageVersion}...`);
       packagePath = await packageManager.fetch(packageId, packageVersion);
-      console.log(`Package extracted to: ${packagePath}`);
 
       // Create provider
       const fullPackagePath = path.join(packageCacheDir, packagePath);
@@ -32,7 +30,6 @@ describe('PackageConceptMapProvider', () => {
 
       // Initialize provider (this creates the database if needed)
       await provider.initialize();
-      console.log('Provider initialized successfully');
 
     } catch (error) {
       console.error('Failed to setup test package:', error);
@@ -59,14 +56,11 @@ describe('PackageConceptMapProvider', () => {
       expect(stats).toHaveProperty('totalSystems');
       expect(typeof stats.totalConceptMaps).toBe('number');
       expect(stats.totalConceptMaps).toBeGreaterThan(0);
-
-      console.log('Package statistics:', stats);
     });
 
     test('should have conceptmaps loaded in map', () => {
       const mapSize = provider.getMapSize();
       expect(mapSize).toBeGreaterThan(0);
-      console.log(`ConceptMaps loaded in map: ${mapSize}`);
     });
   });
 
@@ -138,8 +132,6 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.status).toBe('active');
       }
-
-      console.log(`Found ${results.length} active ConceptMaps`);
     });
 
     test('should search by publisher', async () => {
@@ -154,8 +146,6 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} ConceptMaps with HL7 publisher`);
     });
 
     test('should search by name pattern', async () => {
@@ -170,8 +160,27 @@ describe('PackageConceptMapProvider', () => {
       for (const vs of results) {
         expect(vs.name).toContain('Bfs');
       }
+    });
 
-      console.log(`Found ${results.length} ConceptMaps with 'CDS' in name`);
+    test('url is a left match: the url starts with it', async () => {
+      const prefix = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-';
+      const results = await provider.searchConceptMaps([{ name: 'url', value: prefix }]);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.url === 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir')).toBe(true);
+      for (const r of results) {
+        expect(r.url.startsWith(prefix)).toBe(true);
+      }
+      // not anywhere in the url
+      expect((await provider.searchConceptMaps([{ name: 'url', value: 'ConceptMap/bfs-encounter-class-to-fhir' }])).length).toBe(0);
+    });
+
+    test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {
+      const url = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir';
+      for (const value of ['ConceptMap/bfs-encounter-class-to-fhir', 'BFS-ENCOUNTER', url]) {
+        const results = await provider.searchConceptMaps([{ name: 'url:contains', value }]);
+        expect(results.some(r => r.url === url)).toBe(true);
+      }
+      expect((await provider.searchConceptMaps([{ name: 'url:contains', value: 'no-such-concept-map-anywhere' }])).length).toBe(0);
     });
 
     test('should search by url', async () => {
@@ -200,8 +209,6 @@ describe('PackageConceptMapProvider', () => {
         expect(vs.status).toBe('active');
         expect(vs.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} active HL7 ConceptMaps`);
     });
 
     test('should search by system in group', async () => {
@@ -211,8 +218,6 @@ describe('PackageConceptMapProvider', () => {
 
       expect(Array.isArray(results)).toBe(true);
       expect(results.length).toBeGreaterThan(0);
-
-      console.log(`Found ${results.length} ConceptMaps using the specified system`);
     });
 
     test('should handle empty search criteria', async () => {
@@ -257,6 +262,114 @@ describe('PackageConceptMapProvider', () => {
       expect(mapSize).toBeGreaterThan(0);
       expect(stats.totalConceptMaps).toBeGreaterThan(0);
       expect(mapSize).toBeGreaterThanOrEqual(stats.totalConceptMaps);
+    });
+  });
+
+  describe('id space', () => {
+    let spaced;
+
+    beforeAll(async () => {
+      // a provider of its own, so the other tests see the concept maps as they are loaded
+      spaced = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await spaced.initialize();
+      spaced.assignIds('ch');
+    });
+
+    test('concept maps carry their prefixed id, and are fetched by it', async () => {
+      const cm = [...spaced.conceptMapMap.values()][0];
+      expect(cm.id.startsWith('ch-')).toBe(true);
+      expect(cm.jsonObj.id).toBe(cm.id);
+      expect(await spaced.fetchConceptMapById(cm.id)).toBe(cm);
+    });
+
+    test('a concept map is not found by its unprefixed id', async () => {
+      const cm = [...spaced.conceptMapMap.values()][0];
+      expect(await spaced.fetchConceptMapById(cm.id.substring('ch-'.length))).toBeNull();
+    });
+
+    test('search returns prefixed ids', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await spaced.searchConceptMaps([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        for (const r of results) {
+          expect(r.id.startsWith('ch-')).toBe(true);
+          expect(r.id.startsWith('ch-ch-')).toBe(false);
+        }
+      }
+    });
+  });
+
+  describe('keepPinnedOnly', () => {
+    let reduced;
+    let gone;
+
+    beforeAll(async () => {
+      reduced = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await reduced.initialize();
+      reduced.assignIds('core');
+      gone = [...reduced.conceptMapMap.values()][0];
+      reduced.keepPinnedOnly(new Map([[gone.url, new Set(['999.0.0'])]]));
+    });
+
+    test('a restricted concept map is still fetched by its own version, where THO does not have that version', async () => {
+      expect(gone.version).toBeTruthy();
+      expect(await reduced.fetchConceptMap(gone.url, gone.version)).toBe(gone);
+    });
+
+    test('a restricted concept map is not fetched by a version that THO has', async () => {
+      const thoToo = new PackageConceptMapProvider(reduced.packageLoader);
+      await thoToo.initialize();
+      thoToo.assignIds('core');
+      const cm = [...thoToo.conceptMapMap.values()].find(r => r.url === gone.url);
+      thoToo.keepPinnedOnly(new Map([[cm.url, new Set([cm.version])]]));
+      expect(await thoToo.fetchConceptMap(cm.url, cm.version)).toBeNull();
+      expect(await thoToo.fetchConceptMap(cm.url, null)).toBeNull();
+    });
+
+    test('a restricted concept map is not fetched without a version, or by id', async () => {
+      expect(await reduced.fetchConceptMap(gone.url, null)).toBeNull();
+      expect(await reduced.fetchConceptMapById(gone.id)).toBeNull();
+    });
+
+    test('a restricted concept map is not found by search', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await reduced.searchConceptMaps([], elements);
+        expect(results.some(r => r.id === gone.id)).toBe(false);
+      }
+    });
+
+    test('the package says where it came from', () => {
+      expect(reduced.sourcePackage()).toBe('ch.fhir.ig.ch-core');
+    });
+  });
+
+  describe('incomplete cache', () => {
+    // a cache whose population was cut short (process killed part way through) has no
+    // complete marker, and must be rebuilt rather than trusted with what it holds
+    const sqlite3 = require('sqlite3');
+    const exec = (dbPath, sql) => new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, (err) => {
+        if (err) { reject(err); return; }
+        db.exec(sql, (err) => db.close(() => err ? reject(err) : resolve()));
+      });
+    });
+
+    test('a finished cache is marked complete', async () => {
+      expect(await provider.database.isComplete()).toBe(true);
+    });
+
+    test('a cache without the complete marker is rebuilt', async () => {
+      const fullSize = provider.getMapSize();
+      const dbPath = provider.dbPath;
+      await provider.close?.();
+      // simulate a truncated population: half the rows written, no marker
+      await exec(dbPath, `DELETE FROM conceptmaps WHERE rowid % 2 = 0; DELETE FROM cache_status WHERE key = 'cache-complete';`);
+
+      const again = new PackageConceptMapProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await again.initialize();
+      expect(again.getMapSize()).toBe(fullSize);
+      expect(await again.database.isComplete()).toBe(true);
+      await again.close?.();
     });
   });
 });

@@ -1,4 +1,5 @@
 const {VersionUtilities} = require("../../library/version-utilities");
+const { mapShared, designationsFromR5, convertOnce, CS_ADDITIONAL_USE_EXT } = require("./xv-shared");
 
 /**
  * Converts input CodeSystem to R5 format (modifies input object for performance)
@@ -30,7 +31,7 @@ function codeSystemToR5(jsonObj, version) {
 }
 
 /**
- * Converts R5 CodeSystem to target version format (clones object first)
+ * Converts R5 CodeSystem to target version format (without changing the original: see xv-shared.js)
  * @param {Object} r5Obj - The R5 format CodeSystem object
  * @param {string} targetVersion - Target FHIR version
  * @returns {Object} New object in target version format
@@ -40,17 +41,62 @@ function codeSystemFromR5(r5Obj, targetVersion) {
   if (VersionUtilities.isR5Ver(targetVersion)) {
     return r5Obj; // No conversion needed
   }
-
-  // Clone the object to avoid modifying the original
-  const cloned = JSON.parse(JSON.stringify(r5Obj));
-
-  if (VersionUtilities.isR4Ver(targetVersion)) {
-    return codeSystemR5ToR4(cloned);
-  } else if (VersionUtilities.isR3Ver(targetVersion)) {
-    return codeSystemR5ToR3(cloned);
+  const r3 = VersionUtilities.isR3Ver(targetVersion);
+  if (!r3 && !VersionUtilities.isR4Ver(targetVersion)) {
+    throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
   }
 
-  throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
+  // Copy on write (see xv-shared.js): the top level and the filters are copied, because the
+  // conversions below change them; the concepts are copied only where one changes, so a
+  // large code system with nothing to convert in its concepts shares them all
+  const cloned = { ...r5Obj };
+  if (Array.isArray(r5Obj.filter)) {
+    cloned.filter = r5Obj.filter.map(f => (Array.isArray(f.operator) ? { ...f, operator: [...f.operator] } : { ...f }));
+  }
+  if (Array.isArray(r5Obj.concept)) {
+    cloned.concept = convertOnce(r5Obj.concept, r3 ? 'cs-r3' : 'cs-r4', concepts => mapShared(concepts, c => conceptFromR5(c, r3)));
+  }
+  if (r3 && Array.isArray(r5Obj.property)) {
+    // R3 has no decimal properties
+    const kept = r5Obj.property.filter(p => p.type !== 'decimal');
+    if (kept.length !== r5Obj.property.length) {
+      cloned.property = kept;
+    }
+  }
+
+  return r3 ? codeSystemR5ToR3(cloned) : codeSystemR5ToR4(cloned);
+}
+
+/**
+ * A concept, and those under it, for R4 or R3: designation.additionalUse into its extension,
+ * and for R3, decimal property values dropped (R3 has no decimal properties). The same concept
+ * if nothing in it changes.
+ * @private
+ */
+function conceptFromR5(concept, r3) {
+  const children = Array.isArray(concept.concept) ? mapShared(concept.concept, c => conceptFromR5(c, r3)) : concept.concept;
+  const designation = designationsFromR5(concept.designation, CS_ADDITIONAL_USE_EXT);
+  let property = concept.property;
+  if (r3 && Array.isArray(property)) {
+    const kept = property.filter(p => p.valueDecimal === undefined);
+    if (kept.length !== property.length) {
+      property = kept;
+    }
+  }
+  if (children === concept.concept && designation === concept.designation && property === concept.property) {
+    return concept;
+  }
+  const copy = { ...concept };
+  if (children !== concept.concept) {
+    copy.concept = children;
+  }
+  if (designation !== concept.designation) {
+    copy.designation = designation;
+  }
+  if (property !== concept.property) {
+    copy.property = property;
+  }
+  return copy;
 }
 
 /**

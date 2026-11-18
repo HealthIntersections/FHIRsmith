@@ -1,0 +1,43 @@
+name: GHCR Cleanup
+
+# Manual pruning of old CI container images. The same script runs automatically
+# after each main build (see docker.yml); this is the handle for the one-off
+# backfill of everything published before that job existed, and for any later
+# tidy-up. Run it with dry_run left on first and read the log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: 'How many cibuild-* versions to keep'
+        required: true
+        default: '10'
+      dry_run:
+        description: 'Report what would be deleted without deleting it'
+        type: boolean
+        required: true
+        default: true
+      prefix:
+        description: 'Tag prefix identifying the images to prune'
+        required: true
+        default: 'cibuild-'
+
+jobs:
+  cleanup:
+    name: Prune CI Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune
+        run: python3 .github/scripts/prune-ci-images.py
+        env:
+          # GITHUB_TOKEN works while the package is scoped to this repository.
+          # If it is refused, add a PAT with delete:packages as GHCR_CLEANUP_TOKEN.
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
+          KEEP: ${{ inputs.keep }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PREFIX: ${{ inputs.prefix }}

@@ -1,0 +1,3 @@
+"LOINC_NUM","LOINC_LONG_COMMON_NAME","IEEE_CF_CODE10","IEEE_REFID","EQUIVALENCE"
+"6298-4","Potassium [Moles/volume] in Blood","160016","MDC_CONC_K_GEN","broader"
+"75940-7","Potassium [Mass/volume] in Blood","160016","MDC_CONC_K_GEN","broader"

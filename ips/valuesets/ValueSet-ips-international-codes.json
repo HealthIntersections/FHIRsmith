@@ -1,0 +1,25 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-international-codes",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-international-codes",
+  "name": "IpsInternationalCodes",
+  "title": "International codes (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "The fallback for any element: any SNOMED CT International or LOINC code, or an IPS absent/unknown code. Codes in HL7 terminologies are accepted by the check itself, not by this value set.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008"
+      },
+      {
+        "system": "http://loinc.org"
+      },
+      {
+        "system": "http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips"
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "resourceType": "ValueSet",
+  "id": "syndication-test-unversioned",
+  "url": "http://example.org/fhir/ValueSet/syndication-test-unversioned",
+  "name": "SyndicationTestUnversioned",
+  "status": "active",
+  "compose": {
+    "include": [ { "system": "http://example.org/fhir/CodeSystem/syndication-test" } ]
+  }
+}

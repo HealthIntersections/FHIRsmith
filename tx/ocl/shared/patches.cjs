@@ -254,9 +254,56 @@ function patchValueSetExpandWholeSystemForOcl() {
 }
 
 
+const OCL_PROVIDER_FACTORY_SYNC_PATCH_FLAG = Symbol.for('fhirsmith.ocl.provider.factory-sync.patch');
+
+function patchProviderForOCLFactorySync(getFactoriesByKey) {
+  let ProviderModule;
+  try {
+    ProviderModule = require('../../provider');
+  } catch (_error) {
+    return;
+  }
+
+  const Provider = ProviderModule?.Provider;
+  const proto = Provider?.prototype;
+  if (!proto || proto[OCL_PROVIDER_FACTORY_SYNC_PATCH_FLAG] === true) {
+    return;
+  }
+  if (typeof proto.updateCodeSystemList !== 'function') {
+    return;
+  }
+
+  const originalUpdateCodeSystemList = proto.updateCodeSystemList;
+  proto.updateCodeSystemList = async function patchedUpdateCodeSystemList() {
+    await originalUpdateCodeSystemList.call(this);
+    const factoriesByKey = getFactoriesByKey();
+    for (const factory of factoriesByKey.values()) {
+      if (!factory) continue;
+      const system = typeof factory.system === 'function' ? factory.system() : null;
+      if (!system) continue;
+      const ver = typeof factory.version === 'function' ? (factory.version() ?? '') : '';
+      const vurl = `${system}|${ver}`;
+      if (!this.codeSystemFactories.has(vurl)) {
+        if (!this.codeSystemFactories.has(system)) {
+          this.codeSystemFactories.set(system, factory);
+        }
+        this.codeSystemFactories.set(vurl, factory);
+      }
+    }
+  };
+
+  Object.defineProperty(proto, OCL_PROVIDER_FACTORY_SYNC_PATCH_FLAG, {
+    value: true,
+    writable: false,
+    configurable: false,
+    enumerable: false
+  });
+}
+
 module.exports = {
   patchSearchWorkerForOCLCodeFiltering,
   ensureTxParametersHashIncludesFilter,
   patchValueSetExpandWholeSystemForOcl,
-  normalizeFilterForCacheKey
+  normalizeFilterForCacheKey,
+  patchProviderForOCLFactorySync
 };

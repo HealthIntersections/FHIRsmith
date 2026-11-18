@@ -1,4 +1,5 @@
 const { AbstractCodeSystemProvider } = require('./cs-provider-api');
+const { applyIdPrefix } = require('../library/resource-ids');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -11,18 +12,18 @@ class ListCodeSystemProvider extends AbstractCodeSystemProvider {
   codeSystems = [];
 
   /**
-   * ensure that the ids on the code systems are unique, if they are
-   * in the global namespace
-   *
-   * @param {Set<String>} ids
+   * prefix the ids of the code systems with this provider's spaceId. A code system without
+   * an id gets its position in the list
    */
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
+  prefixIds() {
+    let i = 0;
     for (const cs of this.codeSystems) {
-      if (!cs.id || ids.has("CodeSystem/"+cs.id)) {
-        cs.id = ""+ids.size;
+      i++;
+      const json = cs.jsonObj || cs;
+      if (!json.id) {
+        json.id = String(i);
       }
-      ids.add("CodeSystem/"+cs.id);
+      applyIdPrefix(cs, this.spaceId);
     }
   }
 

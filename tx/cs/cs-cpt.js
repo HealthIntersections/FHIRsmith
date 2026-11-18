@@ -4,6 +4,8 @@ const { CodeSystem } = require('../library/codesystem');
 const { FilterExecutionContext, CodeSystemFactoryProvider } = require('./cs-api');
 const {validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
+const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class CPTConceptDesignation {
   constructor(kind, value) {
@@ -123,10 +125,7 @@ class CPTServices extends BaseCSServices {
   }
 
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // Metadata methods
@@ -228,6 +227,15 @@ class CPTServices extends BaseCSServices {
   isNotClosed() {
     return true;
   }
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup). Not the
+   * copyright, which extendLookup always adds: it is about the code system, not the concept
+   */
+  async properties(context, names) {
+    return (await this._propertiesFromLookup(context, names)).filter(p => p.code !== 'copyright');
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
@@ -514,7 +522,8 @@ class CPTServices extends BaseCSServices {
     } else if (prop === 'kind' && op === '=') {
       list = this.conceptList.filter(concept => concept.hasProperty('kind', value));
     } else {
-      throw new Error(`The filter "${prop} ${op} ${value}" is not supported for CPT`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const filter = new CPTFilterContext(`${prop}:${value}`, list, closed);
@@ -571,11 +580,26 @@ class CPTServices extends BaseCSServices {
 
 
 
-  // Subsumption testing - not implemented
+  // Subsumption: CPT codes have no subsumption relationships, so two codes that both exist are
+  // not-subsumed (the caller deals with equal codes: equivalent)
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
     await this.#ensureContext(codeB);
     return 'not-subsumed';
+  }
+
+  /**
+   * For $closure (see CodeSystemProvider.ancestorsOf): CPT has no hierarchy here -
+   * subsumesTest answers not-subsumed for any two known codes - so a known code sits under
+   * nothing. One locate per concept instead of two per pair; an unknown code gets null, and
+   * $closure then reports it through subsumesTest as before.
+   *
+   * @param {string|Object} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    return ctxt ? new Set() : null;
   }
 
 
@@ -585,9 +609,14 @@ class CPTServices extends BaseCSServices {
 }
 
 class CPTServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the file is
+   *   the master's; this process opens it read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -613,8 +642,12 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  #open() {
+    return this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+  }
+
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     try {
       this._sharedData = {
@@ -645,7 +678,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
 
   async #loadVersion(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Information', (err, rows) => {
+      db.all('SELECT * FROM Information', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -656,13 +689,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadConcepts(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Concepts', (err, rows) => {
+      db.all('SELECT * FROM Concepts', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -680,13 +713,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadProperties(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Properties', (err, rows) => {
+      db.all('SELECT * FROM Properties', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -698,13 +731,13 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadDesignations(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Designations', (err, rows) => {
+      db.all('SELECT * FROM Designations', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -716,7 +749,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -729,7 +762,7 @@ class CPTServicesFactory extends CodeSystemFactoryProvider {
     this.recordUse();
 
     // Create fresh database connection for this provider instance
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     return new CPTServices(opContext, supplements, db, this._sharedData);
   }

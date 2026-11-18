@@ -1,24 +1,24 @@
-<h2>Expand ValueSet</h2>
+<h3>Expand ValueSet</h3>
 <form method="get" action="ValueSet/$expand" style="margin-left: 10px; margin-top: 5px;">
   <table class="grid" cellpadding="0" cellspacing="0">
     <tr>
       <td style="position: relative;">
-        URL: <input type="text" name="url" id="vsUrlInput" size="40" autocomplete="off"/><span style="color: maroon">*</span>
+        URL: <input type="text" aria-label="URL" name="url" id="vsUrlInput" size="40" autocomplete="off"/><span style="color: maroon">*</span>
         <div id="vsUrlSuggestions" class="typeahead-suggestions" style="display:none; position:absolute; background:white; border:1px solid #ccc; max-height:200px; overflow-y:auto; z-index:1000; width:100%;"></div>
       </td>
-      <td>Version: <input type="text" name="valueSetVersion" size="10"/></td>
+      <td>Version: <input type="text" aria-label="Version" name="valueSetVersion" size="10"/></td>
     </tr>
     <tr>
-      <td>Filter: <input type="text" name="filter" size="20"/></td>
-      <td>Language: <input type="text" name="displayLanguage" size="10"/></td>
+      <td>Filter: <input type="text" aria-label="Filter" name="filter" size="20"/></td>
+      <td>Language: <input type="text" aria-label="Language" name="displayLanguage" size="10"/></td>
     </tr>
     <tr>
       <td colspan="2">
-        <input type="checkbox" name="includeDesignations" id="expand_desig" value="true"/>
+        <input type="checkbox" name="includeDesignations" aria-label="Include Designations" id="expand_desig" value="true"/>
         <label for="expand_desig">Include Designations</label>
-        <input type="checkbox" name="activeOnly" id="expand_active" value="true"/>
+        <input type="checkbox" name="activeOnly" aria-label="Active Only" id="expand_active" value="true"/>
         <label for="expand_active">Active Only</label>
-        <input type="checkbox" name="excludeNested" id="expand_excludeNested" value="true"/>
+        <input type="checkbox" name="excludeNested" aria-label="Not nested" id="expand_excludeNested" value="true"/>
         <label for="expand_excludeNested">Not nested</label>
       </td>
     </tr>
@@ -26,29 +26,29 @@
   <button type="submit" class="btn btn-sm btn-primary">Expand</button>
 </form>
 
-<h2>Validate Code</h2>
+<h3>Validate Code</h3>
 <form method="get" action="ValueSet/$validate-code" style="margin-left: 10px; margin-top: 5px;">
   <input type="hidden" name="inferSystem" id="{{ inferSystemId }}" value="true"/>
   <table class="grid" cellpadding="0" cellspacing="0">
     <tr>
       <td style="position: relative;">
-        ValueSet URL: <input type="text" name="url" id="vcVsUrlInput" size="40" autocomplete="off"/><span style="color: maroon">*</span>
+        ValueSet URL: <input type="text" aria-label="ValueSet URL" name="url" id="vcVsUrlInput" size="40" autocomplete="off"/><span style="color: maroon">*</span>
         <div id="vcVsUrlSuggestions" class="typeahead-suggestions" style="display:none; position:absolute; background:white; border:1px solid #ccc; max-height:200px; overflow-y:auto; z-index:1000; width:100%;"></div>
       </td>
-      <td>ValueSet Version: <input type="text" name="valueSetVersion" size="10"/></td>
+      <td>ValueSet Version: <input type="text" aria-label="ValueSet Version" name="valueSetVersion" size="10"/></td>
     </tr>
     <tr>
-      <td>System: <input type="text" name="system" id="{{ vcSystemId }}" size="30" onchange="updateInferSystem('{{ vcSystemId }}', '{{ inferSystemId }}')"/></td>
-      <td>Version: <input type="text" name="version" size="10"/></td>
+      <td>System: <input type="text" aria-label="System"  name="system" id="{{ vcSystemId }}" size="30" onchange="updateInferSystem('{{ vcSystemId }}', '{{ inferSystemId }}')"/></td>
+      <td>Version: <input type="text" aria-label="Version"  name="version" size="10"/></td>
     </tr>
     <tr>
-      <td>Code: <input type="text" name="code" size="20" required/><span style="color: maroon">*</span></td>
-      <td>Display: <input type="text" name="display" size="20"/></td>
+      <td>Code: <input type="text" aria-label="Code" name="code" size="20" required/><span style="color: maroon">*</span></td>
+      <td>Display: <input type="text" aria-label="Display" name="display" size="20"/></td>
     </tr>
     <tr>
-      <td>Language: <input type="text" name="displayLanguage" size="10"/></td>
+      <td>Language: <input type="text" aria-label="Language" name="displayLanguage" size="10"/></td>
       <td>
-        <input type="checkbox" name="abstract" value="true"/>
+        <input type="checkbox" aria-label="Abstract" name="abstract" value="true"/>
         <label>Abstract</label>
       </td>
     </tr>

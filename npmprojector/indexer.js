@@ -4,6 +4,7 @@
 //
 
 const fhirpath = require('fhirpath');
+const indexerLog = require('../library/logger').getInstance().child({ module: 'npmprojector' });
 
 class FHIRIndexer {
   constructor(fhirModel = null) {
@@ -85,9 +86,9 @@ class FHIRIndexer {
           }
         }
       } catch (err) {
-        console.log(err);
-        // FHIRPath evaluation failed - skip this param for this resource
-        // Logged at debug level to avoid noise
+        // FHIRPath evaluation failed - skip this param for this resource. Logged at debug level
+        // to avoid noise
+        indexerLog.debug(`search parameter ${paramName}: ${err.message}`);
       }
     }
   }
@@ -249,7 +250,7 @@ class FHIRIndexer {
       const trimmedValue = value.trim();
 
       switch (paramType) {
-        case 'string':
+        case 'string': {
           // String search: case-insensitive starts-with by default
           const lowerValue = trimmedValue.toLowerCase();
           for (const [indexedValue, ids] of paramIndex) {
@@ -258,22 +259,25 @@ class FHIRIndexer {
             }
           }
           break;
+        }
 
-        case 'token':
+        case 'token': {
           // Token search: exact match on system|code, |code, or code
           const tokenMatches = this.matchToken(trimmedValue, paramIndex);
           tokenMatches.forEach(id => matchingIds.add(id));
           break;
+        }
 
-        case 'reference':
+        case 'reference': {
           // Reference search: exact match
           const refIds = paramIndex.get(trimmedValue);
           if (refIds) {
             refIds.forEach(id => matchingIds.add(id));
           }
           break;
+        }
 
-        case 'date':
+        case 'date': {
           // Simple prefix matching for dates (no range support as specified)
           for (const [indexedValue, ids] of paramIndex) {
             if (indexedValue.startsWith(trimmedValue)) {
@@ -281,9 +285,10 @@ class FHIRIndexer {
             }
           }
           break;
+        }
 
         case 'number':
-        case 'quantity':
+        case 'quantity': {
           // Numeric equality
           const numValue = parseFloat(trimmedValue);
           if (!isNaN(numValue)) {
@@ -293,21 +298,24 @@ class FHIRIndexer {
             }
           }
           break;
+        }
 
-        case 'uri':
+        case 'uri': {
           // Exact match for URI
           const uriIds = paramIndex.get(trimmedValue);
           if (uriIds) {
             uriIds.forEach(id => matchingIds.add(id));
           }
           break;
+        }
 
-        default:
+        default: {
           // Default: exact match (case-insensitive)
           const defaultIds = paramIndex.get(trimmedValue.toLowerCase());
           if (defaultIds) {
             defaultIds.forEach(id => matchingIds.add(id));
           }
+        }
       }
     }
 

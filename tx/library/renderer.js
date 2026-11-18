@@ -4,6 +4,7 @@ const {div} = require("../../library/html");
 const {getValuePrimitive} = require("../../library/utilities");
 const {getValueName} = require("../../library/utilities");
 const {InvalidError} = require("./errors");
+const { storedList } = require("./stored-concepts");
 
 // Valid FHIR value sets used when validating values before rendering, so that
 // illegal input produces an error that names the offending value rather than
@@ -23,7 +24,30 @@ const VALID_CONCEPTMAP_EQUIVALENCES = new Set([
 const VALID_CODESYSTEM_CONTENT = new Set([
   'not-present', 'example', 'fragment', 'complete', 'supplement'
 ]);
+// How many of an include's listed codes displayValueSetInclude writes out before
+// summarising the rest as a count.
+const MAX_INCLUDE_CODES_SHOWN = 20;
+
 const VALID_PUBLICATION_STATUS = new Set(['draft', 'active', 'retired', 'unknown']);
+
+/**
+ * How many of the codes a ValueSet.compose include (or exclude) lists are rendered by
+ * default. Past this, the list ends with a line saying how many more there are and, when
+ * the renderer has been given showAllCodesHref, a link to the page with all of them.
+ * VSAC's Medication Brand Name lists 33,341 codes in one include.
+ */
+const MAX_RENDERED_INCLUDE_CODES = 500;
+
+/**
+ * How many concepts a CodeSystem's concept table shows. Past this, the table stops with a line
+ * saying how many there are and, when the renderer has been given fullContentHref, a link to
+ * the whole code system as JSON. Built in one go, the table for ICD-10-CM (98,000 concepts,
+ * a 24 MB page) held the event loop for 5-6 s; nobody reads a page that long.
+ */
+const MAX_RENDERED_CONCEPTS = 1000;
+
+// While building a concept table, let other work run after this many ms
+const RENDER_YIELD_MS = 25;
 
 /**
  * @typedef {Object} TerminologyLinkResolver
@@ -31,6 +55,8 @@ const VALID_PUBLICATION_STATUS = new Set(['draft', 'active', 'retired', 'unknown
  *   Given a URL and optional version, returns description and link, or null if not found
  * @property {function(OperationContext, string, string, string=): {display: string, link: string}|null} resolveCode
  *   Given a URL, code, and optional version, returns display and link, or null if not found
+ * @property {function(OperationContext, string, string, string[]): Array<{description: string, link: string}|null>} [resolveCodes]
+ *   resolveCode for many codes of one code system, in their order; used where present
  */
 
 class Renderer {
@@ -38,6 +64,28 @@ class Renderer {
   constructor(opContext, linkResolver = null) {
     this.opContext = opContext;
     this.linkResolver = linkResolver;
+    /** How many codes of an include to render; null renders them all. */
+    this.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
+    /** Where "Show all" goes when an include is cut short; null for no link. */
+    this.showAllCodesHref = null;
+    /** How many concepts a CodeSystem's concept table shows; null shows them all. */
+    this.conceptLimit = MAX_RENDERED_CONCEPTS;
+    /** Where the whole code system can be had (as JSON) when its table is cut short; null for no link. */
+    this.fullContentHref = null;
+    this._lastYield = performance.now();
+  }
+
+  /**
+   * Lets other work run (a real turn of the event loop) once RENDER_YIELD_MS has passed since
+   * the last time: building a large table is otherwise one unbroken piece of compute. The
+   * renderer's own awaits don't do this - they resolve at once.
+   */
+  async yieldIfDue() {
+    const now = performance.now();
+    if (now - this._lastYield >= RENDER_YIELD_MS) {
+      await new Promise(resolve => setImmediate(resolve));
+      this._lastYield = performance.now();
+    }
   }
 
   displayCoded(...args) {
@@ -108,22 +156,24 @@ class Renderer {
     return '[' + result + ']';
   }
 
+  /**
+   * A one-line summary of a compose include/exclude, for the operation log and the
+   * $validate-code diagnostics. An include that lists many codes is summarised: the
+   * first MAX_INCLUDE_CODES_SHOWN codes, then how many more there are. (Written in
+   * full, a 33,000-code include is a ~250 KB string, built and kept for every
+   * validation against the value set.)
+   */
   displayValueSetInclude(inc) {
     let result;
     if (inc.system) {
       result = '(' + inc.system + ')';
-      if (inc.concept) {
-        result = result + '(';
-        let first = true;
-        for (const cc of inc.concept) {
-          if (first) {
-            first = false;
-          } else {
-            result = result + ',';
-          }
-          result = result + cc.code;
-        }
-        result = result + ')';
+      if (storedList(inc)) {
+        // a stored list (see stored-concepts.js) isn't read just to describe the include
+        result = result + '(' + storedList(inc).count + ' codes)';
+      } else if (inc.concept) {
+        const shown = inc.concept.slice(0, MAX_INCLUDE_CODES_SHOWN).map(cc => cc.code).join(',');
+        const more = inc.concept.length - MAX_INCLUDE_CODES_SHOWN;
+        result = result + '(' + shown + (more > 0 ? ',... +' + more + ' more (' + inc.concept.length + ' codes)' : '') + ')';
       }
       if (inc.filter) {
         result = result + '(';
@@ -157,8 +207,8 @@ class Renderer {
   async renderMetadataTable(res, tbl, sourcePackage) {
     this.renderMetadataVersion(res, tbl);
     await this.renderMetadataProfiles(res, tbl);
-    this.renderMetadataTags(res, tbl);
-    this.renderMetadataLabels(res, tbl);
+    await this.renderMetadataTags(res, tbl);
+    await this.renderMetadataLabels(res, tbl);
     this.renderMetadataLastUpdated(res, tbl);
     this.renderMetadataSource(res, tbl);
     this.renderProperty(tbl, 'TEST_PLAN_LANG', res.language);
@@ -173,6 +223,7 @@ class Renderer {
     this.renderProperty(tbl, 'CANON_REND_COMMITTEE', Extensions.readString(res, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-wg'));
     this.renderPropertyCopy(tbl, 'GENERAL_COPYRIGHT', res.copyright);
     this.renderProperty(tbl, 'EXT_FMM_LEVEL', Extensions.readString(res, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-fmm'));
+    this.renderProperty(tbl, 'EXT_STANDARDS_STATUS', Extensions.readString(res, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'));
     this.renderProperty(tbl, 'PAT_PERIOD', res.effectivePeriod);
     this.renderPropertyLink(tbl, 'WEB_SOURCE', Extensions.readString(res, 'http://hl7.org/fhir/StructureDefinition/web-source'));
     this.renderProperty(tbl, 'GENERAL_SOURCE', sourcePackage);
@@ -221,41 +272,45 @@ class Renderer {
     }
   }
 
-  renderMetadataTags(res, tbl) {
+  async renderMetadataTags(res, tbl) {
     if (res.meta?.tag) {
       let tr = tbl.tr();
       tr.td().b().tx(this.translate('GENERAL_PROF'));
       if (res.meta.tag.length > 1) {
         let ul = tr.td();
         for (let u of res.meta.tag) {
-          this.renderCoding(ul.li(), u);
+          await this.renderCoding(ul.li(), u);
         }
       } else {
-        this.renderCoding(tr.td(), res.meta.tag[0]);
+        await this.renderCoding(tr.td(), res.meta.tag[0]);
       }
     }
   }
 
-  renderMetadataLabels(res, tbl) {
+  async renderMetadataLabels(res, tbl) {
     if (res.meta?.label) {
       let tr = tbl.tr();
       tr.td().b().tx(this.translate('GENERAL_PROF'));
       if (res.meta.label.length > 1) {
         let ul = tr.td();
         for (let u of res.meta.label) {
-          this.renderCodin(ul.li(), u);
+          await this.renderCoding(ul.li(), u);
         }
       } else {
-        this.renderCoding(tr.td(), res.meta.label[0]);
+        await this.renderCoding(tr.td(), res.meta.label[0]);
       }
     }
   }
 
+  // Inline phrases inherited from the Java core translations (RES_REND_VER = "version: {0}"
+  // etc) are not table labels; when rendering into a name/value table we use the dedicated
+  // *_NAME / *_VALUE phrases instead, and leave the inline phrases to the Java code.
+
   renderMetadataVersion(res, tbl) {
     if (res.meta?.version) {
       let tr = tbl.tr();
-      tr.td().b().tx(this.translate('RES_REND_VER'));
-      tr.td().tx(res.meta.version);
+      tr.td().b().tx(this.translate('RES_REND_VER_NAME'));
+      tr.td().tx(this.translate('RES_REND_VER_VALUE', [res.meta.version]));
     }
   }
 
@@ -263,9 +318,8 @@ class Renderer {
     if (res.meta?.lastUpdated) {
       this._requireValidDate(res.meta.lastUpdated, 'meta.lastUpdated');
       let tr = tbl.tr();
-      // RES_REND_UPDATED is "Last updated: {0}" — supply the formatted date as
-      // the {0} parameter so the placeholder is substituted.
-      tr.td().b().tx(this.translate('RES_REND_UPDATED', [this.displayDate(res.meta.lastUpdated)]));
+      tr.td().b().tx(this.translate('RES_REND_UPDATED_NAME'));
+      tr.td().tx(this.translate('RES_REND_UPDATED_VALUE', [this.displayDate(res.meta.lastUpdated)]));
     }
   }
 
@@ -293,6 +347,7 @@ class Renderer {
         span.tx(value);
         let btn = span.button();
         btn.attr("class", "btn-copy");
+        btn.attr("aria-label", "Copy");
         btn.attr("data-clipboard-text", value);
         btn.attr("data-original-title", this.translate('GENERAL_COPY'));
       }
@@ -326,8 +381,8 @@ class Renderer {
   renderMetadataSource(res, tbl) {
     if (res.meta?.source) {
       let tr = tbl.tr();
-      tr.td().b().tx(this.translate('RES_REND_INFO_SOURCE'));
-      tr.td().tx(res.meta.source);
+      tr.td().b().tx(this.translate('RES_REND_INFO_SOURCE_NAME'));
+      tr.td().tx(this.translate('RES_REND_INFO_SOURCE_VALUE', [res.meta.source]));
     }
   }
 
@@ -340,12 +395,12 @@ class Renderer {
     }
   }
 
-  renderLinkComma(x, uri) {
-    let {desc, url} = (this.linkResolver ? this.linkResolver.resolveURL(this.opContext, uri) : null) || {};
-    if (url) {
-      x.commaItem(desc, url);
+  async renderLinkComma(x, uri) {
+    let {description, link} = await (this.linkResolver ? this.linkResolver.resolveURL(this.opContext, uri) : null) || {};
+    if (link) {
+      x.commaItem(description, link);
     } else {
-      x.commaItem(uri);
+      x.commaItem(link);
     }
   }
 
@@ -627,15 +682,15 @@ class Renderer {
     this._requireAllowed(vs.status, VALID_PUBLICATION_STATUS, 'ValueSet.status', 'invalid status');
 
     let div_ = div();
-    div_.h2().tx("Properties");
+    div_.h4().tx("Properties");
     let tbl = div_.table("grid");
     await this.renderMetadataTable(vs, tbl);
     if (vs.compose) {
-      div_.h2().tx("Logical Definition");
+      div_.h4().tx("Logical Definition");
       await this.renderCompose(vs, div_.table("grid"));
     }
     if (vs.expansion) {
-      div_.h2().tx("Expansion");
+      div_.h4().tx("Expansion");
       await this.renderExpansion(div_, vs, tbl);
     }
 
@@ -654,7 +709,7 @@ class Renderer {
     await this.renderMetadataTable(cs, div_.table("grid"), sourcePackage);
 
     // Code system properties
-    const hasProps = this.generateProperties(div_, cs);
+    const hasProps = await this.generateProperties(div_, cs);
 
     // Filters
     this.generateFilters(div_, cs);
@@ -673,7 +728,7 @@ class Renderer {
       p.tx(" ");
       p.startCommaList("and");
       for (let ext of supplements) {
-        this.renderLinkComma(p, getValuePrimitive(ext));
+        await this.renderLinkComma(p, getValuePrimitive(ext));
       }
       p.stopCommaList();
       p.tx(".");
@@ -722,8 +777,14 @@ class Renderer {
         const ul = li.ul();
         for (let c of inc.concept) {
           this._requireValidCode(c.code, 'ValueSet.compose.include.concept.code');
+        }
+        const limit = this.includeCodeLimit;
+        const shown = limit != null && inc.concept.length > limit ? inc.concept.slice(0, limit) : inc.concept;
+        const links = await this.resolveIncludeCodes(inc, shown);
+        for (let i = 0; i < shown.length; i++) {
+          const c = shown[i];
+          const link = links[i];
           const li = ul.li();
-          const link = this.linkResolver ? await this.linkResolver.resolveCode(this.opContext, inc.system, inc.version, c.code) : null;
           if (link) {
             li.ah(link.link).tx(c.code);
           } else {
@@ -733,6 +794,15 @@ class Renderer {
             li.tx(": "+c.display);
           } else if (link) {
             li.span("opaque: 0.5").tx(": "+link.description);
+          }
+        }
+        if (shown.length < inc.concept.length) {
+          const more = inc.concept.length - shown.length;
+          const li = ul.li();
+          li.i().tx(`\u2026 and ${more.toLocaleString('en-US')} more code${more === 1 ? '' : 's'}.`);
+          if (this.showAllCodesHref) {
+            li.tx(" ");
+            li.ah(this.showAllCodesHref).tx("Show all");
           }
         }
       } else {
@@ -762,10 +832,10 @@ class Renderer {
         li.stopCommaList();
       }
     } else if (inc.valueSet && inc.valueSet.length > 0) {
-      li.tx(this.translatePlural(inc.valueSet.length, 'VALUE_SET_RULES_INC'));
+      li.tx(this.translatePlural(inc.valueSet.length, 'VALUE_SET_IMPORT')+" ");
       li.startCommaList("and");
       for (let vs of inc.valueSet) {
-        this.renderLinkComma(li, vs);
+        await this.renderLinkComma(li, vs);
       }
       li.stopCommaList();
     } else {
@@ -773,18 +843,45 @@ class Renderer {
     }
   }
 
-  generateProperties(x, cs) {
+  /**
+   * The link and description for each of the codes of an include that are shown, in one
+   * request to the link resolver for the include's code system where it can take one.
+   *
+   * @param {Object} inc the include
+   * @param {Object[]} concepts the include's concepts being rendered
+   * @returns {Promise<Array<{link: string, description: string}|null>>}
+   */
+  async resolveIncludeCodes(inc, concepts) {
+    if (!this.linkResolver || concepts.length === 0) {
+      return concepts.map(() => null);
+    }
+    const codes = concepts.map((c) => c.code);
+    if (this.linkResolver.resolveCodes) {
+      return await this.linkResolver.resolveCodes(this.opContext, inc.system, inc.version, codes);
+    }
+    const links = [];
+    for (const code of codes) {
+      links.push(await this.linkResolver.resolveCode(this.opContext, inc.system, inc.version, code));
+    }
+    return links;
+  }
+
+  async generateProperties(x, cs) {
     if (!cs.property || cs.property.length === 0) {
       return false;
     }
 
+    const EXT_PROPERTY_VALUESET = 'http://hl7.org/fhir/StructureDefinition/codesystem-property-valueset';
+
     // Check what columns we need
     let hasURI = false;
     let hasDescription = false;
+    let hasValueSet = false;
 
     for (const p of cs.property) {
       hasURI = hasURI || !!p.uri;
       hasDescription = hasDescription || !!p.description;
+      hasValueSet = hasValueSet || !!Extensions.has(p, EXT_PROPERTY_VALUESET);
     }
 
     x.para().b().tx(this.translate('GENERAL_PROPS'));
@@ -800,6 +897,9 @@ class Renderer {
     if (hasDescription) {
       tr.th().tx(this.translate('GENERAL_DESC'));
     }
+    if (hasValueSet) {
+      tr.th().tx(this.translate('GENERAL_VALUESET'));
+    }
 
     for (const p of cs.property) {
       const row = tbl.tr();
@@ -810,6 +910,13 @@ class Renderer {
       row.td().tx(p.type || '');
       if (hasDescription) {
         row.td().tx(p.description || '');
+      }
+      if (hasValueSet) {
+        const td = row.td();
+        const vsUrl = Extensions.readString(p, EXT_PROPERTY_VALUESET);
+        if (vsUrl) {
+          await this.renderLink(td, vsUrl);
+        }
       }
     }
 
@@ -879,6 +986,9 @@ class Renderer {
     if (columnInfo.hasDefinition) {
       headerRow.th().tx(this.translate('GENERAL_DEFINITION'));
     }
+    if (columnInfo.hasComment) {
+      headerRow.th().tx(this.translate('GENERAL_COMMENTS'));
+    }
     if (columnInfo.hasDeprecated) {
       headerRow.th().tx(this.translate('CODESYSTEM_DEPRECATED'));
     }
@@ -888,9 +998,30 @@ class Renderer {
       headerRow.th().tx(this.getDisplayForProperty(prop) || prop.code);
     }
 
-    // Render concepts recursively
+    // Designation columns (by use + language)
+    for (const desig of columnInfo.designations) {
+      headerRow.th().tx(this.formatDesignationHeader(desig));
+    }
+
+    // Render concepts recursively, up to conceptLimit rows
+    const rows = { count: 0, limit: this.conceptLimit };
     for (const concept of cs.concept) {
-      await this.addConceptRow(tbl, concept, 0, cs, columnInfo);
+      if (!await this.addConceptRow(tbl, concept, 0, cs, columnInfo, rows)) {
+        break;
+      }
+    }
+    const total = this.countConcepts(cs.concept);
+    if (rows.count < total) {
+      const p = x.para();
+      p.i().tx(`This page shows the first ${rows.count.toLocaleString('en-US')} of the ${total.toLocaleString('en-US')} concepts.`);
+      p.tx(' ');
+      if (this.fullContentHref) {
+        p.tx('The whole code system can be had ');
+        p.ah(this.fullContentHref).tx('as JSON');
+        p.tx('.');
+      } else {
+        p.tx('The whole code system can be had as JSON.');
+      }
     }
   }
 
@@ -913,17 +1044,23 @@ class Renderer {
   }
 
   analyzeConceptColumns(cs) {
+    const EXT_CS_COMMENT = 'http://hl7.org/fhir/StructureDefinition/codesystem-concept-comments';
+    const EXT_DISPLAY_HINT = 'http://hl7.org/fhir/StructureDefinition/structuredefinition-display-hint';
     const info = {
       hasHierarchy: false,
       hasDisplay: false,
       hasDefinition: false,
       hasDeprecated: false,
       hasComment: false,
-      properties: []
+      properties: [],
+      designations: [],
+      useMarkdown: this.hasMarkdownInDefinitions(cs)
     };
 
     // Check which properties are actually used
     const usedProperties = new Set();
+    // Track distinct designations, keyed by use + language.
+    const usedDesignations = new Map();
 
     const analyzeConceptList = (concepts) => {
       for (const c of concepts) {
@@ -943,10 +1080,25 @@ class Renderer {
           info.hasDeprecated = true;
         }
 
+        // Check for concept comments
+        if (Extensions.has(c, EXT_CS_COMMENT)) {
+          info.hasComment = true;
+        }
+
         // Track used properties
         if (c.property) {
           for (const prop of c.property) {
             usedProperties.add(prop.code);
+          }
+        }
+
+        // Track distinct designations (by use + language)
+        if (c.designation) {
+          for (const desig of c.designation) {
+            const key = this.getDesignationKey(desig);
+            if (!usedDesignations.has(key)) {
+              usedDesignations.set(key, { use: desig.use, language: desig.language });
+            }
           }
         }
       }
@@ -954,19 +1106,33 @@ class Renderer {
 
     analyzeConceptList(cs.concept || []);
 
+    // If any property carries a display-hint extension, switch to "manual"
+    // column selection: only properties explicitly hinted display/no-link show.
+    const isManual = (cs.property || []).some(p => Extensions.has(p, EXT_DISPLAY_HINT));
+
     // Filter to properties that are actually used
     if (cs.property) {
       for (const prop of cs.property) {
-        if (usedProperties.has(prop.code) && this.showPropertyInTable(prop)) {
+        if (usedProperties.has(prop.code) && this.showPropertyInTable(prop, isManual)) {
           info.properties.push(prop);
         }
       }
     }
 
+    // Convert designation map to array, sorted for stable ordering
+    info.designations = Array.from(usedDesignations.values()).sort((a, b) => {
+      return this.getDesignationKey(a).localeCompare(this.getDesignationKey(b));
+    });
+
     return info;
   }
 
-  showPropertyInTable(prop) {
+  showPropertyInTable(prop, isManual = false) {
+    if (isManual) {
+      // Manual mode: only show properties explicitly hinted display/no-link.
+      const hint = Extensions.readString(prop, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-display-hint');
+      return hint === 'display' || hint === 'no-link';
+    }
     // Skip certain internal properties
     const skipCodes = ['status', 'inactive', 'deprecated', 'notSelectable'];
     return !skipCodes.includes(prop.code);
@@ -975,6 +1141,60 @@ class Renderer {
   getDisplayForProperty(prop) {
     // Could look up a display name for well-known properties
     return prop.description || prop.code;
+  }
+
+  /**
+   * Translations of a concept's definition, carried as translation extensions
+   * on the definition primitive (the sibling _definition element in JSON).
+   * Returns [{lang, value}]. Display translations are intentionally NOT read
+   * here - display variants belong in designations.
+   */
+  definitionTranslations(concept) {
+    const el = concept._definition;
+    if (!el || !el.extension) {
+      return [];
+    }
+    const out = [];
+    for (const ext of el.extension) {
+      if (ext.url === 'http://hl7.org/fhir/StructureDefinition/translation') {
+        const lang = Extensions.readString(ext, 'lang');
+        const value = Extensions.readString(ext, 'content');
+        if (value) {
+          out.push({ lang: lang || '', value });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Whether concept definitions should be rendered as markdown. Honours the
+   * codesystem-use-markdown extension; otherwise auto-detects common markdown
+   * constructs in any definition.
+   */
+  hasMarkdownInDefinitions(cs) {
+    const flag = Extensions.readValue(cs, 'http://hl7.org/fhir/StructureDefinition/codesystem-use-markdown');
+    if (flag && typeof flag.valueBoolean === 'boolean') {
+      return flag.valueBoolean;
+    }
+    const looksMarkdown = (str) => {
+      if (!str) {
+        return false;
+      }
+      return /\]\([^)]*\)|^\s*#{1,6}\s+|^\s*[-*+]\s+|^\s*\d+\.\s+/m.test(str);
+    };
+    const walk = (concepts) => {
+      for (const c of concepts || []) {
+        if (looksMarkdown(c.definition)) {
+          return true;
+        }
+        if (c.concept && walk(c.concept)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    return walk(cs.concept || []);
   }
 
   isDeprecated(concept) {
@@ -987,10 +1207,26 @@ class Renderer {
         }
       }
     }
+    // The valueset-deprecated extension (on compose.include.concept or
+    // expansion.contains) marks a concept as deprecated within this value set.
+    const ext = Extensions.has(concept, 'http://hl7.org/fhir/StructureDefinition/valueset-deprecated');
+    if (ext && ext.valueBoolean === true) {
+      return true;
+    }
     return false;
   }
 
-  async addConceptRow(tbl, concept, level, cs, columnInfo) {
+  /**
+   * @param {Object} [rows] - { count, limit }: the rows rendered so far, and the most to render
+   *   (null: no limit)
+   * @returns {Promise<boolean>} false once the limit is reached: render no more rows
+   */
+  async addConceptRow(tbl, concept, level, cs, columnInfo, rows = { count: 0, limit: null }) {
+    if (rows.limit != null && rows.count >= rows.limit) {
+      return false;
+    }
+    rows.count++;
+    await this.yieldIfDue();
     this._requireValidCode(concept.code, 'CodeSystem.concept.code');
     const tr = tbl.tr();
 
@@ -1031,7 +1267,35 @@ class Renderer {
 
     // Definition column
     if (columnInfo.hasDefinition) {
-      tr.td().tx(concept.definition || '');
+      const td = tr.td();
+      const useMarkdown = columnInfo.useMarkdown;
+      if (concept.definition) {
+        if (useMarkdown) {
+          td.markdown(concept.definition);
+        } else {
+          td.tx(concept.definition);
+        }
+      }
+      // Translations of the definition (translation extension on the
+      // definition primitive) are rendered below the definition, same cell.
+      for (const t of this.definitionTranslations(concept)) {
+        td.br();
+        td.i().tx('(' + t.lang + ') ');
+        if (useMarkdown) {
+          td.markdown(t.value);
+        } else {
+          td.tx(t.value);
+        }
+      }
+    }
+
+    // Comment column
+    if (columnInfo.hasComment) {
+      const td = tr.td();
+      const comment = Extensions.readString(concept, 'http://hl7.org/fhir/StructureDefinition/codesystem-concept-comments');
+      if (comment) {
+        td.tx(comment);
+      }
     }
 
     // Deprecated column
@@ -1040,11 +1304,36 @@ class Renderer {
       if (this.isDeprecated(concept)) {
         td.tx(this.translate('CODESYSTEM_DEPRECATED_TRUE'));
 
-        // Check for replacement
-        const replacedBy = this.getPropertyValue(concept, 'replacedBy');
-        if (replacedBy) {
+        // Replacement: prefer the codesystem-replacedby extension (a Coding),
+        // then fall back to a 'replacedBy' property value.
+        const replacedByExt = Extensions.readValue(concept, 'http://hl7.org/fhir/StructureDefinition/codesystem-replacedby');
+        const replacedByCoding = replacedByExt && replacedByExt.valueCoding;
+        const replacedByProp = this.getPropertyValue(concept, 'replacedBy');
+        if (replacedByCoding) {
           td.tx(' ' + this.translate('CODESYSTEM_REPLACED_BY') + ' ');
-          td.code().tx(replacedBy);
+          const link = this.linkResolver ?
+            await this.linkResolver.resolveCode(this.opContext, replacedByCoding.system, replacedByCoding.version, replacedByCoding.code) : null;
+          if (link) {
+            td.ah(link.link).tx(replacedByCoding.code);
+          } else {
+            td.code().tx(replacedByCoding.code);
+          }
+          if (replacedByCoding.display) {
+            td.tx(' "' + replacedByCoding.display + '"');
+          }
+        } else if (replacedByProp) {
+          td.tx(' ' + this.translate('CODESYSTEM_REPLACED_BY') + ' ');
+          td.code().tx(replacedByProp.value);
+        } else {
+          // No replacement: show the concept-level standards-status reason.
+          const ssExt = Extensions.readValue(concept, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status');
+          if (ssExt) {
+            const reason = Extensions.readString(ssExt, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status-reason');
+            if (reason) {
+              td.tx(' ');
+              td.markdown(reason);
+            }
+          }
         }
       }
     }
@@ -1052,6 +1341,7 @@ class Renderer {
     // Property columns
     for (const prop of columnInfo.properties) {
       const td = tr.td();
+      const noLink = Extensions.readString(prop, 'http://hl7.org/fhir/StructureDefinition/structuredefinition-display-hint') === 'no-link';
       const values = this.getPropertyValues(concept, prop.code);
 
       let first = true;
@@ -1061,16 +1351,28 @@ class Renderer {
         }
         first = false;
 
-        await this.renderPropertyValue(td, val, prop, cs);
+        await this.renderPropertyValue(td, val, prop, cs, noLink);
+      }
+    }
+
+    // Designation columns (by use + language)
+    for (const desigDef of columnInfo.designations) {
+      const td = tr.td();
+      const value = this.getDesignationValue(concept, desigDef);
+      if (value) {
+        td.tx(value);
       }
     }
 
     // Recurse for child concepts
     if (concept.concept) {
       for (const child of concept.concept) {
-        await this.addConceptRow(tbl, child, level + 1, cs, columnInfo);
+        if (!await this.addConceptRow(tbl, child, level + 1, cs, columnInfo, rows)) {
+          return false;
+        }
       }
     }
+    return true;
   }
 
   getPropertyValue(concept, code) {
@@ -1098,13 +1400,13 @@ class Renderer {
     return null;
   }
 
-  async renderPropertyValue(td, val, propDef, cs) {
+  async renderPropertyValue(td, val, propDef, cs, noLink = false) {
     if (!val) return;
 
     switch (val.type) {
       case 'code': {
         // If it's a parent reference, link to it
-        if (propDef.code === 'parent' || propDef.code === 'child') {
+        if ((propDef.code === 'parent' || propDef.code === 'child') && !noLink) {
           td.ah('#' + cs.id + '-' + val.value).tx(val.value);
         } else {
           td.code().tx(val.value);
@@ -1113,7 +1415,7 @@ class Renderer {
       }
       case 'coding': {
         const coding = val.value;
-        const link = this.linkResolver ?
+        const link = (!noLink && this.linkResolver) ?
             await this.linkResolver.resolveCode(this.opContext, coding.system, coding.version, coding.code) : null;
         if (link) {
           td.ah(link.link).tx(coding.code);
@@ -1131,7 +1433,7 @@ class Renderer {
       }
       case 'string': {
         // Check if it's a URL
-        if (val.value.startsWith('http://') || val.value.startsWith('https://')) {
+        if (!noLink && (val.value.startsWith('http://') || val.value.startsWith('https://'))) {
           td.ah(val.value).tx(val.value);
         } else {
           td.tx(val.value);
@@ -1205,7 +1507,7 @@ class Renderer {
     let div_ = div();
     let tbl;
     if (showProps) {
-      div_.h2().tx("Expansion Properties");
+      div_.h3().tx("Expansion Properties");
       tbl = div_.table("grid");
     } else {
       tbl = div(); // dummy
@@ -1215,6 +1517,19 @@ class Renderer {
   }
 
   async renderExpansion(x, vs, tbl) {
+    // Surface expansion-level status extensions as prominent warnings: the
+    // expansion may not contain every code in the value set.
+    if (Extensions.has(vs.expansion, 'http://hl7.org/fhir/StructureDefinition/valueset-unclosed')) {
+      const reason = Extensions.readString(vs.expansion, 'http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason');
+      const p = x.para();
+      p.b().tx('Warning: ');
+      p.tx('This expansion is not closed - it may not contain all the codes in the value set.' + (reason ? ' ' + reason : ''));
+    }
+    if (Extensions.has(vs.expansion, 'http://hl7.org/fhir/StructureDefinition/valueset-toocostly')) {
+      const p = x.para();
+      p.b().tx('Warning: ');
+      p.tx('This expansion is incomplete - a complete expansion was too costly to produce.');
+    }
     this.renderProperty(tbl, 'Expansion Identifier', vs.expansion.identifier);
     this.renderProperty(tbl, 'Expansion Timestamp', vs.expansion.timestamp);
     this.renderProperty(tbl, 'Expansion Total', vs.expansion.total);
@@ -1248,6 +1563,7 @@ class Renderer {
 
     // Analyze columns needed
     const columnInfo = this.analyzeExpansionColumns(vs.expansion);
+    columnInfo.versions = this.expansionVersions(vs);
 
     // Build the expansion table
     const expTbl = x.table("codes");
@@ -1398,6 +1714,40 @@ class Renderer {
   /**
    * Add a row for an expansion contains entry
    */
+  /**
+   * The version each code system was expanded at, by system uri.
+   *
+   * An expansion.contains only carries a version when the expansion needed to distinguish
+   * one, so a link built from the row alone would silently point at whichever version the
+   * server happens to prefer - not what the reader is looking at. The expansion says which
+   * version it used in its used-codesystem parameters, and a value set that came with its
+   * definition says so in its compose; either will do.
+   *
+   * @param {Object} vs the expanded ValueSet
+   * @returns {Map<string, string>} system uri to version
+   */
+  expansionVersions(vs) {
+    const versions = new Map();
+    for (const inc of vs.compose?.include || []) {
+      if (inc.system && inc.version && !versions.has(inc.system)) {
+        versions.set(inc.system, inc.version);
+      }
+    }
+    for (const p of vs.expansion?.parameter || []) {
+      if (p.name !== 'used-codesystem') {
+        continue;
+      }
+      const vurl = getValuePrimitive(p);
+      if (vurl && vurl.includes('|')) {
+        const system = vurl.substring(0, vurl.indexOf('|'));
+        if (!versions.has(system)) {
+          versions.set(system, vurl.substring(vurl.indexOf('|') + 1));
+        }
+      }
+    }
+    return versions;
+  }
+
   async addExpansionRow(tbl, contains, level, columnInfo) {
     const tr = tbl.tr();
 
@@ -1420,12 +1770,14 @@ class Renderer {
       codeTd.tx('\u00A0'.repeat(level * 2)); // Non-breaking spaces for indentation
     }
 
-    // Try to link the code
+    // The code links to $lookup on it - what a reader wants from a row in an expansion is
+    // to find out what that code is - at the version the expansion used.
     if (contains.code) {
-      const link = this.linkResolver ?
-          await this.linkResolver.resolveCode(this.opContext, contains.system, contains.version, contains.code) : null;
+      const version = contains.version || columnInfo.versions?.get(contains.system) || null;
+      const link = this.linkResolver?.lookupLink
+        ? this.linkResolver.lookupLink(contains.system, version, contains.code) : null;
       if (link) {
-        codeTd.ah(link.link).tx(contains.code);
+        codeTd.ah(link, 'Look this code up').code().tx(contains.code);
       } else {
         codeTd.code().tx(contains.code);
       }
@@ -1594,7 +1946,7 @@ class Renderer {
 
     // Formats
     if (cs.format && cs.format.length > 0) {
-      div_.h3().tx(this.translate('Formats') || 'Formats');
+      div_.h4().tx(this.translate('Formats') || 'Formats');
       div_.para().tx(cs.format.join(', '));
     }
 
@@ -1864,7 +2216,7 @@ class Renderer {
 
     // Code Systems
     if (tc.codeSystem && tc.codeSystem.length > 0) {
-      div_.h3().tx('Code Systems');
+      div_.h4().tx('Code Systems');
       const ul = div_.ul();
       for (const cs of tc.codeSystem) {
         if (cs.uri) {
@@ -1958,10 +2310,10 @@ class Renderer {
     let div_ = div();
 
     // Metadata table
-    div_.h3().tx("Properties");
+    div_.h4().tx("Properties");
     await this.renderMetadataTable(cm, div_.table("grid"));
 
-    div_.h3("Mapping Details");
+    div_.h4("Mapping Details");
     // Source/Target scope line (mirrors Java: CONC_MAP_FROM / CONC_MAP_TO)
     const p = div_.para();
     p.tx(this.translate('CONC_MAP_FROM') + " ");
@@ -2535,4 +2887,4 @@ class Renderer {
 
 }
 
-module.exports = { Renderer };
+module.exports = { Renderer, VALID_FILTER_OPS, MAX_RENDERED_INCLUDE_CODES, MAX_INCLUDE_CODES_SHOWN, MAX_RENDERED_CONCEPTS };

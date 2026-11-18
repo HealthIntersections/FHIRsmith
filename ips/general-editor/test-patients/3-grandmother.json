@@ -1,0 +1,2118 @@
+{
+  "resourceType": "Bundle",
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:d92a594d-c524-4807-8f8a-7a958388afa1"
+  },
+  "type": "document",
+  "timestamp": "2025-01-22T00:00:00.000Z",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:414893f0-c335-4cdb-960f-a8ffb8971374",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "2269f789-09ee-4ca3-99e8-0025a8a7bd66",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "60591-5",
+              "display": "Patient summary Document"
+            }
+          ]
+        },
+        "date": "2025-01-22",
+        "title": "Patient Summary - Patricia Henderson",
+        "section": [
+          {
+            "title": "Problem List",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11450-4",
+                  "display": "Problem list - Reported"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:4b99a0eb-98d5-4594-a35a-6058cf7a7744"
+              },
+              {
+                "reference": "urn:uuid:c92ec0dd-cc16-4537-83b1-bb1d5332cf7b"
+              },
+              {
+                "reference": "urn:uuid:19d5bf9a-8be2-4c1a-8a94-bc2e90ae994b"
+              },
+              {
+                "reference": "urn:uuid:9cd00add-c26d-40b5-b1c7-957804da16b4"
+              },
+              {
+                "reference": "urn:uuid:0516c3cc-2404-4305-9f51-0b8af69ebda9"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Category</th><th>Severity</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Malignant neoplasm of breast</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>04-Dec 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Body sites</b><ul><li>Left breast structure</li></ul></td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Left breast invasive ductal carcinoma, grade 2, ER+ PR+ HER2-, stage IIA (pT2 N0). Wide local excision and sentinel node biopsy 10 Jan 2025, clear margins. Adjuvant radiotherapy then letrozole planned (Ballarat Regional Integrated Cancer Centre).</li></ul></td></tr><tr><td>Diabetes mellitus type 2</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2018</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>HbA1c 7.4% (Dec 2024). Basal insulin since 2023. Retinal screening 2024: no retinopathy. Feet: monofilament sensation intact.</li></ul></td></tr><tr><td>Chronic kidney disease stage 2</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2022</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Diabetic kidney disease: eGFR 68, albuminuria. On an ACE inhibitor. Avoid nephrotoxins; check renal function before and after iodinated contrast.</li></ul></td></tr><tr><td>Hypertensive disorder, systemic arterial</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2015</td></tr><tr><td>Memory impairment</td><td>Problem List Item</td><td>Mild</td><td>Active / Provisional</td><td>2024</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Mild. MoCA 25/30 (Oct 2024). Confusion with medicines; dose administration aid started.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Allergies and Intolerances",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "48765-2",
+                  "display": "Allergies and adverse reactions Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:35c78b84-89f2-4683-8f90-6bc63d08afa9"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Allergy / intolerance</th><th>Type</th><th>Category</th><th>Criticality</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Morphine</td><td>intolerance</td><td>medication</td><td>low</td><td>Active / Confirmed</td><td>Aug 16</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"5\"><b>Reactions</b><ul><li>Nausea and vomiting (moderate) - Intractable vomiting with morphine PCA after colectomy, 2016.</li></ul></td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"5\"><b>Notes</b><ul><li>Tolerates oxycodone.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Medication Summary",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10160-0",
+                  "display": "History of Medication use Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:0d1152dd-9555-4544-9f6d-9633d3f386ee"
+              },
+              {
+                "reference": "urn:uuid:4a01a44e-fc66-4ba8-82d1-51981c587675"
+              },
+              {
+                "reference": "urn:uuid:e8de28c3-320b-4c7c-8db0-69a919f175f3"
+              },
+              {
+                "reference": "urn:uuid:a618a461-6acd-4df7-936f-d286f4f6a881"
+              },
+              {
+                "reference": "urn:uuid:70622d0f-05c7-4151-8d66-14bdfa7dd195"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Medication</th><th>Status</th><th>Reason</th><th>Effective</th><th>Dosage</th></tr></thead><tbody><tr><td>Metformin</td><td>active</td><td>Diabetes mellitus type 2</td><td>from 01-Apr 18</td><td>1 g twice daily with meals</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Reduce if eGFR falls below 45; withhold for 48 hours after iodinated contrast.</li></ul></td></tr><tr><td>Insulin glargine</td><td>active</td><td>Diabetes mellitus type 2</td><td>from 01-Feb 23</td><td>24 units at bedtime</td></tr><tr><td>Lisinopril</td><td>active</td><td>Chronic kidney disease stage 2</td><td>from 01-Sep 15</td><td>10 mg once daily</td></tr><tr><td>Atorvastatin</td><td>active</td><td>--</td><td>from 01-Apr 18</td><td>40 mg at night</td></tr><tr><td>Letrozole 2.5 mg tablet</td><td>intended</td><td>Malignant neoplasm of breast</td><td>from 01-Apr 25</td><td>2.5 mg once daily for 5 years, after radiotherapy</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Immunizations",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11369-6",
+                  "display": "History of Immunization note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:4aababeb-82a6-40d5-a41e-7e62edb6a8a5"
+              },
+              {
+                "reference": "urn:uuid:5da2c48e-6814-4c22-905a-f032bb09ebce"
+              },
+              {
+                "reference": "urn:uuid:12d0fe23-f22f-4787-8d7f-e650a8e165ab"
+              },
+              {
+                "reference": "urn:uuid:7687adcc-61be-4191-af2d-caf409169fde"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Vaccine</th><th>Status</th><th>Date</th><th>Target disease</th><th>Dose</th></tr></thead><tbody><tr><td>Influenza virus antigen-containing vaccine product</td><td>completed</td><td>09-Apr 24</td><td>Influenza</td><td>--</td></tr><tr><td>SARS-CoV-2 mRNA vaccine</td><td>completed</td><td>18-Mar 24</td><td>Disease caused by severe acute respiratory syndrome coronavirus 2</td><td>6</td></tr><tr><td>Streptococcus pneumoniae antigen-containing vaccine product</td><td>completed</td><td>22-Jan 18</td><td>Pneumococcal infectious disease</td><td>--</td></tr><tr><td>Zoster vaccine, recombinant (Shingrix)</td><td>completed</td><td>30-Aug 22</td><td>Herpes zoster</td><td>2</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Procedures",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47519-4",
+                  "display": "History of Procedures Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:ef77c616-83cb-4337-b2c9-114a1998c186"
+              },
+              {
+                "reference": "urn:uuid:a64ee396-e451-407f-99ff-7f98f89ac023"
+              },
+              {
+                "reference": "urn:uuid:1897cac1-634b-4a69-bfc8-a93b0004f630"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Procedure</th><th>Status</th><th>Performed</th><th>Body site</th><th>Reason</th></tr></thead><tbody><tr><td>Lumpectomy of breast</td><td>completed</td><td>10-Jan 25</td><td>Left breast structure</td><td>Malignant neoplasm of breast</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Wide local excision, clear margins.</li></ul></td></tr><tr><td>Sentinel lymph node biopsy</td><td>completed</td><td>10-Jan 25</td><td>--</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Left axilla: 0/2 nodes involved.</li></ul></td></tr><tr><td>Colectomy</td><td>completed</td><td>15-Aug 16</td><td>--</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Right hemicolectomy for colon adenocarcinoma, with resection of a single liver metastasis (segment VI); adjuvant FOLFOX. Disease-free on surveillance.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Results",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "30954-2",
+                  "display": "Relevant diagnostic tests/laboratory data note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:f580a242-1a83-47f8-875d-5928b567e45f"
+              },
+              {
+                "reference": "urn:uuid:05fd4a03-1346-4f14-a9dd-1408aeee993b"
+              },
+              {
+                "reference": "urn:uuid:9c66568e-12b4-4800-81da-687be5cbffc0"
+              },
+              {
+                "reference": "urn:uuid:f7a880be-b87d-46ee-b138-03ee24fa7ec9"
+              },
+              {
+                "reference": "urn:uuid:2b60be8a-fb3b-476e-8d03-5ac54f271653"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Interpretation</th><th>Reference range</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Hemoglobin A1c/Hemoglobin.total in Blood</td><td>7.4 %</td><td>High</td><td>&lt;7.0 (target)</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Glomerular filtration rate [Volume Rate/Area] in Serum, Plasma or Blood by Creatinine-based formula (CKD-EPI)/1.73 sq M</td><td>68 mL/min/{1.73_m2}</td><td>Low</td><td>&gt;90</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Creatinine [Moles/volume] in Serum or Plasma</td><td>78 umol/L</td><td>Normal</td><td>45-90</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Albumin/Creatinine [Mass Ratio] in Urine</td><td>45 mg/g</td><td>High</td><td>&lt;30</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Potassium [Moles/volume] in Serum or Plasma</td><td>4.6 mmol/L</td><td>Normal</td><td>3.5-5.2</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Vital Signs",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8716-3",
+                  "display": "Vital Signs"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a7d3963b-917f-4ab3-a18c-17637ebf6641"
+              },
+              {
+                "reference": "urn:uuid:c8356df8-6939-4595-9d71-bb8032b06b1e"
+              },
+              {
+                "reference": "urn:uuid:ee92de1b-d956-4d94-bdcc-31b03bb0f86e"
+              },
+              {
+                "reference": "urn:uuid:6ed140fb-31ad-4ecc-a16a-2a1d6728d641"
+              },
+              {
+                "reference": "urn:uuid:224d2995-89f0-4b09-81d7-1f5885cd6883"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Blood pressure</td><td>132/78 mm[Hg]</td><td>22-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Heart rate</td><td>80 /min</td><td>22-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body weight</td><td>74 kg</td><td>22-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body height</td><td>162 cm</td><td>22-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body mass index</td><td>28.2 kg/m2</td><td>22-Jan 25</td><td>final</td><td>Vital Signs</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Past Problems",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11348-0",
+                  "display": "History of Past illness note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:bd515f5a-634e-44e9-99fb-d6e0ebae4123"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Malignant neoplasm of colon</td><td>Remission / Confirmed</td><td>Jun 16</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Stage IV (single liver metastasis) at diagnosis; resected. CEA and surveillance CT normal to Nov 2024.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Social History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "29762-2",
+                  "display": "Social history note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:1c2b6042-954c-4864-992a-da3a2cdcaada"
+              },
+              {
+                "reference": "urn:uuid:85bee98d-9a88-40de-b3bd-0067c9fa6a27"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Tobacco smoking status</td><td>Never smoked tobacco</td><td>22-Jan 25</td><td>final</td><td>Social History</td></tr><tr><td>Alcoholic drinks per day</td><td>0.3 /d</td><td>22-Jan 25</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>About 2 standard drinks a week.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Functional Status",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47420-5",
+                  "display": "Functional Status Assessment Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:907a1c2d-0915-486b-863e-e5bedf9eb561"
+              },
+              {
+                "reference": "urn:uuid:c9558587-5a6e-4175-aabe-63c4f37c4937"
+              },
+              {
+                "reference": "urn:uuid:457fc149-7a81-4e8f-a65a-f6a000320673"
+              },
+              {
+                "reference": "urn:uuid:b09d4aa5-1f38-4276-bd58-cf70db5d7bea"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Memory functions: MILD impairment</td><td>Active</td><td>2024</td></tr><tr><td>Looking after one&#39;s health: performance MILD problem, capacity MODERATE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Manages her medicines with a pharmacy-packed dose administration aid; capacity without it is reduced.</li></ul></td></tr><tr><td>Energy and drive functions: MILD impairment</td><td>Active</td><td>Jan 25</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Post-operative fatigue.</li></ul></td></tr><tr><td>Immediate family: SUBSTANTIAL facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Daughter Sarah coordinates appointments and holds medical power of attorney.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Plan of Care",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "18776-5",
+                  "display": "Plan of Care Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a49e8663-62eb-4ebf-bb5b-45b96b8bc659"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Title</th><th>Status</th><th>Intent</th><th>Period</th><th>Description</th></tr></thead><tbody><tr><td>Shared care: breast cancer treatment with diabetes and kidney disease</td><td>active</td><td>plan</td><td>22-Jan 25 - 31-Dec 25</td><td>Newly diagnosed early left breast cancer, now excised, in a 72-year-old with type 2 diabetes on basal insulin, stage 2 diabetic kidney disease, and a history of resected stage IV colon cancer (2016, in remission). Mild memory impairment; family very involved.\n\nPlan: adjuvant radiotherapy then letrozole (oncology); GP to monitor glucose closely during treatment - sick day plan given, insulin titration by the diabetes educator; keep renal function stable (no NSAIDs, contrast precautions, metformin hold rules); bone density before letrozole; continue colon cancer surveillance with oncology. Any medication change must go to her pharmacy so the dose administration aid is updated. She is focused on staying well for her grandchildren.</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Advance Directives",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "42348-3",
+                  "display": "Advance Healthcare Directives"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:78ef8581-2d0f-4577-8702-f522699a6219"
+              },
+              {
+                "reference": "urn:uuid:3c10ab9a-516c-46d9-9a7f-049fcb7cd3e5"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Scope</th><th>Category</th><th>Status</th><th>Date</th></tr></thead><tbody><tr><td>Advanced Care Directive</td><td>Enduring power of attorney (medical treatment)</td><td>active</td><td>14-Feb 17</td></tr><tr><td>Advanced Care Directive</td><td>Advance care plan</td><td>active</td><td>22-Jan 25</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Alerts",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "104605-1",
+                  "display": "Alert"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:ca27687c-e438-4289-9181-760e0cedcd6d"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Flag</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Uses a dose administration aid: send every medication change to her pharmacy</td><td>active</td><td>from 15-Oct 24</td></tr></tbody></table></div>"
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3",
+          "display": "Patricia Joan Henderson"
+        },
+        "author": [
+          {
+            "reference": "urn:uuid:bf6926e5-eee5-4e93-a2d9-80a16d639970",
+            "display": "Dr Andrew Collins"
+          }
+        ],
+        "custodian": {
+          "reference": "urn:uuid:0b4c8dad-9fa6-4eef-8850-352d2587fe32",
+          "display": "Lakeside Medical Centre"
+        },
+        "text": {
+          "status": "generated",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p class=\"ips-patient\"><b>Patricia Joan Henderson</b>, female, DoB: 08-Nov 52</p><table class=\"ips-facts\"><tr><td><b>Contact details</b></td><td>phone: 0423567891; email: pat.henderson@outlook.com</td></tr><tr><td><b>Address</b></td><td>3 Lakeview Crescent, Ballarat, 3350, AU</td></tr></table><table class=\"ips-facts\"><tr><td><b>Date</b></td><td>22-Jan 25</td></tr><tr><td><b>Status</b></td><td>final</td></tr><tr><td><b>Type</b></td><td>Patient summary Document</td></tr><tr><td><b>Author</b></td><td>Dr Andrew Collins</td></tr><tr><td><b>Custodian</b></td><td>Lakeside Medical Centre</td></tr></table></div>"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:455711de-876a-4319-939b-7269088213e3",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "b68abd7a-eb60-49a2-a86d-ef05342ebfa2",
+        "name": [
+          {
+            "family": "Henderson",
+            "given": [
+              "Patricia",
+              "Joan"
+            ]
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1952-11-08",
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "0423567891"
+          },
+          {
+            "system": "email",
+            "value": "pat.henderson@outlook.com"
+          }
+        ],
+        "address": [
+          {
+            "text": "3 Lakeview Crescent, Ballarat, 3350, AU"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:bf6926e5-eee5-4e93-a2d9-80a16d639970",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "0c0a65bf-0dc2-4f99-9283-de1063d27c46",
+        "name": [
+          {
+            "text": "Dr Andrew Collins"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0b4c8dad-9fa6-4eef-8850-352d2587fe32",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "5198e795-32c4-4022-81ee-2dc57661ccaf",
+        "name": "Lakeside Medical Centre"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4b99a0eb-98d5-4594-a35a-6058cf7a7744",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "5921c3a5-995d-4c0d-b9be-1edd8a7bbe4d",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "254837009",
+              "display": "Malignant neoplasm of breast"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-12-04",
+        "bodySite": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "80248007",
+                "display": "Left breast structure"
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Left breast invasive ductal carcinoma, grade 2, ER+ PR+ HER2-, stage IIA (pT2 N0). Wide local excision and sentinel node biopsy 10 Jan 2025, clear margins. Adjuvant radiotherapy then letrozole planned (Ballarat Regional Integrated Cancer Centre)."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c92ec0dd-cc16-4537-83b1-bb1d5332cf7b",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "58179e5e-26f5-40f2-bd06-c1b957305299",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "44054006",
+              "display": "Diabetes mellitus type 2"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2018",
+        "note": [
+          {
+            "text": "HbA1c 7.4% (Dec 2024). Basal insulin since 2023. Retinal screening 2024: no retinopathy. Feet: monofilament sensation intact."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:19d5bf9a-8be2-4c1a-8a94-bc2e90ae994b",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "f898c0ae-65dc-46f7-b747-1dc40ebe4c69",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "431856006",
+              "display": "Chronic kidney disease stage 2"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2022",
+        "note": [
+          {
+            "text": "Diabetic kidney disease: eGFR 68, albuminuria. On an ACE inhibitor. Avoid nephrotoxins; check renal function before and after iodinated contrast."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9cd00add-c26d-40b5-b1c7-957804da16b4",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "a8a0087a-b399-4bed-9220-01f27473aaaa",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "38341003",
+              "display": "Hypertensive disorder, systemic arterial"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2015",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0516c3cc-2404-4305-9f51-0b8af69ebda9",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "8d1fb707-015c-4587-9665-45af747a2d79",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "386807006",
+              "display": "Memory impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "provisional",
+              "display": "Provisional"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "255604002",
+              "display": "Mild"
+            }
+          ]
+        },
+        "onsetDateTime": "2024",
+        "note": [
+          {
+            "text": "Mild. MoCA 25/30 (Oct 2024). Confusion with medicines; dose administration aid started."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:35c78b84-89f2-4683-8f90-6bc63d08afa9",
+      "resource": {
+        "resourceType": "AllergyIntolerance",
+        "id": "1291f099-537a-4e9c-a5d3-78e465fdf301",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "373529000",
+              "display": "Morphine"
+            }
+          ]
+        },
+        "type": "intolerance",
+        "category": [
+          "medication"
+        ],
+        "criticality": "low",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2016-08",
+        "note": [
+          {
+            "text": "Tolerates oxycodone."
+          }
+        ],
+        "reaction": [
+          {
+            "manifestation": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "16932000",
+                    "display": "Nausea and vomiting"
+                  }
+                ]
+              }
+            ],
+            "severity": "moderate",
+            "description": "Intractable vomiting with morphine PCA after colectomy, 2016."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0d1152dd-9555-4544-9f6d-9633d3f386ee",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "30d335ab-4ed5-48dd-9476-9c834c9f93ed",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "372567009",
+              "display": "Metformin"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2018-04-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "44054006",
+                "display": "Diabetes mellitus type 2"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "1 g twice daily with meals",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "Reduce if eGFR falls below 45; withhold for 48 hours after iodinated contrast."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4a01a44e-fc66-4ba8-82d1-51981c587675",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "b1133e89-dbbe-41a2-ae32-ad2cbea77edb",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "411529005",
+              "display": "Insulin glargine"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2023-02-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "44054006",
+                "display": "Diabetes mellitus type 2"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "24 units at bedtime",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "34206005",
+                  "display": "Subcutaneous route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e8de28c3-320b-4c7c-8db0-69a919f175f3",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "c917aac0-5325-4628-bdb7-491c47cc44b3",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "386873009",
+              "display": "Lisinopril"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2015-09-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "431856006",
+                "display": "Chronic kidney disease stage 2"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "10 mg once daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a618a461-6acd-4df7-936f-d286f4f6a881",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "b6a02a46-9dcc-4dae-b50a-8786896cd57e",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "373444002",
+              "display": "Atorvastatin"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2018-04-01"
+        },
+        "dosage": [
+          {
+            "text": "40 mg at night",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:70622d0f-05c7-4151-8d66-14bdfa7dd195",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "8a49835d-d29c-407a-908c-ead5b22ad923",
+        "medicationCodeableConcept": {
+          "text": "Letrozole 2.5 mg tablet"
+        },
+        "status": "intended",
+        "effectivePeriod": {
+          "start": "2025-04-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "254837009",
+                "display": "Malignant neoplasm of breast"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "2.5 mg once daily for 5 years, after radiotherapy",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4aababeb-82a6-40d5-a41e-7e62edb6a8a5",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "2ef0bc51-a764-4d32-878e-4c8960343e3e",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836377006",
+              "display": "Influenza virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-04-09",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "6142004",
+                    "display": "Influenza"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5da2c48e-6814-4c22-905a-f032bb09ebce",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "4be03059-71f3-415f-8c85-2a1d4bbe7f69",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "1119349007",
+              "display": "SARS-CoV-2 mRNA vaccine"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-03-18",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "840539006",
+                    "display": "Disease caused by severe acute respiratory syndrome coronavirus 2"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "6"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:12d0fe23-f22f-4787-8d7f-e650a8e165ab",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "3f802e87-43f5-4b53-a87e-a9c2b245fe50",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836398006",
+              "display": "Streptococcus pneumoniae antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2018-01-22",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "16814004",
+                    "display": "Pneumococcal infectious disease"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7687adcc-61be-4191-af2d-caf409169fde",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "6681e684-86fd-4a6b-a5a7-33865386bf03",
+        "vaccineCode": {
+          "text": "Zoster vaccine, recombinant (Shingrix)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2022-08-30",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "4740000",
+                    "display": "Herpes zoster"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "2"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ef77c616-83cb-4337-b2c9-114a1998c186",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "5826cc7a-70ea-4e02-8cd9-05ac2ee87903",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "392021009",
+              "display": "Lumpectomy of breast"
+            }
+          ]
+        },
+        "status": "completed",
+        "performedDateTime": "2025-01-10",
+        "bodySite": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "80248007",
+                "display": "Left breast structure"
+              }
+            ]
+          }
+        ],
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "254837009",
+                "display": "Malignant neoplasm of breast"
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Wide local excision, clear margins."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a64ee396-e451-407f-99ff-7f98f89ac023",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "9c883749-636c-44a6-8044-c2e7b864011a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "396487001",
+              "display": "Sentinel lymph node biopsy"
+            }
+          ]
+        },
+        "status": "completed",
+        "performedDateTime": "2025-01-10",
+        "note": [
+          {
+            "text": "Left axilla: 0/2 nodes involved."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1897cac1-634b-4a69-bfc8-a93b0004f630",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "e0b575b1-4510-494f-b7ce-3070cfe2b0a3",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "23968004",
+              "display": "Colectomy"
+            }
+          ]
+        },
+        "status": "completed",
+        "performedDateTime": "2016-08-15",
+        "note": [
+          {
+            "text": "Right hemicolectomy for colon adenocarcinoma, with resection of a single liver metastasis (segment VI); adjuvant FOLFOX. Disease-free on surveillance."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f580a242-1a83-47f8-875d-5928b567e45f",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "ca434aee-a882-4c90-8c60-c82fc27d71e3",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "4548-4",
+              "display": "Hemoglobin A1c/Hemoglobin.total in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 7.4,
+          "unit": "%",
+          "system": "http://unitsofmeasure.org",
+          "code": "%"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "<7.0 (target)"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:05fd4a03-1346-4f14-a9dd-1408aeee993b",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "61fd1471-3685-4806-ac3e-185d8419c641",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "62238-1",
+              "display": "Glomerular filtration rate [Volume Rate/Area] in Serum, Plasma or Blood by Creatinine-based formula (CKD-EPI)/1.73 sq M"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 68,
+          "unit": "mL/min/{1.73_m2}",
+          "system": "http://unitsofmeasure.org",
+          "code": "mL/min/{1.73_m2}"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "L",
+                "display": "Low"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": ">90"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9c66568e-12b4-4800-81da-687be5cbffc0",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "d0770afd-9e0f-406d-b186-eaac2abadf32",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "14682-9",
+              "display": "Creatinine [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 78,
+          "unit": "umol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "umol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "45-90"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f7a880be-b87d-46ee-b138-03ee24fa7ec9",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "9a2c36f2-e089-4f11-9087-05bd5366b8af",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "9318-7",
+              "display": "Albumin/Creatinine [Mass Ratio] in Urine"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 45,
+          "unit": "mg/g",
+          "system": "http://unitsofmeasure.org",
+          "code": "mg/g"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "<30"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:2b60be8a-fb3b-476e-8d03-5ac54f271653",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "3911ab99-41a5-4fc6-8f9d-45833f87ce57",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "2823-3",
+              "display": "Potassium [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 4.6,
+          "unit": "mmol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mmol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "3.5-5.2"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a7d3963b-917f-4ab3-a18c-17637ebf6641",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "89830898-e8da-4647-84e5-c4484dbd89c1",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel with all children optional"
+            }
+          ],
+          "text": "Blood pressure"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        },
+        "component": [
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6",
+                  "display": "Systolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 132,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4",
+                  "display": "Diastolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 78,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c8356df8-6939-4595-9d71-bb8032b06b1e",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "3dd3a94b-e31f-44e3-8729-a4edfbd44f27",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 80,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ee92de1b-d956-4d94-bdcc-31b03bb0f86e",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "ae4ced18-8e8a-4508-b67f-f6fc6bf16cd9",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "29463-7",
+              "display": "Body weight"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 74,
+          "unit": "kg",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6ed140fb-31ad-4ecc-a16a-2a1d6728d641",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "517a2eee-85fd-4231-a3b0-2c4b1bf7c61a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8302-2",
+              "display": "Body height"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 162,
+          "unit": "cm",
+          "system": "http://unitsofmeasure.org",
+          "code": "cm"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:224d2995-89f0-4b09-81d7-1f5885cd6883",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "53fb2b84-7432-4755-8c8c-c15c274b2f97",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "39156-5",
+              "display": "Body mass index"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 28.2,
+          "unit": "kg/m2",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg/m2"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:bd515f5a-634e-44e9-99fb-d6e0ebae4123",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "615c808d-f36b-44c3-a647-d37c27c38ff4",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "363406005",
+              "display": "Malignant neoplasm of colon"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "remission",
+              "display": "Remission"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2016-06",
+        "note": [
+          {
+            "text": "Stage IV (single liver metastasis) at diagnosis; resected. CEA and surveillance CT normal to Nov 2024."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1c2b6042-954c-4864-992a-da3a2cdcaada",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "0edb8f40-602d-4ec2-9693-724f61b33111",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "72166-2",
+              "display": "Tobacco smoking status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "266919005",
+              "display": "Never smoked tobacco"
+            }
+          ]
+        },
+        "effectiveDateTime": "2025-01-22",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:85bee98d-9a88-40de-b3bd-0067c9fa6a27",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "98aad085-a79e-4723-82eb-345c7a5f4c33",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "74013-4",
+              "display": "Alcoholic drinks per day"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 0.3,
+          "unit": "/d",
+          "system": "http://unitsofmeasure.org",
+          "code": "/d"
+        },
+        "effectiveDateTime": "2025-01-22",
+        "note": [
+          {
+            "text": "About 2 standard drinks a week."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:907a1c2d-0915-486b-863e-e5bedf9eb561",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "595f8653-aa5c-4324-b243-6d5850a8d962",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b144.1",
+              "version": "2017a",
+              "display": "Memory functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024",
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c9558587-5a6e-4175-aabe-63c4f37c4937",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "c8dd5267-7aa5-4b3f-8a0d-612131c4ddce",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d570.12",
+              "version": "2017a",
+              "display": "Looking after one's health: performance MILD problem, capacity MODERATE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Manages her medicines with a pharmacy-packed dose administration aid; capacity without it is reduced."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:457fc149-7a81-4e8f-a65a-f6a000320673",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "9b7faf5d-d8eb-482f-a78c-19a8f4f3de67",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b130.1",
+              "version": "2017a",
+              "display": "Energy and drive functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2025-01",
+        "note": [
+          {
+            "text": "Post-operative fatigue."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:b09d4aa5-1f38-4276-bd58-cf70db5d7bea",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "e551ba6f-52e7-42a1-9d33-3d121d386703",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e310+3",
+              "version": "2017a",
+              "display": "Immediate family: SUBSTANTIAL facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Daughter Sarah coordinates appointments and holds medical power of attorney."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a49e8663-62eb-4ebf-bb5b-45b96b8bc659",
+      "resource": {
+        "resourceType": "CarePlan",
+        "id": "5afa118e-bbb2-4841-aa9c-4f642606b7cd",
+        "title": "Shared care: breast cancer treatment with diabetes and kidney disease",
+        "description": "Newly diagnosed early left breast cancer, now excised, in a 72-year-old with type 2 diabetes on basal insulin, stage 2 diabetic kidney disease, and a history of resected stage IV colon cancer (2016, in remission). Mild memory impairment; family very involved.\n\nPlan: adjuvant radiotherapy then letrozole (oncology); GP to monitor glucose closely during treatment - sick day plan given, insulin titration by the diabetes educator; keep renal function stable (no NSAIDs, contrast precautions, metformin hold rules); bone density before letrozole; continue colon cancer surveillance with oncology. Any medication change must go to her pharmacy so the dose administration aid is updated. She is focused on staying well for her grandchildren.",
+        "status": "active",
+        "period": {
+          "start": "2025-01-22",
+          "end": "2025-12-31"
+        },
+        "intent": "plan",
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:78ef8581-2d0f-4577-8702-f522699a6219",
+      "resource": {
+        "resourceType": "Consent",
+        "id": "a5f7fd05-ff8e-41c4-a323-cafac9570dde",
+        "category": [
+          {
+            "text": "Enduring power of attorney (medical treatment)"
+          }
+        ],
+        "status": "active",
+        "dateTime": "2017-02-14",
+        "text": {
+          "status": "additional",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Medical treatment decision maker: Sarah Henderson-Williams (daughter).</p></div>"
+        },
+        "scope": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+              "code": "adr",
+              "display": "Advanced Care Directive"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3c10ab9a-516c-46d9-9a7f-049fcb7cd3e5",
+      "resource": {
+        "resourceType": "Consent",
+        "id": "8f71c253-759b-4c01-bd5f-40453df7c6e6",
+        "category": [
+          {
+            "text": "Advance care plan"
+          }
+        ],
+        "status": "active",
+        "dateTime": "2025-01-22",
+        "text": {
+          "status": "additional",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Wants full active treatment, including resuscitation. Organ donor. Accepts blood transfusion. To be revisited if the cancer recurs.</p></div>"
+        },
+        "scope": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+              "code": "adr",
+              "display": "Advanced Care Directive"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ca27687c-e438-4289-9181-760e0cedcd6d",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "90986d1c-f287-428d-8d4e-1d1fa42f9ccf",
+        "code": {
+          "text": "Uses a dose administration aid: send every medication change to her pharmacy"
+        },
+        "status": "active",
+        "period": {
+          "start": "2024-10-15"
+        },
+        "subject": {
+          "reference": "urn:uuid:455711de-876a-4319-939b-7269088213e3"
+        }
+      }
+    }
+  ]
+}

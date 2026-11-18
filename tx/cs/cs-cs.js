@@ -1,5 +1,5 @@
 const { CodeSystem}  = require("../library/codesystem");
-const { CodeSystemFactoryProvider, FilterExecutionContext }  = require( "./cs-api");
+const { CodeSystemFactoryProvider, FilterExecutionContext, CodeSystemProvider }  = require( "./cs-api");
 const { VersionUtilities }  = require("../../library/version-utilities");
 const { Language }  = require ("../../library/languages");
 const { validateOptionalParameter, getValuePrimitive, validateArrayParameter} = require("../../library/utilities");
@@ -7,14 +7,41 @@ const {Issue} = require("../library/operation-outcome");
 const {Extensions} = require("../library/extensions");
 const {BaseCSServices} = require("./cs-base");
 const regexUtilities = require("../../library/regex-utilities");
+const { NameIndex } = require("../library/text-match");
+const { TextIndexStore } = require("../library/text-index-store");
+
+// Symbol key under which resolved filter analysis is memoised directly on the
+// ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
+// non-enumerable, so it never serialises, clones (structuredClone), or spreads
+// into a response - it simply lives and dies with the filter element (and thus
+// the cached ValueSet). The value is Map(codeSystemVersionKey -> concepts[]):
+// the resolved concept list is only valid for the code system version it was
+// computed against. Only the expensive full-scan / subtree-walk filters are
+// cached (see _isCacheableFilter); cheap ones (=, in, child-of) are not. cs-cs
+// filter results do not depend on forIteration, so one form is stored per version.
+const { FILTER_ANALYSIS, recall, remember } = require('../library/filter-memo');
+
+// The standard concept properties (http://hl7.org/fhir/concept-properties)
+const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
+
+// The text index of each code system (text-match.js), built the first time it is searched, and
+// dropped with the code system: {size, promise of a NameIndex}
+const TEXT_INDEXES = new WeakMap();
 
 /**
  * Context class for FHIR CodeSystem provider concepts
  */
 class FhirCodeSystemProviderContext {
-  constructor(code, concept) {
+  /**
+   * @param {string} code - the code
+   * @param {Object} concept - its definition in the code system
+   * @param {boolean} reserved - true if the code system doesn't define the code, but it is in its
+   *   reserved code space (so the concept is just the code, and supplements may define it)
+   */
+  constructor(code, concept, reserved = false) {
     this.code = code;
     this.concept = concept;
+    this.reserved = reserved;
   }
 }
 
@@ -103,7 +130,45 @@ class FhirCodeSystemProviderFilterContext {
   }
 }
 
+// Code systems loaded as ordinary CodeSystem resources (from a package, or supplied by a
+// client) that need behaviour beyond the resource: a grammar, say. Keyed on the CodeSystem
+// url; the class extends FhirCodeSystemProvider, so the content still comes from the
+// resource. Required lazily, because the subclasses require this module.
+let specialisedProviders = null;
+
+function providerClassFor(url) {
+  if (specialisedProviders === null) {
+    specialisedProviders = new Map([
+      ['http://hl7.org/fhir/sid/icf', require('./cs-icf').IcfCodeSystemProvider]
+    ]);
+  }
+  return specialisedProviders.get(url) || FhirCodeSystemProvider;
+}
+
 class FhirCodeSystemProvider extends BaseCSServices {
+  /**
+   * A code system that reserves code spaces for users (codesystem-reservedCodeSpace) has codes that
+   * aren't listed in an expansion of all of it
+   * @returns {string|null}
+   */
+  openCodeSpaceReason() {
+    return this.codeSystem.reservedCodeSpaces().length > 0 ?
+      "The code system '" + this.system() + "' reserves code spaces for users to define their own codes, and those codes are not in the expansion" : null;
+  }
+
+  /**
+   * The provider for a CodeSystem resource: a FhirCodeSystemProvider, or the subclass
+   * registered for its url. Always use this rather than the constructor.
+   * @param {OperationContext} opContext
+   * @param {CodeSystem} codeSystem
+   * @param {CodeSystem[]} supplements
+   * @returns {FhirCodeSystemProvider}
+   */
+  static create(opContext, codeSystem, supplements) {
+    const cls = providerClassFor(codeSystem.url);
+    return new cls(opContext, codeSystem, supplements);
+  }
+
   /**
    * @param {CodeSystem} codeSystem - The primary CodeSystem
    * @param {CodeSystem[]} supplements - Array of supplement CodeSystems
@@ -127,6 +192,33 @@ class FhirCodeSystemProvider extends BaseCSServices {
    */
   name() {
     return this.codeSystem.jsonObj.name || '';
+  }
+
+  /**
+   * $lookup's display name: CodeSystem.title, translated where the resource carries a
+   * translation for one of the request's languages, else the title as written, else name.
+   * @param {Languages} [languages] - the request's working languages
+   * @returns {string}
+   */
+  lookupName(languages) {
+    const cs = this.codeSystem.jsonObj;
+    if (!cs.title) return this.name();
+    const base = (c) => String(c || '').toLowerCase().split('-')[0];
+    const translations = (cs._title?.extension || [])
+      .filter(e => e.url === 'http://hl7.org/fhir/StructureDefinition/translation')
+      .map(e => ({
+        lang: (e.extension || []).find(x => x.url === 'lang')?.valueCode,
+        content: (e.extension || []).find(x => x.url === 'content')?.valueString,
+      }))
+      .filter(t => t.lang && t.content);
+    for (const l of languages || []) {
+      const want = base(l.language || l.code);
+      if (!want) continue;
+      if (cs.language && base(cs.language) === want) return cs.title;
+      const t = translations.find(t => base(t.lang) === want);
+      if (t) return t.content;
+    }
+    return cs.title;
   }
 
   /**
@@ -190,6 +282,46 @@ class FhirCodeSystemProvider extends BaseCSServices {
    */
   propertyDefinitions() {
     return this.codeSystem.jsonObj.property || null;
+  }
+
+  /**
+   * The codes this code system uses for one of the standard concept properties
+   * (http://hl7.org/fhir/concept-properties#<name>). A property declared with the
+   * standard uri counts whatever local code it was given. A code that the code
+   * system declares with a different uri is a different property, and does not
+   * count. A code the code system doesn't declare (or declares with no uri) is
+   * recognised by the code alone - the standard code, and any legacy aliases
+   *
+   * @param {string} name - the standard property code (e.g. notSelectable)
+   * @param {string[]} aliases - legacy codes also recognised when not declared otherwise
+   * @returns {Set<string>} the local codes for the property
+   */
+  standardPropertyCodes(name, aliases = []) {
+    const uri = CONCEPT_PROPERTIES + name;
+    const defs = this.propertyDefinitions() || [];
+    const codes = new Set();
+    for (const d of defs) {
+      if (d.uri === uri) {
+        codes.add(d.code);
+      }
+    }
+    for (const c of [name, ...aliases]) {
+      if (!defs.some(d => d.code === c && d.uri && d.uri !== uri)) {
+        codes.add(c);
+      }
+    }
+    return codes;
+  }
+
+  /**
+   * Whether the code system declares the code of a standard concept property for a
+   * property of its own (with a different uri), so that the code is not the standard one
+   * @param {string} name - the standard property code
+   * @returns {boolean}
+   */
+  redefinesStandardProperty(name) {
+    const uri = CONCEPT_PROPERTIES + name;
+    return (this.propertyDefinitions() || []).some(d => d.code === name && d.uri && d.uri !== uri);
   }
 
   /**
@@ -298,6 +430,16 @@ class FhirCodeSystemProvider extends BaseCSServices {
       };
     }
 
+    // a code the code system doesn't define, in a code space it reserves for users to define their own
+    // codes, is a valid code. An extension-codes supplement in scope may define it (display etc); if
+    // none does, it has no display
+    if (this.codeSystem.isInReservedCodeSpace(code)) {
+      return {
+        context: new FhirCodeSystemProviderContext(code, { code: code }, true),
+        message: null
+      };
+    }
+
     return {
       context: null,
       message: undefined
@@ -344,6 +486,11 @@ class FhirCodeSystemProvider extends BaseCSServices {
     const supplementDisplay = this._displayFromSupplements(ctxt.code);
     if (supplementDisplay) {
       return supplementDisplay;
+    }
+    // a code in the reserved code space has the display an extension-codes supplement gives it,
+    // whatever languages were asked for - or, if none does, the code space's default display
+    if (ctxt.reserved) {
+      return this._extensionCodeDisplay(ctxt.code) || this.codeSystem.reservedCodeSpaceFor(ctxt.code).defaultDisplay;
     }
 
     // Use language-aware display logic
@@ -401,14 +548,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
       return false;
     }
 
-    // Check for abstract property
+    // Check for the notSelectable property, by whatever code this code system gives it
     if (ctxt.concept.property && Array.isArray(ctxt.concept.property)) {
-      const abstractProp = ctxt.concept.property.find(p =>
-        p.code === 'abstract' ||
-        p.code === 'not-selectable' ||
-        p.code === 'notSelectable' ||
-        p.uri === 'http://hl7.org/fhir/concept-properties#notSelectable'
-      );
+      const codes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
+      const abstractProp = ctxt.concept.property.find(p => codes.has(p.code));
       if (abstractProp && abstractProp.valueBoolean) {
         return true;
       }
@@ -599,12 +742,14 @@ class FhirCodeSystemProvider extends BaseCSServices {
       displays.addDesignation(true, 'active', displayLang, CodeSystem.makeUseForDisplay(), ctxt.concept.display);
     }
 
-    // Add concept designations
+    // Add concept designations. A designation with no language of its own is in the code
+    // system's language (CodeSystem.language), not in no language at all
     if (ctxt.concept.designation && Array.isArray(ctxt.concept.designation)) {
+      const csLang = this.defaultLanguage ? this.defaultLanguage.toString() : '';
       for (const designation of ctxt.concept.designation) {
         let status = Extensions.readString(designation, "http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status");
         displays.addDesignation(false, status || 'active',
-          designation.language || '',
+          designation.language || csLang,
           designation.use || null,
           designation.value,
           designation.extension?.length > 0 ? designation.extension : []
@@ -612,8 +757,17 @@ class FhirCodeSystemProvider extends BaseCSServices {
       }
     }
 
+    // a code in the reserved code space that no extension-codes supplement in scope gives a display has
+    // its code space's default display ('User-assigned'). It is a placeholder, so (as for ISO 3166's
+    // user-assigned codes) another display is not wrong - see validate.js checkDisplays
+    if (ctxt.reserved && !this._extensionCodeDisplay(ctxt.code)) {
+      displays.userDefined = true;
+      const displayLang = this.defaultLanguage ? this.defaultLanguage.toString() : null;
+      displays.addDesignation(true, 'active', displayLang, CodeSystem.makeUseForDisplay(), this.codeSystem.reservedCodeSpaceFor(ctxt.code).defaultDisplay);
+    }
+
     // Add supplement designations
-    this._listSupplementDesignations(ctxt.code, displays);
+    this._listSupplementDesignations(ctxt.code, displays, ctxt.reserved);
   }
 
   /**
@@ -822,6 +976,28 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
+   * The codes a code sits under, for $closure (see CodeSystemProvider.ancestorsOf): the
+   * CodeSystem's own ancestor walk, which is what subsumesTest above asks of each pair.
+   *
+   * Only a code in the form code() gives is answered (in a case-insensitive code system,
+   * another spelling gets null). A subclass with its own subsumesTest (ICF) gets null too,
+   * since this walk may not be what it answers from.
+   *
+   * @param {string|FhirCodeSystemProviderContext} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    if (this.subsumesTest !== FhirCodeSystemProvider.prototype.subsumesTest) {
+      return null;
+    }
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof FhirCodeSystemProviderContext) || (typeof code === 'string' && ctxt.code !== code)) {
+      return null;
+    }
+    return new Set(this.hasParents() ? this.codeSystem.getAncestors(ctxt.code) : []);
+  }
+
+  /**
    * @param {string|FhirCodeSystemProviderContext} context - Code or context to iterate from
    * @returns {Promise<Object|null>} A handle that can be passed to nextContext (or null if can't be iterated)
    */
@@ -904,11 +1080,17 @@ class FhirCodeSystemProvider extends BaseCSServices {
       return;
     }
 
-    // Add properties if requested (or by default)
-    if (this._hasProp(props, 'property', true)) {
+    // Add the concept's properties: each one if it was asked for by its code (or '*', or nothing
+    // was asked for). 'property' asks for all of them - it used to be the only thing that did, so
+    // asking for a property by its own code returned nothing. A code the server doesn't know is
+    // simply not matched
+    {
       const properties = await this.properties(ctxt);
       if (properties) {
         for (const property of properties) {
+          if (!this._hasProp(props, property.code, true) && !this._hasProp(props, 'property', true)) {
+            continue;
+          }
           let parts = [];
           parts.push({ name: 'code', valueCode: property.code });
 
@@ -964,9 +1146,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @param {boolean} iterate - True if results will be iterated
    * @returns {FilterExecutionContext} Filter context
    */
-  async getPrepContext(iterate) {
-    
-    return new FilterExecutionContext(iterate);
+  async getPrepContext(iterate, languages = null) {
+    const result = new FilterExecutionContext(iterate);
+    result.languages = languages; // what the request asked for (a text filter searches one language)
+    return result;
   }
 
   /**
@@ -993,7 +1176,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     // Supported hierarchy filters
     if ((prop === 'concept' || prop === 'code') &&
-      ['is-a', 'descendent-of', 'is-not-a', 'in', '=', 'regex'].includes(op)) {
+      ['is-a', 'descendent-of', 'descendent-leaf', 'is-not-a', 'child-of', 'in', 'not-in', '=', 'regex'].includes(op)) {
       return true;
     }
 
@@ -1124,29 +1307,57 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
   }
   /**
-   * Execute text-based search filter
+   * Execute text-based search filter. The same rules as every provider's search (text-match.js):
+   * the concepts with a name (the display, or a designation) in the search language that has every
+   * word of the filter, or a code that starts with it; and those that a supplement in use gives a
+   * matching name (_supplementSearchCodes). Answered from the code system's text index, built the
+   * first time it is searched
    * @param {FilterExecutionContext} filterContext - Filter context
-   * @param {string} filter - Search text
+   * @param {SearchFilterText} filter - the filter
    * @param {boolean} sort - Whether to sort results by relevance
    * @returns {Promise<FhirCodeSystemProviderFilterContext>} Filter results
    */
   async searchFilter(filterContext, filter, sort) {
-    
-
     const results = new FhirCodeSystemProviderFilterContext();
-    const searchTerm = filter.filter.toLowerCase();
-
-    // Search through all concepts
+    const query = filter.query;
+    // the display and designations in one language only (see searchLanguage)
+    const lang = this.searchLanguage(filterContext.languages);
     const allConcepts = this.codeSystem.getAllConcepts();
+    const index = await this.#textIndex(allConcepts);
+    this.opContext.deadCheck('cs:searchFilter');
 
-    for (const concept of allConcepts) {
-      this.opContext.deadCheck('cs:searchFilter');
-      const rating = this._calculateSearchRating(concept, searchTerm);
-      if (rating > 0) {
-        results.add(concept, rating);
+    const ratings = new Map(); // concept ordinal -> rating
+    for (const [ordinal, texts] of index.searchNames(query, lang)) {
+      const concept = allConcepts[ordinal];
+      let rating = 0;
+      for (const text of texts) {
+        // the display is the better match; a designation, a little less
+        const r = query.nameRank(text, lang) - (text === concept.display ? 0 : 10);
+        rating = Math.max(rating, r);
+      }
+      ratings.set(ordinal, Math.max(1, rating));
+    }
+    for (const ordinal of index.searchCodes(query)) {
+      ratings.set(ordinal, Math.max(ratings.get(ordinal) || 0, query.codeRank(allConcepts[ordinal].code)));
+    }
+    if (this.supplements && this.supplements.length > 0) {
+      const sources = new Map();
+      const supplementCodes = await this._supplementSearchCodes(filter, lang, sources);
+      if (supplementCodes.size > 0) {
+        for (let ordinal = 0; ordinal < allConcepts.length; ordinal++) {
+          const code = allConcepts[ordinal].code;
+          if (supplementCodes.has(code) && !ratings.has(ordinal)) {
+            ratings.set(ordinal, 10);
+            CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
+          }
+        }
       }
     }
 
+    // in the code system's order, unless sorted
+    for (const ordinal of [...ratings.keys()].sort((a, b) => a - b)) {
+      results.add(allConcepts[ordinal], ratings.get(ordinal));
+    }
     if (sort) {
       results.sort();
     }
@@ -1161,53 +1372,61 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
-   * Calculate search relevance rating for a concept
-   * @param {Object} concept - The concept to rate
-   * @param {string} searchTerm - The search term (lowercase)
-   * @returns {number} Rating (0 = no match, higher = better match)
-   * @private
+   * The text index of the code system: its concepts' displays (in its language) and designations
+   * (in theirs), and codes, keyed by the concept's place in getAllConcepts(). Built once, letting
+   * other work run while it is; built again if the concepts change
    */
-  _calculateSearchRating(concept, searchTerm) {
-    let rating = 0;
+  async #textIndex(allConcepts) {
+    // a code system loaded as the server started has its index in the store (text-index-store.js)
+    const stored = TextIndexStore.indexFor(this.codeSystem);
+    if (stored && stored.size === allConcepts.length) {
+      return stored;
+    }
+    let entry = TEXT_INDEXES.get(this.codeSystem);
+    if (!entry || entry.size !== allConcepts.length) {
+      const index = new NameIndex();
+      TextIndexStore.fillCodeSystem(allConcepts, this.defLang(), index);
+      entry = { size: allConcepts.length, promise: index.build() };
+      entry.promise.catch(() => TEXT_INDEXES.delete(this.codeSystem));
+      TEXT_INDEXES.set(this.codeSystem, entry);
+    }
+    return await entry.promise;
+  }
 
-    // Exact matches get highest rating
-    if (concept.code.toLowerCase() === searchTerm) {
-      rating = 100;
-    } else if (concept.display && concept.display.toLowerCase() === searchTerm) {
-      rating = 100;
-    }
-    // Code starts with search term
-    else if (concept.code.toLowerCase().startsWith(searchTerm)) {
-      rating = 90;
-    }
-    // Display starts with search term
-    else if (concept.display && concept.display.toLowerCase().startsWith(searchTerm)) {
-      const lengthRatio = searchTerm.length / concept.display.length;
-      rating = 80 + (10 * lengthRatio);
-    }
-    // Code contains search term
-    else if (concept.code.toLowerCase().includes(searchTerm)) {
-      rating = 60;
-    }
-    // Display contains search term
-    else if (concept.display && concept.display.toLowerCase().includes(searchTerm)) {
-      rating = 50;
-    }
-    // Definition contains search term
-    else if (concept.definition && concept.definition.toLowerCase().includes(searchTerm)) {
-      rating = 30;
-    }
-    // Check designations
-    else if (concept.designation && Array.isArray(concept.designation)) {
-      for (const designation of concept.designation) {
-        if (designation.value && designation.value.toLowerCase().includes(searchTerm)) {
-          rating = 40;
-          break;
-        }
+  /**
+   * The code's own display, without what supplements give it
+   */
+  async _rootDisplay(code) {
+    const concept = this.codeSystem.getConceptByCode(code);
+    return concept ? concept.display || null : null;
+  }
+
+  /**
+   * As for any code system (CodeSystemProvider.searchLanguage), but whether there is text in
+   * a language is decided by what the code system actually has: its own language, a designation
+   * in it, or a supplement's (hasAnyDisplays says yes to English whatever the code system's
+   * language is)
+   */
+  searchLanguage(languages) {
+    for (const lang of (languages && languages.languages) || []) {
+      if (lang && lang.language && lang.code !== '*' && this.#hasSearchText(lang)) {
+        return lang;
       }
     }
+    return new Language(this.defLang());
+  }
 
-    return rating;
+  #hasSearchText(lang) {
+    const csLang = this.defLang();
+    if (CodeSystemProvider.inSearchLanguage(csLang, lang)) {
+      return true;
+    }
+    for (const concept of this.codeSystem.getAllConcepts()) {
+      if ((concept.designation || []).some(d => d.value && CodeSystemProvider.inSearchLanguage(d.language, lang, csLang))) {
+        return true;
+      }
+    }
+    return this._hasSupplementText(lang);
   }
 
   /**
@@ -1218,40 +1437,65 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @param {string} value - Filter value
    * @returns {Promise<FhirCodeSystemProviderFilterContext>} Filter results
    */
-  async filter(filterContext, forIteration, prop, op, value) {
-    
-
+  async filter(filterContext, forIteration, prop, op, value, fc) {
     let results = null;
 
-    // Handle concept/code hierarchy filters
-    if ((prop === 'concept' || prop === 'code')) {
-      results = await this._handleConceptFilter(filterContext, prop, op, value);
-    }
-
-    // Handle child existence filter
-    if (prop === 'child' && op === 'exists') {
-      results = await this._handleChildExistsFilter(filterContext, value);
-    }
-
-    // Handle property-based filters
-    const propertyDefs = this.propertyDefinitions();
-    if (propertyDefs) {
-      const propertyDef = propertyDefs.find(p => p.code === prop);
-      if (propertyDef) {
-        results = await this._handlePropertyFilter(filterContext, propertyDef, op, value);
+    // Reuse previously resolved analysis when this same cached value set filter
+    // is resolved again against the same code system version (see filter()/fc).
+    // Only expensive filters are cached; the concept list is shared read-only,
+    // wrapped in a fresh context so iteration state (the cursor) is per-use.
+    // Caching needs a stable code system identity. When the code system has no
+    // url (odd corner cases) _filterCacheVersionKey returns null and caching is
+    // skipped entirely - there's no safe key to store or look up under.
+    const vkey = fc ? this._filterCacheVersionKey() : null;
+    const cacheable = vkey !== null && this._isCacheableFilter(prop, op);
+    if (cacheable) {
+      const cachedConcepts = recall(fc, FILTER_ANALYSIS, vkey);
+      if (cachedConcepts) {
+        results = new FhirCodeSystemProviderFilterContext();
+        results.concepts = cachedConcepts; // immutable: read-only from here
       }
     }
 
-    // Handle known special properties
-    const knownProperties = ['notSelectable', 'status', 'inactive', 'deprecated'];
-    if (knownProperties.includes(prop)) {
-      results = await this._handleKnownPropertyFilter(filterContext, prop, op, value);
+    if (!results) {
+      // Handle concept/code hierarchy filters
+      if ((prop === 'concept' || prop === 'code')) {
+        results = await this._handleConceptFilter(filterContext, prop, op, value);
+      }
+
+      // Handle child existence filter
+      if (prop === 'child' && op === 'exists') {
+        results = await this._handleChildExistsFilter(filterContext, value);
+      }
+
+      // Handle property-based filters
+      const propertyDefs = this.propertyDefinitions();
+      if (propertyDefs) {
+        const propertyDef = propertyDefs.find(p => p.code === prop);
+        if (propertyDef) {
+          results = await this._handlePropertyFilter(filterContext, propertyDef, op, value);
+        }
+      }
+
+      // Handle known special properties - unless the code system uses the code for a
+      // property of its own, in which case the property filter above applies
+      const knownProperties = ['notSelectable', 'status', 'inactive', 'deprecated'];
+      if (knownProperties.includes(prop) && !this.redefinesStandardProperty(prop)) {
+        results = await this._handleKnownPropertyFilter(filterContext, prop, op, value);
+      }
+
+      if (!results) {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+              this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
+
+      // Store a private copy of the resolved concept list for reuse. A slice
+      // isolates the cache from any later mutation of this request's context.
+      if (cacheable) {
+        remember(fc, FILTER_ANALYSIS, vkey, results.concepts.slice());
+      }
     }
 
-    if (!results) {
-      throw new Issue('error', 'exception', null, 'FILTER_NOT_UNDERSTOOD',
-            this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
-    }
     // Add to filter context
     if (!filterContext.filters) {
       filterContext.filters = [];
@@ -1259,6 +1503,38 @@ class FhirCodeSystemProvider extends BaseCSServices {
     filterContext.filters.push(results);
 
     return results;
+  }
+
+  /**
+   * Whether a filter is expensive enough to be worth memoising: the full-scan
+   * or subtree-walk families. Cheap lookups (=, in on a code list, child-of)
+   * are not cached. Mirrors the dispatch in filter().
+   * @private
+   */
+  _isCacheableFilter(prop, op) {
+    if (prop === 'concept' || prop === 'code') {
+      return op === 'is-a' || op === 'descendent-of' || op === 'descendent-leaf' || op === 'is-not-a' || op === 'regex';
+    }
+    if (prop === 'child' && op === 'exists') {
+      return true;
+    }
+    const propertyDefs = this.propertyDefinitions();
+    if (propertyDefs && propertyDefs.find(p => p.code === prop)) {
+      return true;
+    }
+    return ['notSelectable', 'status', 'inactive', 'deprecated'].includes(prop);
+  }
+
+  /**
+   * Cache key pinning resolved analysis to the code system identity + version.
+   * @private
+   */
+  _filterCacheVersionKey() {
+    const url = this.codeSystem.jsonObj.url;
+    if (!url) {
+      return null;
+    }
+    return url + '|' + (this.codeSystem.jsonObj.version || '');
   }
 
   /**
@@ -1276,6 +1552,19 @@ class FhirCodeSystemProvider extends BaseCSServices {
       // Find all descendants of the specified code
       const includeRoot = (op === 'is-a');
       await this._addDescendants(results, value, includeRoot);
+    } else if (op === 'descendent-leaf') {
+      // R5: the descendants that have no children of their own
+      if (this.codeSystem.getConceptByCode(value)) {
+        for (const code of this.codeSystem.getDescendants(value)) {
+          this.opContext.deadCheck('cs:conceptFilter:descendent-leaf');
+          if (code !== value && this.codeSystem.getChildren(code).length === 0) {
+            const concept = this.codeSystem.getConceptByCode(code);
+            if (concept) {
+              results.add(concept, 0);
+            }
+          }
+        }
+      }
     } else if (op === 'child-of') {
       // Find all descendants of the specified code
       await this._addChildren(results, value);
@@ -1305,6 +1594,20 @@ class FhirCodeSystemProvider extends BaseCSServices {
         }
       }
     }
+    else if (op === 'not-in') {
+      // Every code except the listed ones (comma separated) - their descendants are not excluded
+      const excludeSet = new Set(value.split(',').map(c => c.trim()));
+      const allCodes = this.codeSystem.getAllCodes();
+      for (const code of allCodes) {
+        this.opContext.deadCheck('cs:conceptFilter:not-in');
+        if (!excludeSet.has(code)) {
+          const concept = this.codeSystem.getConceptByCode(code);
+          if (concept) {
+            results.add(concept, 0);
+          }
+        }
+      }
+    }
     else if (op === '=') {
       // Exact match
       const concept = this.codeSystem.getConceptByCode(value);
@@ -1315,7 +1618,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     else if (op === 'regex') {
       // Regular expression match
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
         const allCodes = this.codeSystem.getAllCodes();
         for (const code of allCodes) {
           this.opContext.deadCheck('cs:conceptFilter:regex');
@@ -1330,7 +1633,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
         throw new Issue('error', 'exception', null, 'INVALID_REGEX', this.opContext.i18n.translate('INVALID_REGEX', this.opContext.langs, [value, error.message]), 'vs-invalid', 422);
       }
     } else {
-      throw new Issue('error', 'exception', null, 'FILTER_NOT_UNDERSTOOD',
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
           this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
@@ -1463,7 +1766,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     else if (op === 'regex') {
       try {
-        const regex = regexUtilities.compile('^' + value + '$');
+        const regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
         return properties.some(p => regex.test(this._getPropertyValue(p)));
       } catch (error) {
         return false;
@@ -1503,13 +1806,14 @@ class FhirCodeSystemProvider extends BaseCSServices {
   async _handleKnownPropertyFilter(filterContext, prop, op, value) {
     const results = new FhirCodeSystemProviderFilterContext();
     const allConcepts = this.codeSystem.getAllConcepts();
+    const nsCodes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:knownPropertyFilter');
       let matches = false;
 
       if (prop === 'notSelectable') {
-        const abstractProp = (concept.property || []).find(p => p.code === 'abstract' || p.code === 'notSelectable' || p.uri === 'http://hl7.org/fhir/concept-properties#notSelectable');
+        const abstractProp = (concept.property || []).find(p => nsCodes.has(p.code));
         let vv = abstractProp ? String(getValuePrimitive(abstractProp)) : null;
         if (op === '=') {
           matches = (vv === value);
@@ -1606,7 +1910,7 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
       });
     }
 
-    return new FhirCodeSystemProvider(opContext, codeSystem, supplements);
+    return FhirCodeSystemProvider.create(opContext, codeSystem, supplements);
   }
 
   // eslint-disable-next-line no-unused-vars
@@ -1622,9 +1926,41 @@ class FhirCodeSystemFactory extends CodeSystemFactoryProvider {
     return "cs";
   }
 
+  /**
+   * This factory wraps whatever CodeSystem it is handed at build() time, so it has no
+   * system or version of its own. It is never registered in codeSystemFactories (which
+   * is keyed on system()); these answer for the abstract contract, not for a lookup.
+   */
+  system() {
+    return null;
+  }
+
+  version() {
+    return null;
+  }
+
+}
+
+/**
+ * Whether a code system has a text index built in memory (for the caches page)
+ * @param {CodeSystem} codeSystem
+ */
+function hasMemoryTextIndex(codeSystem) {
+  return TEXT_INDEXES.has(codeSystem);
+}
+
+/**
+ * Let go of a code system's in-memory text index (it is built again when next searched)
+ * @param {CodeSystem} codeSystem
+ * @returns {boolean} whether it had one
+ */
+function dropMemoryTextIndex(codeSystem) {
+  return TEXT_INDEXES.delete(codeSystem);
 }
 
 module.exports = {
+  hasMemoryTextIndex,
+  dropMemoryTextIndex,
   FhirCodeSystemFactory,
   FhirCodeSystemProvider,
   FhirCodeSystemProviderContext,

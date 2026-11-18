@@ -10,6 +10,7 @@
   <meta charset="utf-8" http-equiv="X-UA-Compatible" content="IE=edge" />
 
   <link rel="stylesheet" href="/fhir.css"/>
+  [%api-head%]
 
     <!-- Bootstrap core CSS -->
   <link rel="stylesheet" href="/assets/css/bootstrap.css"/>
@@ -82,14 +83,15 @@
 		<div id="stripe"> </div>
 		<div class="container">
 		<div style="background-color: #ad1f2f; padding: 6px; color: white;">
-  <a href="http://www.hl7.org/fhir" style="color: gold" title="Fast Healthcare Interoperability Resources - Home Page"><img border="0" src="/icon-fhir-16.png" style="vertical-align: text-bottom"/> <b>FHIR</b></a> [%fhir-version%] &copy; HL7.org &nbsp;|&nbsp;
-  <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" style="vertical-align: text-bottom"/> FHIRsmith</a> [%ver%] &nbsp;|&nbsp;
   <a href="/" style="color: gold"> Server Home</a> &nbsp;|&nbsp;
   <a href="[%endpoint-path%]" style="color: gold">TX Home</a>  &nbsp;|&nbsp;
             <a href="[%endpoint-path%]/metadata" style="color: gold">Capability Statement</a>  &nbsp;|&nbsp;
             <a href="[%endpoint-path%]/metadata?mode=terminology" style="color: gold">Terminology Capabilities</a>  &nbsp;|&nbsp;
             <a href="[%endpoint-path%]/op.html" style="color: gold">Operations</a>  &nbsp;|&nbsp;
+            <a href="[%endpoint-path%]/ecl" style="color: gold">ECL</a>  &nbsp;|&nbsp;
             <a href="[%endpoint-path%]/problems.html" style="color: gold">Problems</a>  &nbsp;|&nbsp;
+            [%api-link%]
+            [%library-link%]
   &nbsp;
 		</div>
 		</div>
@@ -101,7 +103,7 @@
             	<div class="inner-wrapper">
  <div class="col-12">
 
-  <h2><img border="0" src="/FHIRsmith32.png" style="vertical-align: text-bottom"/> TX: [%title%] </h2>
+     <h2><a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" title="FHIRsmith [%ver%]"><img border="0" src="/FHIRsmith32.png" alt="FHIRsmith Logo" style="vertical-align: text-bottom"/></a> TX: [%title%] </h2>
 
 [%content%]
 
@@ -117,8 +119,7 @@
 		<div class="container">
 			<div class="inner-wrapper">
 				<p>
-                    <a href="http://www.hl7.org/fhir" style="color: gold" title="Fast Healthcare Interoperability Resources - Home Page"><img border="0" src="/icon-fhir-16.png" style="vertical-align: text-bottom"/> <b>FHIR</b></a> v[%fhir-version%] &copy; HL7.org 2011+.  &nbsp;|&nbsp;
-                    <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" style="vertical-align: text-bottom"/> FHIRsmith</a>  [%ver%]  &copy; HealthIntersections.com.au 2023+ &nbsp;|&nbsp;
+                    <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" alt="FHIRsmith Logo" style="vertical-align: text-bottom"/> FHIRsmith</a>  [%ver%]  &copy; HealthIntersections.com.au 2023+ &nbsp;|&nbsp;
                     &nbsp; ([%ms%] ms)
                     [%sponsorMessage%]
         </p>

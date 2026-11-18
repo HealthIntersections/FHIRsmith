@@ -1,5 +1,5 @@
 <!--- admin -->
-const escape = require('escape-html');
+// escape() here is the browser's (it encodes the cookie value)
 
 function setCookie(c_name,value,exdays)
 {

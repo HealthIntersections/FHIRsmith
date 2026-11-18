@@ -1,10 +1,90 @@
 {
+  // A starting point for config.json: every section, with comments (config.json may have
+  // // and /* */ comments too). Every module is off: set "enabled": true on the ones you run
   "server": {
     "port": 3000,
     "cors": {
       "origin": true,
       "credentials": true
     }
+    // The largest request body accepted, in MB (bigger: 413). Optional; this is the default.
+    // "maxBodyMB": 50,
+    // Memory protection, as fractions of the memory limit (the cgroup limit - MemoryMax on the
+    // systemd unit - or else the machine's RAM), measured against process RSS (with a role,
+    // the whole cgroup's private memory: cluster.md). Above
+    // rejectFraction new requests get 503 + Retry-After; above abortFraction running operations
+    // are aborted with 422 too-costly. While refusing, the server forces a GC now and then;
+    // with trimAllocator it also returns the C allocator's free memory (malloc_trim, Linux):
+    // off by default, on by default with a role (cluster.md). Optional; these are the defaults.
+    // "memory": { "rejectFraction": 0.85, "abortFraction": 0.92, "trimAllocator": false }
+  },
+  // Usage statistics. Request counts are kept per module, per endpoint and per
+  // operation, and written to a SQLite database every intervalMinutes so they
+  // survive restarts and upgrades. Each row carries both the count for that
+  // interval and the all-time total. The whole block is optional.
+  "stats": {
+    // set false to keep statistics in memory only (nothing is written to disk)
+    "enabled": true,
+    // relative paths resolve under the data folder's databases directory
+    "database": "stats.db",
+    // how often the counters are written out
+    "intervalMinutes": 10
+    // how often the graphs take a sample: intervalMinutes unless set; with a role, at most 60
+    // "sampleSeconds": 60
+  },
+  // Once a day the server checks its installed npm packages against the npm advisory
+  // database (what `npm audit` does - report only, nothing is changed). Problems show on
+  // the home page and the dashboard, and in the log. Needs outbound access to
+  // registry.npmjs.org. The whole block is optional.
+  "npmAudit": {
+    // set false to turn the check off (e.g. a server with no internet access)
+    "enabled": true,
+    "intervalHours": 24
+  },
+  // Outbound email, over SMTP. Optional: without it nothing is emailed. user/password are
+  // optional too (an open relay); secure defaults to true for port 465, otherwise STARTTLS
+  "email": {
+    "host": "smtp.example.org",
+    "port": 587,
+    "user": "fhirsmith",
+    "password": "<!-- password -->",
+    "from": "FHIRsmith <fhirsmith@example.org>"
+  },
+  // A markdown report on the server - its uptime since the last report, restarts and
+  // upgrades, a paragraph from any module with something to say, and the version, logs
+  // and free disk space - emailed at midnight (local time), or as soon as the server is
+  // up again if it was down then. Titled "{hostName} daily report". Needs "email" above;
+  // the whole block is optional
+  "dailyReport": {
+    "enabled": true,
+    "to": ["ops@example.org"]
+  },
+  // Logging (CONFIGURATION.md). The whole block is optional; these are the defaults
+  "logging": {
+    // error, warn, info, debug or verbose
+    "level": "info",
+    // log lines to stdout/stderr too (as a systemd service they go to the journal: set false)
+    "console": true,
+    // whether errors and warnings go to the console as well as the log file
+    "consoleErrors": false,
+    // daily log files kept
+    "maxFiles": 14,
+    // the size a log file is rotated at ("20m", "1g", or bytes); unset: no limit
+    // "maxSize": "50m",
+    // how often buffered lines are written (ms), and how many lines write them at once
+    "flushInterval": 2000,
+    "flushSize": 200,
+    // when the event loop hasn't run for this many seconds (a request holding the process),
+    // a watchdog reads the main thread's stack, and again while it lasts (up to 5 times):
+    // to logs/stall-<instance code or pid>-<time>.txt, and the log. 0: not watched. A small
+    // value (2) is cheap, and useful when hunting what blocks a server
+    "stallReportSeconds": 30
+  },
+  // Accessibility. checkPanel adds a button to the bottom of every page that checks the page,
+  // as it is in the browser, against WCAG 2.0 A/AA (using axe-core) and checks its heading
+  // structure. axe-core is only loaded when the button is pressed. Optional.
+  "accessibility": {
+    "checkPanel": false
   },
   "modules": {
     "shl": {
@@ -40,34 +120,159 @@
     },
     "xig": {
       "enabled": false,
-      "autoUpdate": true
+      "autoUpdate": true,
+      // shared secret for POST /xig/update, which re-downloads the database on demand. Send
+      // it in the x-update-token header. Omit this and the endpoint is disabled entirely -
+      // the scheduled update (autoUpdate) is unaffected either way.
+      "updateToken": "change-this-to-a-secure-random-string",
+      // the public address the sitemap's URLs (/xig/sitemap.xml) start with. Optional; without
+      // it, the request's own address - only right behind a proxy that passes the host and scheme on
+      // "baseUrl": "https://npm.fhir.org",
+      // how many connections to the database: each runs one query at a time. Optional; 4
+      "connections": 4
     },
     "packages": {
       "enabled": false,
       "database": "/absolute/path/to/packages.db",
+      // how many connections requests read the database through (each runs one query at a
+      // time; the crawler writes through another). 0: everything through the one. Optional; 4
+      "readConnections": 4,
       "mirrorPath": "/absolute/path/to/mirror",
+      // shared secret for POST /packages/crawl, which triggers a full registry crawl on
+      // demand. Send it in the x-crawl-token header. Omit this and the endpoint is
+      // disabled entirely - the scheduled crawler below is unaffected either way.
+      "crawlToken": "change-this-to-a-secure-random-string",
       "crawler": {
         "enabled": true,
-        "schedule": "0 * * * *"
+        "schedule": "0 * * * *",
+        // limits on a package, so a hostile or broken one (a decompression bomb, say) costs
+        // a bounded amount. These are the defaults. maxDownloadMB: the package file;
+        // maxUnpackedMB: its files once unzipped (streamed, so this limits work, not
+        // memory); maxFileMB: a file the crawler reads (package.json, .index.json, ig.ini
+        // and each .json, for its url) - memory use is bounded by this; maxFiles: the number
+        // of files in a package
+        "maxDownloadMB": 250,
+        "maxUnpackedMB": 4096,
+        "maxFileMB": 50,
+        "maxFiles": 250000,
+        // and on downloads: maxFeedMB, a feed (JSON or RSS; the largest, Simplifier's, is 5 MB);
+        // maxRequestSeconds, the longest a download (feed or package) may take, response included
+        "maxFeedMB": 50,
+        "maxRequestSeconds": 300,
+        // publishers' package signatures, for feeds that list signing keys in package-feeds.json:
+        // "ignore"; "check" (the default: a signature that fails is logged, and the package
+        // stored anyway, unless the feed says signing.required); or "require" (an unsigned
+        // package, or one whose signature fails, is refused, and feeds that list no keys aren't
+        // read at all)
+        "signatures": "check"
+      },
+      // npm registry signatures (npm audit signatures). On by default. keyFile is the EC
+      // P-256 signing key (PEM), relative to the database's folder; made if it's not there
+      "npmSigning": {
+        "enabled": true,
+        "keyFile": "npm-signing-key.pem"
+      },
+      // /packages/feed-check: checks a package feed the way the crawler reads it, storing
+      // nothing; one check at a time. On by default; the other settings are the defaults.
+      // maxItems: items checked per run (each one's package is downloaded); maxTotalMB:
+      // downloaded per run; keepMinutes: how long a run's report is kept
+      "feedCheck": {
+        "enabled": true,
+        "maxItems": 50,
+        "maxTotalMB": 500,
+        "keepMinutes": 60
+      },
+      // /packages/npm-check: checks any registry against the npm registry protocol. On by
+      // default; the other settings are the defaults. "control": false stops the daily
+      // check against the npm registry itself.
+      "npmCheck": {
+        "enabled": true,
+        "maxConcurrentRuns": 2,
+        "runsPerWindow": 10,
+        "requestTimeout": 30000,
+        "maxDownloadMB": 50
       }
     },
     "registry": {
-      "enabled": true,
+      "enabled": false,
       "masterUrl": "https://fhir.github.io/ig-registry/tx-servers.json",
       "crawlInterval": 30,
       "timeout": 30000,
       "userAgent": "YourServer/1.0",
-      "apiKeys": {}
+      "apiKeys": {},
+      // OAuth2 client credentials for servers that need them to be scanned, by server code:
+      // "oauth": { "code": { "tokenEndpoint": "https://...", "clientId": "...", "clientSecret": "...", "scope": "" } }
+      "oauth": {},
+      // the most a crawled server's response can be, once unzipped
+      "maxResponseMB": 100,
+      // the longest a request may take, response included ("timeout" is only the wait for it to start)
+      "maxRequestSeconds": 120,
+      // how far back the software page reports each server's uptime, and how long scan outcomes are kept
+      "uptimeWindowDays": 30,
+      "uptimeRetentionDays": 90
+      // Securing the JSON API (the HTML pages stay open). Omit for an open registry. Any of the
+      // three can be configured, alone or together - see registry/documentation/security.md
+      // "security": {
+      //   "apiToken": "one token every client sends",
+      //   "users": { "database": "registry-auth.db", "adminUsername": "admin", "adminPassword": "...", "sessionSecret": "...", "cookieSecure": true },
+      //   "oidc": { "issuer": "https://login.microsoftonline.com/{tenant}/v2.0", "audience": "api://ecosystem.hl7.org", "requiredScope": "registry.read" }
+      // }
     },
     "publisher": {
-      "enabled": true,
+      "enabled": false,
       "database": "/absolute/path/to/publisher.db",
+      // required. Without it the publisher generates a random secret at startup, logs a
+      // warning, and logins stop working across restarts.
       "sessionSecret": "change-this-to-a-secure-random-string",
+      // the password of the administrator, login 'admin' - set at every start, so changing it
+      // here changes it. Without it, the administrator gets a random password, which is logged
+      "adminPassword": "change-this-to-a-secure-password",
+      // session cookies are marked Secure by default, so they only travel over HTTPS.
+      // Set false only to run the publisher over plain HTTP - otherwise the browser will
+      // not send the cookie back and logins will appear to do nothing. Behind a TLS
+      // proxy, make sure it sets X-Forwarded-Proto.
+      "cookieSecure": true,
+      // failed-login attempts allowed per IP per 15 minutes (default 20)
+      "loginAttemptsPerWindow": 20,
+      // per IP address per minute: task actions (create, approve, delete, retry), and reads
+      // of task output, history and QA pages and files
+      "taskActionsPerMinute": 30,
+      "taskReadsPerMinute": 300,
       "workspaceRoot": "/absolute/path/to/workspaces",
-      "igPublisherTimeoutMinutes": 60
+      "igPublisherTimeoutMinutes": 60,
+      // where to put files the IG Publisher leaves in the web folder that are too big for GitHub
+      // (>100MB). Only applies to websites whose publish-setup.json has $.website.github = true.
+      // Omit to leave them in place - the push will then fail. Relative paths resolve under the
+      // publisher data folder
+      "large-file-archive": "/absolute/path/to/large-file-archive",
+      // where to clone the IG registry from. Omit for the default,
+      // git@github.com:FHIR/ig-registry.git. Set this to an ssh_config Host alias when the
+      // server should push the registry with a repo-scoped deploy key instead of an account
+      // key - e.g. "git@github-ig-registry:FHIR/ig-registry.git", with a matching Host block
+      // in the service user's ~/.ssh/config carrying IdentityFile and IdentitiesOnly yes.
+      // The alias is what lets ssh tell this remote apart from the website remote.
+      "ig-registry-url": "git@github.com:FHIR/ig-registry.git",
+      // Tagging the IG source repo and publishing a GitHub release with a zip of its source, at
+      // the end of a successful publication. Omit this whole block to skip that step - without it
+      // there is no credential that can write to a source repository.
+      //
+      // This is a GitHub App, not a personal access token: a fine-grained PAT cannot span two
+      // organisations, and a classic PAT would act as whoever minted it. Create the App with
+      // "Where can this GitHub App be installed?" = Any account, give it Contents: Read and write
+      // (which covers tags as well as releases), then install it on each org below with access to
+      // all repositories. The installation id is in the URL of the installation's settings page.
+      "github-app": {
+        "app-id": "123456",
+        "private-key": "/absolute/path/to/app-private-key.pem",
+        // github org name (as it appears on the publication task) -> installation id
+        "installations": {
+          "HL7": 12345678,
+          "FHIR": 87654321
+        }
+      }
     },
     "npmprojector": {
-      "enabled": true,
+      "enabled": false,
       "fhirVersion": "r4",  // Options: "r4", "r5", "stu3", "dstu2"
       "basePath": "/fhir",   // Default: "/npmprojector"
       "npmPath": "./data/fhir-package",
@@ -76,7 +281,7 @@
       "debounceMs": 500
     },
     "token": {
-      "enabled": true,
+      "enabled": false,
       "database": "/absolute/path/to/token.db",
       "sessionSecret": "change-this-to-a-secure-random-string-for-token-sessions",
       "oauth": {
@@ -120,9 +325,92 @@
     "tx": {
       "enabled": false,
       "librarySource": "/absolute/path/to/library.yml",
+      // publish the library source above at <endpoint>/library, so users can see what this
+      // server actually loads. One URL, content negotiated: a browser gets a formatted page
+      // (and a "Library" item in the tx nav bar), anything else gets the YAML file itself.
+      // Off by default - the file names every database, cache and package the server runs.
+      "publishLibrarySource": false,
+      // How SNOMED CT cache files are loaded (see tx/README.md, "Loading SNOMED CT"). Optional;
+      // without it every edition is read into the process, as before. "load": "read" or "mmap"
+      // for every edition; "prewarm": editions to map, then read through once in the background at startup;
+      // "read": editions to read into the process anyway. Entries are cache file names, edition
+      // version URIs or edition URIs
+      // "snomed": { "load": "mmap", "prewarm": ["sct_intl_20250201.cache", "sct_us_20250901b.cache"], "read": [] },
       "cacheTimeout": 30,
+      // Memory limits (see tx/README.md, "Configuration Options"); these are the defaults,
+      // which apply when a limit is left out or null; 0 = no limit. Logged at startup ("Limits: ...")
+      // concepts one client side cache may hold; more is refused with 422 too-costly
+      "cacheMaxConcepts": 250000,
+      // concepts an endpoint's client side caches hold between them; the least recently used
+      // caches are dropped (their cache-id then gets a 404 cache-id-unknown)
+      "cacheMaxTotalConcepts": 1000000,
+      // concepts the filter results remembered on package value sets hold between them (a
+      // resolved ECL expression, the concepts a full scan found); least recently used dropped
+      "filterMemoMaxConcepts": 10000000,
+      // the password for emptying the caches on the caches page (/{path}/caches). Without it, the
+      // page lists the caches and can't empty them
+      // "adminPassword": "<!-- secret -->",
+      // distinct codes, and longest code (characters), counted for usage-count; others aren't counted
+      "usageTrackerMaxCodes": 1000000,
+      "usageTrackerMaxCodeLength": 100,
+      // parsed language tags kept (least recently used dropped)
+      "languageTagCacheSize": 1000,
+      // a code an include lists (compose.include.concept), or an include filter selects by
+      // (is-a etc.), that isn't in its code system: true
+      // - the value set can't be expanded ($expand fails with 422); false - the code is left
+      // out, and the expansion says so (an expansion-issue warning). Default false
+      "errorsForInvalidCodes": false,
+      // Optional. A short code (1-16 letters and digits) naming this server instance. Every
+      // cache-id the server issues then starts with "<code>.", so a proxy in front of
+      // several instances can route cached requests back to the instance that holds the
+      // cache. Leave unset for a single server. See nginx.md.
+      // "instanceCode": "tx1",
+      // The syndication feed (Terminology Syndication Feed IG) at <endpoint>/syndication. When
+      // it is on, the packages, resource files and published binaries the library loads are
+      // recorded in <data>/terminology-cache/syndication as they load - only from the time it
+      // is turned on - and the feed is built from that record. The full CPT database is never
+      // syndicated. Every endpoint shares the one store.
+      "syndication": {
+        "enabled": false
+      },
+      // $closure: closure tables are kept on the server, across sessions and restarts, so
+      // the operation is off unless it is turned on here. When it is on, only one server
+      // instance may use the database - route every $closure request to it (see nginx.md).
+      "closure": {
+        "enabled": false,
+        // relative paths resolve under the data folder's databases directory
+        "database": "closure.db",
+        // require table names to be UUIDs, so names chosen by unrelated clients can't
+        // collide (public servers). Otherwise a name is anything up to 64 characters with
+        // no white space
+        "requireUuidNames": false,
+        // limits: these are the defaults, which apply when a limit is left out; 0 = no limit
+        "maxTables": 1000,
+        "maxConceptsPerTable": 10000,
+        "maxConceptsPerRequest": 1000,
+        "maxEntriesPerTable": 250000,
+        "maxEntriesPerRequest": 50000,
+        // bytes of configuration kept with a table - mostly the tx-resource code systems
+        "maxConfigSize": 5242880,
+        // calls that can queue for one table (counting the one running), and how long, in
+        // seconds, a call will wait for its turn; beyond either, the call gets a 429
+        "maxQueue": 10,
+        "lockTimeout": 60
+        // delete tables that nobody has touched (initialised, added to or resynced) for this
+        // many days. Checked at startup and then daily. Leave it out and nothing is ever
+        // deleted - the right default for a private server; public servers should set it:
+        // , "retentionDays": 90
+      },
       "expansionCacheSize": 1000,
       "expansionCacheMemoryThreshold": 0,
+      // most codes the expansion caches hold in all (default: a quarter of the heap limit, at 1 KB a code)
+      // "expansionCacheMaxCodes": 1000000,
+      // most XML and JSON, in MB, kept per process for large resources (0: none; default 256).
+      // Counted in characters: text outside Latin-1 takes two bytes each, so up to twice this
+      // "xmlCacheMB": 256,
+      // how many connections to the LOINC database the requests share (each runs one query at
+      // a time); 0: each request opens its own. Optional; this is the default
+      // "loincConnections": 4,
       "endpoints": [
         {
           "path": "/tx/r5",
@@ -153,9 +441,130 @@
       ]
     },
     "ext-tracker": {
-      "enabled": true,
+      "enabled": false,
       "database": "/var/fhir/data/extension-tracker.db",
-      "url": "/ext-tracker"
+      "url": "/ext-tracker",
+      // the token submissions must carry (Authorization: Bearer ...). The IG Publisher sends
+      // 9D1C23C0-3915-4542-882E-2BCC55645DF8 - it's in the publisher's source, so it is not a
+      // secret, but it keeps out submissions that aren't from the publisher. Omit it and
+      // submissions need no token
+      "token": "9D1C23C0-3915-4542-882E-2BCC55645DF8"
+    },
+    // TestReports from TxTester and other tools, at /testing. See testing/readme.md
+    "testing": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "testing.db",
+      // if set, every POST must carry this token in tokenHeader (a "Bearer " prefix is
+      // allowed). Leave it out and anyone can submit a report
+      // "token": "<!-- secret -->",
+      "tokenHeader": "Authorization",
+      // DELETE of a report needs this token, in the same header. No adminToken, no deletes
+      // "adminToken": "<!-- secret -->",
+      // the web administration pages: log in as 'admin' with this password to manage users
+      // (who can edit the named links and/or delete reports). No adminPassword, no administrator
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
+      // bytes
+      "maxSize": 512000,
+      // reports per IP address per window; max 0 turns the limit off
+      "rateLimit": { "windowMinutes": 1, "max": 60 }
+      // delete reports received more than this many days ago. Leave it out to keep everything
+      // , "retentionDays": 365
+    },
+    // International Patient Summary documents, in projects, at /ips. See ips/readme.md
+    "ips": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "ips/ips-content.db",
+      // the administrator: creates and deletes projects and users, and says who manages
+      // which project. No adminPassword, no administrator
+      "adminUsername": "admin",
+      // "adminPassword": "<!-- secret -->",
+      // signs the login cookie; without it logins don't survive a restart
+      // "sessionSecret": "<!-- random string -->",
+      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
+      // "cookieSecure": true,
+      // failed-login attempts allowed per IP per 15 minutes (default 20)
+      "loginAttemptsPerWindow": 20,
+      // the biggest document accepted, in bytes (default 10MB)
+      "maxSize": 10485760,
+      // documents submitted per IP address per window; max 0 turns the limit off
+      "rateLimit": { "windowMinutes": 1, "max": 60 },
+      // the background loop that processes received documents
+      "processing": { "enabled": true, "intervalSeconds": 5 },
+      // the terminology server, for links to code systems and for analysing documents:
+      // an http(s) URL, or - when the tx module is enabled - one of its endpoint paths
+      // (modules.tx.endpoints[].path, e.g. /r4), to which requests are then routed
+      // in-process. Omit it for no links and no analysis
+      "txServer": "/tx/r4",
+      // "txServer": "https://tx.fhir.org/r4",
+      // (rateLimit also takes lookupMax: the editor's code lookups per window, 600)
+      // the AI assessment (the last processing step; a project turns it on in its settings).
+      // The server's default account, used by a project that has not set its own: provider
+      // is openai (any chat-completions service: OpenAI, OpenRouter, LiteLLM, Groq, Ollama...)
+      // or anthropic (the Messages API); baseUrl is optional (the provider's own by default;
+      // for an OpenAI-compatible service, up to the version, e.g. https://openrouter.ai/api/v1).
+      // dailyCap: assessments per project per day (50); maxBytes: the biggest document sent
+      // (300000); maxTokens: of the answer (16384); timeout: seconds (120); sendNarrative: send
+      // the narratives as submitted (false: the structured data only); a project can override
+      // all but maxBytes, maxTokens and timeout
+      // prices: USD per million tokens by model (or a prefix of the model name), to work out what
+      // each assessment cost, for services that don't say (OpenRouter does). Anthropic's current
+      // models are built in (ips/ai-client.js DEFAULT_PRICES); anything here overrides them
+      // "ai": { "provider": "anthropic", "model": "claude-sonnet-5-5", "apiKey": "...", "dailyCap": 50,
+      //         "prices": { "claude-sonnet-5-5": { "input": 3, "output": 15 } } },
+      // the secret the projects' own AI keys are encrypted with in the database (else the
+      // sessionSecret is used; with neither, projects cannot keep their own accounts)
+      // "aiKeySecret": "<!-- random string -->",
+      // sharing a document as a QR code - a SMART Health Link, or a Verifiable Health Link
+      // signed as the GDHCN does it - through an SHL server: this server's own shl module
+      // ("server": "/shl"; the password is taken from modules.shl when left out) or another
+      // FHIRsmith's ("server": "https://host/shl", "password": its password). days: how long
+      // the shared copy lives (100); viewer: the SHL viewer the QR opens (this server's own, /ips/view)
+      // "shl": { "server": "/shl", "days": 100 },
+      // the SHL viewer at /ips/view (on unless enabled is false): other systems can name it as the
+      // viewer in their SHLs ({this server}/ips/view#shlink:/...), and the module's own shares
+      // use it unless shl.viewer names another. It retrieves the document on the server, and
+      // logs every step - key and content included - on the page, kept for keepMinutes (60).
+      // allowPrivateAddresses: let it reach private and loopback addresses, and http (false;
+      // for testing a local SHL server); timeout: seconds per request (30); maxMB: the most a
+      // response can be (10); recipient: what it tells the SHL server it is ("FHIRsmith IPS
+      // viewer ({host})"); trust: the certificates VHL signatures are checked with - [{ "kid",
+      // "name", "certFile" | "certificate" (PEM) }]; this server's own shl module's certificate is
+      // trusted too, unless trustOwnShl is false
+      // "viewer": { "keepMinutes": 60, "allowPrivateAddresses": false, "trust": [] },
+      // reports (ips/readme.md#reports): their tables are in a database of their own (relative paths
+      // resolve under the databases directory; default ips-reports.db beside the IPS database).
+      // package: the SQL on FHIR IG the validator checks ViewDefinitions with; queryTimeoutSeconds:
+      // how long a report's statements may run (10); maxRows: the rows shown of a statement or the
+      // table (1000); csvMaxRows: the rows in a CSV download (100000); buildBudgetMs: how long the
+      // queue spends building tables each turn (2000)
+      // "reports": { "database": "ips/ips-reports.db", "package": "org.sql-on-fhir.ig#2.0.0", "queryTimeoutSeconds": 10 },
+      // which copy of a patient's latest document Patient/[id]/$summary returns: "modified" (what
+      // the processing made of it - the default; the original until it has been processed) or "original"
+      // "summarySource": "modified",
+      // the FHIR validator the processing pipeline validates documents with - the same
+      // validator service the shl module uses (fhir-validator-wrapper, the validator CLI jar in
+      // the data folder's bin directory), on its own port. Documents are validated against the
+      // IPS Bundle profile unless "profiles" says otherwise. Omit the block, or set enabled
+      // false, and documents are not validated (processing fails)
+      "validator": {
+        "enabled": true,
+        "version": "4.0.1",
+        "txServer": "http://tx.fhir.org/r4",
+        "txLog": "./ips-validator-tx.log",
+        "port": 8082,
+        "packages": ["hl7.fhir.uv.ips#1.1.0"],
+        "timeout": 120000,
+        // the analysis step looks up extension definitions in the validator: let it find, download
+        // and load the package that defines one it doesn't have (default true; validator 7.0.5)
+        "autoLoadPackages": true
+        // , "profiles": ["http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips"]
+      }
     }
   }
 }

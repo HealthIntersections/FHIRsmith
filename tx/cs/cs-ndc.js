@@ -3,6 +3,8 @@ const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
 const { CodeSystemProvider, CodeSystemFactoryProvider} = require('./cs-api');
 const {validateArrayParameter} = require("../../library/utilities");
+const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class NdcConcept {
   constructor(code, display, isPackage = false, key = null) {
@@ -31,10 +33,7 @@ class NdcServices extends CodeSystemProvider {
 
   // Clean up database connection when provider is destroyed
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // Metadata methods
@@ -132,6 +131,14 @@ class NdcServices extends CodeSystemProvider {
       // Add supplement designations
       this._listSupplementDesignations(ctxt.code, displays);
     }
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
   }
 
   async extendLookup(ctxt, props, params) {
@@ -248,7 +255,7 @@ class NdcServices extends CodeSystemProvider {
         params = [concept.key];
       }
 
-      this.db.get(sql, params, (err, row) => {
+      this.db.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (!row) {
@@ -277,7 +284,7 @@ class NdcServices extends CodeSystemProvider {
 
           resolve(result);
         }
-      });
+      }));
     });
   }
 
@@ -358,7 +365,7 @@ class NdcServices extends CodeSystemProvider {
         LIMIT 1
       `;
 
-      this.db.get(sql, [code, code], (err, row) => {
+      this.db.get(sql, [code, code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -370,7 +377,7 @@ class NdcServices extends CodeSystemProvider {
         } else {
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -383,7 +390,7 @@ class NdcServices extends CodeSystemProvider {
         LIMIT 1
       `;
 
-      this.db.get(sql, [code], (err, row) => {
+      this.db.get(sql, [code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -393,7 +400,7 @@ class NdcServices extends CodeSystemProvider {
         } else {
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -414,7 +421,8 @@ class NdcServices extends CodeSystemProvider {
       return filter;
     }
 
-    throw new Error(`The filter "${prop} ${op} ${value}" is not supported for NDC`);
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
   async executeFilters(filterContext) {
@@ -443,10 +451,10 @@ class NdcServices extends CodeSystemProvider {
           return;
       }
 
-      this.db.get(sql, (err, row) => {
+      this.db.get(sql, guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row.count);
-      });
+      }));
     });
   }
 
@@ -495,7 +503,7 @@ class NdcServices extends CodeSystemProvider {
           return;
       }
 
-      this.db.get(sql, [set._iterator.offset], (err, row) => {
+      this.db.get(sql, [set._iterator.offset], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -514,7 +522,7 @@ class NdcServices extends CodeSystemProvider {
           set._iterator.hasMore = false;
           resolve(null);
         }
-      });
+      }));
     });
   }
 
@@ -571,9 +579,14 @@ class NdcServices extends CodeSystemProvider {
 }
 
 class NdcServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the file is
+   *   the master's; this process opens it read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._loaded = false;
     this._lookupTables = null;
@@ -601,17 +614,21 @@ class NdcServicesFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  #open() {
+    return this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+  }
+
   async load() {
     // Use temporary database connection for loading
-    const tempDb = new sqlite3.Database(this.dbPath);
+    const tempDb = this.#open();
 
     try {
       // Load version
       this._version = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT Version FROM NDCVersion ORDER BY Version DESC LIMIT 1', (err, row) => {
+        tempDb.get('SELECT Version FROM NDCVersion ORDER BY Version DESC LIMIT 1', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row ? row.Version : 'unknown');
-        });
+        }));
       });
 
       // Initialize lookup tables
@@ -632,30 +649,30 @@ class NdcServicesFactory extends CodeSystemFactoryProvider {
 
       for (const table of tables) {
         await new Promise((resolve, reject) => {
-          tempDb.all(table.sql, (err, rows) => {
+          tempDb.all(table.sql, guarded(reject, (err, rows) => {
             if (err) reject(err);
             else {
               const map = this._lookupTables[table.name];
               rows.forEach(row => map.set(row.NDCKey, row.Name));
               resolve();
             }
-          });
+          }));
         });
       }
 
       // Load counts
       this._packageCount = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCPackages', (err, row) => {
+        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCPackages', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row.count);
-        });
+        }));
       });
 
       this._productCount = await new Promise((resolve, reject) => {
-        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCProducts', (err, row) => {
+        tempDb.get('SELECT COUNT(NDCKey) as count FROM NDCProducts', guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row.count);
-        });
+        }));
       });
 
     } finally {
@@ -673,7 +690,7 @@ class NdcServicesFactory extends CodeSystemFactoryProvider {
     this.recordUse();
 
     // Create fresh database connection for this provider instance
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     return new NdcServices(
       opContext, supplements,

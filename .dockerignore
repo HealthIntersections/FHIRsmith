@@ -6,5 +6,7 @@ logs
 data
 package-cache
 *.md
+# the release dates of FHIRsmith versions (CapabilityStatement.software.releaseDate, the registry)
+!CHANGELOG.md
 .env
 .env.*

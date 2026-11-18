@@ -3,7 +3,10 @@ const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const readline = require('readline');
+const { csvRecords } = require('./csv-records');
 const chalk = require('chalk');
+const terminal = require('./terminal');
+const { buildTextIndex } = require('./loinc-text-index');
 
 class LoincModule extends BaseTerminologyModule {
   constructor() {
@@ -60,6 +63,15 @@ class LoincModule extends BaseTerminologyModule {
         await this.handleValidateCommand({...globalOptions, ...options});
       });
 
+    // Upgrade the text index of an existing database (no new import)
+    terminologyCommand
+      .command('upgrade-text-index')
+      .description('Rebuild the text index of a LOINC database (stemmed, with every display), without importing again')
+      .option('-d, --dest <file>', 'Database file to upgrade')
+      .action(async (options) => {
+        await this.handleUpgradeTextIndexCommand({...globalOptions, ...options});
+      });
+
     // Status command
     terminologyCommand
       .command('status')
@@ -108,7 +120,7 @@ class LoincModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -118,17 +130,17 @@ class LoincModule extends BaseTerminologyModule {
     const inquirer = require('inquirer');
     const chalk = require('chalk');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version)}`);
-    console.log(`  Main Only: ${chalk.white(config.mainOnly ? 'Yes' : 'No')}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version)}`);
+    terminal.log(`  Main Only: ${chalk.white(config.mainOnly ? 'Yes' : 'No')}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -143,7 +155,7 @@ class LoincModule extends BaseTerminologyModule {
 
   async runImportWithoutConfigSaving(config) {
     try {
-      console.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
+      terminal.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -162,7 +174,7 @@ class LoincModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`${this.getName()} import failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       process.exit(1);
     }
@@ -185,18 +197,41 @@ class LoincModule extends BaseTerminologyModule {
       const stats = await this.validateLoincDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Main codes file: ${stats.mainCodesFound ? 'Found' : 'Missing'}`);
-      console.log(`  Parts file: ${stats.partsFound ? 'Found' : 'Missing'}`);
-      console.log(`  Language variants: ${stats.languageVariants.length} found`);
-      console.log(`  Estimated main codes: ${stats.estimatedCodes.toLocaleString()}`);
+      terminal.log(`  Main codes file: ${stats.mainCodesFound ? 'Found' : 'Missing'}`);
+      terminal.log(`  Parts file: ${stats.partsFound ? 'Found' : 'Missing'}`);
+      terminal.log(`  Language variants: ${stats.languageVariants.length} found`);
+      terminal.log(`  Estimated main codes: ${stats.estimatedCodes.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
       this.logError(`Validation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Rebuild TextIndex in place (loinc-text-index.js): for a database imported before the index
+   * was stemmed and had every code's display. Run it while no server has the file open
+   */
+  async handleUpgradeTextIndexCommand(options) {
+    const dbPath = options.dest;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      this.logError(`Database not found: ${dbPath || '(give it with -d)'}`);
+      return;
+    }
+    this.logInfo(`Rebuilding the text index of ${dbPath}`);
+    const db = new sqlite3.Database(dbPath);
+    const start = Date.now();
+    try {
+      const rows = await buildTextIndex(db, (msg) => terminal.log(`  ${msg}`));
+      this.logSuccess(`Text index rebuilt: ${rows.toLocaleString()} names, in ${((Date.now() - start) / 1000).toFixed(0)} s`);
+    } catch (error) {
+      this.logError(`Rebuilding the text index failed: ${error.message}`);
+    } finally {
+      await new Promise((resolve) => db.close(() => resolve()));
     }
   }
 
@@ -214,15 +249,15 @@ class LoincModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
 
       this.logSuccess('Database status:');
-      console.log(`  Version: ${stats.version}`);
-      console.log(`  Total Codes: ${stats.codeCount.toLocaleString()}`);
-      console.log(`  Main LOINC Codes: ${stats.mainCodeCount.toLocaleString()}`);
-      console.log(`  Parts: ${stats.partCount.toLocaleString()}`);
-      console.log(`  Answer Lists: ${stats.answerListCount.toLocaleString()}`);
-      console.log(`  Languages: ${stats.languageCount.toLocaleString()}`);
-      console.log(`  Relationships: ${stats.relationshipCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Version: ${stats.version}`);
+      terminal.log(`  Total Codes: ${stats.codeCount.toLocaleString()}`);
+      terminal.log(`  Main LOINC Codes: ${stats.mainCodeCount.toLocaleString()}`);
+      terminal.log(`  Parts: ${stats.partCount.toLocaleString()}`);
+      terminal.log(`  Answer Lists: ${stats.answerListCount.toLocaleString()}`);
+      terminal.log(`  Languages: ${stats.languageCount.toLocaleString()}`);
+      terminal.log(`  Relationships: ${stats.relationshipCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -274,18 +309,27 @@ class LoincModule extends BaseTerminologyModule {
       throw new Error(`Source directory not found: ${sourceDir}`);
     }
 
+    // The accessory files are required, not optional. Without them the import silently
+    // succeeds and the server then answers questions wrongly rather than saying it cannot:
+    // no ComponentHierarchyBySystem means an empty closure and $subsumes replying
+    // 'not-subsumed' to everything, which is indistinguishable from a real answer.
     const requiredFiles = [
       'LoincTable/Loinc.csv',
-      'AccessoryFiles/PartFile/Part.csv'
-    ];
-
-    const optionalFiles = [
+      'AccessoryFiles/PartFile/Part.csv',
       'AccessoryFiles/ConsumerName/ConsumerName.csv',
       'AccessoryFiles/AnswerFile/AnswerList.csv',
       'AccessoryFiles/PartFile/LoincPartLink_Primary.csv',
       'AccessoryFiles/AnswerFile/LoincAnswerListLink.csv',
-      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv',
-      'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv'
+      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv'
+    ];
+
+    // Translations are a different case: a main-only import is a legitimate thing to want,
+    // and their absence costs designations, not correctness
+    const optionalFiles = [
+      'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv',
+      // the external code mappings: their absence costs maps to other code systems, nothing else
+      'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+      'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv'
     ];
 
     const warnings = [];
@@ -403,6 +447,7 @@ class LoincModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_codes_type ON Codes(Type)',
       'CREATE INDEX IF NOT EXISTS idx_codes_status ON Codes(StatusKey)',
       'CREATE INDEX IF NOT EXISTS idx_codes_type_status ON Codes(Type, StatusKey)',
+      'CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)',
 
       // Relationships table indexes
       'CREATE INDEX IF NOT EXISTS idx_relationships_source ON Relationships(RelationshipTypeKey, SourceKey)',
@@ -422,6 +467,11 @@ class LoincModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_descriptions_type ON Descriptions(DescriptionTypeKey)',
       'CREATE INDEX IF NOT EXISTS idx_descriptions_code_type ON Descriptions(CodeKey, DescriptionTypeKey)',
 
+      // External mapping indexes
+      'CREATE INDEX IF NOT EXISTS idx_externalcodes_code ON ExternalCodes(System, Code)',
+      'CREATE INDEX IF NOT EXISTS idx_externalmappings_code ON ExternalMappings(CodeKey)',
+      'CREATE INDEX IF NOT EXISTS idx_externalmappings_target ON ExternalMappings(ExternalCodeKey)',
+
       // Closure table indexes
       'CREATE INDEX IF NOT EXISTS idx_closure_ancestor ON Closure(AncestorKey)',
       'CREATE INDEX IF NOT EXISTS idx_closure_descendent ON Closure(DescendentKey)'
@@ -431,7 +481,7 @@ class LoincModule extends BaseTerminologyModule {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -500,7 +550,9 @@ class LoincDataMigratorWithProgress {
       'AccessoryFiles/AnswerFile/AnswerList.csv',
       'AccessoryFiles/PartFile/LoincPartLink_Primary.csv',
       'AccessoryFiles/AnswerFile/LoincAnswerListLink.csv',
-      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv'
+      'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv',
+      'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv',
+      'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv'
     ];
 
     // Count main files
@@ -562,7 +614,7 @@ class LoincDataMigrator {
   }
 
   async migrate(sourceDir, destFile, version = 'unknown', options = {}) {
-    if (options.verbose) console.log('Starting LOINC data migration...');
+    if (options.verbose) terminal.log('Starting LOINC data migration...');
 
     const destDir = path.dirname(destFile);
     if (!fs.existsSync(destDir)) {
@@ -574,11 +626,21 @@ class LoincDataMigrator {
     }
 
     const db = new sqlite3.Database(destFile);
+    // Run every statement in submission order, and the whole import as one transaction:
+    // without it each INSERT autocommits and waits on its own fsync (~10 ms each), which
+    // made even the small test fixture take minutes
+    db.serialize();
+    const exec = (sql) => new Promise((resolve, reject) => db.exec(sql, (err) => err ? reject(err) : resolve()));
 
     try {
+      await exec('BEGIN');
+
       // Initialize tracking variables
       this.codeKey = 0;
       this.relKey = 0;
+      this.relSeen = new Set();
+      this.axisParts = new Map(); // term key -> { COMPONENT: part key, ... } (see processLanguage)
+      this.partNamesSeen = new Set();
       this.descKey = 0;
       this.propKey = 0;
       this.propValueKey = 0;
@@ -593,6 +655,10 @@ class LoincDataMigrator {
       this.props = new Map();
       this.propValues = new Map();
       this.partNames = new Map();
+      this.extCodeKey = 0;
+      this.extCodes = new Map(); // system|version|code -> ExternalCodeKey
+      this.extMapKey = 0;
+      this.extMaps = new Set(); // codeKey|ExternalCodeKey
 
       // Create tables and initial data
       await this.createTables(db, version, options.verbose);
@@ -625,6 +691,10 @@ class LoincDataMigrator {
       this.updateProgress(0, 'List Links');
       await this.processListLinks(db, sourceDir, 8, options);
 
+      this.updateProgress(0, 'External Mappings');
+      await this.processPartMappings(db, sourceDir, 9, options);
+      await this.processIeeeMappings(db, sourceDir, 9, options);
+
       this.updateProgress(0, 'Hierarchy');
       await this.processHierarchy(db, sourceDir, 9, options);
 
@@ -642,14 +712,19 @@ class LoincDataMigrator {
         }
       }
 
-      if (options.verbose) console.log('LOINC data migration completed successfully');
+      await exec('COMMIT');
+
+      // the text index, from what's now in Codes and Descriptions (loinc-text-index.js)
+      this.updateProgress(0, 'Text Index');
+      await buildTextIndex(db, (msg) => options.verbose && terminal.log(msg));
+      if (options.verbose) terminal.log('LOINC data migration completed successfully');
     } finally {
       await this.closeDatabase(db, options.verbose);
     }
   }
 
   async createTables(db, version, verbose = true) {
-    if (verbose) console.log('Creating database tables...');
+    if (verbose) terminal.log('Creating database tables...');
 
     const tableSQL = [
       `CREATE TABLE Config (
@@ -713,17 +788,27 @@ class LoincDataMigrator {
                                      DescriptionTypeKey INTEGER NOT NULL,
                                      Value TEXT NOT NULL
        )`,
+      // Codes in other code systems that LOINC codes map to (one row per system|version|code)
+      `CREATE TABLE ExternalCodes (
+                                     ExternalCodeKey INTEGER NOT NULL PRIMARY KEY,
+                                     System TEXT NOT NULL,
+                                     Version TEXT NULL,
+                                     Code TEXT NOT NULL,
+                                     Display TEXT NULL
+       )`,
+      // LOINC code (Codes.CodeKey) -> ExternalCodes, with a ConceptMap equivalence (R4 codes)
+      `CREATE TABLE ExternalMappings (
+                                        ExternalMappingKey INTEGER NOT NULL PRIMARY KEY,
+                                        CodeKey INTEGER NOT NULL,
+                                        ExternalCodeKey INTEGER NOT NULL,
+                                        Equivalence TEXT NOT NULL
+       )`,
       `CREATE TABLE Closure (
                                 AncestorKey INTEGER NOT NULL,
                                 DescendentKey INTEGER NOT NULL,
                                 PRIMARY KEY (AncestorKey, DescendentKey)
-       )`,
-      `CREATE VIRTUAL TABLE TextIndex USING fts5(
-        codekey UNINDEXED,
-        type UNINDEXED, 
-        lang UNINDEXED,
-        text
-      )`
+       )`
+      // TextIndex is built at the end, from Codes and Descriptions (loinc-text-index.js)
     ];
 
     return new Promise((resolve, reject) => {
@@ -735,7 +820,7 @@ class LoincDataMigrator {
         });
 
         this.insertInitialData(db, version);
-        if (verbose) console.log('Database tables created');
+        if (verbose) terminal.log('Database tables created');
         resolve();
       });
     });
@@ -786,7 +871,8 @@ class LoincDataMigrator {
     // Description types
     const descriptionTypes = [
       [1, 'LONG_COMMON_NAME'], [2, 'SHORTNAME'], [3, 'ConsumerName'],
-      [4, 'RELATEDNAMES2'], [5, 'DisplayName'], [6, 'LinguisticVariantDisplayName']
+      [4, 'RELATEDNAMES2'], [5, 'DisplayName'], [6, 'LinguisticVariantDisplayName'],
+      [7, 'PartName']
     ];
     descriptionTypes.forEach(([key, desc]) => {
       db.run('INSERT INTO DescriptionTypes (DescriptionTypeKey, Description) VALUES (?, ?)', [key, desc]);
@@ -829,18 +915,15 @@ class LoincDataMigrator {
   }
 
   async processLanguageVariants(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Language Variants...');
+    if (options.verbose) terminal.log('Processing Language Variants...');
 
     const filePath = path.join(sourceDir, 'AccessoryFiles/LinguisticVariants/LinguisticVariants.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Language variants file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Language variants file not found: ${filePath}`);
       return;
     }
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     for await (const line of rl) {
@@ -863,13 +946,10 @@ class LoincDataMigrator {
   }
 
   async processParts(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Parts...');
+    if (options.verbose) terminal.log('Processing Parts...');
 
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/Part.csv');
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -894,7 +974,7 @@ class LoincDataMigrator {
       this.updateProgress(remaining);
     }
 
-    if (options.verbose) console.log(`  Processed ${processedCount} parts`);
+    if (options.verbose) terminal.log(`  Processed ${processedCount} parts`);
   }
 
   async processPartItem(db, items) {
@@ -918,13 +998,10 @@ class LoincDataMigrator {
   }
 
   async processCodes(db, sourceDir, step, options) {
-    if (options.verbose) console.log('Processing Main Codes...');
+    if (options.verbose) terminal.log('Processing Main Codes...');
 
     const filePath = path.join(sourceDir, 'LoincTable/Loinc.csv');
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -949,15 +1026,15 @@ class LoincDataMigrator {
       this.updateProgress(remaining);
     }
 
-    if (options.verbose) console.log(`  Processed ${processedCount} main codes`);
+    if (options.verbose) terminal.log(`  Processed ${processedCount} main codes`);
   }
 
   async processCodeItem(db, items) {
     this.codeKey++;
     const codeKey = this.codeKey;
-    const code = removeQuotes(items[0]);
+    const code = items[0];
     const type = 1;
-    const description = removeQuotes(items[25]);
+    const description = items[25];
     const statusKey = this.statii.get(items[11]) || 1;
 
     db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
@@ -971,6 +1048,7 @@ class LoincDataMigrator {
     const clsCode = this.partNames.get('CLASS.' + items[7]);
     if (clsCode && this.codes.has(clsCode)) {
       this.addRelationship(db, codeKey, this.codes.get(clsCode).key, this.rels.get('CLASS'));
+      this.#noteAxisPart(codeKey, 'CLASS', this.codes.get(clsCode).key);
     }
 
     // Add properties
@@ -995,16 +1073,13 @@ class LoincDataMigrator {
   async processConsumerNames(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/ConsumerName/ConsumerName.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Consumer names file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Consumer names file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Consumer Names...');
+    if (options.verbose) terminal.log('Processing Consumer Names...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1033,16 +1108,13 @@ class LoincDataMigrator {
   async processLists(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/AnswerFile/AnswerList.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Answer lists file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Answer lists file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Answer Lists...');
+    if (options.verbose) terminal.log('Processing Answer Lists...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1052,7 +1124,7 @@ class LoincDataMigrator {
       lineCount++;
       if (lineCount === 1) continue;
 
-      const items = csvSplit(line, 11);
+      const items = csvSplit(line, 15);
       if (items.length < 11) continue;
 
       await this.processListItem(db, items, currentList);
@@ -1071,13 +1143,13 @@ class LoincDataMigrator {
   }
 
   async processListItem(db, items, currentList) {
-    const listCode = removeQuotes(items[0]);
+    const listCode = items[0];
     let listCodeKey;
 
     if (listCode !== currentList) {
       this.codeKey++;
       listCodeKey = this.codeKey;
-      const description = removeQuotes(items[1]);
+      const description = items[1];
 
       db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
         [listCodeKey, listCode, 3, null, 0, description]);
@@ -1087,7 +1159,13 @@ class LoincDataMigrator {
       listCodeKey = this.codes.get(listCode).key;
     }
 
-    const answerCode = removeQuotes(items[6]);
+    const answerCode = items[6];
+    if (!answerCode) {
+      // an externally defined answer list (ExtDefinedYN = Y: ICD-10, RxNorm, ...) has one row with
+      // no AnswerStringId. The list is a code; the row names no answer, so there is nothing to add
+      // (it used to become a single Answer code '' shared by all 65 such lists)
+      return;
+    }
     let answerCodeKey;
 
     if (this.codes.has(answerCode)) {
@@ -1095,7 +1173,7 @@ class LoincDataMigrator {
     } else {
       this.codeKey++;
       answerCodeKey = this.codeKey;
-      const description = removeQuotes(items[10]);
+      const description = items[10];
 
       db.run('INSERT INTO Codes (CodeKey, Code, Type, RelationshipKey, StatusKey, Description) VALUES (?, ?, ?, ?, ?, ?)',
         [answerCodeKey, answerCode, 4, null, 0, description]);
@@ -1105,21 +1183,123 @@ class LoincDataMigrator {
 
     this.addRelationship(db, listCodeKey, answerCodeKey, this.rels.get('Answer'));
     this.addRelationship(db, answerCodeKey, listCodeKey, this.rels.get('AnswerList'));
+
+    // ExtCodeId (11), ExtCodeDisplayName (12), ExtCodeSystem (13), ExtCodeSystemVersion (14).
+    // The file carries no equivalence for these; an answer and its external code are the same thing
+    if (items[11] && items[13]) {
+      this.addExternalMapping(db, answerCodeKey, items[13], items[14], items[11], items[12], 'equivalent');
+    }
+  }
+
+  async processPartMappings(db, sourceDir, step, options) {
+    const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/PartRelatedCodeMapping.csv');
+    if (!fs.existsSync(filePath)) {
+      if (options.verbose) terminal.warn(`Part mapping file not found: ${filePath}`);
+      return;
+    }
+
+    if (options.verbose) terminal.log('Processing Part Mappings...');
+
+    const rl = csvRecords(filePath);
+
+    // PartNumber, PartName, PartTypeName, ExtCodeId, ExtCodeDisplayName, ExtCodeSystem,
+    // Equivalence, ContentOrigin, ExtCodeSystemVersion, ExtCodeSystemCopyrightNotice
+    let lineCount = 0;
+    let processedCount = 0;
+    for await (const line of rl) {
+      lineCount++;
+      if (lineCount === 1) continue;
+
+      const items = csvSplit(line, 10);
+      const partCode = items[0];
+      const system = items[5];
+      // RadLex mappings are not simple code-to-code maps; not handled yet
+      if (!items[3] || !system || system === 'http://www.radlex.org' || !this.codes.has(partCode)) continue;
+
+      this.addExternalMapping(db, this.codes.get(partCode).key, system, items[8], items[3], items[4], items[6] || 'equivalent');
+      processedCount++;
+
+      if (processedCount % 100 === 0) {
+        this.updateProgress(100);
+      }
+    }
+
+    const remaining = processedCount % 100;
+    if (remaining > 0) {
+      this.updateProgress(remaining);
+    }
+  }
+
+  async processIeeeMappings(db, sourceDir, step, options) {
+    const filePath = path.join(sourceDir, 'AccessoryFiles/LoincIeeeMedicalDeviceCodeMappingTable/LoincIeeeMedicalDeviceCodeMappingTable.csv');
+    if (!fs.existsSync(filePath)) {
+      if (options.verbose) terminal.warn(`IEEE mapping file not found: ${filePath}`);
+      return;
+    }
+
+    if (options.verbose) terminal.log('Processing IEEE Mappings...');
+
+    const rl = csvRecords(filePath);
+
+    // LOINC_NUM, LOINC_LONG_COMMON_NAME, IEEE_CF_CODE10, IEEE_REFID, EQUIVALENCE
+    // The code is the CF_CODE10 (as used in FHIR, e.g. 150456); the REFID is its display.
+    let lineCount = 0;
+    let processedCount = 0;
+    for await (const line of rl) {
+      lineCount++;
+      if (lineCount === 1) continue;
+
+      const items = csvSplit(line, 5);
+      const loincCode = items[0];
+      if (!items[2] || !this.codes.has(loincCode)) continue;
+
+      this.addExternalMapping(db, this.codes.get(loincCode).key, 'urn:iso:std:iso:11073:10101', null,
+        items[2], items[3], ieeeEquivalence(items[4]));
+      processedCount++;
+
+      if (processedCount % 100 === 0) {
+        this.updateProgress(100);
+      }
+    }
+
+    const remaining = processedCount % 100;
+    if (remaining > 0) {
+      this.updateProgress(remaining);
+    }
+  }
+
+  addExternalMapping(db, codeKey, system, version, code, display, equivalence) {
+    system = normaliseExternalSystem(system);
+    version = version || null;
+    const targetId = system + '|' + (version || '') + '|' + code;
+    let extKey = this.extCodes.get(targetId);
+    if (!extKey) {
+      this.extCodeKey++;
+      extKey = this.extCodeKey;
+      this.extCodes.set(targetId, extKey);
+      db.run('INSERT INTO ExternalCodes (ExternalCodeKey, System, Version, Code, Display) VALUES (?, ?, ?, ?, ?)',
+        [extKey, system, version, code, display || null]);
+    }
+
+    // the same answer appears once per answer list it's in
+    const mapId = codeKey + '|' + extKey;
+    if (this.extMaps.has(mapId)) return;
+    this.extMaps.add(mapId);
+    this.extMapKey++;
+    db.run('INSERT INTO ExternalMappings (ExternalMappingKey, CodeKey, ExternalCodeKey, Equivalence) VALUES (?, ?, ?, ?)',
+      [this.extMapKey, codeKey, extKey, equivalence]);
   }
 
   async processPartLinks(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/PartFile/LoincPartLink_Primary.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Part links file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Part links file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing Part Links...');
+    if (options.verbose) terminal.log('Processing Part Links...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1142,6 +1322,9 @@ class LoincDataMigrator {
           this.rels.get(relType),
           this.statii.get(status) || 0
         );
+        if (LINGUISTIC_VARIANT_AXES.includes(relType)) {
+          this.#noteAxisPart(this.codes.get(sourceCode).key, relType, this.codes.get(targetCode).key);
+        }
       }
       processedCount++;
 
@@ -1159,16 +1342,13 @@ class LoincDataMigrator {
   async processListLinks(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/AnswerFile/LoincAnswerListLink.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`List links file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`List links file not found: ${filePath}`);
       return;
     }
 
-    if (options.verbose) console.log('Processing List Links...');
+    if (options.verbose) terminal.log('Processing List Links...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1214,16 +1394,14 @@ class LoincDataMigrator {
   async processHierarchy(db, sourceDir, step, options) {
     const filePath = path.join(sourceDir, 'AccessoryFiles/ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv');
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Hierarchy file not found: ${filePath}`);
-      return;
+      // Validation should have caught this already; if we get here, fail rather than build a
+      // cache with an empty closure that answers subsumption questions with a confident no
+      throw new Error(`Required file missing: ${filePath}`);
     }
 
-    if (options.verbose) console.log('Processing Hierarchy...');
+    if (options.verbose) terminal.log('Processing Hierarchy...');
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1251,7 +1429,7 @@ class LoincDataMigrator {
   async processHierarchyItem(db, items) {
     const pathCode = items[3];
     const parentPath = items[2];
-    const description = items[4];
+    const description = items[4].trim();
 
     if (!this.codes.has(pathCode)) {
       this.codeKey++;
@@ -1285,7 +1463,7 @@ class LoincDataMigrator {
   }
 
   async processPropertyValues(db, step, options) {
-    if (options.verbose) console.log('Processing Property Values...');
+    if (options.verbose) terminal.log('Processing Property Values...');
 
     for (const [value, key] of this.propValues) {
       db.run('INSERT INTO PropertyValues (PropertyValueKey, Value) VALUES (?, ?)', [key, value]);
@@ -1293,7 +1471,7 @@ class LoincDataMigrator {
   }
 
   async storeClosureTable(db, step, options) {
-    if (options.verbose) console.log('Storing Closure Table...');
+    if (options.verbose) terminal.log('Storing Closure Table...');
 
     let count = 0;
     for (const codeInfo of this.codeList) {
@@ -1318,7 +1496,7 @@ class LoincDataMigrator {
   }
 
   async processLanguage(db, sourceDir, step, langCode, options) {
-    if (options.verbose) console.log(`Processing Language ${langCode}...`);
+    if (options.verbose) terminal.log(`Processing Language ${langCode}...`);
 
     const langKey = this.langs.get(langCode);
     if (!langKey) return;
@@ -1328,14 +1506,11 @@ class LoincDataMigrator {
     const filePath = path.join(sourceDir, 'AccessoryFiles/LinguisticVariants', fileName);
 
     if (!fs.existsSync(filePath)) {
-      if (options.verbose) console.warn(`Language file not found: ${filePath}`);
+      if (options.verbose) terminal.warn(`Language file not found: ${filePath}`);
       return;
     }
 
-    const rl = readline.createInterface({
-      input: fs.createReadStream(filePath),
-      crlfDelay: Infinity
-    });
+    const rl = csvRecords(filePath);
 
     let lineCount = 0;
     let processedCount = 0;
@@ -1353,6 +1528,24 @@ class LoincDataMigrator {
       this.addDescription(db, codeKey, langKey, this.dTypes.get('SHORTNAME'), items[8]);
       this.addDescription(db, codeKey, langKey, this.dTypes.get('LinguisticVariantDisplayName'), items[11]);
 
+      // The axis columns (COMPONENT ... CLASS) translate the term's Parts. Each becomes a
+      // PartName designation on the Part the term links to for that axis - for some languages
+      // (ko-KR, most of fr-CA) these are the only translations LOINC has. Each distinct name once
+      const axes = this.axisParts.get(codeKey);
+      if (axes) {
+        LINGUISTIC_VARIANT_AXES.forEach((axis, i) => {
+          const value = items[i + 1] ? items[i + 1].trim() : '';
+          const partKey = axes[axis];
+          if (value && partKey) {
+            const id = partKey + '|' + langKey + '|' + value;
+            if (!this.partNamesSeen.has(id)) {
+              this.partNamesSeen.add(id);
+              this.addDescription(db, partKey, langKey, this.dTypes.get('PartName'), value);
+            }
+          }
+        });
+      }
+
       processedCount++;
 
       if (processedCount % 100 === 0) {
@@ -1366,15 +1559,21 @@ class LoincDataMigrator {
     }
   }
 
+  #noteAxisPart(termKey, axis, partKey) {
+    let axes = this.axisParts.get(termKey);
+    if (!axes) {
+      axes = {};
+      this.axisParts.set(termKey, axes);
+    }
+    axes[axis] = partKey;
+  }
+
   addDescription(db, codeKey, languageKey, descriptionType, value) {
     if (!value) return;
 
     this.descKey++;
     db.run('INSERT INTO Descriptions (DescriptionKey, CodeKey, LanguageKey, DescriptionTypeKey, Value) VALUES (?, ?, ?, ?, ?)',
       [this.descKey, codeKey, languageKey, descriptionType, value]);
-
-    db.run('INSERT INTO TextIndex (codekey, type, lang, text) VALUES (?, ?, ?, ?)',
-      [codeKey, descriptionType, languageKey, value]);
   }
 
   addProperty(db, codeKey, propertyType, value) {
@@ -1389,6 +1588,14 @@ class LoincDataMigrator {
 
   addRelationship(db, sourceKey, targetKey, relationshipType, statusKey = 0) {
     if (!relationshipType) return;
+    // each relationship once: the source files repeat some (a part under the same parent on
+    // two paths in ComponentHierarchyBySystem, the same answer list linked more than once)
+    if (!this.relSeen) {
+      this.relSeen = new Set();
+    }
+    const id = relationshipType + '|' + sourceKey + '|' + targetKey;
+    if (this.relSeen.has(id)) return;
+    this.relSeen.add(id);
 
     this.relKey++;
     db.run('INSERT INTO Relationships (RelationshipKey, RelationshipTypeKey, SourceKey, TargetKey, StatusKey) VALUES (?, ?, ?, ?, ?)',
@@ -1409,7 +1616,7 @@ class LoincDataMigrator {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });
@@ -1418,6 +1625,10 @@ class LoincDataMigrator {
 }
 
 // Property name mappings from Pascal code
+// The axis columns of a LinguisticVariant file, in file order (columns 1 to 7), named as the
+// term's relationships to its Parts are
+const LINGUISTIC_VARIANT_AXES = ['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP', 'CLASS'];
+
 const KNOWN_PROPERTY_NAMES = [
   'AskAtOrderEntry', 'AssociatedObservations', 'CHANGE_REASON_PUBLIC', 'CHNG_TYPE', 'CLASS', 'CLASSTYPE', 'COMMON_ORDER_RANK', 'COMMON_TEST_RANK', 'COMPONENT', 'CONSUMER_NAME',
   'DefinitionDescription', 'DisplayName', 'EXAMPLE_UCUM_UNITS', 'EXAMPLE_UNITS', 'EXMPL_ANSWERS', 'EXTERNAL_COPYRIGHT_LINK', 'EXTERNAL_COPYRIGHT_NOTICE', 'FORMULA',
@@ -1481,6 +1692,29 @@ function adjustPropName(s) {
   throw new Error(`Unknown Property Name: ${s}`);
 }
 
+// LOINC names some code systems with something other than their FHIR URI. The others not yet
+// known ('CMS LCDS', 'Unicode') are left as LOINC has them
+const EXTERNAL_SYSTEM_URIS = {
+  'CMS/HCPCS': 'http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets',
+  'https://www.cdc.gov/phin': 'urn:oid:2.16.840.1.113883.6.238' // CDC Race & Ethnicity
+};
+
+function normaliseExternalSystem(system) {
+  return EXTERNAL_SYSTEM_URIS[system] || system;
+}
+
+// The IEEE table states equivalence from the LOINC side ('broader' = the LOINC code is broader,
+// e.g. Glucose in Serum or Plasma -> MDC_CONC_GLU_VENOUS_PLASMA). ConceptMap equivalence is stated
+// from the target side, so broader/narrower swap to narrower/wider.
+function ieeeEquivalence(s) {
+  switch (s) {
+    case 'broader': return 'narrower';
+    case 'narrower': return 'wider';
+    case '': return 'equivalent';
+    default: return s;
+  }
+}
+
 function descClassType(s) {
   const types = {
     '1': 'Laboratory class',
@@ -1491,46 +1725,50 @@ function descClassType(s) {
   return types[s] || s;
 }
 
-// CSV parsing utility
+// CSV parsing utility: the fields of one record, unquoted ("" in a quoted field is a quote).
+// A field is quoted only if it starts with a quote; the enclosing quotes are dropped and nothing
+// else, so a value that starts or ends with a quote (LOINC has answers like '"Poker face"') keeps
+// it. At most expectedCount fields; missing ones are ''
 function csvSplit(line, expectedCount) {
   const result = new Array(expectedCount).fill('');
-  let inQuoted = false;
-  let currentField = 0;
-  let fieldStart = 0;
-  let i = 0;
-
-  while (i < line.length && currentField < expectedCount) {
+  let field = 0;
+  let value = '';
+  let quoted = false; // inside a quoted field
+  let atStart = true; // at the start of a field
+  for (let i = 0; i < line.length; i++) {
     const ch = line[i];
-
-    if (!inQuoted && ch === ',') {
-      if (currentField < expectedCount) {
-        result[currentField] = line.substring(fieldStart, i).replace(/^"|"$/g, '').replace(/""/g, '"');
-        currentField++;
-        fieldStart = i + 1;
-      }
-    } else if (ch === '"') {
-      if (inQuoted && i + 1 < line.length && line[i + 1] === '"') {
+    if (quoted) {
+      if (ch !== '"') {
+        value += ch;
+      } else if (line[i + 1] === '"') {
+        value += '"';
         i++;
       } else {
-        inQuoted = !inQuoted;
+        quoted = false;
       }
+    } else if (ch === ',') {
+      result[field] = value;
+      field++;
+      if (field >= expectedCount) {
+        return result;
+      }
+      value = '';
+      atStart = true;
+    } else if (ch === '"' && atStart) {
+      quoted = true;
+      atStart = false;
+    } else {
+      value += ch;
+      atStart = false;
     }
-    i++;
   }
-
-  if (currentField < expectedCount) {
-    result[currentField] = line.substring(fieldStart).replace(/^"|"$/g, '').replace(/""/g, '"');
-  }
-
+  result[field] = value;
   return result;
-}
-
-function removeQuotes(str) {
-  if (!str) return '';
-  return str.replace(/^"|"$/g, '');
 }
 
 module.exports = {
   LoincModule,
-  LoincDataMigrator
+  csvSplit,
+  LoincDataMigrator,
+  normaliseExternalSystem
 };

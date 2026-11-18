@@ -21,9 +21,7 @@ describe('PackageValueSetProvider', () => {
 
     try {
       // Fetch the test package
-      console.log(`Fetching package ${packageId}#${packageVersion}...`);
       packagePath = await packageManager.fetch(packageId, packageVersion);
-      console.log(`Package extracted to: ${packagePath}`);
 
       // Create provider
       const fullPackagePath = path.join(packageCacheDir, packagePath);
@@ -32,7 +30,6 @@ describe('PackageValueSetProvider', () => {
 
       // Initialize provider (this creates the database if needed)
       await provider.initialize();
-      console.log('Provider initialized successfully');
 
     } catch (error) {
       console.error('Failed to setup test package:', error);
@@ -59,14 +56,11 @@ describe('PackageValueSetProvider', () => {
       expect(stats).toHaveProperty('totalSystems');
       expect(typeof stats.totalValueSets).toBe('number');
       expect(stats.totalValueSets).toBeGreaterThan(0);
-
-      console.log('Package statistics:', stats);
     });
 
     test('should have valuesets loaded in map', () => {
       const mapSize = provider.getMapSize();
       expect(mapSize).toBeGreaterThan(0);
-      console.log(`ValueSets loaded in map: ${mapSize}`);
     });
   });
 
@@ -138,8 +132,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.status).toBe('active');
       }
-
-      console.log(`Found ${results.length} active ValueSets`);
     });
 
     test('should search by publisher', async () => {
@@ -154,8 +146,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.jsonObj.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} ValueSets with HL7 publisher`);
     });
 
     test('should search by name pattern', async () => {
@@ -170,8 +160,6 @@ describe('PackageValueSetProvider', () => {
       for (const vs of results) {
         expect(vs.name).toContain('CDS');
       }
-
-      console.log(`Found ${results.length} ValueSets with 'CDS' in name`);
     });
 
     test('should search by url', async () => {
@@ -184,6 +172,49 @@ describe('PackageValueSetProvider', () => {
       expect(results.length).toBe(1);
       expect(results[0].url).toBe(url);
       expect(results[0].name).toBe('PrimitiveTypesVS');
+    });
+
+    test('url is a left match: the url starts with it', async () => {
+      const prefix = 'http://hl7.org/fhir/tools/ValueSet/primitive-';
+      const results = await provider.searchValueSets([{ name: 'url', value: prefix }]);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+      for (const r of results) {
+        expect(r.url.startsWith(prefix)).toBe(true);
+      }
+      // not anywhere in the url, and case-sensitive
+      expect((await provider.searchValueSets([{ name: 'url', value: 'tools/ValueSet/primitive-types' }])).length).toBe(0);
+      expect((await provider.searchValueSets([{ name: 'url', value: 'HTTP://hl7.org/fhir/tools/ValueSet/primitive-types' }])).length).toBe(0);
+    });
+
+    test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {
+      for (const value of ['tools/ValueSet/primitive-types', 'PRIMITIVE-TYPES', 'http://hl7.org/fhir/tools/ValueSet/primitive-types']) {
+        const results = await provider.searchValueSets([{ name: 'url:contains', value }]);
+        expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+        for (const r of results) {
+          expect(r.url.toLowerCase()).toContain(value.toLowerCase());
+        }
+      }
+      // with _elements (built from the indexed columns) too
+      const indexed = await provider.searchValueSets([{ name: 'url:contains', value: 'Primitive-Types' }], ['url']);
+      expect(indexed.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+      expect((await provider.searchValueSets([{ name: 'url:contains', value: 'no-such-value-set-anywhere' }])).length).toBe(0);
+    });
+
+    test('version is matched version-aware, not as a substring (K8)', async () => {
+      const url = 'http://hl7.org/fhir/tools/ValueSet/primitive-types';
+      const search = async (version, elements = null) =>
+        (await provider.searchValueSets([{ name: 'url', value: url }, { name: 'version', value: version }], elements)).length;
+      expect(await search('0.8.0')).toBe(1);
+      expect(await search('0.8.x')).toBe(1);
+      expect(await search('0.x.x')).toBe(1);
+      expect(await search('0.8')).toBe(0);   // a partial version isn't a wildcard: 0.8.x is
+      expect(await search('0')).toBe(0);   // a substring of 0.8.0, but not a match
+      expect(await search('8.0')).toBe(0);
+      expect(await search('0.9.x')).toBe(0);
+      // the same with only some elements (selected from the index columns)
+      expect(await search('0.8.x', ['url'])).toBe(1);
+      expect(await search('0', ['url'])).toBe(0);
     });
 
     test('should search with multiple criteria', async () => {
@@ -200,8 +231,6 @@ describe('PackageValueSetProvider', () => {
         expect(vs.status).toBe('active');
         expect(vs.jsonObj.publisher).toContain('HL7');
       }
-
-      console.log(`Found ${results.length} active HL7 ValueSets`);
     });
 
     test('should search by system in compose', async () => {
@@ -211,8 +240,6 @@ describe('PackageValueSetProvider', () => {
 
       expect(Array.isArray(results)).toBe(true);
       expect(results.length).toBeGreaterThan(0);
-
-      console.log(`Found ${results.length} ValueSets using the specified system`);
     });
 
     test('should handle empty search criteria', async () => {
@@ -313,6 +340,118 @@ describe('PackageValueSetProvider', () => {
       expect(mapSize).toBeGreaterThan(0);
       expect(stats.totalValueSets).toBeGreaterThan(0);
       expect(mapSize).toBeGreaterThanOrEqual(stats.totalValueSets);
+    });
+  });
+
+  describe('id space', () => {
+    let spaced;
+
+    beforeAll(async () => {
+      // a provider of its own, so the other tests see the value sets as they are loaded
+      spaced = new PackageValueSetProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await spaced.initialize();
+      spaced.assignIds('tools');
+    });
+
+    test('value sets carry their prefixed id, and are fetched by it', async () => {
+      const vs = [...spaced.valueSetMap.values()][0];
+      expect(vs.id.startsWith('tools-')).toBe(true);
+      expect(vs.jsonObj.id).toBe(vs.id);
+      expect(await spaced.fetchValueSetById(vs.id)).toBe(vs);
+    });
+
+    test('a value set is not found by its unprefixed id, or by its url', async () => {
+      const vs = [...spaced.valueSetMap.values()][0];
+      expect(await spaced.fetchValueSetById(vs.id.substring('tools-'.length))).toBeNull();
+      expect(await spaced.fetchValueSetById('tools-' + vs.url)).toBeNull();
+    });
+
+    test('search returns prefixed ids', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await spaced.searchValueSets([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        for (const r of results) {
+          expect((r.jsonObj || r).id.startsWith('tools-')).toBe(true);
+          expect((r.jsonObj || r).id.startsWith('tools-tools-')).toBe(false);
+        }
+      }
+    });
+  });
+
+  describe('keepPinnedOnly', () => {
+    let reduced;
+    let gone;
+
+    beforeAll(async () => {
+      reduced = new PackageValueSetProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await reduced.initialize();
+      reduced.assignIds('core');
+      gone = [...reduced.valueSetMap.values()][0];
+      reduced.keepPinnedOnly(new Map([[gone.url, new Set(['999.0.0'])]]));
+    });
+
+    test('a restricted value set is still fetched by its own version, where THO does not have that version', async () => {
+      expect(gone.version).toBeTruthy();
+      expect(await reduced.fetchValueSet(gone.url, gone.version)).toBe(gone);
+    });
+
+    test('a restricted value set is not fetched by a version that THO has', async () => {
+      const thoToo = new PackageValueSetProvider(reduced.packageLoader);
+      await thoToo.initialize();
+      thoToo.assignIds('core');
+      const r = [...thoToo.valueSetMap.values()].find(x => x.url === gone.url);
+      thoToo.keepPinnedOnly(new Map([[r.url, new Set([r.version])]]));
+      expect(await thoToo.fetchValueSet(r.url, r.version)).toBeNull();
+      expect(await thoToo.fetchValueSet(r.url, null)).toBeNull();
+    });
+
+    test('a restricted value set is not fetched without a version, or by id', async () => {
+      expect(await reduced.fetchValueSet(gone.url, null)).toBeNull();
+      expect(await reduced.fetchValueSetById(gone.id)).toBeNull();
+    });
+
+    test('a restricted value set is not found by search, or listed', async () => {
+      for (const elements of [null, ['id', 'url']]) {
+        const results = await reduced.searchValueSets([], elements);
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.some(r => (r.jsonObj || r).id === gone.id)).toBe(false);
+      }
+      expect(await reduced.listAllValueSets()).not.toContain(gone.url);
+    });
+
+    test('the other value sets are still there', async () => {
+      const other = [...reduced.valueSetMap.values()].find(vs => vs.url !== gone.url);
+      expect(await reduced.fetchValueSetById(other.id)).toBe(other);
+    });
+  });
+
+  describe('incomplete cache', () => {
+    // a cache whose population was cut short (process killed part way through) has no
+    // complete marker, and must be rebuilt rather than trusted with what it holds
+    const sqlite3 = require('sqlite3');
+    const exec = (dbPath, sql) => new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(dbPath, (err) => {
+        if (err) { reject(err); return; }
+        db.exec(sql, (err) => db.close(() => err ? reject(err) : resolve()));
+      });
+    });
+
+    test('a finished cache is marked complete', async () => {
+      expect(await provider.database.isComplete()).toBe(true);
+    });
+
+    test('a cache without the complete marker is rebuilt', async () => {
+      const fullSize = provider.getMapSize();
+      const dbPath = provider.dbPath;
+      await provider.close?.();
+      // simulate a truncated population: half the rows written, no marker
+      await exec(dbPath, `DELETE FROM valuesets WHERE rowid % 2 = 0; DELETE FROM vsac_settings WHERE key = 'cache-complete';`);
+
+      const again = new PackageValueSetProvider(new PackageContentLoader(path.join(packageCacheDir, packagePath)));
+      await again.initialize();
+      expect(again.getMapSize()).toBe(fullSize);
+      expect(await again.database.isComplete()).toBe(true);
+      await again.close?.();
     });
   });
 });

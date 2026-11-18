@@ -7,7 +7,7 @@
 // POST /CodeSystem/{id}/$subsumes
 //
 
-const { TerminologyWorker } = require('./worker');
+const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
 const { FhirCodeSystemProvider } = require('../cs/cs-cs');
 const {TxParameters} = require("../params");
 const {Parameters} = require("../library/parameters");
@@ -51,8 +51,7 @@ class SubsumesWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        return res.status(error.statusCode || 500).json(this.operationOutcome(
-          'error', error.issueCode || 'exception', error.message));
+        return res.status(error.statusCode || 500).json(this.unexpectedErrorOutcome(error));
       }
     }
   }
@@ -74,8 +73,7 @@ class SubsumesWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        return res.status(error.statusCode || 500).json(this.operationOutcome(
-          'error', error.issueCode || 'exception', error.message));
+        return res.status(error.statusCode || 500).json(this.unexpectedErrorOutcome(error));
       }
     }
   }
@@ -87,13 +85,14 @@ class SubsumesWorker extends TerminologyWorker {
   async handleTypeLevelSubsumes(req, res) {
     this.deadCheck('subsumes-type-level');
 
-    // Handle tx-resource and cache-id parameters from Parameters resource
-    if (req.body && req.body.resourceType === 'Parameters') {
-      this.setupAdditionalResources(req.body);
-    }
-
-    // Parse parameters from request
+    // Parse the parameters first, then hand them to setupAdditionalResources. It used to be
+    // handed req.body, which meant a GET (no body) never reached the cache-id handling: when a
+    // client front-loads a suite's resources into a server-side cache the request carries no
+    // tx-resource at all, only the X-Cache-Id header, and every code system supplied that way
+    // was invisible. On a GET parseParameters turns the query string into the same Parameters
+    // shape, and the cache-id comes off the operation context
     const params = new Parameters(this.parseParameters(req));
+    this.setupAdditionalResources(params.jsonObj);
     const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
     txp.readParams(params.jsonObj);
 
@@ -101,14 +100,23 @@ class SubsumesWorker extends TerminologyWorker {
     let codingA, codingB;
     let csProvider;
 
+    let names = ['codeA', 'codeB'];
     if (params.has('codingA') && params.has('codingB')) {
+      names = ['codingA', 'codingB'];
       // Using codingA and codingB (only from Parameters resource)
       codingA = params.get('codingA');
       codingB = params.get('codingB');
 
+      // A Coding with no system has no defined meaning, so there is nothing to test. This is a
+      // problem with the request (400/invalid), not a code system the server can't find
+      for (const [name, coding] of [['codingA', codingA], ['codingB', codingB]]) {
+        if (!coding.system) {
+          throw this.parameterIssue(txp, 'SUBSUMPTION_NO_SYSTEM', [name], name);
+        }
+      }
       // Codings must have the same system
       if (codingA.system !== codingB.system) {
-        throw new Issue('error', 'not-found', null, null, 'codingA and codingB must have the same system', null, 400);
+        throw this.parameterIssue(txp, 'SUBSUMPTION_SYSTEM_MISMATCH', [codingA.system, codingB.system], 'codingB');
       }
       // Get the code system provider from the coding's system
       csProvider = await this.findCodeSystem(codingA.system, codingA.version || '', txp, ['complete'], null, false);
@@ -116,7 +124,7 @@ class SubsumesWorker extends TerminologyWorker {
     } else if (params.has('codeA') && params.has('codeB')) {
       // Using codeA, codeB - system is required
       if (!params.has('system')) {
-        throw new Issue('error', 'not-found', null, null, 'system parameter is required when using codeA and codeB', null, 404);
+        throw this.parameterIssue(txp, 'SUBSUMPTION_NO_SYSTEM', ['codeA'], 'codeA');
       }
 
       csProvider = await this.findCodeSystem(params.get('system'), params.get('version') || '', txp, ['complete'], null, false);
@@ -138,7 +146,7 @@ class SubsumesWorker extends TerminologyWorker {
     }
 
     // Perform the subsumes check
-    const result = await this.doSubsumes(csProvider, codingA, codingB);
+    const result = await this.doSubsumes(csProvider, codingA, codingB, txp, names);
     req.logInfo = this.usedSources.join("|")+txp.logInfo();
     return res.status(200).json(result);
   }
@@ -159,13 +167,9 @@ class SubsumesWorker extends TerminologyWorker {
       throw new Issue('error', 'not found', null, null, `CodeSystem/${id} not found`, null, 404);
     }
 
-    // Handle tx-resource and cache-id parameters from Parameters resource
-    if (req.body && req.body.resourceType === 'Parameters') {
-      this.setupAdditionalResources(req.body);
-    }
-
-    // Parse parameters from request
+    // See handleTypeLevelSubsumes: parse first, so a GET reaches the cache-id handling too
     const params = new Parameters(this.parseParameters(req));
+    this.setupAdditionalResources(params.jsonObj);
     const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
     txp.readParams(params.jsonObj);
 
@@ -173,12 +177,14 @@ class SubsumesWorker extends TerminologyWorker {
     const supplements = this.loadSupplements(codeSystem.url, codeSystem.version, txp.supplements);
 
     // Create a FhirCodeSystemProvider for this CodeSystem
-    const csProvider = new FhirCodeSystemProvider(this.opContext, codeSystem, supplements);
+    const csProvider = FhirCodeSystemProvider.create(this.opContext, codeSystem, supplements);
 
     // Get the codings
     let codingA, codingB;
 
+    let names = ['codeA', 'codeB'];
     if (params.has('codingA') && params.has('codingB')) {
+      names = ['codingA', 'codingB'];
       codingA = params.get('codingA');
       codingB = params.get('codingB');
     } else if (params.has('codeA') && params.has('codeB')) {
@@ -198,7 +204,7 @@ class SubsumesWorker extends TerminologyWorker {
     }
 
     // Perform the subsumes check
-    const result = await this.doSubsumes(csProvider, codingA, codingB);
+    const result = await this.doSubsumes(csProvider, codingA, codingB, txp, names);
     req.logInfo = this.usedSources.join("|")+txp.logInfo();
     return res.json(result);
   }
@@ -263,9 +269,11 @@ class SubsumesWorker extends TerminologyWorker {
    * @param {CodeSystemProvider} csProvider - CodeSystem provider
    * @param {Object} codingA - First coding
    * @param {Object} codingB - Second coding
+   * @param {TxParameters} txp - parsed parameters (for languages)
+   * @param {Array<string>} names - the parameters the two codes came from, for `expression`
    * @returns {Object} Parameters resource with subsumes result
    */
-  async doSubsumes(csProvider, codingA, codingB) {
+  async doSubsumes(csProvider, codingA, codingB, txp, names = ['codeA', 'codeB']) {
     this.deadCheck('doSubsumes');
 
     const csSystem = csProvider.system();
@@ -287,18 +295,12 @@ class SubsumesWorker extends TerminologyWorker {
     // Validate both codes exist
     const locateA = await csProvider.locate(codingA.code);
     if (!locateA || !locateA.context) {
-      const error = new Error(`Invalid code: '${codingA.code}' not found in CodeSystem '${csSystem}'`);
-      error.statusCode = 404;
-      error.issueCode = 'not-found';
-      throw error;
+      throw this.unknownCodeIssue(csProvider, codingA.code, names[0], locateA ? locateA.message : null, txp);
     }
 
     const locateB = await csProvider.locate(codingB.code);
     if (!locateB || !locateB.context) {
-      const error = new Error(`Invalid code: '${codingB.code}' not found in CodeSystem '${csSystem}'`);
-      error.statusCode = 404;
-      error.issueCode = 'not-found';
-      throw error;
+      throw this.unknownCodeIssue(csProvider, codingB.code, names[1], locateB ? locateB.message : null, txp);
     }
 
     let equal = false;
@@ -324,21 +326,52 @@ class SubsumesWorker extends TerminologyWorker {
   }
 
   /**
-   * Build an OperationOutcome
-   * @param {string} severity - error, warning, information
-   * @param {string} code - Issue code
-   * @param {string} message - Diagnostic message
+   * Build the Issue for a request that is malformed - a missing or unusable parameter. These
+   * are 400 / invalid: the request can't be processed as given, whatever the server knows
+   */
+  parameterIssue(txp, msgId, args, path) {
+    const msg = this.i18n.translate(msgId, txp.HTTPLanguages, args);
+    return new Issue('error', 'invalid', path, msgId, msg, 'invalid-data', 400);
+  }
+
+  /**
+   * Build the Issue for a code that isn't in the code system. Uses the same message ids
+   * and tx-issue-type detail code as $validate-code, so clients get consistent errors
+   * @param {CodeSystemProvider} csProvider - CodeSystem provider
+   * @param {string} code - the code that wasn't found
+   * @param {string} path - the parameter the code came from ('codeA' / 'codeB')
+   * @param {string} message - any explanation the provider gave for not finding it
+   * @param {TxParameters} txp - parsed parameters (for languages)
+   * @returns {Issue}
+   */
+  unknownCodeIssue(csProvider, code, path, message, txp) {
+    const system = csProvider.system();
+    const version = csProvider.version();
+    const msgId = Unknown_Code_in_VersionSCT(system, version);
+    const langs = txp ? txp.HTTPLanguages : null;
+    const msg = this.i18n.translate(msgId, langs, [code, system, version, SCTVersion(system, version)]);
+    const issue = new Issue('error', 'code-invalid', path, msgId, msg, 'invalid-code', 404);
+    if (message) {
+      issue.withDiagnostics(message);
+    }
+    return issue;
+  }
+
+  /**
+   * Wrap an error we did not expect as an OperationOutcome. The message goes in details.text,
+   * not diagnostics: TxTester strips diagnostics from every issue it compares, so anything
+   * reported that way is invisible in a failing test - all you see is 'exception'
+   * @param {Error} error - the error that escaped
    * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  unexpectedErrorOutcome(error) {
+    // txIssueType, when the thrower set one, becomes the details.coding - that is where
+    // a client looks for the machine-readable reason (e.g. cannot-determine).
+    const issue = new Issue('error', error.issueCode || 'exception', null, null,
+      error.message || String(error), error.txIssueType || null, error.statusCode || 500);
+    const oo = new OperationOutcome();
+    oo.addIssue(issue);
+    return oo.jsonObj;
   }
 }
 

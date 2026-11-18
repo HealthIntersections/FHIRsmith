@@ -1,0 +1,46 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-route",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-route",
+  "name": "IpsRoute",
+  "title": "Routes of administration (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 284009009 |Route of administration value|, and the current EDQM Standard Terms routes of administration for human (and veterinary) use (status C, class ROA, domain H+V).",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "284009009"
+          }
+        ]
+      },
+      {
+        "system": "http://standardterms.edqm.eu",
+        "filter": [
+          {
+            "property": "status",
+            "op": "=",
+            "value": "C"
+          },
+          {
+            "property": "class",
+            "op": "=",
+            "value": "ROA"
+          },
+          {
+            "property": "domain",
+            "op": "=",
+            "value": "H+V"
+          }
+        ]
+      }
+    ]
+  }
+}

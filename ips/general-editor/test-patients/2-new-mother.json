@@ -1,0 +1,1880 @@
+{
+  "resourceType": "Bundle",
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:135c4103-53f4-464d-964f-f83de1b7d89a"
+  },
+  "type": "document",
+  "timestamp": "2025-01-20T00:00:00.000Z",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:7b83e99f-1875-4a0b-aeb7-f6ab802f44aa",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "e3b6d13a-1d6b-4bf8-9338-ab30e18834a3",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "60591-5",
+              "display": "Patient summary Document"
+            }
+          ]
+        },
+        "date": "2025-01-20",
+        "title": "Patient Summary - Fatima Rahman",
+        "section": [
+          {
+            "title": "Problem List",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11450-4",
+                  "display": "Problem list - Reported"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:c3ec96cf-5b7c-404b-a211-b4068c97207f"
+              },
+              {
+                "reference": "urn:uuid:945e105a-aba5-4871-b733-729ba3a906b6"
+              },
+              {
+                "reference": "urn:uuid:f56f4b17-f88a-43e2-9207-e648964e743b"
+              },
+              {
+                "reference": "urn:uuid:295c036f-d398-460b-90a9-e2dd759f5462"
+              },
+              {
+                "reference": "urn:uuid:a3160c52-3ded-4f8b-a529-8809649b8cbb"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Category</th><th>Severity</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Epilepsy</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>Feb 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Focal epilepsy with focal to bilateral tonic-clonic seizures, first presenting in the second trimester (Feb 2024). EEG: left temporal epileptiform discharges; MRI brain normal. Last seizure Sept 2024. Neurology follow-up at Monash Health. Not to drive until 12 months seizure-free.</li></ul></td></tr><tr><td>Anxiety disorder</td><td>Problem List Item</td><td>Moderate severity</td><td>Active / Confirmed</td><td>Jun 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Postpartum onset. GAD-7 14 (Dec 2024). Referred to perinatal mental health; counselling with a Dari interpreter.</li></ul></td></tr><tr><td>Adjustment disorder</td><td>Problem List Item</td><td>--</td><td>Active / Provisional</td><td>2022</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Settlement stress since resettling from Afghanistan in 2021; limited English; small social network.</li></ul></td></tr><tr><td>Iron deficiency anemia</td><td>Problem List Item</td><td>Mild</td><td>Active / Confirmed</td><td>May 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Postpartum; on oral iron. Recheck in 3 months.</li></ul></td></tr><tr><td>Vitamin D deficiency</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>2022</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Allergies and Intolerances",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "48765-2",
+                  "display": "Allergies and adverse reactions Document"
+                }
+              ]
+            },
+            "emptyReason": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/list-empty-reason",
+                  "code": "nilknown",
+                  "display": "Nil known"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p><i>Nil known</i></p></div>"
+            }
+          },
+          {
+            "title": "Medication Summary",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10160-0",
+                  "display": "History of Medication use Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:5a691a51-601d-44c3-aa83-8ce00c68e28a"
+              },
+              {
+                "reference": "urn:uuid:3f705b64-1e50-4813-97c2-5c79e59dcd81"
+              },
+              {
+                "reference": "urn:uuid:d602ee44-ca9c-4ac1-b5ac-b8fac5df5d2e"
+              },
+              {
+                "reference": "urn:uuid:ec1dd197-59c6-426a-bc56-2b1003a12a2b"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Medication</th><th>Status</th><th>Reason</th><th>Effective</th><th>Dosage</th></tr></thead><tbody><tr><td>Levetiracetam</td><td>active</td><td>Epilepsy</td><td>from 20-Feb 24</td><td>500 mg twice daily</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Considered compatible with breastfeeding; infant drowsiness and feeding reviewed - no concerns.</li></ul></td></tr><tr><td>Folic acid</td><td>active</td><td>--</td><td>from 20-Feb 24</td><td>5 mg once daily</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>High dose while on an antiseizure medication and of child-bearing age.</li></ul></td></tr><tr><td>Ferrous sulfate 325 mg (iron 105 mg) modified-release tablet</td><td>active</td><td>Iron deficiency anemia</td><td>from 10-Dec 24</td><td>1 tablet daily</td></tr><tr><td>Colecalciferol 1000 IU capsule</td><td>active</td><td>Vitamin D deficiency</td><td>from 01-Mar 22</td><td>1 capsule daily</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Immunizations",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11369-6",
+                  "display": "History of Immunization note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:5bfbb47b-5e2f-4887-ba5f-59fe7aeff8cc"
+              },
+              {
+                "reference": "urn:uuid:1e0aee4c-2ffa-4fe6-860d-43a760da822a"
+              },
+              {
+                "reference": "urn:uuid:3880da27-3e80-44b1-bfaf-9e1cc8de125d"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Vaccine</th><th>Status</th><th>Date</th><th>Target disease</th><th>Dose</th></tr></thead><tbody><tr><td>Diphtheria, tetanus and pertussis vaccine (dTpa)</td><td>completed</td><td>15-Jan 24</td><td>Tetanus</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Given in pregnancy (28 weeks).</li></ul></td></tr><tr><td>Influenza virus antigen-containing vaccine product</td><td>completed</td><td>02-Apr 24</td><td>Influenza</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Given in pregnancy.</li></ul></td></tr><tr><td>SARS-CoV-2 mRNA vaccine</td><td>completed</td><td>14-Feb 23</td><td>Disease caused by severe acute respiratory syndrome coronavirus 2</td><td>3</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Procedures",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47519-4",
+                  "display": "History of Procedures Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:9f0c7a3b-9544-4205-8fb5-1ebcc7ae4c3f"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Procedure</th><th>Status</th><th>Performed</th></tr></thead><tbody><tr><td>Delivery normal</td><td>completed</td><td>30-Apr 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Spontaneous vaginal delivery at 39 weeks; no seizures in labour. Daughter, 3.1 kg.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Results",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "30954-2",
+                  "display": "Relevant diagnostic tests/laboratory data note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:62b2ab57-4426-45c4-b5fe-121c7bba41f1"
+              },
+              {
+                "reference": "urn:uuid:66cb2761-3b17-4003-9e6e-91dd8a87c703"
+              },
+              {
+                "reference": "urn:uuid:bca2648d-1110-43dd-b4b0-c8cf3101285b"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Interpretation</th><th>Reference range</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Hemoglobin [Mass/volume] in Blood</td><td>112 g/L</td><td>Low</td><td>115-160</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Ferritin [Mass/volume] in Serum or Plasma</td><td>14 ug/L</td><td>Low</td><td>30-200</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Thyrotropin [Units/volume] in Serum or Plasma</td><td>1.8 mU/L</td><td>Normal</td><td>0.5-4.0</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Vital Signs",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8716-3",
+                  "display": "Vital Signs"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a324081c-7b86-4521-a79c-459836afe0a7"
+              },
+              {
+                "reference": "urn:uuid:af38daf9-8c65-4e34-8ae5-4f1fed3c6bb5"
+              },
+              {
+                "reference": "urn:uuid:7d1a0b3f-a4e4-42b2-b033-8ec65df62a84"
+              },
+              {
+                "reference": "urn:uuid:aa214de0-2d03-4aac-a409-551d7a04dbe4"
+              },
+              {
+                "reference": "urn:uuid:ea80ff89-981c-4f66-b145-b1495018efc5"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Blood pressure</td><td>112/70 mm[Hg]</td><td>20-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Heart rate</td><td>78 /min</td><td>20-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body weight</td><td>61 kg</td><td>20-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body height</td><td>158 cm</td><td>20-Jan 25</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body mass index</td><td>24.4 kg/m2</td><td>20-Jan 25</td><td>final</td><td>Vital Signs</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Pregnancy History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10162-6",
+                  "display": "History of pregnancies Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:1c0d9dc7-6f77-4cfa-a545-696ab9f7ecad"
+              },
+              {
+                "reference": "urn:uuid:1414ac04-717d-4c0c-9deb-92bf96f78e94"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Pregnancy status</td><td>Not pregnant</td><td>20-Jan 25</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Breastfeeding. Contraception: progestogen-only pill.</li></ul></td></tr><tr><td>Live births</td><td>1 {births}</td><td>20-Jan 25</td><td>final</td><td>Social History</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Social History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "29762-2",
+                  "display": "Social history note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:97eef82f-7939-45cb-8e53-bc168906ef41"
+              },
+              {
+                "reference": "urn:uuid:15b53566-1288-412d-8241-d74f85dd882e"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Tobacco smoking status</td><td>Never smoked tobacco</td><td>20-Jan 25</td><td>final</td><td>Social History</td></tr><tr><td>Alcoholic drinks per day</td><td>0 /d</td><td>20-Jan 25</td><td>final</td><td>Social History</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Functional Status",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47420-5",
+                  "display": "Functional Status Assessment Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:3adb1d35-7c45-4ff3-a1ee-ca8c694222c6"
+              },
+              {
+                "reference": "urn:uuid:66559bd3-79f7-41dd-a518-27ca7ca37979"
+              },
+              {
+                "reference": "urn:uuid:eda464c2-5ed8-4481-88c9-01dc8690a73d"
+              },
+              {
+                "reference": "urn:uuid:678ae8c3-74a1-4fb3-8980-39064983f8f9"
+              },
+              {
+                "reference": "urn:uuid:75d8ef3f-981c-4206-95ee-1429a1cb4d48"
+              },
+              {
+                "reference": "urn:uuid:3ada9743-b050-4bda-9943-3035fcaea5a2"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Consciousness functions: MILD impairment</td><td>Active</td><td>Feb 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Seizures: none since Sept 2024.</li></ul></td></tr><tr><td>Emotional functions: MODERATE impairment</td><td>Active</td><td>Jun 24</td></tr><tr><td>Sleep functions: MILD impairment</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Broken sleep with infant feeding; sleep deprivation lowers her seizure threshold.</li></ul></td></tr><tr><td>Communicating with - receiving - spoken messages: performance SEVERE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>In English. Needs a Dari interpreter for clinical discussions.</li></ul></td></tr><tr><td>Driving: performance COMPLETE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Not permitted to drive until 12 months seizure-free.</li></ul></td></tr><tr><td>Immediate family: SUBSTANTIAL facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Husband Ahmad attends appointments.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Plan of Care",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "18776-5",
+                  "display": "Plan of Care Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:b79413bf-0a53-482f-97fd-08417f4fb032"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Title</th><th>Status</th><th>Intent</th><th>Period</th><th>Description</th></tr></thead><tbody><tr><td>Postnatal and epilepsy care plan</td><td>active</td><td>plan</td><td>20-Jan 25 - 20-Jul 25</td><td>Nine months postpartum, breastfeeding, with new-onset focal epilepsy (onset in pregnancy), postpartum anxiety, and iron and vitamin D deficiency. Resettled from Afghanistan in 2021; speaks Dari, limited English.\n\nPlan: continue levetiracetam; seizure diary; sleep protection (partner to do a night feed); seizure safety with the baby (bathing, carrying on stairs); neurology review in March. Perinatal mental health: counselling continuing, review GAD-7 in 6 weeks. Iron and ferritin recheck in 3 months. Her daughter is under paediatric review for developmental delay; the family is linked with early intervention. Book a Dari interpreter and a female clinician for every visit.</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Advance Directives",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "42348-3",
+                  "display": "Advance Healthcare Directives"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:e99550f6-2370-41d2-9d8b-c79251b1342b"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Scope</th><th>Category</th><th>Status</th><th>Date</th></tr></thead><tbody><tr><td>Advanced Care Directive</td><td>Refusal of blood transfusion</td><td>active</td><td>12-Mar 24</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Alerts",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "104605-1",
+                  "display": "Alert"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:12f47c6e-a4ff-42e5-b65d-e3206b2eb07f"
+              },
+              {
+                "reference": "urn:uuid:f615558d-4b64-49e4-8914-16591295288f"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Flag</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Interpreter required: Dari (book in advance)</td><td>active</td><td>from 01-Sep 21</td></tr><tr><td>Prefers female clinicians</td><td>active</td><td>from 01-Sep 21</td></tr></tbody></table></div>"
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c",
+          "display": "Fatima Abdul Rahman"
+        },
+        "author": [
+          {
+            "reference": "urn:uuid:d6d2c375-e77b-4524-ace6-4c9155a98868",
+            "display": "Dr Laila Sharif"
+          }
+        ],
+        "custodian": {
+          "reference": "urn:uuid:90c97cb1-aef4-4f55-ab00-f3a5e40c7958",
+          "display": "Dandenong Community Health Service"
+        },
+        "text": {
+          "status": "generated",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p class=\"ips-patient\"><b>Fatima Abdul Rahman</b>, female, DoB: 12-Jul 95</p><table class=\"ips-facts\"><tr><td><b>Contact details</b></td><td>phone: 0456789123; email: fatima.rahman@hotmail.com</td></tr><tr><td><b>Address</b></td><td>7/21 Station Road, Dandenong, 3175, AU</td></tr></table><table class=\"ips-facts\"><tr><td><b>Date</b></td><td>20-Jan 25</td></tr><tr><td><b>Status</b></td><td>final</td></tr><tr><td><b>Type</b></td><td>Patient summary Document</td></tr><tr><td><b>Author</b></td><td>Dr Laila Sharif</td></tr><tr><td><b>Custodian</b></td><td>Dandenong Community Health Service</td></tr></table></div>"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "4446c369-b6ee-44d3-a343-8e1afed1d050",
+        "name": [
+          {
+            "family": "Rahman",
+            "given": [
+              "Fatima",
+              "Abdul"
+            ]
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1995-07-12",
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "0456789123"
+          },
+          {
+            "system": "email",
+            "value": "fatima.rahman@hotmail.com"
+          }
+        ],
+        "address": [
+          {
+            "text": "7/21 Station Road, Dandenong, 3175, AU"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d6d2c375-e77b-4524-ace6-4c9155a98868",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "ef5f5d1d-cd1d-4ffa-8998-188cfc4a6d4c",
+        "name": [
+          {
+            "text": "Dr Laila Sharif"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:90c97cb1-aef4-4f55-ab00-f3a5e40c7958",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "e0964d0f-fe2c-48be-89e6-8cf679a84695",
+        "name": "Dandenong Community Health Service"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c3ec96cf-5b7c-404b-a211-b4068c97207f",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "a2c8a635-b977-4ecd-ab2c-ecde433434eb",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "84757009",
+              "display": "Epilepsy"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-02",
+        "note": [
+          {
+            "text": "Focal epilepsy with focal to bilateral tonic-clonic seizures, first presenting in the second trimester (Feb 2024). EEG: left temporal epileptiform discharges; MRI brain normal. Last seizure Sept 2024. Neurology follow-up at Monash Health. Not to drive until 12 months seizure-free."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:945e105a-aba5-4871-b733-729ba3a906b6",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "97a1fad2-00b7-46e4-be23-f255dc7a6743",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "197480006",
+              "display": "Anxiety disorder"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "6736007",
+              "display": "Moderate severity"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-06",
+        "note": [
+          {
+            "text": "Postpartum onset. GAD-7 14 (Dec 2024). Referred to perinatal mental health; counselling with a Dari interpreter."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f56f4b17-f88a-43e2-9207-e648964e743b",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "fed87584-1d7a-40dd-beb4-be552faa0fd9",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "17226007",
+              "display": "Adjustment disorder"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "provisional",
+              "display": "Provisional"
+            }
+          ]
+        },
+        "onsetDateTime": "2022",
+        "note": [
+          {
+            "text": "Settlement stress since resettling from Afghanistan in 2021; limited English; small social network."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:295c036f-d398-460b-90a9-e2dd759f5462",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "04ff62e5-ef76-4152-9230-95034da2c88f",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "87522002",
+              "display": "Iron deficiency anemia"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "255604002",
+              "display": "Mild"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-05",
+        "note": [
+          {
+            "text": "Postpartum; on oral iron. Recheck in 3 months."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a3160c52-3ded-4f8b-a529-8809649b8cbb",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "de30bc5f-ef3f-4dc7-96c7-7b7288712f9f",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "34713006",
+              "display": "Vitamin D deficiency"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2022",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5a691a51-601d-44c3-aa83-8ce00c68e28a",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "7673c079-6e38-400e-9370-789b9a4114ee",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "387000003",
+              "display": "Levetiracetam"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-02-20"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "84757009",
+                "display": "Epilepsy"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "500 mg twice daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "Considered compatible with breastfeeding; infant drowsiness and feeding reviewed - no concerns."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3f705b64-1e50-4813-97c2-5c79e59dcd81",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "1cfec403-230f-4281-88b7-ecd67217a16b",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "63718003",
+              "display": "Folic acid"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-02-20"
+        },
+        "dosage": [
+          {
+            "text": "5 mg once daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "High dose while on an antiseizure medication and of child-bearing age."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d602ee44-ca9c-4ac1-b5ac-b8fac5df5d2e",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "53cf64f8-8b03-4968-9df7-e8404d75fb76",
+        "medicationCodeableConcept": {
+          "text": "Ferrous sulfate 325 mg (iron 105 mg) modified-release tablet"
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-12-10"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "87522002",
+                "display": "Iron deficiency anemia"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "1 tablet daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ec1dd197-59c6-426a-bc56-2b1003a12a2b",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "5c11be49-797f-4ef9-9406-449868890247",
+        "medicationCodeableConcept": {
+          "text": "Colecalciferol 1000 IU capsule"
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2022-03-01"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "34713006",
+                "display": "Vitamin D deficiency"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "1 capsule daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5bfbb47b-5e2f-4887-ba5f-59fe7aeff8cc",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "d9ce25a2-82a6-4eb1-998e-460586524b79",
+        "vaccineCode": {
+          "text": "Diphtheria, tetanus and pertussis vaccine (dTpa)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-01-15",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "76902006",
+                    "display": "Tetanus"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Given in pregnancy (28 weeks)."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1e0aee4c-2ffa-4fe6-860d-43a760da822a",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "6aaca793-2188-4873-a620-d1eecccf6fd5",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836377006",
+              "display": "Influenza virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-04-02",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "6142004",
+                    "display": "Influenza"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Given in pregnancy."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3880da27-3e80-44b1-bfaf-9e1cc8de125d",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "b86ef0e9-a4da-423b-a5c2-745d262adaf0",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "1119349007",
+              "display": "SARS-CoV-2 mRNA vaccine"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2023-02-14",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "840539006",
+                    "display": "Disease caused by severe acute respiratory syndrome coronavirus 2"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "3"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9f0c7a3b-9544-4205-8fb5-1ebcc7ae4c3f",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "664de396-dd02-425e-a67a-9330ab2f4a17",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "48782003",
+              "display": "Delivery normal"
+            }
+          ]
+        },
+        "status": "completed",
+        "performedDateTime": "2024-04-30",
+        "note": [
+          {
+            "text": "Spontaneous vaginal delivery at 39 weeks; no seizures in labour. Daughter, 3.1 kg."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:62b2ab57-4426-45c4-b5fe-121c7bba41f1",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "4e131ec7-5d14-4880-99cf-4597ed995354",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "718-7",
+              "display": "Hemoglobin [Mass/volume] in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 112,
+          "unit": "g/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "g/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "L",
+                "display": "Low"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "115-160"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:66cb2761-3b17-4003-9e6e-91dd8a87c703",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "ff5a5e38-3aac-413a-91f4-e492b6959097",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "2276-4",
+              "display": "Ferritin [Mass/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 14,
+          "unit": "ug/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "ug/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "L",
+                "display": "Low"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "30-200"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:bca2648d-1110-43dd-b4b0-c8cf3101285b",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "868e743e-538d-45a2-ab6d-ef4da1b92d39",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "3016-3",
+              "display": "Thyrotropin [Units/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 1.8,
+          "unit": "mU/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mU/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "0.5-4.0"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a324081c-7b86-4521-a79c-459836afe0a7",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "aad5ded7-a32d-45dd-9e93-e8a2e349fffb",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel with all children optional"
+            }
+          ],
+          "text": "Blood pressure"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        },
+        "component": [
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6",
+                  "display": "Systolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 112,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4",
+                  "display": "Diastolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 70,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:af38daf9-8c65-4e34-8ae5-4f1fed3c6bb5",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "5525c524-a01b-46bb-a08f-af508a7738be",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 78,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7d1a0b3f-a4e4-42b2-b033-8ec65df62a84",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "5b55d179-8dca-4d8b-a586-4f80eba391ff",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "29463-7",
+              "display": "Body weight"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 61,
+          "unit": "kg",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:aa214de0-2d03-4aac-a409-551d7a04dbe4",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "91f846d6-8a43-421a-b917-d568a59b3dc9",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8302-2",
+              "display": "Body height"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 158,
+          "unit": "cm",
+          "system": "http://unitsofmeasure.org",
+          "code": "cm"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ea80ff89-981c-4f66-b145-b1495018efc5",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "c99386dc-de20-468e-8a04-2071294370a2",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "39156-5",
+              "display": "Body mass index"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 24.4,
+          "unit": "kg/m2",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg/m2"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1c0d9dc7-6f77-4cfa-a545-696ab9f7ecad",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "1675ee13-df29-4e60-acb0-4f10d078d1b8",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "82810-3",
+              "display": "Pregnancy status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "60001007",
+              "display": "Not pregnant"
+            }
+          ]
+        },
+        "effectiveDateTime": "2025-01-20",
+        "note": [
+          {
+            "text": "Breastfeeding. Contraception: progestogen-only pill."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1414ac04-717d-4c0c-9deb-92bf96f78e94",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "8f353fc2-bed2-44ef-bbcd-7ed2feebd555",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "11636-8",
+              "display": "[#] Births.live"
+            }
+          ],
+          "text": "Live births"
+        },
+        "valueQuantity": {
+          "value": 1,
+          "unit": "{births}",
+          "system": "http://unitsofmeasure.org",
+          "code": "{births}"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:97eef82f-7939-45cb-8e53-bc168906ef41",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "1256dc64-d877-4e59-abed-d0ed385de17b",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "72166-2",
+              "display": "Tobacco smoking status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "266919005",
+              "display": "Never smoked tobacco"
+            }
+          ]
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:15b53566-1288-412d-8241-d74f85dd882e",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "db68d1bb-af46-4797-bc7b-b8fafc1baad5",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "74013-4",
+              "display": "Alcoholic drinks per day"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 0,
+          "unit": "/d",
+          "system": "http://unitsofmeasure.org",
+          "code": "/d"
+        },
+        "effectiveDateTime": "2025-01-20",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3adb1d35-7c45-4ff3-a1ee-ca8c694222c6",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "654d8397-d50f-4e83-9f61-b6ece3292abc",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b110.1",
+              "version": "2017a",
+              "display": "Consciousness functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-02",
+        "note": [
+          {
+            "text": "Seizures: none since Sept 2024."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:66559bd3-79f7-41dd-a518-27ca7ca37979",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0b5f43cf-2a0b-420d-9894-b74d53459f2d",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b152.2",
+              "version": "2017a",
+              "display": "Emotional functions: MODERATE impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-06",
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:eda464c2-5ed8-4481-88c9-01dc8690a73d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0181623d-7c4d-441a-8703-a454bf74b393",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b134.1",
+              "version": "2017a",
+              "display": "Sleep functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Broken sleep with infant feeding; sleep deprivation lowers her seizure threshold."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:678ae8c3-74a1-4fb3-8980-39064983f8f9",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "6bd44dda-2ba1-473d-8797-5acb7366ef95",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d310.3",
+              "version": "2017a",
+              "display": "Communicating with - receiving - spoken messages: performance SEVERE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "In English. Needs a Dari interpreter for clinical discussions."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:75d8ef3f-981c-4206-95ee-1429a1cb4d48",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "3faf973b-e183-4eb0-a2f0-e0eab9fab5bc",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d475.4",
+              "version": "2017a",
+              "display": "Driving: performance COMPLETE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Not permitted to drive until 12 months seizure-free."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:3ada9743-b050-4bda-9943-3035fcaea5a2",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0bf06ddc-0d98-4259-91db-0b0d4ec76d9c",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e310+3",
+              "version": "2017a",
+              "display": "Immediate family: SUBSTANTIAL facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Husband Ahmad attends appointments."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:b79413bf-0a53-482f-97fd-08417f4fb032",
+      "resource": {
+        "resourceType": "CarePlan",
+        "id": "abdc1093-9625-4408-9367-51fb0258bc73",
+        "title": "Postnatal and epilepsy care plan",
+        "description": "Nine months postpartum, breastfeeding, with new-onset focal epilepsy (onset in pregnancy), postpartum anxiety, and iron and vitamin D deficiency. Resettled from Afghanistan in 2021; speaks Dari, limited English.\n\nPlan: continue levetiracetam; seizure diary; sleep protection (partner to do a night feed); seizure safety with the baby (bathing, carrying on stairs); neurology review in March. Perinatal mental health: counselling continuing, review GAD-7 in 6 weeks. Iron and ferritin recheck in 3 months. Her daughter is under paediatric review for developmental delay; the family is linked with early intervention. Book a Dari interpreter and a female clinician for every visit.",
+        "status": "active",
+        "period": {
+          "start": "2025-01-20",
+          "end": "2025-07-20"
+        },
+        "intent": "plan",
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e99550f6-2370-41d2-9d8b-c79251b1342b",
+      "resource": {
+        "resourceType": "Consent",
+        "id": "b1275b73-048f-4203-865e-d7fb4b361cca",
+        "category": [
+          {
+            "text": "Refusal of blood transfusion"
+          }
+        ],
+        "status": "active",
+        "dateTime": "2024-03-12",
+        "text": {
+          "status": "additional",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Declines transfusion of blood products. Discussed at the antenatal booking; she accepts iron infusion.</p></div>"
+        },
+        "scope": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/consentscope",
+              "code": "adr",
+              "display": "Advanced Care Directive"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:12f47c6e-a4ff-42e5-b65d-e3206b2eb07f",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "45f04d1b-75c5-478c-afaa-ad4a91532b3a",
+        "code": {
+          "text": "Interpreter required: Dari (book in advance)"
+        },
+        "status": "active",
+        "period": {
+          "start": "2021-09-01"
+        },
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f615558d-4b64-49e4-8914-16591295288f",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "8145d6b0-47e4-4da2-89e5-38355a6e96a3",
+        "code": {
+          "text": "Prefers female clinicians"
+        },
+        "status": "active",
+        "period": {
+          "start": "2021-09-01"
+        },
+        "subject": {
+          "reference": "urn:uuid:7fafa0fa-71ff-40ba-895b-795468b2667c"
+        }
+      }
+    }
+  ]
+}

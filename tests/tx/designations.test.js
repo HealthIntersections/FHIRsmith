@@ -615,6 +615,27 @@ describe('Designations', () => {
       expect(filter.passes('cardiac rhythm')).toBe(false);
     });
 
+    test('passes needs every word of the filter (passesAll is the same)', () => {
+      const filter = new SearchFilterText('serum glucose');
+
+      expect(filter.passes('Cholesterol in Serum')).toBe(false);
+      expect(filter.passesAll('Cholesterol in Serum')).toBe(false);
+      expect(filter.passes('Glucose [Mass/volume] in Serum or Plasma')).toBe(true);
+      expect(filter.passesAll('Glucoses, serum')).toBe(true); // stemmed, in any order
+      expect(new SearchFilterText('').passesAll('anything')).toBe(true);
+    });
+
+    test('passesCode: the code starts with the filter', () => {
+      expect(new SearchFilterText('2345').passesCode('2345-7')).toBe(true);
+      expect(new SearchFilterText('2345').passesCode('12345-7')).toBe(false);
+      expect(new SearchFilterText('').passesCode('x')).toBe(true);
+    });
+
+    test('stemmed in the language of the text', () => {
+      const filter = new SearchFilterText('Untersuchungen');
+      expect(filter.passes('Untersuchung des Blutes', false, 'de')).toBe(true);
+    });
+
     test('should calculate match scores', () => {
       const filter = new SearchFilterText('blood pressure');
       const stems = ['blood', 'pressure', 'measurement'];

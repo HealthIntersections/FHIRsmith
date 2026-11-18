@@ -11,7 +11,7 @@
 const { TerminologyWorker } = require('./worker');
 const {TxParameters} = require("../params");
 const {Extensions} = require("../library/extensions");
-const {Issue, OperationOutcome} = require("../library/operation-outcome");
+const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
 const ValueSet = require("../library/valueset");
 const {ValueSetExpander} = require("./expand");
 const {SearchFilterText} = require("../library/designations");
@@ -59,18 +59,7 @@ class CompareWorker extends TerminologyWorker {
         oo.addIssue(error);
         return res.status(error.statusCode || 500).json(oo.jsonObj);
       } else {
-        const issueCode = error.issueCode || 'exception';
-        return res.status(statusCode).json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'error',
-            code: issueCode,
-            details: {
-              text: error.message
-            },
-            diagnostics: error.message
-          }]
-        });
+        return res.status(statusCode).json(outcomeFromError(error));
       }
     }
   }
@@ -89,18 +78,7 @@ class CompareWorker extends TerminologyWorker {
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
       const statusCode = error.statusCode || 500;
-      const issueCode = error.issueCode || 'exception';
-      return res.status(statusCode).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: issueCode,
-          details: {
-            text : error.message
-          },
-          diagnostics: error.message
-        }]
-      });
+      return res.status(statusCode).json(outcomeFromError(error));
     }
   }
 
@@ -158,15 +136,9 @@ class CompareWorker extends TerminologyWorker {
    * @param {string} message - Diagnostic message
    * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    // the shared builder, so that every outcome has details.text and a tx-issue-type coding
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
   async readValueSet(res, prefix, params) {
@@ -200,18 +172,21 @@ class CompareWorker extends TerminologyWorker {
 
   async doCompare(txp, thisVS, otherVS) {
 
-    // ok, we have to compare the composes. we don't care about anything else
-    const thisC = thisVS.jsonObj.compose;
-    const otherC = otherVS.jsonObj.compose;
+    // ok, we have to compare the composes. we don't care about anything else.
+    // Copies: tidyIncludes merges, removes and sorts includes in place, and these value
+    // sets are shared - cache-id resources, and the server's own - so must not change
+    // (ExpansionCache.computeKey remembers a cached resource's hash, for one).
+    const thisC = thisVS.jsonObj.compose ? structuredClone(thisVS.jsonObj.compose) : thisVS.jsonObj.compose;
+    const otherC = otherVS.jsonObj.compose ? structuredClone(otherVS.jsonObj.compose) : otherVS.jsonObj.compose;
     if (!thisC) {
       return this.makeOutcome("indeterminate", `The ValueSet ${thisVS.vurl} has no compose`);
     }
-    Extensions.checkNoModifiers(thisC, 'CompareWorker.doCompare', 'compose', thisVS.vurl)
+    Extensions.checkNoModifiers(thisC, 'CompareWorker.doCompare', 'ValueSet.compose', thisVS.vurl)
     this.checkNoLockedDate(thisVS.vurl, thisC);
     if (!otherC) {
       return this.makeOutcome("indeterminate", `The ValueSet ${otherVS.vurl} has no compose`);
     }
-    Extensions.checkNoModifiers(otherC, 'CompareWorker.doCompare', 'compose', otherVS.vurl)
+    Extensions.checkNoModifiers(otherC, 'CompareWorker.doCompare', 'ValueSet.compose', otherVS.vurl)
     this.checkNoLockedDate(otherVS.vurl, otherC);
 
     let systems = new Map(); // tracks whether the comparison is version dependent or not

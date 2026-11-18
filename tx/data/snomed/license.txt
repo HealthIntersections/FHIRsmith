@@ -1,0 +1,8 @@
+-- License Statement --
+This package contains a scoped subset of SNOMED Clinical Terms® (SNOMED CT®) distributed by International Health Terminology Standards Development Organisation, trading as SNOMED International. SNOMED CT is © and ® SNOMED International. All rights reserved.
+
+SNOMED International grants users a non-exclusive, royalty-free, worldwide permission to use this package solely for the purposes of testing, validation, and demonstration of interoperability, including testing events. Users may copy and distribute the package for these purposes, provided it is distributed in full, without modification, and with this license statement and all copyright and trademark notices intact.
+
+The package may not be modified or altered. The package or any derivative works may not be used in production systems, for the delivery of patient care, or for any commercial purpose other than testing and validation. Any use beyond these terms requires a SNOMED CT Affiliate License, available through a SNOMED International Member's National Release Centre or directly from SNOMED International at www.snomed.org.
+
+The package is provided "as is", without warranty of any kind, and SNOMED International accepts no liability arising from its use. The right to maintain and update this content remains vested exclusively in SNOMED International.

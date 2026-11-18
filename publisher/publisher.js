@@ -1,12 +1,24 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const validation = require('./validation');
+const gitRemote = require('./git-remote');
+const githubRelease = require('./github-release');
 const Database = require('sqlite3').Database;
 const bcrypt = require('bcrypt');
 const session = require('express-session');
+const lusca = require('lusca');
+const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const { requireSameOrigin } = require('../library/same-origin');
 const {Utilities} = require("../library/utilities");
+const { guarded } = require('../library/sqlite-utilities');
+
+// GitHub refuses any file larger than this at the pre-receive hook, and the rejection takes down
+// the whole push rather than just the offending file.
+const GITHUB_MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 
 class PublisherModule {
@@ -30,16 +42,48 @@ class PublisherModule {
     await this.initializeDatabase();
 
     // Set up session middleware - use in-memory sessions or separate session db
+    if (!this.config.sessionSecret) {
+      // Never fall back to a constant. This project is open source, so a fixed default
+      // secret is a published signing key: anyone could mint themselves an admin session
+      // on any deployment that forgot the setting, and nothing about the server would
+      // look wrong. A random secret fails safe instead - sessions simply do not survive
+      // a restart, which is visible and harmless. token.js does the same.
+      this.logger.warn('publisher: no sessionSecret configured - using a random one, so ' +
+        'logins will not survive a restart. Set modules.publisher.sessionSecret.');
+    }
     this.router.use(session({
-      secret: this.config.sessionSecret || 'your-secret-key-change-this',
+      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
       resave: false,
       saveUninitialized: false,
-      cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 } // 24 hours
+      cookie: {
+        // Secure by default: the cookie is then only ever sent over HTTPS. Express is
+        // configured to trust the proxy, so this works behind an NGINX TLS terminator
+        // reporting X-Forwarded-Proto. Set cookieSecure false to run the publisher over
+        // plain HTTP - without it the browser will not send the cookie back and login
+        // appears to succeed and then silently do nothing.
+        secure: this.config.cookieSecure ?? true,
+        // CSRF: the browser leaves the cookie off a POST that starts on another site. That,
+        // with the Origin check below, is what stops another site's page from driving a
+        // logged-in browser to create, approve or delete tasks, or to add users
+        sameSite: 'lax',
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      }
       // Not using SQLiteStore to avoid the database conflict
     }));
 
+    // every POST must come from one of our own pages - see library/same-origin.js
+    this.router.use(requireSameOrigin());
+
     // Parse form data
     this.router.use(express.urlencoded({ extended: true }));
+
+    // CSRF tokens (lusca): every form carries the session's token in a hidden _csrf field,
+    // and every POST route has this.csrf in it, written out so static analysis can see it.
+    // Pages only make a token for someone logged in (making one stores a secret in the
+    // session, and anonymous visitors should not get sessions); the login page always does
+    this.csrf = lusca.csrf({ key: '_csrf' });
+    this.csrfIfLoggedIn = (req, res, next) => req.session && req.session.userId ? this.csrf(req, res, next) : next();
 
     // Set up routes
     this.setupRoutes();
@@ -126,6 +170,7 @@ class PublisherModule {
                                           build_output_path TEXT,
                                           failure_reason TEXT,
                                           announcement TEXT,
+                                          release_url TEXT,
                                           approved_by INTEGER,
                                           queued_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                                           building_at DATETIME,
@@ -162,19 +207,19 @@ class PublisherModule {
 
     for (const sql of tables) {
       await new Promise((resolve, reject) => {
-        this.db.run(sql, (err) => {
+        this.db.run(sql, guarded(reject, (err) => {
           if (err) {
             this.logger.error('Failed to create table:', err);
             reject(err);
           } else {
             resolve();
           }
-        });
+        }));
       });
     }
 
-    // Create default admin user if none exists
-    await this.createDefaultAdmin();
+    // the administrator, with the configured password (or a random one)
+    await this.ensureAdmin();
 
     // Schema migrations for existing databases
     await this.runMigrations();
@@ -183,99 +228,161 @@ class PublisherModule {
   async runMigrations() {
     // Add announcement column if it doesn't exist (added after initial schema)
     const columns = await new Promise((resolve, reject) => {
-      this.db.all("PRAGMA table_info(tasks)", (err, rows) => {
+      this.db.all("PRAGMA table_info(tasks)", guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
     const columnNames = columns.map(c => c.name);
     if (!columnNames.includes('announcement')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE tasks ADD COLUMN announcement TEXT', (err) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN announcement TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added announcement column to tasks table');
             resolve();
           }
-        });
+        }));
+      });
+    }
+    if (!columnNames.includes('publisher_version')) {
+      await new Promise((resolve, reject) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN publisher_version TEXT', guarded(reject, (err) => {
+          if (err) reject(err);
+          else {
+            this.logger.info('Migration: added publisher_version column to tasks table');
+            resolve();
+          }
+        }));
+      });
+    }
+    if (!columnNames.includes('release_url')) {
+      await new Promise((resolve, reject) => {
+        this.db.run('ALTER TABLE tasks ADD COLUMN release_url TEXT', guarded(reject, (err) => {
+          if (err) reject(err);
+          else {
+            this.logger.info('Migration: added release_url column to tasks table');
+            resolve();
+          }
+        }));
       });
     }
     const websiteColumns = await new Promise((resolve, reject) => {
-      this.db.all("PRAGMA table_info(websites)", (err, rows) => {
+      this.db.all("PRAGMA table_info(websites)", guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
     const websiteColumnNames = websiteColumns.map(c => c.name);
     if (!websiteColumnNames.includes('git_root')) {
       await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE websites ADD COLUMN git_root TEXT', (err) => {
+        this.db.run('ALTER TABLE websites ADD COLUMN git_root TEXT', guarded(reject, (err) => {
           if (err) reject(err);
           else {
             this.logger.info('Migration: added git_root column to websites table');
             resolve();
           }
-        });
+        }));
       });
     }
   }
 
-  async createDefaultAdmin() {
-    return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1', (err, row) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+  /**
+   * The administrator, login 'admin'. Its password is the config's adminPassword, set (or reset)
+   * at every start, so changing the config changes it. With no adminPassword, an 'admin' that
+   * doesn't exist yet (and no other administrator) - or that still has the old fixed default
+   * password, admin123 - gets a random password (a UUID), which is logged: set adminPassword to
+   * choose it. There is no page to change a password
+   */
+  async ensureAdmin() {
+    const get = (sql, params = []) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+    const run = (sql, params = []) => new Promise((resolve, reject) =>
+      this.db.run(sql, params, guarded(reject, (err) => err ? reject(err) : resolve())));
+    const setPassword = async (admin, password) => {
+      const hash = await bcrypt.hash(password, 10);
+      if (admin) {
+        await run('UPDATE users SET password_hash = ?, is_admin = 1 WHERE id = ?', [hash, admin.id]);
+      } else {
+        await run('INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
+          ['Administrator', 'admin', hash, 1]);
+      }
+    };
 
-        if (row.count === 0) {
-          const defaultPassword = 'admin123'; // Change this!
-          bcrypt.hash(defaultPassword, 10, (err, hash) => {
-            if (err) {
-              reject(err);
-              return;
-            }
-
-            this.db.run(
-                'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
-                ['Administrator', 'admin', hash, 1],
-                (err) => {
-                  if (err) {
-                    this.logger.error('Failed to create default admin:', err);
-                    reject(err);
-                  } else {
-                    this.logger.warn('Created default admin user - login: admin, password: admin123 - CHANGE THIS!');
-                    resolve();
-                  }
-                }
-            );
-          });
-        } else {
-          resolve();
-        }
-      });
-    });
+    const configured = typeof this.config.adminPassword === 'string' && this.config.adminPassword.trim() !== ''
+      ? this.config.adminPassword : null;
+    const admin = await get("SELECT id, password_hash FROM users WHERE login = 'admin'");
+    if (configured) {
+      if (!admin || !(await bcrypt.compare(configured, admin.password_hash))) {
+        await setPassword(admin, configured);
+        this.logger.info(`Administrator 'admin': password ${admin ? 'changed to' : 'set from'} the configured adminPassword`);
+      }
+      return;
+    }
+    if (!admin) {
+      const others = await get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1');
+      if (others.count > 0) {
+        return;
+      }
+      const password = crypto.randomUUID();
+      await setPassword(null, password);
+      this.logger.warn(`Created administrator - login: admin, password: ${password}. Set adminPassword in the publisher config to choose the password`);
+    } else if (await bcrypt.compare('admin123', admin.password_hash)) {
+      const password = crypto.randomUUID();
+      await setPassword(admin, password);
+      this.logger.warn(`Administrator 'admin' had the old default password (admin123); it is now ${password}. Set adminPassword in the publisher config to choose the password`);
+    }
   }
 
   setupRoutes() {
     // Main dashboard
-    this.router.get('/', this.renderDashboard.bind(this));
+    this.router.get('/', this.csrfIfLoggedIn, this.renderDashboard.bind(this));
 
-    // Authentication
-    this.router.get('/login', this.renderLogin.bind(this));
-    this.router.post('/login', this.handleLogin.bind(this));
-    this.router.post('/logout', this.handleLogout.bind(this));
+    // Authentication. The login post is rate limited: besides slowing down guessing, it
+    // is the one unauthenticated route that runs bcrypt, and bcrypt.compare holds a libuv
+    // threadpool thread (4 by default) for ~100ms - so without a limit a handful of
+    // concurrent attempts stall every file operation the server wants to do.
+    const loginLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: this.config.loginAttemptsPerWindow ?? 20,
+      message: 'Too many login attempts, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    // Task actions delete build output from disk or queue new builds: a logged-in user can't
+    // be allowed to hammer them either
+    const taskActionLimiter = rateLimit({
+      windowMs: 60 * 1000,
+      max: this.config.taskActionsPerMinute ?? 30,
+      message: 'Too many task actions, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    // the task pages read build logs and QA output from disk
+    const taskReadLimiter = rateLimit({
+      windowMs: 60 * 1000,
+      max: this.config.taskReadsPerMinute ?? 300,
+      message: 'Too many requests, please try again later.',
+      standardHeaders: true,
+      legacyHeaders: false
+    });
+
+    this.router.get('/login', this.csrf, this.renderLogin.bind(this));
+    this.router.post('/login', loginLimiter, this.csrf, this.handleLogin.bind(this));
+    this.router.post('/logout', this.csrf, this.handleLogout.bind(this));
 
     // Tasks
-    this.router.get('/tasks', this.renderTasks.bind(this));
-    this.router.post('/tasks', this.requireAuth.bind(this), this.createTask.bind(this));
-    this.router.post('/tasks/:id/approve', this.requireAuth.bind(this), this.approveTask.bind(this));
-    this.router.post('/tasks/:id/delete', this.requireAuth.bind(this), this.deleteTask.bind(this));
-    this.router.post('/tasks/:id/retry', this.requireAuth.bind(this), this.retryTask.bind(this));
-    this.router.get('/tasks/:id/output', this.getTaskOutput.bind(this));
-    this.router.get('/tasks/:id/history', this.getTaskHistory.bind(this));
-    this.router.get('/tasks/:id/qa', this.getTaskQA.bind(this));
-    this.router.use('/tasks/:id/qa-files', (req, res, next) => {
+    this.router.get('/tasks', this.csrfIfLoggedIn, this.renderTasks.bind(this));
+    this.router.post('/tasks', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.createTask.bind(this));
+    this.router.post('/tasks/:id/approve', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.approveTask.bind(this));
+    this.router.post('/tasks/:id/delete', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.deleteTask.bind(this));
+    this.router.post('/tasks/:id/retry', taskActionLimiter, this.csrf, this.requireAuth.bind(this), this.retryTask.bind(this));
+    this.router.get('/tasks/:id/output', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskOutput.bind(this));
+    this.router.get('/tasks/:id/history', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskHistory.bind(this));
+    this.router.get('/tasks/:id/qa', taskReadLimiter, this.csrfIfLoggedIn, this.getTaskQA.bind(this));
+    this.router.use('/tasks/:id/qa-files', taskReadLimiter, (req, res, next) => {
       const taskId = req.params.id;
       this.getTask(taskId).then(task => {
         if (!task || !task.local_folder) {
@@ -287,13 +394,27 @@ class PublisherModule {
     });
 
     // Admin routes
-    this.router.get('/admin/websites', this.requireAdmin.bind(this), this.renderWebsites.bind(this));
-    this.router.post('/admin/websites', this.requireAdmin.bind(this), this.createWebsite.bind(this));
-    this.router.get('/admin/websites/:id/edit', this.requireAdmin.bind(this), this.renderEditWebsite.bind(this));
-    this.router.post('/admin/websites/:id/edit', this.requireAdmin.bind(this), this.updateWebsite.bind(this));
-    this.router.get('/admin/users', this.requireAdmin.bind(this), this.renderUsers.bind(this));
-    this.router.post('/admin/users', this.requireAdmin.bind(this), this.createUser.bind(this));
-    this.router.post('/admin/permissions', this.requireAdmin.bind(this), this.updatePermissions.bind(this));
+    this.router.get('/admin/websites', this.csrf, this.requireAdmin.bind(this), this.renderWebsites.bind(this));
+    this.router.post('/admin/websites', this.csrf, this.requireAdmin.bind(this), this.createWebsite.bind(this));
+    this.router.get('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.renderEditWebsite.bind(this));
+    this.router.post('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.updateWebsite.bind(this));
+    this.router.get('/admin/users', this.csrf, this.requireAdmin.bind(this), this.renderUsers.bind(this));
+    this.router.post('/admin/users', this.csrf, this.requireAdmin.bind(this), this.createUser.bind(this));
+    this.router.post('/admin/permissions', this.csrf, this.requireAdmin.bind(this), this.updatePermissions.bind(this));
+
+    // lusca rejects a post with a missing or wrong token by passing on an error
+    this.router.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
+      }
+      next(err);
+    });
+  }
+
+  /** The hidden field every POST form carries: the session's CSRF token. */
+  csrfField(res) {
+    const token = res.locals && res.locals._csrf;
+    return token ? '<input type="hidden" name="_csrf" value="' + escape(token) + '">' : '';
   }
 
   // Background Task Processing
@@ -375,10 +496,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE status = ? ORDER BY queued_at ASC LIMIT 1',
           ['queued'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -388,10 +509,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE status = ? ORDER BY publishing_at ASC LIMIT 1',
           ['publishing'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -426,10 +547,10 @@ class PublisherModule {
       this.db.run(
           'UPDATE tasks SET ' + fields.join(', ') + ' WHERE id = ?',
           values,
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
       );
     });
   }
@@ -448,20 +569,20 @@ class PublisherModule {
       this.db.run(
           'UPDATE tasks SET ' + assignments.join(', ') + ' WHERE id = ?',
           values,
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
       );
     });
   }
 
   async logTaskMessage(taskId, level, message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.db.run(
           'INSERT INTO task_logs (task_id, level, message) VALUES (?, ?, ?)',
           [taskId.toString(), level, message],
-          () => resolve() // Don't fail if logging fails
+          guarded(reject, () => resolve()) // Don't fail if logging fails
       );
     });
   }
@@ -542,6 +663,11 @@ class PublisherModule {
     // Step 3: Clone GitHub repository
     await this.cloneRepository(task, draftDir);
 
+    // Step 3b: Update SUSHI to the latest release. The IG Publisher runs SUSHI with
+    // --require-latest, so a SUSHI that has fallen behind npm's latest makes the build
+    // fail. Refreshing it here keeps draft builds working.
+    await this.ensureLatestSushi(task.id);
+
     // Step 4: Run IG publisher
     await this.runIGPublisher(publisherJar, draftDir, logFile, task.id);
 
@@ -578,6 +704,16 @@ class PublisherModule {
         throw new Error('Could not find publisher.jar in latest release');
       }
 
+      // Record which IG Publisher version this task is using. The same jar is reused
+      // for the publication run, so this is the version that produced the output.
+      const publisherVersion = releaseResponse.data.tag_name || releaseResponse.data.name || 'unknown';
+      try {
+        await this.updateTaskFields(taskId, { publisher_version: publisherVersion });
+      } catch (e) {
+        this.logger.warn('Failed to record publisher_version for task ' + taskId + ': ' + e.message);
+      }
+      await this.logTaskMessage(taskId, 'info', 'Using IG Publisher version ' + publisherVersion);
+
       await this.logTaskMessage(taskId, 'info', 'Downloading from: ' + downloadUrl);
 
       // Download the file
@@ -603,9 +739,65 @@ class PublisherModule {
     }
   }
 
+  // Directory holding FHIRsmith's own copy of SUSHI. Installing here (rather than -g)
+  // needs no root: on the server the global npm prefix (/usr) is root-owned.
+  sushiDir() {
+    return folders.filePath('publisher', 'sushi');
+  }
+
+  // Environment for spawning the IG Publisher so it finds our managed SUSHI on PATH.
+  // The publisher resolves the `sushi` command from PATH, so prepending our bin dir
+  // makes it use the version we just installed.
+  publisherEnv() {
+    const binDir = path.join(this.sushiDir(), 'bin');
+    return Object.assign({}, process.env, {
+      PATH: binDir + path.delimiter + (process.env.PATH || '')
+    });
+  }
+
+  // Update FHIRsmith's managed SUSHI to the latest npm release before a run. The IG
+  // Publisher invokes SUSHI with --require-latest, so a SUSHI that has fallen behind
+  // npm's latest makes the build abort. We install into a FHIRsmith-owned prefix
+  // (sushiDir) to avoid needing root for a global install, and the publisher picks it
+  // up via publisherEnv(). Best-effort: a failure is logged but not fatal - the
+  // corrected runBuild check in the IG Publisher now turns a stale SUSHI into a loud
+  // publication failure rather than a silently-published draft.
+  async ensureLatestSushi(taskId) {
+    const { spawn } = require('child_process');
+    const dir = this.sushiDir();
+    fs.mkdirSync(dir, { recursive: true });
+    await this.logTaskMessage(taskId, 'info', 'Ensuring SUSHI is up to date in ' + dir + ' ...');
+    await new Promise((resolve) => {
+      // -g with --prefix makes npm treat `dir` as the global prefix, so the binary
+      // lands at dir/bin/sushi (a FHIRsmith-owned, writable location).
+      const npm = spawn('npm', ['install', '-g', 'fsh-sushi@latest', '--prefix', dir], { stdio: ['ignore', 'pipe', 'pipe'] });
+      let err = '';
+      npm.stdout.on('data', () => { /* ignore */ });
+      npm.stderr.on('data', (d) => { err += d.toString(); });
+      npm.on('error', async (e) => {
+        await this.logTaskMessage(taskId, 'warn', 'Could not run npm to update SUSHI: ' + e.message);
+        resolve();
+      });
+      npm.on('close', async (code) => {
+        if (code === 0) {
+          let version = '';
+          try {
+            version = require('child_process').execSync('sushi --version', { env: this.publisherEnv(), encoding: 'utf8' }).trim();
+          } catch (e) {
+            version = '(version check failed)';
+          }
+          await this.logTaskMessage(taskId, 'info', 'SUSHI is up to date: ' + version);
+        } else {
+          await this.logTaskMessage(taskId, 'warn', 'SUSHI update exited with code ' + code + (err ? ': ' + err.trim().slice(-400) : ''));
+        }
+        resolve();
+      });
+    });
+  }
+
   async cloneRepository(task, draftDir) {
     const { spawn } = require('child_process');
-    const gitUrl = 'https://github.com/' + task.github_org + '/' + task.github_repo + '.git';
+    const gitUrl = gitRemote.githubUrl(task.github_org, task.github_repo);
 
     await this.logTaskMessage(task.id, 'info', 'Cloning repository: ' + gitUrl + ' (branch: ' + task.git_branch + ')');
 
@@ -617,7 +809,10 @@ class PublisherModule {
         gitUrl,
         draftDir
       ], {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // no terminal prompt: a missing repo looks like a private one to GitHub, and
+        // git would otherwise ask for a username (see git-remote.js)
+        env: gitRemote.gitEnv()
       });
 
       let stderr = '';
@@ -631,7 +826,10 @@ class PublisherModule {
           await this.logTaskMessage(task.id, 'info', 'Repository cloned successfully');
           resolve();
         } else {
-          const error = 'Git clone failed with code ' + code + ': ' + stderr;
+          const explained = gitRemote.explainCloneFailure(stderr, task.github_org, task.github_repo, task.git_branch);
+          const error = explained
+            ? 'Git clone failed: ' + explained
+            : 'Git clone failed with code ' + code + ': ' + stderr;
           await this.logTaskMessage(task.id, 'error', error);
           reject(new Error(error));
         }
@@ -658,7 +856,8 @@ class PublisherModule {
         '.'
       ], {
         cwd: draftDir,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: this.publisherEnv()
       });
 
       // Create log file stream
@@ -684,7 +883,7 @@ class PublisherModule {
         const elapsedMs = Date.now() - buildStart;
         const sinceDataMs = Date.now() - lastDataAt;
         let logKb = 0;
-        try { logKb = Math.round(fs.statSync(logFile).size / 1024); } catch (_) {}
+        try { logKb = Math.round(fs.statSync(logFile).size / 1024); } catch (_) { /* log file not created yet */ }
         const elapsedMin = Math.floor(elapsedMs / 60000);
         const elapsedSec = Math.floor(elapsedMs / 1000) % 60;
         const idleSec = Math.floor(sinceDataMs / 1000);
@@ -750,6 +949,28 @@ class PublisherModule {
       errors.push('Version mismatch: task specifies "' + task.version + '" but build produced "' + qaData['ig-ver'] + '"');
     }
 
+    // publication-request.json is what the publication run actually follows - it decides the
+    // version folder the IG is published into. If it wasn't updated along with the IG, the run
+    // publishes the new content over the previous release's folder, so catch it here, before the
+    // task can be approved.
+    const prPath = path.join(draftDir, 'publication-request.json');
+    if (fs.existsSync(prPath)) {
+      let pr = null;
+      try {
+        pr = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+      } catch (e) {
+        errors.push('publication-request.json could not be parsed: ' + e.message);
+      }
+      if (pr) {
+        if (pr['package-id'] !== task.npm_package_id) {
+          errors.push('publication-request.json package-id is "' + pr['package-id'] + '" but the task specifies "' + task.npm_package_id + '"');
+        }
+        if (pr.version !== task.version) {
+          errors.push('publication-request.json version is "' + pr.version + '" but the task specifies "' + task.version + '" - update publication-request.json in the IG');
+        }
+      }
+    }
+
     if (errors.length > 0) {
       for (const err of errors) {
         await this.logTaskMessage(task.id, 'error', err);
@@ -758,6 +979,265 @@ class PublisherModule {
     }
 
     await this.logTaskMessage(task.id, 'info', 'Build output verified: package-id=' + qaData['package-id'] + ', version=' + qaData['ig-ver']);
+  }
+
+  // Read package/package.json out of a .tgz without unpacking the whole archive.
+  inspectPackageTgz(tgzPath) {
+    const { spawn } = require('child_process');
+    return new Promise((resolve, reject) => {
+      const tar = spawn('tar', ['-xzOf', tgzPath, 'package/package.json']);
+      let out = '';
+      let err = '';
+      tar.stdout.on('data', (d) => { out += d.toString(); });
+      tar.stderr.on('data', (d) => { err += d.toString(); });
+      tar.on('error', reject);
+      tar.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error('Could not read ' + tgzPath + ': ' + (err.trim() || ('tar exit ' + code))));
+        } else {
+          try {
+            resolve(JSON.parse(out));
+          } catch (e) {
+            reject(new Error('Invalid package.json in ' + tgzPath + ': ' + e.message));
+          }
+        }
+      });
+    });
+  }
+
+  // Discard everything a failed publication run left in the web folder (modified and untracked
+  // files; ignored files are kept). Failures here are logged, not thrown, so the original error
+  // is the one the task reports.
+  async resetWebFolder(task, website) {
+    try {
+      await this.runCommand('git', ['reset', '--hard', 'HEAD'], { cwd: website.git_root }, task.id,
+          'Resetting web folder after failed publication');
+      await this.runCommand('git', ['clean', '-fd'], { cwd: website.git_root }, task.id,
+          'Removing untracked files from web folder');
+    } catch (e) {
+      await this.logTaskMessage(task.id, 'error', 'Web folder ' + website.git_root +
+          ' could not be reset and must be cleaned up by hand before the next publication: ' + e.message);
+    }
+  }
+
+  // Confirm the package.tgz files that landed in the web tree are publication builds,
+  // not the draft. Throws (failing the task) if a draft package was published.
+  async verifyPublishedPackage(task, website, draftDir) {
+    await this.logTaskMessage(task.id, 'info', 'Verifying published package(s) are publication builds...');
+
+    // The intended publication path comes from the IG's publication-request.json.
+    const prPath = path.join(draftDir, 'publication-request.json');
+    if (!fs.existsSync(prPath)) {
+      await this.logTaskMessage(task.id, 'warn', 'No publication-request.json found at ' + prPath + ' - skipping published-package check');
+      return;
+    }
+    const pr = JSON.parse(fs.readFileSync(prPath, 'utf8'));
+    const pubPath = pr.path;
+
+    // The website base url lets us map a canonical url to a folder in the web tree.
+    const setupPath = path.join(website.local_folder, 'publish-setup.json');
+    if (!pubPath || !fs.existsSync(setupPath)) {
+      await this.logTaskMessage(task.id, 'warn', 'Cannot resolve web path (path or publish-setup.json missing) - skipping published-package check');
+      return;
+    }
+    const setup = JSON.parse(fs.readFileSync(setupPath, 'utf8'));
+    const baseUrl = setup.website && setup.website.url;
+    if (!baseUrl || !pubPath.startsWith(baseUrl)) {
+      await this.logTaskMessage(task.id, 'warn', 'Publication path ' + pubPath + ' is not under website url ' + baseUrl + ' - skipping published-package check');
+      return;
+    }
+
+    const relVer = pubPath.substring(baseUrl.length).replace(/^\/+/, '');
+    const relCur = relVer.replace(/\/[^/]+\/?$/, ''); // strip the version segment for the "current" copy
+    const candidates = [path.join(website.local_folder, relVer, 'package.tgz')];
+    // The IG Publisher only replaces the root ("current") copy for milestone and technical correction
+    // runs; a working-mode publication (e.g. a ballot) leaves the current release in place there.
+    if (pr.mode === 'milestone' || pr.mode === 'technical-correction') {
+      candidates.push(path.join(website.local_folder, relCur, 'package.tgz'));
+    }
+
+    let checked = 0;
+    for (const pkgPath of candidates) {
+      if (!fs.existsSync(pkgPath)) {
+        continue;
+      }
+      checked++;
+      const json = await this.inspectPackageTgz(pkgPath);
+      const problems = [];
+      if (json.notForPublication) {
+        problems.push('notForPublication is set');
+      }
+      if (typeof json.url === 'string' && json.url.startsWith('file:')) {
+        problems.push('url is a local file path (' + json.url + ')');
+      }
+      if (json.version !== task.version) {
+        problems.push('its version is ' + json.version + ', not ' + task.version);
+      }
+      if (problems.length > 0) {
+        throw new Error('Published package ' + pkgPath + ' is not the publication build of ' +
+            task.npm_package_id + '#' + task.version + ' (' + problems.join('; ') + '). ' +
+            'Either the IG Publisher publication run skipped package regeneration (e.g. a Jekyll/template ' +
+            'failure), or publication-request.json points at another version. Not committing.');
+      }
+      await this.logTaskMessage(task.id, 'info', 'Verified publication package: ' + pkgPath);
+    }
+
+    if (checked === 0) {
+      await this.logTaskMessage(task.id, 'warn', 'No published package.tgz found to verify under ' + relVer + ' or ' + relCur);
+    }
+  }
+
+  // The IG Publisher can leave a file in the web folder that GitHub will not accept - typically a
+  // technical correction archive, which is a zip of an entire published version folder and so
+  // carries that folder's own full-ig.zip inside it. GitHub rejects the entire push over one such
+  // file, at the very last step of a publication run. The IG Publisher will keep these out of the
+  // web folder itself from the next release; until then, move them aside here.
+  //
+  // Does nothing unless publisher.large-file-archive says where to put them, and the website is
+  // one that's hosted on GitHub in the first place.
+  async archiveLargeFiles(task, website) {
+    const configured = this.config['large-file-archive'];
+    if (!configured || !this.isGitHubHosted(website)) {
+      return;
+    }
+    const root = website.git_root || website.local_folder;
+    const oversized = await this.findLargeFiles(root, GITHUB_MAX_FILE_SIZE);
+    if (oversized.length === 0) {
+      return;
+    }
+
+    const archiveDir = path.isAbsolute(configured)
+        ? configured
+        : folders.filePath('publisher', configured);
+    if (!fs.existsSync(archiveDir)) {
+      fs.mkdirSync(archiveDir, { recursive: true });
+    }
+
+    for (const file of oversized) {
+      const sizeMB = Math.round((await fs.promises.stat(file)).size / (1024 * 1024));
+      const dest = this.nonClashingPath(archiveDir, path.basename(file));
+      await this.moveFile(file, dest);
+      await this.logTaskMessage(task.id, 'warn', 'Large file ' + path.relative(root, file) + ' (' + sizeMB +
+          ' MB) is over the 100 MB GitHub limit - moved to ' + dest + ' instead of being published');
+    }
+  }
+
+  // Only a website kept in a GitHub repository has a 100MB problem - others can carry files of any
+  // size. $.website.github in the web root's publish-setup.json says which is which; if that can't
+  // be read, or doesn't say, assume not and leave the files where they are.
+  isGitHubHosted(website) {
+    if (!website.local_folder) {
+      return false;
+    }
+    const setupPath = path.join(website.local_folder, 'publish-setup.json');
+    try {
+      const setup = JSON.parse(fs.readFileSync(setupPath, 'utf8'));
+      return !!(setup.website && setup.website.github === true);
+    } catch (err) {
+      this.logger.warn('Could not read ' + setupPath + ' to check whether the website is on GitHub: ' + err.message);
+      return false;
+    }
+  }
+
+  // Files in the web folder that are too big to push. Never descends into .git: a pack file over the
+  // limit is perfectly normal there, and moving it would destroy the repository. Files git is already
+  // ignoring are left alone, since they were never going to be pushed anyway.
+  //
+  // The web folder can hold hundreds of thousands of files (hl7.org/fhir), so the walk is
+  // asynchronous: each directory is read, and each file's size taken, without holding the event loop
+  async findLargeFiles(root, limit) {
+    const found = [];
+    const walk = async (dir) => {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch (err) {
+        this.logger.warn('Large file scan could not read ' + dir + ': ' + err.message);
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== '.git') {
+            await walk(full);
+          }
+        } else if (entry.isFile()) {
+          try {
+            if ((await fs.promises.stat(full)).size > limit) {
+              found.push(full);
+            }
+          } catch (err) {
+            // the file went away between readdir and stat - nothing left to move
+          }
+        }
+      }
+    };
+    await walk(root);
+    return found.length === 0 ? found : this.removeGitIgnored(root, found);
+  }
+
+  // The files git isn't ignoring, from `git check-ignore --stdin` (run without waiting on it)
+  removeGitIgnored(root, files) {
+    return new Promise((resolve) => {
+      const keepAll = (why) => {
+        // git could not tell us: treat everything as pushable rather than leaving a file that breaks the push
+        if (why) {
+          this.logger.warn('Could not check the gitignore status of large files: ' + why);
+        }
+        resolve(files);
+      };
+      let child;
+      try {
+        child = require('child_process').spawn('git', ['check-ignore', '--stdin'], { cwd: root });
+      } catch (err) {
+        keepAll(err.message);
+        return;
+      }
+      let stdout = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.on('error', (err) => keepAll(err.message));
+      child.stdin.on('error', () => { /* git went away; 'close' or 'error' says what happened */ });
+      child.on('close', (status) => {
+        // exit 0: at least one path is ignored. 1: none are. anything else: git could not tell us
+        if (status !== 0 || !stdout) {
+          keepAll(null);
+          return;
+        }
+        const ignored = new Set(stdout.split('\n').map((s) => s.trim()).filter((s) => s));
+        resolve(files.filter((f) => !ignored.has(f)));
+      });
+      child.stdin.end(files.join('\n'));
+    });
+  }
+
+  nonClashingPath(dir, name) {
+    let candidate = path.join(dir, name);
+    if (!fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const ext = path.extname(name);
+    const stem = path.basename(name, ext);
+    let i = 2;
+    do {
+      candidate = path.join(dir, stem + '-' + i + ext);
+      i++;
+    } while (fs.existsSync(candidate));
+    return candidate;
+  }
+
+  // rename() fails across filesystems, and the archive folder will not always be on the same one
+  // (these are files over 100 MB: copied without holding the event loop)
+  async moveFile(src, dest) {
+    try {
+      await fs.promises.rename(src, dest);
+    } catch (err) {
+      if (err.code !== 'EXDEV') {
+        throw err;
+      }
+      await fs.promises.copyFile(src, dest);
+      await fs.promises.unlink(src);
+    }
   }
 
   async runPublication(task) {
@@ -783,8 +1263,15 @@ class PublisherModule {
     // Step 1: Clone supporting repositories into the task directory
     const registryDir = path.join(taskDir, 'ig-registry');
 
-    await this.runCommand('git', ['clone', 'git@github.com:FHIR/ig-registry.git', registryDir],
-        {}, task.id, 'Cloning ig-registry');
+    // The URL is configurable so that the credential arrangement can live in server config
+    // rather than here. A deployment that pushes ig-registry with a repo-scoped deploy key
+    // rather than an account key points this at an ssh_config Host alias carrying that key,
+    // e.g. git@github-ig-registry:FHIR/ig-registry.git - the alias is the only way ssh can
+    // tell this remote apart from the website remote, both being github.com.
+    const igRegistryUrl = this.config['ig-registry-url'] || 'git@github.com:FHIR/ig-registry.git';
+
+    await this.runCommand('git', ['clone', igRegistryUrl, registryDir],
+        {}, task.id, 'Cloning ig-registry from ' + igRegistryUrl);
 
     // Use website-configured history templates path if provided, otherwise clone the default repo
     let historyDir;
@@ -824,6 +1311,12 @@ class PublisherModule {
     // Step 3: Pull latest web folder before publishing into it
     await this.runCommand('git', ['pull'], { cwd: website.git_root }, task.id, 'Pulling latest web folder');
 
+    // Step 3b: Update SUSHI to the latest release before the publication run. This is the
+    // step that previously failed silently: the publication build runs SUSHI with
+    // --require-latest, and a draft approved days earlier may now face a newer SUSHI on
+    // npm. Refresh it so the publication build doesn't abort on a version mismatch.
+    await this.ensureLatestSushi(task.id);
+
     // Step 4: Run the IG publisher in go-publish mode
     await this.runPublisherGoPublish(task.id, publisherJar, draftDir, website.local_folder,
         registryDir, historyDir, templatesDir, zipsDir, publishLogFile);
@@ -836,6 +1329,22 @@ class PublisherModule {
     }
     await this.logTaskMessage(task.id, 'info', 'Publication run verified: ' + pubLogName + ' found');
 
+    // Step 5b: Verify the published package is actually a publication build.
+    // If the IG Publisher's publication run skipped package regeneration (e.g. a Jekyll
+    // or template failure), the draft package - flagged notForPublication with a file://
+    // url - can survive into the web tree. Catch that here, before anything is committed.
+    // If the check fails, the go-publish output is left uncommitted in the web folder, where the
+    // next publication's 'git add .' would sweep it up - so put the web folder back as it was.
+    try {
+      await this.verifyPublishedPackage(task, website, draftDir);
+    } catch (err) {
+      await this.resetWebFolder(task, website);
+      throw err;
+    }
+
+    // Step 5c: Move anything too big for GitHub out of the web folder, before it gets staged
+    await this.archiveLargeFiles(task, website);
+
     // Step 6: Commit and push the web folder
     await this.logTaskMessage(task.id, 'info', 'Committing changes to web folder...');
     const gitUrl = 'https://github.com/' + task.github_org + '/' + task.github_repo + '.git';
@@ -847,15 +1356,24 @@ class PublisherModule {
     // Step 7: Commit and push the ig-registry
     await this.logTaskMessage(task.id, 'info', 'Committing changes to ig-registry...');
     const registryCommitMsg = 'publish ' + task.npm_package_id + '#' + task.version;
-    await this.runCommand('git', ['commit', '-a', '-m', registryCommitMsg], { cwd: registryDir }, task.id, 'Committing ig-registry changes');
-    await this.runCommand('git', ['pull'], { cwd: registryDir }, task.id, 'Pulling latest ig-registry');
-    await this.runCommand('git', ['push'], { cwd: registryDir }, task.id, 'Pushing ig-registry changes');
+    // A republication of a version the registry already lists (a technical correction) leaves the
+    // registry as it was, and 'git commit' fails on a clean tree - which is not an error here.
+    const registryStatus = await this.runCommand('git', ['status', '--porcelain', '--untracked-files=no'],
+        { cwd: registryDir }, task.id, 'Checking for ig-registry changes');
+    if (registryStatus.trim() === '') {
+      await this.logTaskMessage(task.id, 'warn', 'The publication run made no changes to the ig-registry - nothing to commit');
+    } else {
+      await this.runCommand('git', ['commit', '-a', '-m', registryCommitMsg], { cwd: registryDir }, task.id, 'Committing ig-registry changes');
+      await this.runCommand('git', ['pull'], { cwd: registryDir }, task.id, 'Pulling latest ig-registry');
+      await this.runCommand('git', ['push'], { cwd: registryDir }, task.id, 'Pushing ig-registry changes');
+    }
 
     // Step 8: Read the announcement text and store it in the database
+    let announcement = null;
     const announcementPath = path.join(zipsDir, task.npm_package_id + '#' + task.version + '-announcement.txt');
     if (fs.existsSync(announcementPath)) {
       try {
-        const announcement = fs.readFileSync(announcementPath, 'utf8');
+        announcement = fs.readFileSync(announcementPath, 'utf8');
         await this.updateTaskFields(task.id, { announcement: announcement });
         await this.logTaskMessage(task.id, 'info', 'Announcement text saved (' + announcement.length + ' chars)');
       } catch (err) {
@@ -865,10 +1383,67 @@ class PublisherModule {
       await this.logTaskMessage(task.id, 'warn', 'No announcement file found at ' + announcementPath);
     }
 
+    // Step 8b: Tag the source repository and publish a GitHub release carrying its source zip
+    await this.createSourceRelease(task, draftDir, zipsDir, announcement);
+
     // Step 9: Run the website update script
     if (website.server_update_script) {
       await this.logTaskMessage(task.id, 'info', 'Running website update script: ' + website.server_update_script);
       await this.runCommand('bash', ['-c', website.server_update_script], {}, task.id, 'Running website update script');
+    }
+  }
+
+  // Tag the IG source repository and publish a GitHub release with a zip of the source at the
+  // commit that was published. Runs only when a GitHub App is configured; without one there is no
+  // credential that can write to the source repository, and the step is skipped.
+  //
+  // Nothing here is allowed to fail the task. By the time this runs the IG is published, the web
+  // folder is pushed and the registry is updated - a release that did not get made is worth a
+  // warning in the log and nothing more.
+  async createSourceRelease(task, draftDir, zipsDir, announcement) {
+    const appConfig = this.config && this.config['github-app'];
+    if (!githubRelease.isConfigured(appConfig)) {
+      await this.logTaskMessage(task.id, 'info',
+          'No GitHub App configured - skipping the source tag and release');
+      return;
+    }
+
+    try {
+      // The draft clone is the exact tree that was published, so its HEAD is the commit the
+      // release should point at.
+      const sha = (await this.runCommand('git', ['rev-parse', 'HEAD'], { cwd: draftDir },
+          task.id, 'Reading the published commit')).trim();
+
+      // git archive takes the committed state, not the working directory: by now the publisher has
+      // built in this folder twice and left output/, temp/, template/ and fsh-generated/ behind,
+      // none of which are in the archive. It is also exactly reproducible from the tag.
+      const stem = task.npm_package_id + '-' + task.version;
+      const assetName = stem + '-source.zip';
+      const zipPath = path.join(zipsDir, assetName);
+      await this.runCommand('git',
+          ['archive', '--format=zip', '--prefix=' + stem + '/', '-o', zipPath, 'HEAD'],
+          { cwd: draftDir }, task.id, 'Building the source zip');
+
+      const result = await githubRelease.publishRelease({
+        config: appConfig,
+        org: task.github_org,
+        repo: task.github_repo,
+        tag: 'v' + task.version,
+        sha: sha,
+        releaseName: task.npm_package_id + '#' + task.version,
+        body: announcement || '',
+        zipPath: zipPath,
+        assetName: assetName,
+        // logTaskMessage never rejects, and github-release logs without waiting
+        log: (level, message) => { void this.logTaskMessage(task.id, level, message); }
+      });
+
+      await this.updateTaskFields(task.id, { release_url: result.url });
+    } catch (err) {
+      const detail = (err.response && err.response.data && err.response.data.message) || err.message;
+      await this.logTaskMessage(task.id, 'warn',
+          'Could not tag and release the source repository: ' + detail +
+          '. The IG itself is published - this does not affect it.');
     }
   }
 
@@ -892,7 +1467,8 @@ class PublisherModule {
 
     return new Promise((resolve, reject) => {
       const java = spawn('java', args, {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: this.publisherEnv()
       });
 
       const logStream = fs.createWriteStream(logFile);
@@ -916,7 +1492,7 @@ class PublisherModule {
         const elapsedMs = Date.now() - buildStart;
         const sinceDataMs = Date.now() - lastDataAt;
         let logKb = 0;
-        try { logKb = Math.round(fs.statSync(logFile).size / 1024); } catch (_) {}
+        try { logKb = Math.round(fs.statSync(logFile).size / 1024); } catch (_) { /* log file not created yet */ }
         const elapsedMin = Math.floor(elapsedMs / 60000);
         const elapsedSec = Math.floor(elapsedMs / 1000) % 60;
         const idleSec = Math.floor(sinceDataMs / 1000);
@@ -1000,14 +1576,14 @@ class PublisherModule {
         content += '<div class="col-12">';
 
         if (req.session.userId) {
-          content += '<p>Welcome, ' + req.session.userName + '!</p>';
+          content += '<p>Welcome, ' + escape(req.session.userName) + '!</p>';
           content += '<div class="mb-3">';
           content += '<a href="/publisher/tasks" class="btn btn-primary me-2">View All Tasks</a>';
           if (req.session.isAdmin) {
             content += '<a href="/publisher/admin/websites" class="btn btn-secondary me-2">Manage Websites</a>';
             content += '<a href="/publisher/admin/users" class="btn btn-secondary">Manage Users</a>';
           }
-          content += '<form style="display: inline-block; margin-left: 10px;" method="post" action="/publisher/logout">';
+          content += '<form style="display: inline-block; margin-left: 10px;" method="post" action="/publisher/logout">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-outline-secondary">' + escape(req.session.userName) + ' \u2014 Logout</button>';
           content += '</form>';
           content += '</div>';
@@ -1028,11 +1604,11 @@ class PublisherModule {
           tasks.forEach(task => {
             content += '<tr>';
             content += '<td><strong>#' + task.id + '</strong></td>';
-            content += '<td>' + task.npm_package_id + '</td>';
-            content += '<td>' + task.version + '</td>';
-            content += '<td><span class="badge bg-' + this.getStatusColor(task.status) + '">' + task.status + '</span></td>';
+            content += '<td>' + escape(task.npm_package_id) + '</td>';
+            content += '<td>' + escape(task.version) + '</td>';
+            content += '<td><span class="badge bg-' + this.getStatusColor(task.status) + '">' + escape(task.status) + '</span></td>';
             content += '<td>' + new Date(task.queued_at).toLocaleString() + '</td>';
-            content += '<td>' + task.user_name + '</td>';
+            content += '<td>' + escape(task.user_name) + '</td>';
             content += '</tr>';
           });
 
@@ -1048,7 +1624,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }
         });
 
@@ -1072,7 +1648,7 @@ class PublisherModule {
       let content = '<div class="row justify-content-center">';
       content += '<div class="col-md-6">';
       content += '<h3>Login</h3>';
-      content += '<form method="post" action="/publisher/login">';
+      content += '<form method="post" action="/publisher/login">' + this.csrfField(res);
       content += '<div class="mb-3">';
       content += '<label for="login" class="form-label">Username</label>';
       content += '<input type="text" class="form-control" id="login" name="login" required>';
@@ -1090,7 +1666,7 @@ class PublisherModule {
         templateVars: {
           loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
           loginPath: req.session.userId ? "logout" : 'login',
-          loginAction: req.session.userId ? "POST" : 'GET'
+          loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
         }});
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -1110,10 +1686,10 @@ class PublisherModule {
           this.db.get(
               'SELECT * FROM users WHERE login = ?',
               [login],
-              (err, row) => {
+              guarded(reject, (err, row) => {
                 if (err) reject(err);
                 else resolve(row);
-              }
+              })
           );
         });
 
@@ -1126,6 +1702,9 @@ class PublisherModule {
           return res.redirect('/publisher/login?error=invalid');
         }
 
+        // a new session id on login, so an id planted in the browser before login
+        // (session fixation) does not become a logged-in session
+        await new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
         req.session.userId = user.id;
         req.session.userName = user.name;
         req.session.isAdmin = user.is_admin;
@@ -1171,7 +1750,7 @@ class PublisherModule {
           content += '<button class="btn btn-primary" onclick="document.getElementById(\'create-task-panel\').style.display = document.getElementById(\'create-task-panel\').style.display === \'none\' ? \'block\' : \'none\'">New Publication Task</button>';
           content += '<div id="create-task-panel" style="display: none;" class="mt-3">';
           content += '<h3>Create New Publication Task</h3>';
-          content += '<form id="create-task-form" method="post" action="/publisher/tasks" class="row g-3">';
+          content += '<form id="create-task-form" method="post" action="/publisher/tasks" class="row g-3">' + this.csrfField(res);
           content += '<div class="col-md-3">';
           content += '<label for="website_id" class="form-label">Target Website</label>';
           content += '<select class="form-select" id="website_id" name="website_id" required>';
@@ -1182,23 +1761,23 @@ class PublisherModule {
           content += '</div>';
           content += '<div class="col-md-3">';
           content += '<label for="github_org" class="form-label">GitHub Org</label>';
-          content += '<input type="text" class="form-control" id="github_org" name="github_org" required placeholder="hl7">';
+          content += '<input type="text" class="form-control" id="github_org" name="github_org" required maxlength="39" pattern="' + escape(validation.HTML_PATTERNS.github_org) + '" title="Letters, digits and single hyphens" placeholder="hl7">';
           content += '</div>';
           content += '<div class="col-md-3">';
           content += '<label for="github_repo" class="form-label">GitHub Repo</label>';
-          content += '<input type="text" class="form-control" id="github_repo" name="github_repo" required placeholder="fhir-us-core">';
+          content += '<input type="text" class="form-control" id="github_repo" name="github_repo" required maxlength="100" pattern="' + escape(validation.HTML_PATTERNS.github_repo) + '" title="Letters, digits, dots, hyphens and underscores" placeholder="fhir-us-core">';
           content += '</div>';
           content += '<div class="col-md-3">';
           content += '<label for="git_branch" class="form-label">Branch</label>';
-          content += '<input type="text" class="form-control" id="git_branch" name="git_branch" required placeholder="main">';
+          content += '<input type="text" class="form-control" id="git_branch" name="git_branch" required maxlength="255" pattern="' + escape(validation.HTML_PATTERNS.git_branch) + '" title="A git branch name - slashes are fine, but not spaces, backslashes, markup characters, or any of ~ ^ : ? * [" placeholder="main">';
           content += '</div>';
           content += '<div class="col-md-4">';
           content += '<label for="npm_package_id" class="form-label">NPM Package ID</label>';
-          content += '<input type="text" class="form-control" id="npm_package_id" name="npm_package_id" required placeholder="hl7.fhir.us.core">';
+          content += '<input type="text" class="form-control" id="npm_package_id" name="npm_package_id" required maxlength="128" pattern="' + escape(validation.HTML_PATTERNS.npm_package_id) + '" title="Letters, digits, dots, hyphens and underscores" placeholder="hl7.fhir.us.core">';
           content += '</div>';
           content += '<div class="col-md-4">';
           content += '<label for="version" class="form-label">Version</label>';
-          content += '<input type="text" class="form-control" id="version" name="version" required placeholder="6.0.0">';
+          content += '<input type="text" class="form-control" id="version" name="version" required maxlength="64" pattern="' + escape(validation.HTML_PATTERNS.version) + '" title="Letters, digits, dots, hyphens and plus signs" placeholder="6.0.0">';
           content += '</div>';
           content += '<div class="col-md-4 d-flex align-items-end">';
           content += '<button type="submit" class="btn btn-primary">Create Task</button>';
@@ -1217,7 +1796,7 @@ class PublisherModule {
         } else {
           content += '<div class="table-responsive">';
           content += '<table class="table table-striped">';
-          content += '<thead><tr><th>ID</th><th>Package</th><th>Version</th><th>Website</th><th>Status</th><th>Queued</th><th>User</th><th>Actions</th></tr></thead>';
+          content += '<thead><tr><th>ID</th><th>Package</th><th>Version</th><th>Website</th><th>Status</th><th>IG Publisher</th><th>Queued</th><th>User</th><th>Actions</th></tr></thead>';
           content += '<tbody>';
 
           for (const task of tasks) {
@@ -1234,12 +1813,13 @@ class PublisherModule {
 
             content += '<tr>';
             content += '<td><strong>#' + task.id + '</strong></td>';
-            content += '<td><code>' + task.npm_package_id + '</code></td>';
-            content += '<td>' + task.version + '</td>';
-            content += '<td>' + task.website_name + '</td>';
-            content += '<td><span class="badge bg-' + this.getStatusColor(task.status) + '">' + task.status + '</span></td>';
+            content += '<td><code>' + escape(task.npm_package_id) + '</code></td>';
+            content += '<td>' + escape(task.version) + '</td>';
+            content += '<td>' + escape(task.website_name) + '</td>';
+            content += '<td><span class="badge bg-' + this.getStatusColor(task.status) + '">' + escape(task.status) + '</span></td>';
+            content += '<td>' + (task.publisher_version ? '<code>' + escape(task.publisher_version) + '</code>' : '<span class="text-muted">—</span>') + '</td>';
             content += '<td>' + new Date(task.queued_at).toLocaleString() + '</td>';
-            content += '<td>' + task.user_name + '</td>';
+            content += '<td>' + escape(task.user_name) + '</td>';
             content += '<td class="task-actions">';
             content += '<a href="/publisher/tasks/' + task.id + '/history" class="btn btn-sm btn-outline-secondary me-1">History</a>';
 
@@ -1248,7 +1828,7 @@ class PublisherModule {
               content += '<a href="/publisher/tasks/' + task.id + '/qa-files/index.html" class="btn btn-sm btn-outline-secondary me-1">View IG</a>';
               content += '<a href="/publisher/tasks/' + task.id + '/qa" class="btn btn-sm btn-outline-secondary me-1">View QA</a>';
               if (canApprove) {
-                content += '<form method="post" action="/publisher/tasks/' + task.id + '/approve" style="display: inline;">';
+                content += '<form method="post" action="/publisher/tasks/' + task.id + '/approve" style="display: inline;">' + this.csrfField(res);
                 content += '<button type="submit" name="approve" class="btn btn-sm btn-success me-1">Approve</button>';
                 content += '</form>';
               }
@@ -1265,13 +1845,13 @@ class PublisherModule {
             }
 
             if (canDelete) {
-              content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">';
+              content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">' + this.csrfField(res);
               content += '<button type="submit" class="btn btn-sm btn-danger">Delete</button>';
               content += '</form>';
             }
 
             if (req.session.userId && task.status === 'failed') {
-              content += ' <form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;">';
+              content += ' <form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;">' + this.csrfField(res);
               content += '<button type="submit" class="btn btn-sm btn-warning">Retry</button>';
               content += '</form>';
             }
@@ -1291,7 +1871,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -1313,6 +1893,15 @@ class PublisherModule {
       try {
         const {website_id, github_org, github_repo, git_branch, npm_package_id, version} = req.body;
 
+        // Check the input before it goes anywhere near a git command line or a
+        // file name. The browser checks these too (see HTML_PATTERNS), but the
+        // form isn't the only way to reach this route.
+        const problems = validation.validateTaskInput(req.body);
+        if (problems.length > 0) {
+          this.logger.warn('Rejected task creation from user ' + req.session.userId + ': ' + problems.join('; '));
+          return res.status(400).send('Invalid task details: ' + problems.join('; '));
+        }
+
         // Verify user has permission for this website
         const canQueue = await this.userCanQueue(req.session.userId, website_id);
         if (!canQueue) {
@@ -1325,15 +1914,27 @@ class PublisherModule {
           return res.status(400).send('An active task for this package and version is already in progress. Wait for it to complete or fail before resubmitting.');
         }
 
+        // Check the repo and branch actually exist before queueing, so a typo is
+        // reported now rather than when the build starts. If GitHub can't be
+        // reached, don't block - the clone will report any real problem.
+        const remote = await gitRemote.checkRemoteBranch(github_org, github_repo, git_branch);
+        if (!remote.ok) {
+          if (remote.unreachable) {
+            this.logger.warn('Could not verify ' + github_org + '/' + github_repo + '#' + git_branch + ' before queueing: ' + remote.error);
+          } else {
+            return res.status(400).send('Invalid task details: ' + remote.error);
+          }
+        }
+
         // Insert task (ID will be auto-generated)
         const result = await new Promise((resolve, reject) => {
           this.db.run(
               'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
               [req.session.userId, website_id, github_org, github_repo, git_branch, npm_package_id, version],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve(this.lastID);
-              }
+              })
           );
         });
 
@@ -1380,10 +1981,10 @@ class PublisherModule {
           this.db.run(
               'UPDATE tasks SET status = ?, approved_by = ?, publishing_at = CURRENT_TIMESTAMP WHERE id = ?',
               ['publishing', req.session.userId, taskId],
-              (err) => {
+              guarded(reject, (err) => {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -1441,18 +2042,18 @@ class PublisherModule {
 
         // Delete task logs
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM task_logs WHERE task_id = ?', [taskId.toString()], (err) => {
+          this.db.run('DELETE FROM task_logs WHERE task_id = ?', [taskId.toString()], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         // Delete task record
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM tasks WHERE id = ?', [taskId], (err) => {
+          this.db.run('DELETE FROM tasks WHERE id = ?', [taskId], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         this.logUserAction(req.session.userId, 'delete_task', taskId, req.ip);
@@ -1460,7 +2061,7 @@ class PublisherModule {
         res.redirect('/publisher/tasks');
       } catch (error) {
         this.logger.error('Error deleting task:', error);
-        res.status(500).send('Failed to delete task: ' + error.message);
+        res.status(500).type('text/plain').send('Failed to delete task: ' + escape(error.message));
       }
     } finally {
       this.stats.countRequest('delete-task', Date.now() - start);
@@ -1483,7 +2084,7 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
               [req.session.userId, task.website_id, task.github_org, task.github_repo, task.git_branch, task.npm_package_id, task.version],
-              function (err) { if (err) reject(err); else resolve(this.lastID); }
+              guarded(reject, function (err) { if (err) reject(err); else resolve(this.lastID); })
           );
         });
         this.logUserAction(req.session.userId, 'retry_task', newTaskId.toString(), req.ip);
@@ -1491,7 +2092,7 @@ class PublisherModule {
         res.redirect('/publisher/tasks/' + newTaskId + '/history');
       } catch (error) {
         this.logger.error('Error retrying task:', error);
-        res.status(500).send('Failed to retry task: ' + error.message);
+        res.status(500).type('text/plain').send('Failed to retry task: ' + escape(error.message));
       }
     } finally {
       this.stats.countRequest('retry-task', Date.now() - start);
@@ -1514,12 +2115,15 @@ class PublisherModule {
         const logs = await this.getTaskLogs(taskId);
 
         // Get build log if available
+        // (the logs can be many MB: read without holding the event loop)
         let buildLog = '';
-        if (task.build_output_path && fs.existsSync(task.build_output_path)) {
+        if (task.build_output_path) {
           try {
-            buildLog = fs.readFileSync(task.build_output_path, 'utf8');
+            buildLog = await fs.promises.readFile(task.build_output_path, 'utf8');
           } catch (error) {
-            buildLog = 'Error reading build log: ' + error.message;
+            if (error.code !== 'ENOENT') {
+              buildLog = 'Error reading build log: ' + error.message;
+            }
           }
         }
 
@@ -1527,10 +2131,10 @@ class PublisherModule {
         let publishLog = '';
         if (task.local_folder) {
           const publishLogPath = path.join(task.local_folder, 'publication.log');
-          if (fs.existsSync(publishLogPath)) {
-            try {
-              publishLog = fs.readFileSync(publishLogPath, 'utf8');
-            } catch (error) {
+          try {
+            publishLog = await fs.promises.readFile(publishLogPath, 'utf8');
+          } catch (error) {
+            if (error.code !== 'ENOENT') {
               publishLog = 'Error reading publication log: ' + error.message;
             }
           }
@@ -1538,16 +2142,23 @@ class PublisherModule {
 
         if (req.headers.accept && req.headers.accept.includes('text/html')) {
           const htmlServer = require('../library/html-server');
-          let content = '<h3>Task Output: #' + task.id + ' - ' + task.npm_package_id + '#' + task.version + '</h3>';
-          content += '<p><strong>Status:</strong> <span class="badge bg-' + this.getStatusColor(task.status) + '">' + task.status + '</span></p>';
-          content += '<p><strong>GitHub:</strong> ' + task.github_org + '/' + task.github_repo + ' (' + task.git_branch + ')</p>';
+          let content = '<h3>Task Output: #' + task.id + ' - ' + escape(task.npm_package_id) + '#' + escape(task.version) + '</h3>';
+          content += '<p><strong>Status:</strong> <span class="badge bg-' + this.getStatusColor(task.status) + '">' + escape(task.status) + '</span></p>';
+          content += '<p><strong>GitHub:</strong> ' + escape(task.github_org) + '/' + escape(task.github_repo) + ' (' + escape(task.git_branch) + ')</p>';
+          if (task.release_url) {
+            content += '<p><strong>Release:</strong> <a href="' + escape(task.release_url) + '" target="_blank" rel="noopener noreferrer">' + escape(task.release_url) + '</a></p>';
+          }
+
+          if (task.publisher_version) {
+            content += '<p><strong>IG Publisher:</strong> <code>' + escape(task.publisher_version) + '</code></p>';
+          }
 
           if (task.local_folder) {
-            content += '<p><strong>Local Folder:</strong> <code>' + task.local_folder + '</code></p>';
+            content += '<p><strong>Local Folder:</strong> <code>' + escape(task.local_folder) + '</code></p>';
           }
 
           if (task.failure_reason) {
-            content += '<div class="alert alert-danger"><strong>Failure Reason:</strong> ' + task.failure_reason + '</div>';
+            content += '<div class="alert alert-danger"><strong>Failure Reason:</strong> ' + escape(task.failure_reason) + '</div>';
           }
 
           // Task logs section
@@ -1559,7 +2170,7 @@ class PublisherModule {
             logs.forEach(log => {
               const timestamp = new Date(log.timestamp).toLocaleString();
               const levelClass = log.level === 'error' ? 'text-danger' : (log.level === 'warn' ? 'text-warning' : '');
-              content += '<div class="' + levelClass + '">[' + timestamp + '] [' + log.level.toUpperCase() + '] ' + log.message + '</div>';
+              content += '<div class="' + levelClass + '">[' + timestamp + '] [' + escape(log.level.toUpperCase()) + '] ' + escape(log.message) + '</div>';
             });
             content += '</div>';
           }
@@ -1595,7 +2206,7 @@ class PublisherModule {
             templateVars: {
               loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
               loginPath: req.session.userId ? "logout" : 'login',
-              loginAction: req.session.userId ? "POST" : 'GET'
+              loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
             }});
           res.setHeader('Content-Type', 'text/html');
           res.send(html);
@@ -1675,13 +2286,16 @@ class PublisherModule {
         content += '<div class="card mb-4"><div class="card-body">';
         content += '<div class="row">';
         content += '<div class="col-md-6">';
-        content += '<p><strong>Status:</strong> <span class="badge bg-' + this.getStatusColor(task.status) + '">' + task.status + '</span></p>';
+        content += '<p><strong>Status:</strong> <span class="badge bg-' + this.getStatusColor(task.status) + '">' + escape(task.status) + '</span></p>';
         content += '<p><strong>Package:</strong> <code>' + escape(task.npm_package_id) + '</code></p>';
         content += '<p><strong>Version:</strong> ' + escape(task.version) + '</p>';
         content += '<p><strong>Website:</strong> ' + escape(task.website_name) + '</p>';
         content += '</div>';
         content += '<div class="col-md-6">';
         content += '<p><strong>GitHub:</strong> ' + escape(task.github_org) + '/' + escape(task.github_repo) + ' (' + escape(task.git_branch) + ')</p>';
+        if (task.release_url) {
+          content += '<p><strong>Release:</strong> <a href="' + escape(task.release_url) + '" target="_blank" rel="noopener noreferrer">' + escape(task.release_url) + '</a></p>';
+        }
         content += '<p><strong>Created by:</strong> ' + escape(task.user_name) + ' (' + escape(task.user_login) + ')</p>';
         if (task.approved_by_name) {
           content += '<p><strong>Approved by:</strong> ' + escape(task.approved_by_name) + '</p>';
@@ -1751,7 +2365,7 @@ class PublisherModule {
           if (action.action === 'create_task') actionLabel = 'Created task';
           else if (action.action === 'approve_task') actionLabel = 'Approved task';
           else if (action.action === 'delete_task') actionLabel = 'Deleted task';
-          else actionLabel = action.action.replace(/_/g, ' ');
+          else actionLabel = escape(action.action.replace(/_/g, ' '));
 
           events.push({
             timestamp: action.timestamp,
@@ -1809,7 +2423,7 @@ class PublisherModule {
           content += '<a href="/publisher/tasks/' + task.id + '/qa" class="btn btn-outline-secondary me-2">View QA Report</a>';
         }
         if (req.session.userId && task.status === 'failed') {
-          content += '<form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;" class="me-2">';
+          content += '<form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;" class="me-2">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-warning">Retry</button>';
           content += '</form>';
         }
@@ -1823,7 +2437,7 @@ class PublisherModule {
             (detailIsPostApprovalFailed && req.session.isAdmin)
         );
         if (detailCanDelete) {
-          content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" class="me-2" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">';
+          content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" class="me-2" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-danger">Delete</button>';
           content += '</form>';
         }
@@ -1834,7 +2448,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -1855,7 +2469,7 @@ class PublisherModule {
       if (!website) return res.status(404).send('Website not found');
 
       let content = '<h3>Edit Website</h3>';
-      content += '<form method="post" action="/publisher/admin/websites/' + website.id + '/edit" class="row g-3">';
+      content += '<form method="post" action="/publisher/admin/websites/' + website.id + '/edit" class="row g-3">' + this.csrfField(res);
       content += '<div class="col-md-4"><label class="form-label">Website Name</label>';
       content += '<input type="text" class="form-control" name="name" value="' + escape(website.name) + '" required></div>';
       content += '<div class="col-md-4"><label class="form-label">Local Folder</label>';
@@ -1875,7 +2489,7 @@ class PublisherModule {
       content += '</form>';
 
       const html = htmlServer.renderPage('publisher', 'Edit Website - FHIR Publisher', content, {
-        templateVars: { loginTitle: (req.session.userName || '') + ' \u2014 Logout', loginPath: 'logout', loginAction: 'POST' }
+        templateVars: { loginTitle: (req.session.userName || '') + ' \u2014 Logout', loginPath: 'logout', loginAction: 'POST', csrfToken: res.locals._csrf || '' }
       });
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
@@ -1897,7 +2511,7 @@ class PublisherModule {
         this.db.run(
             'UPDATE websites SET name=?, local_folder=?,  git_root = ?, history_templates=?, web_templates=?, server_update_script=?, is_active=? WHERE id=?',
             [name, local_folder,  git_root, history_templates, web_templates, server_update_script, is_active === '1' ? 1 : 0, websiteId],
-            (err) => err ? reject(err) : resolve()
+            guarded(reject, (err) => err ? reject(err) : resolve())
         );
       });
 
@@ -1926,7 +2540,7 @@ class PublisherModule {
         content += '<button class="btn btn-primary" onclick="document.getElementById(\'add-website-panel\').style.display = document.getElementById(\'add-website-panel\').style.display === \'none\' ? \'block\' : \'none\'">Add New Website</button>';
         content += '<div id="add-website-panel" style="display: none;" class="mt-3">';
         content += '<h3>Add New Website</h3>';
-        content += '<form method="post" action="/publisher/admin/websites" class="row g-3">';
+        content += '<form method="post" action="/publisher/admin/websites" class="row g-3">' + this.csrfField(res);
         content += '<div class="col-md-4">';
         content += '<label for="name" class="form-label">Website Name</label>';
         content += '<input type="text" class="form-control" id="name" name="name" required>';
@@ -1972,7 +2586,7 @@ class PublisherModule {
 
           websites.forEach(website => {
             content += '<tr>';
-            content += '<td>' + website.name + '</td>';
+            content += '<td>' + escape(website.name) + '</td>';
             content += '<td><code>' + escape(website.local_folder) + '</code></td>';
             content += '<td><code>' + escape(website.git_root || '') + '</code></td>';
             content += '<td><code>' + escape(website.history_templates) + '</code></td>';
@@ -1995,7 +2609,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -2018,10 +2632,10 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO websites (name, local_folder,  git_root, history_templates, web_templates, server_update_script) VALUES (?, ?, ?, ?, ?, ?)',
               [name, local_folder, git_root, history_templates, web_templates, server_update_script],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -2055,7 +2669,7 @@ class PublisherModule {
         content += '<button class="btn btn-primary" onclick="document.getElementById(\'add-user-panel\').style.display = document.getElementById(\'add-user-panel\').style.display === \'none\' ? \'block\' : \'none\'">Add New User</button>';
         content += '<div id="add-user-panel" style="display: none;" class="mt-3">';
         content += '<h3>Add New User</h3>';
-        content += '<form method="post" action="/publisher/admin/users" class="row g-3">';
+        content += '<form method="post" action="/publisher/admin/users" class="row g-3">' + this.csrfField(res);
         content += '<div class="col-md-3">';
         content += '<label for="name" class="form-label">Full Name</label>';
         content += '<input type="text" class="form-control" id="name" name="name" required>';
@@ -2093,14 +2707,14 @@ class PublisherModule {
 
             content += '<div class="card mb-3">';
             content += '<div class="card-header">';
-            content += '<h5>' + user.name + ' (' + user.login + ') ' + (user.is_admin ? '<span class="badge bg-warning">Admin</span>' : '') + '</h5>';
+            content += '<h5>' + escape(user.name) + ' (' + escape(user.login) + ') ' + (user.is_admin ? '<span class="badge bg-warning">Admin</span>' : '') + '</h5>';
             content += '</div>';
             content += '<div class="card-body">';
 
             if (websites.length === 0) {
               content += '<p>No websites available for permission assignment.</p>';
             } else {
-              content += '<form method="post" action="/publisher/admin/permissions">';
+              content += '<form method="post" action="/publisher/admin/permissions">' + this.csrfField(res);
               content += '<input type="hidden" name="user_id" value="' + user.id + '">';
               content += '<div class="permission-grid">';
               content += '<div><strong>Website</strong></div>';
@@ -2109,7 +2723,7 @@ class PublisherModule {
 
               websites.forEach(website => {
                 const perm = permissions.find(p => p.website_id === website.id) || {};
-                content += '<div>' + website.name + '</div>';
+                content += '<div>' + escape(website.name) + '</div>';
                 content += '<div>';
                 content += '<input type="checkbox" name="queue_' + website.id + '"' + (perm.can_queue ? ' checked' : '') + '>';
                 content += '</div>';
@@ -2137,7 +2751,7 @@ class PublisherModule {
           templateVars: {
             loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
             loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET'
+            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
           }});
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -2162,10 +2776,10 @@ class PublisherModule {
           this.db.run(
               'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
               [name, login, passwordHash, is_admin ? 1 : 0],
-              function (err) {
+              guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve();
-              }
+              })
           );
         });
 
@@ -2196,10 +2810,10 @@ class PublisherModule {
 
         // Clear existing permissions
         await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM user_website_permissions WHERE user_id = ?', [user_id], (err) => {
+          this.db.run('DELETE FROM user_website_permissions WHERE user_id = ?', [user_id], guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          });
+          }));
         });
 
         // Add new permissions
@@ -2212,10 +2826,10 @@ class PublisherModule {
               this.db.run(
                   'INSERT INTO user_website_permissions (user_id, website_id, can_queue, can_approve) VALUES (?, ?, ?, ?)',
                   [user_id, website.id, canQueue ? 1 : 0, canApprove ? 1 : 0],
-                  (err) => {
+                  guarded(reject, (err) => {
                     if (err) reject(err);
                     else resolve();
-                  }
+                  })
               );
             });
           }
@@ -2241,10 +2855,10 @@ class PublisherModule {
         sql += ' LIMIT ' + limit;
       }
 
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -2253,10 +2867,10 @@ class PublisherModule {
       this.db.get(
           'SELECT t.*, u.name as user_name, u.login as user_login, w.name as website_name, approver.name as approved_by_name FROM tasks t JOIN users u ON t.user_id = u.id JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id WHERE t.id = ?',
           [taskId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -2266,10 +2880,10 @@ class PublisherModule {
       this.db.all(
           'SELECT * FROM task_logs WHERE task_id = ? ORDER BY timestamp ASC',
           [taskId.toString()],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2279,10 +2893,10 @@ class PublisherModule {
       this.db.all(
           'SELECT ua.*, u.name as user_name, u.login as user_login FROM user_actions ua LEFT JOIN users u ON ua.user_id = u.id WHERE ua.target_id = ? ORDER BY ua.timestamp ASC',
           [taskId.toString()],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2292,10 +2906,10 @@ class PublisherModule {
       this.db.all(
           'SELECT w.* FROM websites w JOIN user_website_permissions p ON w.id = p.website_id WHERE p.user_id = ? AND p.can_queue = 1 AND w.is_active = 1',
           [userId],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
   }
@@ -2305,10 +2919,10 @@ class PublisherModule {
       this.db.get(
           'SELECT can_queue FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
           [userId, websiteId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row && row.can_queue);
-          }
+          })
       );
     });
   }
@@ -2318,10 +2932,10 @@ class PublisherModule {
       this.db.get(
           'SELECT can_approve FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
           [userId, websiteId],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row && row.can_approve);
-          }
+          })
       );
     });
   }
@@ -2331,10 +2945,10 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE npm_package_id = ? AND version = ? AND status NOT IN (?, ?) ORDER BY queued_at DESC LIMIT 1',
           [packageId, version, 'complete', 'failed'],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
@@ -2344,29 +2958,29 @@ class PublisherModule {
       this.db.get(
           'SELECT * FROM tasks WHERE npm_package_id = ? AND version = ? ORDER BY queued_at DESC LIMIT 1',
           [packageId, version],
-          (err, row) => {
+          guarded(reject, (err, row) => {
             if (err) reject(err);
             else resolve(row);
-          }
+          })
       );
     });
   }
 
   async getWebsites() {
     return new Promise((resolve, reject) => {
-      this.db.all('SELECT * FROM websites ORDER BY name', (err, rows) => {
+      this.db.all('SELECT * FROM websites ORDER BY name', guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
   async getWebsite(websiteId) {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT * FROM websites WHERE id = ?', [websiteId], (err, row) => {
+      this.db.get('SELECT * FROM websites WHERE id = ?', [websiteId], guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row);
-      });
+      }));
     });
   }
 
@@ -2376,10 +2990,12 @@ class PublisherModule {
     await this.logTaskMessage(taskId, 'info', description);
 
     return new Promise((resolve, reject) => {
-      const proc = spawn(command, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        ...options
-      });
+      const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'], ...options };
+      if (command === 'git') {
+        // never let git block on (or fail obscurely at) a credentials prompt
+        spawnOptions.env = gitRemote.gitEnv(spawnOptions.env || process.env);
+      }
+      const proc = spawn(command, args, spawnOptions);
 
       let stdout = '';
       let stderr = '';
@@ -2411,10 +3027,10 @@ class PublisherModule {
 
   async getUsers() {
     return new Promise((resolve, reject) => {
-      this.db.all('SELECT id, name, login, is_admin, created_at FROM users ORDER BY name', (err, rows) => {
+      this.db.all('SELECT id, name, login, is_admin, created_at FROM users ORDER BY name', guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -2423,12 +3039,41 @@ class PublisherModule {
       this.db.all(
           'SELECT * FROM user_website_permissions WHERE user_id = ?',
           [userId],
-          (err, rows) => {
+          guarded(reject, (err, rows) => {
             if (err) reject(err);
             else resolve(rows || []);
-          }
+          })
       );
     });
+  }
+
+  /**
+   * The paragraph for the server's daily report: publication runs started in
+   * the period, and how many finished successfully.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.db) {
+      return 'The database is not open.';
+    }
+    const get = (sql, params) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+    // the timestamps are CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
+    const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
+    try {
+      const started = await get('SELECT COUNT(*) AS n FROM tasks WHERE building_at > ? AND building_at <= ?', [utc(since), utc(now)]);
+      const finished = await get('SELECT COUNT(*) AS n FROM tasks WHERE completed_at > ? AND completed_at <= ?', [utc(since), utc(now)]);
+      const failed = await get('SELECT COUNT(*) AS n FROM tasks WHERE failed_at > ? AND failed_at <= ?', [utc(since), utc(now)]);
+      const waiting = await get("SELECT COUNT(*) AS n FROM tasks WHERE status IN ('queued', 'waiting for approval')", []);
+      let text = `${plural(started.n, 'publication run')} ${started.n === 1 ? 'was' : 'were'} started, and ${finished.n} finished successfully`;
+      text += failed.n > 0 ? ` (${failed.n} failed).` : '.';
+      if (waiting.n > 0) {
+        text += ` ${plural(waiting.n, 'task')} ${waiting.n === 1 ? 'is' : 'are'} queued or waiting for approval.`;
+      }
+      return text;
+    } catch (e) {
+      return `The database could not be read: ${e.message}.`;
+    }
   }
 
   async shutdown() {
@@ -2454,15 +3099,15 @@ class PublisherModule {
 
     // Close database
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             this.logger.error('Error closing database:', err);
           } else {
             this.logger.info('Database closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }
@@ -2479,14 +3124,14 @@ class PublisherModule {
     return colors[status] || 'secondary';
   }
 
-  async logUserAction(userId, action, targetId, ipAddress) {
-    return new Promise((resolve) => {
-      this.db.run(
-          'INSERT INTO user_actions (user_id, action, target_id, ip_address) VALUES (?, ?, ?, ?)',
-          [userId, action, targetId, ipAddress],
-          () => resolve() // Don't fail if logging fails
-      );
-    });
+  // Fire-and-forget audit logging: callers don't await this, and it must never fail a
+  // request, so it returns void and swallows any DB error in the callback.
+  logUserAction(userId, action, targetId, ipAddress) {
+    this.db.run(
+        'INSERT INTO user_actions (user_id, action, target_id, ip_address) VALUES (?, ?, ?, ?)',
+        [userId, action, targetId, ipAddress],
+        () => {} // don't fail (or block) the request if audit logging fails
+    );
   }
 
   getStatus() {

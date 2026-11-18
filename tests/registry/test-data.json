@@ -1,7 +1,9 @@
 {
   "version": "1",
   "address": "https://fhir.github.io/ig-registry/tx-servers.json",
-  "doco": "See https://github.com/FHIR/ig-registry/blob/master/tx-registry-doco.md",
+  "doco": "See http://hl7.org/fhir/uv/tx-ecosystem/ecosystem.html",
+  "registration": "https://github.com/FHIR/ig-registry/blob/master/tx-registry-doco.md",
+  "ecosystem-documentation": "http://hl7.org/fhir/uv/tx-ecosystem/ecosystem.html",
   "last-run": "2025-08-08T22:50:55.096Z",
   "outcome": "Processed OK - 12.7 MB",
   "registries": [

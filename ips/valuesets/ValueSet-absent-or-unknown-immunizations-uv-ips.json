@@ -1,0 +1,59 @@
+{
+  "resourceType": "ValueSet",
+  "id": "absent-or-unknown-immunizations-uv-ips",
+  "url": "http://hl7.org/fhir/uv/ips/ValueSet/absent-or-unknown-immunizations-uv-ips",
+  "identifier": [
+    {
+      "use": "official",
+      "system": "http://art-decor.org/ns/oids/vs",
+      "value": "2.16.840.1.113883.11.22.43"
+    }
+  ],
+  "version": "1.1.0",
+  "name": "AbsentOrUnknownImmunizationUvIps",
+  "title": "Absent or Unknown Immunization - IPS",
+  "status": "active",
+  "experimental": false,
+  "date": "2022-11-22T03:24:39+00:00",
+  "publisher": "Health Level Seven International - Patient Care Work Group",
+  "contact": [
+    {
+      "telecom": [
+        {
+          "system": "url",
+          "value": "http://www.hl7.org/Special/committees/patientcare"
+        }
+      ]
+    }
+  ],
+  "description": "Absent or Unknown Immunization",
+  "jurisdiction": [
+    {
+      "coding": [
+        {
+          "system": "http://unstats.un.org/unsd/methods/m49/m49.htm",
+          "code": "001"
+        }
+      ]
+    }
+  ],
+  "immutable": false,
+  "copyright": "Produced by HL7 under the terms of HL7\u00ae Governance and Operations Manual relating to Intellectual Property (Section 16), specifically its copyright, trademark and patent provisions. This document is licensed under Creative Commons 'No Rights Reserved' (CC0).",
+  "compose": {
+    "include": [
+      {
+        "system": "http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips",
+        "concept": [
+          {
+            "code": "no-immunization-info",
+            "display": "No information about immunizations"
+          },
+          {
+            "code": "no-known-immunizations",
+            "display": "No known immunizations"
+          }
+        ]
+      }
+    ]
+  }
+}

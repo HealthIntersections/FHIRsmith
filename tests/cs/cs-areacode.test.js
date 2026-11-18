@@ -174,8 +174,7 @@ describe('AreaCodeServices', () => {
 
     test('should not locate region in country filter', async () => {
       const result = await provider.filterLocate(ctxt, countryFilter, '150'); // Europe
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in country filter', async () => {
@@ -245,8 +244,7 @@ describe('AreaCodeServices', () => {
 
     test('should not locate country in region filter', async () => {
       const result = await provider.filterLocate(ctxt, regionFilter, '840'); // USA
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
   });
 
@@ -254,13 +252,13 @@ describe('AreaCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', '=', 'test')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "display = test" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'class', 'contains', 'country')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "class contains country" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for search filter', async () => {

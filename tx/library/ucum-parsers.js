@@ -185,6 +185,11 @@ class Lexer {
 }
 
 // Expression parser for UCUM unit expressions (port of ExpressionParser.java)
+// A UCUM expression parses into a chain of Terms, one level per operator and per bracket, and
+// the parser and every walker of the result recurse along that chain. Bound it so that a hostile
+// unit is a clean error rather than a RangeError (stack overflow). Real units have a few terms.
+const MAX_UCUM_TERMS = 100;
+
 class ExpressionParser {
   constructor(model) {
     this.model = model;
@@ -192,6 +197,7 @@ class ExpressionParser {
 
   parse(code) {
     const lexer = new Lexer(code);
+    this.terms = 0;
     const res = this._parseTerm(lexer, true);
 
     if (!lexer.finished()) {
@@ -202,6 +208,9 @@ class ExpressionParser {
   }
 
   _parseTerm(lexer, first) {
+    if (++this.terms > MAX_UCUM_TERMS) {
+      lexer.error(`The unit has more than ${MAX_UCUM_TERMS} terms and brackets`);
+    }
     const res = new Term();
 
     if (first && lexer.getType() === TokenType.NONE) {
@@ -1026,5 +1035,6 @@ module.exports = {
   UcumEssenceParser,
   Search,
   Converter,
-  UcumValidator
+  UcumValidator,
+  MAX_UCUM_TERMS
 };

@@ -72,7 +72,6 @@ describe('NDC Module Import', () => {
         const count = await getTableCount(db, table.name);
 
         expect(count).toBeGreaterThanOrEqual(table.minRecords);
-        // console.log(`✓ ${table.name}: ${count} records`);
       }
 
       // Verify version table has correct version
@@ -498,6 +497,14 @@ describe('NDC Provider', () => {
   });
 
   describe('Extended Lookup', () => {
+    // $expand reports properties from properties(), which is built from extendLookup
+    test('properties() for $expand', async () => {
+      expect(await provider.properties('0002-0152', [])).toEqual([]);
+      const got = await provider.properties('0002-0152', ['code-type', 'active']);
+      expect(got).toContainEqual({ code: 'code-type', valueString: 'product' });
+      expect(got.map(p => p.code)).toContain('active');
+    });
+
     test('should extend lookup for product with properties', async () => {
       const paramSet = [];
       await provider.extendLookup('0002-0152', [], paramSet);
@@ -685,7 +692,7 @@ describe('NDC Provider', () => {
 
       await expect(
         provider.filter(filterContext, true, 'unsupported', '=', 'value')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "unsupported = value" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should handle extend lookup with invalid context', async () => {
@@ -708,7 +715,6 @@ describe('NDC Provider', () => {
           const display = await provider.display(result.context);
           expect(display).toContain('Cialis');
           expect(display).toContain('(product)');
-          // console.log(`✓ Found Cialis product: ${code} - ${display}`);
           break;
         }
       }
@@ -723,7 +729,6 @@ describe('NDC Provider', () => {
           const display = await provider.display(result.context);
           expect(display).toContain('RETEVMO');
           expect(display).toContain('(product)');
-          // console.log(`✓ Found RETEVMO: ${code} - ${display}`);
           break;
         }
       }
@@ -739,7 +744,6 @@ describe('NDC Provider', () => {
           expect(display).toContain('Trulicity');
           expect(display).toContain('SYRINGE');
           expect(display).toContain('(package)');
-          // console.log(`✓ Found Trulicity syringe: ${code} - ${display}`);
           break;
         }
       }

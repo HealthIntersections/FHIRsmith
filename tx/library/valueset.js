@@ -1,5 +1,6 @@
 const {CanonicalResource} = require("./canonical-resource");
 const {valueSetToR5, valueSetFromR5} = require("../xversion/xv-valueset");
+const {countNested} = require("./nesting-limit");
 
 /**
  * Represents a FHIR ValueSet resource with version conversion support
@@ -24,10 +25,26 @@ class ValueSet extends CanonicalResource {
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = valueSetToR5(jsonObj, fhirVersion);
     this.validate();
+    this.checkContained();
     this.buildMaps();
     // Precalculated at construction so callers (e.g. the resource cache) have a
     // cheap O(1) sense of how large this resource is.
-    this._conceptCount = ValueSet._countConcepts(this.jsonObj);
+    this._conceptCount = ValueSet._countConcepts(this.jsonObj, this._containsCount);
+  }
+
+  /**
+   * What circular reference detection knows this value set by: its versioned url, or, for
+   * a contained value set (see TerminologyWorker.findValueSet), its container's key plus
+   * #id - a contained value set's own url, if it has one, says nothing about which
+   * container it came from. null for a value set with no url that isn't contained.
+   * @returns {string|null}
+   */
+  get contextKey() {
+    if (this.isContained && this.container) {
+      const base = this.container.contextKey || this.container.vurl || '(unidentified)';
+      return `${base}#${this.jsonObj.id || ''}`;
+    }
+    return this.vurl || null;
   }
 
   /**
@@ -42,7 +59,7 @@ class ValueSet extends CanonicalResource {
     return this._conceptCount;
   }
 
-  static _countConcepts(jsonObj) {
+  static _countConcepts(jsonObj, containsCount) {
     let n = 0;
     const compose = jsonObj && jsonObj.compose;
     if (compose) {
@@ -53,24 +70,7 @@ class ValueSet extends CanonicalResource {
         n += Array.isArray(exc.concept) ? exc.concept.length : 0;
       }
     }
-    if (jsonObj && jsonObj.expansion) {
-      n += ValueSet._countContains(jsonObj.expansion.contains);
-    }
-    return n;
-  }
-
-  static _countContains(items) {
-    if (!Array.isArray(items)) {
-      return 0;
-    }
-    let n = 0;
-    for (const it of items) {
-      n++;
-      if (it && it.contains) {
-        n += ValueSet._countContains(it.contains);
-      }
-    }
-    return n;
+    return n + (containsCount || 0);
   }
 
   /**
@@ -78,6 +78,13 @@ class ValueSet extends CanonicalResource {
    * @type {Map<string, Object>}
    */
   codeMap = new Map();
+
+  /**
+   * Number of entries in expansion.contains, nested ones included. Counted by the
+   * depth-bounding walk in validate(), so the tree is only traversed once.
+   * @type {number}
+   */
+  _containsCount = 0;
 
   /**
    * Static factory method for convenience
@@ -158,6 +165,11 @@ class ValueSet extends CanonicalResource {
       if (this.jsonObj.expansion.contains && !Array.isArray(this.jsonObj.expansion.contains)) {
         throw new Error('Invalid ValueSet: expansion.contains must be an array if present');
       }
+      // Bound the nesting before anything walks it recursively - see nesting-limit.js.
+      // This has to happen before buildMaps(), which is itself a recursive walker, so
+      // it lives here rather than alongside the concept count in the constructor.
+      this._containsCount = countNested(this.jsonObj.expansion.contains, 'contains',
+        'Invalid ValueSet: expansion.contains');
     }
   }
 

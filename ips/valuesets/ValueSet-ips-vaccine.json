@@ -1,0 +1,31 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-vaccine",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-vaccine",
+  "name": "IpsVaccine",
+  "title": "Vaccines (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 787859002 |Vaccine product|, and the IPS codes for absent or unknown immunizations.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "descendent-of",
+            "value": "787859002"
+          }
+        ]
+      },
+      {
+        "valueSet": [
+          "http://hl7.org/fhir/uv/ips/ValueSet/absent-or-unknown-immunizations-uv-ips"
+        ]
+      }
+    ]
+  }
+}

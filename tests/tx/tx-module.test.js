@@ -51,6 +51,18 @@ describe('TX Module', () => {
       expect(response.body.kind).toBe('instance');
     });
 
+    test('url and implementation.url reflect the client host + endpoint path', async () => {
+      const response = await request(app)
+        .get('/tx/r5/metadata')
+        .set('Host', 'tx.example.org')
+        .set('Accept', 'application/json');
+
+      expect(response.status).toBe(200);
+      // Must echo the host the client used, not a hardcoded value
+      expect(response.body.implementation.url).toBe('http://tx.example.org/tx/r5');
+      expect(response.body.url).toBe('http://tx.example.org/tx/r5/CapabilityStatement/tx');
+    });
+
     test('should list supported resource types', async () => {
       const response = await request(app)
         .get('/tx/r5/metadata')
@@ -109,6 +121,22 @@ describe('TX Module', () => {
       expect(expansionParams).not.toContain('cache-id');
       // tx-resource is still supported and still advertised
       expect(expansionParams).toContain('tx-resource');
+    });
+
+    test('advertises the $expand parameters the server actually reads', async () => {
+      const response = await request(app)
+        .get('/tx/r5/metadata')
+        .query({ mode: 'terminology' })
+        .set('Accept', 'application/json');
+      expect(response.status).toBe(200);
+
+      const expansionParams = ((response.body.expansion || {}).parameter || []).map(p => p.name);
+      for (const name of ['url', 'valueSet', 'valueSetVersion', 'filter', 'designation', 'useSupplement',
+        'default-valueset-version', 'check-valueset-version', 'force-valueset-version']) {
+        expect(expansionParams).toContain(name);
+      }
+      // no duplicates
+      expect(new Set(expansionParams).size).toBe(expansionParams.length);
     });
   });
 
@@ -202,6 +230,42 @@ describe('TX Module', () => {
         .get('/tx/r5/CodeSystem/$unknown-operation')
         .set('Accept', 'application/json');
 
+      expect(response.status).toBe(404);
+      expect(response.body.resourceType).toBe('OperationOutcome');
+    });
+  });
+
+  describe('Content-Type', () => {
+    test('should say so when a POST has no Content-Type', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json');
+
+      expect(response.status).toBe(415);
+      expect(response.body.resourceType).toBe('OperationOutcome');
+      expect(response.body.issue[0].details.text).toBe(
+        'No Content-Type was given for this POST; use application/fhir+json or application/fhir+xml');
+    });
+
+    test('should name an unsupported Content-Type', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'text/plain')
+        .send('hello');
+
+      expect(response.status).toBe(415);
+      expect(response.body.issue[0].details.text).toBe('Unsupported Media Type: text/plain');
+    });
+
+    test('should accept a form post with a charset', async () => {
+      const response = await request(app)
+        .post('/tx/r5/$unknown-operation')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8')
+        .send('code=x');
+
+      // past the media type check, to the unknown operation
       expect(response.status).toBe(404);
       expect(response.body.resourceType).toBe('OperationOutcome');
     });

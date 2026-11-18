@@ -1,5 +1,7 @@
 # Third-party libraries (minified/vendor code)
 static/assets/js/*.js
+ips/vendor/
+ips/patient-editor/
 
 # Node modules
 node_modules/

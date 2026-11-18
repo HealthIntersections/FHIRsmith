@@ -48,7 +48,7 @@ initializeSession() {
     rolling: true,
     cookie: {
       // This is key - secure cookies when behind HTTPS proxy
-      secure: this.config.server?.httpsProxy || process.env.NODE_ENV === 'production',
+      secure: this.config.cookieSecure ?? 'auto', // Secure when the request came over https (req.secure)
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000,
       sameSite: 'lax'

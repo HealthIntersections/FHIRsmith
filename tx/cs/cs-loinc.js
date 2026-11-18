@@ -2,11 +2,20 @@ const sqlite3 = require('sqlite3').verbose();
 const assert = require('assert');
 const { CodeSystem } = require('../library/codesystem');
 const { Language, Languages} = require('../../library/languages');
-const { CodeSystemFactoryProvider} = require('./cs-api');
+const { CodeSystemFactoryProvider, CodeSystemProvider } = require('./cs-api');
 const { validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
 const {BaseCSServices} = require("./cs-base");
-const {sqlEscapeString} = require("../../xig/xig");
+const {sqlEscapeString} = require("../../library/sqlite-utilities");
 const regexUtilities = require('../../library/regex-utilities');
+const {ConceptMap} = require("../library/conceptmap");
+const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
+const { isCurrentTextIndex } = require('../importers/loinc-text-index');
+const { languageOf, bestRanks } = require('../library/text-match');
+const { SqlitePool } = require('../../library/sqlite-pool');
+
+// how many connections the requests share (LoincServicesFactory.#pool), unless the library says
+const DEFAULT_CONNECTIONS = 4;
 
 // Context kinds matching Pascal enum
 const LoincProviderContextKind = {
@@ -16,13 +25,52 @@ const LoincProviderContextKind = {
   ANSWER: 3   // lpckAnswer
 };
 
+// LOINC's mappings to other code systems (the ExternalCodes / ExternalMappings tables, from
+// PartRelatedCodeMapping, the IEEE mapping table and the answer lists). Each target system
+// has an implicit ConceptMap http://loinc.org/cm/<key>, and its mappings are $lookup
+// properties named <key>. Targets in systems not listed here are not used yet
+const LOINC_MAPS = [
+  { system: 'http://loinc.org', key: 'loinc' },
+  { system: 'http://pubchem.ncbi.nlm.nih.gov', key: 'ncbi' },
+  { system: 'http://snomed.info/sct', key: 'sct' },
+  { system: 'http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets', key: 'hcpcs' },
+  { system: 'http://www.genenames.org', key: 'gene-names' },
+  { system: 'http://www.nlm.nih.gov/research/umls/rxnorm', key: 'rxnorm' },
+  { system: 'https://www.ebi.ac.uk/chebi', key: 'chebi' },
+  { system: 'https://www.ncbi.nlm.nih.gov/clinvar', key: 'ncbi-clinvar' },
+  { system: 'https://www.ncbi.nlm.nih.gov/gene', key: 'ncbi-gene' },
+  { system: 'https://www.ncbi.nlm.nih.gov/taxonomy', key: 'ncbi-taxo' },
+  { system: 'urn:iso:std:iso:11073:10101', key: 'mdc' },
+  { system: 'urn:oid:2.16.840.1.113883.6.238', key: 'race' }
+];
+const LOINC_MAP_BASE = 'http://loinc.org/cm/';
+
+// The mapping tables hold R4 equivalences, stated from the LOINC code to the external code.
+// Translations report R5 relationships, from the code being translated to the one found
+function mapRelationship(equivalence, fromLoinc) {
+  switch (equivalence) {
+    case 'equivalent':
+    case 'equal':
+      return 'equivalent';
+    case 'narrower': // the external code is narrower than the LOINC code
+      return fromLoinc ? 'source-is-broader-than-target' : 'source-is-narrower-than-target';
+    case 'wider':
+      return fromLoinc ? 'source-is-narrower-than-target' : 'source-is-broader-than-target';
+    default:
+      return 'related-to';
+  }
+}
+
+// CLASSTYPE: the code and the description the importer stores (see descClassType in
+// import-loinc.module.js - 'Claims attachment', singular), and back
 const classTypes = {
   '1': 'Laboratory class',
   '2': 'Clinical class',
-  '3': 'Claims attachments',
+  '3': 'Claims attachment',
   '4': 'Surveys',
   'Laboratory class' : '1',
   'Clinical class' : '2',
+  'Claims attachment' : '3',
   'Claims attachments' : '3',
   'Surveys' : '4'
 };
@@ -79,6 +127,64 @@ class LoincIteratorContext {
   }
 }
 
+function ascending(keys) {
+  for (let i = 1; i < keys.length; i++) {
+    if (keys[i - 1] > keys[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** What the importer makes (import-loinc.module.js); a database imported before it has no such index */
+const CODES_DESCRIPTION_INDEX = 'CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)';
+// the database files the missing-index hint has been given for (once per file, per process)
+const indexHintGiven = new Set();
+// the databases already told their text index is the old one (see #checkTextIndex)
+const textIndexHintGiven = new Set();
+
+/**
+ * The answers to the lookups a filter can need before its SQL is written: the parts a
+ * relationship filter names, and the values a regex filter matches. Each reads a whole table,
+ * and the answer depends only on the database, so the factory keeps the most recently used:
+ * at most 256 of them, holding at most 1,000,000 keys in all (lists of keys, not the filters'
+ * codes)
+ */
+class LoincFilterLookups {
+  constructor(maxEntries = 256, maxKeys = 1000000) {
+    this.maxEntries = maxEntries;
+    this.maxKeys = maxKeys;
+    this.entries = new Map(); // key -> array of keys, least recently used first
+    this.keyCount = 0;
+  }
+
+  /** Let go of every lookup (the caches page) */
+  clear() {
+    this.entries.clear();
+    this.keyCount = 0;
+  }
+
+  async get(key, lookup) {
+    let keys = this.entries.get(key);
+    if (keys !== undefined) {
+      this.entries.delete(key);
+      this.entries.set(key, keys);
+      return keys;
+    }
+    keys = await lookup();
+    if (!this.entries.has(key) && keys.length <= this.maxKeys) {
+      this.entries.set(key, keys);
+      this.keyCount += keys.length;
+      while (this.entries.size > this.maxEntries || this.keyCount > this.maxKeys) {
+        const [oldest, old] = this.entries.entries().next().value;
+        this.entries.delete(oldest);
+        this.keyCount -= old.length;
+      }
+    }
+    return keys;
+  }
+}
+
 class LoincFilterHolder {
   constructor() {
     this.keys = [];
@@ -87,7 +193,10 @@ class LoincFilterHolder {
   }
 
   hasKey(key) {
-    // Binary search since keys should be sorted
+    if (this.keySet) {
+      return this.keySet.has(key);
+    }
+    // keys in ascending order (#executeSQL gives a filter whose keys aren't a keySet): binary search
     let l = 0;
     let r = this.keys.length - 1;
     while (l <= r) {
@@ -105,20 +214,31 @@ class LoincFilterHolder {
 }
 
 class LoincPrep {
-  constructor() {
+  constructor(languages = null, iterate = true) {
     this.filters = [];
+    this.languages = languages; // what the request asked for (a text filter searches one language)
+    // false: the filters are only asked whether a code is in them ($validate-code), so their
+    // codes aren't read: each check is one indexed query (lsql)
+    this.iterate = iterate;
   }
 }
 
 class LoincServices extends BaseCSServices {
-  constructor(opContext, supplements, db, sharedData) {
+  /**
+   * @param db - a connection of its own (closed with it), or the factory's pool (left open)
+   * @param {boolean} [ownsDb] - false: db is the factory's pool
+   */
+  constructor(opContext, supplements, db, sharedData, ownsDb = true) {
     super(opContext, supplements);
     this.db = db;
+    this.ownsDb = ownsDb;
 
     // Shared data from factory
     this.langs = sharedData.langs;
     this.codes = sharedData.codes;
     this.codeList = sharedData.codeList;
+    // whether TextIndex is the stemmed one (loinc-text-index.js): how a text filter is searched
+    this.currentTextIndex = !!sharedData.currentTextIndex;
     this.allKeys = sharedData.allKeys;
     this._version = sharedData._version;
     this.root = sharedData.root;
@@ -127,12 +247,14 @@ class LoincServices extends BaseCSServices {
     this.propertyList = sharedData.propertyList;
     this.statusKeys = sharedData.statusKeys;
     this.statusCodes = sharedData.statusCodes;
+    this.hasMappings = sharedData.hasMappings;
+    this.filterLookups = sharedData.filterLookups || new LoincFilterLookups();
   }
 
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
+    // not the factory's pool, which stays open for the other requests
+    if (this.ownsDb !== false) {
+      this.closeDb();
     }
   }
 
@@ -147,6 +269,12 @@ class LoincServices extends BaseCSServices {
 
   name() {
     return 'LOINC';
+  }
+
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'Logical Observation Identifier Names and Codes (LOINC)';
   }
 
   description() {
@@ -292,6 +420,14 @@ class LoincServices extends BaseCSServices {
 
   }
 
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(ctxt, props, params) {
     validateArrayParameter(props, 'props', String);
     validateArrayParameter(params, 'params', Object);
@@ -308,13 +444,123 @@ class LoincServices extends BaseCSServices {
       throw new Error('Invalid context for LOINC lookup');
     }
 
-    // Run all property queries in parallel — they're independent reads on the same key
+    // Run all property queries in parallel - they're independent reads on the same key - but
+    // each into its own list, appended in a fixed order, so that the order of the properties
+    // does not depend on which query finishes first
+    const groups = [[], [], [], [], []];
     await Promise.all([
-      this.#addRelationshipProperties(ctxt, props, params),
-      this.#addConceptProperties(ctxt, props,params),
-      this.#addStatusProperty(ctxt, props,params),
-      this.#addRelatedNames(ctxt, props,params)
+      this.#addRelationshipProperties(ctxt, props, groups[0]),
+      this.#addConceptProperties(ctxt, props, groups[1]),
+      this.#addStatusProperty(ctxt, props, groups[2]),
+      this.#addRelatedNames(ctxt, props, groups[3]),
+      this.#addMappingProperties(ctxt, props, groups[4])
     ]);
+    for (const group of groups) {
+      params.push(...group);
+    }
+  }
+
+  /**
+   * The code's mappings to other code systems, as Coding-valued properties named for the
+   * map (sct, chebi, mdc...), each with its equivalence as a subproperty. Returned by
+   * default, and when asked for by name
+   */
+  async #addMappingProperties(ctxt, props, params) {
+    if (!this.hasMappings) {
+      return;
+    }
+    const rows = await this.#dbAll(`
+        SELECT ExternalCodes.System, ExternalCodes.Version, ExternalCodes.Code, ExternalCodes.Display, ExternalMappings.Equivalence
+        FROM ExternalMappings, ExternalCodes
+        WHERE ExternalMappings.CodeKey = ?
+          AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+        ORDER BY ExternalCodes.System, ExternalCodes.Code`, [ctxt.key]);
+    for (const row of rows) {
+      const map = LOINC_MAPS.find(m => m.system === row.System);
+      if (map && this._hasProp(props, map.key, true)) {
+        const coding = { system: row.System };
+        if (row.Version) {
+          coding.version = row.Version;
+        }
+        coding.code = row.Code;
+        if (row.Display) {
+          coding.display = row.Display;
+        }
+        params.push({
+          name: 'property',
+          part: [
+            { name: 'code', valueCode: map.key },
+            { name: 'value', valueCoding: coding },
+            { name: 'subproperty', part: [{ name: 'code', valueCode: 'equivalence' }, { name: 'value', valueCode: row.Equivalence }] }
+          ]
+        });
+      }
+    }
+  }
+
+  #dbAll(sql, args) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, args, (err, rows) => err ? reject(err) : resolve(rows));
+    });
+  }
+
+  /**
+   * Translate using one of LOINC's implicit maps (http://loinc.org/cm/<key>). The map works
+   * in both directions, decided by the system of the code being translated: a LOINC code to
+   * the codes it maps to in the map's system, or a code in that system to the LOINC codes
+   * that map to it (for the LOINC to LOINC map, always the first). The version of a non-LOINC
+   * code is not used: the mappings name one version of each external system
+   */
+  async getTranslations(map, coding, target, reverse) { // eslint-disable-line no-unused-vars
+    const lm = map && map.jsonObj.loincMap;
+    if (!lm || !this.hasMappings) {
+      return [];
+    }
+    const targetSystem = target ? target.split('|')[0] : null;
+    const result = [];
+    if (coding.system === this.system() && (!targetSystem || targetSystem === lm.system)) {
+      const ctxt = this.codes.get(coding.code);
+      if (!ctxt) {
+        return [];
+      }
+      const rows = await this.#dbAll(`
+          SELECT ExternalCodes.Version, ExternalCodes.Code, ExternalCodes.Display, ExternalMappings.Equivalence
+          FROM ExternalMappings, ExternalCodes
+          WHERE ExternalMappings.CodeKey = ?
+            AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+            AND ExternalCodes.System = ?
+          ORDER BY ExternalCodes.Code`, [ctxt.key, lm.system]);
+      for (const row of rows) {
+        const t = { map: map.vurl, system: lm.system, code: row.Code, relationship: mapRelationship(row.Equivalence, true) };
+        if (row.Version) {
+          t.version = row.Version;
+        }
+        if (row.Display) {
+          t.display = row.Display;
+        }
+        result.push(t);
+      }
+    } else if (coding.system === lm.system && (!targetSystem || targetSystem === this.system())) {
+      const rows = await this.#dbAll(`
+          SELECT Codes.Code, Codes.Description, ExternalMappings.Equivalence
+          FROM ExternalCodes, ExternalMappings, Codes
+          WHERE ExternalCodes.System = ?
+            AND ExternalCodes.Code = ?
+            AND ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+            AND Codes.CodeKey = ExternalMappings.CodeKey
+          ORDER BY Codes.Code`, [lm.system, coding.code]);
+      for (const row of rows) {
+        result.push({
+          map: map.vurl,
+          system: this.system(),
+          version: this.version(),
+          code: row.Code,
+          display: row.Description,
+          relationship: mapRelationship(row.Equivalence, false)
+        });
+      }
+    }
+    return result;
   }
 
   #getDesignationUse(kind) {
@@ -330,26 +576,36 @@ class LoincServices extends BaseCSServices {
 
   async #addRelationshipProperties(ctxt, props, params) {
     return new Promise((resolve, reject) => {
+      // DISTINCT: databases imported before the importer de-duplicated relationships have the
+      // same row more than once - a part listed twice under the same parent in
+      // ComponentHierarchyBySystem (on two paths) has two parent rows
       const sql = `
-          SELECT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
+          SELECT DISTINCT RelationshipTypes.Description as Relationship, Codes.Code, Codes.Description as Value
           FROM Relationships, RelationshipTypes, Codes
           WHERE Relationships.SourceKey = ?
             AND Relationships.RelationshipTypeKey = RelationshipTypes.RelationshipTypeKey
             AND Relationships.TargetKey = Codes.CodeKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           for (const row of rows) {
             if (this._hasProp(props, row.Relationship, true)) {
-              this._addCodeProperty(params, 'property', row.Relationship, row.Code);
+              if (row.Relationship === 'CLASS') {
+                // CLASS is a string property - the class name (e.g. PULM). The Part code for the
+                // class is also returned, as partCode (an informal extension to the property)
+                this._addStringProperty(params, 'property', row.Relationship, row.Value || row.Code)
+                  .part.push({name: 'partCode', valueCode: row.Code});
+              } else {
+                this._addCodeProperty(params, 'property', row.Relationship, row.Code);
+              }
             }
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -363,14 +619,15 @@ class LoincServices extends BaseCSServices {
             AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           for (const row of rows) {
             if (this._hasProp(props, row.Description, true)) {
               if (row.Description == 'CLASSTYPE') {
-                this._addStringProperty(params, 'property', row.Description, classTypes[row.Value])
+                // the code (1-4), with its description; a description with no known code is the value
+                this._addStringProperty(params, 'property', row.Description, classTypes[row.Value] || row.Value)
                   .part.push({name: 'description', valueString: row.Value});
               } else {
                 this._addStringProperty(params, 'property', row.Description, row.Value);
@@ -379,7 +636,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -387,7 +644,7 @@ class LoincServices extends BaseCSServices {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT StatusKey FROM Codes WHERE CodeKey = ? AND StatusKey != 0';
 
-      this.db.get(sql, [ctxt.key], (err, row) => {
+      this.db.get(sql, [ctxt.key], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -401,7 +658,7 @@ class LoincServices extends BaseCSServices {
         } else {
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -429,7 +686,7 @@ class LoincServices extends BaseCSServices {
           AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -438,7 +695,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -456,7 +713,7 @@ class LoincServices extends BaseCSServices {
           ORDER BY DescriptionTypeKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -469,7 +726,7 @@ class LoincServices extends BaseCSServices {
 
           resolve(displays);
         }
-      });
+      }));
     });
   }
 
@@ -503,7 +760,7 @@ class LoincServices extends BaseCSServices {
             AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -514,7 +771,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve(results);
         }
-      });
+      }));
     });
   }
 
@@ -528,7 +785,7 @@ class LoincServices extends BaseCSServices {
             AND Descriptions.LanguageKey = Languages.LanguageKey
       `;
 
-      this.db.all(sql, [ctxt.key], (err, rows) => {
+      this.db.all(sql, [ctxt.key], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -538,7 +795,7 @@ class LoincServices extends BaseCSServices {
           }
           resolve(results);
         }
-      });
+      }));
     });
   }
 
@@ -607,12 +864,18 @@ class LoincServices extends BaseCSServices {
   // Filter support
   async doesFilter(prop, op, value) {
     // Relationship filters
-    if (this.relationships.has(prop) && ['=', 'in', 'exists', 'regex'].includes(op)) {
+    if (this.relationships.has(prop) && ['=', 'in', 'regex'].includes(op)) {
+      return true;
+    }
+    if (this.relationships.has(prop) && op === 'exists' && ['true', 'false'].includes(value)) {
       return true;
     }
 
     // Property filters
-    if (this.propertyList.has(prop) && ['=', 'in', 'exists', 'regex'].includes(op)) {
+    if (this.propertyList.has(prop) && ['=', 'in', 'regex'].includes(op)) {
+      return true;
+    }
+    if (this.propertyList.has(prop) && op === 'exists' && ['true', 'false'].includes(value)) {
       return true;
     }
 
@@ -621,8 +884,14 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
-    // LIST filter
+    // LIST filter: tx.fhir.org's own name for answers-for = [answer list], supported for
+    // backwards compatibility only (the defined filters are answers-for and answer-list, UP-645)
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
+      return true;
+    }
+
+    // answer-list filter: the answer lists (LL) that an answer (LA) is in (UP-645)
+    if (prop === 'answer-list' && op === '=') {
       return true;
     }
 
@@ -631,13 +900,20 @@ class LoincServices extends BaseCSServices {
       return true;
     }
 
-    // answers-for filter
-    if (prop === 'answers-for' && op === '=') {
+    // answers-for filter (in: the union of = each value)
+    if (prop === 'answers-for' && ['=', 'in'].includes(op)) {
       return true;
     }
 
     // concept filters
     if (prop === 'concept' && ['is-a', 'descendent-of', '=', 'in', 'not-in'].includes(op)) {
+      return true;
+    }
+
+    // LOINC's own hierarchy filter: ancestor = part (or in parts), the codes the part subsumes
+    // in the multi-axial hierarchy. LOINC's implicit value sets (http://loinc.org/vs/[partcode])
+    // are defined with it
+    if (prop === 'ancestor' && ['=', 'in'].includes(op)) {
       return true;
     }
 
@@ -654,25 +930,111 @@ class LoincServices extends BaseCSServices {
     return false;
   }
 
-  async getPrepContext(iterate) {
-    return new LoincPrep(iterate);
+  async getPrepContext(iterate, languages = null) {
+    return new LoincPrep(languages, iterate !== false);
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
     const filter = new LoincFilterHolder();
-    await this.#executeFilterQuery(prop, op, value, filter);
+    await this.#executeFilterQuery(prop, op, value, filter, filterContext.iterate !== false);
     filterContext.filters.push(filter);
   }
 
-  async searchFilter(filterContext, filterText, sort) {
+  /**
+   * A text filter matches, by the rules every provider's search follows (text-match.js), the codes
+   * that start with the filter, then those with a name in the search language (see searchLanguage:
+   * the request's language if LOINC has it, else English) that has every word of the filter, and
+   * the codes that a supplement in use gives a matching designation in that language. In English
+   * the names are the display and the other English names (long common name, short name, consumer
+   * name, display name); in another language, its names. Never RELATEDNAMES2, which is a list of
+   * keywords (a property), not a name. Searched in TextIndex (loinc-text-index.js); a database
+   * made before it is searched as before: the whole filter text in the display (in English) or in
+   * the language's names. The best match comes first (TextQuery.nameRank, codeRank), then display order
+   */
+  async searchFilter(filterContext, filterText, sort) { // eslint-disable-line no-unused-vars
     const filter = new LoincFilterHolder();
-    await this.#executeFilterQuery('$text', (sort ? '>' : '<'), filterText.filter, filter);
+    const lang = this.searchLanguage(filterContext.languages);
+    const english = CodeSystemProvider.inSearchLanguage(null, lang);
+    const langKeys = [];
+    for (const [code, key] of this.langs) {
+      if (!english && CodeSystemProvider.inSearchLanguage(code, lang)) {
+        langKeys.push(key);
+      }
+    }
+    const query = filterText.query;
+    if (this.currentTextIndex) {
+      // the codes that start with the filter (codes are upper case; people type them in lower)
+      const ranks = new Map(); // code key -> rank
+      const descriptions = new Map(); // code key -> display, to order equal ranks
+      for (const range of query.codeRanges(filterText.filter)) {
+        for (const r of await this.#all('SELECT CodeKey, Code, Description FROM Codes WHERE Code >= ? AND Code < ?', range)) {
+          ranks.set(r.CodeKey, query.codeRank(r.Code));
+          descriptions.set(r.CodeKey, r.Description);
+        }
+      }
+      // every name in the search language (in English, the display and the other English names),
+      // ranked by how closely it follows the filter (TextQuery.nameRank), from the words the
+      // index has for it
+      const keys = english ? [...this.langs].filter(([code]) => CodeSystemProvider.inSearchLanguage(code, lang)).map(([, key]) => key) : langKeys;
+      const searchLang = languageOf(lang);
+      const fts = query.ftsQuery(searchLang);
+      if (fts && keys.length > 0) {
+        const rows = await this.#all(`SELECT t.codekey AS key, t.words AS name, Codes.Description AS description
+                 FROM TextIndex t JOIN Codes ON Codes.CodeKey = t.codekey
+                 WHERE TextIndex MATCH ? AND t.lang IN (${keys.map(k => Number(k)).join(',')})`, [fts]);
+        for (const r of rows) {
+          descriptions.set(r.key, r.description);
+        }
+        for (const [key, rank] of await bestRanks(query, searchLang, rows)) {
+          if (rank > (ranks.get(key) ?? 0)) {
+            ranks.set(key, rank);
+          }
+        }
+      }
+      // the best first; then in display order
+      filter.keys = [...ranks.keys()].filter(k => k !== 0).sort((a, b) => (ranks.get(b) - ranks.get(a))
+        || String(descriptions.get(a) ?? '').localeCompare(String(descriptions.get(b) ?? '')) || (a - b));
+    } else {
+      const text = sqlEscapeString(filterText.filter || '');
+      const conds = [];
+      if (english) {
+        conds.push(`Codes.Description like '%${text}%'`); // the display, which is English
+      }
+      if (langKeys.length > 0) {
+        conds.push(`Codes.CodeKey IN (SELECT CodeKey FROM Descriptions WHERE LanguageKey IN (${langKeys.join(',')})
+                     AND DescriptionTypeKey != 4 AND Value like '%${text}%')`);
+      }
+      if (conds.length > 0) {
+        await this.#executeSQL(`SELECT Codes.CodeKey as Key FROM Codes WHERE ${conds.join(' OR ')} ORDER BY Codes.Description ASC`, filter);
+      } else {
+        filter.keys = [];
+      }
+    }
+    const have = new Set(filter.keys);
+    const sources = new Map();
+    for (const code of await this._supplementSearchCodes(filterText, lang, sources)) {
+      const ctxt = this.codes.get(code);
+      if (ctxt && !have.has(ctxt.key)) {
+        filter.keys.push(ctxt.key);
+        have.add(ctxt.key);
+        CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
+      }
+    }
+    filter.lsql = 'text'; // checked by key (filterLocate needs it set)
+    filter.keySet = new Set(filter.keys); // in display order, not key order, so hasKey can't binary search
     filterContext.filters.push(filter);
   }
 
-  async #executeFilterQuery(prop, op, value, filter) {
+  /**
+   * Prepares a filter: sql lists its codes (filter.keys), lsql + a code key counts whether that
+   * code is in it. When the filter is only asked about codes (load false: $validate-code), its
+   * codes aren't read, and each check runs lsql: loading the keys of a big filter (69,651 codes
+   * for CLASSTYPE = 1) takes far longer than the check it is for
+   */
+  async #executeFilterQuery(prop, op, value, filter, load = true) {
     let sql = '';
     let lsql = '';
+    let noMatches = false; // a regex filter that no value matches, or part names and codes that no part has
 
     // LIST filter
     if (prop === 'LIST' && op === '=' && this.codes.has(value)) {
@@ -684,6 +1046,17 @@ class LoincServices extends BaseCSServices {
               WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
                 AND SourceKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
                 AND TargetKey = `;
+    }
+    // answer-list filter: the answer lists (LL) the answer (LA) is in - the inverse of answers-for
+    else if (prop === 'answer-list' && op === '=') {
+      sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
+             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+             ORDER BY SourceKey ASC`;
+      lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
+              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+                AND SourceKey = `;
     }
     // answers-for filter
     else if (prop === 'answers-for' && op === '=') {
@@ -713,6 +1086,26 @@ class LoincServices extends BaseCSServices {
                   AND TargetKey = `;
       }
     }
+    // answers-for 'in' filter: the union of answers-for = each value, so each value is an answer
+    // list (LL) or a term that answer lists are for, as above
+    else if (prop === 'answers-for' && op === 'in') {
+      const values = this.#valueList(value);
+      const lists = this.#commaListOfCodes(values.filter(v => v.startsWith('LL')).join(','));
+      const terms = this.#commaListOfCodes(values.filter(v => !v.startsWith('LL')).join(','));
+      const sources = `SELECT CodeKey FROM Codes WHERE Code IN (${lists})
+                       UNION
+                       SELECT SourceKey FROM Relationships
+                       WHERE RelationshipTypeKey = ${this.relationships.get('answers-for')}
+                         AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${terms}))`;
+      sql = `SELECT DISTINCT TargetKey as Key FROM Relationships
+             WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+               AND SourceKey IN (${sources})
+             ORDER BY TargetKey ASC`;
+      lsql = `SELECT COUNT(DISTINCT TargetKey) FROM Relationships
+              WHERE RelationshipTypeKey = ${this.relationships.get('Answer')}
+                AND SourceKey IN (${sources})
+                AND TargetKey = `;
+    }
     // Relationship equal filter
     else if (this.relationships.has(prop) && op === '=') {
       if (this.codes.has(value)) {
@@ -725,48 +1118,65 @@ class LoincServices extends BaseCSServices {
                   AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
                   AND SourceKey = `;
       } else {
+        // a part given by its name (SCALE_TYP = Doc)
+        const partKeys = await this.#partKeysByName(value);
+        noMatches = partKeys.length === 0;
+        if (partKeys.length > 0) {
+          sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
+                 WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                   AND TargetKey IN (${partKeys.join(',')})
+                 ORDER BY SourceKey ASC`;
+          lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
+                  WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
+                    AND TargetKey IN (${partKeys.join(',')})
+                    AND SourceKey = `;
+        }
+      }
+    }
+    // Relationship 'in' filter: the union of = each value, so each value is a part code or,
+    // if it is not a code, a part name (SCALE_TYP in Doc,Nar), as above
+    else if (this.relationships.has(prop) && op === 'in') {
+      const partKeys = new Set();
+      for (const v of this.#valueList(value)) {
+        // a lookup for each name: a long list has to answer to the time limit (and the client
+        // going), as a filter that does the work in one query does by finishing
+        this.opContext.deadCheck('loinc:relationship-in');
+        const keys = this.codes.has(v) ? [this.codes.get(v).key] : await this.#partKeysByName(v);
+        keys.forEach(k => partKeys.add(k));
+      }
+      noMatches = partKeys.size === 0;
+      if (partKeys.size > 0) {
+        const targets = [...partKeys].join(',');
         sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
+                 AND TargetKey IN (${targets})
                ORDER BY SourceKey ASC`;
         lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
                 WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
+                  AND TargetKey IN (${targets})
                   AND SourceKey = `;
       }
     }
-    // Relationship 'in' filter
-    else if (this.relationships.has(prop) && op === 'in') {
-      const codes = this.#commaListOfCodes(value);
-      sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-             WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-               AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
-             ORDER BY SourceKey ASC`;
-      lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-              WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                AND TargetKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))
-                AND SourceKey = `;
-    }
-    // Relationship 'exists' filter
+    // Relationship 'exists' filter: value is true or false (doesFilter rejects anything else).
+    // true = codes that have at least one relationship of this type; false = every other code
+    // in the code system (Parts, AnswerLists and Answers included - combine with e.g.
+    // CLASSTYPE exists true to restrict to LOINC terms)
     else if (this.relationships.has(prop) && op === 'exists') {
-      if (this.codes.has(value)) {
+      const rk = this.relationships.get(prop);
+      if (value === 'true') {
         sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND EXISTS (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+               WHERE RelationshipTypeKey = ${rk}
                ORDER BY SourceKey ASC`;
-        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND EXISTS (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
+        lsql = `SELECT COUNT(SourceKey) FROM Relationships
+                WHERE RelationshipTypeKey = ${rk}
                   AND SourceKey = `;
-      } else {
-        sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
-               WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                 AND EXISTS (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-               ORDER BY SourceKey ASC`;
-        lsql = `SELECT COUNT(DISTINCT SourceKey) FROM Relationships
-                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
-                  AND EXISTS (SELECT CodeKey FROM Codes WHERE Description = '${this.#sqlWrapString(value)}' COLLATE NOCASE)
-                  AND SourceKey = `;
+      } else if (value === 'false') {
+        sql = `SELECT CodeKey as Key FROM Codes
+               WHERE NOT EXISTS (SELECT 1 FROM Relationships r WHERE r.RelationshipTypeKey = ${rk} AND r.SourceKey = Codes.CodeKey)
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Codes
+                WHERE NOT EXISTS (SELECT 1 FROM Relationships r WHERE r.RelationshipTypeKey = ${rk} AND r.SourceKey = Codes.CodeKey)
+                  AND CodeKey = `;
       }
     }
     // Relationship regex filter
@@ -777,6 +1187,7 @@ class LoincServices extends BaseCSServices {
         value,
         'Description'
       );
+      noMatches = matchingKeys.length === 0;
       if (matchingKeys.length > 0) {
         sql = `SELECT DISTINCT SourceKey as Key FROM Relationships
                WHERE RelationshipTypeKey = ${this.relationships.get(prop)}
@@ -805,28 +1216,41 @@ class LoincServices extends BaseCSServices {
                 AND PropertyValues.Value = '${this.#sqlWrapString(actualValue)}' COLLATE NOCASE
                 AND CodeKey = `;
     }
-    // Property 'in' filter
+    // Property 'in' filter: the union of = each value. The values are the property's own
+    // (ORDER_OBS in Order,Both), not LOINC codes, and CLASSTYPE takes its numbers here too
     else if (this.propertyList.has(prop) && op === 'in') {
-      const codes = this.#commaListOfCodes(value);
+      const values = this.#valueList(value)
+        .map(v => prop === 'CLASSTYPE' && ['1', '2', '3', '4'].includes(v) ? classTypes[v] : v)
+        .map(v => `'${this.#sqlWrapString(v)}'`).join(',');
       sql = `SELECT DISTINCT CodeKey as Key FROM Properties, PropertyValues
              WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
                AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
-               AND PropertyValues.Value IN (${codes}) COLLATE NOCASE
+               AND PropertyValues.Value COLLATE NOCASE IN (${values})
              ORDER BY CodeKey ASC`;
       lsql = `SELECT COUNT(DISTINCT CodeKey) FROM Properties, PropertyValues
               WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
                 AND Properties.PropertyValueKey = PropertyValues.PropertyValueKey
-                AND PropertyValues.Value IN (${codes}) COLLATE NOCASE
+                AND PropertyValues.Value COLLATE NOCASE IN (${values})
                 AND CodeKey = `;
     }
-    // Property 'exists' filter
+    // Property 'exists' filter: value is true or false, as for relationships above
     else if (this.propertyList.has(prop) && op === 'exists') {
-      sql = `SELECT DISTINCT CodeKey as Key FROM Properties
-             WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
-             ORDER BY CodeKey ASC`;
-      lsql = `SELECT COUNT(CodeKey) FROM Properties
-              WHERE Properties.PropertyTypeKey = ${this.propertyList.get(prop)}
-                AND CodeKey = `;
+      const pk = this.propertyList.get(prop);
+      if (value === 'true') {
+        sql = `SELECT DISTINCT CodeKey as Key FROM Properties
+               WHERE Properties.PropertyTypeKey = ${pk}
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Properties
+                WHERE Properties.PropertyTypeKey = ${pk}
+                  AND CodeKey = `;
+      } else if (value === 'false') {
+        sql = `SELECT CodeKey as Key FROM Codes
+               WHERE NOT EXISTS (SELECT 1 FROM Properties p WHERE p.PropertyTypeKey = ${pk} AND p.CodeKey = Codes.CodeKey)
+               ORDER BY CodeKey ASC`;
+        lsql = `SELECT COUNT(CodeKey) FROM Codes
+                WHERE NOT EXISTS (SELECT 1 FROM Properties p WHERE p.PropertyTypeKey = ${pk} AND p.CodeKey = Codes.CodeKey)
+                  AND CodeKey = `;
+      }
     }
     // Property regex filter
     else if (this.propertyList.has(prop) && op === 'regex') {
@@ -837,6 +1261,7 @@ class LoincServices extends BaseCSServices {
         'Value',
         'PropertyValueKey'
       );
+      noMatches = matchingKeys.length === 0;
       if (matchingKeys.length > 0) {
         sql = `SELECT DISTINCT CodeKey as Key FROM Properties
                WHERE PropertyTypeKey = ${this.propertyList.get(prop)}
@@ -859,12 +1284,15 @@ class LoincServices extends BaseCSServices {
     }
     // Concept hierarchy filters (is-a, descendent-of)
     else if (prop === 'concept' && ['is-a', 'descendent-of'].includes(op)) {
-      sql = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-             ORDER BY DescendentKey ASC`;
-      lsql = `SELECT COUNT(DescendentKey) FROM Closure
-              WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-                AND DescendentKey = `;
+      ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
+    }
+    // ancestor = X is LOINC's name for descendent-of X: "Ancestor includes parents transitively",
+    // and the part itself is not its own ancestor. in is the union over the parts
+    else if (prop === 'ancestor' && op === '=') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', value));
+    }
+    else if (prop === 'ancestor' && op === 'in') {
+      ({ sql, lsql } = this.#hierarchyFilterSql('descendent-of', null, this.#commaListOfCodes(value)));
     }
     // Concept equal filter (workaround for VSAC misuse)
     else if (prop === 'concept' && op === '=') {
@@ -887,12 +1315,7 @@ class LoincServices extends BaseCSServices {
     }
     // Code property filters (workaround for VSAC misuse)
     else if (prop === 'code' && ['is-a', 'descendent-of'].includes(op)) {
-      sql = `SELECT DescendentKey as Key FROM Closure
-             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-             ORDER BY DescendentKey ASC`;
-      lsql = `SELECT COUNT(DescendentKey) FROM Closure
-              WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code = '${this.#sqlWrapString(value)}')
-                AND DescendentKey = `;
+      ({ sql, lsql } = this.#hierarchyFilterSql(op, value));
     }
     else if (prop === 'code' && op === '=') {
       sql = `SELECT CodeKey as Key FROM Codes
@@ -923,26 +1346,93 @@ class LoincServices extends BaseCSServices {
       sql = `SELECT CodeKey as Key FROM Codes
              WHERE Description like '%${sqlEscapeString(value)}%'
              ORDER BY Description `+(op === '<' ? 'ASC' : 'DESC');
-      lsql = `SELECT COUNT(CodeKey) as Key FROM Codes
+      lsql = `SELECT COUNT(CodeKey) FROM Codes
              WHERE Codes.Description like '%${sqlEscapeString(value)}%'
-             AND TargetKey = `;
+             AND CodeKey = `;
     }
 
     if (sql) {
-      await this.#executeSQL(sql, filter);
       filter.lsql = lsql;
+      if (load) {
+        await this.#executeSQL(sql, filter);
+      } else {
+        filter.keys = null; // not read: see filterLocate
+      }
+    } else if (noMatches) {
+      // a regex that matches no value, or a name that no part has: the filter is empty
+      filter.keys = [];
+      filter.lsql = 'empty';
+      filter.empty = true;
     } else {
-      throw new Error(`The filter "${prop} ${op} ${value}" is not supported for LOINC`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 
-// Helper method for regex matching
+  /**
+   * The SQL for an is-a or descendent-of filter. The Closure table holds the strict descendants
+   * of each part (and never the part itself), which is descendent-of. is-a also includes the
+   * concept itself, as FHIR defines it.
+   *
+   * The closure follows LOINC's ComponentHierarchyBySystem path by path: a code is a descendant
+   * of the parts on its own PATH_TO_ROOT. A part that sits under two parents has its children by
+   * system listed separately under each, and they are not inherited across the paths - reading
+   * the file as a graph would, for example, put Glucose in Serum or Plasma under Urinalysis,
+   * because Protein appears under both.
+   */
+  #hierarchyFilterSql(op, value, codeList = null) {
+    // one code, or (codeList) an already quoted, comma separated list of them
+    const codes = codeList || `'${this.#sqlWrapString(value)}'`;
+    const descendants = `SELECT DISTINCT DescendentKey as Key FROM Closure
+             WHERE AncestorKey IN (SELECT CodeKey FROM Codes WHERE Code IN (${codes}))`;
+    const set = op === 'is-a'
+      ? `${descendants}
+             UNION
+             SELECT CodeKey as Key FROM Codes WHERE Code IN (${codes})`
+      : descendants;
+    // one code: an indexed look at Closure (and, for is-a, at the code itself), not the whole set
+    const ancestors = `SELECT CodeKey FROM Codes WHERE Code IN (${codes})`;
+    const member = `EXISTS (SELECT 1 FROM Closure WHERE Closure.DescendentKey = c.CodeKey AND Closure.AncestorKey IN (${ancestors}))`;
+    return {
+      sql: `${set}
+             ORDER BY Key ASC`,
+      lsql: `SELECT COUNT(*) FROM Codes c
+             WHERE (${op === 'is-a' ? `c.CodeKey IN (${ancestors}) OR ` : ''}${member})
+               AND c.CodeKey = `
+    };
+  }
+
+  /**
+   * the keys of the codes with this name (Description, in any case). Without the index
+   * idx_codes_description (databases imported before it) the lookup reads every code (21 ms on
+   * LOINC 2.83): the factory keeps the answer. The key is lower-cased as NOCASE compares (ASCII
+   * letters only), so Doc and DOC share it
+   */
+  async #partKeysByName(name) {
+    const key = 'name ' + name.replace(/[A-Z]/g, c => c.toLowerCase());
+    return this.filterLookups.get(key, () => new Promise((resolve, reject) => {
+      this.db.all('SELECT CodeKey FROM Codes WHERE Description = ? COLLATE NOCASE', [name], guarded(reject, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(rows.map(row => row.CodeKey));
+        }
+      }));
+    }));
+  }
+
+  /** the keys (keyColumn) of the rows of sql whose valueColumn matches the regex (kept, as above) */
   async #findRegexMatches(sql, pattern, valueColumn, keyColumn = 'Key') {
+    return this.filterLookups.get(`regex ${pattern}\n${valueColumn} ${keyColumn} ${sql}`, () => this.#scanRegexMatches(sql, pattern, valueColumn, keyColumn));
+  }
+
+  async #scanRegexMatches(sql, pattern, valueColumn, keyColumn) {
     return new Promise((resolve, reject) => {
-      const regex = regexUtilities.compile(pattern);
+      // the whole value, as for every regex filter: a|b is ^(?:a|b)$
+      const regex = regexUtilities.compile('^(?:' + pattern + ')$');
       const matchingKeys = [];
 
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -954,8 +1444,13 @@ class LoincServices extends BaseCSServices {
           }
           resolve(matchingKeys);
         }
-      });
+      }));
     });
+  }
+
+  /** the values of an in filter's comma separated list, trimmed, without empty ones */
+  #valueList(source) {
+    return source.split(',').map(s => s.trim()).filter(s => s !== '');
   }
 
 // Helper method for comma-separated code lists
@@ -966,16 +1461,37 @@ class LoincServices extends BaseCSServices {
     return codes.join(',');
   }
 
-  async #executeSQL(sql, filter) {
+  /**
+   * The code's own display, for leaving out what a supplement only copies (see
+   * CodeSystemProvider._rootDisplay)
+   */
+  async _rootDisplay(code) {
+    const ctxt = this.codes.get(code);
+    return ctxt ? ctxt.desc || null : null;
+  }
+
+  #all(sql, params = []) {
     return new Promise((resolve, reject) => {
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
+    });
+  }
+
+  async #executeSQL(sql, filter, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           filter.keys = rows.map(row => row.Key).filter(key => key !== 0);
+          // hasKey binary-searches the keys, which only works when they ascend. Not every query
+          // gives them in key order (answers-for gives an answer list's answers in the list's
+          // order, which an expansion keeps), so then hasKey uses a set
+          if (!ascending(filter.keys)) {
+            filter.keySet = new Set(filter.keys);
+          }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -984,24 +1500,34 @@ class LoincServices extends BaseCSServices {
   }
 
   async executeFilters(filterContext) {
-
-    return filterContext.filters;
+    const filters = filterContext.filters;
+    if (filters.length <= 1 || filters.some(f => f.keys === null)) {
+      // (filters whose codes aren't read are each asked about the code: filterLocate on the
+      // first, filterCheck on the rest)
+      return filters;
+    }
+    // Every filter is already a list of keys in memory, so the include is their intersection,
+    // as one set: its size is the include's size (count=0 needs no walk, and so no limit), and
+    // the expander walks only the codes that are in it. In the first filter's order
+    const others = filters.slice(1).map(f => new Set(f.keys));
+    const set = new LoincFilterHolder();
+    set.keys = filters[0].keys.filter(k => others.every(o => o.has(k)));
+    set.keySet = new Set(set.keys);
+    set.lsql = filters.map(f => f.lsql).find(l => l) || 'intersection';
+    return [set];
   }
 
   async filterSize(filterContext, set) {
-    return set.keys.length;
+    return this.#readKeys(set).length;
   }
 
   async filterMore(filterContext, set) {
-
     set.cursor = set.cursor || 0;
-    return set.cursor < set.keys.length;
+    return set.cursor < this.#readKeys(set).length;
   }
 
   async filterConcept(filterContext, set) {
-
-
-    if (set.cursor >= set.keys.length) {
+    if (set.cursor >= this.#readKeys(set).length) {
       return null;
     }
 
@@ -1021,28 +1547,117 @@ class LoincServices extends BaseCSServices {
       return 'Filter not understood';
     }
 
-    // Check if this context's key is in the filter
-    if (set.hasKey(context.key)) {
-      return context;
-    } else {
-      return null; // `Code ${code} is not in the specified filter`;
-    }
+    return (await this.#inFilter(set, context.key)) ? context : null;
   }
 
   async filterCheck(filterContext, set, concept) {
     if (!(concept instanceof LoincProviderContext)) {
       return false;
     }
-
-    return set.hasKey(concept.key);
+    return this.#inFilter(set, concept.key);
   }
 
-  // Subsumption testing
-  async subsumesTest(codeA, codeB) {
-    await this.#ensureContext(codeA);
-    await this.#ensureContext(codeB);
+  /** a filter's codes, which a filter prepared only for checking codes doesn't have */
+  #readKeys(set) {
+    if (set.keys === null) {
+      throw new Error('This LOINC filter was prepared for checking codes (getPrepContext(false)), not for listing them');
+    }
+    return set.keys;
+  }
 
-    return 'not-subsumed'; // Not implemented yet
+  /** whether the code (key) is in the filter: from its codes when they were read, else by lsql */
+  async #inFilter(set, key) {
+    if (set.empty) {
+      return false;
+    }
+    if (set.keys !== null) {
+      return set.hasKey(key);
+    }
+    const row = await new Promise((resolve, reject) => {
+      this.db.get(set.lsql + Number(key), guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+    });
+    return !!row && Object.values(row)[0] > 0;
+  }
+
+  /**
+   * Subsumption over the LOINC multiaxial hierarchy. The Closure table is a full transitive
+   * ancestor/descendent closure - the importer walks PATH_TO_ROOT from
+   * ComponentHierarchyBySystem and records every ancestor on the path, not just the immediate
+   * parent - so one indexed lookup each way answers the question. This is the same table the
+   * `is-a` / `descendent-of` filters run against, so $subsumes and an expansion agree.
+   *
+   * In practice the relationships found are Part-to-Part and Part-to-code: LOINC codes hang off
+   * the hierarchy as leaves, so two codes never subsume one another.
+   *
+   * @param {string|LoincProviderContext} codeA
+   * @param {string|LoincProviderContext} codeB
+   * @returns {string} equivalent, subsumes, subsumed-by or not-subsumed
+   */
+  async subsumesTest(codeA, codeB) {
+    const a = await this.#ensureContext(codeA);
+    const b = await this.#ensureContext(codeB);
+
+    if (a.key === b.key) {
+      return 'equivalent';
+    }
+    if (await this.#isAncestorOf(a.key, b.key)) {
+      return 'subsumes';
+    }
+    if (await this.#isAncestorOf(b.key, a.key)) {
+      return 'subsumed-by';
+    }
+    return 'not-subsumed';
+  }
+
+  /**
+   * The parts a code sits under, for $closure (see CodeSystemProvider.ancestorsOf): one indexed
+   * lookup on the Closure table by DescendentKey. It is the table subsumesTest probes, so the
+   * two agree: a is an ancestor of b here exactly when subsumesTest(a, b) is 'subsumes'. The
+   * Closure table follows ComponentHierarchyBySystem path by path, which is not the same as
+   * walking the parent links (see #hierarchyFilterSql), so that walk is not used.
+   *
+   * locate() is an exact match on the code, so a code it finds is already in the form code()
+   * gives, and two different codes are two different concepts.
+   *
+   * @param {string|LoincProviderContext} code
+   * @returns {Promise<Set<string>|null>} null for a code that isn't known
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof LoincProviderContext)) {
+      return null;
+    }
+    const rows = await new Promise((resolve, reject) => {
+      this.db.all('SELECT AncestorKey FROM Closure WHERE DescendentKey = ?', [ctxt.key],
+        guarded(reject, (err, rows) => err ? reject(err) : resolve(rows)));
+    });
+    const ancestors = new Set();
+    for (const row of rows) {
+      const a = this.codeList[row.AncestorKey];
+      if (a && a.key !== ctxt.key) {
+        ancestors.add(a.code);
+      }
+    }
+    return ancestors;
+  }
+
+  /**
+   * Is ancestorKey an ancestor of descendentKey in the multiaxial hierarchy?
+   * @param {number} ancestorKey
+   * @param {number} descendentKey
+   * @returns {Promise<boolean>}
+   */
+  async #isAncestorOf(ancestorKey, descendentKey) {
+    return new Promise((resolve, reject) => {
+      const sql = 'SELECT 1 FROM Closure WHERE AncestorKey = ? AND DescendentKey = ? LIMIT 1';
+      this.db.get(sql, [ancestorKey, descendentKey], (err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(!!row);
+        }
+      });
+    });
   }
 
   versionAlgorithm() {
@@ -1055,9 +1670,17 @@ class LoincServices extends BaseCSServices {
 }
 
 class LoincServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the master
+   *   sets the journal mode and makes the indexes; this process opens the file read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
+    // how many connections the requests share (#pool); 0: each request opens its own, as before
+    this.connections = Number.isInteger(options.connections) && options.connections >= 0 ? options.connections : DEFAULT_CONNECTIONS;
+    this._poolPromise = null;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -1077,17 +1700,21 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   async #ensureLoaded() {
     if (!this._loaded) {
-      await this.load();
+      // one load, however many requests arrive before it is done: each load() rebuilds the
+      // shared tables, so loads running side by side left requests reading half-built ones
+      this._loading ??= this.load().finally(() => { this._loading = null; });
+      await this._loading;
     }
   }
 
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
 
     // Enable performance optimizations
     await this.#optimizeDatabase(db);
 
     try {
+      await this.#checkIndexes(db);
       this._sharedData = {
         langs: new Map(),
         codes: new Map(),
@@ -1097,10 +1724,17 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         propertyList: new Map(),
         statusKeys: new Map(),
         statusCodes: new Map(),
+        hasMappings: false,
+        mappedCodes: new Map(), // LOINC code -> Set of the systems it maps to
+        mappedTargets: new Set(), // system|code of every external code something maps to
         _version: '',
         root: '',
-        firstCodeKey: 0
+        firstCodeKey: 0,
+        filterLookups: new LoincFilterLookups(),
+        // whether TextIndex is the stemmed one, with every display (loinc-text-index.js)
+        currentTextIndex: false
       };
+      this._sharedData.currentTextIndex = await this.#checkTextIndex(db);
 
       // Load small lookup tables in parallel
       // eslint-disable-next-line no-unused-vars
@@ -1109,11 +1743,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         this.#loadStatusCodes(db),
         this.#loadRelationshipTypes(db),
         this.#loadPropertyTypes(db),
-        this.#loadConfig(db)
+        this.#loadConfig(db),
+        this.#loadHasMappings(db)
       ]);
 
       // Load codes (largest operation)
       await this.#loadCodes(db);
+      await this.#loadMappingIndex(db);
 
       // Load dependent data in parallel
       await Promise.all([
@@ -1127,9 +1763,74 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     this._loaded = true;
   }
 
+  /**
+   * A database imported before the importer made idx_codes_description (CHANGELOG, 1.0.2)
+   * still works, but a filter that names a part reads every code the first time it is used.
+   * Says so once per file, with the command that adds the index. A tx-worker leaves it to the
+   * master, which opens the same file. It is only advice: if the check itself fails, the
+   * database loads all the same, and nothing is said
+   */
+  async #checkIndexes(db) {
+    if (this.readOnly || indexHintGiven.has(this.dbPath)) {
+      return;
+    }
+    let row;
+    try {
+      row = await new Promise((resolve, reject) => {
+        db.get("SELECT 1 AS x FROM sqlite_master WHERE type = 'index' AND name = 'idx_codes_description'", [],
+          guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+      });
+    } catch (e) {
+      return;
+    }
+    if (row) {
+      return;
+    }
+    indexHintGiven.add(this.dbPath);
+    const file = /^[\w./-]+$/.test(this.dbPath) ? this.dbPath : `'${this.dbPath.replace(/'/g, `'\\''`)}'`;
+    // fetched here: importers and tests require this module too
+    require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(
+      `LOINC: ${this.dbPath} has no index on Codes.Description, so a filter that names a part ` +
+      `(SCALE_TYP = Doc) reads every code the first time. Add it once, while the server isn't using the file: ` +
+      `sqlite3 ${file} "${CODES_DESCRIPTION_INDEX}"`);
+  }
+
+  /**
+   * Whether the database's TextIndex is the stemmed one (loinc-text-index.js), which text filters
+   * search. A database made before it is still searched, as before - the display, for the whole
+   * filter text - and says once that it can be brought up to date
+   */
+  async #checkTextIndex(db) {
+    let row = null;
+    try {
+      row = await new Promise((resolve, reject) => {
+        db.get("SELECT sql FROM sqlite_master WHERE name = 'TextIndex'", [],
+          guarded(reject, (err, r) => err ? reject(err) : resolve(r)));
+      });
+    } catch (e) {
+      return false;
+    }
+    const current = isCurrentTextIndex(row && row.sql);
+    if (!current && !this.readOnly && !textIndexHintGiven.has(this.dbPath)) {
+      textIndexHintGiven.add(this.dbPath);
+      require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(
+        `LOINC: ${this.dbPath} has an old text index, so a text filter looks for the whole filter text in the display, ` +
+        `rather than for each word in every name, as other code systems do. Bring it up to date, while the server isn't using the file: ` +
+        `tx-import loinc upgrade-text-index -d ${this.dbPath}`);
+    }
+    return current;
+  }
+
   async #optimizeDatabase(db) {
     return new Promise((resolve, reject) => {
       db.serialize(() => {
+        if (this.readOnly) {
+          // this connection's settings only; the file is the master's
+          db.run('PRAGMA cache_size = 10000');
+          db.run('PRAGMA temp_store = MEMORY');
+          db.run('PRAGMA mmap_size = 268435456', (err) => err ? reject(err) : resolve());
+          return;
+        }
         db.run('PRAGMA journal_mode = WAL');
         db.run('PRAGMA synchronous = NORMAL');
         db.run('PRAGMA cache_size = 10000');
@@ -1149,7 +1850,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   async #loadLanguages(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT LanguageKey, Code FROM Languages', (err, rows) => {
+      db.all('SELECT LanguageKey, Code FROM Languages', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1158,13 +1859,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadStatusCodes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT StatusKey, Description FROM StatusCodes', (err, rows) => {
+      db.all('SELECT StatusKey, Description FROM StatusCodes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1174,13 +1875,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadRelationshipTypes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT RelationshipTypeKey, Description FROM RelationshipTypes', (err, rows) => {
+      db.all('SELECT RelationshipTypeKey, Description FROM RelationshipTypes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1189,13 +1890,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadPropertyTypes(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT PropertyTypeKey, Description FROM PropertyTypes', (err, rows) => {
+      db.all('SELECT PropertyTypeKey, Description FROM PropertyTypes', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1204,14 +1905,14 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadCodes(db) {
     return new Promise((resolve, reject) => {
       // First get the count to pre-allocate array
-      db.get('SELECT MAX(CodeKey) as maxKey FROM Codes', (err, row) => {
+      db.get('SELECT MAX(CodeKey) as maxKey FROM Codes', guarded(reject, (err, row) => {
         if (err) return reject(err);
 
         // Pre-allocate the array to avoid repeated resizing
@@ -1219,7 +1920,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
         this._sharedData.codeList = new Array(maxKey + 1).fill(null);
 
         // Now load all codes
-        db.all('SELECT CodeKey, Code, Type, Codes.Description, StatusCodes.Description as Status FROM Codes, StatusCodes where StatusCodes.StatusKey = Codes.StatusKey order by Type Asc, CodeKey Asc', (err, rows) => {
+        db.all('SELECT CodeKey, Code, Type, Codes.Description, StatusCodes.Description as Status FROM Codes, StatusCodes where StatusCodes.StatusKey = Codes.StatusKey order by Type Asc, CodeKey Asc', guarded(reject, (err, rows) => {
           if (err) return reject(err);
 
           // Batch process rows
@@ -1241,8 +1942,8 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
             }
           }
           resolve();
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -1262,7 +1963,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           ORDER BY d.CodeKey
       `;
 
-      db.all(sql, (err, rows) => {
+      db.all(sql, guarded(reject, (err, rows) => {
         if (err) return reject(err);
 
         // Batch process by CodeKey to reduce lookups
@@ -1282,7 +1983,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
         }
         resolve();
-      });
+      }));
     });
   }
 
@@ -1293,12 +1994,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     }
 
     return new Promise((resolve, reject) => {
+      // DISTINCT, for databases imported with duplicate rows (see #addRelationshipProperties)
       const sql = `
-          SELECT SourceKey, TargetKey FROM Relationships
+          SELECT DISTINCT SourceKey, TargetKey FROM Relationships
           WHERE RelationshipTypeKey = ${childRelKey}
       `;
 
-      db.all(sql, (err, rows) => {
+      db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1312,13 +2014,13 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
   async #loadConfig(db) {
     return new Promise((resolve, reject) => {
-      db.all('SELECT ConfigKey, Value FROM Config WHERE ConfigKey IN (2, 3)', (err, rows) => {
+      db.all('SELECT ConfigKey, Value FROM Config WHERE ConfigKey IN (2, 3)', guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1331,7 +2033,7 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -1339,9 +2041,116 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     return this._sharedData?._version || 'unknown';
   }
 
+  // the mapping tables were added with the LOINC 2.83 importer; older databases don't have them
+  async #loadHasMappings(db) {
+    return new Promise((resolve, reject) => {
+      db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ExternalMappings'", guarded(reject, (err, row) => {
+        if (err) {
+          reject(err);
+        } else {
+          this._sharedData.hasMappings = !!row;
+          resolve();
+        }
+      }));
+    });
+  }
+
+  // which codes have mappings, so that a map is only offered for a code it says something about
+  async #loadMappingIndex(db) {
+    if (!this._sharedData.hasMappings) {
+      return;
+    }
+    return new Promise((resolve, reject) => {
+      db.all(`SELECT Codes.Code as LoincCode, ExternalCodes.System, ExternalCodes.Code
+              FROM ExternalMappings, ExternalCodes, Codes
+              WHERE ExternalMappings.ExternalCodeKey = ExternalCodes.ExternalCodeKey
+                AND ExternalMappings.CodeKey = Codes.CodeKey`, guarded(reject, (err, rows) => {
+        if (err) {
+          reject(err);
+        } else {
+          for (const row of rows) {
+            let systems = this._sharedData.mappedCodes.get(row.LoincCode);
+            if (!systems) {
+              systems = new Set();
+              this._sharedData.mappedCodes.set(row.LoincCode, systems);
+            }
+            systems.add(row.System);
+            this._sharedData.mappedTargets.add(row.System + '|' + row.Code);
+          }
+          resolve();
+        }
+      }));
+    });
+  }
+
+  /**
+   * LOINC's implicit maps (see LOINC_MAPS): from LOINC to a system it maps to, or from that
+   * system to LOINC. When the code being translated is known, the map is only offered if it
+   * has a mapping for it - so a translation between LOINC and SNOMED CT that the SNOMED CT
+   * edition answers (the LOINC Extension) does not also report a LOINC map that says nothing.
+   * The code may be on either side (under reverse it is the target concept)
+   */
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest, code = null) { // eslint-disable-line no-unused-vars
+    await this.#ensureLoaded();
+    if (!dest || !this._sharedData.hasMappings) {
+      return;
+    }
+    const destSystem = dest.split('|')[0];
+    let other = null;
+    if (source === this.system()) {
+      other = destSystem;
+    } else if (destSystem === this.system()) {
+      other = source;
+    }
+    const lm = LOINC_MAPS.find(m => m.system === other);
+    if (!lm || conceptMaps.some(m => m.url === LOINC_MAP_BASE + lm.key)) {
+      return;
+    }
+    if (code && !(this._sharedData.mappedCodes.get(code)?.has(lm.system)) && !this._sharedData.mappedTargets.has(lm.system + '|' + code)) {
+      return;
+    }
+    conceptMaps.push(this.#loincMap(lm));
+  }
+
+  async findImplicitConceptMap(url, version) {
+    if (!url || !url.startsWith(LOINC_MAP_BASE)) {
+      return null;
+    }
+    await this.#ensureLoaded();
+    if ((version && version !== this.version()) || !this._sharedData.hasMappings) {
+      return null;
+    }
+    const lm = LOINC_MAPS.find(m => LOINC_MAP_BASE + m.key === url);
+    return lm ? this.#loincMap(lm) : null;
+  }
+
+  #loincMap(lm) {
+    const groups = [{ source: this.system(), target: lm.system }];
+    if (lm.system !== this.system()) {
+      groups.push({ source: lm.system, target: this.system() });
+    }
+    return new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      loincMap: lm,
+      url: LOINC_MAP_BASE + lm.key,
+      name: `LOINC ${lm.key} Concept Map`,
+      description: `The mappings between LOINC ${this.version()} and ${lm.system}, as published by LOINC`,
+      status: 'active',
+      group: groups
+    });
+  }
+
   async build(opContext, supplements) {
     await this.#ensureLoaded();
     this.recordUse();
+
+    if (this.connections > 0) {
+      const pool = await this.#pool();
+      if (pool) {
+        return new LoincServices(opContext, supplements, pool, this._sharedData, false);
+      }
+    }
 
     // Create read-only database connection for this provider instance
     const db = await new Promise((resolve, reject) => {
@@ -1363,6 +2172,45 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
     });
 
     return new LoincServices(opContext, supplements, db, this._sharedData);
+  }
+
+  /**
+   * The connections the requests share, opened on first use. A request used to open a
+   * connection of its own and close it at the end: opening it, setting it up, and starting
+   * with an empty page cache, every time - a share of a LOINC $validate-code, which takes 4ms
+   * on tx.fhir.org. Several, because a connection runs one query at a time
+   * (library/sqlite-pool.js). Nothing LOINC does needs a connection to itself (no
+   * transactions or temporary tables), so any query can go to any of them. If they can't be
+   * opened, requests open their own as before, and the next request tries again.
+   * @returns {Promise<SqlitePool|null>}
+   */
+  #pool() {
+    if (!this._poolPromise) {
+      this._poolPromise = SqlitePool.open(this.dbPath, {
+        size: this.connections,
+        configure: (db) => new Promise((resolve, reject) => {
+          db.serialize(() => {
+            db.run('PRAGMA cache_size = 10000');
+            db.run('PRAGMA temp_store = MEMORY');
+            db.run('PRAGMA mmap_size = 268435456', (err) => err ? reject(err) : resolve());
+          });
+        })
+      }).catch((error) => {
+        this._poolPromise = null;
+        require('../../library/logger').getInstance().child({ module: 'tx-loinc' }).warn(`Unable to open the LOINC connections (${this.dbPath}), so each request opens its own: ${error.message}`);
+        return null;
+      });
+    }
+    return this._poolPromise;
+  }
+
+  async close() {
+    const promise = this._poolPromise;
+    this._poolPromise = null;
+    const pool = promise ? await promise : null;
+    if (pool && !pool.closed) {
+      await new Promise((resolve) => pool.close(() => resolve()));
+    }
   }
 
   useCount() {
@@ -1455,6 +2303,11 @@ class LoincServicesFactory extends CodeSystemFactoryProvider {
 
   id() {
     return "loinc"+this.version();
+  }
+
+  /** Codes, parts, answers and groups all have a page at loinc.org (as LoincLinker in org.hl7.fhir.core) */
+  codeLink(context) {
+    return context && context.code ? `https://loinc.org/${encodeURIComponent(context.code)}/` : undefined;
   }
 }
 

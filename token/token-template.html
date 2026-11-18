@@ -36,11 +36,6 @@
 <script type="text/javascript" src="/assets/js/jquery.min.js"></script>
 <script type="text/javascript" src="/assets/js/jquery-ui.min.js"></script>
 <link rel="stylesheet" href="/assets/css/jquery.ui.all.css">
-<script type="text/javascript" src="/assets/js/jquery.ui.core.js"></script>
-<script type="text/javascript" src="/assets/js/jquery.ui.widget.js"></script>
-<script type="text/javascript" src="/assets/js/jquery.ui.mouse.js"></script>
-<script type="text/javascript" src="/assets/js/jquery.ui.resizable.js"></script>
-<script type="text/javascript" src="/assets/js/jquery.ui.draggable.js"></script>
 <script type="text/javascript" src="/assets/js/jtip.js"></script>
 <script type="text/javascript" src="/assets/js/jcookie.js"></script>
 <script type="text/javascript" src="/assets/js/fhir-gw.js"></script>
@@ -128,8 +123,6 @@
 		<div id="stripe"> </div>
 		<div class="container">  <!-- container -->
 		<div style="background-color: #ad1f2f; padding: 6px; color: white;">  <!-- container -->
-  <a href="http://www.hl7.org/fhir" style="color: gold" title="Fast Healthcare Interoperability Resources - Home Page"><img border="0" src="/icon-fhir-16.png" style="vertical-align: text-bottom"/> <b>FHIR</b></a> &copy; HL7.org &nbsp;|&nbsp;
-  <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" style="vertical-align: text-bottom"/> FHIRsmith</a> [%ver%] &nbsp;|&nbsp;
   <a href="/" style="color: gold"> Server Home</a> &nbsp;|&nbsp;
   <a href="/token" style="color: gold">Token Home</a> 
 		</div>  <!-- /container -->
@@ -144,29 +137,30 @@
             	<div class="inner-wrapper">
  <div class="col-9">
 
-  <h2><img border="0" src="../FHIRsmith32.png" style="vertical-align: text-bottom"/> Token Server: [%title%] </h2>
+  <h2><a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" title="FHIRsmith [%ver%]"><img border="0" src="/FHIRsmith32.png" alt="FHIRsmith Logo" style="vertical-align: text-bottom"/></a> Token Server: [%title%] </h2>
 
 [%content%]
 
 <div class="api-docs">
   <h4>API Documentation</h4>
-  <p>Use these endpoints to validate and track API key usage:</p>
+  <p>Use these endpoints to validate and track API key usage. Send the key in a header:
+    <code>Authorization: Bearer {api_key}</code> (or <code>X-API-Key: {api_key}</code>).</p>
   
   <div class="mb-3">
     <strong>Validate API Key:</strong>
-    <div class="api-endpoint">GET /token/api/validate/{api_key}</div>
+    <div class="api-endpoint">GET /token/api/validate</div>
     <p>Returns user information and allowed request count.</p>
   </div>
   
   <div class="mb-3">
     <strong>Record Usage:</strong>
-    <div class="api-endpoint">POST /token/api/usage/{api_key}</div>
+    <div class="api-endpoint">POST /token/api/usage</div>
     <p>Records API usage. Send <code>{"count": 1}</code> in request body.</p>
   </div>
   
   <div class="mb-3">
     <strong>Get Usage Statistics:</strong>
-    <div class="api-endpoint">GET /token/api/stats/{api_key}?days=30</div>
+    <div class="api-endpoint">GET /token/api/stats?days=30</div>
     <p>Returns usage statistics for the specified number of days.</p>
   </div>
 </div>
@@ -182,8 +176,7 @@
 		<div class="container">  <!-- container -->
 			<div class="inner-wrapper">
 				<p>
-                    <a href="http://www.hl7.org/fhir" style="color: gold" title="Fast Healthcare Interoperability Resources - Home Page"><img border="0" src="/icon-fhir-16.png" style="vertical-align: text-bottom"/> <b>FHIR</b></a> &copy; HL7.org 2011+.  &nbsp;|&nbsp;
-                    <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" style="vertical-align: text-bottom"/> FHIRsmith</a>  [%ver%]  &copy; HealthIntersections.com.au 2023+ &nbsp;|&nbsp;
+                    <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/README.md" style="color: gold"><img border="0" src="/FHIRsmith16.png" alt="FHIRsmith Logo" style="vertical-align: text-bottom"/> FHIRsmith</a>  [%ver%]  &copy; HealthIntersections.com.au 2023+ &nbsp;|&nbsp;
                      ([%ms%] ms)
 
         </p>

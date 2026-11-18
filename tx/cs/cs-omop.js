@@ -5,6 +5,8 @@ const { FilterExecutionContext, CodeSystemFactoryProvider } = require('./cs-api'
 const {validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
 const {BaseCSServices} = require("./cs-base");
+const { guarded } = require('../library/sqlite-utilities');
+const { Issue } = require('../library/operation-outcome');
 
 class OMOPConcept {
   constructor(code, display, domain, conceptClass, standard, vocabulary) {
@@ -135,10 +137,7 @@ class OMOPServices extends BaseCSServices {
   }
 
   close() {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
-    }
+    this.closeDb();
   }
 
   // Metadata methods
@@ -151,7 +150,13 @@ class OMOPServices extends BaseCSServices {
   }
 
   name() {
-    return `OMOP Concepts`;
+    return 'OMOP_Concepts';
+  }
+
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'OMOP Unified Vocabularies';
   }
 
   description() {
@@ -160,10 +165,10 @@ class OMOPServices extends BaseCSServices {
 
   async totalCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM Concepts', (err, row) => {
+      this.db.get('SELECT COUNT(*) as count FROM Concepts', guarded(reject, (err, row) => {
         if (err) reject(err);
         else resolve(row.count);
-      });
+      }));
     });
   }
 
@@ -239,7 +244,7 @@ class OMOPServices extends BaseCSServices {
             AND ConceptSynonyms.concept_id = ?
       `;
 
-      this.db.all(sql, [code], (err, rows) => {
+      this.db.all(sql, [code], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -249,8 +254,24 @@ class OMOPServices extends BaseCSServices {
           }));
           resolve(synonyms);
         }
-      });
+      }));
     });
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    // a concept from a filter is partial (domain_id is the domain's concept id, no concept class
+    // or vocabulary): the properties are those of the concept itself
+    if (names && names.length > 0 && context instanceof OMOPConcept && context.conceptClass === '') {
+      const located = await this.locate(String(context.code));
+      if (located.context) {
+        context = located.context;
+      }
+    }
+    return this._propertiesFromLookup(context, names);
   }
 
   async extendLookup(ctxt, props, params) {
@@ -301,7 +322,7 @@ class OMOPServices extends BaseCSServices {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT * FROM Concepts WHERE concept_id = ?';
 
-      this.db.get(sql, [ctxt.code], (err, row) => {
+      this.db.get(sql, [ctxt.code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -331,7 +352,7 @@ class OMOPServices extends BaseCSServices {
         } else {
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -348,7 +369,7 @@ class OMOPServices extends BaseCSServices {
             AND ConceptRelationships.concept_id_1 = ?
       `;
 
-      this.db.all(sql, [ctxt.code], (err, rows) => {
+      this.db.all(sql, [ctxt.code], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -361,7 +382,7 @@ class OMOPServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
 
     // Reverse relationships
@@ -374,7 +395,7 @@ class OMOPServices extends BaseCSServices {
             AND ConceptRelationships.concept_id_2 = ?
       `;
 
-      this.db.all(sql, [ctxt.code], (err, rows) => {
+      this.db.all(sql, [ctxt.code], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -388,7 +409,7 @@ class OMOPServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -506,7 +527,7 @@ class OMOPServices extends BaseCSServices {
             AND concept_id = ?
       `;
 
-      this.db.get(sql, [code], (err, row) => {
+      this.db.get(sql, [code], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row && row.concept_id.toString() === code) {
@@ -522,7 +543,7 @@ class OMOPServices extends BaseCSServices {
         } else {
           resolve({ context: null, message: undefined });
         }
-      });
+      }));
     });
   }
 
@@ -574,7 +595,8 @@ class OMOPServices extends BaseCSServices {
       }
       filterContext.filters.push(filter);
     } else {
-      throw new Error(`Filter "${prop} ${op} ${value}" not understood for OMOP`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 
@@ -599,7 +621,7 @@ class OMOPServices extends BaseCSServices {
     set.cursor++;
 
     return new OMOPConcept(
-      row.concept_id,
+      String(row.concept_id), // a code is a string (the expansion's code was a JSON number)
       row.concept_name,
       row.domain_id,
       '', // concept_class not in basic filter query
@@ -651,12 +673,28 @@ class OMOPServices extends BaseCSServices {
   }
 
 
-  // Subsumption testing - not implemented
+  // Subsumption: this provider has no hierarchy (the OMOP concept_ancestor table isn't
+  // imported), so two concepts that both exist are not-subsumed (the caller deals with equal
+  // codes: equivalent)
   async subsumesTest(codeA, codeB) {
     await this.#ensureContext(codeA);
     await this.#ensureContext(codeB);
     
     return 'not-subsumed';
+  }
+
+  /**
+   * For $closure (see CodeSystemProvider.ancestorsOf): OMOP has no hierarchy here -
+   * subsumesTest answers not-subsumed for any two known codes - so a known code sits under
+   * nothing. One locate per concept instead of two per pair; an unknown code gets null, and
+   * $closure then reports it through subsumesTest as before.
+   *
+   * @param {string|Object} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    return ctxt ? new Set() : null;
   }
 
   // Translation support
@@ -677,7 +715,7 @@ class OMOPServices extends BaseCSServices {
           WHERE concept_id = ? AND vocabulary_id = ?
       `;
 
-      this.db.all(sql, [coding.code, vocabId], (err, rows) => {
+      this.db.all(sql, [coding.code, vocabId], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -690,7 +728,7 @@ class OMOPServices extends BaseCSServices {
           }));
           resolve(translations);
         }
-      });
+      }));
     });
   }
 
@@ -706,7 +744,7 @@ class OMOPServices extends BaseCSServices {
             AND Domains.domain_concept_id = Concepts.concept_id
       `;
 
-      this.db.get(sql, [domain], (err, row) => {
+      this.db.get(sql, [domain], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row && row.domain_id === domain) {
@@ -734,7 +772,7 @@ class OMOPServices extends BaseCSServices {
         } else {
           reject(new Error(`Unknown Value Domain ${id}`));
         }
-      });
+      }));
     });
   }
 
@@ -743,7 +781,7 @@ class OMOPServices extends BaseCSServices {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT DISTINCT vocabulary_id FROM Concepts';
 
-      this.db.all(sql, (err, rows) => {
+      this.db.all(sql, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -768,7 +806,7 @@ class OMOPServices extends BaseCSServices {
           }
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -778,9 +816,14 @@ class OMOPServices extends BaseCSServices {
 }
 
 class OMOPServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, dbPath) {
+  /**
+   * @param {Object} [options] - {readOnly: true} in a tx-worker (cluster.md): the file is
+   *   the master's; this process opens it read-only
+   */
+  constructor(i18n, dbPath, options = {}) {
     super(i18n);
     this.dbPath = dbPath;
+    this.readOnly = !!options.readOnly;
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -849,8 +892,12 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  #open() {
+    return this.readOnly ? new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY) : new sqlite3.Database(this.dbPath);
+  }
+
   async load() {
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     try {
       this._sharedData = {
@@ -874,7 +921,7 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
           WHERE vocabulary_id = 'OMOP Extension'
       `;
 
-      db.get(sql, (err, row) => {
+      db.get(sql, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else if (row) {
@@ -888,7 +935,7 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
           this._sharedData._version = 'unknown';
           resolve();
         }
-      });
+      }));
     });
   }
 
@@ -901,7 +948,7 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
     this.recordUse();
 
     // Create fresh database connection for this provider instance
-    const db = new sqlite3.Database(this.dbPath);
+    const db = this.#open();
 
     return new OMOPServices(opContext, supplements, db, this._sharedData);
   }
@@ -952,7 +999,8 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
    * @param version
    * @returns {ConceptMap}
    */
-  async findImplicitConceptMaps(conceptMaps, source, dest) {
+  // eslint-disable-next-line no-unused-vars
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
     if (source == 'https://fhir-terminology.ohdsi.org') {
       let key = this.#getVocabId(dest);
       if (key) {
@@ -1007,7 +1055,7 @@ class OMOPServicesFactory extends CodeSystemFactoryProvider {
 
 
   name() {
-    return `OMOP Concepts`;
+    return 'OMOP_Concepts';
   }
 
   id() {

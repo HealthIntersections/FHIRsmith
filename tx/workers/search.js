@@ -7,8 +7,11 @@
 
 const { TerminologyWorker } = require('./worker');
 const {Utilities} = require("../../library/utilities");
+const { VersionUtilities } = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
+const {acceptsHtml} = require("../tx-html");
 
+const { buildOperationOutcome } = require('../library/operation-outcome');
 class SearchWorker extends TerminologyWorker {
   /**
    * @param {OperationContext} opContext - Operation context
@@ -84,23 +87,33 @@ class SearchWorker extends TerminologyWorker {
           break;
       }
 
-      const count = summary === 'count' ? 0 : Math.min(elements ? 2000 : 200, params._count && Utilities.isInteger(params._count) ? parseInt(params._count) : 20);
+      // Default page size depends on the return format: browsers get small pages
+      // (20), while API clients (json/xml) get big ones (1000) - they just want
+      // the data, and small pages make crawlers (e.g. the tx registry) painfully
+      // slow. An explicit _count always wins, subject to the caps.
+      const defaultCount = acceptsHtml(req) ? 20 : 1000;
+      const count = summary === 'count' ? 0 : Math.min(elements ? 2000 : 200, params._count && Utilities.isInteger(params._count) ? parseInt(params._count) : defaultCount);
       const sort = params._sort || "id";
+
+      // A person using the HTML search form gets a partial match on url (e.g. an OID); an API
+      // client gets the match it always has, because clients look resources up by url and
+      // count on what comes back
+      const partialUrl = acceptsHtml(req);
 
       // Get matching resources
       let matches = [];
       switch (resourceType) {
         case 'CodeSystem':
-          matches = this.searchCodeSystems(params);
+          matches = this.searchCodeSystems(params, partialUrl);
           break;
 
         case 'ValueSet':
-          matches = await this.searchValueSets(params, elements);
+          matches = await this.searchValueSets(params, elements, partialUrl);
           break;
 
         case 'ConceptMap':
           // Not implemented yet - return empty set
-          matches = await this.searchConceptMaps(params, elements);
+          matches = await this.searchConceptMaps(params, elements, partialUrl);
           break;
 
         default:
@@ -109,6 +122,9 @@ class SearchWorker extends TerminologyWorker {
 
       // Sort results
       matches = this.sortResults(matches, sort);
+      if (summary !== 'count') {
+        matches = await this.loadPage(matches, offset, count);
+      }
 
       // Build and return the bundle
       const bundle = this.buildSearchBundle(
@@ -121,29 +137,20 @@ class SearchWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = "error "+(error.msgId || error.className);
-      return res.status(500).json({
-        resourceType: 'OperationOutcome',
-        issue: [{
-          severity: 'error',
-          code: 'exception',
-          diagnostics: error.message
-        }]
-      });
+      return res.status(500).json(buildOperationOutcome('error', 'exception', error.message));
     }
   }
 
   /**
    * Search CodeSystems
    */
-  searchCodeSystems(params) {
+  searchCodeSystems(params, partialUrl = false) {
     const matches = [];
 
     // Extract search parameters (excluding special params)
     const searchParams = {};
-    for (const [key, value] of Object.entries(params)) {
-      if (!key.startsWith('_') && value && SearchWorker.ALLOWED_PARAMS.includes(key)) {
-        searchParams[key] = key == 'url' ? value : value.toLowerCase();
-      }
+    for (const { name, value } of this.searchParamsFor(params, partialUrl)) {
+      searchParams[name] = name == 'url' || name == 'version' ? value : value.toLowerCase();
     }
 
     // If no search params, return all
@@ -156,23 +163,39 @@ class SearchWorker extends TerminologyWorker {
   }
 
   /**
+   * The search parameters to hand to the providers: the allowed ones that have a value. With
+   * partialUrl (the HTML search form), url becomes url:contains - the url contains the value,
+   * without regard to case - and the value is trimmed (a form value often picks up a space)
+   * @param {Object} params - the request parameters
+   * @param {boolean} partialUrl
+   * @returns {Array<{name: string, value: string}>}
+   */
+  searchParamsFor(params, partialUrl) {
+    const searchParams = [];
+    for (const [key, value] of Object.entries(params)) {
+      if (!key.startsWith('_') && value && SearchWorker.ALLOWED_PARAMS.includes(key)) {
+        if (key === 'url' && partialUrl && typeof value === 'string') {
+          if (value.trim()) {
+            searchParams.push({ name: 'url:contains', value: value.trim() });
+          }
+        } else {
+          searchParams.push({ name: key, value: value });
+        }
+      }
+    }
+    return searchParams;
+  }
+
+  /**
    * Search ValueSets by delegating to providers
    */
-  async searchValueSets(params, elements) {
+  async searchValueSets(params, elements, partialUrl = false) {
     const allMatches = [];
 
     // Convert params object to array format expected by ValueSet providers
     // Exclude control params (_offset, _count, _elements, _sort)
-    const searchParams = [];
-    let source = null;
-    for (const [key, value] of Object.entries(params)) {
-      if (!key.startsWith('_') && value && SearchWorker.ALLOWED_PARAMS.includes(key)) {
-        searchParams.push({ name: key, value: value });
-      }
-      if (key == 'source') {
-        source = value;
-      }
-    }
+    const searchParams = this.searchParamsFor(params, partialUrl);
+    const source = params.source || null;
 
     for (const vsp of this.provider.valueSetProviders) {
       if (!source || source == vsp.sourcePackage()) {
@@ -193,21 +216,13 @@ class SearchWorker extends TerminologyWorker {
   /**
    * Search ConceptMaps by delegating to providers
    */
-  async searchConceptMaps(params, elements) {
+  async searchConceptMaps(params, elements, partialUrl = false) {
     const allMatches = [];
 
     // Convert params object to array format expected by ValueSet providers
     // Exclude control params (_offset, _count, _elements, _sort)
-    const searchParams = [];
-    let source = null;
-    for (const [key, value] of Object.entries(params)) {
-      if (!key.startsWith('_') && value && SearchWorker.ALLOWED_PARAMS.includes(key)) {
-        searchParams.push({ name: key, value: value });
-      }
-      if (key == 'source') {
-        source = value;
-      }
-    }
+    const searchParams = this.searchParamsFor(params, partialUrl);
+    const source = params.source || null;
 
     for (const cmsp of this.provider.conceptMapProviders) {
       if (!source || source == cmsp.sourcePackage()) {
@@ -264,6 +279,44 @@ class SearchWorker extends TerminologyWorker {
     }
 
     return false;
+  }
+
+  /**
+   * A provider that doesn't hold its resources in memory can return matches that only carry
+   * what a search is sorted by, and a load() that reads the resource (see VSACValueSetProvider):
+   * read the ones on this page. One that can't be read (it was rejected when it was parsed) is
+   * dropped, and the next match moves up onto the page; the total counts the dropped ones less.
+   * A rejected match on a page not asked for is still counted: rejected rows are rare, and
+   * finding out exactly which matches are good would mean reading all of them
+   */
+  async loadPage(matches, offset, count) {
+    let start = offset;
+    let end = Math.min(matches.length, offset + count);
+    while (start < end) {
+      this.deadCheck('search-load');
+      const page = [];
+      for (let i = start; i < end; i++) {
+        if (matches[i].load) {
+          page.push(i);
+        }
+      }
+      const loaded = await Promise.all(page.map(i => matches[i].load()));
+      let dropped = 0;
+      page.forEach((i, n) => {
+        matches[i] = loaded[n] || null;
+        if (!loaded[n]) {
+          dropped++;
+        }
+      });
+      if (dropped === 0) {
+        break;
+      }
+      // the matches after the page move up to fill it: read those
+      matches = matches.filter(m => m !== null);
+      start = end - dropped;
+      end = Math.min(matches.length, offset + count);
+    }
+    return matches;
   }
 
   /**
@@ -456,9 +509,19 @@ class SearchWorker extends TerminologyWorker {
               isMatch = false;
               break;
             }
+          } else if (param === 'version') { // version-aware matching
+            if (!VersionUtilities.versionSearchMatches(searchValue, json.version, VersionUtilities.versionAlgorithmOf(json))) {
+              isMatch = false;
+              break;
+            }
           } else if (param === 'url' || param === 'system') { // exact match
             const propValue = json.url;
             if (propValue !== searchValue) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:contains') { // the HTML form: partial, without regard to case
+            if (!(json.url || '').toLowerCase().includes(searchValue)) {
               isMatch = false;
               break;
             }
@@ -527,9 +590,19 @@ class SearchWorker extends TerminologyWorker {
             isMatch = false;
             break;
           }
+        } else if (param === 'version') { // version-aware matching
+          if (!VersionUtilities.versionSearchMatches(searchValue, json.version)) {
+            isMatch = false;
+            break;
+          }
         } else if (param === 'url' || param === 'system') { // exact match
           const propValue = json.url;
           if (propValue !== searchValue) {
+            isMatch = false;
+            break;
+          }
+        } else if (param === 'url:contains') { // the HTML form: partial, without regard to case
+          if (!(json.url || '').toLowerCase().includes(searchValue)) {
             isMatch = false;
             break;
           }

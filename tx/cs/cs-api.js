@@ -8,6 +8,8 @@ const {Extensions} = require("../library/extensions");
 const {validateParameter, validateArrayParameter} = require("../../library/utilities");
 const {I18nSupport} = require("../../library/i18nsupport");
 const {VersionUtilities} = require("../../library/version-utilities");
+const { Issue } = require("../library/operation-outcome");
+const { SupplementTextIndex } = require("../library/supplement-text-index");
 
 /**
  * For documentation, see cs-api.md
@@ -67,9 +69,90 @@ class CodeSystemProvider {
    */
 
   /**
-   * @returns {string} uri for the code system
+   * The name of the code system (CodeSystem.name, or the provider's equivalent). Every
+   * provider should override this; the fallback is the versioned uri, which is not a name,
+   * and a provider that forgets ends up reporting
+   * "http://snomed.info/sct|http://snomed.info/sct/731000124108/version/20230301" where
+   * the others report "LOINC".
+   * @returns {string} name of the code system
    */
   name() { return this.system() + (this.version() ? "|"+this.version() : "") }
+
+  /**
+   * What $lookup reports as its `name` parameter - "a display name for the code system".
+   * That is the title, translated into the request's language where the provider can,
+   * falling back to name(). Only $lookup uses this; everything else keeps using name().
+   * The default has no title to offer, so it is name().
+   * @param {Languages} [languages] - the request's working languages (displayLanguage, else
+   *   Accept-Language)
+   * @returns {string} display name for the code system
+   */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) { return this.name(); }
+
+  /**
+   * A second, shorter form of the code that some code systems also carry - ICD-11's short
+   * classification code (1A00) beside its code, the entity uri. $validate-code reports it as
+   * the classificationCode output parameter when the request used the code itself, and
+   * $expand always reports it as a contains property. Null (the default) when there is none.
+   * @param {CodeSystemProviderContext} context
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async classificationCode(context) { return null; }
+
+  /**
+   * The classificationCode $validate-code reports for a code as it was given: by default the
+   * concept's classificationCode, whatever spelling was used.
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @param {string} code the code as given
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async reportedClassificationCode(context, code) { return this.classificationCode(context); }
+
+  /**
+   * The code to put in an expansion for a concept the value set enumerated as `requested`.
+   * The default keeps the value set's own spelling; a code system whose normal form differs
+   * from what a value set may write (ICD-11: short code vs entity uri) returns code().
+   * @param {CodeSystemProviderContext} context
+   * @param {string} requested - the code as the value set wrote it
+   * @returns {Promise<string>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async expansionCode(context, requested) { return requested; }
+
+  /**
+   * Properties an expansion carries on every contains entry whatever the request asked
+   * for (each must also come back from properties()). None by default.
+   * @returns {string[]}
+   */
+  mandatoryExpansionProperties() { return []; }
+
+  /**
+   * Check the extensions on a Coding that this code system defines - ICD-11's
+   * classificationCode, say. Called by $validate-code once the coding's code has validated.
+   * Extensions the code system does not define are not its business, and are ignored.
+   *
+   * @param {Object} coding the Coding as given
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @returns {Promise<{index: number, msgId: string, params: string[]}[]>} one entry per problem,
+   *   naming the extension (its index in coding.extension) and the message; none by default
+   */
+  // eslint-disable-next-line no-unused-vars
+  async checkCodingExtensions(coding, context) { return []; }
+
+  /**
+   * Things $validate-code should say about a code that is valid - for a postcoordinated
+   * expression, say, a qualifier the grammar allows but a rule of the code system does not
+   * (ICD-11: two values on an axis that takes one).
+   *
+   * @param {CodeSystemProviderContext} context the concept the code located
+   * @param {string} code the code as the client wrote it
+   * @returns {Promise<{severity: string, msgId: string, params: string[]}[]>} none by default
+   */
+  // eslint-disable-next-line no-unused-vars
+  async codeIssues(context, code) { return []; }
 
   /**
    * @returns {string} uri for the code system
@@ -119,6 +202,19 @@ class CodeSystemProvider {
   totalCount() { throw new Error("Must override"); }
 
   /**
+   * The number of codes an "all codes" expansion of this code system would
+   * contain, computed WITHOUT materialising them - used by the count=0 (count
+   * only) expansion fast path. `excludeInactive` mirrors the expansion's
+   * active-only handling. Defaults to totalCount(); providers that distinguish
+   * active from inactive override this to honour excludeInactive.
+   * @param {boolean} excludeInactive
+   * @returns {integer}
+   */
+  async countAllCodes(excludeInactive) {  // eslint-disable-line no-unused-vars
+    return await this.totalCount();
+  }
+
+  /**
    * @returns {CodeSystem.property[]} defined properties for the code system
    */
   propertyDefinitions() { return null; }
@@ -129,6 +225,29 @@ class CodeSystemProvider {
    */
   isNotClosed() {
     return false;
+  }
+
+  /**
+   * Why an expansion of all of the code system is not closed even though every code it defines
+   * is in it - e.g. it reserves code spaces for users to define their own codes
+   * (codesystem-reservedCodeSpace), and those codes can't be listed - or null when it is closed
+   * (as far as this is concerned: see isNotClosed() for grammars)
+   * @returns {string|null}
+   */
+  openCodeSpaceReason() {
+    return null;
+  }
+
+  /**
+   * returns false if the code system cannot be iterated / enumerated in any
+   * meaningful sense - as distinct from isNotClosed(), which marks a code system
+   * that has a grammar whose base set may still be partially expanded. An
+   * expansion that would need to iterate a system for which this is false
+   * returns an OperationOutcome rather than attempting the iteration.
+   * @returns {boolean}
+   */
+  canBeExpanded() {
+    return true;
   }
 
   /**
@@ -163,6 +282,122 @@ class CodeSystemProvider {
     }
   }
 
+  /**
+   * The language a text filter ($expand filter) searches. A text filter matches a code's
+   * displays and designations in one language only (the same rule as for the SNOMED CT display
+   * filter): the first language the request names (displayLanguage, else Accept-Language) that
+   * the code system - or a supplement in use - has displays in, else the code system's default
+   * language. Matching is at the language subtag level: de-DE searches all German.
+   *
+   * @param {Languages|null} languages - what the request asked for
+   * @returns {Language}
+   */
+  searchLanguage(languages) {
+    for (const lang of (languages && languages.languages) || []) {
+      if (!lang || !lang.language || lang.code === '*') {
+        continue;
+      }
+      const one = new Languages();
+      one.add(lang);
+      if (this.hasAnyDisplays(one) || this._hasSupplementText(lang)) {
+        return lang;
+      }
+    }
+    return new Language(this.defLang());
+  }
+
+  /**
+   * Whether a supplement in use has any display or designation (of any use) in the language
+   *
+   * @param {Language} lang
+   * @returns {boolean}
+   */
+  _hasSupplementText(lang) {
+    // the languages a supplement has text in are worked out once (SupplementTextIndex)
+    return (this.supplements || []).some(s => SupplementTextIndex.of(s, this.defLang()).hasText(lang));
+  }
+
+  /**
+   * Whether text in language `code` (a tag; empty means `fallback`) is in the search language
+   *
+   * @param {string|Language|null} code
+   * @param {Language} searchLang - from searchLanguage()
+   * @param {string} [fallback] - the language of text that doesn't say
+   * @returns {boolean}
+   */
+  static inSearchLanguage(code, searchLang, fallback = 'en') {
+    // only the primary subtag counts, so the tag isn't parsed (this is asked of every display
+    // and designation a text search looks at); compared without regard to case, as BCP 47 says
+    return SupplementTextIndex.languageOf(code, fallback) === SupplementTextIndex.languageOf(searchLang, 'en');
+  }
+
+  /**
+   * The codes whose displays or designations in a supplement in use, in the search language,
+   * pass a text filter - a supplement's designations are searched like the code system's own,
+   * so every word of the filter must match (as LOINC's and SNOMED CT's own text search need)
+   *
+   * Answered from each supplement's text index (SupplementTextIndex), built once per
+   * supplement: stemming every display of a large supplement (a global language pack has one
+   * for every code) for each search held the event loop for about a second.
+   *
+   * @param {SearchFilterText} filter
+   * @param {Language} searchLang - from searchLanguage()
+   * @param {Map<string, string>} [sources] - filled in: code -> the supplement (vurl) that matched it
+   *   first, so that the caller can report a supplement whose matches it uses (used-supplement)
+   * @returns {Promise<Set<string>>}
+   */
+  async _supplementSearchCodes(filter, searchLang, sources = null) {
+    const codes = new Set();
+    for (const supplement of this.supplements || []) {
+      const matches = await SupplementTextIndex.of(supplement, this.defLang()).searchTexts(filter, searchLang);
+      for (const [code, texts] of matches) {
+        if (codes.has(code)) {
+          continue;
+        }
+        // a text that only repeats the code system's own display (a language pack that copies
+        // the English names alongside its own, to make it easier to maintain) says nothing the
+        // code system's own search doesn't: it is left out, so the two can't disagree over it
+        const root = await this._rootDisplay(code);
+        if (root && texts.every(t => CodeSystemProvider.sameText(t, root))) {
+          continue;
+        }
+        codes.add(code);
+        if (sources) {
+          sources.set(code, supplement.vurl);
+        }
+      }
+    }
+    return codes;
+  }
+
+  /**
+   * The code's own display in the code system, without what supplements give it, for leaving
+   * out of a text search a supplement's text that only repeats it; null if the provider doesn't
+   * say (then nothing is left out)
+   * @param {string} code
+   * @returns {Promise<string|null>}
+   */
+  // eslint-disable-next-line no-unused-vars
+  async _rootDisplay(code) {
+    return null;
+  }
+
+  /** Whether two texts are the same, but for case and white space */
+  static sameText(a, b) {
+    const norm = (s) => String(s).trim().replace(/\s+/g, ' ').toLowerCase();
+    return norm(a) === norm(b);
+  }
+
+  /**
+   * Note on a filter context that a supplement in use gave a text filter some of its codes: the
+   * expansion reports it as used (used-supplement), whatever it shows of the codes' displays
+   */
+  static noteSupplementUsed(filterContext, vurl) {
+    if (filterContext && vurl) {
+      (filterContext.usedSupplements ??= new Set()).add(vurl);
+    }
+  }
+
   _hasAnySupplementDisplays(languages) {
     // Check if any supplements have displays in the requested languages
     if (this.supplements) {
@@ -184,8 +419,9 @@ class CodeSystemProvider {
           if (concept.designation) {
             for (const designation of concept.designation) {
               if (CodeSystem.isUseADisplay(designation.use)) {
-                if (designation.language) {
-                  const designationLang = new Language(designation.language);
+                const lang = designation.language || supplement.jsonObj.language;
+                if (lang) {
+                  const designationLang = new Language(lang);
                   for (const requestedLang of languages) {
                     if (designationLang.matchesForDisplay(requestedLang)) {
                       return true;
@@ -221,11 +457,12 @@ class CodeSystemProvider {
   }
 
   /**
-   * @param {boolean} langPacks - whether to include language packs
+   * @param {boolean} globals - whether to include global supplements (which $expand only reports
+   *   when they contribute something)
    * @returns {string[]} all supplements in scope
    */
-  listSupplements(langPacks) {
-    return this.supplements ? this.supplements.filter(s => langPacks || !s.isLangPack()).map(s => s.vurl) : [];
+  listSupplements(globals) {
+    return this.supplements ? this.supplements.filter(s => globals || !s.isGlobalSupplement()).map(s => s.vurl) : [];
   }
 
   /**
@@ -272,6 +509,22 @@ class CodeSystemProvider {
    * @param {String} code
    * @returns {string} the best display given the languages in the operation context
    */
+  /**
+   * @param {string} code - a code users define (one in the code system's reserved code space)
+   * @returns {string|null} the display an extension-codes supplement gives it, if one does
+   */
+  _extensionCodeDisplay(code) {
+    for (const supplement of this.supplements || []) {
+      if (supplement.isExtensionCodes()) {
+        const concept = supplement.getConceptByCode(code);
+        if (concept && concept.display) {
+          return concept.display;
+        }
+      }
+    }
+    return null;
+  }
+
   _displayFromSupplements(code) {
     assert(typeof code === 'string', 'code must be string');
     if (this.supplements) {
@@ -372,19 +625,46 @@ class CodeSystemProvider {
   }
 
   /**
+   * List the designations for a concept, adding them to `displays`.
+   *
    * @param {string | CodeSystemProviderContext} code
-   * @param {ConceptDesignations} designation list
+   * @param {ConceptDesignations} displays - designation list to add to
+   * @param {boolean} [significantOnly=false] - when true, emit only the
+   *   designations that are significant for a value set expansion (the display,
+   *   and - for code systems that distinguish them - the fully specified name
+   *   and the preferred term), rather than every designation. This narrows which
+   *   designations are emitted, NOT which languages: the display for a request is
+   *   chosen downstream by preferredDesignation(displayLanguage), so a provider
+   *   that emits significant designations for one language only makes localized
+   *   expansions fall back to that language. Emit the significant designations
+   *   for every language the concept has.
+   *   The $expand worker passes true when the client did not ask for
+   *   designations; $lookup and includeDesignations=true use the default (false)
+   *   to return the complete set. Providers that do not distinguish significant
+   *   designations may ignore this parameter and return all designations either
+   *   way.
    * @returns {Designation[]} whatever designations exist (in all languages)
    */
-  async designations(code, displays) { return null; }
+  async designations(code, displays, significantOnly = false) { return null; }
 
-  _listSupplementDesignations(code, displays) {
+  /**
+   * @param {string} code - the code
+   * @param {ConceptDesignations} displays - the designations being built for the code
+   * @param {boolean} extensionCode - true if the code is one users define (it is in the code system's
+   *   reserved code space), so that an extension-codes supplement's display is the code's display. The
+   *   designations record where it came from (displays.extensionCodeDisplay): 'global' if a global
+   *   supplement gave it - as if the code system defined it - otherwise 'referenced'
+   */
+  _listSupplementDesignations(code, displays, extensionCode = false) {
     assert(typeof code === 'string', 'code must be string');
 
     if (this.supplements) {
       for (const supplement of this.supplements) {
         const concept= supplement.getConceptByCode(code);
         if (concept) {
+          if (extensionCode && concept.display && supplement.isExtensionCodes()) {
+            displays.extensionCodeDisplay = supplement.isGlobalSupplement() || displays.extensionCodeDisplay === 'global' ? 'global' : 'referenced';
+          }
           if (concept.display) {
             // sometimes the display is just repeated from the base code system
             if (!displays.hasAnyDisplay(concept.display)) {
@@ -394,7 +674,8 @@ class CodeSystemProvider {
           if (concept.designation) {
             for (const d of concept.designation) {
               let status = Extensions.readString(d, "http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status");
-              displays.addDesignation(false, status || 'active', d.language, d.use, d.value, d.extension?.length > 0 ? d.extension : []).supplement = supplement;
+              // a designation with no language is in the supplement's language (not the base code system's)
+              displays.addDesignation(false, status || 'active', d.language || supplement.jsonObj.language, d.use, d.value, d.extension?.length > 0 ? d.extension : []).supplement = supplement;
             }
           }
         }
@@ -410,11 +691,50 @@ class CodeSystemProvider {
   async extensions(code) { return null; }
 
   /**
-   
+   * The properties of a concept, in CodeSystem.concept.property form ({code, value[x]}).
+   * $expand reports them on expansion.contains, so a provider that has properties must
+   * override this, not just extendLookup - otherwise $lookup returns them and $expand never does
+   *
    * @param {string | CodeSystemProviderContext} code
+   * @param {string[]} [names] the properties the caller wants ('*' for all of them). A provider
+   *   that has to compute its properties should compute only these (none when the list is
+   *   empty: an expansion that asks for no properties must not pay for them); one that holds
+   *   them in memory may return the lot, and the caller picks what it asked for
    * @returns {CodeSystem.concept.property[]} list of properties (may be empty)
    */
-  async properties(code) { return []; }
+  // eslint-disable-next-line no-unused-vars
+  async properties(code, names) { return []; }
+
+  /**
+   * properties() for a provider whose properties are only built by extendLookup: run it for
+   * just the named properties, and turn the $lookup property parameters it adds into
+   * CodeSystem.concept.property form. Lookup-only parts (subproperty, description, language,
+   * code-display...) are dropped; designations are not properties
+   *
+   * @param {string | CodeSystemProviderContext} context
+   * @param {string[]} names - the properties wanted ('*' for all); none means none
+   * @returns {Promise<Object[]>}
+   */
+  async _propertiesFromLookup(context, names) {
+    if (!names || names.length === 0) {
+      return [];
+    }
+    const params = [];
+    await this.extendLookup(context, names, params);
+    const result = [];
+    for (const p of params) {
+      if (p.name !== 'property' || !Array.isArray(p.part)) {
+        continue;
+      }
+      const code = p.part.find(x => x.name === 'code')?.valueCode;
+      const value = p.part.find(x => x.name === 'value');
+      const vn = value ? Object.keys(value).find(k => k.startsWith('value')) : null;
+      if (code && vn && value[vn] !== undefined && value[vn] !== null) {
+        result.push({ code, [vn]: value[vn] });
+      }
+    }
+    return result;
+  }
 
   /**
    
@@ -438,9 +758,12 @@ class CodeSystemProvider {
   /**
    
    * @param {string } code
+   * @param {*} [prefetched] - a handle that prefetchCodes() returned for a list holding this code, or
+   *   null. A provider uses it only if it is one of its own; otherwise it looks the code up as usual
    * @returns {{context : CodeSystemProviderContext, message : String} the result of looking for the code
    */
-  async locate(code) { throw new Error("Must override"); }
+  // eslint-disable-next-line no-unused-vars
+  async locate(code, prefetched = null) { throw new Error("Must override"); }
 
   /**
    
@@ -485,13 +808,36 @@ class CodeSystemProvider {
   async subsumesTest(codeA, codeB) { return 'not-subsumed'; }
 
   /**
+   * The codes a code sits under: every ancestor in the hierarchy subsumesTest() answers from,
+   * not just the parents, and not the code itself. Optional: $closure uses it, when it is given,
+   * to relate many concepts to one another from one call per concept instead of one
+   * subsumesTest() per pair. The default returns null (not supported), and $closure then calls
+   * subsumesTest() for each pair, as it always has.
+   *
+   * A provider that implements it must agree with its own subsumesTest(): for two different
+   * codes a and b that this method answers for, subsumesTest(a, b) is 'subsumes' exactly when a
+   * is in ancestorsOf(b), 'subsumed-by' exactly when b is in ancestorsOf(a) (and a is not in
+   * ancestorsOf(b)), and never 'equivalent'. The codes are given in the form code() returns them.
+   * For any code where that can't be promised - an unknown code, a code not in the form code()
+   * gives (so another code may be the same concept), a postcoordinated expression - return null,
+   * and the pairs that involve it are tested with subsumesTest().
+   *
+   * @param {string | CodeSystemProviderContext} code
+   * @returns {Promise<Set<string>|null>} the ancestors' codes, or null when not supported for this code
+   */
+  // eslint-disable-next-line no-unused-vars
+  async ancestorsOf(code) { return null; }
+
+  /**
    
    * @param {CodeSystemProviderContext} ctxt the context to add properties for
    * @param {string[]} props the properties requested
    * @param {Parameters} params the parameters response to add to
+   * @param {TxParameters} [txParams] the parsed request parameters, for providers whose output
+   *   depends on more than the property list (ICD-11's post-coordination-metadata)
    */
-
-  async extendLookup(ctxt, props, params) { }
+  // eslint-disable-next-line no-unused-vars
+  async extendLookup(ctxt, props, params, txParams) { }
 
   // procedure getCDSInfo(card : TCDSHookCard; langList : THTTPLanguageList; baseURL, code, display : String); virtual;
 
@@ -513,20 +859,75 @@ class CodeSystemProvider {
   }
 
   /**
-   * Process a set of includes and excludes for the code system
+   * Select the codes of a whole compose in one call (only called when handlesSelecting() is true).
    *
-   * @param {TxParameters} params: information from the request that the user made, to help optimise loading
-   * @param {Object[]} includes - a list of includes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {Object[]} excludes - a list of excludes from the code system. Each include may contain just the system(+version), concepts and/or filters (but won't contain value sets)
-   * @param {boolean} excludeInactive: whether the server will use inactive codes or not
-   * @param {int} offset if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable offset. -1 if not applicable
-   * @param {int} count if handlesOffset() and !iterate, and if the value set is a simple one that only uses this provider, then this is the applicable count. -1 if not applicable
-   * @returns {FilterConceptSet[]} filter sets. In general, it wouldn't make sense to return more than one, but providers can do if they want to. See futher comments on executeFilters
+   * expand.js hands over a compose that selects from this code system alone (one system|version),
+   * imports no value sets, has no text filter, and lists no concepts (an enumerated concept
+   * carries displays and extensions from the value set, so those go through the usual path,
+   * where prefetchCodes() applies). Anything else this provider doesn't support - an
+   * unknown filter, say - it declines by returning null, and the compose goes through the
+   * usual include/exclude path (getPrepContext/filter/executeFilters, locate) instead. A compose
+   * with a filter on a property that a supplement in use defines is never handed over: the usual
+   * path evaluates that filter from the supplement (tx/workers/supplement-filters.js).
+   *
+   * The provider applies offset and count: the sets it returns hold just the requested page of
+   * the selection, in expansion order. The worker adds every code in them to the expansion
+   * (with displays, properties etc. from this provider, as for a filter set), and takes the
+   * total from the result.
+   *
+   * @param {TxParameters} params: information from the request that the user made, to help optimise loading (activeOnly, properties, designations...)
+   * @param {Object[]} includes - the compose's includes. Each names this system (and version), with or without filters
+   * @param {Object[]} excludes - the compose's excludes, in the same form
+   * @param {boolean} excludeInactive: whether the value set leaves out inactive codes (compose.inactive = false)
+   * @param {int} offset the index of the first code to return, -1 when the request gave no offset (start at 0)
+   * @param {int} count the most codes to return, -1 when the request gave no count (all of them); 0 asks for the total only
+   * @param {Object} [context] what the selection is for. `context.valueSet` is `{ url, version }` of the
+   *   value set whose compose this is (either may be undefined for a value set given inline without
+   *   them). A provider may ignore it.
+   *
+   * A provider that won't produce a selection because it would cost too much may throw the standard
+   * too-costly Issue, in the form expand.js uses when it refuses a value set (Issue from
+   * tx/library/operation-outcome.js; vurl is url|version, or url when there is no version):
+   *
+   *     throw new Issue('error', 'too-costly', null, 'VALUESET_TOO_COSTLY',
+   *       this.opContext.i18n.translate('VALUESET_TOO_COSTLY', params.httpLanguages, [vurl, '>' + limit]),
+   *       null, 422).withDiagnostics(this.opContext.diagnostics());
+   *
+   * @returns {Promise<{sets: FilterConceptSet[], total: number, notClosed?: boolean}|null>} null to decline.
+   *   Otherwise `sets` (in general one; iterated with filterMore/filterConcept) hold the page,
+   *   `total` is the number of codes in the whole selection before paging, or -1 when the
+   *   provider hasn't counted it (the expansion then has no total), and `notClosed` is true
+   *   when the selection is open-ended (a grammar-based code system), so the expansion is
+   *   marked unclosed
    */
-  processSelection(params, includes, excludes, excludeInactive, offset, count) {
+  processSelection(params, includes, excludes, excludeInactive, offset, count, context = {}) {
     // well, you only need to override if handlesSelecting=true, but that's the only time this will be called
     throw new Error("Must override");
   }
+
+  /**
+   * Before the worker locates each code of a list one at a time: the concepts a value set include
+   * or exclude lists ($expand), or that validate-code compares a code with. A provider that
+   * answers locate() from a database may read the codes together here and return a handle to
+   * what it read: an object of its own, opaque to the worker. The worker passes the handle back
+   * as locate(code, prefetched) for each code of that list, and drops it when the loop ends. The
+   * provider keeps no state of its own for this: two lists in progress have two handles.
+   * $batch-validate-code calls it once per code system for all its entries' codes, and each entry
+   * passes the handle to a provider of its own, from the same factory (cs-api.md, Batches): so a
+   * handle holds only row data, read with no supplements under the batch's context, and is
+   * recognised by what it was read from, not by provider.
+   *
+   * @param {String[]} codes - the codes, in the order the worker will locate them (it may stop early)
+   * @param {boolean} withDesignations - whether the worker will also list each code's displays and designations
+   * @param {Object} [hints] - what the worker knows about the response; a provider may ignore it.
+   *   `displayOnly: true` - the response shows each code's display and none of its other
+   *   designations (TxParameters.showsDisplayOnly, and there is no text filter). A provider
+   *   whose display doesn't depend on its other designations may then have designations() report
+   *   the display alone for these codes, and leave the rest unread. Absent or false: no such promise.
+   * @returns {Promise<*>} the handle, or null: this provider does no prefetching (the default)
+   */
+  // eslint-disable-next-line no-unused-vars
+  async prefetchCodes(codes, withDesignations, hints = {}) { return null; }
 
   /**
    * returns true if a filter is supported
@@ -543,10 +944,17 @@ class CodeSystemProvider {
    * it's only use is to be passed back to the CodeSystem provider so it can make use of it to organise the filter process
    *
    * @param {boolean} iterate true if the conceptSets that result from this will be iterated, and false if they'll be used to locate a single code
+   * @param {Languages|null} languages the languages the request named (TxParameters.requestedLanguages()), or null if it named none;
+   *   for filters whose meaning depends on language, such as a regex on the display
    * @returns {FilterExecutionContext} filter
    *
    **/
-  async getPrepContext(iterate) { return new FilterExecutionContext(iterate); }
+  // eslint-disable-next-line no-unused-vars
+  async getPrepContext(iterate, languages = null) {
+    const result = new FilterExecutionContext(iterate);
+    result.languages = languages; // what the request asked for (a text filter searches one language)
+    return result;
+  }
 
 
   /**
@@ -582,9 +990,32 @@ class CodeSystemProvider {
    * @param {boolean} forIteration - whether this filter is going to be iterated
    * @param {String} prop
    * @param {ValueSetFilterOperator} op
-   * @param {String} prop
+   * @param {String} value
+   * @param {Object} [fc] the ValueSet compose filter element
+   *   (ValueSet.compose.include.filter) this filter was derived from. It is a stable
+   *   sub-object of the (cached) ValueSet resource, so a provider MAY use it as a place
+   *   to memoise the resolved analysis of this filter (e.g. the enumerated concept set),
+   *   which is then reused on subsequent expand/validate calls for as long as the
+   *   ValueSet stays cached - trading memory for the cost of re-preparing the filter.
+   *
+   *   Two rules govern any such cache:
+   *   - It MUST be pinned to the resolved code system VERSION. The same ValueSet can be
+   *     resolved against different versions/editions, and a resolved filter (a set of
+   *     version-specific concept references) is only valid for the version it was
+   *     computed against.
+   *   - It must NOT be pinned to forIteration. The same ValueSet is used both ways
+   *     (iterated for $expand, non-iterated for validate), so if the iterated and
+   *     non-iterated resolved forms differ, store BOTH rather than assuming one.
+   *
+   *   Providers that gain nothing from this (the SQL-backed providers, and the trivial
+   *   in-memory enumerations) simply ignore fc.
    **/
-  async filter(filterContext, forIteration, prop, op, value) { throw new Error("Must override"); } // well, only if any filters are actually supported
+  async filter(filterContext, forIteration, prop, op, value, fc) {
+    // a provider that supports no filters needn't override this: the request asked for a filter
+    // this code system doesn't have, which is the client's problem, not a server error
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+  }
 
   /**
    * called once all the filters have been handled, and iteration is about to happen.
@@ -729,6 +1160,18 @@ class CodeSystemProvider {
    */
   valueSet() {
     return null;
+  }
+
+  /**
+   * For a provider with a sqlite connection in this.db: close it, once. The handle is kept:
+   * sqlite still runs the queries already queued (and any their callbacks issue), and fails
+   * later ones with an error. Setting it to null made such a callback throw, outside any promise.
+   */
+  closeDb() {
+    if (this.db && !this.dbClosed) {
+      this.dbClosed = true;
+      this.db.close();
+    }
   }
 
   /**
@@ -885,15 +1328,21 @@ class CodeSystemFactoryProvider {
   }
 
   /**
-   * build and return a known concept map from the URL, if there is one.
+   * Add any concept maps this code system implies for translating from source
+   * (a system URI, with the version of the source coding, which may be empty)
+   * to dest (a system URI, possibly with |version).
    *
-   * the conceptmap is never visible to a user; if it has an implicitSource, then
+   * The conceptmap is never visible to a user; if it has an internalSource, then
    * provider.getTranslations will be called when it's actually used
-   * @param url
-   * @param version
-   * @returns {ConceptMap}
+   * @param conceptMaps - the list to add to
+   * @param source - the source system URI
+   * @param sourceVersion - the version of the source coding (may be null)
+   * @param dest - the target system URI, possibly with |version
+   * @param code - the code being translated, if known (under reverse, the target concept's
+   *   code), so a provider can leave out a map that has nothing to say about it
    */
-  async findImplicitConceptMaps(conceptMaps, source, dest) {
+  // eslint-disable-next-line no-unused-vars
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest, code = null) {
     return null;
   }
 
@@ -912,7 +1361,15 @@ class CodeSystemFactoryProvider {
     throw new Error("Must override");
   }
 
-  codeLink(code) {
+  /**
+   * A link for a code, usually to the code system's own web site, for pages that list codes
+   * (a ValueSet's includes). Override it to give codes from this code system a link; the
+   * default gives none, and then resolveCode() doesn't look the code up at all.
+   *
+   * @param {*} context - what locate() found for the code (the provider's own context)
+   * @returns {string|undefined} the URL, or undefined for no link
+   */
+  codeLink(context) {
     return undefined;
   }
 
@@ -934,9 +1391,38 @@ class CodeSystemFactoryProvider {
   }
 }
 
+/**
+ * The error a code system provider raises when it cannot work out the subsumption
+ * relationship between two codes.
+ *
+ * $subsumes has four outcome codes - equivalent, subsumes, subsumed-by, not-subsumed -
+ * and none of them means "unknown", so a server that cannot decide has no honest answer
+ * to give and must report an error instead. Answering `not-subsumed` would assert
+ * something the server has not established, in the direction that wrongly drops a code
+ * out of a cohort. See FHIR-58748.
+ *
+ * This is a real condition in more than one code system: SNOMED CT expressions that no
+ * classifier has seen, and media types whose difference lies in a parameter the server
+ * does not understand.
+ *
+ * 422 rather than 400 because the request is well formed and both codes are valid - the
+ * server simply cannot answer it.
+ *
+ * @param {string} message - what could not be determined, and why
+ * @returns {Error} tagged with statusCode, issueCode and txIssueType
+ */
+function cannotDetermineSubsumption(message) {
+  const error = new Error(message);
+  error.statusCode = 422;
+  error.issueCode = 'not-supported';
+  error.txIssueType = 'cannot-determine';
+  return error;
+}
+
 module.exports = {
   FilterExecutionContext,
   CodeSystemProvider,
   CodeSystemContentMode,
-  CodeSystemFactoryProvider
+  CodeSystemFactoryProvider,
+  cannotDetermineSubsumption
 };

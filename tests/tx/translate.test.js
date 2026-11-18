@@ -19,13 +19,19 @@ describe('Translate Worker', () => {
   });
 
   describe('GET /tx/r5/ConceptMap/$translate', () => {
+    // This used ConceptMap/example2, whose sourceScopeUri names http://example.org/fhir/example1
+    // - an invented example identifier that is not a ValueSet anywhere. ConceptMap.sourceScope
+    // limits the map to codes that are members of that value set, so a scope that cannot be
+    // resolved cannot be evaluated, and the operation fails rather than guessing. sc-flag-status
+    // is used instead: its scope resolves, so the map can actually be applied and the test
+    // asserts a translation rather than merely a response.
     test('should translate code with url, system, and sourceCode parameters', async () => {
       const response = await request(app)
         .get('/tx/r5/ConceptMap/$translate')
         .query({
-          url: 'example2',
-          sourceSystem: 'http://example.org/fhir/example1',
-          sourceCode: 'code'
+          url: 'http://hl7.org/fhir/ConceptMap/sc-flag-status',
+          sourceSystem: 'http://hl7.org/fhir/flag-status',
+          sourceCode: 'active'
         })
         .set('Accept', 'application/json');
 
@@ -34,7 +40,12 @@ describe('Translate Worker', () => {
 
       const resultParam = response.body.parameter.find(p => p.name === 'result');
       expect(resultParam).toBeDefined();
-      expect(typeof resultParam.valueBoolean).toBe('boolean');
+      expect(resultParam.valueBoolean).toBe(true);
+
+      const match = response.body.parameter.find(p => p.name === 'match');
+      expect(match).toBeDefined();
+      const concept = match.part.find(p => p.name === 'concept');
+      expect(concept.valueCoding.code).toBe('active');
     });
 
     test('should return 400 when sourceCode provided without system', async () => {
@@ -80,7 +91,7 @@ describe('Translate Worker', () => {
       expect(response.body.issue[0].code).toBe('not-found');
     });
 
-    test('should return 404 when no suitable ConceptMap found for source/target', async () => {
+    test('should not return 404 when no suitable ConceptMap found for source/target', async () => {
       const response = await request(app)
         .get('/tx/r5/ConceptMap/$translate')
         .query({
@@ -90,8 +101,8 @@ describe('Translate Worker', () => {
         })
         .set('Accept', 'application/json');
 
-      expect(response.status).toBe(404);
-      expect(response.body.resourceType).toBe('OperationOutcome');
+      expect(response.status).toBe(200);
+      expect(response.body.resourceType).toBe('Parameters');
     });
 
     test('should support version parameter for ConceptMap', async () => {
@@ -148,6 +159,63 @@ describe('Translate Worker', () => {
         .set('Accept', 'application/json');
 
       expect([200, 404]).toContain(response.status);
+    });
+  });
+
+  describe('targetScope without targetSystem', () => {
+    const A = 'http://example.org/fhir/CodeSystem/scope-test-a';
+    const B = 'http://example.org/fhir/CodeSystem/scope-test-b';
+    const VS = 'http://example.org/fhir/ValueSet/scope-test-b-some';
+    const resources = [
+      { resourceType: 'CodeSystem', url: A, version: '2.0', status: 'active', content: 'complete', concept: [{ code: 'a1', display: 'A one' }, { code: 'a2', display: 'A two' }] },
+      { resourceType: 'CodeSystem', url: B, version: '1.0', status: 'active', content: 'complete', concept: [{ code: 'b1', display: 'B one' }, { code: 'b2', display: 'B two' }] },
+      // only b1 is in the target scope
+      { resourceType: 'ValueSet', url: VS, status: 'active', compose: { include: [{ system: B, concept: [{ code: 'b1' }] }] } },
+      // a map from A to B that says nothing about scopes: it is found from the systems
+      { resourceType: 'ConceptMap', url: 'http://example.org/fhir/ConceptMap/scope-test', status: 'active',
+        group: [{ source: A, target: B, element: [{ code: 'a1', target: [{ code: 'b1', relationship: 'equivalent' }, { code: 'b2', relationship: 'related-to' }] }] }] }
+    ];
+    const translate = (coding, extra = []) => request(app)
+      .post('/tx/r5/ConceptMap/$translate')
+      .set('Accept', 'application/json')
+      .set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [
+        { name: 'sourceCoding', valueCoding: coding },
+        { name: 'targetScope', valueUri: VS },
+        ...extra,
+        ...resources.map(r => ({ name: 'tx-resource', resource: r }))
+      ] });
+
+    test('the maps into the code systems the value set draws on are used, and what they give is held to the value set', async () => {
+      const response = await translate({ system: A, code: 'a1' });
+      expect(response.status).toBe(200);
+      const p = response.body.parameter;
+      expect(p.find(x => x.name === 'result').valueBoolean).toBe(true);
+      const matches = p.filter(x => x.name === 'match').map(m => m.part.find(x => x.name === 'concept').valueCoding.code);
+      expect(matches).toEqual(['b1']);
+      expect(p.find(x => x.name === 'message').valueString).toBe(`A translation was left out because it is not in the target scope '${VS}': ${B}#b2`);
+    });
+
+    test('with no map for the code, the message names the source version - as given, or the one taken', async () => {
+      let response = await translate({ system: A, version: '2.0', code: 'a2' });
+      expect(response.status).toBe(200);
+      expect(response.body.parameter.find(x => x.name === 'result').valueBoolean).toBe(false);
+      response = await translate({ system: 'http://example.org/fhir/CodeSystem/scope-test-none', version: '3.1', code: 'x' });
+      expect(response.body.parameter.find(x => x.name === 'message').valueString)
+        .toBe(`No ConceptMap is available to translate from 'http://example.org/fhir/CodeSystem/scope-test-none|3.1' to '${VS}'`);
+      response = await translate({ system: 'http://example.org/fhir/CodeSystem/scope-test-none', code: 'x' });
+      expect(response.body.parameter.find(x => x.name === 'message').valueString)
+        .toBe(`No ConceptMap is available to translate from 'http://example.org/fhir/CodeSystem/scope-test-none' (no version given) to '${VS}'`);
+    });
+
+    test('a source with no version given is described with the version the server takes it to be', async () => {
+      const W = require('../../tx/workers/translate');
+      const w = Object.create(W.prototype);
+      w.findCodeSystem = async () => ({ version: () => 'http://snomed.info/sct/731000124108/version/20250901' });
+      expect(await w.describeSourceSystem({ system: 'http://snomed.info/sct', code: '1' }, {}))
+        .toBe("'http://snomed.info/sct' (no version given, so 'http://snomed.info/sct|http://snomed.info/sct/731000124108/version/20250901')");
+      expect(await w.describeSourceSystem({ system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/32506021000036107', code: '1' }, {}))
+        .toBe("'http://snomed.info/sct|http://snomed.info/sct/32506021000036107'");
     });
   });
 
@@ -308,7 +376,7 @@ describe('Translate Worker', () => {
   describe('GET /tx/r5/ConceptMap/:id/$translate', () => {
     test('should translate by instance id', async () => {
       const response = await request(app)
-        .get('/tx/r5/ConceptMap/example2/$translate')
+        .get('/tx/r5/ConceptMap/core-example2/$translate')
         .query({
           system: 'http://example.org/source',
           sourceCode: 'source-code'
@@ -334,7 +402,7 @@ describe('Translate Worker', () => {
 
     test('should return 400 when source code/coding is missing for instance translate', async () => {
       const response = await request(app)
-        .get('/tx/r5/ConceptMap/example2/$translate')
+        .get('/tx/r5/ConceptMap/core-example2/$translate')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(400);
@@ -343,7 +411,7 @@ describe('Translate Worker', () => {
 
     test('should translate by instance id with sourceCoding', async () => {
       const response = await request(app)
-        .post('/tx/r5/ConceptMap/example/$translate')
+        .post('/tx/r5/ConceptMap/core-example/$translate')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({
@@ -366,7 +434,7 @@ describe('Translate Worker', () => {
   describe('POST /tx/r5/ConceptMap/:id/$translate', () => {
     test('should translate by instance id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/ConceptMap/example/$translate')
+        .post('/tx/r5/ConceptMap/core-example/$translate')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({

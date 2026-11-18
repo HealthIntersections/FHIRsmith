@@ -1,0 +1,9 @@
+# Test library for whole-code-system SNOMED expansion tests - loads the
+# committed SNOMED test subset (copied into the terminology cache by the test's
+# beforeAll) alongside the automatic R5 core loading.
+
+base:
+  url: https://storage.googleapis.com/tx-fhir-org
+
+sources:
+  - snomed:sct_test_20250909-21.cache

@@ -4,17 +4,110 @@ const Database = require('better-sqlite3');
 const htmlServer = require('../library/html-server');
 const escape = require('escape-html');
 const packageJson = require('../package.json');
+const { tokenMatches, tokenConfigured } = require('../library/request-token');
 
 const TEMPLATE_NAME = 'ext-tracker';
+
+// What the IG Publisher submits (ExtensionTracker.generate() in the publisher): anything
+// that doesn't look like that is refused, which keeps what anyone can put in the database
+// (and so in these pages) to the shapes the pages expect
+const CODE = /^[A-Za-z0-9._-]{1,100}$/;
+const VERSION = /^[A-Za-z0-9._+-]{1,50}$/;
+const FHIR_VERSION = /^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$/;
+const URL_LIKE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\s"'<>\\]{1,1000}$/;
+const RESOURCE_TYPE = /^[A-Za-z][A-Za-z0-9_]{0,99}$/;
+// an element path, e.g. Patient.name or ImplementationGuide.definition.page (a logical
+// model's type can be a URL)
+const PATH = /^[A-Za-z][\w.:/#%[\]-]{0,511}$/;
+const TYPE_CODE = /^[^\s"'<>\\]{1,256}$/;
+const MAX_TITLE = 1024;
+const MAX_ITEMS = 20000;
+
+/**
+ * Checks that a submission looks like what the IG Publisher sends.
+ *
+ * @returns {string[]} what is wrong (empty if nothing)
+ */
+function validateSubmission(data) {
+  const errors = [];
+  const check = (ok, message) => {
+    if (!ok && errors.length < 10) {
+      errors.push(message);
+    }
+  };
+  const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const str = (v, re) => typeof v === 'string' && re.test(v);
+  const optionalTitle = (v) => v === undefined || v === null || (typeof v === 'string' && v.length <= MAX_TITLE);
+  const onlyKeys = (obj, keys, where) => {
+    for (const k of Object.keys(obj)) {
+      check(keys.includes(k), `${where}: unexpected property ${JSON.stringify(k.substring(0, 50))}`);
+    }
+  };
+
+  if (!isObject(data)) {
+    return ['the submission must be a JSON object'];
+  }
+  onlyKeys(data, ['package', 'version', 'fhirVersion', 'jurisdiction', 'extensions', 'profiles', 'usage'], 'submission');
+  check(str(data.package, CODE), 'package must be a package id');
+  check(str(data.version, VERSION), 'version must be a version');
+  check(str(data.fhirVersion, FHIR_VERSION), 'fhirVersion must be a FHIR version (e.g. 4.0.1)');
+  check(data.jurisdiction === undefined || data.jurisdiction === null || str(data.jurisdiction, CODE), 'jurisdiction must be a code');
+
+  let items = 0;
+  if (data.extensions !== undefined) {
+    check(Array.isArray(data.extensions), 'extensions must be an array');
+    for (const [i, ext] of (Array.isArray(data.extensions) ? data.extensions : []).entries()) {
+      items++;
+      if (!isObject(ext)) {
+        check(false, `extensions[${i}] must be an object`);
+        continue;
+      }
+      onlyKeys(ext, ['url', 'title', 'types'], `extensions[${i}]`);
+      check(str(ext.url, URL_LIKE), `extensions[${i}].url must be a URL`);
+      check(optionalTitle(ext.title), `extensions[${i}].title must be text`);
+      check(ext.types === undefined || (Array.isArray(ext.types) && ext.types.every(t => str(t, TYPE_CODE))), `extensions[${i}].types must be an array of type codes`);
+      items += Array.isArray(ext.types) ? ext.types.length : 0;
+    }
+  }
+  if (data.profiles !== undefined) {
+    check(isObject(data.profiles), 'profiles must be an object');
+    for (const [type, list] of Object.entries(isObject(data.profiles) ? data.profiles : {})) {
+      check(RESOURCE_TYPE.test(type), `profiles: ${JSON.stringify(type.substring(0, 50))} is not a resource type`);
+      check(Array.isArray(list), `profiles.${type} must be an array`);
+      for (const [i, prof] of (Array.isArray(list) ? list : []).entries()) {
+        items++;
+        if (!isObject(prof)) {
+          check(false, `profiles.${type}[${i}] must be an object`);
+          continue;
+        }
+        onlyKeys(prof, ['url', 'title'], `profiles.${type}[${i}]`);
+        check(str(prof.url, URL_LIKE), `profiles.${type}[${i}].url must be a URL`);
+        check(optionalTitle(prof.title), `profiles.${type}[${i}].title must be text`);
+      }
+    }
+  }
+  if (data.usage !== undefined) {
+    check(isObject(data.usage), 'usage must be an object');
+    for (const [url, locations] of Object.entries(isObject(data.usage) ? data.usage : {})) {
+      check(URL_LIKE.test(url), `usage: ${JSON.stringify(url.substring(0, 50))} is not a URL`);
+      check(Array.isArray(locations) && locations.every(l => str(l, PATH)), `usage[${JSON.stringify(url.substring(0, 50))}] must be an array of element paths`);
+      items += Array.isArray(locations) ? locations.length : 0;
+    }
+  }
+  check(items <= MAX_ITEMS, `the submission has more than ${MAX_ITEMS} items`);
+  return errors;
+}
 
 class ExtensionTrackerModule {
   constructor(stats) {
     this.stats = stats;
     this.db = null;
     this.urlBase = '/ext-tracker';
+    this.usageCache = null; // the page of all usages (handleUsage), until the next submission
   }
 
   initialize(config, app) {
+    this.config = config;
     const dbPath = config.database || path.join(config.folder || '.', 'extension-tracker.db');
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -45,8 +138,6 @@ class ExtensionTrackerModule {
     router.get(this.urlBase + '/package/:pkg', (req, res) => this.handlePackageDetail(req, res));
 
     app.use('/', router);
-    const count = this.db.prepare('SELECT COUNT(*) as count FROM packages').get().count;
-    console.log(`Extension tracker: loaded (${count} packages in database) at ${this.urlBase}`);
   }
 
   createSchema() {
@@ -130,10 +221,12 @@ class ExtensionTrackerModule {
    * @param {string} cookiePrefix - cookie name prefix for persistence
    */
   buildColumnFilters(tableId, columns, cookiePrefix) {
+    // goes inside a <script>, and the options are submitted data: with no '<' in it, no
+    // value can close the script element
     const colsJson = JSON.stringify(columns.map(c => ({
       type: c.type || 'text',
       options: c.options || []
-    })));
+    }))).replace(/</g, '\\u003c');
 
     return `
       <script>
@@ -246,8 +339,21 @@ class ExtensionTrackerModule {
     const startTime = Date.now();
     const data = req.body;
 
-    if (!data.package || !data.version || !data.fhirVersion) {
-      return res.status(400).json({ error: 'Missing required fields: package, version, fhirVersion' });
+    // The IG Publisher sends a token. It is in the publisher's source, so it is no secret,
+    // but it keeps out anything that isn't trying to look like the publisher
+    if (tokenConfigured(this.config.token)) {
+      const auth = req.get('Authorization') || '';
+      const supplied = auth.replace(/^Bearer\s+/i, '');
+      if (!tokenMatches(this.config.token, supplied)) {
+        return res.status(401).json({ error: 'A valid token is required in the Authorization header' });
+      }
+    }
+
+    const errors = validateSubmission(data);
+    if (errors.length > 0) {
+      // logged, so that a real publisher submission refused by a rule that is too strict is seen
+      console.log(`Extension tracker: refused a submission for ${String(data?.package).substring(0, 100)} from ${req.ip}: ${errors.slice(0, 3).join('; ')}`);
+      return res.status(400).json({ error: 'Not a valid submission', issues: errors });
     }
 
     try {
@@ -315,6 +421,7 @@ class ExtensionTrackerModule {
     });
 
     ingest();
+    this.usageCache = null; // the aggregated usage page (handleUsage) is out of date now
   }
 
   // ---- GET handlers ----
@@ -502,18 +609,37 @@ class ExtensionTrackerModule {
     }
   }
 
+  /**
+   * Usages, aggregated across packages: of one extension (?url=, as the package pages link
+   * to), or of all of them. The query is synchronous (better-sqlite3), and all of them is the
+   * whole table: 2 s and 800 KB on tx.fhir.org, which a spider following the package pages'
+   * links asked for 500 times a day, as the url was ignored. All of them is kept until the next
+   * submission (usageCache).
+   */
   handleUsage(req, res) {
     const startTime = Date.now();
     try {
+      const filterUrl = typeof req.query.url === 'string' && req.query.url !== '' ? req.query.url : null;
+      if (!filterUrl && this.usageCache) {
+        this.stats.countRequest('handleUsage', Date.now() - startTime);
+        this.sendHtmlResponse(res, 'Extension Usage', this.usageCache, startTime);
+        return;
+      }
       // Aggregate usages by extension_url + location, counting distinct packages
       const rows = this.db.prepare(`
         SELECT u.extension_url, u.location, COUNT(DISTINCT u.package_id) as package_count
         FROM usages u
+        ${filterUrl ? 'WHERE u.extension_url = ?' : ''}
         GROUP BY u.extension_url, u.location
         ORDER BY u.extension_url, u.location
-      `).all();
+      `).all(...(filterUrl ? [filterUrl] : []));
 
-      let content = `<p><span id="usage-table-count">${rows.length}</span> usage entries (aggregated across packages)</p>`;
+      let content = '';
+      if (filterUrl) {
+        content += `<p><a href="${this.urlBase}/usage">&laquo; All extensions</a></p>`;
+        content += `<p>Where <code>${escape(filterUrl)}</code> is used</p>`;
+      }
+      content += `<p><span id="usage-table-count">${rows.length}</span> usage entries (aggregated across packages)</p>`;
       content += '<table class="grid" id="usage-table"><tr><th>Extension</th><th>Used on</th><th>Packages</th></tr>';
       for (const r of rows) {
         content += '<tr>';
@@ -527,6 +653,9 @@ class ExtensionTrackerModule {
       content += this.buildColumnFilters('usage-table', [
         { type: 'text' }, { type: 'text' }, { type: 'text' }
       ], 'usagef');
+      if (!filterUrl) {
+        this.usageCache = content;
+      }
 
       this.stats.countRequest('handleUsage', Date.now() - startTime);
       this.sendHtmlResponse(res, 'Extension Usage', content, startTime);
@@ -695,3 +824,4 @@ class ExtensionTrackerModule {
 }
 
 module.exports = ExtensionTrackerModule;
+module.exports.validateSubmission = validateSubmission;

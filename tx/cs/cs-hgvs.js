@@ -42,6 +42,10 @@ class HGVSServices extends CodeSystemProvider {
     return null;
   }
 
+  canBeExpanded() {
+    return false; // HGVS is a grammar validated externally; its codes cannot be iterated
+  }
+
   defaultToLatest() {
     return true;
   }
@@ -201,16 +205,6 @@ class HGVSServices extends CodeSystemProvider {
   async doesFilter(prop, op, value) {
     
     return false;
-  }
-
-  async getPrepContext(iterate) {
-    
-    throw new Error('Filters are not supported for HGVS');
-  }
-
-  async filter(filterContext, forIteration, prop, op, value) {
-    
-    throw new Error('Filters are not supported for HGVS');
   }
 
   async prepare(filterContext) {

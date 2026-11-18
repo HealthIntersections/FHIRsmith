@@ -1,6 +1,6 @@
-const { CodeSystemContentMode, CodeSystemFactoryProvider} = require('./cs-api');
+const { CodeSystemContentMode, CodeSystemFactoryProvider, CodeSystemProvider, cannotDetermineSubsumption} = require('./cs-api');
 const {
-  SnomedStrings, SnomedWords, SnomedStems, SnomedReferences,
+  SnomedStrings, SnomedReferences,
   SnomedDescriptions, SnomedDescriptionIndex, SnomedConceptList,
   SnomedRelationshipList, SnomedReferenceSetMembers, SnomedReferenceSetIndex,
   SnomedFileReader
@@ -13,11 +13,69 @@ const {DesignationUse} = require("../library/designations");
 const {BaseCSServices} = require("./cs-base");
 const {formatDateMMDDYYYY} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
-const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType} = require("../sct/ecl");
+const {ECLLexer, ECLParser, ECLNodeType, ECLTokenType, wildTermMatcher} = require("../sct/ecl");
 const {Issue} = require("../library/operation-outcome");
+
+// ECL evaluation loops check whether to yield to the event loop every this many iterations
+// (see SnomedServices._eclTick); checkAndYield only actually yields once the operation has
+// computed for its yield interval, so this just keeps the checking cheap
+const ECL_YIELD_EVERY = 256;
+let eclTicks = 0;
 const {debugLog} = require("../operation-context");
+const {editionName, editionCode, SNOMED_LINKABLE_EDITIONS} = require("../sct/editions");
+const {SnomedTextIndex, SnomedTextIndexes, rankMatches} = require("../sct/text-index");
+const { TextQuery } = require("../library/text-match");
+const {Language} = require("../../library/languages");
+const regexUtilities = require("../../library/regex-utilities");
+
+// Symbol key under which a resolved ECL filter analysis is memoised directly on
+// the ValueSet compose.include.filter element (`fc`). Symbol-keyed and defined
+// non-enumerable, so it never serialises, clones, or spreads into a response;
+// it lives and dies with the filter element (and thus the cached ValueSet).
+// Value: Map(codeSystemUrl|version -> {descendants, members, matches, eclAst}).
+// SNOMED editions vary the url (and always have a version), so both url and
+// version are part of the key. Only iteration-INSENSITIVE ECL is cached (see
+// _cacheEcl): a wildcard's materialised form depends on forIteration and is not
+// shared - it simply recomputes.
+const { SNOMED_FILTER_ANALYSIS, SNOMED_DISPLAY_REGEX, recall, remember } = require('../library/filter-memo');
+
+/**
+ * Alternate identifier schemes (sct2_Identifier) that FHIRsmith knows how to present:
+ * the code system the identifiers are codes in, and the $lookup property they are
+ * returned as. An identifier in an unknown scheme is kept but not reported.
+ */
+const IDENTIFIER_SCHEMES = {
+  '30051010000102': { system: 'http://loinc.org', property: 'loinc', alias: 'LOINC' }   // |LOINC code identifier| (LOINC Extension)
+};
+
+/** The $expand / ECL-free filter on alternate identifiers: mapped:<scheme> exists true|false */
+const MAPPED_FILTER_PREFIX = 'mapped:';
+const SNOMED_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'descendent-leaf', 'is-not-a', 'in']);
+
+// Description language byte -> ISO 639-1 code: the one table, shared with the importer
+// (tx/sct/languages.js)
+const { LANGUAGE_CODES: SCT_LANGUAGE_CODES, languageBytesFor } = require('../sct/languages');
+
+// ECL dialect aliases (ECL specification, appendix "Dialect aliases") to the
+// language reference set they denote. Used by {{ D dialect = en-gb }}.
+const ECL_DIALECT_ALIASES = {
+  'en-us': '900000000000509007',
+  'en-gb': '900000000000508004',
+  'en-au': '32570271000036106',
+  'en-ca': '19491000087109',
+  'en-nz': '271000210107',
+  'en-ie': '21000220103',
+  'fr-ca': '20581000087109',
+  'fr-be': '21000172104',
+  'nl-be': '31000172101',
+  'nl-nl': '31000146106',
+  'es-es': '448879004',
+  'sv-se': '46011000052107',
+  'da-dk': '554461000005103'
+};
 
 // Context kinds matching Pascal enum
+
 const SnomedProviderContextKind = {
   CODE: 0,
   EXPRESSION: 1
@@ -87,8 +145,9 @@ class SnomedFilterContext {
 }
 
 class SnomedPrep {
-  constructor() {
+  constructor(languages = null) {
     this.filters = [];
+    this.languages = languages; // the languages the request named, or null
   }
 }
 
@@ -99,8 +158,6 @@ class SnomedServices {
   constructor(sharedData) {
     // Core data structures
     this.strings = new SnomedStrings(sharedData.strings);
-    this.words = new SnomedWords(sharedData.words);
-    this.stems = new SnomedStems(sharedData.stems);
     this.refs = new SnomedReferences(sharedData.refs);
     this.descriptions = new SnomedDescriptions(sharedData.desc);
     this.descriptionIndex = new SnomedDescriptionIndex(sharedData.descRef);
@@ -108,6 +165,12 @@ class SnomedServices {
     this.relationships = new SnomedRelationshipList(sharedData.rel);
     this.refSetIndex = new SnomedReferenceSetIndex(sharedData.refSetIndex, sharedData.hasLangs);
     this.refSetMembers = new SnomedReferenceSetMembers(sharedData.refSetMembers);
+    // The free-text search indexes, built by the importer and read where they are in the cache
+    // (see getTextIndex); and the languages the edition has active descriptions in
+    const textIndexes = SnomedTextIndexes.deserialize(sharedData.textIndexes);
+    this._textIndex = textIndexes.all;
+    this._textIndexes = textIndexes.indexes;
+    this._activeDescLanguages = textIndexes.languages;
 
     // Metadata
     this.versionUri = sharedData.versionUri;
@@ -120,14 +183,14 @@ class SnomedServices {
     this.isAIndex = sharedData.isAIndex;
     this.activeRoots = sharedData.activeRoots;
     this.inactiveRoots = sharedData.inactiveRoots;
-    this.defaultLanguage = sharedData.defaultLanguage;
+    // The edition's default description language, as a language byte (SCT_LANGUAGE_CODES):
+    // the language a text or display filter searches when the request names none.
+    this.defaultLanguage = this.#resolveDefaultLanguage(sharedData.defaultLanguage);
     this.isTesting = sharedData.isTesting;
 
     // Expression services
     this.expressionServices = new SnomedExpressionServices({
       strings: this.strings,
-      words: this.words,
-      stems: this.stems,
       refs: this.refs,
       descriptions: this.descriptions,
       descriptionIndex: this.descriptionIndex,
@@ -137,6 +200,149 @@ class SnomedServices {
       refSetIndex: this.refSetIndex
     }, this.isAIndex);
 
+    // The expression services check the MRCM attribute ranges, but those are ECL
+    // and the ECL engine lives here, so hand them an evaluator. Returning null
+    // means "could not decide", and leaves the value unchecked.
+    this.expressionServices.eclConstraintMatcher = (constraint, value) => this.mrcmRangeSatisfied(constraint, value);
+    this._mrcmRangeCache = new Map();
+
+    this.#loadIdentifiers(sharedData.identifiers || []);
+    this.#loadConcreteValues(sharedData.concreteValues);
+  }
+
+  /**
+   * The cache's default-language slot, as a language byte. There are three conventions:
+   * - caches written by the importer here hold the edition's default language byte
+   *   (older ones hold 1, English, whatever the edition);
+   * - caches written by the original server hold the membersByRef offset of the edition's
+   *   default language reference set (51756144 - 900000000000509007, US English - in
+   *   sct_intl_20250201.cache; 10965809 - 450828004, Spanish - in sct_es_20250510.cache).
+   *   That reference set's language is the one most of the descriptions it holds are in -
+   *   a language reference set also lists some descriptions in other languages (450828004
+   *   has 42804 English ones beside 1136162 Spanish ones in the es cache).
+   * Anything else is read as English.
+   */
+  #resolveDefaultLanguage(slot) {
+    return SCT_LANGUAGE_CODES[slot] ? slot : 1;
+  }
+
+
+  /**
+   * Index the concrete value relationships (cache version 19: rows of
+   * [sourceId, typeId, group, value], value as written in RF2 - "#500", "#5.5",
+   * a quoted string, or true/false) by source concept index, for the ECL
+   * evaluator. `concreteValues` stays null when the cache predates them, which
+   * is how a concrete-value refinement knows to report itself as unsupported
+   * rather than answering with nothing.
+   */
+  #loadConcreteValues(rows) {
+    this.concreteValues = null;
+    if (!rows) return;
+    this.concreteValues = new Map();
+    for (const [sourceId, typeId, group, raw] of rows) {
+      const src = this.concepts.findConcept(sourceId);
+      const type = this.concepts.findConcept(typeId);
+      if (!src.found || !type.found) continue;
+      let value;
+      if (/^#-?\d+(\.\d+)?$/.test(raw)) {
+        value = { kind: 'number', value: Number(raw.substring(1)), decimal: raw.includes('.') };
+      } else if (/^".*"$/.test(raw)) {
+        value = { kind: 'string', value: raw.substring(1, raw.length - 1) };
+      } else if (/^(true|false)$/i.test(raw)) {
+        value = { kind: 'boolean', value: raw.toLowerCase() === 'true' };
+      } else {
+        value = { kind: 'string', value: raw };
+      }
+      const list = this.concreteValues.get(src.index) || [];
+      list.push({ relType: type.index, group: group || 0, concrete: value });
+      this.concreteValues.set(src.index, list);
+    }
+  }
+
+  /**
+   * Index the alternate identifiers (sct2_Identifier rows, active only, as
+   * [scheme, module, code, conceptId]) both ways: concept -> identifiers, and
+   * scheme|code -> concepts. Also which modules carry identifiers, since each such
+   * module defines an implicit map (?fhir_cm=<module>).
+   */
+  #loadIdentifiers(rows) {
+    this.identifiersByConcept = new Map();
+    this.conceptsByIdentifier = new Map();
+    this.identifierModules = new Map(); // module -> Set of schemes
+    for (const [scheme, module, code, conceptId] of rows) {
+      const entry = { scheme, module, code };
+      if (!this.identifiersByConcept.has(conceptId)) {
+        this.identifiersByConcept.set(conceptId, []);
+      }
+      this.identifiersByConcept.get(conceptId).push(entry);
+      const key = scheme + '|' + code;
+      if (!this.conceptsByIdentifier.has(key)) {
+        this.conceptsByIdentifier.set(key, []);
+      }
+      this.conceptsByIdentifier.get(key).push(conceptId);
+      if (!this.identifierModules.has(module)) {
+        this.identifierModules.set(module, new Set());
+      }
+      this.identifierModules.get(module).add(scheme);
+    }
+  }
+
+  /** The alternate identifiers of a concept (by id), optionally only those of one scheme */
+  getIdentifiers(conceptId, scheme = null) {
+    const list = this.identifiersByConcept.get(String(conceptId)) || [];
+    return scheme ? list.filter(i => i.scheme === scheme) : list;
+  }
+
+  /** The concept ids that have the given code in the given scheme */
+  getConceptsForIdentifier(scheme, code) {
+    return this.conceptsByIdentifier.get(scheme + '|' + code) || [];
+  }
+
+  /**
+   * Does this refinement value satisfy an MRCM range constraint?
+   *
+   * @param {string} constraint - the rangeConstraint ECL, e.g. "<< 182353008 |Side|"
+   * @param {SnomedExpression} value - the refinement's value expression
+   * @returns {boolean|null} null when the constraint cannot be evaluated
+   */
+  async mrcmRangeSatisfied(constraint, value) {
+    let entry = this._mrcmRangeCache.get(constraint);
+    if (entry === undefined) {
+      entry = null;
+      try {
+        const ast = new ECLParser(new ECLLexer(constraint).tokenize()).parse();
+        const ctxt = await this._evalECLNode(ast, null);
+        entry = {
+          ast: ast,
+          wildcard: !!ctxt.eclWildcard,
+          members: new Set(this._eclToIndexArray(ctxt))
+        };
+      } catch (error) {
+        // Concrete value ranges (dec/int/str) and anything else the ECL engine
+        // does not support: remembered as unusable so it is parsed only once.
+        entry = null;
+      }
+      this._mrcmRangeCache.set(constraint, entry);
+    }
+    if (!entry) {
+      return null;
+    }
+    if (entry.wildcard) {
+      return true;
+    }
+
+    const concepts = (value.concepts || []).filter(c => c.reference != null && c.reference !== NO_REFERENCE);
+    const refined = value.hasRefinements() || value.hasRefinementGroups();
+    if (!refined) {
+      if (concepts.length === 0) {
+        return null; // a concrete value, or nothing we can resolve
+      }
+      // Every focus concept of a plain value must be in the constraint's set.
+      return concepts.every(c => entry.members.has(c.reference));
+    }
+    // A refined value: ask the ECL engine whether the expression satisfies the
+    // constraint (it knows that a refinement of X is still << X).
+    return await this._eclExpressionSatisfies({ expression: value }, entry.ast, null);
   }
 
   close() {
@@ -199,6 +405,21 @@ class SnomedServices {
     }
   }
 
+  // Count of active concepts (status nibble == 0), computed once and cached.
+  // Concepts are fixed-size records addressed by byte offset, so iterate by
+  // ordinal via getConceptByCount. Used by the count=0 expansion fast path.
+  activeConceptCount() {
+    if (this._activeConceptCount != null) return this._activeConceptCount;
+    let n = 0;
+    const total = this.concepts.count();
+    for (let ord = 0; ord < total; ord++) {
+      const c = this.concepts.getConceptByCount(ord);
+      if ((c.flags & 0x0F) === 0) n++;
+    }
+    this._activeConceptCount = n;
+    return n;
+  }
+
   isPrimitive(reference) {
     try {
       const concept = this.concepts.getConcept(reference);
@@ -222,37 +443,174 @@ class SnomedServices {
         return false;
       }
 
-      const descendants = this.refs.getReferences(closureRef);
-      return descendants && descendants.includes(childRef);
+      // The closure is stored sorted ascending (see the importer's buildConceptClosure), so
+      // membership is a binary search of the stored list - this is the hot path for is-a and
+      // ECL refinement checks, and copying a top-level concept's descendants out first cost
+      // milliseconds a call
+      return this.refs.hasSortedReference(closureRef, childRef);
     } catch (error) {
       return false;
     }
   }
 
-  getDisplayName(reference = 0) {
+  // Key concept indexes used for preferred-term selection, resolved once per
+  // loaded edition. US English (900000000000509007) is the global default
+  // language reference set for display.
+  _displayConstants() {
+    if (this._dispConst) return this._dispConst;
+    const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
+    this._dispConst = {
+      usRefset: idx(900000000000509007n),   // US English language reference set
+      preferred: idx(900000000000548007n),  // Preferred
+      synonym: idx(900000000000013009n),    // Synonym
+      fsn: idx(900000000000003001n)         // Fully specified name
+    };
+    return this._dispConst;
+  }
+
+  // Ordered display language reference set(s) for the loaded edition. SNOMED's
+  // default display language differs by edition, and a concept can carry a
+  // preferred synonym in more than one dialect at once (the International
+  // edition ships both US English 509007 and GB English 508004, each marking a
+  // different synonym Preferred). The edition default decides which term is
+  // shown.
+  //
+  // Editions not listed here default to English (US then GB) rather than to
+  // "preferred synonym in any language refset". A national edition carries a
+  // Preferred synonym in each of its own language refsets as well as in English
+  // (e.g. the Belgian edition 11000172109 marks a French term Preferred in
+  // 21000172104 and a Dutch one in 31000172101), so "any refset" resolved to
+  // whichever description happened to be stored first - French for one concept,
+  // Dutch for the next, English for a third. A caller who asked for no
+  // particular language got an arbitrary mix. English is the only defensible
+  // default: it is the one language every edition has, and it is what a request
+  // with no displayLanguage is taken to mean everywhere else in the server. An
+  // edition with no English at all still falls through to the any-refset step
+  // below, so nothing regresses.
+  _displayRefsetOrder() {
+    if (this._dispOrder) return this._dispOrder;
+    const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
+    const US = 900000000000509007n;   // US English
+    const GB = 900000000000508004n;   // GB English
+    const byEdition = {
+      '900000000000207008': [US],       // International Edition (US English is the default)
+      '31000003106': [US],              // tx-ecosystem test edition (International-derived, US English default)
+      '731000124108': [US],             // US Edition
+      '5991000124107': [US],            // US Edition (with ICD-10-CM maps)
+      '83821000000107': [GB],           // UK Edition
+      '999000021000000109': [GB]        // UK Clinical Edition
+    };
+    const ids = byEdition[String(this.edition)] || [US, GB];
+    this._dispOrder = ids.map(idx).filter((i) => i >= 0);
+    return this._dispOrder;
+  }
+
+  // Acceptability (a concept index, e.g. Preferred/Acceptable) of a description
+  // within the given language reference set, or -1 if it is not a member.
+  _descAcceptability(description, refsetIndex) {
+    if (!description.refsets || !description.valueses) return -1;
+    const refsets = this.refs.getReferences(description.refsets);
+    const valueses = this.refs.getReferences(description.valueses);
+    if (!refsets || !valueses) return -1;
+    for (let i = 0; i < refsets.length; i++) {
+      if (refsets[i] === refsetIndex) {
+        const vals = this.refs.getReferences(valueses[i]); // [acceptabilityIndex, type]
+        return (vals && vals.length > 0) ? vals[0] : -1;
+      }
+    }
+    return -1;
+  }
+
+  // True if the description is a synonym marked Preferred (900000000000548007)
+  // in ANY of its language reference sets. Editions use different English
+  // language refsets (International US-English 509007, GB 508004, US extension,
+  // ...), so we accept a preferred marking in any of them rather than a single
+  // hard-coded refset. (Multi-language dialect selection is a separate concern.)
+  _synonymIsPreferred(description) {
+    const K = this._displayConstants();
+    if (description.kind !== K.synonym) return false;
+    if (!description.valueses) return false;
+    const valueses = this.refs.getReferences(description.valueses);
+    if (!valueses) return false;
+    for (let i = 0; i < valueses.length; i++) {
+      const vals = this.refs.getReferences(valueses[i]); // [acceptabilityIndex, type]
+      if (vals && vals.length > 0 && vals[0] === K.preferred) return true;
+    }
+    return false;
+  }
+
+  // Return a concept's display, together with the language it is actually in:
+  // the synonym marked Preferred in the edition's display language reference
+  // set; failing that a preferred synonym in any language refset; failing that
+  // the FSN; failing that the first active description. Previously this
+  // returned the first active description outright, which is only the preferred
+  // term by accident of import order.
+  //
+  // The language matters as much as the term: the display is emitted as a
+  // designation (DesignationUse.DISPLAY) during $expand, and tagging a French
+  // term as en-US puts it in an IG's English display column and makes the real
+  // French designation look like a duplicate.
+  //
+  // Returns {term, lang} - lang is a language code, or null when no description
+  // could be read.
+  getDisplayNameEx(reference = 0) {
+    const none = { term: '', lang: null };
     try {
       const concept = this.concepts.getConcept(reference);
       const descriptionsRef = concept.descriptions;
 
       if (descriptionsRef === 0) {
-        return '';
+        return none;
       }
 
       const descriptionIndices = this.refs.getReferences(descriptionsRef);
+      const K = this._displayConstants();
+      const pick = (description) => ({
+        term: this.strings.getEntry(description.iDesc).trim(),
+        lang: SCT_LANGUAGE_CODES[description.lang] || 'en'
+      });
 
-      // Look for preferred term, then any active description
-      for (const descIndex of descriptionIndices) {
-        const description = this.descriptions.getDescription(descIndex);
-        if (description.active) {
-          const term = this.strings.getEntry(description.iDesc);
-          return term.trim();
+      // 1. Preferred synonym in the edition's default display refset(s), tried
+      //    in priority order. This is what disambiguates dialects: on the
+      //    International edition a concept may be Preferred in both US and GB
+      //    English, and the edition default (US English) must win. It is also
+      //    what keeps a multi-language national edition from picking a
+      //    different language for each concept.
+      for (const refsetIdx of this._displayRefsetOrder()) {
+        for (const descIndex of descriptionIndices) {
+          const description = this.descriptions.getDescription(descIndex);
+          if (!description.active || description.kind !== K.synonym) continue;
+          if (this._descAcceptability(description, refsetIdx) === K.preferred) {
+            return pick(description);
+          }
         }
       }
 
-      return '';
+      // 2. Fallback: preferred synonym in ANY language refset; then FSN; then
+      //    the first active description. Reached only by editions with no
+      //    English language refset at all, and by concepts with no preferred
+      //    synonym in the edition's display refsets.
+      let fsn = null;
+      let firstActive = null;
+      for (const descIndex of descriptionIndices) {
+        const description = this.descriptions.getDescription(descIndex);
+        if (!description.active) continue;
+        if (firstActive === null) firstActive = pick(description);
+        if (this._synonymIsPreferred(description)) {
+          return pick(description); // preferred synonym (any language refset)
+        }
+        if (description.kind === K.fsn && fsn === null) {
+          fsn = pick(description);
+        }
+      }
+      return fsn || firstActive || none;
     } catch (error) {
-      return '';
+      return none;
     }
+  }
+
+  getDisplayName(reference = 0) {
+    return this.getDisplayNameEx(reference).term;
   }
 
   getConceptDescendants(reference) {
@@ -303,6 +661,9 @@ class SnomedServices {
     }
   }
 
+  // The concept's active outbound relationships. Inactive rows are imported (they are in the
+  // cache) but ignored altogether, as agreed with the SNOMED leads: a retired row no longer
+  // describes the concept, so no filter, lookup or refinement may see it.
   getConceptRelationships(reference) {
     try {
       const concept = this.concepts.getConcept(reference);
@@ -310,10 +671,126 @@ class SnomedServices {
 
       if (relRef === 0) return [];
 
-      return this.refs.getReferences(relRef) || [];
+      return (this.refs.getReferences(relRef) || []).filter(relIdx => this.relationships.isActive(relIdx));
     } catch (error) {
       return [];
     }
+  }
+
+  /**
+   * The module this edition is published under, as a concept index (0 if it cannot be found),
+   * taken from the edition URI http://snomed.info/[x]sct/<module>[/version/<date>]
+   */
+  editionModule() {
+    const m = /^http:\/\/snomed\.info\/x?sct\/(\d+)/.exec(this.getVersion() || '');
+    if (!m) return 0;
+    const r = this.concepts.findConcept(m[1]);
+    return r.found ? r.index : 0;
+  }
+
+  /**
+   * The module dependency reference set (900000000000534007). Found by its defining concept
+   * when that is present; a subontology extract may carry the members without the concept,
+   * so the filename-derived refset name is the fallback.
+   * @returns {object|null} the reference set record
+   */
+  moduleDependencyRefSet() {
+    if (this._mdrs !== undefined) return this._mdrs;
+    this._mdrs = null;
+    const r = this.concepts.findConcept('900000000000534007');
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      const rs = this.refSetIndex.getReferenceSet(i);
+      if ((r.found && rs.definition === r.index) || this.strings.getEntry(rs.name).startsWith('ModuleDependency')) {
+        this._mdrs = rs;
+        break;
+      }
+    }
+    return this._mdrs;
+  }
+
+  /**
+   * The modules that the given module depends on, per the module dependency reference set:
+   * [{module: <concept index>, sourceEffectiveTime, targetEffectiveTime}]. Only the direct
+   * dependencies - the dependencies of those modules are their own rows.
+   */
+  moduleDependencies(moduleIndex) {
+    const rs = this.moduleDependencyRefSet();
+    if (!rs || !moduleIndex) return [];
+    const result = [];
+    for (const m of this.refSetMembers.getMembers(rs.membersByRef)) {
+      if (m.module !== moduleIndex || !m.ref) continue;
+      // values are [value, type, value, type...]; both fields here are strings
+      const vals = m.values ? this.refs.getReferences(m.values) || [] : [];
+      const str = (i) => vals.length > i && vals[i + 1] === 5 ? this.strings.getEntry(vals[i]) : null;
+      result.push({ module: m.ref, sourceEffectiveTime: str(0), targetEffectiveTime: str(2) });
+    }
+    return result;
+  }
+
+  /**
+   * The concept indexes of all the modules that make up the edition published under the
+   * given module: the module itself and, transitively, everything it depends on.
+   */
+  editionModules(moduleIndex) {
+    const result = new Set();
+    const todo = [moduleIndex];
+    while (todo.length) {
+      const m = todo.pop();
+      if (!m || result.has(m)) continue;
+      result.add(m);
+      for (const d of this.moduleDependencies(m)) todo.push(d.module);
+    }
+    return result;
+  }
+
+  /**
+   * Translation from this edition to another edition it depends on (see
+   * SnomedProvider.translateToEdition). The target is an edition URI,
+   * http://snomed.info/sct/<module>[/version/<date>]; the result says which module and
+   * version that is, and which modules' content belongs to it, or null if this edition
+   * does not depend on it (or not on that version of it).
+   */
+  editionDependency(targetEdition) {
+    const m = /^http:\/\/snomed\.info\/x?sct\/(\d+)(?:\/version\/(\d{8}))?$/.exec(targetEdition || '');
+    if (!m) return null;
+    const mine = this.editionModule();
+    const target = this.concepts.findConcept(m[1]);
+    if (!mine || !target.found) return null;
+    for (const d of this.moduleDependencies(mine)) {
+      if (d.module === target.index && (!m[2] || m[2] === d.targetEffectiveTime)) {
+        const version = d.targetEffectiveTime ? `http://snomed.info/sct/${m[1]}/version/${d.targetEffectiveTime}` : `http://snomed.info/sct/${m[1]}`;
+        return { moduleId: m[1], moduleIndex: target.index, version, modules: this.editionModules(target.index) };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The concept whose normal form is the given expression, if there is one. The index is
+   * built on first use: every defined concept's stored normal form, rendered in the minimal
+   * form so that two expressions compare as strings.
+   * @param {string} rendered - the expression, rendered with SnomedServicesRenderOption.Minimal
+   * @returns {number} the concept index, or -1
+   */
+  conceptWithNormalForm(rendered) {
+    if (!this._normalFormIndex) {
+      const index = new Map();
+      const total = this.concepts.count();
+      for (let ord = 0; ord < total; ord++) {
+        const c = this.concepts.getConceptByCount(ord);
+        if ((c.flags & 0x0F) !== 0 || this.concepts.getNormalForm(c.index) === 0) continue;
+        try {
+          const nf = this.expressionServices.createNormalForm(c.index);
+          const key = this.expressionServices.renderExpression(nf, SnomedServicesRenderOption.Minimal);
+          if (!index.has(key)) index.set(key, c.index);
+        } catch (e) {
+          // a normal form that cannot be built is simply not indexed
+        }
+      }
+      this._normalFormIndex = index;
+    }
+    const r = this._normalFormIndex.get(rendered);
+    return r === undefined ? -1 : r;
   }
 
   getConceptRefSet(conceptIndex, byName = false) {
@@ -331,13 +808,8 @@ class SnomedServices {
   // members" (returns a numeric membersByRef, which may be 0 or the
   // MAGIC_NO_CHILDREN sentinel). Used by memberOf to reject non-refset operands.
   _findRefSetMembersRef(conceptIndex) {
-    for (let i = 0; i < this.refSetIndex.count(); i++) {
-      const refSet = this.refSetIndex.getReferenceSet(i);
-      if (refSet.definition === conceptIndex) {
-        return refSet.membersByRef;
-      }
-    }
-    return null;
+    const refSet = this._findRefSetRecord(conceptIndex);
+    return refSet ? refSet.membersByRef : null;
   }
 
   // Filter support methods
@@ -369,6 +841,35 @@ class SnomedServices {
       result.descendants = descendants;
     }
 
+    return result;
+  }
+
+  // descendent-leaf (R5): the concept's descendants that have no children of their own
+  filterDescendentLeaf(id) {
+    const result = new SnomedFilterContext();
+    const conceptResult = this.concepts.findConcept(id);
+
+    if (!conceptResult.found) {
+      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+    }
+
+    result.descendants = this.getConceptDescendants(conceptResult.index)
+      .filter(ref => this.getConceptChildren(ref).length === 0);
+    return result;
+  }
+
+  // is-not-a (R5): every concept except the concept itself and its descendants - the
+  // same population as the ECL * MINUS << id
+  filterIsNotA(id, opContext = null) {
+    const result = new SnomedFilterContext();
+    const conceptResult = this.concepts.findConcept(id);
+
+    if (!conceptResult.found) {
+      throw new Error(`The SNOMED CT Concept ${id} is not known`);
+    }
+
+    const excluded = new Set([conceptResult.index, ...this.getConceptDescendants(conceptResult.index)]);
+    result.descendants = this._eclEnumerateAllConcepts(opContext).filter(ref => !excluded.has(ref));
     return result;
   }
 
@@ -419,10 +920,25 @@ class SnomedServices {
   }
 
 
+  // concept in A,B,C: any of the listed concepts; a listed reference set stands for its
+  // members. Members are kept as reference set member records ({ref}), which is what every
+  // consumer of set.members reads, so a plain concept is wrapped the same way; and each
+  // concept appears once, however many times it is named or reached.
   filterIn(idList) {
     const result = new SnomedFilterContext();
-    let members = [];
+    const members = [];
+    const seen = new Set();
+    const add = (member) => {
+      if (!seen.has(member.ref)) {
+        seen.add(member.ref);
+        members.push(member);
+      }
+    };
     for (let id of idList.split(',')) {
+      id = id.trim();
+      if (!id) {
+        continue;
+      }
       const conceptResult = this.concepts.findConcept(id);
 
       if (!conceptResult.found) {
@@ -431,9 +947,11 @@ class SnomedServices {
 
       const refSetIndex = this.getConceptRefSet(conceptResult.index, false);
       if (refSetIndex === 0) {
-        members.push(conceptResult.index);
+        add({ ref: conceptResult.index });
       } else {
-        members.push(...this.refSetMembers.getMembers(refSetIndex));
+        for (const member of this.refSetMembers.getMembers(refSetIndex) || []) {
+          add(member);
+        }
       }
     }
     result.members = members;
@@ -472,12 +990,23 @@ class SnomedServices {
    *   >> (ancestor-or-self-of)
    *   >! (strict ancestor-of)
    *   >  (parent-of)
-   *   ^  (member-of refset)      — refset must be a plain concept ID
+   *   ^  (member-of refset)      — a concept or any bracketed expression, with
+   *                                 {{ M ... }} member filters
    *   *  (wildcard)
+   *   hierarchy operators on *, ^ and bracketed sets (applied per member)
    *   AND / OR / MINUS compound expressions
+   *   !!> / !!< (top / bottom of set)
+   *   refinements (= and != against an expression, reversed (R) attributes,
+   *   attribute AND/OR/",", groups, attribute and group cardinality,
+   *   attribute names that are expressions),
+   *   dotted expressions, {{ C ... }} concept filters, {{ D ... }} description
+   *   filters, {{ + HISTORY... }} history supplements, concrete (numeric /
+   *   string / boolean) values in refinements (cache version 19+), comments
    *
-   * Everything else (refinements, dotted expressions, cardinality,
-   * reverse attributes, numeric/string comparisons) throws an informative error.
+   *   alternate identifiers (LOINC#code, from the identifier scheme aliases)
+   *
+   * Everything else (reference set field selection on ^) throws an informative
+   * error which is reported as UNSUPPORTED_ECL.
    */
 
   /**
@@ -489,7 +1018,7 @@ class SnomedServices {
    * @param {string} eclExpression
    * @returns {SnomedFilterContext}
    */
-  filterECL = function (eclExpression, forIteration, opContext) {
+  filterECL = async function (eclExpression, forIteration, opContext) {
     let ast;
     try {
       const tokens = new ECLLexer(eclExpression).tokenize();
@@ -500,38 +1029,84 @@ class SnomedServices {
     }
     let result;
     try {
-      result = this._evalECLNode(ast, opContext);
+      result = await this._evalECLNode(ast, opContext);
     } catch (err) {
       debugLog(err);
-      throw new Issue('error', 'invalid', null, 'UNSUPPORTED_ECL', opContext.i18n.translate('UNSUPPORTED_ECL', opContext.langs, [eclExpression, err.message]), 'vs-invalid').handleAsOO(400);
+      // Out of time or memory, or the client went away: that is not a verdict on the
+      // expression, so it goes out as it is (too-costly), not as UNSUPPORTED_ECL
+      if (err instanceof Issue && err.cause === 'too-costly') {
+        throw err;
+      }
+      // Distinguish an *invalid* ECL expression (a malformed SCTID, or a
+      // reference to a concept that does not exist - the expression can never
+      // be valid) from an *unsupported* one (a well-formed expression using a
+      // feature this server does not implement). The tx-ecosystem test suite
+      // expects INVALID_ECL for the former, UNSUPPORTED_ECL for the latter.
+      // The parser has accepted the expression by now, so an evaluation error
+      // means an unsupported feature - unless it is explicitly about a concept
+      // that does not exist (err.eclInvalid, or the legacy "is not known" text).
+      const emsg = (err && err.message) ? err.message : String(err);
+      const invalid = (err && err.eclInvalid) || /is not known/.test(emsg);
+      const msgId = invalid ? 'INVALID_ECL' : 'UNSUPPORTED_ECL';
+      throw new Issue('error', 'invalid', null, msgId, opContext.i18n.translate(msgId, opContext.langs, [eclExpression, err.message]), 'vs-invalid').handleAsOO(400);
     }
     // Wildcard + iteration: the `eclWildcard` flag is only consulted by the
     // per-concept membership checks (filterCheck/filterLocate). For an $expand
     // we actually need the full concept list, otherwise filterSize returns 0
     // and the iteration yields nothing. Materialise active concepts now.
     if (forIteration && result.eclWildcard && (!result.descendants || result.descendants.length === 0)) {
-      result.descendants = this._eclEnumerateActiveConcepts(opContext);
+      result.descendants = this._eclEnumerateAllConcepts(opContext);
       delete result.eclWildcard;
+      // The materialised wildcard form differs from the lazy (eclWildcard) form,
+      // so mark it: the filter cache must not share it across iteration modes.
+      result.iterationSensitive = true;
     }
+    // Keep the parsed AST so validate-code can test a post-coordinated
+    // expression's membership against the constraint (see _eclExpressionSatisfies).
+    result.eclAst = ast;
     return result;
   };
 
   /**
-   * Return every active concept's index. Used to materialise wildcard results
-   * when the filter needs to be iterated over (e.g. $expand).
+   * Return every concept's index. Used to materialise wildcard results when the
+   * filter needs to be iterated over (e.g. $expand).
+   *
+   * `*` means every concept the server knows, so this deliberately walks the
+   * concept table rather than descending from 138875005 |SNOMED CT Concept|.
+   * Two kinds of concept are in the table but not reachable from that root:
+   * inactive concepts (their is-a relationships are inactive too), and the
+   * foundation-metadata concepts that a subset carries without their is-a
+   * relationships - module concepts above all. Both belong in `*`, and both are
+   * counted by countAllCodes, so descending from the root made $expand of a
+   * `constraint = *` filter disagree with $expand of the whole code system.
+   *
+   * Inactive concepts are not filtered out here: activeOnly is applied by the
+   * expansion itself (see ValueSetExpander.processCodes), which is what lets one
+   * enumeration serve both activeOnly=true and activeOnly=false.
    * @returns {number[]}
    */
-  _eclEnumerateActiveConcepts = function (opContext) {
+  _eclEnumerateAllConcepts = function (opContext) {
     const all = [];
     const n = this.concepts.count();
     for (let i = 0; i < n; i++) {
-      if (opContext) opContext.deadCheck('ecl:enumerateActiveConcepts');
-      const concept = this.concepts.getConceptByCount(i);
-      if ((concept.flags & 0x0F) === 0) { // active
-        all.push(concept.index);
-      }
+      if (opContext) opContext.deadCheck('ecl:enumerateAllConcepts');
+      all.push(this.concepts.getConceptByCount(i).index);
     }
     return all;
+  };
+
+  /**
+   * For the loops of ECL evaluation: the usual deadCheck, and every ECL_YIELD_EVERY
+   * iterations true, when the loop should `await opContext.checkAndYield(place)` - which
+   * gives the event loop a turn if this operation has been computing for a while. ECL
+   * evaluation can run for many seconds (up to the operation's time limit), and without
+   * this it held the event loop for all of that time.
+   */
+  _eclTick = function (opContext, place) {
+    if (!opContext) return false;
+    opContext.deadCheck(place);
+    eclTicks = (eclTicks + 1) % ECL_YIELD_EVERY;
+    return eclTicks === 0 && typeof opContext.checkAndYield === 'function';
   };
 
   /**
@@ -539,7 +1114,7 @@ class SnomedServices {
    * @param {object} node
    * @returns {SnomedFilterContext}
    */
-  _evalECLNode = function (node, opContext) {
+  _evalECLNode = async function (node, opContext) {
     if (!node) {
       throw new Error('ECL evaluation error: null AST node');
     }
@@ -548,11 +1123,14 @@ class SnomedServices {
     switch (node.type) {
 
       case ECLNodeType.SUB_EXPRESSION_CONSTRAINT:
-        return this._evalSubExpression(node, opContext);
+        return await this._evalSubExpression(node, opContext);
 
       case ECLNodeType.COMPOUND_EXPRESSION_CONSTRAINT: {
-        const left = this._evalECLNode(node.left, opContext);
-        const right = this._evalECLNode(node.right, opContext);
+        if (node.operator === ECLNodeType.DISJUNCTION) {
+          return await this._evalDisjunction(node, opContext);
+        }
+        const left = await this._evalECLNode(node.left, opContext);
+        const right = await this._evalECLNode(node.right, opContext);
         switch (node.operator) {
           case ECLNodeType.CONJUNCTION:
             return this._eclIntersect(left, right, opContext);
@@ -566,10 +1144,10 @@ class SnomedServices {
       }
 
       case ECLNodeType.REFINED_EXPRESSION_CONSTRAINT:
-        return this._evalRefined(node, opContext);
+        return await this._evalRefined(node, opContext);
 
       case ECLNodeType.DOTTED_EXPRESSION_CONSTRAINT:
-        return this._evalDotted(node, opContext);
+        return await this._evalDotted(node, opContext);
 
       default:
         // Could be a bare concept reference or wildcard passed in directly
@@ -578,7 +1156,7 @@ class SnomedServices {
             node.type === ECLNodeType.WILDCARD ||
             node.type === ECLNodeType.MEMBER_OF) {
           // Wrap it as if it came from a no-operator SubExpressionConstraint
-          return this._evalSubExpression({type: ECLNodeType.SUB_EXPRESSION_CONSTRAINT, operator: null, focus: node}, opContext);
+          return await this._evalSubExpression({type: ECLNodeType.SUB_EXPRESSION_CONSTRAINT, operator: null, focus: node}, opContext);
         }
         throw new Error(`Unsupported ECL node type: ${node.type}`);
     }
@@ -590,24 +1168,50 @@ class SnomedServices {
    * @param {object} node
    * @returns {SnomedFilterContext}
    */
-  _evalSubExpression = function (node, opContext) {
+  _evalSubExpression = async function (node, opContext) {
     const operator = node.operator; // an ECLTokenType string, or null
     const focus = node.focus;
 
-    // Wildcard
-    if (focus.type === ECLNodeType.WILDCARD) {
-      if (operator) {
-        throw new Error('ECL hierarchy operators combined with wildcard (*) are not supported');
+    // History supplements are parsed but not implemented. Member filters
+    // ({{ M ... }}) are handled in _evalMemberOf; concept filters ({{ C ... }})
+    // and description filters ({{ D ... }}) are applied to the result below.
+    if (node.filters && node.filters.length > 0) {
+      const inner = { ...node, filters: undefined };
+      let ctx = await this._evalSubExpression(inner, opContext);
+      const conceptFilters = node.filters.filter(fc => fc.kind === 'C');
+      if (conceptFilters.length > 0) {
+        ctx = await this._applyConceptFilters(ctx, conceptFilters, opContext);
       }
-      return this._eclWildcard();
+      for (const fc of node.filters.filter(fc => fc.kind === 'D')) {
+        ctx = await this._applyDescriptionFilter(ctx, fc.filters, opContext);
+      }
+      for (const fc of node.filters.filter(fc => fc.kind === '+')) {
+        ctx = await this._applyHistorySupplement(ctx, fc, opContext);
+      }
+      return ctx;
     }
 
-    // Member-of (^)
-    if (focus.type === ECLNodeType.MEMBER_OF) {
-      if (operator) {
-        throw new Error('ECL hierarchy operators combined with ^ (member-of) are not yet supported');
+    // Alternate identifiers (ECL 2.1 "scheme#code"): the concept(s) that carry
+    // the code in that identifier scheme, then the operator applies to them as
+    // to any set. The scheme is an alias from the ECL specification (LOINC) or
+    // the identifier scheme concept's own id.
+    if (focus.type === ECLNodeType.ALT_IDENTIFIER) {
+      const set = this._eclAltIdentifier(focus);
+      if (!operator) {
+        const result = new SnomedFilterContext();
+        result.descendants = set;
+        return result;
       }
-      return this._evalMemberOf(focus, opContext);
+      const base = new SnomedFilterContext();
+      base.descendants = set;
+      return await this._eclApplyOperatorToSet(base, operator, opContext);
+    }
+
+    // Top / bottom of set: the members of the focus set with no ancestor
+    // (respectively descendant) in that set
+    if (operator === ECLTokenType.TOP_OF_SET || operator === ECLTokenType.BOTTOM_OF_SET) {
+      const set = this._eclResolveSet(await this._evalECLNode(focus, opContext), opContext);
+      return await this._eclTopOrBottom(set, operator === ECLTokenType.TOP_OF_SET, opContext);
     }
 
     // Plain concept reference
@@ -615,8 +1219,145 @@ class SnomedServices {
       return this._evalConceptWithOperator(focus.conceptId, operator, opContext);
     }
 
-    // Parenthesised sub-expression: focus is itself a full constraint node
-    return this._evalECLNode(focus, opContext);
+    // Wildcard, member-of, or a parenthesised sub-expression: evaluate the
+    // focus to a set, then apply the operator to each member and union the
+    // results ("< (A OR B)" is "< A OR < B"; "<< ^ refset" is the descendants
+    // of every member). Without an operator the set is the answer.
+    let base;
+    if (focus.type === ECLNodeType.WILDCARD) {
+      base = this._eclWildcard();
+    } else if (focus.type === ECLNodeType.MEMBER_OF) {
+      base = await this._evalMemberOf(focus, opContext);
+    } else {
+      base = await this._evalECLNode(focus, opContext);
+    }
+    if (!operator) {
+      return base;
+    }
+    return await this._eclApplyOperatorToSet(base, operator, opContext);
+  };
+
+  /**
+   * Apply a hierarchy operator to every concept in a set and union the results.
+   * The wildcard is special-cased: its self-inclusive forms are the wildcard
+   * again, and the others are "every concept that has a parent / child".
+   */
+  _eclApplyOperatorToSet = async function (ctx, operator, opContext) {
+    if (ctx.eclWildcard && (!ctx.descendants || ctx.descendants.length === 0)) {
+      switch (operator) {
+        case ECLTokenType.DESCENDANT_OR_SELF_OF:
+        case ECLTokenType.ANCESTOR_OR_SELF_OF:
+        case ECLTokenType.CHILD_OR_SELF_OF:
+        case ECLTokenType.PARENT_OR_SELF_OF:
+          return this._eclWildcard();
+        case ECLTokenType.DESCENDANT_OF:
+        case ECLTokenType.CHILD_OF: {
+          const result = new SnomedFilterContext();
+          result.descendants = this._eclEnumerateAllConcepts(opContext).filter(idx => this.getConceptParents(idx).length > 0);
+          return result;
+        }
+        case ECLTokenType.ANCESTOR_OF:
+        case ECLTokenType.PARENT_OF: {
+          const result = new SnomedFilterContext();
+          result.descendants = this._eclEnumerateAllConcepts(opContext).filter(idx => this.getConceptChildren(idx).length > 0);
+          return result;
+        }
+        default:
+          throw new Error(`Unsupported ECL hierarchy operator: ${operator}`);
+      }
+    }
+    const union = new Set();
+    for (const idx of this._eclToIndexArray(ctx)) {
+      if (this._eclTick(opContext, 'ecl:operatorOnSet')) await opContext.checkAndYield('ecl:operatorOnSet');
+      const part = this._evalConceptWithOperator(this.concepts.getConceptId(idx), operator, opContext);
+      for (const r of this._eclToIndexArray(part)) {
+        union.add(r);
+      }
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = [...union];
+    return result;
+  };
+
+  /**
+   * Resolve an ECL alternate identifier (scheme#code) to concept indexes. The
+   * scheme is a known alias (IDENTIFIER_SCHEMES[].alias, case-insensitive) or
+   * an identifier scheme concept id. An unknown scheme, or a code nobody has,
+   * is an invalid expression - the same standing as an unknown concept.
+   */
+  _eclAltIdentifier = function (node) {
+    let schemeId = null;
+    if (/^\d{6,18}$/.test(node.scheme)) {
+      schemeId = node.scheme;
+    } else {
+      for (const [id, def] of Object.entries(IDENTIFIER_SCHEMES)) {
+        if (def.alias && def.alias.toLowerCase() === node.scheme.toLowerCase()) schemeId = id;
+      }
+    }
+    const invalid = (msg) => { const e = new Error(msg); e.eclInvalid = true; return e; };
+    if (!schemeId) {
+      throw invalid(`The alternate identifier scheme "${node.scheme}" is not known`);
+    }
+    const concepts = this.getConceptsForIdentifier(schemeId, node.code);
+    if (concepts.length === 0) {
+      throw invalid(`No concept has the alternate identifier ${node.scheme}#${node.code}`);
+    }
+    return concepts.map(id => this.concepts.findConcept(id)).filter(r => r.found).map(r => r.index);
+  };
+
+  /**
+   * !!> / !!< : keep the concepts in `set` that have no ancestor (top) or no
+   * descendant (bottom) that is also in `set`. Walks the stated parents of each
+   * member within the set, so the cost is bounded by the set's own size.
+   */
+  _eclTopOrBottom = async function (set, top, opContext) {
+    const members = new Set(set);
+    // a member is "covered" (not top) when some ancestor is in the set; for
+    // bottom, the ancestor is the one that is covered
+    const covered = new Set();
+    for (const idx of members) {
+      if (this._eclTick(opContext, 'ecl:topBottom')) await opContext.checkAndYield('ecl:topBottom');
+      const seen = new Set();
+      const stack = [...this.getConceptParents(idx)];
+      while (stack.length > 0) {
+        const p = stack.pop();
+        if (seen.has(p)) continue;
+        seen.add(p);
+        if (members.has(p)) {
+          covered.add(top ? idx : p);
+          if (top) break;
+        }
+        stack.push(...this.getConceptParents(p));
+      }
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = [...members].filter(idx => !covered.has(idx));
+    return result;
+  };
+
+  /**
+   * Resolve an attribute name (the left side of a refinement or a dotted step)
+   * to the set of relationship type indexes it denotes: a bare concept gives one
+   * index, `*` any type, and an expression (<< 762705008, (A OR B), ^ refset)
+   * whatever it evaluates to.
+   * @returns {{any: boolean, types: Set<number>|null}}
+   */
+  _eclAttributeTypes = async function (nameNode, opContext) {
+    if (nameNode.type === ECLNodeType.WILDCARD) {
+      return { any: true, types: null };
+    }
+    if (nameNode.type === ECLNodeType.CONCEPT_REFERENCE) {
+      const attrResult = this.concepts.findConcept(nameNode.conceptId);
+      if (!attrResult.found) {
+        throw new Error(`The SNOMED CT Concept ${nameNode.conceptId} is not known`);
+      }
+      return { any: false, types: new Set([attrResult.index]) };
+    }
+    const ctx = await this._evalECLNode(nameNode, opContext);
+    if (ctx.eclWildcard && (!ctx.descendants || ctx.descendants.length === 0)) {
+      return { any: true, types: null };
+    }
+    return { any: false, types: new Set(this._eclToIndexArray(ctx)) };
   };
 
   /**
@@ -700,8 +1441,9 @@ class SnomedServices {
    * resolved to a set of candidate reference-set concepts, and the result is the
    * union of their active concept members' referenced components.
    *
-   * When the operand is a bare, explicitly-named concept that is not a reference
-   * set, this throws (the caller asked for an error in that case). When the
+   * When the operand concept is not a reference set the result is empty (a
+   * non-refset concept simply has no members - this matches Snowstorm and the
+   * tx-ecosystem test suite). When the
    * operand is a computed expression (e.g. ^(<<900000000000455006)), concepts in
    * the resolved set that are not reference sets are simply skipped — the closure
    * of "Reference set" necessarily includes the non-refset parent itself.
@@ -710,33 +1452,52 @@ class SnomedServices {
    * @param {OperationContext} [opContext]
    * @returns {SnomedFilterContext}
    */
-  _evalMemberOf = function (memberOfNode, opContext) {
-    const operandIsBareRef = memberOfNode.refSet.type === ECLNodeType.CONCEPT_REFERENCE;
-    const refsetConcepts = this._eclResolveSet(this._evalECLNode(memberOfNode.refSet, opContext), opContext);
+  _evalMemberOf = async function (memberOfNode, opContext) {
+    // ^ [field, ...] refset selects which field of the member rows to return
+    // instead of the referenced component. Not supported: the referenced
+    // components, and the fields, may be descriptions or other non-concept
+    // components, which an expansion cannot carry.
+    if (memberOfNode.fields) {
+      throw new Error(`ECL reference set field selection (^ [${memberOfNode.fields.join(', ')}] ...) is not supported`);
+    }
+    const refsetConcepts = this._eclResolveSet(await this._evalECLNode(memberOfNode.refSet, opContext), opContext);
+    const memberFilters = await this._eclPrepareMemberFilters(memberOfNode.memberFilters, opContext);
+    const rs = memberOfNode.refSet;
+    const explicit = rs.type === ECLNodeType.CONCEPT_REFERENCE ||
+      (rs.type === ECLNodeType.SUB_EXPRESSION_CONSTRAINT && !rs.operator && rs.focus.type === ECLNodeType.CONCEPT_REFERENCE);
 
     const members = new Set();
     for (const refsetIdx of refsetConcepts) {
-      if (opContext) opContext.deadCheck('ecl:memberOf');
-      const membersRef = this._findRefSetMembersRef(refsetIdx);
+      if (this._eclTick(opContext, 'ecl:memberOf')) await opContext.checkAndYield('ecl:memberOf');
+      const refSet = this._findRefSetRecord(refsetIdx);
+      const membersRef = refSet ? refSet.membersByRef : null;
       if (membersRef === null) {
-        if (operandIsBareRef) {
-          const code = this.concepts.getConceptId(refsetIdx).toString();
-          throw new Error(`The SNOMED CT Concept ${code} is not a reference set`);
-        }
-        continue; // computed operand: ignore concepts that aren't reference sets
+        // Operand concept is not a reference set: yield no members for it
+        // (empty result) rather than erroring. Applies to both a bare concept
+        // reference (e.g. "^ 10200004") and a computed operand.
+        continue;
       }
       if (membersRef === 0 || membersRef === 0xFFFFFFFF) {
         continue; // a reference set with no members
       }
-      const memberList = this.refSetMembers.getMembers(membersRef);
-      for (const m of memberList || []) {
+      const memberList = this.refSetMembers.getMembers(membersRef) || [];
+      // A reference set whose members are descriptions (a language reference
+      // set, say) has no concept members to return. When it was named
+      // explicitly, say so rather than answering with an empty set, which would
+      // read as "no members". When it merely falls inside a computed operand
+      // (^ *, ^ (< 900000000000455006)) it contributes nothing and the rest of
+      // the operand still counts.
+      if (explicit && memberList.length > 0 && !memberList.some(m => m.kind === 0)) {
+        throw new Error(`The members of reference set ${this.concepts.getConceptId(refsetIdx)} are descriptions, not concepts, so ^ cannot be evaluated for it`);
+      }
+      for (const m of memberList) {
         // Concept referenced components only (kind 0). Description/other members
         // are excluded, which also prevents the no-component sentinel (0xFFFFFFFF)
         // from leaking in. The referenced concept may itself be INACTIVE and is
         // still returned — "active" in the spec qualifies the membership row (and
         // inactive rows are already dropped at import), not the referenced
         // concept. The expansion marks/handles inactivity (e.g. activeOnly).
-        if (m.kind === 0) {
+        if (m.kind === 0 && this._eclMemberMatches(m, refSet, memberFilters)) {
           members.add(m.ref);
         }
       }
@@ -747,7 +1508,521 @@ class SnomedServices {
   };
 
   /**
-   * Wildcard — all active concepts.  The eclWildcard flag tells filterCheck /
+   * Apply a history supplement ({{ + HISTORY... }}): add to the result the
+   * inactive concepts that the selected historical association reference sets
+   * associate with a concept in the result (the association rows whose
+   * targetComponentId is in the result).
+   *
+   * Profiles (ECL 2.x): MIN = SAME AS; MOD = SAME AS, WAS A, REPLACED BY,
+   * PARTIALLY EQUIVALENT TO; MAX (and a bare HISTORY) = every reference set
+   * under 900000000000522004 |Historical association|; HISTORY (expr) = the
+   * reference sets the expression yields. A reference set the edition does not
+   * carry simply contributes nothing.
+   */
+  _applyHistorySupplement = async function (ctx, hs, opContext) {
+    const HISTORICAL_ASSOCIATION = '900000000000522004';
+    const PROFILES = {
+      MIN: ['900000000000527005'],
+      MOD: ['900000000000527005', '900000000000528000', '900000000000526001', '1186924009']
+    };
+    let refsetIdxs;
+    if (hs.profile === 'EXPLICIT') {
+      refsetIdxs = this._eclResolveSet(await this._evalECLNode(hs.refsets, opContext), opContext);
+    } else if (hs.profile === 'MAX') {
+      const root = this.concepts.findConcept(HISTORICAL_ASSOCIATION);
+      refsetIdxs = root.found ? this._eclToIndexArray(this.filterIsA(HISTORICAL_ASSOCIATION, false)) : [];
+    } else {
+      refsetIdxs = PROFILES[hs.profile].map(id => this.concepts.findConcept(id)).filter(r => r.found).map(r => r.index);
+    }
+
+    const base = this._eclResolveSet(ctx, opContext);
+    const inResult = new Set(base);
+    const added = new Set();
+    for (const refsetIdx of refsetIdxs) {
+      if (this._eclTick(opContext, 'ecl:history')) await opContext.checkAndYield('ecl:history');
+      const byTarget = this._historyIndex(refsetIdx);
+      if (!byTarget) continue;
+      for (const [target, sources] of byTarget) {
+        if (inResult.has(target)) {
+          for (const src of sources) {
+            if (!inResult.has(src)) added.add(src);
+          }
+        }
+      }
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = base.concat([...added]);
+    return result;
+  };
+
+  /**
+   * target concept index -> [referenced (inactive) concept indexes] for one
+   * association reference set, built once per edition. null when the concept
+   * is not a reference set with concept-valued members.
+   */
+  _historyIndex = function (refsetIdx) {
+    this._historyIndexes = this._historyIndexes || new Map();
+    if (this._historyIndexes.has(refsetIdx)) {
+      return this._historyIndexes.get(refsetIdx);
+    }
+    let index = null;
+    const refSet = this._findRefSetRecord(refsetIdx);
+    if (refSet && refSet.membersByRef && refSet.membersByRef !== 0xFFFFFFFF) {
+      for (const m of this.refSetMembers.getMembers(refSet.membersByRef) || []) {
+        if (m.kind !== 0 || !m.values) continue;
+        const values = this.refs.getReferences(m.values);
+        // targetComponentId is the first additional field, stored as (value, type) with type 1 = concept
+        if (!values || values.length < 2 || values[1] !== 1) continue;
+        index = index || new Map();
+        const list = index.get(values[0]) || [];
+        list.push(m.ref);
+        index.set(values[0], list);
+      }
+    }
+    this._historyIndexes.set(refsetIdx, index);
+    return index;
+  };
+
+  /**
+   * Apply {{ C ... }} concept filters to a result: each concept is tested on
+   * its own active flag, module, effectiveTime and definition status. Several
+   * filter constraints, and the comma-separated filters within one, all AND.
+   */
+  _applyConceptFilters = async function (ctx, filterConstraints, opContext) {
+    const filters = [];
+    for (const fc of filterConstraints) {
+      for (const f of fc.filters) {
+        if (f.valueType === 'expression') {
+          const vctx = await this._evalECLNode(f.value, opContext);
+          if (vctx.eclWildcard && (!vctx.descendants || vctx.descendants.length === 0)) {
+            filters.push({ ...f, wildcard: true });
+          } else {
+            filters.push({ ...f, set: new Set(this._eclToIndexArray(vctx)) });
+          }
+        } else {
+          filters.push(f);
+        }
+      }
+    }
+    // The definition status concepts, if this edition has them
+    const statusIndex = (id) => {
+      const r = this.concepts.findConcept(id);
+      return r.found ? r.index : null;
+    };
+    const primitiveIdx = statusIndex('900000000000074008');
+    const definedIdx = statusIndex('900000000000073002');
+
+    const matching = [];
+    for (const idx of this._eclResolveSet(ctx, opContext)) {
+      if (this._eclTick(opContext, 'ecl:conceptFilter')) await opContext.checkAndYield('ecl:conceptFilter');
+      let ok = true;
+      for (const f of filters) {
+        const field = f.field.toLowerCase();
+        let r;
+        if (field === 'active') {
+          r = this.isActive(idx) === f.value;
+          if (f.operator === '!=') r = !r;
+        } else if (field === 'effectivetime') {
+          const concept = this.concepts.getConcept(idx);
+          r = this._eclCompareValues(this._snomedDateToString(concept.effectiveTime), f.operator, f.values, (a, b) => a.localeCompare(b));
+        } else if (field === 'moduleid') {
+          const inSet = f.wildcard || f.set.has(this.concepts.getModuleId(idx));
+          r = f.operator === '=' ? inSet : !inSet;
+        } else if (field === 'definitionstatusid') {
+          const statusIdx = this.isPrimitive(idx) ? primitiveIdx : definedIdx;
+          const inSet = f.wildcard || (statusIdx !== null && f.set.has(statusIdx));
+          r = f.operator === '=' ? inSet : !inSet;
+        } else if (field === 'definitionstatus') {
+          const status = this.isPrimitive(idx) ? 'primitive' : 'defined';
+          const inSet = f.values.includes(status);
+          r = f.operator === '=' ? inSet : !inSet;
+        } else {
+          throw new Error(`Unsupported concept filter ${f.field}`);
+        }
+        if (!r) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        matching.push(idx);
+      }
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = matching;
+    return result;
+  };
+
+  /**
+   * Apply one {{ D ... }} block: a concept is kept when at least one of its
+   * descriptions satisfies every filter in the block. Only active descriptions
+   * are considered unless the block has an `active` filter. Several blocks
+   * AND at the concept level (each may be satisfied by a different description).
+   */
+  _applyDescriptionFilter = async function (ctx, filters, opContext) {
+    const K = this._displayConstants();
+    const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
+    const typeTokens = { syn: K.synonym, fsn: K.fsn, def: idx('900000000000550004') };
+    const acceptabilityIdx = { preferred: K.preferred, acceptable: idx('900000000000549004') };
+    const resolveSet = async (expr) => {
+      const vctx = await this._evalECLNode(expr, opContext);
+      if (vctx.eclWildcard && (!vctx.descendants || vctx.descendants.length === 0)) return null; // any
+      return new Set(this._eclToIndexArray(vctx));
+    };
+    let activeFilter = null;
+    const prepare = async (f) => {
+      const field = f.field.toLowerCase();
+      switch (f.valueType) {
+        case 'term':
+          return { ...f, field, matchers: f.values.map(v => this._eclTermMatcher(v)) };
+        case 'expression':
+          return { ...f, field, set: await resolveSet(f.value) };
+        case 'type':
+          return { ...f, field, set: new Set(f.values.map(t => typeTokens[t]).filter(i => i >= 0)) };
+        case 'dialectId':
+        case 'dialect': {
+          const dialects = [];
+          for (const d of f.dialects) {
+            let set;
+            if (d.alias) {
+              const id = ECL_DIALECT_ALIASES[d.alias];
+              if (!id) throw new Error(`Unknown dialect alias ${d.alias} in description filter`);
+              const i = idx(id);
+              set = new Set(i >= 0 ? [i] : []);
+            } else {
+              set = await resolveSet(d.expression);
+            }
+            const acceptability = d.acceptability
+              ? new Set(d.acceptability.map(a => acceptabilityIdx[a] !== undefined ? acceptabilityIdx[a] : idx(a)))
+              : null;
+            dialects.push({ set, acceptability });
+          }
+          return { ...f, field, dialects };
+        }
+        case 'boolean':
+          activeFilter = f;
+          return { ...f, field };
+        case 'id':
+          return { ...f, field, ids: new Set(f.values.map(v => BigInt(v))) };
+        default:
+          return { ...f, field };
+      }
+    };
+    const prepared = [];
+    for (const f of filters) {
+      prepared.push(await prepare(f));
+    }
+
+    // Only the concepts the text index says could pass the term filters are looked at: reading
+    // and splitting every description of a big set (<< 138875005 is 380k concepts) is seconds of
+    // synchronous work on tx.fhir.org, and the index answers in milliseconds
+    const candidates = activeFilter ? null : this._eclTermCandidates(prepared, opContext);
+    const matching = [];
+    for (const conceptIdx of this._eclResolveSet(ctx, opContext)) {
+      if (candidates && !candidates.has(conceptIdx)) continue;
+      if (this._eclTick(opContext, 'ecl:descriptionFilter')) await opContext.checkAndYield('ecl:descriptionFilter');
+      const concept = this.concepts.getConcept(conceptIdx);
+      const descIndices = concept.descriptions ? (this.refs.getReferences(concept.descriptions) || []) : [];
+      let found = false;
+      for (const descIndex of descIndices) {
+        const d = this.descriptions.getDescription(descIndex);
+        if (!activeFilter && !d.active) continue;
+        if (prepared.every(f => this._eclDescriptionMatches(d, f))) {
+          found = true;
+          break;
+        }
+      }
+      if (found) matching.push(conceptIdx);
+    }
+    const result = new SnomedFilterContext();
+    result.descendants = matching;
+    return result;
+  };
+
+  /**
+   * The concepts that could pass the term filters of one {{ D ... }} block, from the edition's
+   * text index (SnomedTextIndex), or null when it can't say (no term filter it can narrow by) - then every concept is checked. A superset: each concept is still
+   * checked description by description (_eclDescriptionMatches), so the index only decides which
+   * concepts are looked at, never what matches.
+   *
+   * The index holds the words of active descriptions, folded, in every language, and finds the
+   * concepts with words that start with each search word - which every concept a "match" term
+   * can match has. Only search words of plain letters and digits (a-z, 0-9), at least 2 of them,
+   * are used: the index's folding and word breaks are the same as the ECL matcher's for those
+   * (others are left out, which only lets more concepts through). "wild:" terms and != filters
+   * don't narrow.
+   *
+   * @param {object[]} prepared - the block's prepared filters
+   * @param {OperationContext|null} opContext
+   * @returns {Set<number>|null} concept indexes
+   */
+  _eclTermCandidates = function (prepared, opContext) {
+    const index = this._textIndex;
+    if (!index) {
+      return null;
+    }
+    let result = null;
+    for (const f of prepared) {
+      if (f.field !== 'term' || f.operator !== '=') {
+        continue;
+      }
+      // the values are alternatives: the union of what each can match, unless one can't be narrowed
+      let union = new Set();
+      for (const v of f.values) {
+        const tokens = v.kind === 'wild' ? [] : v.value.toLowerCase().split(/\s+/)
+          .filter(w => w.length >= 2 && /^[a-z0-9]+$/.test(w))
+          .map(word => ({ word, stem: null, whole: false }));
+        if (tokens.length === 0) {
+          union = null;
+          break;
+        }
+        for (const ordinal of index.search(tokens, opContext)) {
+          union.add(ordinal * index.conceptSize);
+        }
+      }
+      if (union) {
+        // several term filters in the block: a concept has to pass them all
+        result = result === null ? union : new Set([...union].filter(i => result.has(i)));
+      }
+    }
+    return result;
+  };
+
+  /**
+   * Does one description satisfy one prepared description filter?
+   */
+  _eclDescriptionMatches = function (d, f) {
+    const neg = f.operator === '!=';
+    const eq = (r) => neg ? !r : r;
+    switch (f.field) {
+      case 'term':
+        return eq(f.matchers.some(m => m(this.strings.getEntry(d.iDesc))));
+      case 'language':
+        return eq(f.values.includes(SCT_LANGUAGE_CODES[d.lang] || 'en'));
+      case 'typeid':
+        return eq(f.set === null || f.set.has(d.kind));
+      case 'type':
+        return eq(f.set.has(d.kind));
+      case 'moduleid':
+        return eq(f.set === null || f.set.has(d.module));
+      case 'dialectid':
+      case 'dialect': {
+        const refsets = d.refsets ? (this.refs.getReferences(d.refsets) || []) : [];
+        const inDialect = f.dialects.some(dl => refsets.some(r => {
+          if (dl.set !== null && !dl.set.has(r)) return false;
+          if (!dl.acceptability) return true;
+          return dl.acceptability.has(this._descAcceptability(d, r));
+        }));
+        return eq(inDialect);
+      }
+      case 'effectivetime':
+        return this._eclCompareValues(this._snomedDateToString(d.date), f.operator, f.values, (a, b) => a.localeCompare(b));
+      case 'active':
+        return eq(d.active === f.value);
+      case 'id':
+        return eq(f.ids.has(d.id));
+      default:
+        throw new Error(`Unsupported description filter ${f.field}`);
+    }
+  };
+
+  /**
+   * A matcher for one typed search term. "match" semantics (the default): every
+   * word of the search term is a prefix of some word of the description, case
+   * insensitively. "wild" semantics: the whole description matches the pattern,
+   * with * standing for any characters.
+   */
+  _eclTermMatcher = function (v) {
+    if (v.kind === 'wild') {
+      return wildTermMatcher(v.value);
+    }
+    const words = v.value.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    return (term) => {
+      const termWords = term.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length > 0);
+      return words.every(w => termWords.some(tw => tw.startsWith(w)));
+    };
+  };
+
+  /**
+   * Resolve the expression-valued member filters (moduleId = ..., <conceptField> = ...)
+   * once, before the members are walked. Returns the filters with a `set` of
+   * concept indexes attached (or `wildcard: true`), or null when there are none.
+   */
+  _eclPrepareMemberFilters = async function (filters, opContext) {
+    if (!filters || filters.length === 0) {
+      return null;
+    }
+    const prepared = [];
+    for (const f of filters) {
+      if (f.valueType !== 'expression') {
+        prepared.push(f);
+        continue;
+      }
+      const ctx = await this._evalECLNode(f.value, opContext);
+      if (ctx.eclWildcard && (!ctx.descendants || ctx.descendants.length === 0)) {
+        prepared.push({ ...f, wildcard: true });
+      } else {
+        prepared.push({ ...f, set: new Set(this._eclToIndexArray(ctx)) });
+      }
+    }
+    return prepared;
+  };
+
+  /**
+   * Does a reference set member row satisfy every member filter?
+   *
+   * Member rows are only stored when active, so `active = false` matches
+   * nothing. effectiveTime and moduleId come from the row itself (present when
+   * the reference set stores ids); any other field name is looked up in the
+   * reference set's additional fields (e.g. targetComponentId, mapTarget,
+   * acceptabilityId), typed by the refset file name (c / i / s).
+   */
+  _eclMemberMatches = function (m, refSet, filters) {
+    if (!filters) {
+      return true;
+    }
+    for (const f of filters) {
+      const field = f.field.toLowerCase();
+      let ok;
+      if (field === 'active') {
+        ok = (f.operator === '=') === f.value;
+      } else if (field === 'effectivetime') {
+        if (m.date == null) {
+          return false;
+        }
+        ok = this._eclCompareValues(this._snomedDateToString(m.date), f.operator, f.values, (a, b) => a.localeCompare(b));
+      } else if (field === 'moduleid') {
+        if (m.module == null) {
+          return false;
+        }
+        const inSet = f.wildcard || f.set.has(m.module);
+        ok = f.operator === '=' ? inSet : !inSet;
+      } else {
+        const fv = this._eclMemberFieldValue(m, refSet, f.field);
+        if (fv === undefined) {
+          throw new Error(`Reference set ${this.concepts.getConceptId(refSet.definition)} has no field named ${f.field}`);
+        }
+        if (fv === null) {
+          return false;
+        }
+        switch (f.valueType) {
+          case 'expression': {
+            if (fv.type !== 'concept') {
+              throw new Error(`Reference set field ${f.field} is not a concept field`);
+            }
+            const inSet = f.wildcard || f.set.has(fv.value);
+            ok = f.operator === '=' ? inSet : !inSet;
+            break;
+          }
+          case 'numeric': {
+            if (fv.type !== 'integer') {
+              throw new Error(`Reference set field ${f.field} is not a numeric field`);
+            }
+            ok = this._eclCompareValues(Number(fv.value), f.operator, [Number(f.value)], (a, b) => a - b);
+            break;
+          }
+          case 'string': {
+            if (fv.type !== 'string') {
+              throw new Error(`Reference set field ${f.field} is not a string field`);
+            }
+            ok = this._eclCompareValues(fv.value, f.operator, f.values, (a, b) => a.localeCompare(b));
+            break;
+          }
+          case 'time': {
+            if (fv.type !== 'string') {
+              throw new Error(`Reference set field ${f.field} is not a time field`);
+            }
+            ok = this._eclCompareValues(fv.value, f.operator, f.values, (a, b) => a.localeCompare(b));
+            break;
+          }
+          case 'boolean': {
+            if (fv.type !== 'string' && fv.type !== 'integer') {
+              throw new Error(`Reference set field ${f.field} is not a boolean field`);
+            }
+            const b = String(fv.value) === '1' || String(fv.value).toLowerCase() === 'true';
+            ok = (f.operator === '=') === (b === f.value);
+            break;
+          }
+          default:
+            throw new Error(`Unsupported member filter on ${f.field}`);
+        }
+      }
+      if (!ok) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  /**
+   * Compare one value against a value set with an ECL comparison operator.
+   * "=" is true when any set value matches, "!=" when none does; the ordering
+   * operators compare against the single value.
+   */
+  _eclCompareValues = function (actual, operator, values, cmp) {
+    switch (operator) {
+      case '=': return values.some(v => cmp(actual, v) === 0);
+      case '!=': return !values.some(v => cmp(actual, v) === 0);
+      case '<': return cmp(actual, values[0]) < 0;
+      case '<=': return cmp(actual, values[0]) <= 0;
+      case '>': return cmp(actual, values[0]) > 0;
+      case '>=': return cmp(actual, values[0]) >= 0;
+      default: throw new Error(`Unsupported comparison operator ${operator}`);
+    }
+  };
+
+  /**
+   * Read a named additional field from a member row. Returns undefined when the
+   * reference set has no such field, null when the row has no value for it, and
+   * otherwise { type: 'concept'|'description'|'integer'|'string', value }.
+   */
+  _eclMemberFieldValue = function (m, refSet, fieldName) {
+    if (!refSet.fieldNames) {
+      return undefined;
+    }
+    const names = this.refs.getReferences(refSet.fieldNames) || [];
+    const idx = names.findIndex(n => this.strings.getEntry(n).trim().toLowerCase() === fieldName.toLowerCase());
+    if (idx < 0) {
+      return undefined;
+    }
+    const values = m.values ? this.refs.getReferences(m.values) : null;
+    if (!values || values.length < (idx + 1) * 2) {
+      return null;
+    }
+    const value = values[idx * 2];
+    const type = values[idx * 2 + 1];
+    switch (type) {
+      case 1: return { type: 'concept', value };
+      case 2: return { type: 'description', value };
+      case 4: return { type: 'integer', value };
+      case 5: return { type: 'string', value: this.strings.getEntry(value) };
+      default: return null;
+    }
+  };
+
+  /**
+   * Stored SNOMED dates are days since the Pascal TDateTime epoch (1899-12-30);
+   * render as YYYYMMDD for comparison with an ECL time value.
+   */
+  _snomedDateToString = function (days) {
+    const d = new Date(Date.UTC(1899, 11, 30) + days * 86400000);
+    return d.toISOString().slice(0, 10).replace(/-/g, '');
+  };
+
+  _findRefSetRecord = function (conceptIndex) {
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      const refSet = this.refSetIndex.getReferenceSet(i);
+      // definition 0 means the importer could not resolve the reference set's
+      // concept (it is outside the subset) - not "the concept at offset 0"
+      if (refSet.definition === conceptIndex && refSet.definition !== 0) {
+        return refSet;
+      }
+    }
+    return null;
+  };
+
+  /**
+   * Wildcard — every concept, active or not.  The eclWildcard flag tells filterCheck /
    * filterLocate to accept every active concept without enumeration.
    * @returns {SnomedFilterContext}
    */
@@ -767,26 +2042,19 @@ class SnomedServices {
    * @param {object} node
    * @returns {SnomedFilterContext}
    */
-  _evalDotted = function (node, opContext) {
-    let current = this._eclResolveSet(this._evalECLNode(node.base, opContext), opContext);
+  _evalDotted = async function (node, opContext) {
+    let current = this._eclResolveSet(await this._evalECLNode(node.base, opContext), opContext);
 
     for (const attr of node.attributes || []) {
-      if (attr.type !== ECLNodeType.CONCEPT_REFERENCE) {
-        throw new Error('ECL dotted expressions only support plain concept-reference attribute names');
-      }
-      const attrResult = this.concepts.findConcept(attr.conceptId);
-      if (!attrResult.found) {
-        throw new Error(`The SNOMED CT Concept ${attr.conceptId} is not known`);
-      }
-      const attrTypeIdx = attrResult.index;
+      const types = await this._eclAttributeTypes(attr, opContext);
 
       const next = new Set();
       for (const conceptIdx of current) {
-        if (opContext) opContext.deadCheck('ecl:dotted');
+        if (this._eclTick(opContext, 'ecl:dotted')) await opContext.checkAndYield('ecl:dotted');
         const relIdxs = this.getConceptRelationships(conceptIdx);
         for (const relIdx of relIdxs) {
-          const rel = this.relationships.getRelationship(relIdx);
-          if (rel.active && rel.relType === attrTypeIdx) {
+          const rel = this.relationships.getRelationshipCore(relIdx);
+          if (rel.active && (types.any || types.types.has(rel.relType))) {
             next.add(rel.target);
           }
         }
@@ -805,19 +2073,27 @@ class SnomedServices {
    * Evaluate a refined expression: `<baseConstraint> : <refinement>`.
    * Supported refinement shapes:
    *   - ATTRIBUTE            attr = valueExpr
-   *   - ATTRIBUTE_SET        attr1 = v1, attr2 = v2 (conjunction)
+   *   - ATTRIBUTE_SET        attr1 = v1, attr2 = v2 / attr1 = v1 AND|OR attr2 = v2 (operator 'AND'|'OR')
    *   - ATTRIBUTE_GROUP      { attr1 = v1, attr2 = v2 } (same relationship group)
    * Reverse attributes, cardinality, `!=`, and non-concept attribute names
    * throw informative errors.
    * @param {object} node
    * @returns {SnomedFilterContext}
    */
-  _evalRefined = function (node, opContext) {
-    const baseSet = this._eclResolveSet(this._evalECLNode(node.base, opContext), opContext);
+  _evalRefined = async function (node, opContext) {
+    const baseSet = this._eclResolveSet(await this._evalECLNode(node.base, opContext), opContext);
+    // Only gather what this refinement can look at: the inbound relationships (for R
+    // attributes) and the concrete values are costly to collect for every concept
+    const needs = this._refinementNeeds(node.refinement);
+    await this._eclPrepareRefinement(node.refinement, opContext);
+    // The concepts that can possibly match, found from the attribute values' inbound
+    // relationships - when that is a smaller job than testing every concept in the base
+    const candidates = await this._refinementCandidates(node.refinement, baseSet.length, opContext);
     const matching = [];
     for (const conceptIdx of baseSet) {
-      if (opContext) opContext.deadCheck('ecl:refined');
-      if (this._refinementMatches(conceptIdx, node.refinement, opContext)) {
+      if (this._eclTick(opContext, 'ecl:refined')) await opContext.checkAndYield('ecl:refined');
+      if (candidates && !candidates.has(conceptIdx)) continue;
+      if (this._refinementMatches(this._conceptRelRecords(conceptIdx, needs), node.refinement, opContext)) {
         matching.push(conceptIdx);
       }
     }
@@ -827,26 +2103,203 @@ class SnomedServices {
   };
 
   /**
+   * What the relationship records for a refinement must include: inbound relationships
+   * when some attribute is reversed (R), concrete values when some comparison is concrete
+   * (numeric / string / boolean).
+   * @param {object} refinement
+   * @returns {{inbound: boolean, concrete: boolean}}
+   */
+  _refinementNeeds = function (refinement) {
+    const needs = { inbound: false, concrete: false, lean: true };
+    const walk = (n) => {
+      if (!n) return;
+      if (n.type === ECLNodeType.ATTRIBUTE) {
+        if (n.reverse) needs.inbound = true;
+        if (n.comparison && n.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON) needs.concrete = true;
+      } else if (Array.isArray(n.attributes)) {
+        n.attributes.forEach(walk);
+      } else {
+        // a refinement shape this doesn't know: collect everything
+        needs.inbound = true;
+        needs.concrete = true;
+      }
+    };
+    walk(refinement);
+    return needs;
+  };
+
+  /**
+   * The attribute types and value set of a refinement attribute. These depend only on the
+   * (static) AST node, not on the concept being tested, so they are resolved once and kept
+   * on the node - the AST is parsed fresh per request, so that is safe within a request.
+   * Without this the value expression would be re-evaluated for every concept (for a
+   * wildcard value, the whole active-concept set enumerated per concept).
+   */
+  _eclResolveAttribute = async function (attr, opContext) {
+    let resolved = attr._eclResolved;
+    if (!resolved) {
+      resolved = { types: await this._eclAttributeTypes(attr.name, opContext) };
+      if (attr.comparison.type === ECLNodeType.EXPRESSION_COMPARISON) {
+        resolved.valueSet = new Set(this._eclResolveSet(await this._evalECLNode(attr.comparison.value, opContext), opContext));
+      } else {
+        resolved.concrete = this._eclConcreteMatcher(attr.comparison);
+      }
+      attr._eclResolved = resolved;
+    }
+    return resolved;
+  };
+
+  /**
+   * Resolve every attribute of a refinement (_eclResolveAttribute) before concepts are
+   * tested against it, so that the test of each concept (_refinementMatches) is synchronous
+   * and cheap - the evaluation of the value expressions, which can be long, happens here,
+   * where it can yield.
+   */
+  _eclPrepareRefinement = async function (node, opContext) {
+    if (!node) return;
+    if (node.type === ECLNodeType.ATTRIBUTE) {
+      await this._eclResolveAttribute(node, opContext);
+    } else if (Array.isArray(node.attributes)) {
+      for (const a of node.attributes) {
+        await this._eclPrepareRefinement(a, opContext);
+      }
+    }
+  };
+
+  /**
+   * The resolved types and values of a refinement attribute (_eclPrepareRefinement must have
+   * been run on the refinement).
+   */
+  _eclResolvedAttribute = function (attr) {
+    if (!attr._eclResolved) {
+      throw new Error('ECL refinement attribute used before it was resolved');
+    }
+    return attr._eclResolved;
+  };
+
+  /**
+   * A superset of the concepts that can satisfy a refinement, or null when that can't be
+   * worked out more cheaply than testing each of the base set's `baseSize` concepts.
+   *
+   * A concept satisfies `A = X` only if it has an active relationship of type A whose
+   * target is in X - which is one of the inbound relationships of a concept in X. So when
+   * X is smaller than the base set, walking the inbound relationships of X finds the only
+   * concepts worth testing: `< 404684003 : 363698007 = << 39057004` tests the few hundred
+   * findings with a lung finding site, not all 120,000 findings. The full test still runs
+   * on each candidate (groups, cardinality and the other attributes are checked there).
+   *
+   * Not prunable: an attribute that may match zero times (cardinality [0..n]), `!=`,
+   * reversed and concrete attributes, and an OR with any unprunable branch.
+   *
+   * @returns {Set<number>|null}
+   */
+  _refinementCandidates = async function (node, baseSize, opContext) {
+    if (!node) return null;
+    switch (node.type) {
+      case ECLNodeType.ATTRIBUTE:
+        return await this._attributeCandidates(node, baseSize, opContext);
+      case ECLNodeType.ATTRIBUTE_SET:
+      case ECLNodeType.ATTRIBUTE_GROUP: {
+        if (node.type === ECLNodeType.ATTRIBUTE_GROUP && node.cardinality && !(node.cardinality.min >= 1)) {
+          return null;
+        }
+        const attrs = node.attributes || [];
+        if (node.type === ECLNodeType.ATTRIBUTE_SET && node.operator === 'OR') {
+          let union = null;
+          for (const a of attrs) {
+            const c = await this._refinementCandidates(a, baseSize, opContext);
+            if (!c) return null;
+            if (!union) {
+              union = c;
+            } else {
+              for (const idx of c) union.add(idx);
+            }
+            if (union.size >= baseSize) return null;
+          }
+          return union;
+        }
+        // AND (",", AND, and every attribute of a group): any one branch's candidates will do;
+        // intersecting them all narrows further
+        let result = null;
+        for (const a of attrs) {
+          const c = await this._refinementCandidates(a, baseSize, opContext);
+          if (!c) continue;
+          if (!result) {
+            result = c;
+          } else {
+            for (const idx of result) {
+              if (!c.has(idx)) result.delete(idx);
+            }
+          }
+        }
+        return result;
+      }
+      default:
+        return null;
+    }
+  };
+
+  _attributeCandidates = async function (attr, baseSize, opContext) {
+    if (!attr.comparison || attr.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON) return null;
+    if (attr.comparison.operator === ECLTokenType.NOT_EQUALS) return null;
+    if (attr.reverse) return null;
+    if (attr.cardinality && !(attr.cardinality.min >= 1)) return null;
+    const { types, valueSet } = await this._eclResolveAttribute(attr, opContext);
+    if (valueSet.size >= baseSize) return null;
+    const candidates = new Set();
+    for (const valueIdx of valueSet) {
+      if (this._eclTick(opContext, 'ecl:refinementCandidates')) await opContext.checkAndYield('ecl:refinementCandidates');
+      const inbounds = this.concepts.getInbounds(valueIdx);
+      if (!inbounds) continue;
+      for (const relIdx of this.refs.getReferences(inbounds) || []) {
+        const rel = this.relationships.getRelationshipCore(relIdx);
+        if (rel.active && rel.target === valueIdx && (types.any || types.types.has(rel.relType))) {
+          candidates.add(rel.source);
+        }
+      }
+    }
+    return candidates;
+  };
+
+  /**
    * Check whether a single concept satisfies a refinement node (ATTRIBUTE,
    * ATTRIBUTE_SET, or ATTRIBUTE_GROUP).
    * @param {number} conceptIdx
    * @param {object} refinement
    * @returns {boolean}
    */
-  _refinementMatches = function (conceptIdx, refinement, opContext) {
+  _refinementMatches = function (rels, refinement, opContext) {
     switch (refinement.type) {
       case ECLNodeType.ATTRIBUTE:
-        return this._attributeMatches(conceptIdx, refinement, null, opContext);
+        return this._attributeMatches(rels, refinement, null, opContext);
       case ECLNodeType.ATTRIBUTE_SET:
-        for (const a of refinement.attributes) {
-          if (!this._refinementMatches(conceptIdx, a, opContext)) return false;
+        // operator is 'AND' (also for ",") or 'OR'
+        if (refinement.operator === 'OR') {
+          return refinement.attributes.some(a => this._refinementMatches(rels, a, opContext));
         }
-        return true;
+        return refinement.attributes.every(a => this._refinementMatches(rels, a, opContext));
       case ECLNodeType.ATTRIBUTE_GROUP:
-        return this._attributeGroupMatches(conceptIdx, refinement, opContext);
+        return this._attributeGroupMatches(rels, refinement, opContext);
       default:
         throw new Error(`Unsupported refinement node type: ${refinement.type}`);
     }
+  };
+
+  /**
+   * The same, restricted to the relationships in one role group: an attribute
+   * set inside { } may itself be an AND/OR tree of attributes.
+   */
+  _refinementMatchesInGroup = function (rels, node, g, opContext) {
+    if (node.type === ECLNodeType.ATTRIBUTE_SET) {
+      if (node.operator === 'OR') {
+        return node.attributes.some(a => this._refinementMatchesInGroup(rels, a, g, opContext));
+      }
+      return node.attributes.every(a => this._refinementMatchesInGroup(rels, a, g, opContext));
+    }
+    if (node.type !== ECLNodeType.ATTRIBUTE) {
+      throw new Error(`Unsupported node type in attribute group: ${node.type}`);
+    }
+    return this._attributeMatches(rels, node, g, opContext);
   };
 
   /**
@@ -859,24 +2312,15 @@ class SnomedServices {
    * @param {number|null} groupFilter
    * @returns {boolean}
    */
-  _attributeMatches = function (conceptIdx, attr, groupFilter, opContext) {
-    if (attr.reverse) {
-      throw new Error('ECL reverse attributes (R) are not yet supported');
-    }
+  _attributeMatches = function (rels, attr, groupFilter, opContext) {
     if (!attr.comparison) {
       throw new Error('ECL attribute without a comparison is not supported');
     }
-    if (attr.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON) {
-      throw new Error(`ECL ${attr.comparison.type} in refinements is not yet supported`);
-    }
-    if (attr.comparison.operator !== ECLTokenType.EQUALS) {
-      throw new Error('ECL != in refinements is not yet supported');
-    }
-    if (attr.name.type !== ECLNodeType.CONCEPT_REFERENCE) {
-      throw new Error('ECL refinements only support plain concept-reference attribute names');
+    if (attr.comparison.type !== ECLNodeType.EXPRESSION_COMPARISON && !this.concreteValues) {
+      throw new Error('ECL concrete values (numeric, string and boolean attribute values) cannot be evaluated - this edition was imported without its concrete value relationships');
     }
 
-    const count = this._countAttributeMatches(conceptIdx, attr, groupFilter, opContext);
+    const count = this._countAttributeMatches(rels, attr, groupFilter, opContext);
 
     if (attr.cardinality) {
       return this._cardinalityAccepts(attr.cardinality, count);
@@ -893,7 +2337,7 @@ class SnomedServices {
    * @param {number|null} groupFilter
    * @returns {number}
    */
-  _countAttributeMatches = function (conceptIdx, attr, groupFilter, opContext) {
+  _countAttributeMatches = function (rels, attr, groupFilter, opContext) {
     // The attribute type and the value set depend only on the (static) AST node,
     // not on the concept being tested, so resolve them once per refinement
     // attribute and reuse across the whole base set. Without this memo the value
@@ -901,36 +2345,53 @@ class SnomedServices {
     // (`= *`) the entire active-concept set is re-enumerated per concept —
     // making refinement evaluation O(baseSet × valueExpr). The AST is parsed
     // fresh per request, so memoising on the node is safe within a request.
-    let resolved = attr._eclResolved;
-    if (!resolved) {
-      const attrResult = this.concepts.findConcept(attr.name.conceptId);
-      if (!attrResult.found) {
-        throw new Error(`The SNOMED CT Concept ${attr.name.conceptId} is not known`);
-      }
-      resolved = {
-        attrTypeIdx: attrResult.index,
-        valueSet: new Set(this._eclResolveSet(this._evalECLNode(attr.comparison.value, opContext), opContext))
-      };
-      attr._eclResolved = resolved;
-    }
-    const attrTypeIdx = resolved.attrTypeIdx;
+    const resolved = this._eclResolvedAttribute(attr);
+    const types = resolved.types;
     const valueSet = resolved.valueSet;
 
-    const relIdxs = this.getConceptRelationships(conceptIdx);
-    // ECL cardinality counts non-redundant matching attributes — i.e. distinct
-    // matching values — not raw relationship rows. The same (type, value) can
-    // appear in multiple role groups; counting rows over-counts and makes e.g.
-    // [1..1] fail and [2..*] succeed for a concept with a single morphology.
-    const matchedTargets = new Set();
-    for (const relIdx of relIdxs) {
-      if (opContext) opContext.deadCheck('ecl:countAttributeMatches');
-      const rel = this.relationships.getRelationship(relIdx);
-      if (!rel.active) continue;
-      if (rel.relType !== attrTypeIdx) continue;
-      if (groupFilter !== null && rel.group !== groupFilter) continue;
-      if (valueSet.has(rel.target)) matchedTargets.add(rel.target);
+    if (resolved.concrete) {
+      // A concrete-value comparison: only the concrete rows count, each
+      // occurrence being a (group, value) pair
+      const matched = new Set();
+      for (const rel of rels) {
+        if (!rel.concrete) continue;
+        if (!types.any && !types.types.has(rel.relType)) continue;
+        if (groupFilter !== null && rel.group !== groupFilter) continue;
+        if (resolved.concrete(rel.concrete)) matched.add(rel.group + ':' + JSON.stringify(rel.concrete.value));
+      }
+      return matched.size;
     }
-    return matchedTargets.size;
+
+    // ECL cardinality counts OCCURRENCES of a matching attribute, per role group
+    // — not distinct values. ECL runs against the necessary normal form, where a
+    // role group has no redundant attributes, so the same (type, value) in two
+    // different role groups counts as two occurrences (confirmed by the SNOMED
+    // Computable Languages Group; ECL 6.3 "non-redundant" refers to the normal
+    // form, not to de-duplicating across groups). We therefore count distinct
+    // (group, target) pairs: within a group filter this is the matching values
+    // in that group; ungrouped it is the total occurrences across all groups.
+    //
+    // "!=" counts the occurrences whose value is NOT in the set (so "A != X"
+    // matches a concept with at least one A whose value is something other than
+    // X, and "[0..0] A != X" one whose every A is X).
+    //
+    // A reversed attribute ("R A = X") is matched against the concept's INBOUND
+    // relationships: the concept is the value of an A attribute on some concept
+    // in X. _conceptRelRecords supplies those tagged `inbound`; the records built
+    // for a post-coordinated expression have none, so R matches nothing there.
+    const notEquals = attr.comparison.operator === ECLTokenType.NOT_EQUALS;
+    const reverse = !!attr.reverse;
+    const matched = new Set();
+    for (const rel of rels) {
+      if (opContext) opContext.deadCheck('ecl:countAttributeMatches');
+      if (!rel.active || rel.concrete) continue;
+      if (!!rel.inbound !== reverse) continue;
+      if (!types.any && !types.types.has(rel.relType)) continue;
+      if (groupFilter !== null && rel.group !== groupFilter) continue;
+      const value = reverse ? rel.source : rel.target;
+      if (valueSet.has(value) !== notEquals) matched.add(rel.group + ':' + value);
+    }
+    return matched.size;
   };
 
   /**
@@ -958,11 +2419,9 @@ class SnomedServices {
    * @param {object} group
    * @returns {boolean}
    */
-  _attributeGroupMatches = function (conceptIdx, group, opContext) {
-    const relIdxs = this.getConceptRelationships(conceptIdx);
+  _attributeGroupMatches = function (rels, group, opContext) {
     const groupNumbers = new Set();
-    for (const relIdx of relIdxs) {
-      const rel = this.relationships.getRelationship(relIdx);
+    for (const rel of rels) {
       if (rel.active && rel.group > 0) {
         groupNumbers.add(rel.group);
       }
@@ -973,7 +2432,7 @@ class SnomedServices {
       if (opContext) opContext.deadCheck('ecl:attributeGroup');
       let allMatch = true;
       for (const attr of group.attributes) {
-        if (!this._attributeMatches(conceptIdx, attr, g, opContext)) {
+        if (!this._refinementMatchesInGroup(rels, attr, g, opContext)) {
           allMatch = false;
           break;
         }
@@ -989,6 +2448,200 @@ class SnomedServices {
       return this._cardinalityAccepts(group.cardinality, matchingGroupCount);
     }
     return false;
+  };
+
+  // Materialise a concept's relationships as plain records {active, relType,
+  // target, group} — the shape the refinement matchers consume. Sharing this
+  // shape lets the same matchers run against a post-coordinated expression's
+  // relationships (see _expressionRelRecords).
+  /**
+   * A predicate over a stored concrete value for one comparison node:
+   *   numeric: = != < <= > >= against a number (integers and decimals compare as
+   *            numbers, so #5 = #5.0)
+   *   string:  = / != against typed search terms (match / wild semantics, as for
+   *            description terms), any of a set
+   *   boolean: = / != true/false
+   * A value of another kind never matches (and never "not-matches" either: a
+   * string attribute is not "!= #5").
+   */
+  _eclConcreteMatcher = function (comparison) {
+    switch (comparison.type) {
+      case ECLNodeType.NUMERIC_COMPARISON: {
+        const n = Number(comparison.value);
+        const op = { [ECLTokenType.EQUALS]: '=', [ECLTokenType.NOT_EQUALS]: '!=', [ECLTokenType.LT]: '<', [ECLTokenType.LTE]: '<=', [ECLTokenType.GT]: '>', [ECLTokenType.GTE]: '>=' }[comparison.operator] || comparison.operator;
+        return (v) => v.kind === 'number' && this._eclCompareValues(v.value, op, [n], (a, b) => a - b);
+      }
+      case ECLNodeType.STRING_COMPARISON: {
+        const matchers = comparison.values.map(t => this._eclTermMatcher(typeof t === 'string' ? { kind: 'match', value: t } : t));
+        const neg = comparison.operator === ECLTokenType.NOT_EQUALS;
+        return (v) => v.kind === 'string' && (matchers.some(m => m(v.value)) !== neg);
+      }
+      case ECLNodeType.BOOLEAN_COMPARISON: {
+        const neg = comparison.operator === ECLTokenType.NOT_EQUALS;
+        return (v) => v.kind === 'boolean' && ((v.value === comparison.value) !== neg);
+      }
+      default:
+        throw new Error(`Unsupported comparison ${comparison.type}`);
+    }
+  };
+
+  /**
+   * The relationship records an ECL refinement is tested against: the concept's active
+   * outbound relationships, its concrete values, and its inbound relationships (tagged
+   * `inbound`). `needs` (from _refinementNeeds) leaves out what the refinement doesn't
+   * look at, and decodes only the fields matching uses - a concept that is the value of
+   * many attributes has thousands of inbound relationships, and gathering them for every
+   * concept in a big base set is what made refinements slow.
+   */
+  _conceptRelRecords = function (conceptIdx, needs = null) {
+    const out = [];
+    const lean = needs && needs.lean;
+    for (const relIdx of this.getConceptRelationships(conceptIdx)) {
+      out.push(lean ? this.relationships.getRelationshipCore(relIdx) : this.relationships.getRelationship(relIdx));
+    }
+    if (needs && !needs.inbound && !needs.concrete) {
+      return out;
+    }
+    // concrete value rows, for numeric / string / boolean comparisons
+    if (this.concreteValues && (!needs || needs.concrete)) {
+      for (const cv of this.concreteValues.get(conceptIdx) || []) {
+        out.push({ active: true, relType: cv.relType, group: cv.group, target: -1, concrete: cv.concrete });
+      }
+    }
+    // inbound relationships, for reversed (R) attributes
+    const inbounds = (!needs || needs.inbound) ? this.concepts.getInbounds(conceptIdx) : 0;
+    if (inbounds) {
+      for (const relIdx of this.refs.getReferences(inbounds) || []) {
+        const rel = lean ? this.relationships.getRelationshipCore(relIdx) : this.relationships.getRelationship(relIdx);
+        if (rel.active && rel.relType !== this.isAIndex) {
+          out.push({ ...rel, inbound: true });
+        }
+      }
+    }
+    return out;
+  };
+
+  // Turn one parsed expression refinement (name = attribute concept, value =
+  // sub-expression) into a relationship record in the given group, or null if it
+  // is not a plain concept = concept pair.
+  _refinementToRel = function (refinement, group) {
+    const relType = (refinement.name && refinement.name.reference != null)
+      ? refinement.name.reference : NO_REFERENCE;
+    let target = NO_REFERENCE;
+    const val = refinement.value;
+    if (val && val.concepts && val.concepts.length > 0) {
+      target = val.concepts[0].reference;
+    }
+    if (relType === NO_REFERENCE || target === NO_REFERENCE) return null;
+    return { active: true, relType, target, group };
+  };
+
+  // Effective relationships of a post-coordinated expression: the focus
+  // concept(s) stated relationships (inherited) plus the expression's own
+  // refinements. Stated ungrouped refinements go in group 0; each stated
+  // refinement group gets a fresh group number beyond any inherited group so the
+  // two never collide. This is sufficient for the common single-focus
+  // expressions; it is not a full necessary normal form (no redundancy pruning
+  // across inherited and stated attributes).
+  _expressionRelRecords = function (expression) {
+    const rels = [];
+    for (const c of expression.concepts || []) {
+      if (c.reference != null && c.reference !== NO_REFERENCE && c.reference >= 0) {
+        for (const rel of this._conceptRelRecords(c.reference)) rels.push(rel);
+      }
+    }
+    let maxGroup = 0;
+    for (const r of rels) if (r.group > maxGroup) maxGroup = r.group;
+    for (const ref of expression.refinements || []) {
+      const rec = this._refinementToRel(ref, 0);
+      if (rec) rels.push(rec);
+    }
+    let g = maxGroup;
+    for (const grp of expression.refinementGroups || []) {
+      g += 1;
+      for (const ref of grp.refinements || []) {
+        const rec = this._refinementToRel(ref, g);
+        if (rec) rels.push(rec);
+      }
+    }
+    return rels;
+  };
+
+  // Does a post-coordinated expression satisfy an ECL constraint? Unlike the
+  // enumerating evaluator (_evalECLNode), this tests a single expression by its
+  // focus subsumption and its (normal-form) relationships, so validate-code can
+  // accept a composed expression that is a *member* of an ECL value set even
+  // though it never appears in the (precoordinated) expansion.
+  _eclExpressionSatisfies = async function (exprContext, node, opContext) {
+    const expr = exprContext.expression;
+    const rels = this._expressionRelRecords(expr);
+    return await this._eclExprNode(expr, rels, node, opContext);
+  };
+
+  _eclExprNode = async function (expr, rels, node, opContext) {
+    if (!node) return false;
+    if (opContext) opContext.deadCheck('ecl:exprSatisfies');
+    switch (node.type) {
+      case ECLNodeType.SUB_EXPRESSION_CONSTRAINT: {
+        const focus = node.focus;
+        if (focus.type === ECLNodeType.WILDCARD) return true;
+        if (focus.type === ECLNodeType.MEMBER_OF) return false; // an expression is not a refset member
+        if (focus.type === ECLNodeType.CONCEPT_REFERENCE) {
+          return this._complexExprSatisfiesConcept(expr, focus.conceptId, node.operator);
+        }
+        return await this._eclExprNode(expr, rels, focus, opContext); // parenthesised
+      }
+      case ECLNodeType.COMPOUND_EXPRESSION_CONSTRAINT: {
+        const l = await this._eclExprNode(expr, rels, node.left, opContext);
+        const r = await this._eclExprNode(expr, rels, node.right, opContext);
+        switch (node.operator) {
+          case ECLNodeType.CONJUNCTION: return l && r;
+          case ECLNodeType.DISJUNCTION: return l || r;
+          case ECLNodeType.EXCLUSION:   return l && !r;
+          default: throw new Error(`Unsupported ECL compound operator: ${node.operator}`);
+        }
+      }
+      case ECLNodeType.REFINED_EXPRESSION_CONSTRAINT:
+        if (!(await this._eclExprNode(expr, rels, node.base, opContext))) {
+          return false;
+        }
+        await this._eclPrepareRefinement(node.refinement, opContext);
+        return this._refinementMatches(rels, node.refinement, opContext);
+      case ECLNodeType.CONCEPT_REFERENCE:
+        return this._complexExprSatisfiesConcept(expr, node.conceptId, null);
+      case ECLNodeType.WILDCARD:
+        return true;
+      case ECLNodeType.MEMBER_OF:
+        return false;
+      default:
+        throw new Error(`Unsupported ECL node type for expression membership: ${node.type}`);
+    }
+  };
+
+  // Whether a post-coordinated expression's focus stands in the given hierarchy
+  // relation to conceptId. A refined expression is always strictly more specific
+  // than its focus, so it can never be an ancestor/self/parent/child edge — only
+  // the descendant operators (<, <<) hold, via focus subsumption.
+  _complexExprSatisfiesConcept = function (expr, conceptId, operator) {
+    const cr = this.concepts.findConcept(conceptId);
+    if (!cr.found) {
+      throw new Error(`The SNOMED CT Concept ${conceptId} is not known`);
+    }
+    const target = cr.index;
+    const focusRefs = (expr.concepts || [])
+      .map(c => c.reference)
+      .filter(r => r != null && r !== NO_REFERENCE && r >= 0);
+    if (focusRefs.length === 0) return false;
+    const subsumed = focusRefs.every(f => this.subsumes(target, f));
+    switch (operator) {
+      case ECLTokenType.DESCENDANT_OR_SELF_OF: // <<
+      case ECLTokenType.DESCENDANT_OF:         // <
+        return subsumed;
+      // exact / ancestors / parents / children: a refined expression has no such
+      // materialised standing, so it is not a member.
+      default:
+        return false;
+    }
   };
 
 // ── Set operation helpers ────────────────────────────────────────────────────
@@ -1008,15 +2661,15 @@ class SnomedServices {
 
   /**
    * Like _eclToIndexArray, but if the context is a bare wildcard (no
-   * descendants populated) it materialises the full active-concept list
-   * via _eclEnumerateActiveConcepts. Used by dotted/refined evaluation,
+   * descendants populated) it materialises the full concept list
+   * via _eclEnumerateAllConcepts. Used by dotted/refined evaluation,
    * which need an explicit concept set to iterate over.
    * @param {SnomedFilterContext} ctx
    * @returns {number[]}
    */
   _eclResolveSet = function (ctx, opContext) {
     if (ctx.eclWildcard && (!ctx.descendants || ctx.descendants.length === 0)) {
-      return this._eclEnumerateActiveConcepts(opContext);
+      return this._eclEnumerateAllConcepts(opContext);
     }
     return this._eclToIndexArray(ctx);
   };
@@ -1052,6 +2705,40 @@ class SnomedServices {
   };
 
   /**
+   * A OR B OR C ...: the whole chain is gathered into one set. Pairwise (_eclUnion) each
+   * OR copied everything so far into a new set, so a long list of `<< X OR << Y OR ...`
+   * cost the square of its size - a second or more for a few hundred big subtrees.
+   */
+  _evalDisjunction = async function (node, opContext) {
+    const operands = [];
+    const collect = (n) => {
+      if (n.type === ECLNodeType.COMPOUND_EXPRESSION_CONSTRAINT && n.operator === ECLNodeType.DISJUNCTION) {
+        collect(n.left);
+        collect(n.right);
+      } else {
+        operands.push(n);
+      }
+    };
+    collect(node);
+    const combined = new Set();
+    let wildcard = false;
+    for (const operand of operands) {
+      // every operand is still evaluated, so an unknown concept anywhere is reported
+      const ctx = await this._evalECLNode(operand, opContext);
+      if (this._eclTick(opContext, 'ecl:union')) await opContext.checkAndYield('ecl:union');
+      if (ctx.eclWildcard) {
+        wildcard = true;
+      } else if (!wildcard) {
+        for (const idx of this._eclToIndexArray(ctx)) combined.add(idx);
+      }
+    }
+    if (wildcard) return this._eclWildcard();
+    const result = new SnomedFilterContext();
+    result.descendants = [...combined];
+    return result;
+  };
+
+  /**
    * MINUS: concepts in left that are not in right.
    */
   _eclMinus = function (left, right, opContext) {
@@ -1065,16 +2752,10 @@ class SnomedServices {
     const rightSet = new Set(this._eclToIndexArray(right));
 
     if (left.eclWildcard) {
-      // Enumerate all active concepts minus the right set
-      const all = [];
-      for (let i = 0; i < this.concepts.count(); i++) {
-        if (opContext) opContext.deadCheck('ecl:minus');
-        const concept = this.concepts.getConceptByCount(i);
-        if (this.isActive(concept.index) && !rightSet.has(concept.index)) {
-          all.push(concept.index);
-        }
-      }
-      result.descendants = all;
+      // Wildcard minus the right set: use the shared enumeration so `*` behaves
+      // consistently everywhere.
+      result.descendants = this._eclEnumerateAllConcepts(opContext)
+        .filter(idx => !rightSet.has(idx));
       return result;
     }
 
@@ -1086,75 +2767,132 @@ class SnomedServices {
   };
 
 
-  searchFilter(searchText, includeInactive = false, exactMatch = false) {
+  /**
+   * Free-text search over active descriptions.
+   *
+   * Uses the edition's word index (see tx/sct/text-index.js), which the cache
+   * carries: every filter token (stop words aside) must match a word of the
+   * concept's active descriptions, either as a prefix or by sharing its stem.
+   *
+   * Previously the third parameter was `exactMatch`, which the provider fed
+   * from its unrelated `sort` flag - so $expand with a filter on an
+   * include-all-codes value set matched ANY term by brute-force scan: 10k+
+   * matches for a typical multi-word filter, with the event loop blocked for
+   * the whole scan (tx.fhir.org incident 2026-09-17).
+   *
+   * Only descriptions in `lang` take part, when it is given (a text filter searches one
+   * language: see SnomedProvider.searchFilter).
+   *
+   * @param {SearchFilterText} searchText
+   * @param {boolean} includeInactive - include inactive concepts
+   * @param {OperationContext|null} opContext - for yielding / deadline checks
+   * @param {number|null} lang - the description language byte, or null for all
+   * @returns {Promise<SnomedFilterContext>}
+   */
+  async searchFilter(searchText, includeInactive = false, opContext = null, lang = null) {
+    const query = searchText && searchText.query ? searchText.query : new TextQuery(searchText && searchText.filter ? searchText.filter : '');
+    const langCode = (lang !== null && SCT_LANGUAGE_CODES[lang]) || 'en';
+    const tokens = query.tokens(langCode);
     const result = new SnomedFilterContext();
+    result.matches = [];
+    if (tokens.length > 0) {
+      const index = this.getTextIndex(lang);
+      const ordinals = index.search(tokens, opContext);
+      if (opContext) {
+        await opContext.checkAndYield('sct:searchFilter');
+      }
+      result.matches = await rankMatches(this, index, ordinals, query, langCode, lang, includeInactive, opContext);
+    }
+    this.#addCodeMatches(result, query, includeInactive);
+    return result;
+  }
 
-    // Simplified search - in full implementation would use stemming and word indexes
-    const searchTerms = searchText.filter.toLowerCase().split(/\s+/);
-    const matches = [];
-
-    // Search through all concepts
-    for (let i = 0; i < this.concepts.count(); i++) {
-      const conceptIndex = i * this.concepts.constructor.CONCEPT_SIZE;
-
-      try {
-        const concept = this.concepts.getConcept(conceptIndex);
-        if (!includeInactive && !this.isActive(conceptIndex)) {
-          continue;
+  /**
+   * Add the concepts whose identifier starts with the filter (people search by code too), at
+   * the front: the concept itself (100), then those it is the start of (90), in identifier order
+   */
+  #addCodeMatches(result, query, includeInactive) {
+    if (!/^[0-9]{1,18}$/.test(query.code)) {
+      return;
+    }
+    const prefix = BigInt(query.code);
+    const size = this.concepts.constructor.CONCEPT_SIZE;
+    const count = this.concepts.count();
+    const found = [];
+    // identifiers are sorted as numbers: the ones that start with the digits are a range for
+    // each length an identifier can have
+    for (let length = query.code.length; length <= 18; length++) {
+      const scale = 10n ** BigInt(length - query.code.length);
+      const low = prefix * scale;
+      const high = (prefix + 1n) * scale;
+      for (let ordinal = this.concepts.findConcept(low).index / size; ordinal < count; ordinal++) {
+        const id = this.concepts.getConceptId(ordinal * size);
+        if (id >= high) {
+          break;
         }
-
-        const descriptionsRef = concept.descriptions;
-        if (descriptionsRef === 0) continue;
-
-        const descriptionIndices = this.refs.getReferences(descriptionsRef);
-        let matchFound = false;
-        let priority = 0;
-
-        for (const descIndex of descriptionIndices) {
-          const description = this.descriptions.getDescription(descIndex);
-          if (description.active) {
-            const term = this.strings.getEntry(description.iDesc).toLowerCase();
-
-            if (exactMatch) {
-              // All search terms must be present
-              matchFound = searchTerms.every(searchTerm => term.includes(searchTerm));
-            } else {
-              // Any search term can match
-              matchFound = searchTerms.some(searchTerm => term.includes(searchTerm));
-            }
-
-            if (matchFound) {
-              // Calculate priority based on match quality
-              if (term === searchText.filter.toLowerCase()) {
-                priority = 100; // Exact match
-              } else if (term.startsWith(searchText.filter.toLowerCase())) {
-                priority = 50; // Prefix match
-              } else {
-                priority = 10; // Contains match
-              }
-              break;
-            }
-          }
+        if (includeInactive || this.isActive(ordinal * size)) {
+          found.push({ index: ordinal * size, term: id, priority: query.codeRank(id.toString()) });
         }
-
-        if (matchFound) {
-          matches.push({
-            index: conceptIndex,
-            term: concept.identity,
-            priority: priority
-          });
-        }
-      } catch (error) {
-        // Skip problematic concepts
-        continue;
       }
     }
+    if (found.length === 0) {
+      return;
+    }
+    const have = new Set(found.map(m => m.index));
+    result.matches = found.sort((a, b) => b.priority - a.priority).concat(result.matches.filter(m => !have.has(m.index)));
+  }
 
-    // Sort by priority (descending)
-    matches.sort((a, b) => b.priority - a.priority);
+  // whether lang is the only language the edition has active descriptions in (then there is
+  // nothing to restrict - the International Edition is all English)
+  #onlyLanguage(lang) {
+    return this._activeDescLanguages.size === 1 && this._activeDescLanguages.has(lang);
+  }
 
-    result.matches = matches;
-    return result;
+  /**
+   * What the edition builds as it is used and keeps (for the caches page): the history indexes
+   * of association reference sets, and the MRCM range constraints it has evaluated (its text
+   * indexes come with the cache, and aren't counted)
+   * @returns {{historyIndexes: number, mrcmRanges: number}}
+   */
+  cacheCounts() {
+    return {
+      historyIndexes: this._historyIndexes ? this._historyIndexes.size : 0,
+      mrcmRanges: this._mrcmRangeCache ? this._mrcmRangeCache.size : 0
+    };
+  }
+
+  /**
+   * Let go of what cacheCounts counts: it is built again when next needed
+   * @returns {number} the entries let go
+   */
+  clearCaches() {
+    const c = this.cacheCounts();
+    if (this._historyIndexes) {
+      this._historyIndexes.clear();
+    }
+    if (this._mrcmRangeCache) {
+      this._mrcmRangeCache.clear();
+    }
+    return c.historyIndexes + c.mrcmRanges;
+  }
+
+  /**
+   * The text index to search descriptions in one language (a byte), or in all of them (null).
+   * An edition with descriptions in only one language has the one index, for all of them; a
+   * language it has no descriptions in has an empty one.
+   * @param {number|null} lang
+   * @returns {SnomedTextIndex}
+   */
+  getTextIndex(lang = null) {
+    if (lang === null || this.#onlyLanguage(lang)) {
+      return this._textIndex;
+    }
+    let index = this._textIndexes.get(lang);
+    if (!index) {
+      index = SnomedTextIndex.empty(this.concepts.constructor.CONCEPT_SIZE);
+      this._textIndexes.set(lang, index);
+    }
+    return index;
   }
 }
 
@@ -1186,12 +2924,38 @@ class SnomedProvider extends BaseCSServices {
     return actualVersion && actualVersion.startsWith(checkVersion);
   }
 
+  /**
+   * The display name of the code system, as $lookup reports it.
+   *
+   * Without this, CodeSystemProvider's fallback applies, which returns the versioned uri -
+   * so a SNOMED lookup answered "http://snomed.info/sct|http://snomed.info/sct/731000124108
+   * /version/20230301" where every other code system answers something like "LOINC". The
+   * edition is named because for SNOMED that is the part worth knowing; the version
+   * parameter carries the uri.
+   */
+  name() {
+    return this.sct.getDescription();
+  }
+
+  /**
+   * $lookup's display name: the edition description (e.g. "SNOMED CT International
+   * Edition"), which says more than the bare code system title.
+   */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return this.sct.getDescription();
+  }
+
   description() {
     return this.sct.getDescription();
   }
 
   totalCount() {
     return this.sct.totalCount;
+  }
+
+  async countAllCodes(excludeInactive) {
+    return excludeInactive ? this.sct.activeConceptCount() : this.sct.totalCount;
   }
 
   contentMode() {
@@ -1239,6 +3003,10 @@ class SnomedProvider extends BaseCSServices {
     if (disp) return disp;
 
     if (ctxt.isComplex()) {
+      // an extension-codes supplement in scope can give a post-coordinated expression a display;
+      // otherwise it is generated from the expression
+      const ext = this.#extensionCodeDisplay(ctxt);
+      if (ext) return ext;
       return this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.FillMissing);
     } else {
       return this.sct.getDisplayName(ctxt.getReference(), this.sct.defaultLanguage);
@@ -1279,7 +3047,7 @@ class SnomedProvider extends BaseCSServices {
     return this.sct.isActive(ctxt.getReference()) ? 'active' : 'inactive';
   }
 
-  async designations(context, displays) {
+  async designations(context, displays, significantOnly = false) {
 
     const ctxt = await this.#ensureContext(context);
 
@@ -1287,8 +3055,11 @@ class SnomedProvider extends BaseCSServices {
 
 
       if (ctxt.isComplex()) {
-        // For complex expressions, just add the display
-        const display = await this.display(context);
+        // For complex expressions: the display an extension-codes supplement in scope gives it (first,
+        // so it is the preferred display), and the display generated from the expression, which stays
+        // a valid display
+        this._listSupplementDesignations(this.#extensionCodeKey(ctxt), displays, true);
+        const display = this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.FillMissing);
         if (display) {
           displays.addDesignation(true, 'active', 'en-US', DesignationUse.PREFERRED, display);
         }
@@ -1300,17 +3071,95 @@ class SnomedProvider extends BaseCSServices {
 
           if (descriptionsRef !== 0) {
             const descriptionIndices = this.sct.refs.getReferences(descriptionsRef);
+            const K = this.sct._displayConstants();
 
-            for (const descIndex of descriptionIndices) {
-              const description = this.sct.descriptions.getDescription(descIndex);
-              const term = this.sct.strings.getEntry(description.iDesc).trim();
-              const langCode = this.getLanguageCode(description.lang);
-              const kind = this.sct.concepts.getConcept(description.kind);
-              const kid = String(kind.identity);
-              const kdesc = this.sct.getDisplayName(description.kind);
-              let use = { system: 'http://snomed.info/sct', code: kid, display : kdesc};
-
-              displays.addDesignation(false, description.active ? 'active' : 'inactive', langCode, use, term);
+            if (significantOnly) {
+              // $expand: emit the "significant" designations only — the FSN and
+              // the preferred synonym, active descriptions only. Acceptable
+              // synonyms are the bulk of a SNOMED concept's descriptions and are
+              // not needed to render an expansion, so they are dropped.
+              //
+              // One per LANGUAGE, though, not one overall: the display for a
+              // request is chosen downstream by
+              // Designations.preferredDesignation(displayLanguage), so a concept
+              // that emits only its English terms has nothing for a
+              // displayLanguage=de request to match and silently falls back to
+              // English. Keeping the preferred synonym in every language the
+              // concept has is what makes localized expansions work at all
+              // (e.g. the Swiss edition, whose German terms are preferred in the
+              // Swiss German language refset 2041000195100).
+              //
+              // The edition-default display is also added as the display
+              // designation (which the expand worker selects for `display` when
+              // no language was asked for, and skips from the emitted list).
+              const fsns = new Map(), prefSyns = new Map();
+              for (const descIndex of descriptionIndices) {
+                const description = this.sct.descriptions.getDescription(descIndex);
+                if (!description.active) continue;
+                const term = this.sct.strings.getEntry(description.iDesc).trim();
+                const langCode = this.getLanguageCode(description.lang);
+                const kind = this.sct.concepts.getConcept(description.kind);
+                const use = { system: 'http://snomed.info/sct', code: String(kind.identity), display: this.sct.getDisplayName(description.kind) };
+                if (description.kind === K.fsn) {
+                  if (!fsns.has(langCode)) fsns.set(langCode, { langCode, use, term });
+                } else if (this.sct._synonymIsPreferred(description)) {
+                  if (!prefSyns.has(langCode)) prefSyns.set(langCode, { langCode, use, term });
+                }
+              }
+              // Tagged with the language the term is actually in, not a
+              // hard-coded en-US: on a multi-language edition the edition
+              // display can be French or Dutch, and mislabelling it as English
+              // is what puts it in an IG's English display column and makes the
+              // real French designation look like a duplicate of it. English
+              // stays 'en-US' (the term comes from the US English language
+              // reference set), so nothing changes for English editions.
+              const display = this.sct.getDisplayNameEx(ctxt.getReference());
+              const displayLang = (!display.lang || display.lang === 'en') ? 'en-US' : display.lang;
+              if (display.term) displays.addDesignation(true, 'active', displayLang, null, display.term);
+              // FSNs before synonyms, matching the designation order the published
+              // tx-ecosystem expectations were written against (sct/expand-inactive).
+              // Which of the two is chosen as the display is settled by
+              // Designations.preferredDesignation(), which ranks the SNOMED synonym
+              // above the FSN - not by the order they are emitted in.
+              for (const d of fsns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
+              for (const d of prefSyns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
+            } else {
+              // $lookup: emit every description. Order matters only for the
+              // display: a request with no displayLanguage takes the first
+              // designation Designations._isPreferred() accepts, which is any
+              // SNOMED synonym. Ranking by the edition's display language
+              // reference set first (rather than by "preferred in any refset")
+              // keeps that pick in one language - otherwise a national edition
+              // answers $lookup in French for one concept and Dutch for the
+              // next, depending on description storage order.
+              const K2 = this.sct._displayConstants();
+              const displayRefsets = this.sct._displayRefsetOrder();
+              // Buckets: 0 = preferred in the edition's display refset, 1 =
+              // preferred in some other language refset, 2 = everything else
+              // (FSNs and acceptable synonyms, left in their original order -
+              // Array.sort is stable, so nothing else about the output moves).
+              const rank = (description) => {
+                if (description.kind !== K2.synonym) return 2;
+                for (const refsetIdx of displayRefsets) {
+                  if (this.sct._descAcceptability(description, refsetIdx) === K2.preferred) return 0;
+                }
+                return this.sct._synonymIsPreferred(description) ? 1 : 2;
+              };
+              const orderedIndices = descriptionIndices.slice().sort((a, b) => {
+                const da = this.sct.descriptions.getDescription(a);
+                const db = this.sct.descriptions.getDescription(b);
+                return rank(da) - rank(db);
+              });
+              for (const descIndex of orderedIndices) {
+                const description = this.sct.descriptions.getDescription(descIndex);
+                const term = this.sct.strings.getEntry(description.iDesc).trim();
+                const langCode = this.getLanguageCode(description.lang);
+                const kind = this.sct.concepts.getConcept(description.kind);
+                const kid = String(kind.identity);
+                const kdesc = this.sct.getDisplayName(description.kind);
+                let use = { system: 'http://snomed.info/sct', code: kid, display : kdesc};
+                displays.addDesignation(false, description.active ? 'active' : 'inactive', langCode, use, term);
+              }
             }
           }
         } catch (error) {
@@ -1327,19 +3176,32 @@ class SnomedProvider extends BaseCSServices {
     }
   }
 
+  /**
+   * The code an extension-codes supplement gives a post-coordinated expression under: the expression
+   * as it was written, or, if no supplement in scope has that, the expression in its minimal rendering
+   * (so that a supplement written without spaces or terms matches an expression written with them).
+   *
+   * @param {SnomedExpressionContext} ctxt - a complex expression
+   * @returns {string} the code to look for in the supplements
+   */
+  #extensionCodeKey(ctxt) {
+    const source = ctxt.getCode();
+    if (source && this._extensionCodeDisplay(source)) {
+      return source;
+    }
+    return this.sct.expressionServices.renderExpression(ctxt.expression, SnomedServicesRenderOption.Minimal);
+  }
+
+  /**
+   * @param {SnomedExpressionContext} ctxt - a complex expression
+   * @returns {string|null} the display an extension-codes supplement in scope gives it, if one does
+   */
+  #extensionCodeDisplay(ctxt) {
+    return this._extensionCodeDisplay(this.#extensionCodeKey(ctxt));
+  }
+
   getLanguageCode(langIndex) {
-    const languageMap = {
-      1: 'en',
-      2: 'fr',
-      3: 'nl',
-      4: 'es',
-      5: 'sv',
-      6: 'da',
-      7: 'de',
-      8: 'it',
-      9: 'cs'
-    };
-    return languageMap[langIndex] || 'en';
+    return SCT_LANGUAGE_CODES[langIndex] || 'en';
   }
 
   // Lookup methods
@@ -1352,7 +3214,7 @@ class SnomedProvider extends BaseCSServices {
       // Try parsing as expression
       try {
         const expression = new SnomedExpressionParser().parse(code);
-        this.sct.expressionServices.checkExpression(expression);
+        await this.sct.expressionServices.checkExpression(expression);
         return {
           context: SnomedExpressionContext.fromExpression(code, expression),
           message: null
@@ -1376,19 +3238,6 @@ class SnomedProvider extends BaseCSServices {
           message: undefined
         };
       }
-    }
-  }
-
-  async incompleteValidationMessage(context) {
-
-    const ctxt = await this.#ensureContext(context);
-
-    if (!ctxt) return null;
-
-    if (ctxt.isComplex()) {
-      return "The expression is grammatically correct and the concepts are valid, but the expression has not been checked against the SNOMED CT concept model (MRCM)";
-    } else {
-      return null;
     }
   }
 
@@ -1427,12 +3276,22 @@ class SnomedProvider extends BaseCSServices {
 
 
     if (!context) {
-      // Iterate all active root concepts
+      // Iterate all active root concepts; the walk descends into each root's
+      // children via includeCodeAndDescendants. `total` reports the real concept
+      // count (not the root count) so the expansion size cap is meaningful, while
+      // `keys` are the roots and nextContext bounds on keys.length.
+      // activeRoots holds concept *ids* (BigInt); map them to concept indices so
+      // the contexts and the getConceptChildren descent work (which key on index).
+      const rootKeys = [];
+      for (const rootId of this.sct.activeRoots) {
+        const r = this.sct.concepts.findConcept(rootId);
+        if (r.found) rootKeys.push(r.index);
+      }
       return {
         context: null,
-        keys: this.sct.activeRoots.slice(),
+        keys: rootKeys,
         current: 0,
-        total: this.sct.activeRoots.length
+        total: this.sct.totalCount
       };
     } else {
       const ctxt = await this.#ensureContext(context);
@@ -1452,7 +3311,7 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async nextContext(iteratorContext) {
-    if (iteratorContext.current >= iteratorContext.total) {
+    if (iteratorContext.current >= iteratorContext.keys.length) {
       return null;
     }
 
@@ -1462,35 +3321,109 @@ class SnomedProvider extends BaseCSServices {
     return SnomedExpressionContext.fromReference(key);
   }
 
+  // The FHIR value for a concrete value in $lookup. A number is typed by the attribute's MRCM
+  // range where it has one - so #4000 for a dec() attribute is a decimal, as the concept model
+  // defines it - and otherwise by how it is written (#4000 an integer, #2.5 a decimal).
+  #concreteLookupValue(cv) {
+    const c = cv.concrete;
+    switch (c.kind) {
+      case 'string':
+        return { valueString: c.value };
+      case 'boolean':
+        return { valueBoolean: c.value };
+      case 'number': {
+        let type = c.decimal ? 'dec' : 'int';
+        const services = this.sct.expressionServices;
+        const constraint = services && services.mrcmAttributeRanges ? services.mrcmAttributeRanges().get(cv.relType) : null;
+        const range = constraint ? services.parseConcreteRange(constraint) : null;
+        if (range && (range.type === 'dec' || range.type === 'int')) {
+          type = range.type;
+        }
+        return type === 'int' && Number.isInteger(c.value) ? { valueInteger: c.value } : { valueDecimal: c.value };
+      }
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
+  }
+
   async extendLookup(context, props, params) {
     const ctxt = await this.#ensureContext(context);
     if (ctxt) {
       if (!(ctxt instanceof SnomedExpressionContext) || ctxt.expression?.concepts.length == 1) {
-        const time = this.sct.concepts.getConcept(ctxt.getReference()).effectiveTime;
-        const pascalEpoch = new Date(1899, 11, 30);
-        const date = new Date(pascalEpoch.getTime() + time * 86400000);
-        const dateStr = date.toISOString().slice(0, 10);
-        this._addDateTimeProperty(params, 'property', 'effectiveTime', dateStr);
-
-
-        const parents = this.sct.getConceptParents(ctxt.getReference());
-        for (let parentRef of parents) {
-          const code = this.sct.getConceptId(parentRef);
-          const description = this.sct.getDisplayName(parentRef);
-          this._addCodeProperty(params, 'property', 'parent', code, null, description);
+        // Only what was asked for, if anything was (see _hasProp): effectiveTime, moduleId,
+        // parent, child and the defining relationships are returned by default but are not
+        // important enough to return when the client named the properties it wants.
+        // The mappings (alternate identifiers such as the LOINC code) are returned by
+        // default too, and when asked for by name. property=* asks for every property the
+        // SNOMED CT on FHIR page defines (adding sufficientlyDefined and semanticTag) except
+        // the normal forms, which are computed and have to be asked for by name.
+        if (this._hasProp(props, 'effectiveTime', true)) {
+          const time = this.sct.concepts.getConcept(ctxt.getReference()).effectiveTime;
+          // Pascal TDateTime epoch (1899-12-30) computed in UTC so the formatted
+          // date is timezone-independent. new Date(1899,11,30) is LOCAL midnight,
+          // which in zones ahead of UTC rolls the ISO date back by one day.
+          const pascalEpochUTC = Date.UTC(1899, 11, 30);
+          const date = new Date(pascalEpochUTC + time * 86400000);
+          const dateStr = date.toISOString().slice(0, 10);
+          this._addDateTimeProperty(params, 'property', 'effectiveTime', dateStr);
         }
 
-        const children = this.sct.getConceptChildren(ctxt.getReference());
-        for (let childRef of children) {
-          const code = this.sct.getConceptId(childRef);
-          const description = this.sct.getDisplayName(childRef);
-          this._addCodeProperty(params, 'property', 'child', code, null, description);
+        if (this._hasProp(props, 'parent', true)) {
+          const parents = this.sct.getConceptParents(ctxt.getReference());
+          for (let parentRef of parents) {
+            const code = this.sct.getConceptId(parentRef);
+            const description = this.sct.getDisplayName(parentRef);
+            this._addCodeProperty(params, 'property', 'parent', code, null, description);
+          }
         }
 
-        const moduleId = this.sct.concepts.getModuleId(ctxt.getReference());
-        if (moduleId) {
-          const code = this.sct.getConceptId(moduleId);
-          this._addCodeProperty(params, 'property', 'module', code, null, this.sct.getDisplayName(moduleId));
+        if (this._hasProp(props, 'child', true)) {
+          const children = this.sct.getConceptChildren(ctxt.getReference());
+          for (let childRef of children) {
+            const code = this.sct.getConceptId(childRef);
+            const description = this.sct.getDisplayName(childRef);
+            this._addCodeProperty(params, 'property', 'child', code, null, description);
+          }
+        }
+
+        // moduleId, as the SNOMED CT on FHIR page names it ("module" is still understood)
+        if (this._hasProp(props, 'moduleId', true) || SnomedProvider.#askedFor(props, 'module')) {
+          const moduleId = this.sct.concepts.getModuleId(ctxt.getReference());
+          if (moduleId) {
+            const code = this.sct.getConceptId(moduleId);
+            this._addCodeProperty(params, 'property', 'moduleId', code, null, this.sct.getDisplayName(moduleId));
+          }
+        }
+
+        // returned for property=* or by name, not by default
+        if (this._hasProp(props, 'sufficientlyDefined', false)) {
+          params.push({
+            name: 'property',
+            part: [
+              {name: 'code', valueCode: 'sufficientlyDefined'},
+              {name: 'value', valueBoolean: !this.sct.isPrimitive(ctxt.getReference())}
+            ]
+          });
+        }
+        if (this._hasProp(props, 'semanticTag', false)) {
+          const tag = this.#semanticTag(ctxt.getReference());
+          if (tag) {
+            params.push({
+              name: 'property',
+              part: [
+                {name: 'code', valueCode: 'semanticTag'},
+                {name: 'value', valueString: tag}
+              ]
+            });
+          }
         }
 
         const relationships = this.sct.getConceptRelationships(ctxt.getReference());
@@ -1498,7 +3431,7 @@ class SnomedProvider extends BaseCSServices {
         for (let relationshipRef of relationships) {
           const relationship = this.sct.relationships.getRelationship(relationshipRef);
           const relType = this.sct.getConceptId(relationship.relType);
-          if (relType != '116680003') {
+          if (relType != '116680003' && this._hasProp(props, relType, true)) {
             const relTypeD = this.sct.getDisplayName(relationship.relType);
             const code = this.sct.getConceptId(relationship.target);
             const description = this.sct.getDisplayName(relationship.target);
@@ -1509,40 +3442,153 @@ class SnomedProvider extends BaseCSServices {
             }
           }
         }
+
+        // concrete values (strengths, counts, ...): not relationships to concepts, so held apart
+        for (const cv of (this.sct.concreteValues && this.sct.concreteValues.get(ctxt.getReference())) || []) {
+          const relType = this.sct.getConceptId(cv.relType);
+          if (this._hasProp(props, relType, true)) {
+            const value = this.#concreteLookupValue(cv);
+            if (value) {
+              params.push({
+                name: 'property',
+                part: [
+                  {name: 'code', valueCode: relType},
+                  {name: 'value', ...value},
+                  {name: 'code-display', valueString: this.sct.getDisplayName(cv.relType)}
+                ]
+              });
+            }
+          }
+        }
+
+        this.#addMappingProperties(ctxt, props, params);
       }
+      // the normal forms: only when asked for by name (not by default, not by property=*)
+      this.#addNormalFormProperties(ctxt, props, params);
       if (ctxt instanceof SnomedExpressionContext) {
         // ignore concepts for now, but list refinements and refinement groups
         for (const refinement of ctxt.expression.refinements) {
-          const codeA = refinement.name.code;
-          const codeB = refinement.value.describe();
-          const description = await this.display(codeB);
-          let p = this._addCodeProperty(params, 'property', codeA, codeB, null, description);
-          p.part.push({name: 'code-display', valueString: await this.display(codeA)});
+          await this._addRefinementProperty(params, refinement);
         }
         for (const refinementGroup of ctxt.expression.refinementGroups) {
           for (const refinement of refinementGroup.refinements) {
-            const codeA = refinement.name.code;
-            const codeB = refinement.value.describe();
-            const description = await this.display(codeB);
-            let p = this._addCodeProperty(params, 'property', codeA, codeB, null, description);
-            p.part.push({name: 'code-display', valueString: await this.display(codeA)});
+            await this._addRefinementProperty(params, refinement);
           }
         }
       }
     }
   }
 
+  // Whether props names this property explicitly (property=* does not count)
+  static #askedFor(props, name) {
+    const lower = name.toLowerCase();
+    return !!props && props.some(p => p && p.toLowerCase() === lower);
+  }
+
+  // The semantic tag: the bracketed suffix of the concept's active fully specified name
+  #semanticTag(reference) {
+    const K = this.sct._displayConstants();
+    const concept = this.sct.concepts.getConcept(reference);
+    const descIndices = concept.descriptions ? (this.sct.refs.getReferences(concept.descriptions) || []) : [];
+    for (const descIndex of descIndices) {
+      const d = this.sct.descriptions.getDescription(descIndex);
+      if (d.active && d.kind === K.fsn) {
+        const m = /\(([^()]+)\)\s*$/.exec(this.sct.strings.getEntry(d.iDesc));
+        if (m) {
+          return m[1];
+        }
+      }
+    }
+    return null;
+  }
+
+  // normalForm (with terms) and normalFormTerse (without), for a concept or an expression
+  #addNormalFormProperties(ctxt, props, params) {
+    const wantFull = SnomedProvider.#askedFor(props, 'normalForm');
+    const wantTerse = SnomedProvider.#askedFor(props, 'normalFormTerse');
+    if (!wantFull && !wantTerse) {
+      return;
+    }
+    const services = this.sct.expressionServices;
+    let nf;
+    if (ctxt instanceof SnomedExpressionContext && ctxt.isComplex()) {
+      nf = services.normaliseExpression(ctxt.expression);
+    } else {
+      nf = services.createNormalForm(ctxt.getReference());
+    }
+    if (wantFull) {
+      params.push({
+        name: 'property',
+        part: [
+          {name: 'code', valueCode: 'normalForm'},
+          {name: 'value', valueString: services.renderExpression(nf, SnomedServicesRenderOption.FillMissing)}
+        ]
+      });
+    }
+    if (wantTerse) {
+      params.push({
+        name: 'property',
+        part: [
+          {name: 'code', valueCode: 'normalFormTerse'},
+          {name: 'value', valueString: services.renderExpression(nf, SnomedServicesRenderOption.Minimal)}
+        ]
+      });
+    }
+  }
+
+  /**
+   * The concept's alternate identifiers in the schemes we know (IDENTIFIER_SCHEMES), as
+   * Coding-valued properties named for the scheme - e.g. loinc = http://loinc.org#2160-0.
+   * Returned by default, and when asked for by name.
+   */
+  #addMappingProperties(ctxt, props, params) {
+    const conceptId = this.sct.getConceptId(ctxt.getReference());
+    for (const ident of this.sct.getIdentifiers(conceptId)) {
+      const scheme = IDENTIFIER_SCHEMES[ident.scheme];
+      if (scheme && this._hasProp(props, scheme.property, true)) {
+        params.push({
+          name: 'property',
+          part: [
+            { name: 'code', valueCode: scheme.property },
+            { name: 'value', valueCoding: { system: scheme.system, code: ident.code } }
+          ]
+        });
+      }
+    }
+  }
+
+  /**
+   * Report one refinement of a post-coordinated expression as a lookup property.
+   *
+   * The value is handled as an expression, not as a string: SnomedExpression's
+   * describe() is a human-readable rendering that joins concepts and refinements
+   * with commas ("85562004,272741003=24028007"), so round-tripping it through
+   * display() parsed it back as SCG and failed on any refined value.
+   *
+   * @param {Object} params - the Parameters being built
+   * @param {SnomedRefinement} refinement
+   */
+  async _addRefinementProperty(params, refinement) {
+    const codeA = refinement.name.code;
+    const value = SnomedExpressionContext.fromExpression('', refinement.value);
+    const codeB = await this.code(value);
+    const description = await this.display(value);
+    const p = this._addCodeProperty(params, 'property', codeA, codeB, null, description);
+    p.part.push({name: 'code-display', valueString: await this.display(codeA)});
+  }
+
   // Filter support
   async doesFilter(prop, op, value) {
+    prop = SnomedProvider.#filterProperty(prop);
     if (prop === 'concept') {
       const id = this.sct.stringToIdOrZero(value);
-      if (id !== 0n && ['=', 'is-a', 'descendent-of', 'in', 'generalizes', 'child-of'].includes(op)) {
+      if (id !== 0n && ['=', 'is-a', 'descendent-of', 'in', 'generalizes', 'child-of', 'descendent-leaf', 'is-not-a'].includes(op)) {
         return this.sct.conceptExists(value);
       }
       if (op === 'in' && value.includes(',')) {
         let ok = true;
         for (const idStr of value.split(',')) {
-          const id = this.sct.stringToIdOrZero(idStr);
+          const id = this.sct.stringToIdOrZero(idStr.trim());
           if (id === 0n) {
             ok = false;
             break;
@@ -1553,6 +3599,15 @@ class SnomedProvider extends BaseCSServices {
     }
     if (prop === 'inactive') {
       return op === '=' && ['true', 'false'].includes(value);
+    }
+
+    if (prop === 'display' && op === 'regex') {
+      try {
+        SnomedProvider.#displayRegex(value);
+        return true;
+      } catch (e) {
+        return false;
+      }
     }
 
     if (prop === 'moduleId') {
@@ -1567,6 +3622,11 @@ class SnomedProvider extends BaseCSServices {
       return true;
     }
 
+    if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
+      return op === 'exists' && ['true', 'false'].includes(value) &&
+        this.sct.stringToIdOrZero(prop.substring(MAPPED_FILTER_PREFIX.length)) !== 0n;
+    }
+
     const cid = this.sct.stringToIdOrZero(prop);
     if (cid != 0) {
       const id = this.sct.stringToIdOrZero(value);
@@ -1577,14 +3637,134 @@ class SnomedProvider extends BaseCSServices {
   }
 
   // eslint-disable-next-line no-unused-vars
-  async getPrepContext(iterate) {
-
-    return new SnomedPrep(); // Simple filter context
+  async getPrepContext(iterate, languages = null) {
+    return new SnomedPrep(languages);
   }
 
-  async filter(filterContext, forIteration, prop, op, value) {
+  // Cache key pinning resolved analysis to the SNOMED edition url + version.
+  // SNOMED always has both; the url varies across editions (incl. the test set).
+  _snomedFilterCacheKey() {
+    return this.system() + '|' + this.version();
+  }
+
+  // Return a fresh filter context wrapping a cached ECL analysis, or null on
+  // miss. The concept arrays are shared read-only (nothing mutates them for an
+  // ECL set); only the cursor state is per-context.
+  _getCachedEcl(fc) {
+    if (!fc) {
+      return null;
+    }
+    const data = recall(fc, SNOMED_FILTER_ANALYSIS, this._snomedFilterCacheKey());
+    if (!data) {
+      return null;
+    }
+    const ctx = new SnomedFilterContext();
+    ctx.descendants = data.descendants;
+    ctx.members = data.members;
+    ctx.matches = data.matches;
+    ctx.eclAst = data.eclAst;
+    return ctx;
+  }
+
+  // Memoise an ECL analysis on fc, keyed by url+version. Skips iteration-
+  // sensitive results (wildcards): their materialised form is not valid for the
+  // other iteration mode, and their lazy form is cheap to recompute anyway.
+  _cacheEcl(fc, resolved) {
+    if (!fc || !resolved || resolved.eclWildcard || resolved.iterationSensitive) {
+      return;
+    }
+    remember(fc, SNOMED_FILTER_ANALYSIS, this._snomedFilterCacheKey(), {
+      descendants: resolved.descendants,
+      members: resolved.members,
+      matches: resolved.matches,
+      eclAst: resolved.eclAst,
+    });
+  }
+
+  // Value sets in production say "code" where SNOMED defines "concept" (users don't tell
+  // them apart), so the two are the same filter property here, as they are for code
+  // systems defined as resources (cs-cs.js).
+  static #filterProperty(prop) {
+    return prop === 'code' ? 'concept' : prop;
+  }
+
+  // display regex: matches a concept with an active description (FSN or synonym - a text
+  // definition is not a display), in one language, whose whole term matches the pattern
+  // (anchored, as for regex filters on code systems defined as resources), case-sensitively. RE2, so no catastrophic backtracking. The language is
+  // the first one the request named that the edition has descriptions in, else the
+  // edition's default.
+  static #displayRegex(pattern) {
+    return regexUtilities.compile('^(?:' + pattern + ')$');
+  }
+
+  #filterLanguage(languages) {
+    const present = this.sct._activeDescLanguages;
+    for (const lang of languages || []) {
+      for (const code of languageBytesFor(lang.language)) {
+        if (present.has(code)) {
+          return code;
+        }
+      }
+    }
+    // none named: the edition's default, if it has descriptions in it, else its first language
+    const fallback = this.sct.defaultLanguage;
+    return present.has(fallback) || present.size === 0 ? fallback : Math.min(...present);
+  }
+
+  // the concept index of 900000000000550004 |Definition|, or -1
+  #definitionKind() {
+    if (this.sct._definitionKind === undefined) {
+      const r = this.sct.concepts.findConcept(900000000000550004n);
+      this.sct._definitionKind = r.found ? r.index : -1;
+    }
+    return this.sct._definitionKind;
+  }
+
+  #displayMatches(set, reference) {
+    const definition = this.#definitionKind();
+    const concept = this.sct.concepts.getConcept(reference);
+    const descIndices = concept.descriptions ? (this.sct.refs.getReferences(concept.descriptions) || []) : [];
+    for (const descIndex of descIndices) {
+      const d = this.sct.descriptions.getDescription(descIndex);
+      if (d.active && d.lang === set.displayLang && d.kind !== definition && set.displayRegex.test(this.sct.strings.getEntry(d.iDesc))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // The scan for an iterated display regex: every active description in the language,
+  // a chunk at a time, yielding between chunks so the server keeps serving meanwhile.
+  async #populateDisplayRegex(set) {
+    if (set.populationDone) {
+      return;
+    }
+    const CHUNK = 10000;
+    const found = new Set();
+    const test = (term) => set.displayRegex.test(term);
+    const definition = this.#definitionKind();
+    let count = Infinity;
+    for (let start = 0; start < count; start += CHUNK) {
+      if (this.opContext) {
+        await this.opContext.checkAndYield('snomed:displayRegex');
+      }
+      count = this.sct.descriptions.matchActiveTerms(start, start + CHUNK, set.displayLang, this.sct.strings, test, found, definition);
+    }
+    set.descendants = [...found].sort((a, b) => a - b);
+    set.populationDone = true;
+    if (set.displayCache) {
+      remember(set.displayCache.fc, SNOMED_DISPLAY_REGEX, set.displayCache.key, set.descendants);
+    }
+  }
+
+  async filter(filterContext, forIteration, prop, op, value, fc) {
+    prop = SnomedProvider.#filterProperty(prop);
 
     if (prop === 'concept') {
+      if (!SNOMED_CONCEPT_FILTER_OPS.has(op)) {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n && op !== 'in') {
         throw new Error(`Invalid concept ID: ${value}`);
@@ -1611,49 +3791,80 @@ class SnomedProvider extends BaseCSServices {
           filterContext.filters.push(this.sct.filterGeneralizes(id, false));
           return null;
         }
+        case 'descendent-leaf': {
+          filterContext.filters.push(this.sct.filterDescendentLeaf(id));
+          return null;
+        }
+        case 'is-not-a': {
+          filterContext.filters.push(this.sct.filterIsNotA(id, this.opContext));
+          return null;
+        }
         case 'in': {
           filterContext.filters.push(this.sct.filterIn(value));
           return null;
         }
-        default:
-          throw new Error(`Unsupported filter operation: concept ${op} ${value}`);
       }
+    }
+
+    if (prop === 'display' && op === 'regex') {
+      const result = new SnomedFilterContext();
+      result.displayRegex = SnomedProvider.#displayRegex(value);
+      result.displayLang = this.#filterLanguage(filterContext.languages);
+      // Like ECL, a cached value set's filter keeps what it resolved to: here, per edition
+      // and language, the concepts the scan found, so the scan is paid once.
+      if (fc) {
+        const key = this._snomedFilterCacheKey() + '|' + result.displayLang;
+        const cached = recall(fc, SNOMED_DISPLAY_REGEX, key);
+        if (cached) {
+          result.descendants = cached;
+          result.populationDone = true;
+        } else {
+          result.displayCache = { fc, key };
+        }
+      }
+      filterContext.filters.push(result);
+      return null;
     }
 
     if (prop === 'inactive') {
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       if (value !== 'true' && value !== 'false') {
         throw new Error(`Invalid filter value: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterInactive(value === 'true'));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: inactive ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterInactive(value === 'true'));
+      return null;
     }
 
     if (prop === 'constraint' && op === '=') {
-      filterContext.filters.push(await this.sct.filterECL(value, forIteration, this.opContext));
+      // Reuse a previously resolved ECL analysis for this same cached value set
+      // filter against the same code system (url+version). ECL resolution is the
+      // expensive SNOMED filter to prepare; the resolved concept list is shared
+      // read-only, wrapped in a fresh context so the iteration cursor is per-use.
+      const cached = this._getCachedEcl(fc);
+      if (cached) {
+        filterContext.filters.push(cached);
+        return null;
+      }
+      const resolved = await this.sct.filterECL(value, forIteration, this.opContext);
+      this._cacheEcl(fc, resolved);
+      filterContext.filters.push(resolved);
       return null;
     }
 
     if (prop === 'moduleId') {
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
         throw new Error(`Invalid concept ID: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterModuleId(id));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: moduleId ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterModuleId(id));
+      return null;
     }
 
     if (prop == 'expressions' && op == '=') {
@@ -1663,25 +3874,45 @@ class SnomedProvider extends BaseCSServices {
       return null;
     }
 
+    // mapped:<identifier scheme> exists true|false - concepts that do (or don't) have an
+    // alternate identifier in that scheme (e.g. mapped:30051010000102: has a LOINC code).
+    // A prefix, so as not to be confused with the attribute filters (<attribute> = <value>)
+    if (prop.startsWith(MAPPED_FILTER_PREFIX)) {
+      const scheme = prop.substring(MAPPED_FILTER_PREFIX.length);
+      if (this.sct.stringToIdOrZero(scheme) === 0n) {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
+      if (op !== 'exists') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
+      if (value !== 'true' && value !== 'false') {
+        throw new Error(`Invalid filter value: ${value}`);
+      }
+      const filter = new SnomedFilterContext();
+      filter.mappedScheme = scheme;
+      filter.mappedExists = value === 'true';
+      filterContext.filters.push(filter);
+      return null;
+    }
+
     const cid = this.sct.stringToIdOrZero(prop);
     if (cid != 0) {
-
+      if (op !== '=') {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
       const id = this.sct.stringToIdOrZero(value);
       if (id === 0n) {
         throw new Error(`Invalid concept ID: ${value}`);
       }
-
-      switch (op) {
-        case '=': {
-          filterContext.filters.push(this.sct.filterByProperty(cid, id));
-          return null;
-        }
-        default:
-          throw new Error(`Unsupported filter operation: ${prop} ${op} ${value}`);
-      }
+      filterContext.filters.push(this.sct.filterByProperty(cid, id));
+      return null;
     }
 
-    throw new Error(`Unsupported filter property: ${prop}`);
+    throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+      this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
   }
 
 
@@ -1700,6 +3931,14 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async filterSize(filterContext, set) {
+    if (set.displayRegex) {
+      await this.#populateDisplayRegex(set);
+    }
+    // A wildcard (`*`) set is lazy - it carries the eclWildcard flag rather than a
+    // materialised descendant list - so count the active concepts it denotes.
+    if (set.eclWildcard && (!set.descendants || set.descendants.length === 0)) {
+      return this.sct._eclEnumerateAllConcepts(this.opContext).length;
+    }
     if (set.matches && set.matches.length > 0) {
       return set.matches.length;
     } else if (set.members && set.members.length > 0) {
@@ -1713,6 +3952,9 @@ class SnomedProvider extends BaseCSServices {
 
   async filterMore(filterContext, set) {
     set.cursor = set.cursor || 0;
+    if (set.displayRegex) {
+      await this.#populateDisplayRegex(set);
+    }
     this.#ensurePopulated(set);
     const size = await this.filterSize(filterContext, set);
     return set.cursor < size;
@@ -1746,14 +3988,24 @@ class SnomedProvider extends BaseCSServices {
       return conceptResult.message;
     }
 
-    if (set.eclWildcard) {
-      return this.sct.isActive(reference) ? ctxt : null;
-    }
     const ctxt = conceptResult.context;
     const reference = ctxt.getReference();
+
+    if (set.eclWildcard) {
+      return ctxt; // `*` is every concept; inactive ones included
+    }
+
+    // A post-coordinated expression validated against an ECL value set: test the
+    // expression's membership against the constraint directly (subsumption +
+    // refinements), rather than collapsing it to its focus concept.
+    if (set.eclAst && ctxt.isComplex()) {
+      return await this.sct._eclExpressionSatisfies(ctxt, set.eclAst, this.opContext) ? ctxt : null;
+    }
     let found = false;
 
-    if (set.inactive !== undefined) {
+    if (set.mappedScheme !== undefined) {
+      found = this.#isMapped(reference, set.mappedScheme) === set.mappedExists;
+    } else if (set.inactive !== undefined) {
       let concept = this.sct.concepts.getConcept(reference);
       let active = (concept.flags & 0x0F) === 0;
       found = active !== set.inactive
@@ -1761,6 +4013,8 @@ class SnomedProvider extends BaseCSServices {
       let concept = this.sct.concepts.getConcept(reference);
       let moduleId = this.sct.concepts.getModuleId(concept.index);
       found = moduleId === set.moduleId;
+    } else if (set.displayRegex) {
+      found = this.#displayMatches(set, reference);
     } else if (set.propProp || set.propValue) {
       found = false;
       const relationships = this.sct.getConceptRelationships(reference);
@@ -1771,6 +4025,9 @@ class SnomedProvider extends BaseCSServices {
         }
       }
     } else if (set.matches && set.matches.length > 0) {
+      // filterLocate is only ever called once per set (single code, validate
+      // path), so a Set would cost O(n) to build for one lookup - a plain scan
+      // is the right call here. filterCheck, which is looped, uses the Sets.
       found = set.matches.some(m => m.index === reference);
     } else if (set.members && set.members.length > 0) {
       found = set.members.some(m => m.ref === reference);
@@ -1796,12 +4053,19 @@ class SnomedProvider extends BaseCSServices {
     }
 
     const reference = concept.getReference();
+    if (set.mappedScheme !== undefined) {
+      return this.#isMapped(reference, set.mappedScheme) === set.mappedExists;
+    }
     if (set.inactive !== undefined) {
       return this.sct.isActive(reference) !== set.inactive;
     }
 
     if (set.moduleId) {
       return this.sct.concepts.getModuleId(reference) === set.moduleId;
+    }
+
+    if (set.displayRegex) {
+      return this.#displayMatches(set, reference);
     }
 
     if (set.propProp || set.propValue) {
@@ -1815,20 +4079,77 @@ class SnomedProvider extends BaseCSServices {
     }
 
     if (set.matches && set.matches.length > 0) {
-      return set.matches.some(m => m.index === reference);
+      return this.#matchesHas(set, reference);
     } else if (set.members && set.members.length > 0) {
-      return set.members.some(m => m.ref === reference);
+      return this.#membersHas(set, reference);
     } else if (set.descendants && set.descendants.length > 0) {
-      return set.descendants.includes(reference);
+      return this.#descendantsHas(set, reference);
     }
     if (set.eclWildcard) {
-      return this.sct.isActive(reference);
+      return true; // `*` is every concept; inactive ones included
     }
     return false;
   }
 
+  // Lazily build and cache a membership Set on the filter context so repeated
+  // filterLocate/filterCheck calls test membership in O(1) instead of scanning
+  // the descendants/members/matches array each time. The length guard rebuilds
+  // the Set if the underlying array was mutated (e.g. by #ensurePopulated).
+  #descendantsHas(set, reference) {
+    if (!set._descSet || set._descSetLen !== set.descendants.length) {
+      set._descSet = new Set(set.descendants);
+      set._descSetLen = set.descendants.length;
+    }
+    return set._descSet.has(reference);
+  }
+
+  #membersHas(set, reference) {
+    if (!set._memberSet || set._memberSetLen !== set.members.length) {
+      set._memberSet = new Set(set.members.map(m => m.ref));
+      set._memberSetLen = set.members.length;
+    }
+    return set._memberSet.has(reference);
+  }
+
+  #matchesHas(set, reference) {
+    if (!set._matchSet || set._matchSetLen !== set.matches.length) {
+      set._matchSet = new Set(set.matches.map(m => m.index));
+      set._matchSetLen = set.matches.length;
+    }
+    return set._matchSet.has(reference);
+  }
+
+  /** Whether the concept (by reference) has an alternate identifier in the scheme */
+  #isMapped(reference, scheme) {
+    return this.sct.getIdentifiers(this.sct.getConceptId(reference), scheme).length > 0;
+  }
+
   #ensurePopulated(set) {
     if (set.populationDone) {
+      return;
+    }
+    if (set.mappedScheme !== undefined) {
+      if (set.mappedExists) {
+        // straight from the identifier index, in concept order
+        const refs = new Set();
+        for (const [conceptId, idents] of this.sct.identifiersByConcept) {
+          if (idents.some(i => i.scheme === set.mappedScheme)) {
+            const r = this.sct.concepts.findConcept(BigInt(conceptId));
+            if (r.found) {
+              refs.add(r.index);
+            }
+          }
+        }
+        set.descendants = [...refs].sort((a, b) => a - b);
+      } else {
+        for (let i = 0; i < this.sct.concepts.count(); i++) {
+          const concept = this.sct.concepts.getConceptByCount(i);
+          if (!this.#isMapped(concept.index, set.mappedScheme)) {
+            set.descendants.push(concept.index);
+          }
+        }
+      }
+      set.populationDone = true;
       return;
     }
     if (set.inactive !== undefined && set.descendants.length === 0) {
@@ -1864,17 +4185,60 @@ class SnomedProvider extends BaseCSServices {
     set.populationDone = true;
   }
 
+  /**
+   * The concept's own display (the edition's preferred term), for leaving out what a supplement
+   * only copies (see CodeSystemProvider._rootDisplay)
+   */
+  async _rootDisplay(code) {
+    try {
+      return /^\d+$/.test(code) ? (this.sct.getDisplayName(code) || null) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Search filter
+  // eslint-disable-next-line no-unused-vars
   async searchFilter(filterContext, filter, sort) {
-    let f = this.sct.searchFilter(filter, false, sort);
+    // `sort` is not a match-mode flag: results are always ranked. Only descriptions in one
+    // language take part, chosen as for the display filter: the first language the request
+    // names that the edition has descriptions in, else the edition's default; and the codes
+    // whose designations in that language, in a supplement in use, match
+    const lang = this.#filterLanguage(filterContext.languages);
+    let f = await this.sct.searchFilter(filter, false, this.opContext, lang);
+    if (this.supplements && this.supplements.length > 0) {
+      const have = new Set(f.matches.map(m => m.index));
+      const sources = new Map();
+      for (const code of await this._supplementSearchCodes(filter, new Language(SCT_LANGUAGE_CODES[lang] || 'en'), sources)) {
+        const id = this.sct.stringToIdOrZero(code);
+        const r = id !== 0n ? this.sct.concepts.findConcept(id) : null;
+        if (r && r.found && !have.has(r.index) && this.sct.isActive(r.index)) {
+          f.matches.push({ index: r.index, term: this.sct.concepts.getConceptId(r.index), priority: 10 });
+          have.add(r.index);
+          CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(code));
+        }
+      }
+    }
     filterContext.filters.push(f);
     return f;
   }
 
   // Subsumption testing
+  /**
+   * Subsumption between two codes, either of which may be a postcoordinated expression.
+   *
+   * PRECONDITION: both codes have already been validated. doSubsumes (the only caller)
+   * runs locate() on each first, which parses and runs checkExpression - so an
+   * expression that breaks the concept model is reported as an invalid code before it
+   * gets here, rather than having a subsumption answer computed for it. The check is
+   * deliberately not repeated here: it evaluates ECL for the MRCM range constraints, and
+   * doing that twice per request is not free.
+   *
+   * @param {string} codeA
+   * @param {string} codeB
+   * @returns {Promise<string>} equivalent | subsumes | subsumed-by | not-subsumed
+   */
   async subsumesTest(codeA, codeB) {
-
-
     try {
       const exprA = new SnomedExpressionParser(this.sct.concepts).parse(codeA);
       const exprB = new SnomedExpressionParser(this.sct.concepts).parse(codeB);
@@ -1903,12 +4267,79 @@ class SnomedProvider extends BaseCSServices {
         } else if (b2) {
           return 'subsumed-by';
         } else {
-          return 'not-subsumed';
+          // No structural relationship found - which is NOT the same as there being
+          // none. Structural comparison of normal forms is sound when it succeeds (a
+          // proof is a proof) but not when it fails: SNOMED's OWL axiom reference set
+          // carries general concept inclusions and property chains whose entailments
+          // are baked into the distributed inferred relationships for precoordinated
+          // concepts, but a postcoordinated expression is one the classifier never saw,
+          // so those entailments are not available for it. Answering 'not-subsumed'
+          // here would assert something we have not established, in the direction that
+          // wrongly excludes a code from a cohort.
+          //
+          // $subsumes has four outcome codes and none of them means "unknown", so the
+          // only honest answer is an error. Both codes are valid and the request is
+          // well formed, hence 422 rather than 400.
+          throw cannotDetermineSubsumption('Unable to determine the subsumption relationship between '
+            + `'${codeA}' and '${codeB}': at least one is a postcoordinated expression and no `
+            + 'relationship follows from comparing their normal forms. Establishing that there '
+            + 'is no relationship would require classification, which this server does not do, '
+            + 'so no outcome is returned rather than one that may be wrong');
         }
       }
     } catch (error) {
+      // Errors that already say how they should be reported pass straight through -
+      // wrapping them would lose the status and issue code.
+      if (error.statusCode) {
+        throw error;
+      }
       throw new Error(`Error in subsumption test: ${error.message}`);
     }
+  }
+
+  /**
+   * The concepts a concept sits under, for $closure (see CodeSystemProvider.ancestorsOf): a
+   * walk up the active is-a parents held in memory. The descendant closure subsumesTest reads
+   * (getAllDesc) is built at import from the same relationships the other way round (active,
+   * defining is-a; inactive rows are ignored), so the two agree. The walk costs the concept's
+   * ancestors (about 20 on average, at most about 130), where subsumesTest parses both codes and
+   * searches a descendant list, twice, for every pair.
+   *
+   * Only a plain concept id, in the form code() gives it, is answered: an expression, or a
+   * concept written another way (with a term, or leading zeros) gets null, so $closure
+   * compares it with subsumesTest, which knows when two spellings are the same concept.
+   *
+   * @param {string|SnomedExpressionContext} code
+   * @returns {Promise<Set<string>|null>}
+   */
+  async ancestorsOf(code) {
+    const ctxt = typeof code === 'string' ? (await this.locate(code)).context : code;
+    if (!(ctxt instanceof SnomedExpressionContext) || !ctxt.isSimple() || ctxt.expression.concepts.length !== 1) {
+      return null;
+    }
+    const ref = ctxt.getReference();
+    if (ref === NO_REFERENCE || ref === undefined || ref === null) {
+      return null;
+    }
+    const id = this.sct.getConceptId(ref);
+    if ((await this.code(ctxt)) !== id) {
+      return null;
+    }
+    const seen = new Set();
+    const ancestors = new Set();
+    let todo = this.sct.getConceptParents(ref);
+    while (todo.length > 0) {
+      const next = [];
+      for (const p of todo) {
+        if (p !== ref && !seen.has(p)) {
+          seen.add(p);
+          ancestors.add(this.sct.getConceptId(p));
+          next.push(...this.sct.getConceptParents(p));
+        }
+      }
+      todo = next;
+    }
+    return ancestors;
   }
 
   // Helper methods
@@ -1946,7 +4377,16 @@ class SnomedProvider extends BaseCSServices {
   }
 
   async getTranslations(map, coding, target, reverse) {
-    if (!map || (target && target !== this.system()) || reverse) {
+    if (map && map.jsonObj.identifierMap) {
+      return this.translateByIdentifier(map, coding, target);
+    }
+    if (!map || reverse) {
+      return [];
+    }
+    if (map.jsonObj.editionTranslation) {
+      return this.translateToEdition(map, coding);
+    }
+    if (target && target !== this.system()) {
       return [];
     }
     let ref = this.sct.concepts.findConcept(map.id);
@@ -2003,6 +4443,181 @@ class SnomedProvider extends BaseCSServices {
     return result;
   }
 
+  /**
+   * Translate using a module's alternate identifiers (the implicit map ?fhir_cm=<module>,
+   * e.g. the LOINC Extension's LOINC codes). The identifiers say the concept and the code
+   * are the same thing, so the map works the same in both directions: a SNOMED CT concept
+   * translates to its codes, and a code in the identifier's system to its concepts. Either
+   * way the relationship is equivalent.
+   */
+  async translateByIdentifier(map, coding, target) {
+    const { schemes } = map.jsonObj.identifierMap;
+    const targetSystem = target ? target.split('|')[0] : null;
+    const result = [];
+    if (coding.system === this.system()) {
+      const ctxt = await this.locate(coding.code);
+      if (!ctxt.context) {
+        return [];
+      }
+      const conceptId = this.sct.getConceptId(ctxt.context.getReference());
+      for (const ident of this.sct.getIdentifiers(conceptId)) {
+        const scheme = IDENTIFIER_SCHEMES[ident.scheme];
+        if (scheme && schemes.includes(ident.scheme) && (!targetSystem || targetSystem === scheme.system)) {
+          result.push({
+            map: map.vurl,
+            system: scheme.system,
+            code: ident.code,
+            relationship: 'equivalent'
+          });
+        }
+      }
+    } else if (!targetSystem || targetSystem === this.system()) {
+      for (const schemeId of schemes) {
+        const scheme = IDENTIFIER_SCHEMES[schemeId];
+        if (scheme && scheme.system === coding.system) {
+          for (const conceptId of this.sct.getConceptsForIdentifier(schemeId, coding.code)) {
+            result.push({
+              map: map.vurl,
+              system: this.system(),
+              version: this.version(),
+              code: conceptId,
+              display: await this.display(conceptId),
+              relationship: 'equivalent'
+            });
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Translate a concept of this edition to the edition it depends on (typically a national
+   * extension to the International Edition). There is no map: the answer comes from the
+   * definitions.
+   *  - a concept in one of the target edition's modules is its own translation
+   *  - an inactive concept translates via its historical associations (REPLACED BY, SAME AS,
+   *    POSSIBLY EQUIVALENT TO, ALTERNATIVE) to concepts in the target edition
+   *  - a fully defined extension concept translates to its normal form, provided every concept
+   *    in it belongs to the target edition; if the target edition has a concept with that same
+   *    normal form, to that concept
+   *  - otherwise (a primitive extension concept, or a definition that uses other extension
+   *    content) to its proximal ancestors in the target edition, which it is narrower than -
+   *    unless the only such ancestors are top-level hierarchies (or the root), which carry no
+   *    information: that is reported as a reason rather than a translation
+   */
+  async translateToEdition(map, coding) {
+    const ed = map.jsonObj.editionTranslation;
+    const sct = this.sct;
+    const src = sct.concepts.findConcept(coding.code);
+    if (!src.found) {
+      return [];
+    }
+    const inTarget = (ref) => ed.modules.has(sct.concepts.getModuleId(ref));
+    const mk = (code, display, relationship) => ({
+      map: map.vurl, system: this.system(), version: ed.version, code, display, relationship
+    });
+    const named = (ref) => `${sct.getConceptId(ref)} |${sct.getDisplayName(ref, sct.defaultLanguage)}|`;
+
+    if (inTarget(src.index)) {
+      return [mk(sct.getConceptId(src.index), sct.getDisplayName(src.index, sct.defaultLanguage), 'equivalent')];
+    }
+
+    if (!sct.isActive(src.index)) {
+      const result = [];
+      for (const [refset, relationship] of [['900000000000527005', 'equivalent'], ['900000000000526001', 'equivalent'],
+        ['900000000000523009', 'related-to'], ['900000000000530003', 'related-to']]) {
+        for (const tgt of this.#historicalAssociations(refset, src.index)) {
+          if (inTarget(tgt)) {
+            result.push(mk(sct.getConceptId(tgt), sct.getDisplayName(tgt, sct.defaultLanguage), relationship));
+          }
+        }
+      }
+      return result;
+    }
+
+    if (!sct.isPrimitive(src.index)) {
+      const nf = sct.expressionServices.createNormalForm(src.index);
+      if (this.#expressionConcepts(nf).every(inTarget)) {
+        const same = sct.conceptWithNormalForm(sct.expressionServices.renderExpression(nf, SnomedServicesRenderOption.Minimal));
+        if (same >= 0 && same !== src.index && inTarget(same)) {
+          return [mk(sct.getConceptId(same), sct.getDisplayName(same, sct.defaultLanguage), 'equivalent')];
+        }
+        // the canonical form self-groups every attribute; for output, never-grouped ones go back ungrouped
+        const out = sct.expressionServices.ungroupNeverGroupedRefinements(nf);
+        return [mk(sct.expressionServices.renderExpression(out, SnomedServicesRenderOption.Minimal),
+          sct.expressionServices.renderExpression(out, SnomedServicesRenderOption.FillMissing), 'equivalent')];
+      }
+    }
+
+    const ancestors = this.#proximalAncestorsIn(src.index, inTarget);
+    if (ancestors.length === 0) {
+      return [];
+    }
+    const useful = ancestors.filter(a => sct.concepts.getDepth(a) >= 2);
+    if (useful.length === 0) {
+      const list = ancestors.map(named);
+      const msgId = list.length === 1 ? 'TRANSLATE_SCT_EDITION_TOP_LEVEL_ONE' : 'TRANSLATE_SCT_EDITION_TOP_LEVEL_MANY';
+      return [{ message: this.opContext.i18n.translate(msgId, this.opContext.langs,
+        [getEditionName(ed.moduleId), named(src.index), list.join(', ')]) }];
+    }
+    return useful.map(a => mk(sct.getConceptId(a), sct.getDisplayName(a, sct.defaultLanguage), 'source-is-narrower-than-target'));
+  }
+
+  /** The target components of the given association reference set for a concept */
+  #historicalAssociations(refsetId, conceptIndex) {
+    const sct = this.sct;
+    const rs = sct.concepts.findConcept(refsetId);
+    if (!rs.found) return [];
+    const rref = sct.refSetIndex.getRefSetByConcept(rs.index);
+    if (rref === -1) return [];
+    const members = sct.refSetMembers.getMembers(sct.refSetIndex.getReferenceSet(rref).membersByRef);
+    const result = [];
+    for (const m of members) {
+      if (m.ref !== conceptIndex) continue;
+      const values = m.values ? sct.refs.getReferences(m.values) : null;
+      if (values && values.length >= 1 && values[0]) {
+        result.push(values[0]);
+      }
+    }
+    return result;
+  }
+
+  /** Every concept reference used anywhere in an expression */
+  #expressionConcepts(exp, into = []) {
+    for (const c of exp.concepts) {
+      if (c.reference !== NO_REFERENCE) into.push(c.reference);
+    }
+    const refinements = [...exp.refinements, ...exp.refinementGroups.flatMap(g => g.refinements)];
+    for (const r of refinements) {
+      if (r.name && r.name.reference !== NO_REFERENCE) into.push(r.name.reference);
+      if (r.value) this.#expressionConcepts(r.value, into);
+    }
+    return into;
+  }
+
+  /**
+   * The nearest ancestors of a concept that satisfy the test: a parent that does is taken
+   * and not looked beyond; one that does not is replaced by its own parents.
+   */
+  #proximalAncestorsIn(conceptIndex, test) {
+    const result = [];
+    const seen = new Set();
+    const todo = [...this.sct.expressionServices.getConceptParents(conceptIndex)];
+    while (todo.length) {
+      const p = todo.shift();
+      if (seen.has(p)) continue;
+      seen.add(p);
+      if (test(p)) {
+        result.push(p);
+      } else {
+        todo.push(...this.sct.expressionServices.getConceptParents(p));
+      }
+    }
+    // an ancestor that is itself subsumed by another in the list is not proximal
+    return result.filter(a => !result.some(b => b !== a && this.sct.subsumes(a, b)));
+  }
+
   hasMultiHierarchy() {
     return true;
   }
@@ -2013,9 +4628,12 @@ class SnomedProvider extends BaseCSServices {
  * Factory for creating SNOMED services and providers
  */
 class SnomedServicesFactory extends CodeSystemFactoryProvider {
-  constructor(i18n, filePath) {
+  constructor(i18n, filePath, loadMode = 'read', log = null) {
     super(i18n);
     this.filePath = filePath;
+    this.loadMode = loadMode; // 'read', 'mmap' or 'prewarm' - see SnomedFileReader
+    this.log = log;
+    this.mapped = false;      // set by load(): whether the cache file really is memory-mapped
     this.uses = 0;
     this._loaded = false;
     this._sharedData = null;
@@ -2027,6 +4645,26 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 
   version() {
     return this._sharedData.versionUri;
+  }
+
+  /**
+   * A concept links to snomed.info, which redirects to a browser: in its edition when that is
+   * one snomed.info knows, otherwise without an edition. An expression links to the browser's
+   * home page. The same links as SnomedUtilities.getSctLink in org.hl7.fhir.core.
+   */
+  codeLink(context) {
+    if (!context || !context.expression) {
+      return undefined;
+    }
+    const code = context.isSimple() ? (context.source || context.expression.concepts[0].code) : null;
+    if (!code || !/^\d+$/.test(code)) {
+      return 'https://browser.ihtsdotools.org/';
+    }
+    const m = /^http:\/\/snomed\.info\/sct\/(\d+)/.exec(this.version() || '');
+    if (m && SNOMED_LINKABLE_EDITIONS.has(m[1])) {
+      return `http://snomed.info/sct/${m[1]}/id/${code}`;
+    }
+    return `http://snomed.info/id/${code}`;
   }
 
   getPartialVersion() {
@@ -2047,39 +4685,86 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
    *   http://snomed.info/sct?fhir_vs=refset             – list of reference sets
    *   http://snomed.info/sct?fhir_vs=refset/<id>        – members of a reference set
    *   http://snomed.info/sct?fhir_vs=isa/<id>           – concept and descendants
+   *   http://snomed.info/sct?fhir_vs=ecl/<ecl>          – the concepts an ECL expression selects
    *
    * The URL may optionally include edition and/or version segments:
    *   http://snomed.info/sct/<edition>?fhir_vs...
    *   http://snomed.info/sct/<edition>/version/<ver>?fhir_vs...
    *
+   * Which edition and version the value set is drawn from is the provider's choice, made
+   * with implicitValueSetForm(): the generic form from the default edition, the edition
+   * form from the latest version of that edition, the version form from that version.
+   * For the edition and version forms, the value set's include names this version, so that
+   * it is expanded against it; the generic form leaves the version to the request.
+   *
    * @param {string} url - The ValueSet URL to resolve
    * @returns {object|null} A FHIR ValueSet JSON object, or null if the URL is not recognised
    */
   async buildKnownValueSet(url, version) {
-    if (!url.startsWith("http://snomed.info/sct")) {
+    if (!url.startsWith('http://snomed.info/')) {
       return null;
     }
+    await this.#ensureLoaded();
     if (version != null && !this.version().startsWith(version)) {
       return null;
     }
+    const form = this.implicitValueSetForm(url);
+    if (!form) {
+      return null;
+    }
+    const id = form.query;
+    const vs = await this.#buildImplicitValueSet(url, id);
+    if (vs && form.form !== 'generic') {
+      for (const include of vs.compose.include) {
+        include.version = this.version();
+      }
+    }
+    return vs;
+  }
 
-    const URI_SNOMED = 'http://snomed.info/sct';
-
-    // Extract the query portion (?fhir_vs...) if this is a recognised SNOMED implicit VS URL
-    let id = null;
-    const qIdx = url.indexOf('?');
+  /**
+   * Whether url is an implicit value set of this edition, and in which form:
+   *   generic - http://snomed.info/sct?fhir_vs...              (any edition)
+   *   edition - http://snomed.info/sct/<edition>?fhir_vs...    (this edition, no version given)
+   *   version - http://snomed.info/sct/<edition>/version/<date>?fhir_vs... (this version)
+   * The edition and version forms are also recognised under this version's own base
+   * (http://snomed.info/xsct/... for the test edition).
+   *
+   * @param {string} url
+   * @returns {{form: string, query: string}|null}
+   */
+  implicitValueSetForm(url) {
+    if (!url || !this._sharedData) {
+      return null;
+    }
+    const qIdx = url.indexOf('?fhir_vs');
     if (qIdx === -1) {
       return null;
     }
-
-    if (url.startsWith('http://snomed.info/sct?fhir_vs') ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}?fhir_vs`) ||
-        url.startsWith(`http://snomed.info/sct/${this.edition}/version/${this.version}?fhir_vs`)) {
-      id = url.substring(qIdx);
-    } else {
+    const base = url.substring(0, qIdx);
+    const query = url.substring(qIdx);
+    if (query !== '?fhir_vs' && !query.startsWith('?fhir_vs=')) {
       return null;
     }
+    const versionUri = this.version();
+    const edition = this._sharedData.edition;
+    const date = this._sharedData.version;
+    const editionBases = new Set([`http://snomed.info/sct/${edition}`, this.getPartialVersion()]);
+    const versionBases = new Set([versionUri, `http://snomed.info/sct/${edition}/version/${date}`]);
+    if (base === 'http://snomed.info/sct') {
+      return { form: 'generic', query };
+    }
+    if (editionBases.has(base)) {
+      return { form: 'edition', query };
+    }
+    if (versionBases.has(base)) {
+      return { form: 'version', query };
+    }
+    return null;
+  }
 
+  async #buildImplicitValueSet(url, id) {
+    const URI_SNOMED = 'http://snomed.info/sct';
     const now = new Date().toISOString();
 
     if (id === '?fhir_vs=refset') {
@@ -2093,7 +4778,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTReferenceSetList',
         title: 'SNOMED CT Reference Set List',
         description: 'Reference Sets defined in this SNOMED-CT version',
@@ -2113,7 +4797,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'ALLSNOMEDCT',
         title: 'SNOMED CT Reference Set (All of SNOMED CT)',
         description: 'SNOMED CT Reference Set (All of SNOMED CT)',
@@ -2140,7 +4823,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTRefSet' + refsetId,
         title: 'SNOMED CT Reference Set ' + refsetId,
         description: this.snomedServices.getDisplayName(ref.index),
@@ -2158,6 +4840,38 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
       };
     }
 
+    if (id.startsWith('?fhir_vs=ecl/')) {
+      // the ECL is URL-encoded in the value set URL; accept it already decoded as well
+      let ecl = id.substring(13);
+      try {
+        ecl = decodeURIComponent(ecl);
+      } catch (e) {
+        // not encoded (or not validly): use it as it stands
+      }
+      if (!ecl.trim()) {
+        return null;
+      }
+      return {
+        resourceType: 'ValueSet',
+        url,
+        status: 'active',
+        name: 'SNOMEDCTECL',
+        title: 'SNOMED CT ECL ' + ecl,
+        description: 'The SNOMED CT concepts selected by the expression constraint ' + ecl,
+        date: now,
+        compose: {
+          include: [{
+            system: URI_SNOMED,
+            filter: [{
+              property: 'constraint',
+              op: '=',
+              value: ecl,
+            }],
+          }],
+        },
+      };
+    }
+
     if (id.startsWith('?fhir_vs=isa/')) {
       const conceptId = id.substring(13);
       let ref = this.snomedServices.concepts.findConcept(conceptId);
@@ -2168,7 +4882,6 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         resourceType: 'ValueSet',
         url,
         status: 'active',
-        version: this.versionDate,
         name: 'SNOMEDCTConcept' + conceptId,
         title: 'SNOMED CT Concept ' + conceptId + ' and descendants',
         description: 'All Snomed CT concepts for ' + this.snomedServices.getDisplayName(ref.index),
@@ -2195,8 +4908,9 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
   }
 
   async load() {
-    const reader = new SnomedFileReader(this.filePath);
+    const reader = new SnomedFileReader(this.filePath, this.loadMode, this.log);
     this._sharedData = await reader.loadSnomedData();
+    this.mapped = reader.mapped;
     this.snomedServices = new SnomedServices(this._sharedData);
     this._loaded = true;
   }
@@ -2252,11 +4966,140 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
     return edition + ' ' + formatDateMMDDYYYY(match[2].substring(4, 6) + match[2].substring(6, 8) + match[2].substring(0, 4));
   }
 
+  /**
+   * A translation from this edition to an edition it depends on needs no map: the answer
+   * comes from the definitions (see SnomedProvider.translateToEdition). The request names
+   * the source by its edition URI (with or without a version) and the target as
+   * system|edition URI (with or without a version); the map's url is the versioned source
+   * edition URI plus ?fhir_cm=edition/<target edition module>
+   */
+  async findImplicitConceptMaps(conceptMaps, source, sourceVersion, dest) {
+    if (dest) {
+      this.#findIdentifierMaps(conceptMaps, source, sourceVersion, dest);
+    }
+    if (source !== this.system() || !sourceVersion || !dest || !this.isMyEdition(sourceVersion)) {
+      return;
+    }
+    const bar = dest.indexOf('|');
+    if (bar === -1 || dest.substring(0, bar) !== this.system()) {
+      return;
+    }
+    const dep = this.snomedServices.editionDependency(dest.substring(bar + 1));
+    if (dep) {
+      conceptMaps.push(this.editionTranslationMap(dep));
+    }
+  }
+
+  /**
+   * The implicit map from this edition to an edition it depends on. Its url is the one
+   * agreed with SNOMED International: <source edition>/version/<date>?fhir_cm=edition/<target module>
+   * (the source always versioned, whatever the request said)
+   */
+  editionTranslationMap(dep) {
+    return new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      editionTranslation: dep,
+      url: `${this.version()}?fhir_cm=edition/${dep.moduleId}`,
+      name: `SNOMED CT ${this.describeVersion(this.version())} to ${getEditionName(dep.moduleId)} Concept Map`,
+      description: `The translation implied by the concept definitions of the edition ${this.version()} to the ${getEditionName(dep.moduleId)} that it depends on`,
+      status: 'active',
+      group: [{
+        source: this.system(),
+        target: this.system()
+      }]
+    });
+  }
+
+  /**
+   * Maps implied by alternate identifiers, found from the systems rather than nominated:
+   * from this edition (source system|version naming it) to an identifier system (LOINC,
+   * say), or from an identifier system to this edition (the target given as
+   * system|edition URI, with or without the version)
+   */
+  #findIdentifierMaps(conceptMaps, source, sourceVersion, dest) {
+    const bar = dest.indexOf('|');
+    const destSystem = bar === -1 ? dest : dest.substring(0, bar);
+    const destVersion = bar === -1 ? null : dest.substring(bar + 1);
+    let identSystem;
+    if (source === this.system() && sourceVersion && this.isMyEdition(sourceVersion)) {
+      identSystem = destSystem;
+    } else if (destSystem === this.system() && destVersion && this.isMyEdition(destVersion)) {
+      identSystem = source;
+    } else {
+      return;
+    }
+    for (const [moduleId, schemes] of this.snomedServices.identifierModules) {
+      if ([...schemes].some(s => IDENTIFIER_SCHEMES[s] && IDENTIFIER_SCHEMES[s].system === identSystem)) {
+        const cm = this.identifierMap(moduleId);
+        if (cm && !conceptMaps.some(m => m.url === cm.url)) {
+          conceptMaps.push(cm);
+        }
+      }
+    }
+  }
+
+  /**
+   * The implicit map defined by a module's alternate identifiers, if the module has any
+   * in a scheme we know. Its url follows the edition maps: <source edition>/version/<date>?fhir_cm=<module>
+   */
+  identifierMap(moduleId) {
+    const schemes = [...(this.snomedServices.identifierModules.get(moduleId) || [])].filter(s => IDENTIFIER_SCHEMES[s]);
+    if (schemes.length === 0) {
+      return null;
+    }
+    const systems = schemes.map(s => IDENTIFIER_SCHEMES[s].system);
+    const moduleName = this.snomedServices.conceptExists(moduleId)
+      ? this.snomedServices.getDisplayName(this.snomedServices.concepts.findConcept(BigInt(moduleId)).index) : moduleId;
+    return new ConceptMap({
+      resourceType: 'ConceptMap',
+      internalSource: this,
+      identifierMap: { module: moduleId, schemes: schemes },
+      url: `${this.version()}?fhir_cm=${moduleId}`,
+      name: `SNOMED CT ${moduleName} Concept Map`,
+      description: `The concept map implied by the alternate identifiers (${systems.join(', ')}) of the module ${moduleId} |${moduleName}| in ${this.version()}`,
+      status: 'active',
+      group: [
+        ...systems.map(s => ({ source: this.system(), target: s })),
+        ...systems.map(s => ({ source: s, target: this.system() }))
+      ]
+    });
+  }
+
+  /** Whether a source version names this edition: exactly, or the edition without a version */
+  isMyEdition(version) {
+    const mine = this.version();
+    return version === mine || mine.startsWith(version + '/version/');
+  }
+
   async findImplicitConceptMap(url, version) {
     if (version && (version !== this.version())) {
       return null;
     }
-    if (!url || !url.startsWith(this.system()+"?fhir_cm=")) {
+    if (!url) {
+      return null;
+    }
+    // <edition[/version/date]>?fhir_cm=edition/<module>: this edition's definition-based
+    // translation to an edition it depends on, nominated by url
+    const q = url.indexOf('?fhir_cm=edition/');
+    if (q !== -1) {
+      if (!this.isMyEdition(url.substring(0, q))) {
+        return null;
+      }
+      const dep = this.snomedServices.editionDependency(`http://snomed.info/sct/${url.substring(q + '?fhir_cm=edition/'.length)}`);
+      return dep ? this.editionTranslationMap(dep) : null;
+    }
+    // <edition[/version/date]>?fhir_cm=<module>: the map implied by a module's alternate
+    // identifiers (e.g. 11010000107, the LOINC Extension's LOINC codes)
+    const qm = url.indexOf('?fhir_cm=');
+    if (qm !== -1 && url.substring(0, qm) !== this.system()) {
+      if (!this.isMyEdition(url.substring(0, qm))) {
+        return null;
+      }
+      await this.#ensureLoaded();
+      return this.identifierMap(url.substring(qm + '?fhir_cm='.length));
+    }
+    if (!url.startsWith(this.system()+"?fhir_cm=")) {
       return null;
     }
     let id = url.substring(url.indexOf("=")+1);
@@ -2292,8 +5135,8 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
         description: `The concept map implicitly defined by the ${name} Association Reference Set`,
         copyright: 'This value set includes content from SNOMED CT, which is copyright © 2002+ International Health Terminology Standards Development Organisation (SNOMED International), and distributed by agreement between SNOMED International and HL7',
         status: 'active',
-        sourceUri: `${this.system}?fhir_vs`,
-        targetUri: `${this.system}?fhir_vs`,
+        sourceUri: `${this.system()}?fhir_vs`,
+        targetUri: `${this.system()}?fhir_vs`,
         group: [{
           source: 'http://snomed.info/sct',
           target: 'http://snomed.info/sct'
@@ -2312,75 +5155,11 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
 }
 
 function getEditionName(edition) {
-  const editionMap = {
-    '900000000000207008': 'International Edition',
-    '449081005': 'International Spanish Edition',
-    '11000221109': 'Argentinian Edition',
-    '32506021000036107': 'Australian Edition (with drug extension)',
-    '11000234105': 'Austrian Edition',
-    '11000172109': 'Belgian Edition',
-    '20621000087109': 'Canadian English Edition',
-    '20611000087101': 'Canadian Canadian French Edition',
-    '554471000005108': 'Danish Edition',
-    '11000279109': 'Czech Edition',
-    '11000181102': 'Estonian Edition',
-    '11000229106': 'Finnish Edition',
-    '11000274103': 'German Edition',
-    '1121000189102': 'Indian Edition',
-    '827022005': 'IPS Terminology',
-    '11000220105': 'Irish Edition',
-    '11000146104': 'Netherlands Edition',
-    '21000210109': 'New Zealand Edition',
-    '51000202101': 'Norwegian Edition',
-    '11000267109': 'Republic of Korea Edition (South Korea)',
-    '900000001000122104': 'Spanish National Edition',
-    '45991000052106': 'Swedish Edition',
-    '2011000195101': 'Swiss Edition',
-    '83821000000107': 'UK Edition',
-    '999000021000000109': 'UK Clinical Edition',
-    '5631000179106': 'Uruguay Edition',
-    '731000124108': 'US Edition',
-    '21000325107': 'Chilean Edition',
-    '5991000124107': 'US Edition (with ICD-10-CM maps)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionName(edition) || 'Unknown Edition';
 }
 
 function getEditionCode(edition) {
-  const editionMap = {
-    '900000000000207008': 'Intl',
-    '449081005': 'es',
-    '11000221109': 'AR-es',
-    '32506021000036107': 'AU+',
-    '11000234105': 'AT',
-    '11000172109': 'BE',
-    '20621000087109': 'CA-en',
-    '20611000087101': 'CA-fr',
-    '554471000005108': 'DK',
-    '11000279109': 'CZ',
-    '11000181102': 'ES',
-    '11000229106': 'FI',
-    '11000274103': 'DE',
-    '1121000189102': 'IN',
-    '827022005': 'IPS',
-    '11000220105': 'IE',
-    '11000146104': 'NL',
-    '21000210109': 'NZ',
-    '51000202101': 'NO',
-    '11000267109': 'KR',
-    '900000001000122104': 'ES-es',
-    '45991000052106': 'SW',
-    '2011000195101': 'CH',
-    '83821000000107': 'UK',
-    '999000021000000109': 'UK-Clinical',
-    '5631000179106': 'UR',
-    '731000124108': 'US',
-    '21000325107': 'CL',
-    '5991000124107': 'US+)'
-  };
-
-  return editionMap[edition] || 'Unknown Edition';
+  return editionCode(edition) || 'Unknown Edition';
 }
 
 

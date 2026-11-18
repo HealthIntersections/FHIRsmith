@@ -1,4 +1,46 @@
+const crypto = require("crypto");
 const {VersionUtilities, VersionPrecision} = require("../../library/version-utilities");
+const {Issue} = require("./operation-outcome");
+
+/**
+ * Contained resources. The terminology server supports exactly one use of them: a ValueSet
+ * that contains ValueSets, which its compose refers to as #id. Any other contained resource
+ * - a contained CodeSystem or ConceptMap, anything contained in a CodeSystem or ConceptMap,
+ * or a contained ValueSet that itself contains something - is rejected, whatever path the
+ * resource arrives by (request, tx-resource, cache, package). Supporting them would mean
+ * resolving references to them everywhere, and the terminology ecosystem only requires
+ * servers to support contained value sets in value sets.
+ *
+ * @param {Object} jsonObj - the resource (R5 form)
+ * @throws {Issue} if the resource contains anything not supported
+ */
+function checkContained(jsonObj) {
+  const contained = jsonObj ? jsonObj.contained : undefined;
+  if (contained === undefined || contained === null) {
+    return;
+  }
+  const type = jsonObj.resourceType;
+  const which = `${type}${jsonObj.id ? '/' + jsonObj.id : ''}${jsonObj.url ? ' (' + jsonObj.url + ')' : ''}`;
+  if (!Array.isArray(contained)) {
+    throw new Issue('error', 'structure', `${type}.contained`, 'CONTAINED_RESOURCE_NOT_SUPPORTED',
+      `${which}: contained must be an array`, 'invalid-data', 400);
+  }
+  contained.forEach((c, i) => {
+    const ct = c && typeof c === 'object' ? c.resourceType : undefined;
+    let problem = null;
+    if (type !== 'ValueSet') {
+      problem = `${which} contains a ${ct || 'resource'}: this server only supports ValueSets contained in a ValueSet`;
+    } else if (ct !== 'ValueSet') {
+      problem = `${which} contains a ${ct || 'resource with no resourceType'}: this server only supports ValueSets contained in a ValueSet`;
+    } else if (Array.isArray(c.contained) && c.contained.length > 0) {
+      problem = `${which}: the contained ValueSet${c.id ? ' #' + c.id : ''} itself contains resources, which is not allowed`;
+    }
+    if (problem) {
+      throw new Issue('error', 'not-supported', `${type}.contained[${i}]`, 'CONTAINED_RESOURCE_NOT_SUPPORTED',
+        problem, 'not-supported', 400);
+    }
+  });
+}
 
 /**
  * Base class for metadata resources to provide common interface
@@ -29,6 +71,62 @@ class CanonicalResource {
   constructor(jsonObj, fhirVersion = 'R5') {
     this.jsonObj = jsonObj;
     this.fhirVersion = fhirVersion;
+  }
+
+  /**
+   * Rejects contained resources this server doesn't support - see checkContained.
+   * Subclasses call this once the resource is in R5 form.
+   */
+  checkContained() {
+    checkContained(this.jsonObj);
+  }
+
+  /**
+   * The hash ExpansionCache.computeKey puts in an expansion's cache key for this
+   * resource: the first 16 hex characters of the sha256 of JSON.stringify(json). Computing
+   * it means serialising the whole resource, and a $cache-control cache hands every
+   * resource it holds to every $expand that carries its cache-id, so it is worked out
+   * once and remembered.
+   *
+   * @param {Object} json - the resource (R5 form)
+   * @returns {string}
+   */
+  static computeExpansionKeyHash(json) {
+    return crypto.createHash('sha256')
+      .update(JSON.stringify(json))
+      .digest('hex')
+      .substring(0, 16);
+  }
+
+  /**
+   * This resource's expansion-key hash (see computeExpansionKeyHash), computed on first
+   * use and then remembered. Nothing writes to jsonObj once a resource is in use (the r4/r5 conversion
+   * happens in the constructor, before anything can ask), and the memo is tied to the
+   * jsonObj it was computed from, so replacing jsonObj gets a new hash.
+   * @returns {string}
+   */
+  expansionKeyHash() {
+    const memo = this._expansionKeyHashMemo;
+    if (memo && memo.json === this.jsonObj) {
+      return memo.hash;
+    }
+    return this.setExpansionKeyHash(CanonicalResource.computeExpansionKeyHash(this.jsonObj));
+  }
+
+  /**
+   * Record the expansion-key hash for a store that already knows it, so it is never
+   * recomputed. It must be computeExpansionKeyHash(this.jsonObj). Non-enumerable, so it never serialises
+   * into a response or log, and structuredClone/spread don't copy it onto a different
+   * resource.
+   * @param {string} hash
+   * @returns {string} the hash
+   */
+  setExpansionKeyHash(hash) {
+    Object.defineProperty(this, '_expansionKeyHashMemo', {
+      value: { json: this.jsonObj, hash },
+      enumerable: false, configurable: true, writable: true
+    });
+    return hash;
   }
 
   get resourceType() {
@@ -163,4 +261,4 @@ class CanonicalResource {
   }
 }
 
-module.exports = { CanonicalResource };
+module.exports = { CanonicalResource, checkContained };

@@ -1,0 +1,37 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-procedure-reason",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-procedure-reason",
+  "name": "IpsProcedureReason",
+  "title": "Procedure reasons (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 404684003 |Clinical finding| and 71388002 |Procedure|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "404684003"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "71388002"
+          }
+        ]
+      }
+    ]
+  }
+}

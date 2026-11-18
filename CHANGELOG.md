@@ -1,10 +1,1327 @@
 # Changelog
 
-All notable changes to the Health Intersections Node Server will be documented in this file.
+All notable changes to Health Intersections FHIRsmith will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-11-18
+
+### Added
+
+- tx: a caches page, `/{path}/caches`: every cache the tx module keeps, with how many entries each holds and its limit, and the process's memory. With `modules.tx.adminPassword`, it empties all but the client caches, or all of them (back to what the server held when it had started), then runs a full GC and `malloc_trim`, and shows RSS before and after. Under the cluster launcher it is server wide: it shows every process, with a column for each and the total, and empties the caches of every process. Listed are the endpoint and process caches (expansions, the XML of large arrays, recently read VSAC value sets, LOINC filter lookups, what the ecosystem said, language tags, regular expressions), what is kept with loaded content (the SNOMED CT history and MRCM range indexes), and the client caches
+- tx: the text indexes of the code systems and supplements loaded at startup (from packages and folders) are kept in SQLite (`terminology-cache/text-indexes/text-indexes.db`), not in the heap, and from one run to the next: each is keyed on a hash of what it indexes, so only new or changed content is indexed. The server waits for them as it starts (the first start with a big library takes a while); then the indexes nothing loads any more are deleted. In a cluster the master builds them and the tx-workers use them. Code systems and supplements from a request are indexed in memory, as before
+- XIG: a sitemap, `/xig/sitemap.xml`: an index of files of 50,000 resource pages each (`sitemap-1.xml.gz`, ...), built when first asked for and kept until the database is next updated. Crawlers that follow the lists' filter links ask for every combination of version, authority, realm and type - tens of thousands of pages, each a dozen database queries; with the sitemap they can find every resource page without them, and robots.txt can keep them off the lists (`Disallow: /xig?`: see xig/readme.md, "Crawlers"). `modules.xig.baseUrl` is the public address the sitemap's URLs start with (default: the request's own)
+- IPS: reports - a table of data drawn from every document by a [SQL on FHIR](https://sql-on-fhir.org) ViewDefinition, and SQL statements that summarise it. The administrator defines them (`/ips/reports`); each project shows them for its own documents (`/ips/{code}/reports`), with a CSV download of the table. A report runs over the documents as submitted, as processed, or their validation outcomes; the ViewDefinition is checked by the FHIR validator against the SQL on FHIR IG. Settings: `modules.ips.reports` (see the configuration template, and ips/readme.md, "Reports")
+- SQL on FHIR: a ViewDefinition runner, `library/sql`, with SQLite, CSV and JSON output; the IPS reports use it
+
+### Changed
+
+- The event loop watchdog's stall files say, on Linux, what the kernel says about the main thread for each second of a stall, and over it (in the log too): its state and what it waits in, the CPU time it used, the major page faults it took, RSS and swap, and the machine's pressure (PSI) and free memory. On npm.fhir.org eight of nine stalls in a day had an empty stack and no garbage collection - the main thread wasn't running JavaScript at all - and a stack can't say why
+- packages: the crawler parses the feeds (XML) in a worker thread when they are bigger than 256 KB: the hl7.org package feed held npm.fhir.org's event loop for 2-3 seconds each time it was read
+- tx: what providers remember on the filters of value sets (a resolved ECL expression, the concepts a full scan or a SNOMED CT display regex found, for each code system version and language) had no limit on the value sets of packages, which are held for the life of the server: one result for each version a filter was resolved against, forever. They are now kept least recently used first within `filterMemoMaxConcepts` (default 10,000,000 concepts, about 80 MB), and the memory guard can let them go. On the value sets a client cache holds they now count as concepts the cache holds, under `cacheMaxConcepts` and `cacheMaxTotalConcepts` (a result that would take a cache over its limit isn't kept), and go with it
+- SNOMED CT: **import your SNOMED CT editions again** with this version's importer: the server now only reads cache format 21, and refuses to start with a cache in any other format (1.0.4 asked for format 20, but still read older ones). Format 21 adds:
+  - the license the edition is distributed under: the importer has a new, required parameter, `--license <file>`, and puts the file in the cache, near the start, so that the license goes wherever the cache goes. The server doesn't read it. For the tx-ecosystem test subset, use its `license.txt` (in `tx/data/snomed` here)
+  - the text indexes that `$expand` filters and ECL term filters search - one for all the edition's languages and, when it has descriptions in more than one, one for each - built at import. The server reads them where they are in the cache file (memory-mapped, or read in with the rest), so nothing is built when a cache loads or is first searched (it took seconds for a full edition, and memory beside the cache), and the caches page no longer lists SNOMED CT text indexes
+  - and drops the old words and stems sections, which nothing read (they took most of an import's word processing, and space in every cache)
+
+  The server no longer reports caches in older formats in its log and daily report (it doesn't load them). The committed test cache, `tx/data/snomed-testing.cache`, is rebuilt from the RF2 subset in `tx/data/snomed`, and the tests that relied on its older content (no concrete values, module ids or MRCM) now use what the subset has
+- tx: the usage tracker (the `usage-count` expansion property) is off for now: nothing uses its counts yet, so the server no longer scans every value set at startup for it, nor counts the codes `$validate-code` sees, and `usage-count` is 0. An `$expand` asking for `usage-count` on a code system the tracker had no counts for failed; it now gives 0
+- tx: the memory guard empties every endpoint and process cache while it refuses requests for memory (it emptied the XML cache only), and the client caches too, but last: only at a later look, if emptying the rest wasn't enough
+- SNOMED CT: ECL evaluation no longer holds the event loop. On tx.fhir.org (2026-11-18) a script sending ECL expansions three at a time held each tx-worker for 20 s - the operation time limit - at a time. Evaluation is now asynchronous, and gives the event loop a turn every few hundred steps (`checkAndYield`), so an expensive expression uses its compute time while the process goes on answering other requests. And it is faster:
+  - a refinement (`A : attribute = X`) tests only the concepts with a relationship to a value in X, when there are fewer of them than in A, and gathers only the relationships it looks at (a concept's inbound relationships only for a reversed attribute, `R`)
+  - a chain of ORs is gathered into one set (each OR copied everything before it)
+
+  On the US edition, ten finding-site refinements joined by OR went from 2.9 s to 0.13 s, and 220 `<<` subtrees joined by OR from 970 ms to 16 ms. `checkExpression` and `parseExpression` (SNOMED CT expressions, `tx/sct/expressions.js`) are asynchronous too: the MRCM range check runs ECL
+- tx: the slow request log line (`slowRequestSeconds`) gives the filters of the value sets in the request - an ECL constraint, say - so that an expensive expansion can be repeated: the value set was only `ValueSet (1 include)`
+- ICD-11: `$validate-code` warns when a code - on its own, or a stem in a postcoordinated expression - has no value on an axis WHO marks as required (`ICD11_PC_REQUIRED_AXIS_EMPTY`). WHO's "required" means strongly encouraged: the code is valid without it, just not complete
+- packages: the crawler lists the mirror folder asynchronously when it removes what an interrupted crawl left: listing tens of thousands of files with `readdirSync`, on a server just started, held npm.fhir.org's event loop for 2.3 s
+
+### Fixed
+
+- tx: CodeSystem `$validate-code` with `useSupplement` and no version: a supplement the server holds, pinned to the version of the code system it has (`supplements = url|version`), was reported as missing (`VALUESET_SUPPLEMENT_MISSING`), and a supplement passed in `tx-resource` pinned to another version was used. Which supplements apply now depends on the version the code system turns out to be, as it already did for value sets (#387)
+- SNOMED CT: an ECL expression that ran out of time (or memory, or whose client went away) was reported as `UNSUPPORTED_ECL` (400); it is now too-costly (422), like any other operation that does
+
+## [1.0.4] - 2026-11-17
+
+### Changed
+
+- SNOMED CT: **import your SNOMED CT editions again** with this version's importer. It writes cache format 20, and the server now says, when it loads a cache in an older format and in the daily report every day, that the cache should be imported again, and why. Older caches still load and are served as before, but, depending on the importer that wrote them:
+  - effective dates are a day early, if the cache was built in a time zone ahead of UTC (fixed in 1.0.0, but the cache format didn't change, so the server couldn't tell)
+  - descriptions in any language other than English, French, Dutch, Spanish, Swedish, Danish, German, Italian and Czech are labelled English: Norwegian, Finnish, Estonian, Korean, Portuguese... The importer now records every ISO 639-1 language (`tx/sct/languages.js`), and any other code as English with a warning
+  - a text or display regex filter with no request language searches English, not the edition's own language: the importer now records the edition's language (from its editions table, or `--language`)
+  - caches older than format 19 have no concrete values (ECL concrete value refinements are reported as unsupported)
+
+  A format 20 cache can't be read by an older server
+- SNOMED CT: a request in Norwegian finds descriptions under either `no` or `nb`/`nn`
+- SQLite connection pools: the XIG (`modules.xig.connections`), the packages module's reads (`modules.packages.readConnections`) and LOINC (`modules.tx.loincConnections`; 0, a connection per request, as before) read their databases through several connections, 4 by default, and a connection is given one query at a time: a query waits for one that is free (`library/sqlite-pool.js`). node-sqlite3 runs one query at a time on a connection, and finishes each on the main thread, so on npm.fhir.org a quick XIG query ending while a slow one ran on the same connection held the event loop for 2-6 s at a time
+- SNOMED CT: an ECL description filter (`{{ term = "..." }}`) uses the text index to find the concepts that can match, rather than reading every description of every concept in the set
+- packages: downloads redirected to the mirror are counted, as the ones served are
+- The event loop block warnings say how much of a block was garbage collection
+
+### Fixed
+
+- tx: a code system on another server (`cs-virtual`) whose server won't answer `$lookup` (401, 403, 405, 429, or not a FHIR response) is checked with `$validate-code` instead: every code was reported as unknown
+- extension tracker: the usage page honours its `url` filter (it built the page for every extension, each time), and shows what was submitted since it was last built
+- publisher: a publication that failed its package check left the go-publish output uncommitted in the web folder, for the next publication to commit with its own; and for a working-mode publication (a ballot) the check looked at the root `package.tgz`, which only milestone and technical correction runs replace
+
+## [1.0.3] - 2026-11-16
+
+### Added
+
+- IPS: a Patient endpoint for each project, `{project}/Patient`: read and search (`_id`, `identifier`, `name`, `family`, `given`, `birthdate`, `gender`) the patients of the documents received, and IPS `$summary` (`Patient/[id]/$summary`, or `Patient/$summary?identifier=`) for a patient's latest document - the modified copy, unless `modules.ips.summarySource` is `"original"`. Each document's Patient is matched to one seen before in the project - the same identifier, or the same name and birth date, unless the birth date or gender conflicts - or is a new one; the patient's resource has this server's id and gathers what all their documents say. Documents already stored are matched when the server starts
+
+- IPS: a page for the processing queue, `/ips/queue` (linked from the top menu; JSON for other clients): the document being processed and the step it is up to, and the documents waiting, in the order they will be processed. `queue` can no longer be a project's code. It also shows how long each processing step takes - on average, and per KB of document - over each step's last 100 runs that did their work (recorded from now on, in `step_timings`)
+- IPS: an SHL viewer, `/ips/view`: other systems can name it as the viewer in their SMART Health Links (`{server}/ips/view#shlink:/...`), and SHLs and VHLs (`HC1:...`) can be pasted into it. It retrieves the document on the server and shows every step it took - the payload, key included, each request and response with headers and body, redirects, the decryption, the decrypted content - to help debug SHL servers; asks for a passcode when the link needs one; checks a VHL's signature against the certificates it trusts (`modules.ips.viewer.trust`, and this server's own shl module's); shows the document's narrative; and offers to add an IPS document to a project, saying that this makes it visible to everyone, and warning when the same document is already here. The module's own SHL QR codes now open this viewer unless `modules.ips.shl.viewer` says otherwise. The IPS home page says how a system that generates SHLs or VHLs names this server as the viewer. Settings: `modules.ips.viewer` (see the configuration template)
+- IPS: "Compose a document" (from a project, or `/ips/compose`, also in the top menu and on the home page, for no project) lists the document creators: the general IPS editor (the editor that was there) and the patient IPS editor - the Patient Document Generator that was on healthintersections.com.au, moved here (its old page now redirects), with its scripts and libraries served by the module rather than from CDNs. Both work the same way: load an IPS document or a test patient at the top; the document is made as the form changes; and they end with the same choices: submit to the project (or the one the user picks), download as JSON, ZIP or PDF, or get a QR code - an SHL that opens in this server's SHL viewer, or a WHO (GDHCN) QR code (a VHL) - made on the server. The choices are offered once the document is a minimal IPS (a named patient, an author, and the allergies, problems and medications sections, each with entries or an empty reason); until then the page says what is missing. The general editor can now load an IPS document, or one of five test patients - the same people as the patient editor's, as their GP would summarise them, with functional status in ICF. `compose` can no longer be a project's code
+- IPS: the analysis draws attention to a primitive that has an extension instead of a value (a data-absent-reason, say - legal almost everywhere in IPS): "There is no value at {path} - instead, the extension {url} is found. Check that this is truly necessary - such values are often misinterpreted"
+- IPS: the Source view switches between the original document and the modified one (what the processing ended up with: the translations, the generated narrative, the terminology check), and the Share as SHL / VHL buttons have moved there, to share whichever is shown
+- tx: `$expand` of a value set whose include lists a code that isn't in the code system: the code was silently left out; now the expansion says so, with an `expansion-issue` (a contained OperationOutcome with a warning for each such code). A new setting, `modules.tx.errorsForInvalidCodes` (false), makes it an error instead: the value set can't be expanded (422)
+- tx: `$expand` of a value set with an include filter that selects by concept (`is-a`, `descendent-of`, `child-of`, `descendent-leaf`, `generalizes`, `=` on `concept` or `code`) on a code the code system doesn't have: what happened depended on the code system - nothing (most), or an error (SNOMED CT, for an id with a wrong check digit; ICD-11). Now every code system does the same: the include adds no codes, and the expansion says so with an `expansion-issue` warning - or, with `errorsForInvalidCodes`, the value set can't be expanded (422)
+- tx: `$validate-code` against a value set that names codes its code systems don't have (listed, or in an `is-a`-style filter): when the code isn't valid, the OperationOutcome has an error saying the value set is not valid, and why (`VALUESET_INVALID_FOR_VALIDATION`; `errorsForInvalidCodes` doesn't apply). Such a filter matches nothing: SNOMED CT used to fail on it (500), and a filter other than `is-a` / `descendent-of` on an unknown concept was refused as not understood (422)
+- libuv's thread pool (`UV_THREADPOOL_SIZE`) is 16 threads unless the environment says otherwise, not Node's 4: the sqlite3 queries run there (LOINC, RxNorm, ICD-11, VSAC, the packages and XIG databases), and on npm.fhir.org a few slow XIG queries held all 4, so package requests waited up to 30 s with the event loop idle
+- The event loop held for 2 seconds or more (synchronous work during which the process answers nothing) is logged as a warning - "Event loop blocked for 12.3s; in flight when it began: ..." - with the requests that were in flight when it began, the one that finished as it ended first (most likely the one that held it); and counted, so the daily report's stability paragraph says how many times it happened (for 2, 5 and 10 seconds or more). The node blocking graph only showed the longest in each 10 minutes, and not what caused it (`library/block-monitor.js`)
+- XIG: each request is logged when it finishes, with its status, how long it took and the size of the response (`GET /xig?type=cs 200 42ms 5120b`), and "(client gone)" when the client hung up first. The XIG is most of npm.fhir.org's traffic (about a million requests a day) and logged nothing, so what held the server up couldn't be found
+- XIG: a resource is available as JSON (`_fmt=json`, or `Accept: application/json`), as stored - sent gzipped as it is held when the client takes that, so nothing is parsed or decompressed
+- OCL in cluster mode (PR #373): the master alone discovers the OCL sources and collections, and writes what it found to discovery snapshots (`data/terminology-cache/ocl/discovery-snapshot.json`, `vs-discovery-snapshot.json`: each source's metadata and CodeSystem, without its concepts); after each discovery or refresh it downloads every source's concepts into the cold cache files. The workers build the same code systems and value sets from the snapshots, load the concepts from the cold cache files, and pick up a snapshot or cache file the master rewrites - they never run the discovery or the downloads themselves. On a public OCL server the master's downloads take in every public organisation-owned source. See cluster.md
+- Tagalog (`tl`): the server's messages and the rendering phrases
+
+### Changed
+
+- IPS: a document's page is titled `IPS #{id}: {what it is}` - the document's title, with the patient's name when the title doesn't have it (or the patient and date, when there is no title) - rather than the project and the document's number
+
+- tx: a text filter (`$expand` with `filter`) matches by the same rules in every code system - SNOMED CT, LOINC, RxNorm, ICD-11, code systems from packages, and supplements - where each had its own (`tx/library/text-match.js`): a code whose name (its display, or one designation) in the search language has every word of the filter, in any order, each as the start of a word or with the same stem, without regard to case or accents; or whose code starts with the filter, a straight left match (only without regard to case: not split into words, stemmed or folded). Matches are ranked the same way everywhere too: the code itself, then a name that is the filter, then names with the filter's words in its order - at the start, together, with words between - above names with them in another order (`ac ap` lists Acute appendicitis before Applied action); shorter names first. LOINC, RxNorm and ICD-11 listed their matches in display or hierarchy order. Words are Unicode (letters, marks and digits; numbers are words too); the stemmer is the best there is for the language (English, French, German, Spanish, Italian, Portuguese, Dutch, Swedish, Norwegian, Russian, Ukrainian, Persian, Indonesian), and a language without one isn't stemmed; a, an, and, as, at, by, for, from, in, into, of, on, or, the, to are left out of a filter of other words; a single letter or digit is a whole word (`hepatitis b` doesn't find hepatitis C). What changes: LOINC searched for the whole filter text in the display (`calcium urine` now finds "Calcium [Mass or Moles/volume] in 24 hour Urine", and in English every English name is searched - display, long common name, short name, consumer name, display name - never the RELATEDNAMES2 keywords); RxNorm, every word, as before, but numbers too, and in one name; ICD-11, the whole filter text; SNOMED CT matched the last word only as the start of a word, and the words anywhere in the concept's descriptions, not in one; code systems from packages looked for the filter inside the code, display and definition (a definition is not a name, and is no longer searched); other code systems' displays matched on any one word. The database code systems answer it from a text index, which their importers build: `tx-import loinc upgrade-text-index -d <file>`, `tx-import rxnorm upgrade-text-index -d <file>` and `node tx/importers/import-icd11.js --text-index-only --dest <file>` build it in an existing database without importing again; a database without it is searched as before, and the server says so at startup
+- tx: a supplement's text that only repeats the code's own display (as a language pack that copies the English names alongside its own does) takes no part in a text filter: it says nothing the code system's own search doesn't. For LOINC and SNOMED CT
+- tx: a code system's HTML page shows the first 1,000 concepts, then says how many there are, with a link to the whole code system as JSON; the JSON and XML tabs show the same 1,000 codes (of a CodeSystem's concepts, a ValueSet's include and exclude lists, an expansion), with a link to the whole resource in that format. ICD-10-CM's page (98,000 concepts, 24 MB) and MDC's (21-45 MB) were built in one go, holding the event loop for 4-6 s each time on tx.fhir.org. Building a table also lets other work run every 25 ms
+- tx: the JSON of large resources is kept for next time, as the XML is, in the same cache (`modules.tx.xmlCacheMB` now covers both): MDC as JSON (20 MB) took a second each time
+- Ecosystem resolution: a server registered as `http://` is asked over `https://` first, and over `http://` only if it doesn't answer on `https://` at all; which one works is remembered for an hour. Redirects are followed (up to 5) under the SSRF guard - a request with credentials only to the same host. A server registered as `http://` that redirects to `https://` (tx.hl7europe.eu) couldn't be used
+- tx: a text filter searches the supplements in use (a global language pack, say) through an index of each one, built once (for the global supplements, in the background as the server starts), letting other work run while it is built, rather than stemming every display and designation of the supplement for each search: with the Uzbek LOINC language pack in use on tx.fhir.org, every LOINC text search (`$expand` with `filter`) took about a second, all of it holding the event loop. Text languages are compared at the primary language subtag without parsing the tag, and without regard to case
+- Ecosystem resolution: only a code system that is a URI is looked for; `1`, `PRESCRIPTION_TYPE`, or a url with its version glued on, are no longer sent to the registry (which answered 400, and each made a warning in the log)
+- IPS: "nationality" is now "jurisdiction" on the pages (IPS specifications exist for provinces and for regions like the EU, not just nations); nothing else changes
+- tx: the search pages (CodeSystem, ValueSet and ConceptMap, in a browser, or with `_format=html`) match `url` anywhere in the url, without regard to case, and ignore spaces around it: an OID, or a fragment of a url, finds the resources (`url=2.16.840.1.113883.3.464.1003.103.12.1001` finds the VSAC value set). A search from any other client is unchanged - a ValueSet or ConceptMap url that starts with the value, a CodeSystem url that is the value - since clients look resources up by url and count on what comes back
+- IPS: the AI assessment replaces attachments (Attachment and Binary data, base64Binary values, images in the narrative) with a placeholder before the document is sent, and the model is told to ignore them: most of a document that was too big to send was its attachments
+
+- tx: ISO 3166 country codes: EU (exceptionally reserved by ISO for the European Union, but used, in health exchange too) is an active code; the alpha-2 codes formerly used and not assigned again (AN, BU, CS, DD, FX, NT, SU, TP, YU, ZR and the rest, 25 in all) are known, as inactive codes, with a definition saying what they were and their ISO 3166-3 code. The other reserved codes (UK - use GB - EZ, UN, IC and so on) are still not codes; the user-assigned and XX / XZ / ZZ arrangements are unchanged
+- XIG: no list has more than 200 rows. The JSON and CSV of the resource list (`_fmt=json` / `_fmt=csv`, or an `Accept` header) were every resource the filter matched - with no filter, all 280,000, 115 MB of JSON, built in one go - and are now a page, by `offset` as the HTML is, with `X-Total-Count` and a `Link` header (first, prev, next, last) for the other pages; the JSON is still an array. A resource page's lists (the resources that use it, that it uses, and an extension's examples) are paged the same way (`usedByOffset`, `usesOffset`, `examplesOffset`)
+- XIG: a resource bigger than 1 MB (as JSON) has no narrative or source on its page, which says how big it is and links to it as JSON. The biggest (VSAC value sets, a WHO Library) are 20-27 MB, and their pages were read and parsed twice, pretty-printed and escaped, holding the event loop. Smaller resources are read and parsed once
+- XIG: the counts of packages and resources at the foot of each page are counted once for each database, not on every request
+- tx: a ConceptMap at the R4 and R3 endpoints is converted copy-on-write, as code systems and value sets are: it was deep-copied (a JSON round trip of the whole map) on every request, and as a new object each time, so its XML and JSON were never served from the cache. Parameters (the answers of $translate, $validate-code, batch validation) likewise. A ConceptMap's HTML page shows the first 1,000 elements, as a code system's does, with a link to the whole map as JSON; its Translate tab takes a typed code when the map has more than 1,000 codes, rather than listing them all
+- Publisher: the check for files too big for GitHub, before a publication is pushed, walks the web folder without holding the event loop (hl7.org/fhir's has hundreds of thousands of files), and asks git which are ignored, and moves them, the same way. The task page reads the build and publication logs the same way
+- packages: /npm-check works out the tarball's digests in slices, letting other work run between them, and reads its package.json from a streaming unzip that stops once it is found: the whole tarball (VSAC's are ~100 MB) was unzipped into memory and hashed in one go
+- tx: a designation with no language of its own is in its code system's language (`CodeSystem.language`), and `$lookup` and `$expand` say so (`"language": "en"`); a supplement's designation is in the supplement's language, and if the supplement has none either, its language is unknown, as before. The tx-ecosystem tests require this (fhir-tx-ecosystem-ig PR #104)
+- tx: `$validate-code`'s message for a display that isn't valid, when the code has displays in the requested language, is in the request's language (`Accept-Language`), as every other message is; it was in the display language
+
+### Fixed
+
+- IPS: the SHL viewer inflated compressed content (an SHL's zip DEF content, a VHL's COSE) without a limit, so a small link could be made to inflate to gigabytes, holding the server and its memory (a zip bomb). Inflating stops at the viewer's size limit (`modules.ips.viewer.maxMB`, 10 MB for a VHL), and the viewer says why
+- IPS: the analysis view's "Only show problems" showed resources and sections whose only findings were extensions the validator knows (with their narrative): those aren't problems. An unknown extension, or a modifier extension, still is
+
+- IPS: the general editor put wrong displays on its codes: each section's LOINC code had the section title as its display ("Problem List" for 11450-4, which is "Problem list - Reported"), and some choices had displays that aren't the code system's (85354-9, 2708-6, 9843-4, 11778-8, 11636-8, 449868002, 428041000124106); the form still shows the friendlier labels, which go in the text. "Alcoholic drinks per week" was 74013-4, which is per day; and "History of alcohol use" was 11331-4, which isn't a LOINC code (11331-6). A coded value can now carry the code system version (ICF needs one)
+
+- The page templates (IPS, packages, publisher, registry, testing, token, XIG, extension tracker) loaded jQuery UI 1.14 and then the old jquery.ui.core/widget/mouse/resizable/draggable scripts over it, which broke jQuery UI widgets such as autocomplete ($.widget.extend is not a function); and statuspage.js had a node `require` in it, so it failed in the browser
+
+- tx: a supplement in use (a global language pack, say) that gives a text filter codes the code system's own search doesn't is reported as used (`used-supplement`): it decided what the expansion has, even when the displays shown aren't its own
+- tx: the "(n ms)" at the foot of a tx page always said 0 ms: it now says how long the request took
+- ICD-11: a text filter searched the language of the request's `displayLanguage` header only, never `displayLanguage` or `Accept-Language` given as the request's language list: the provider dropped it
+- SHL: a VHL's signed claims (`/shl/sign`) had text keys (`"1"`, `"-260"`, `"5"`) where CWT and the GDHCN use integers (1, -260, 5): they are integers now
+- SHL: the Bundle a VHL link's manifest request returns is valid FHIR: type `searchset` (was `searchSet`), each DocumentReference has a status (`current`), and its file is `content.attachment.url` (was `content.url`, which isn't an element)
+- The translations of the server's messages and of the rendering phrases were never used, since 0.10.0: each file was loaded under the wrong name (`Messages-de`, not `de`), so a request in German, say, got English. A request's `Accept-Language` now gets them, in Arabic, Chinese, Dutch, French, German, Japanese, Portuguese, Russian, Spanish, Tagalog and Uzbek - tx.fhir.org's messages for a client that asks for another language will change accordingly
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.3 passed all 5362 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
+
+## [1.0.2] - 2026-11-15
+
+### Security
+
+- XML: a JSON key that isn't an element name (every FHIR element name is a simple token: letters, digits and `_`), from a resource that came in from outside, is refused - the response falls back to JSON - instead of being written into the XML as markup (`{"a><x/><b": ...}` became `<a><x/><b .../>`). The same check covers a resource's type in a Bundle or Parameters
+- Configuration check: a setting whose value is wrong was reported (by `--check`, and in the server's log at startup) with its value, so a misconfigured secret - a password, token, key or client secret given as a number, say - was written to the log. A secret's value is no longer shown, nor what is inside an object or a list
+- LOINC: a relationship `in` filter looks each part name up on its own (PR #386); a long list of names now answers to the operation's time limit, and to the client hanging up, as it goes
+
+### Added
+
+- `node server.js --check` (or `-t`; `npm run check`): checks the configuration and exits 0 or 1, without starting anything, as `nginx -t` does - `config.json`, unknown settings (warnings, with the setting that may have been meant), replaced settings, types and ranges, the files the configuration names (the tx library, parsed and its sources checked), the folders the server writes to, the Node.js version and the native SQLite modules. With `--role`, what the role makes of it; `node cluster.js --check`, the launcher's settings and each process's configuration. The server logs the same errors and warnings as it starts. See CONFIGURATION.md, "Checking the configuration"
+- tx: a warning at startup when the library's order makes a partial version (`http://loinc.org|2`, say) mean an older version than one loaded before it: the version the library lists last wins, deliberately, so the order says which one a partial version means - the warning catches an order that says it by mistake
+- Registry: a registry (in the master registration file) or a server (in a registry file) marked `"disabled": true` is taken out of the ecosystem without deleting its registration: it isn't read or scanned, and isn't discovered or resolved to (see the tx ecosystem IG's ecosystem page)
+- tx: the XML of large resources is kept for next time, so a resource asked for again isn't serialised again. An array (a CodeSystem's concepts, an expansion's contains...) that took 50 ms or more to serialise is kept the second time it does; at most `modules.tx.xmlCacheMB` (default 256 MB per process, counted in characters, so text outside Latin-1 can take up to twice that; 0: none), the least recently used dropped first, and all of it while the memory guard is refusing requests. An R4 search for an ICD-10-CM-sized code system, as XML: about 350 ms, then 25 ms
+- tx: a request whose response took 10 ms or more to serialise says so in its log line: `5+6120ms` is 5 ms for the operation and 6,120 ms to serialise. The time was taken before serialising, so a request that held the process for seconds was logged as taking a few ms
+
+### Changed
+
+- Requests to other servers have a deadline for the whole request, response included: a server that sends its response headers and then a byte now and then no longer holds the request for as long as it likes (axios's `timeout` only covers the wait for the response to start). Ecosystem resolution: 30 s and 10 MB (PR #382, Josh Mandel). Registry crawler: `maxRequestSeconds` (default 120), also for the OAuth token request. Package crawler: `crawler.maxRequestSeconds` (default 300) for feeds and packages, and feeds are limited to `crawler.maxFeedMB` (default 50; they had no limit, and the largest, Simplifier's, is 5 MB). `/packages/npm-check`: its `requestTimeout` now covers the whole request. A request that hits a limit says which in the log ("no complete response within 30 s", "the response is more than 10 MB"), not "canceled" or "maxContentLength size of 10485760 exceeded"
+- tx: XML responses are serialised a part at a time, letting other requests run every 25 ms. The full ICD-10-CM CodeSystem as XML (64 MB, `CodeSystem?url=http://hl7.org/fhir/sid/icd-10-cm`, fetched 50-200 times a day) held a tx.fhir.org process for 9 s on average and up to 17 s, 204 times on 2026-11-13 - the long spikes in the Node Blocking graph. The XML serialiser is also about 3 times faster, with about 7 times less garbage collection
+- tx: converting a CodeSystem or ValueSet from R5 for an R4 or R3 endpoint no longer copies the whole resource first: what changes is copied, and the rest shared (for ICD-10-CM, 110-190 ms of copying a response, now none). The same stored code system or cached expansion converted again gives the same result, so its XML can come from the cache
+- ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id, as JSON or XML) has an ETag from a hash of its content, worked out once, and a matching `If-None-Match` gets a 304 before anything is serialised; it was serialised in full and then hashed. These ETags aren't the old ones, so a client that keeps them gets each resource once more. Other responses over 1 MB no longer get an ETag: Express hashed every response, POSTs included
+- Ecosystem resolution: a server the registry lists as a candidate for a code system is used only if it has the content (complete or fragment) - as its TerminologyCapabilities says (for R4 and R3, in the cross-version extension), or else as a search of its CodeSystems finds - and the next candidate is tried if it doesn't, or doesn't have the version. A server the registry says is authoritative is used whatever it says about the content. If this server is authoritative for the code system, no other server is asked
+- tx: a response isn't serialised once the client has hung up - before it starts, or (XML) at the next point it lets other work run - and the request is logged with 499
+- Ecosystem resolution: the caches of what the registry and the other servers say keep the 1,000 most recently used entries each. They are keyed by the code systems (and versions) requests name, so they grew without limit
+- Provider contracts (PR #368, Josh Mandel): what a code system or value set provider that keeps its content in a database (rather than in memory) is told, so it needn't load everything:
+  - `fetchValueSet(url, version, opContext)`: the request comes too, so a provider can share work between the lookups of one request
+  - an include's (or exclude's) concept list can stay in the store, with a handle `{ count, lookup(code) }` on the include (`tx/library/stored-concepts.js`): `$validate-code` asks it about the one code it checks instead of reading the list. An include whose listed concepts carry a `modifierExtension` stays an ordinary list, and is refused as before (422)
+  - `prefetchCodes` is told when the response shows each code's display and nothing else of its designations (`hints.displayOnly`), so the rest needn't be read
+  - THO precedence asks hl7.terminology's providers for their versions with `fetchValueSet` / `fetchConceptMap`, instead of reading their in-memory maps
+  - the scans of every value set (`scanAllValueSets`) read only each value set's url, version and compose, and a provider may hand them just those
+  - the ECL `wild:` term matcher is in the ECL module, so every SNOMED CT provider matches the same way
+- `$validate-code` against a value set that lists a code in another form (ICD-11's short code and entity id): the listed codes are located only when the code isn't listed as given, and ICD-11 reads them together (`prefetchCodes`, a query per 400 codes) instead of one at a time
+- LOINC: a relationship filter that names its part (`SCALE_TYP = Doc`) found the part by reading every code (`Codes.Description` had no index), in every membership query: on LOINC 2.83, 18 ms for each `$validate-code`. The importer now indexes `Codes.Description` (`idx_codes_description`, 14 MB on 2.83), and the lookup takes 0.04 ms. A database imported before this doesn't need re-importing: add the index once (about 2 s on 2.83) with the sqlite3 command line, while the server isn't using the file:
+
+  ```
+  sqlite3 /path/to/loinc.db "CREATE INDEX IF NOT EXISTS idx_codes_description ON Codes(Description COLLATE NOCASE)"
+  ```
+
+  The server says so once at startup, with that command, when it loads a LOINC database without the index (not in a tx-worker: the master says it)
+- LOINC: the parts a filter names, and the values a `regex` filter matches, are looked up once and kept by the code system (the most recently used 256, at most 1,000,000 keys in all). A regex re-read all the property's values on every request; the name lookup is kept too, for databases without the index (PR #384, PR #392, Josh Mandel)
+- `$batch-validate-code` (PR #378, Josh Mandel): the codes the entries name are collected by code system before any entry runs, and a code system whose provider reads codes together (`prefetchCodes`: ICD-11) is asked once per version for all of them, instead of each entry looking its code up on its own. The answers are the same (see `tx/cs/cs-api.md`, Batches)
+- `$closure` (PR #388, Josh Mandel): LOINC, SNOMED CT, ICD-11, CodeSystem resources, CPT, OMOP and RxNorm give a concept's ancestors (`ancestorsOf`), so a concept is related to the others with one lookup instead of a `subsumesTest` for each pair
+- tx: an expansion that imports value sets kept, for each imported code, how to read its details if the code is returned, in a module-level `WeakMap`. A heavy import (condition-code and procedure-code on SNOMED CT US: about 180,000 codes) made the next major garbage collection pause for about half a second; the record is now kept on the code itself, and that pause is about 30 ms (PR #394, Josh Mandel)
+
+### Fixed
+
+- Stall watchdog: the stack of a blocked event loop is read with a `Runtime.evaluate` on the main thread instead of by pausing it in the debugger. Enabling the debugger first lists every script the process has loaded, which takes longer the more it has loaded: in a CI run of every test suite in one process, no stack came back within 15 s
+- R4 and R3: `designation.additionalUse` (R5 only) was sent as it was; it now goes into the cross-version extension (CodeSystem concepts, ValueSet compose concepts and expansion contains)
+- R3: CodeSystems had decimal properties, which R3 doesn't have; they are left out (the property definitions, and the concepts' values)
+- tx: a value set filter that a code system doesn't support (a property or operator it doesn't have) is a 422 `not-supported` issue, `FILTER_NOT_UNDERSTOOD`, instead of a 500 with a stack trace from `$expand` (PR #383, Josh Mandel) - for every code system, including those with no filters at all (UNII, URIs, US states), and `$validate-code` now gives the same 422 (it gave 400). A filter value a code system can't use (an unknown concept, say) is unchanged, pending the discussion of what that should be
+- LOINC: an `in` filter is the union of `=` each value. A property `in` took only values that were LOINC codes, so `ORDER_OBS in Order,Both` or `CLASSTYPE in 3,4` matched nothing; a relationship `in` took part codes only, so `SCALE_TYP in Doc,Nar` (part names, as `=` takes them) matched nothing, with no error; and `answers-for in` gave the answer lists for a term, not the answers (PR #386, Josh Mandel)
+- LOINC `$lookup`: the properties come in a fixed order. They came in the order their queries finished, so `$lookup`, and the properties in `$expand`, could change order from one request to the next (PR #385, Josh Mandel)
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.2 passed all 5293 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
+
+## [1.0.1] - 2026-11-12
+
+### Security
+
+- SNOMED CT expressions: a term with no closing `|` (e.g. `86290005 |Atemfrequenz`) read on past the end of the input, adding NULs to a string until it reached V8's limit - minutes, and about 17 GB, with the event loop held. This was the 321 s stall of tx.fhir.org's worker tx2 on 2026-11-11 (a `$validate-code`). Any operation that takes a SNOMED CT code could trigger it
+- SNOMED CT expressions are limited: at most 100,000 characters, 500 concept references, and 18 digits in a concept id. Checking, normalising and testing subsumption are synchronous, so a large expression held the process (5,000 attributes, a 95 KB body: over 15 s)
+
+### Added
+
+- A watchdog for the event loop: when it hasn't run for `logging.stallReportSeconds` (default 30) - a request holding the process with code that never yields - a worker thread reads the main thread's stack (through the inspector), and again while the stall lasts. The stacks go to `logs/stall-<instance code or pid>-<time>.txt`, and to the log once the loop runs again. On 11 Nov a `$validate-code` held tx.fhir.org's worker tx2 for 321 s and 17 GB, and nothing said what it was doing
+- tx: a request that takes `modules.tx.slowRequestSeconds` (default 30) or longer gets a warning in the log saying what it asked: the url, `Accept-Language` and the body's parameters, enough to repeat it
+
+### Changed
+
+- SNOMED CT subsumption (and so is-a, ECL, and checking an expression against the concept model) reads the stored closure by binary search instead of copying it first: checking an expression's attributes is about 200 times faster, and normalising and subsumption of expressions 5-10 times
+- Client errors (4xx: an unknown code, code system, version or cache-id...) are no longer logged as errors: the request's log line has its status. They are logged, with their stack, at `debug`. A module's logger lost an error's status, so these were logged with a stack trace
+- LOINC `$validate-code` against a value set filter no longer reads every code the filter selects: each code is checked with one indexed query (`CLASSTYPE = 1`, 69,651 codes: 244 ms to read them, 1.2 ms to check one)
+
+### Fixed
+
+- SNOMED CT expression grammar: a value (`#5`, `"x"`) is no longer accepted as a focus concept; a number must be one (`#`, `#.`, `#1.2.3` were accepted, `#-1` was not); a string value can't be empty, and takes `\"` and `\\` escapes; a NUL in an expression was taken as its end (`64572001\u0000junk` was 64572001)
+- SNOMED CT: `$subsumes` of a concept and a postcoordinated expression failed with a 500 when a defined concept's stored normal form was empty or malformed (the committed test subset has 1,125); it is built from the relationships instead. A warning from the expression services was a TypeError (they had no logger)
+- An `Accept-Language` header that isn't valid (e.g. `zh-cn`'s region, checked strictly) is a 400 OperationOutcome; it was a 500
+- `$validate-code` with an unknown version of a known code system was a 500 internally (the 422 went to the message, not the issue), and a code system with no version was listed as 'Valid versions: null'
+- LOINC `answers-for`: an answer in the list could be reported as not in the value set, though `$expand` listed it. The answers come in the list's order, and membership binary-searched them as if they were in key order; on LOINC 2.83 that missed 7,135 answers of 2,367 lists (`$text` `<`/`>` filters, in display order, had the same problem)
+- LOINC: a `regex` filter that matches no value is an empty filter; it failed as "not supported"
+- LOINC importer: a quote at the start or end of a display was lost (the field's quotes were removed twice), e.g. LA15800-8 `Minimal hypomimia, could be normal "Poker Face` lost its last quote; 15 displays in 2.83 show it. LOINC needs re-importing to fix them
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.1 passed all 5251 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.5)
+
+## [1.0.0] - 2026-11-12
+
+**Upgrading**: a big upgrade - every operator should check their settings, though some might not need to change any. See [Upgrading to 1.0.0](CONFIGURATION.md#upgrading-to-100) for what to check.
+
+Major new features:
+
+- Cluster mode: a master and several tx-workers on one machine and data directory, so terminology can use more than one CPU core (`node cluster.js`, see [cluster.md](cluster.md))
+- Memory protection: a memory guard that refuses new requests (503) when memory is short and aborts running operations near the limit, caps on the caches that could grow without bound, VSAC value sets read on demand, and SNOMED CT caches optionally memory-mapped
+- Lots of performance improvements, particularly in `$expand` paging, `$validate-code` and `$batch-validate-code`
+- Lots of bug fixes around terminology handling (SNOMED CT, LOINC, RxNorm, supplements, filters, limits)
+- Ecosystem resolution: `$validate-code` for code systems this server doesn't have, by asking other servers in the terminology ecosystem
+- Package signatures: npm registry signatures, and publishers' signatures checked by the crawler
+- IPS module
+
+### Security
+
+- Publisher: the administrator (`admin`) was created with a fixed password, `admin123`, and there is no page to change a password. Its password is now the module's `adminPassword` setting, set at every start; without one, the administrator gets a random password (a UUID), which is logged. An administrator that still has `admin123` is given a random one at startup
+- Parsers have depth and size limits: ECL, VCL, SNOMED CT expressions and UCUM units nested past the limit were a stack overflow (RangeError) rather than a parse error, and an unterminated VCL filter list looped until memory ran out
+- SNOMED CT ECL `wild:` terms are matched with re2js: as native regular expressions, a term with many `*`s took exponential time
+- Token module: the session cookie is `Secure` when the request came over https (`req.secure`, which follows nginx's `X-Forwarded-Proto` with `server.trustProxy`; `cookieSecure` overrides). It depended on `NODE_ENV`, which nothing set, so it was never Secure
+
+### Added
+
+- `config.json` may have comments: `//` to the end of the line, and `/* ... */` (`library/config-reader.js`). A syntax error is reported at its line and column in the file
+- A LICENSE file (BSD 3-Clause); the package's licence is now the SPDX id `BSD-3-Clause` (was `BSD-3`)
+- Memory guard (`server.memory`): above `rejectFraction` (0.85) of the memory limit (the cgroup's - systemd `MemoryMax` - or else the machine's RAM) new requests get 503 + `Retry-After`; above `abortFraction` (0.92) running operations are aborted (422 too-costly). While it refuses, it forces a GC (so start node with `--expose-gc`, as `npm start` and the Docker image now do), and, with `trimAllocator` (on by default only with a role), returns the C allocator's free memory. A client that disconnects, or a memory abort, now stops the whole operation, `$batch` and `$batch-validate-code` included
+- Accessibility: [ACCESSIBILITY.md](ACCESSIBILITY.md) (the target is WCAG 2.0 Level AA, at least), and `accessibility.checkPanel`, a button at the bottom of every page that checks the page against WCAG 2.0 A/AA (axe-core, loaded only when pressed) and its heading structure
+- The largest request body the server accepts is a setting, `server.maxBodyMB` (default 50, as before; about 36x the largest IG Publisher request seen on build.fhir.org, 1.39 MB)
+- Packages
+  - `/packages/feed-check` - enter a package feed's URL, and it is read the way the crawler reads it, with nothing stored: for each item, the package (downloaded and checked as the crawler checks it), whether the registry's package-restrictions allow it from that feed, its signature, and whether the registry already holds it (and if it's the same bytes); or what's wrong with the feed itself. The feed's signing keys can be given as JSON (its package-feeds.json `signing` block), to test a feed before its keys are registered. Runs in the background (the report page reloads until done), one at a time, SSRF-guarded, http(s) only (`feedCheck` settings)
+  - publishers' signatures. A package can be signed by its publisher (the IG Publisher does, with a key configured in `fhir-settings.json`): a partner file, `{package}.tgz.sigstore.json`, linked from the feed item by `fhir:signature`, checked against the keys `package-feeds.json` lists for the feed (`feeds[].signing`). `crawler.signatures`: `ignore`, `check` (the default: a signature that fails is logged and the package stored anyway, unless the feed says `signing.required`) or `require` (unsigned or badly signed packages are refused, and feeds that list no keys aren't read). Packages already held are checked against their stored bytes when their feed first carries a signature. Each signature file is kept, as checked, in a new `PackageSignatures` table, and the HTML package lists show each version's signature as confirmed, rejected or absent. The package document has `dist.fhir-signature` (`url`, `status`, `keyid`) for each version with a signature, and `/packages/-/fhir/v1/signatures/{name}@{version}` serves the signature as fetched. Not `dist.attestations`, which npm would fail to verify (see the packages readme)
+  - npm registry signatures, so `npm audit signatures` can check packages installed from the package server. Each version in a package document now has `dist.integrity` (sha512 SRI) and `dist.signatures` (ECDSA P-256 over `{id}@{version}:{integrity}`, as the npm registry signs), and `/packages/-/npm/v1/keys` lists the key. The signature is the registry's, so every version is signed, wherever it was crawled from. On by default (`npmSigning.enabled`); the key is `npmSigning.keyFile`, default `npm-signing-key.pem` next to the database, made at startup if it isn't there. Versions are signed when stored; existing ones are signed in the background at startup (progress in `/packages/status`), and the keys endpoint is a 404 until they all are. Integrity and signatures are in a new `PackageDist` table. `/packages/npm-check` checks signatures too, when the registry lists keys
+- Terminology Ecosystem
+  - OAuth2 client credentials (`oauth`, by server code) for servers that need a token to be scanned (NZHTS); such endpoints are reported as `security: oauth`
+- Terminology
+  - A `fhirsmith-cluster` command (`cluster.js`), alongside `fhirsmith` (`server.js`), for a global npm install
+  - Cluster: the daily report has a Cluster paragraph: when the launcher started; for each process that exited or was recycled, how many times and why, how long it was unavailable, and the requests lost to it (504, 502, cache-ids that came while it restarted); and the requests the launcher refused itself (503) and the connections it closed for write timeouts. The launcher sends the master what it saw over IPC, and the master keeps it in `stats.db` (`cluster_events`)
+  - Cluster: `server.js --role=master|tx-worker` (`--instance-code`, `--port`), and a launcher, `cluster.js`, that starts a master and tx-workers (by default, as many as the CPU cores and the memory limit allow) and sends each request to the right process. The master runs every module; the tx-workers answer terminology requests, opening the master's databases and caches read-only, and never building or downloading them. Settings are in `server.cluster` (see [cluster.md](cluster.md)): with a role a process listens on 127.0.0.1 (`bindAddress`); options `sharedCache` (the `$cache-control` caches in one SQLite file, `databases/resource-cache.db`, at most `sharedCacheMaxMB`, default 256, so any process can answer any cache-id) and `sharedClosure` (every process answers `$closure`), both off by default. The home page and dashboard graph every process, and count every process's requests. With no role, nothing changes
+  - SNOMED CT: how each edition's cache file is loaded is set in `modules.tx.snomed`: `load` = `read` (the default, as before) or `mmap` (memory-mapped, so pages are only resident when used and can be dropped under memory pressure; needs the optional dependency koffi, and falls back to read where mapping isn't available), `prewarm` (editions mapped and read through once at startup, in the background) and `read` (editions always read into memory). The memory guard leaves out the file-backed pages of mapped editions
+  - LOINC: the `answer-list` filter (`answer-list = [LA code]`: the answer lists the answer is in), as agreed with LOINC (UP-645) and tested by the tx-ecosystem `loinc-*-filter-answer-list` tests. `answers-for` is the defined filter for the answers in a list; `LIST` is still accepted, for backwards compatibility only
+  - Extension-codes supplements: a code in a code space the code system reserves for users (`codesystem-reservedCodeSpace`, a regular expression) is a valid code, whether or not anything defines it; with nothing defining it, its display is the code space's `default-display`, or 'User-assigned', and (as a placeholder) another display only gets an information issue. An `extension-codes` supplement in scope defines such codes, with their displays: a global one as if the code system defined them (a different display is an error, or a warning with lenient display validation), one that is referenced as a display that isn't the only correct one (a different display is a warning). Codes from supplements are only in an expansion when the value set lists them. ISO 3166's user-assigned codes work the same way: an extension-codes supplement's display replaces the 'User-assigned' placeholder. So do ICF's qualified (post-coordinated) codes and SNOMED CT post-coordinated expressions (matched as written, or in their minimal rendering): an extension-codes supplement's display is the code's display, and the generated one stays valid
+  - Reserved code spaces: an expansion of all of a code system that reserves code spaces (`codesystem-reservedCodeSpace`) is marked unclosed (`valueset-unclosed`, with the reason), since `$validate-code` accepts codes in those spaces that the expansion can't list
+  - Terminology: `$cache-control` mode=start also returns the issued cache-id in the `X-Cache-Id` response header (the body is unchanged), so a request log taken at the proxy (nginx `$sent_http_x_cache_id`) can tie each cache-id to the request that created it, for replay
+  - Terminology: `$validate-code` (CodeSystem and ValueSet) warns when a coding has no version but its code system says `versionNeeded = true` (`CODESYSTEM_VERSION_NEEDED`); a version pinned by the value set or by the parameters doesn't count, since it's specific to that context and doesn't travel with the coding
+  - Ecosystem resolution (`modules.tx.ecosystem`, off by default): for a code system (or version) this server doesn't have, `$validate-code` against a value set asks the ecosystem registry which server has it, and asks that server (a `$lookup` per code, a `$validate-code` per filter). Servers can be excluded, as can code system patterns; API keys and OAuth client credentials can be given per server; requests are SSRF-guarded; answers are cached for an hour. Requests that had to ask another server are counted and graphed separately (External requests). See tx/README.md
+  - `$translate`: `targetScope` - with a `targetSystem`, a code system's own targets are held to the value set; without one, the maps into the code systems the value set draws on are used (how a national SNOMED CT edition is translated to the International Edition a value set is built on), and what they give is held to the value set. A source version that is a SNOMED CT edition with no date is the release it resolves to
+  - TerminologyCapabilities marks the version of each code system that a request naming no version gets (`isDefault`)
+  - Terminology: Resource pages link codes to their code system's browser: SNOMED CT (to the edition, when the browser has it), LOINC (codes, parts and answers), RxNorm (RxNav), the NCI Thesaurus (EVS Explore) and ICD-11 (the WHO browser; a postcoordinated expression links to its stem)
+  - SNOMED CT: the `display` `regex` filter (VSAC uses it): every concept with an active description (not only the preferred term) that the pattern matches, whole and case-sensitively, in one language - the request's, else the edition's default. The scan is cached as for ECL
+  - SNOMED CT: `concept` filters `descendent-leaf` and `is-not-a`, and `code` is accepted as the same property as `concept` (value sets in production use it)
+  - SNOMED CT `$lookup`: `sufficientlyDefined`, `semanticTag` and concrete values (typed by the MRCM range); the module is `moduleId` (`module` still works); the normal forms are returned when asked for by name
+  - CodeSystem resources: the `descendent-leaf` filter
+  - `modules.tx.pruneTerminologyCache` (default false): once the library and the endpoints' core packages have loaded, what in `terminology-cache` wasn't used is deleted - the `.db` and `.cache` files (with their SQLite side files) and the package folders (old versions, packages no longer in the library, core packages of FHIR versions no endpoint has, failed downloads) - and what was freed is logged. Not other files or folders, not anything changed in the last day, and in a cluster only the master
+- IPS
+  - a Structure view (after Narrative) showing a document's logical structure as an expandable tree: what the Composition refers to, then its sections, each with its entries and what else it refers to, and each resource referred to expanding into its own references. A reference that doesn't resolve in the document is `not-in-document`; a resource already shown isn't expanded again
+  - a nationality step (the first), which decides the document's nation from what it claims (US and AU so far), shown as a flag on the document page and a Nation column on the project page
+  - an analysis step and view - for each resource and section: its extensions (with their definitions, found through the validator), modifier extensions and `implicitRules`, inactive, entered-in-error and unknown statuses, a subject that isn't the document's, dates in the future where one isn't expected, and negation patterns (no known allergies and the like, US Core and IPS styles)
+  - the Narrative view switches between the narrative as provided and the one the server generates; the daily report has an IPS section
+  - `modules.ips.validator.autoLoadPackages` (default true): the validator finds and loads the package that defines an extension it doesn't have
+- READMEs for the publisher, xig and vcl modules, from their settings
+
+### Changed
+
+- The server keeps idle connections open for 65 s (`keepAliveTimeout`; `headersTimeout` 66 s), longer than nginx's 60 s upstream keep-alive: Node's 5 s meant nginx sometimes reused a connection as Node closed it, and a POST then got a 502
+- `node server.js` with `--port` or `--instance-code` but no `--role` stops with an error (they were ignored)
+- `NODE_ENV` defaults to `production` when it isn't set (`npm run dev`: `development`), so Express's error pages no longer include stack traces on a server where nobody set it
+- `npm start` (and the Docker image) run `node --expose-gc server.js`, for the memory guard
+- Dependencies: re2js, koffi (optional, for memory-mapped SNOMED CT), fhir-validator-wrapper 1.7.0, mongoose 9.12.1; rimraf is gone
+- Dashboard: the FHIRsmith release and npm audit's result are one line above "More", with low disk space (under 10% free, still also a problem) in red on the same line (on the home page too, which has no npm audit line); the graphs' key is under "More"
+- Status page (`/` and `/dashboard`): one line (requests, uptime, heap, and problems only when there are any), with the detail - a panel of tiles, a memory meter against the memory guard's thresholds, the caches - under "More"; the graphs are one component for every server, with a line per process in a cluster
+- `config-template.json` has every module turned off: set `"enabled": true` on the ones you run
+- The npm package for FHIRsmith leaves out the release scripts and test reports, and what git ignores (npm doesn't read `.gitignore` when there is a `.npmignore`, so a local `npm publish` included, for one, `private/`)
+- Terminology
+  - `$expand` limits: the defaults are now 10000 codes returned (`externalLimit`, was 3000) and 100000 built (`internalLimit`, was 10000). The three expansion limits (`externalLimit`, `internalLimit`, `walkLimit`) are checked at startup - whole numbers above 0, external <= internal <= walk - and logged. The tx-ecosystem test runner (User-Agent `Tools/Java`) is no longer held to the old defaults: it gets the same limits as any client, and the tests that depend on a limit set `X-TOO-COSTLY-THRESHOLD`
+  - `$expand`: a page (`count` and `offset`) can lie past the expansion limit. Only the page is built; the codes before it are passed keeping only their keys, so `offset + count` is limited by a new, larger `walkLimit` (default 10 x `internalLimit`), and `count` by the expansion limit as before. Over the walk limit: 422 too-costly, `VALUESET_TOO_COSTLY_PAGE`. Value sets with an exclude are paged too (see below); a request with a text filter is as before. Any page, the first too, builds only its own codes: the rest are counted, by key, for the total (reported, as before, only when the whole expansion is within the limit), so a `count=20` first page of a large value set no longer builds codes up to the limit
+  - `$expand` of a code system that caps how many of its codes an expansion may list (`expandLimitation`: CPT, 1000, by agreement with the AMA): no page has codes past the cap, but the total is all the codes (as for `count=0`), and the walk stops at the cap. When the cap keeps codes off the page asked for (e.g. `count=1100`), the expansion says why: a new `expansion-issue` extension refers to a contained OperationOutcome with a business-rule warning (`VALUESET_EXPANSION_CODESYSTEM_LIMITED`). (`addExpansionIssue` is the general mechanism, for other things users of an expansion should know)
+  - `$expand`: every expansion is held to the limits. A value set with an exclude was exempt from the response limit, and an imported value set's codes didn't count against it, so a value set with an exclude or an import came back whole whatever its size (and an imported value set with an exclude escaped the internal limit). Now they are limited, and paged, like any other: an expansion that used to succeed may now be a 422 too-costly, and should be paged (`count` and `offset`). `count=0` still only counts
+  - Global supplements: a code system supplement is used without being referenced when it is a `lang-pack` or `extension-codes` supplement (`codesystem-supplement-type`) marked with `codesystem-supplement-global` = `true`. The `global-lang-pack` code (0.18.1) is gone, and a `lang-pack` supplement that isn't marked global is only used when it is referenced, like any other supplement
+  - VSAC value sets are read from the database when asked for, with the recently used ones kept parsed (`vsacCfg.valueSetCacheMB`, default 64), instead of all ~40,000 being held in memory (about 1 GB); a search reads only the value sets on the page returned
+  - SNOMED CT: a loaded edition uses its cache file's sections in place, rather than copies, so it takes its file size in memory, not twice that
+  - `$expand` builds only what it returns: a page's codes (the codes before it are only walked, the codes after it counted, or totalled by the provider), and only the codes it returns from an imported value set
+  - Performance: supplements are indexed by the code system they supplement (scanning every CodeSystem was 18-24% of CPU under IG Publisher traffic); a code system provider is built once per operation, not once per include or code; a code not in an enumerated include is located once; a response is serialised once; each cache-id's resources are hashed once; long operations give other requests a turn every 10 ms of compute (was 25), as do `$batch-validate-code` between entries and the usage tracker's startup scan; `$batch-validate-code` releases each entry as it is answered; RxNorm has an index on `RXNATOMARCHIVE(RXCUI, SAB)`, added to an existing database at load (an unknown code scanned ~372k rows); `$closure` can use a provider's ancestor sets (`ancestorsOf`)
+  - `x-too-costly-threshold` can't be more than `internalLimit` (a bigger value is cut down to it), and a value that isn't a positive whole number is ignored: there is always a limit (`0` meant no limit)
+  - `$cache-control`: caches are never carried over a restart. With an `instanceCode`, a cache-id carries the process's start, so a request with a cache-id from before a restart is told the cache was lost to a restart (404 `cache-id-unknown`)
+  - ValueSet pages list the first 500 codes of an include or exclude, with "Show all" (`_showAll=true`); VSAC's Medication Brand Name was 33,341 rows, each looked up
+  - The code system provider API (`tx/cs/cs-api.js`) has optional hooks for providers: `handlesSelecting`/`processSelection` (now called, with the value set as context, and may refuse as too costly), `prefetchCodes`, and `ancestorsOf`
+  - LOINC importer: every linguistic variant's language is loaded, and the variants' axis columns become `PartName` designations on the Parts (for some languages, e.g. ko-KR, the only translations LOINC has); relationships the source files repeat are stored once; the import runs as one transaction (much faster)
+  - `$expand` `designation` parameter: a bare code (or `|code`) matches a language, or a use code from any system; `system|code` works as before
+- IPS
+  - on a document's page the actions (Edit, Share, Process again, Delete) are on their own line below the processing pipeline, and Edit is a button like the others
+  - `fhir-validator-wrapper` 1.7.0; the validator is no longer passed `checkIpsCodes` (validator 7.0.4 refuses it, failing every validation)
+
+### Fixed
+
+- A `config.json` with no `server` block failed at startup; every setting in it has a default
+- The home page's folder module entry wasn't closed (`</li>`)
+- Lint: the errors in the project's own code are fixed, and the vendored jQuery files are no longer linted, so `npm run lint` has no errors
+- The release workflow's test job has the heap size that `ci.yml` gives the tests (the suites outgrow Node's default)
+- Terminology
+  - SNOMED CT importer: effectiveTimes were stored a day early when a cache was built in a time zone ahead of UTC (the day count to the 1899 epoch used local dates), so `$lookup` reported e.g. 2002-01-30 for 20020131. Caches built in such a zone need rebuilding
+  - `CodeSystem/$batch-validate-code`: a top-level `url` (and `version`) is the code system for every entry, as for `CodeSystem/$validate-code`, and every entry is validated against a code system - an entry with its own `url` was validated as a value set
+  - `regex` filters match the whole value, for every code system: the pattern is `^(?:pattern)$`. Code systems from CodeSystem resources, ISO 3166 and filters on supplement properties anchored it as `^pattern$`, so an alternation went wrong (`code2|code3` matched every code starting with code2); LOINC matched anywhere in the value (a CLASS regex of `CYTO` matched PANEL.HL7.CYTOGEN). LOINC regex filters may now select fewer codes
+  - ValueSet `$validate-code` with `activeOnly=true`: an inactive code was only rejected when the value set includes all of its code system; when the value set lists the code, or selects it with a filter, it was valid (with an inactive warning). It is now not in the value set whatever the include, for every code system
+  - Only one version of a supplement applies: when the server has one version and the request passes another in `tx-resource` (or a value set names one and the request another), the version the request asks for by version (`useSupplement url|version`, or the value set's `valueset-supplement`) is used - else the request's own, else the latest - and `used-supplement` reports that exact version. Both were applied before, and the server's version was the one reported (and whose displays won)
+  - ValueSet `$validate-code`: a code found through a value set filter didn't report a status the code has while active (`deprecated`: no `status` parameter and no `DEPRECATED_CONCEPT_FOUND` warning), as it does when the value set lists the code
+  - `$expand` text filters (`filter`) now search one language: the first language the request asks for (`displayLanguage`, else `Accept-Language`) that the code system has text in, else the code system's own language - the same rule as the SNOMED CT display filter. All the displays and designations in that language take part, including those from supplements in use; designations in other languages no longer match. LOINC searches its names in other languages (`filter=Volumen&displayLanguage=de` finds Glucose [Masse/Volumen] in Serum oder Plasma) and supplement designations (Uzbek); in English it still searches the displays. SNOMED CT builds a text index per language on editions with more than one (the first search in a language takes a second or two), and a national edition with no language asked for searches its default language
+  - A value set filter on a property that a supplement in use defines (`catalog-group = renal-diabetes` on LOINC or SNOMED CT, with a supplement giving codes a `catalog-group`) failed (500 for LOINC and SNOMED CT, 'not understood' for code systems from CodeSystem resources). Such filters are now evaluated from the supplement, for any code system, in `$expand` (includes and excludes) and `$validate-code`, alone or with the code system's own filters (=, in, regex and exists = true can select codes on their own; not-in and exists = false only narrow other filters). A filter the code system does itself still goes to the code system
+  - Supplements pinned to a version of their code system (`supplements` = `http://loinc.org|2.80`) were applied to whichever version a request without a version resolved to (LOINC 2.83), and reported as used; a value set requiring one didn't fail. Which supplements apply is now decided by the version actually used: one pinned to another version is not applied (so requiring it fails with `VALUESET_SUPPLEMENT_MISSING`), and one from the server's own content pinned to that version now applies when the request doesn't name a version
+  - `$expand` returned no properties for codes from LOINC, SNOMED CT, RxNorm, UCUM, OMOP, CPT or NDC, whether asked for with `property`, `ValueSet.compose.property` or `*` (`$lookup` returned them): these code systems now report the requested properties on each code, as `$lookup` does, and only compute them when some are asked for. UCUM's `canonical` property is returned when asked for (`$lookup` never returned it). An R4 expansion declared a property with no uri with an empty uri extension. OMOP codes from a filter were JSON numbers in an expansion
+  - LOINC: `$lookup` of a claims attachment term (CLASSTYPE 3: 18719-5, 19005-8, 26436-6... - 1,161 of them) failed with a 500 ('valueString must be a string, not a undefined'), and a `CLASSTYPE = 3` filter selected nothing: the importer stores the class type as 'Claims attachment', and the provider only knew 'Claims attachments'. CLASSTYPE is now reported as 3 with the description 'Claims attachment', and the filter selects those terms
+  - The too-costly error (`VALUESET_TOO_COSTLY`) for a value set passed in the request with no url named it 'undefined' or '??'; it now names it by its id, or says it's the value set in the request
+  - A value set with a modifier extension the server doesn't know (on the value set, its compose, an include or exclude, a filter or a listed concept - e.g. VSAC's `vsacOpModifier` on a filter) was refused with a 500. It's a problem with the value set, not the server: `$expand` and `$validate-code` now refuse it with a 422 (`VALUESET_MODIFIER_EXTENSION_UNKNOWN`, `vs-invalid`) naming the extension. A resource with implicit rules is refused with a 422 too
+  - `$expand`: a value set that carries an expansion (one sent as a `tx-resource`, or from a package), whether expanded itself or imported by another, was answered from that expansion, even when it was made from other code system versions than the request asks for (`force-system-version` etc.) or the server has - the opioid-cds IG's value sets got 1,733 codes from stale LOINC 2.82 expansions instead of 2,221 from 2.83. A value set with a compose is now expanded from its compose, as the Java expander does. Its stored expansion is only used when it has no compose, or when a code system the compose includes isn't available here (not loaded, or not the version the include names), so the compose can't be expanded
+  - Search (`CodeSystem?`, `ValueSet?`, `ConceptMap?`): the `version` parameter matched any version containing it (`version=0` found 3.0.0). It is now matched version-aware: exactly, or with wildcards for a semver version (`3.0.x`, `3.x.x`), or as a prefix for others (`2024-01` finds 2024-01-15), using the resource's versionAlgorithm when it has one
+  - Search: the `url` parameter is a left match (the url starts with the value, case-sensitive) for ValueSets and ConceptMaps. A ValueSet url had to match exactly, and a ConceptMap url matched anywhere in the url
+  - VSAC: a value set asked for at a version VSAC doesn't have (`valueSetVersion=19990101`) was answered from its latest version; it is now not found, as a value set from a package is (#94). `VSACValueSetProvider.VERSION_FALLBACK_TO_LATEST` brings the old behaviour back
+  - The expansion caches could fill the heap under steady load (a replay of IG Publisher traffic ran a server with node's default heap out of memory in 7 minutes: 1,000-code pages of whole-SNOMED CT expansions, about 0.8 MB each). The memory threshold (`expansionCacheMemoryThreshold`) was only checked every 5 minutes. The caches of all the endpoints now share a budget of codes (`expansionCacheMaxCodes`; default a quarter of the heap limit at 1 KB a code, about a million codes with a 4 GB heap): each expansion is counted as it's cached, and the least recently used ones are dropped, from whichever endpoint, to stay under it. An expansion bigger than the whole budget isn't cached. The caches also drop entries in least recently used order without sorting
+  - ValueSet `$validate-code` with `inferSystem`: when the value set includes a code system that isn't known, the request failed with a 500 ('Exception expanding value set in order to infer system') if the value set also imports a value set, and otherwise reported that the system couldn't be inferred. The system can't be inferred when the code might be in a code system that isn't known, so it is now a 422 naming that code system (`UNABLE_TO_INFER_CODESYSTEM_UNKNOWN_SYSTEM`). The same applies to the value sets it imports
+  - ValueSet `$validate-code` with `inferSystem`: a value set that imports another value set was expanded to find the code's system, which failed with a 500 when the expansion was too big (an import of all of UCUM: 'too many codes to produce (>10000)'), and cost as much as the value set was big when it wasn't. The system is now found by checking the code against each include, and each include of the value sets it imports, less the value set's excludes, without expanding anything
+  - `$expand` of a value set that lists its codes (as VSAC value sets do), when the codes are more than the expansion limit: `count=0` (the total only) was refused as too costly (422), and a full expansion was refused only after the codes up to the limit had been built (displays, properties) - 0.1 to 3 s for some VSAC value sets. With `count=0` the listed codes are now counted without being built, when every include lists its codes, so the total is returned whatever the limit; otherwise the listed codes are counted first, and an expansion they would take over the limit is refused before any is built (a page that fits within the limit is still served)
+  - Client side caches (`$cache-control`) had no size limit: only idle ones were dropped, so a cache in use could grow without bound, and 500 caches of a 20,000-concept code system ran the server out of memory. A cache may now hold at most `cacheMaxConcepts` concepts (default 250,000, about 10x the largest IG Publisher session measured on build.fhir.org, 24,048): a request that would take it over is not performed: the cache is dropped and the request gets a 404 with one issue coded `cache-id-unknown` (`CACHE_ID_DISCARDED_TOO_BIG`: the cache grew too large and was dropped; start a new cache), as for any cache that is gone, so the client starts a new cache and sends the request again (a later request with that cache-id gets the same 404, saying why it was dropped). A request whose own resources hold more than `cacheMaxConcepts`, which no cache could take, is refused (422 too-costly) and the cache is kept. An endpoint's caches hold at most `cacheMaxTotalConcepts` between them (default 1,000,000, 4 full caches), and the least recently used caches are dropped to stay under it; a request with a dropped cache-id is told so (404 `cache-id-unknown`). 0 = no limit, for either
+  - The usage tracker (behind the `usage-count` expansion property) kept every system and code a `$validate-code` was asked about, forever: validating unique made-up codes grew the heap by 10 MB a second. It now records only valid codes, at most `usageTrackerMaxCodes` of them (default 1,000,000, 2x the about 500,000 a full library's value sets list), none longer than `usageTrackerMaxCodeLength` characters (default 100, 2.5x the longest of those, 40). 0 = no limit
+  - The cache of parsed language tags kept every valid tag forever, and private use tags (`en-x-...`) of any length are valid: unique 8 KB tags in requests grew the heap by 46 KB each. It now keeps the `languageTagCacheSize` tags used most recently (default 1,000: at most about 46 MB of 8 KB tags). 0 = no limit
+  - The tx module logs its memory limits at startup, on one line (`Limits: operationTimeLimit=20s, cacheTimeout=30min, cacheMaxConcepts=250000, ...`)
+  - VSAC: a sync cut short when the server stopped left the cache partly filled until the next scheduled refresh (24 h), since a sync only ran at startup when the cache was empty. At startup the server now carries on with a sync that was interrupted or failed: a sync keeps its work list and how far it has got, and the next one does the value sets that weren't finished first (including one that was part way through its versions, which a fresh listing wouldn't find), then whatever else has changed. A run left marked running is recorded as interrupted. A failed startup sync no longer stops the refresh timer from starting
+  - A tx endpoint answered a request body over the size limit with Express's HTML error page; it now answers with a 413 OperationOutcome (too-costly), in the format the client asked for
+  - SNOMED CT: inactive relationship rows are ignored (agreed with the SNOMED leads; they are still imported) - property filters, ECL refinements, is-a and subsumption, and `$lookup`'s properties, parents and children used them
+  - SNOMED CT: `concept in` a list of plain concepts selected nothing (only reference sets in the list worked); spaces after commas and concepts named twice are handled too
+  - SNOMED CT implicit value sets: the generic form (`http://snomed.info/sct?fhir_vs...`) is resolved against the edition the request asks for (`system-version` and the like), checking the named concept or reference set there, not the default edition; an edition or version named in the url still wins
+  - SNOMED CT `$lookup` `property=*`: every property but the normal forms (and ancestors and descendants), which have to be asked for by name
+  - RxNorm: filters in one include are ANDed (two of the same kind both apply); results and totals count concepts, not atoms; the display is the concept's main atom; `concept in` lists codes, and `code` is accepted as `concept`; relationship filters with `in`; a concept whose display atom is obsolete (`SUPPRESS = O`) is inactive; `$lookup` returns TTY, STY and SAB by default, and RxNorm's own relationships (SAB = RXNORM) with `*` or by name, valued with the bare RXCUI
+  - `$expand` of a value set that includes one version of a code system and excludes another whole version of it: an included code is excluded when the excluded version has it (the excluded version's codes aren't listed, since most providers can't list theirs)
+  - `$expand` from a code system with no content (`not-present`, e.g. THO's time-period-ranges) is a 422, not a 500
+  - A cached expansion made under one request's `x-too-costly-threshold` could be served to a request with another: the limit is now part of the cache key
+  - `CodeSystem/$validate-code` never answered (the connection was held until the client gave up) when an issue was raised before validation started, such as an unknown cache-id
+  - `$validate-code` of a CodeableConcept: the display reported is the reported coding's own, not one from a coding before it; when the code is in no include, the code systems' reasons (an error from another server, say) are reported
+  - An exception in a SQLite callback left the request hanging with no response; now it fails the request, in every module
+  - SQLite connections leaked: `CodeSystem/$validate-code` (and batch entries with no value set) never closed its provider, nor did a request that failed `check-system-version`
+  - A supplement's designations matched a text filter when they had any of its words; they need every word, as the code system's own do
+  - LOINC importer: each externally defined answer list (65 in 2.83) added an Answer with a blank code, shared by all of them
+  - VSAC: a failed sync stopped the refresh timer for good (it now retries after 1, 5 and 30 minutes); after a restart the next sync is due an interval after the last one, not after the restart (a server restarted more than daily never synced); a `refreshIntervalHours` too big for a timer ran syncs back to back
+  - Packages crawler: mirror files are written to a temporary name and renamed into place (nginx could serve a half-written file), before the registry advertises the package; each package is stored in one transaction
+- Statistics: requests per minute is divided by the real time since the last sample (a late timer showed a higher rate), and only responses the static file handlers send count as static hits
+- Startup: logging starts before `config.json` is read, so a server that fails to start says why in the log as well as on stderr
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.0 passed all 5230 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.5)
+
+## [0.18.2] - 2026-10-29
+
+### Added
+
+- IPS: national profiles - the profile on Bundle that a national IG defines for an IPS document: its jurisdiction (an ISO 3166 country code, or a UN M49 region), the IG's package id and version, and the profile's url. They are shared across all projects at `/ips/national-profiles`, where everyone can see them and only the administrator adds, edits and deletes them (also as JSON). A new processing step, after validation, validates each document against each national profile - loading the IG's package into the validator, once - and keeps the outcome and whether the document passed (no errors). The document's new National Profiles view lists them, and shows each one's validation as the Validation view does
+- IPS: `modules.ips.validator.jar` - a validator jar of the module's own (a local build of org.hl7.fhir.core, say), used as it is, never downloaded or updated. Don't put such a jar at `bin/validator_cli.jar`: the wrapper takes that jar's version from the `.version` file it wrote when it downloaded the release, so a different jar there is started as if it were that release, and is replaced by the next one
+- Registry: `GET /tx-reg/choose-server` - given the code systems a request involves and the client's default server, which one server to send it to, and a log of why. The same choice the Java tooling makes, for clients that aren't Java
+- SNOMED CT ECL: member filters (`^ refset {{ M ... }}`) - `effectiveTime` (with a time value or set), `active`, `moduleId` (any sub expression) and the reference set's own fields (`targetComponentId = << X`, `mapTarget = "..."`, `mapGroup >= #2`, ...), comma-separated and repeatable. A member filter anywhere other than directly after a memberOf constraint is a syntax error (`INVALID_ECL`)
+- SNOMED CT ECL: concept filters (`{{ C ... }}`) - `active`, `definitionStatus` (primitive/defined), `definitionStatusId`, `moduleId` (a concept, a bracketed concept list or any sub expression) and `effectiveTime`
+- SNOMED CT ECL: description filters (`{{ D ... }}`) - `term` (match and `wild:` search terms, single or a set), `language`, `typeId` and `type` (syn/fsn/def), `dialectId` and `dialect` (en-us, en-gb and the other aliases in the ECL specification) with acceptability sets, `moduleId`, `effectiveTime`, `active` and `id`. The filters in one block apply to the same description; only active descriptions are considered unless `active` is given
+- SNOMED CT ECL: history supplements (`{{ + HISTORY }}`, `HISTORY-MIN` / `-MOD` / `-MAX`, `HISTORY (*)`, `HISTORY (refset expression)`) - the inactive concepts that the selected historical association reference sets associate with the result are added to it
+- SNOMED CT ECL: `AND` and `OR` between refinements - between attributes (`: A = x AND B = y`, `: A = x OR B = y`, with brackets for nesting), within an attribute group (`{ A = x OR B = y }`) and between groups (`{ ... } OR { ... }`). Mixing AND and OR without brackets is rejected, as it is for compound expressions. Previously only `,` (conjunction) was accepted
+- SNOMED CT ECL: concrete values in refinements (`= #500`, `>= #1.5`, `!= #-1`, `= "text"`, `= true`). The importer now reads `sct2_RelationshipConcreteValues_*` into a new cache section (cache version 19, after 18's alternate identifiers); editions imported before this report a concrete-value refinement as unsupported. The test edition cache is now `sct_test_20250909e.cache`
+- SNOMED CT ECL: `!=` in refinements (`: A != X` - at least one A whose value is not in X; `[0..0] A != X` - every A is in X), reversed attributes (`: R A = X` - the concepts that are the value of A on a concept in X), and `,` as a conjunction between expressions as well as between refinements
+- SNOMED CT ECL: comments (`/* ... */`), top and bottom of set (`!!> (...)`, `!!< (...)`), and attribute names that are expressions rather than a single concept (`: << 762705008 = ...`, `: (A OR B) = ...`, `: ^ refset = ...`, `: * = ...`, and the same after `.` in dotted expressions)
+- SNOMED CT ECL: alternate identifiers (`LOINC#14394-1`, `"LOINC#14394-1"`): the scheme alias names an identifier scheme (LOINC = 30051010000102 |LOINC code ID|, as imported from the LOINC Extension) and the code resolves to the concept(s) carrying it, which then take hierarchy operators like any set. An unknown scheme, or a code that no concept carries, is `INVALID_ECL`, as an unknown concept is
+- SNOMED CT ECL: reference set field selection on member-of (`^ [targetComponentId] refset`) is parsed, and reported as `UNSUPPORTED_ECL` (the selected fields, and many of the referenced components, are descriptions) rather than as a syntax error
+
+### Changed
+
+- IPS: a clinical profile's page is the same for everyone. The required sections and entries are a table of Expectation, Section and Entry (`Code is system|code`, or `Code is in` a value set, with `[m..n]` when the cardinality isn't 1..1). The rules about resources are a table of Expectation, Resource Set (`Conditions where Code is ...`) and Rule, in words for `.exists()`, `.x.exists()` and `.x.y.exists()`, `.all(sameSubject())`, `.conformsTo(url)` and `.category.hasCoding(system, code)`. The administrator adds, edits and deletes the rules on that page one at a time, in a dialog, each saved by itself; the full editor is still there as Edit all
+- IPS: `fhir-validator-wrapper` 1.6.1 (was 1.5.0) - it sends `/loadIG` the package in the request body (1.5.0 sent it in the query, which the validator ignored, so no national profile's package loaded), and starts validator 7.0.4 and later with `-txTests`, which the tx tests need
+- Terminology server: code systems, value sets and concept maps that both hl7.terminology and an endpoint's FHIR core package provide. THO's is still always the default for the url, but the core versions are no longer dropped: a reference that names a core version (`url|5.0.0`) gets it, where THO doesn't have that version. Previously they weren't available at all, so a reference to one failed - including THO's own value sets that pin a core version (`ValueSet/concept-property-type` 6.0.1 includes `concept-property-type` 5.0.0) - and `valueSetVersion=5.0.0` found nothing
+- Registry: the "Register your own server" and "Documentation" links on the main page come from the master registration file (`registration` and `ecosystem-documentation`), so each ecosystem has its own, and a link the file doesn't give is left out. They were hard-coded to the HL7 ecosystem's
+- Tx tests: the `loinc` mode (the LOINC suite) is run
+
+### Fixed
+
+- VSAC: the cache folder `terminology-cache/vsac` is created if it doesn't exist. Only its parent was being created (the folder name was passed as if it were a file name), so on a fresh install the VSAC database could not be created (`SQLITE_CANTOPEN`) and every VSAC value set failed
+- CodeSystem resources: the `notSelectable` property is recognised as the tx-ecosystem requirements say - by the `concept-properties#notSelectable` uri, whatever local code the code system gives it, and by the code `notSelectable` only where the code system doesn't declare that code with a different uri. A code system that used `notSelectable` for a property of its own had its concepts marked `abstract` in expansions and treated as not selectable (`notSelectable-unprop-all`, `notSelectable-unprop-true`). A filter on that code is still a filter on the code system's own property
+- LOINC: `$lookup` returns `CLASS` as a string, the class name (e.g. `CHEM`), with the Part code for the class as `partCode`; it returned the Part code as a code
+- SNOMED CT ECL: a hierarchy operator on a bracketed expression was silently dropped - `< (A OR B)` returned A and B themselves rather than their descendants. It now applies to every member of the set, as do operators on `*` and on `^ refset`, which were previously rejected as unsupported
+- SNOMED CT ECL: `^` on a reference set whose members are descriptions (a language reference set) returned an empty expansion. It is now reported as `UNSUPPORTED_ECL` when the reference set is named, and skipped when it merely falls inside a computed operand such as `^ *`
+- SNOMED CT ECL: an attribute name with no comparison (`: 363698007` with nothing after it) was accepted by the parser and failed later as unsupported; it is a syntax error
+- SNOMED CT ECL: an evaluation error is now `UNSUPPORTED_ECL` unless it is about a concept that does not exist (`INVALID_ECL`). It was classified by matching the error text, which filed `= true` as a syntax error. A concept id that is not 6-18 digits is rejected by the parser
+- IPS: the pages link the module's browser scripts with their version (`?v=`), so a browser picks up a changed script as soon as the server is restarted with it, instead of using its cached copy for up to an hour
+
+### Tx Conformance Statement
+
+FHIRsmith v0.18.2 passed all 4565 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.10.1-snapshot, runner v7.0.3)
+
+## [0.18.1] - 2026-10-25
+
+
+### Added
+
+- ICF (`http://hl7.org/fhir/sid/icf`): qualified codes now cover environmental factors (`e`) - a barrier after `.`, or a facilitator after `+` in place of the `.` (no `+9`), on the new `q5` (barrier) and `q6` (facilitator) scales. As a whole: A category may be followed by `.` and one qualifier digit per position, the positions depending on the component: extent for body functions (`b`); extent, nature and localization for body structures (`s`); performance, capacity, and optionally capacity with assistance and performance without assistance for activities and participation (`d`); one for environmental factors (`e`), a barrier after `.` or a facilitator after `+` in place of the `.`. Each digit is checked against its scale in the code system (`q1`-`q6`, added to the ICF code systems in fhir.tx.support with a `kind` property). A qualified code gets a generated display (8, not specified, is left out of it; `d` qualifiers are labelled `performance`, `capacity`, ...), its qualifiers as properties in `$lookup` (`extent`, `nature`, `localization`, `performance`, `capacity`, `capacity-with-assistance`, `performance-without-assistance`, `barrier`, `facilitator`), and sits under its category for subsumption and `is-a` filters. Value sets can control qualifiers with an `exists` `true`/`false` filter on any of those properties (8 counts as absent) and `qualified` `=` `false`. ICF is now marked as not closed. The behaviour is in `tx/cs/cs-icf.js`, a subclass of the CodeSystem provider that `FhirCodeSystemProvider.create()` picks by url - the way to give any code system loaded from a package behaviour of its own
+- SNOMED CT alternate identifiers (`sct2_Identifier`, e.g. the LOINC Extension's LOINC codes): the importer reads them into the cache (cache format 18, written only when there are identifiers, so other caches stay 17). `$lookup` returns them as Coding properties named for the scheme (`loinc` = `http://loinc.org#...`), by default and when asked for. `$expand`: the filter `mapped:<scheme>` `exists` `true`/`false` (e.g. `mapped:30051010000102`) for concepts that do or don't have one. `$translate`: each module with identifiers defines an implicit map `<edition>/version/<date>?fhir_cm=<module>` (e.g. `?fhir_cm=11010000107`), `equivalent` in both directions, nominated by url or found from the systems (`targetSystem` `http://loinc.org` from a SNOMED CT coding, or `http://snomed.info/sct|<edition>` from a LOINC one)
+- SNOMED CT test edition: a subset of the LOINC Extension (LOINC ontology, module `11010000107`) - twelve LOINC-coded concepts with their LOINC identifiers (`sct2_Identifier`), plus the module and identifier scheme concepts - generated from the LOINC Extension release by `utilities/make-sct-loinc-subset.js`. The test cache is now `sct_test_20250909d.cache` (2280 concepts)
+- LOINC importer: mappings from LOINC codes, parts and answers to other code systems, in two new tables - `ExternalCodes` (system, version, code, display; one row per target) and `ExternalMappings` (LOINC code to target, with an equivalence). Read from `PartFile/PartRelatedCodeMapping.csv` (the file's own equivalence; the RadLex rows are left out for now), `LoincIeeeMedicalDeviceCodeMappingTable` (MDC, `urn:iso:std:iso:11073:10101`, the CF_CODE10 as the code and the REFID as display; IEEE's `broader`/`narrower` are from the LOINC side, so they become `narrower`/`wider`) and the `ExtCode*` columns of `AnswerList.csv` (`equivalent`; LOINC's `CMS/HCPCS` and `https://www.cdc.gov/phin` systems become `http://www.cms.gov/Medicare/Coding/HCPCSReleaseCodeSets` and `urn:oid:2.16.840.1.113883.6.238`). Both mapping files are optional. LOINC caches need rebuilding to get them; nothing uses them yet
+- LOINC: the mappings to other code systems are used. `$lookup` returns them as Coding properties named for the map (`sct`, `chebi`, `mdc`, `race`...), with the equivalence as a subproperty, by default and when asked for. `$translate`: each target system has an implicit map `http://loinc.org/cm/<name>` - `loinc`, `ncbi` (PubChem), `sct`, `hcpcs`, `gene-names`, `rxnorm`, `chebi`, `ncbi-clinvar`, `ncbi-gene`, `ncbi-taxo`, `mdc`, `race` - that works in both directions (LOINC to the system, and the system to LOINC), found from the target system or nominated by url. Found from the systems, a map is only offered for a code it has a mapping for, so translations that a SNOMED CT edition answers (the LOINC Extension) are unchanged. Targets in other systems (`CMS LCDS`, `Unicode`) are not used yet. Code system providers' `findImplicitConceptMaps` now also gets the code being translated
+- `$closure`: `dispose` - a request with `name` and `dispose` = `true` says the client has finished with the closure table, and the server deletes it (not in the specification; disposing of a table that doesn't exist is fine - it may already have been pruned). It can't be combined with concepts, a version, `reset` or configuration (`CLOSURE_DISPOSE_NOT_ALONE`, 400). Documented in the OpenAPI
+
+### Changed
+
+- Global language packs: the `codesystem-supplement-type` code is now `global-lang-pack` (`lang-pack` is still accepted)
+- `$lookup` on SNOMED CT: when the request names properties, only those are returned - effectiveTime, module, parent, child and the defining relationships are no longer added regardless
+- Daily report: the title is now "{server} daily report for {date} covering the last {24 hours | n days}", and the summary is one line per item - `Versions:` (FHIRsmith and Node), `Uptime:` (this run, and the percentage over all recorded runs), `Space:` (the log files and the disk) and `Audit:`
+- Tx test generator (`tx/tests/testcases-generator.js`): disabled suites and tests are left out, and `version` gates (including negated ones, `!4.0`) and `modes` lists are read as the Java runner reads them, so tests gated `!4.0` now run at R5. The rules are in `tx/tests/test-case-gates.js`
+
+### Fixed
+
+- Implicit ConceptMaps nominated by url are looked for in every version of a code system, not just the first loaded (a SNOMED CT edition's maps are named by its edition URI)
+- LOINC importer (and subsetter): CSV files are read by record, not by line, so a quoted field with a line break in it is one record. LOINC 2.83's `ComponentHierarchyBySystem.csv` has one (the text of `LP409416-7`), and the import failed with `UNIQUE constraint failed: Config.ConfigKey` - the second half of the record looked like a second root
+- `$expand`: a supplement that only supplied the chosen display or a designation - a global language pack, typically - was never reported as a `used-supplement`. Designations from a supplement carry it as `.supplement`, but the reporting looked for `.source`, which is never set
+- `CodeSystem/$validate-code` with `useSupplement`: the supplement was always reported as missing (`VALUESET_SUPPLEMENT_MISSING`, 422), even when it was passed in `tx-resource`, because the supplements were only checked off while preparing a value set, and validating against a code system doesn't prepare one
+- `$lookup` on a CodeSystem resource: a property asked for by its own code (`property=prop`) was not returned - only `property=property`, `*` or no `property` parameter returned the code system's properties. A property the server doesn't know is still ignored
+
+### Tx Conformance Statement
+
+FHIRsmith v0.18.1 passed all 4337 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure, tests v1.10.0, runner v7.0.3)
+
+## [0.18.0] - 2026-10-23
+
+A big release: a new IPS module (prototype), a secured and documented registry with uptime reporting, a syndication feed for the terminology server, a daily email report, ICF qualified codes, SNOMED CT edition to edition translation and much more ECL, and the ICD-11 representation agreed at the October 2026 test-case review meetings. Plus the outcome of security reviews of the registry, IPS and token modules. The README now says what state each module is in.
+
+Note: We are heading towards a 1.0.0 release.
+
+- **Upgrading** - check these before deploying:
+  - ICD-11 (MMS and ICF): the code is now the bare entity id, not the short code (see Changed). Clients that send or store short codes still work, but get `CODE_NOT_IN_NORMAL_FORM`; full entity URIs as codes are no longer accepted
+  - Token: the JSON API key moves from the URL path to a header (see Security)
+  - LOINC: `exists` filters now mean what they say, so value sets that relied on the old behaviour expand differently (see Fixed)
+  - VSAC: the default base URL is now https; a configured http `baseUrl` is logged as a warning
+  - The SNOMED CT test edition cache is now `sct_test_20250909c` (extension concepts added in module TEST1000003) and needs rebuilding for the tx tests
+
+### Security
+
+- Page templates (`library/html-server.js`, every module): placeholders are now substituted in one pass, so a `[%...%]` in a page's content (a submitted IPS narrative, say) stays as it is. Before, `[%context-link%]`, `[%about%]` and the like inside content were replaced with their raw HTML, which inside an attribute let a stranger's narrative become a live element (stored XSS)
+- IPS: the generated narrative escapes dosage timing values (`frequency`, `period` and their maxima) that a document puts where numbers belong, and generated narrative is checked for active content before it is stored or shown
+- IPS: a project's stored AI key is dropped when the provider or base URL changes, so it can't be sent to a host other than the one it was given for. The terminology check no longer sends a coding's display to `$validate-code`: answers are cached by code, so one document with a wrong display could decide the answer for every document after it. Delete confirmations are an escaped attribute, not inline script with a name in it. `setPath`/`getPath` refuse paths that would reach a prototype. Document submissions are read by the module itself (the server's body parsers leave `/ips` alone): the submission token is checked before the body is read, and the body is read no bigger than `maxSize`
+- Registry: markdown documents are rendered without raw HTML (commonmark's safe mode), and a past version of a document keeps the visibility it had then, so a version from when it was private stays private after the document is made public. `/resolve` no longer answers a page request with JSON when the page fails to render. JWTs without `exp` are refused. Changing or removing a user's password ends the user's other sessions. The failed-authentication limit checks the token first, so a valid token is never held back
+- VSAC: the default base URL is now `https://cts.nlm.nih.gov/fhir`. It was http, and VSAC only redirects to https after the request (which carries the API key) has been sent. A configured `baseUrl` that is http is logged as a warning
+- VSAC: a search bundle's `next` link is only followed on the VSAC server (the same host, under `baseUrl`), and always over `baseUrl`'s scheme, so a link can't send the API key elsewhere or over http
+- Token: the JSON API takes the API key in a header - `Authorization: Bearer {key}` or `X-API-Key: {key}` - instead of the URL path (`/token/api/validate`, `/token/api/usage`, `/token/api/stats`), so keys don't end up in access logs. The usage statistics no longer include the IP address of the last request, and the key list's delete button no longer puts the key's name into an inline script
+- Narrative check (`library/narrative-check.js`): the regex that stripped CSS comments from a `style` attribute was quadratic in the attribute's length - a few hundred KB of `/* ` held the event loop for seconds, and a resource with such a narrative could be sent to any module that checks narratives. Comments are now stripped in one pass
+- IPS: narratives are shown as parsed, never as the string submitted, so an unterminated tag at the end of one narrative can't swallow the start of the next on the page and turn its text into attributes of a live element (the active-content check parses each narrative on its own, so it didn't see this). Reference resolution within a document is indexed rather than scanned (a document with tens of thousands of entries took a minute of CPU per page view); index rows per search parameter, sort keys per search, the JSON a search page carries, the terminology-server questions per document and the remembered answers are all bounded; an in-process terminology request has a timeout; error responses and the public document pages no longer carry internal detail (the reason a document's processing failed is shown to its project's managers); the submission form no longer gives every visitor a session; an unknown login takes as long as a known one; verdicts in a submitted document's own extensions are never shown as analysis
+
+### Added
+
+- Terminology server: a syndication feed (`modules.tx.syndication.enabled`, off by default) - the content the library loads, published at `{endpoint}/syndication` as a [Terminology Syndication Feed](https://build.fhir.org/ig/FHIR/fhir-syndication-ig/en/) (Atom, NCTS ASF profile) for Ontoserver, other FHIRsmith servers and people. As the library loads, each source is recorded in a store in `terminology-cache/syndication`, from the time syndication is turned on: npm, url and core packages (linked at npm.fhir.org, `FHIR_Package`), the versioned resources in file and folder sources (copied into the store), and the binaries (SNOMED caches, LOINC databases etc, linked at `base.url`, in a FHIRsmith category scheme, with `<rights>`) that are published there - not internal sources, OCL, `#current` packages or the full CPT database. Every link has a SHA-256. The store only grows: no retracts, and a later update to the same content is a new entry (so `contentItemVersion` is not unique, deliberately). The feed is paged as RFC 5005 archived feeds of 30 entries; a browser gets it as a page, and the tx pages have a Syndication nav item and feed autodiscovery link
+- Registry: the software page shows one row per server rather than one per endpoint - the endpoints of a server (its FHIR versions) that run the same software and version are collapsed under their common base URL, with the FHIR versions listed and any unreachable endpoint named. Endpoints running different software keep their own rows
+- Registry: the API can be secured (`modules.registry.security`), in any combination of three ways: a single `apiToken` every client sends; `users` the administrator manages on `/tx-reg/admin/users`, each with their own tokens (256 random bits, stored as a SHA-256 hash, shown once, labelled, optionally expiring, revocable; usage counted per token) and optionally a password to manage their own tokens on `/tx-reg/account`; and `oidc`, JWTs from an OpenID Connect provider verified against its published keys for issuer, audience, expiry and a required scope or role. Only the JSON API is closed - the HTML pages, the OpenAPI description and the login page stay open - and a request without a valid token gets 401 with `WWW-Authenticate: Bearer`. Failed authentications are limited per address (`security.failedAuthPerWindow`, default 60 in 15 minutes, then 429; successful requests aren't counted). Tokens are sent as `Authorization: Bearer {token}` or `Api-Key: {token}`, the headers the HL7 Java tooling already sends for a server in fhir-settings.json. Without `security` the registry is open, as before. New dependency: `jose`
+- Registry: documents (`/tx-reg/docs`, when `security.users` is configured) - markdown or JSON documents the registry stores and serves, each with a name (its address), a type, whether it is public, and when and by whom it was last edited. Public documents are readable by anyone, the others by any logged in user (a browser session, never an API token); administrators create, edit, rename and delete them in a plain text editor. A browser gets the document rendered (markdown as written, raw HTML included - the authors are the administrators; JSON pretty-printed), anything else the raw file with its media type. Every change is logged with the full content, and the history page shows each past version
+- Registry: users can be administrators (a flag the administrator sets): an administrator user manages users and documents as the configured administrator does, and keeps its own account page
+- Registry: uptime. Each scan records whether every endpoint answered (`[data]/registry/registry-uptime.json`, kept for `uptimeRetentionDays`, default 90), and the software page reports each server's uptime over the last `uptimeWindowDays` (default 30) as the share of its endpoint probes that answered. Scans the registry itself missed count against no one
+- IPS module (`/ips`): collections ("projects") of International Patient Summary documents, each with its own FHIR endpoint (`POST`/`GET {project}/Bundle`, `Bundle/{id}`, `metadata`) and web pages - a filterable list, the document's assembled narrative, and a submission form. The administrator (login in the configuration) creates projects and users and assigns managers; managers set a project's submission token and delete documents. Searches support Bundle's parameters and chain to the Composition's and Patient's (`composition.date`, `composition.patient.name`, ...), indexed with fhirpath.js. A document's page has narrative, terminology (every CodeableConcept, with code systems linked to the configured terminology server or, for SNOMED CT, LOINC etc., to their browsers), validation and JSON views. Received documents are queued for a background processing pipeline, of which six steps exist: translation of every CodeableConcept that fails the terminology check, by `ConceptMap/$translate` into the element's value set, the matches added as codings (in the analysed copy) with an extension saying which server, concept map and relationship they came from; generation of the document's narrative with an IPS presenter (the Composition's header and patient, then the sections in the IPS order, each a table of its entries with the columns that suit the resource type and the nested parts as bullets beneath, coded values looked up on the terminology server when they have no display), written into the analysed copy; validation with the FHIR validator (as the shl module runs it) against the IPS Bundle profile, the outcome kept with the document; a terminology check of every CodeableConcept for international exchange: against the module's own value sets for its element (`ips/valuesets/`, on SNOMED CT International, LOINC, EDQM routes and HL7 codes), falling back to any SNOMED CT International, LOINC or HL7 code, by `$validate-code` on the configured terminology server, the verdicts written as extensions into a second, analysed copy of the document and shown in the terminology view; a check against each clinical profile (whether the document conforms, and the constraints it doesn't meet, shown in a Clinical Profiles view); and, when a project turns it on, an AI assessment of the document's consistency, completeness and terminology by an OpenAI-compatible or Anthropic service (the project's own account, its key encrypted at rest, or the server's default; capped per project per day). A document can be shared as a QR code - a SMART Health Link, or a Verifiable Health Link signed as the GDHCN does it - through the shl module (`modules.ips.shl`). An editor (`/ips/{code}/compose`) composes a document in the browser - the patient and header, then each IPS section as entries with code lookups, a narrative, or a reason it is empty - and submits it to the project or hands it back; an existing document can be opened in it. Two FHIRPath functions for IPS documents, `section(system, code [, min, max])` and `entry(system, code [, min, max])`, find sections (nested too) and their resolved entries by code, within cardinality bounds, and `resources(system, code [, type])` finds the document's resources with a code, with `entryIn()` and `resourcesIn()` doing the same by value set, asking the terminology server as they go, with each answer cached (`ips/fhirpath-ips.js`, `ips/membership.js`). Clinical profiles (`/ips/StructureDefinition`), across all projects: what a kind of clinical document is expected to contain, as a profile on Bundle (the document) whose root element's constraints are the expectations - edited in three parts: required sections and entries (a section that must be there, or a section with entries with a code, or a code in a value set) and rules about resources (`Bundle.resources(system, code, type)` and the rest of the rule), each as a table with code lookups, and other rules as FHIRPath; the administrator makes, edits, downloads and uploads them (an upload gets a new id and url, and anything more than such a profile is rejected), and everyone can see them. See `ips/readme.md`
+- Daily report: a markdown report on the server, emailed at midnight (local time) - or as soon as the server is up again if it was down then - to `dailyReport.to`, titled "{hostName} daily report". A paragraph on the server's stability since the last report (uptime, restarts, the longest outage, any upgrade - from the run history in the statistics database, which now records each run's version), a paragraph from each running module that has one (a module implements `dailyReport({since, now})` to take part; by default none do), a paragraph on the system (version, Node.js and OS, how long this run has been up, the log files and the free disk space, and anything the npm audit found - vulnerable packages and the upgrade advice, or a newer release), and, when any background task's last run failed, a list of them. Nothing is sent without the new top-level `email` block (SMTP: `host`, `port`, `user`, `password`, `from`), which is the server's outbound email for anything else that needs it (`library/mailer.js`). New dependency: `nodemailer`. The terminology server, registry, packages, xig, testing, shl, ips and publisher modules each report (see the README for what); the counts come from the statistics database, which now answers per-operation counts over a period (`stats.countsSince`)
+- Home page and dashboard: the uptime box now also reports the server's overall uptime - `Uptime: 38m 16s (99.3% overall)` - the proportion of the time since the first recorded run that the server has been running. Each run is recorded in the statistics database (`server_runs` in `stats.db`) with a heartbeat every minute, so a crash loses at most a minute. Not shown when statistics are turned off
+- `library/fhir-search-values.js`: the date range, prefix and comma-splitting parts of FHIR search, moved out of the testing module for sharing
+- `library/package-manager.js`: a cached package folder with no `package/package.json` (a download that failed after the folder was made) is fetched again instead of being used
+- `$translate`: SNOMED CT edition to edition translation with no map - from an edition to one it depends on (per the module dependency reference set), using the implicit map `<edition>/version/<date>?fhir_cm=edition/<target module>` (the url agreed with the SNOMED committee), found from `targetSystem` or nominated by url. A concept in the target edition's modules is its own translation; an inactive concept translates through its historical associations; a fully defined extension concept translates to its normal form (or the target concept with that normal form), when that uses only target edition content; anything else translates to its proximal target-edition ancestors as `source-is-narrower-than-target`, unless those are only top-level hierarchies, which is reported as the reason there is no translation. The source concept in a match carries its version, as given
+- `$translate`: when the target code a map directs to is not in its code system's normal form, the match has a `normalized-concept`. A source code that has a normal form is looked up both as given and in its normal form (a map entry written in the normal form matches any code with that normal form; the map's own entries are not normalised). A target in a code system the server doesn't know gets a `note` saying it was not validated, and a target code that is not valid gives an `error`
+- `$lookup`: a warning when the `displayLanguage` asked for has no display for the code, and the display is in the default language (`LOOKUP_DISPLAY_LANGUAGE_FALLBACK`)
+- ICD-11: the `classificationCode` extension (provisional url `http://id.who.int/icd/schema/extension/classificationCode`) on a Coding carries the short code for an entity id, saving a lookup. When present it is checked in `$validate-code` (CodeSystem and ValueSet): a wrong value, or the extension on a code with no short code, on a short code, or on a system other than MMS, is an error
+- ICD-11 `$lookup`: postcoordination is reported as one `postcoordination` property per axis (subproperties `axis` and `value` Codings, a `/` member's value with its own nested postcoordination), replacing the WHO `postcoordinationScale` shape. With the new parameter `post-coordination-metadata=true` every declared axis is listed with `required`, `allowMultipleValues` and its value set; otherwise only the valued axes. `source` (the Foundation entity) is a Coding, and asking for `source.details` adds what a `$lookup` on it would return, designations included. A single-valued axis with several values gets a message in `$validate-code`
+- SNOMED CT: `tx/sct/documentation.md` - what the server supports for SNOMED CT: editions, ECL, expressions and the MRCM, implicit concept maps and translation
+- `utilities/make-sct-test-extension.js`: builds the extension concepts (module TEST1000003) in the SNOMED CT test edition used by the tx tests - one of each shape (fully defined ungrouped, fully defined role-grouped, equivalent to an International concept, primitive), plus inactive ones with and without historical associations
+- README: each module's status - in production; in production but still under development; under development / prototyping; or on the back-burner
+
+### Changed
+
+- SNOMED CT expressions: validation now follows the MRCM the way Ontoserver does (from a comparison over every post-coordinated expression in the published FHIR packages). An attribute must be a concept model attribute (a descendant of 410662002) - linkage concepts such as 20401003 |With| and 280452008 |Interpretation| were allowed before - and an attribute the MRCM attribute domain reference set says nothing about (|Has definitional manifestation|, |Subject of information|, ...) is rejected rather than left unchecked. An attribute the MRCM marks as grouped that is written ungrouped (`40468003:363698007=10200004`) is now accepted and put in a relationship group of its own (the "self-grouped attribute" transformation from Close To User Form to Classifiable Form), as Ontoserver and Snowstorm do; it was rejected. The grouped form is what is rendered and used for the normal form
+- ICD-11 (MMS and ICF): following the October 2026 test-case review meetings, the code is the bare entity id (`257068234`; the full uri is the system url + `/` + the id), and that is the normal form. The short code (`1A00`) is still accepted, with `CODE_NOT_IN_NORMAL_FORM` and the normalized code; the full uri is no longer accepted as a code. The short code is reported as `classificationCode`: a `$lookup` property (the old `code` property; the old `id` property is now `code`), a property on every `$expand` contains entry, and a `$validate-code` output when the request used the id. Parent, child, stem and postcoordination value references are all entity ids, and postcoordinated expressions are written without spaces. The Foundation is unchanged
+- `$lookup`: `name` is the code system's title, translated where possible, falling back to `CodeSystem.name` (a new `lookupName()` on code system providers, so other operations are unaffected). SNOMED CT gives the edition (`SNOMED CT International Edition`), LOINC, UCUM and OMOP their titles; OMOP's `name()` is now `OMOP_Concepts`
+- `$lookup`: a code that is not selectable always returns `abstract` (true) and the `notSelectable` property (true), whatever properties were asked for; a selectable code returns neither unless asked (as agreed for the tx-ecosystem tests)
+- Dependencies: new `jose`, `nodemailer` and `qrcode-generator`; `fhir-validator-wrapper` 1.4.0 to 1.5.0
+- tx.fhir.org configuration: the Swiss and Danish SNOMED CT editions are no longer loaded, and `hl7.fhir.uv.ips` is
+
+### Fixed
+
+- IPS: two runs of the processing queue could overlap at start-up while the terminology server was being looked for, and a run could start before it had answered; the queue now claims itself before it waits, and any answer but a CapabilityStatement (a 5xx while the tx module loads, say) counts as "not there yet". Requeueing a document while it is being processed is refused (it lost the requeue and the results), and a pipeline only finishes a document that is still being processed. A clinical profile rule over a value set the terminology server couldn't answer for is "could not be checked" whatever it evaluates to, and a profile deleted while a document is checked is passed over. The migration of profiles from Composition to Bundle rewrites every `Composition.` in a rule, not just a leading one. FHIRPath string escapes (`\uXXXX`, `\f`, ...) are read in the profile editor's shapes. A display lookup the server couldn't answer isn't cached. The editor refuses two fields for one `value[x]`, reads each `value[x]` field back from its own type, and keeps paragraphs on a round trip. A huge `_offset` is a 400, not a 500
+- Registry: sessions are kept in the auth database (logins survive a restart), and pages a visitor only reads start no session. Documents up to the 2 MB limit can be saved (the form parser stopped at 64 KB). An endpoint missing from one crawl (a sub-registry that failed to fetch, a crawl cut short at shutdown) keeps its uptime history; history only ages out, and a scan cut short isn't recorded as a failure. Usage counts survive a failed write. The main pages' navigation shows who is logged in
+- Server: SIGTERM (systemd, docker stop) shuts the server down as SIGINT does, so modules save what they hold
+- ValueSet `$validate-code`: an include with more than one filter only checked the first. The other filters' checks return a message when the code fails them, and a message was taken as a pass
+- LOINC: the `exists` filter ignored its value. On a relationship property (`METHOD_TYP`, `COMPONENT`, `document-kind`, ...) the value was looked up as a code or display, so `exists true` and `exists false` both returned every code with the relationship (because a code displayed as "True" and one as "False" exist), and on a property (`CLASSTYPE`, `ORDER_OBS`, ...) `exists false` meant `exists true`. `true` now returns the codes that have the property, `false` every other code in the code system - Parts, AnswerLists and Answers included, so add `CLASSTYPE exists true` to restrict to LOINC terms (e.g. LOINC terms with no method: `METHOD_TYP exists false` + `CLASSTYPE exists true`). Any other value is not supported
+- Packages: a package download or page request was counted twice in the statistics (once by the validation step, once by the handler), and tarball downloads were not told from requests for a version's JSON document; downloads are now counted as `download`, version documents as `version`, each once
+- SNOMED CT expressions: the MRCM content type taken as "postcoordinated" was 723594008, which is *all precoordinated content* (postcoordinated is 723595009). So the body-structure part-of attributes (|Regional part of| etc., precoordinated only) were allowed in expressions, |Has ingredient| (postcoordinated only) was not checked, and for the attributes with a precoordinated-specific range that range was used in place of the general one
+
+- SHL: every access to a live link (`/shl/access/{uuid}`) hung without a response - the access-logging callback was a plain `function`, so `this.db` was undefined in it and the request was never answered (since 0.3.0). A `GET` on a link is now the U flag (direct file) access the SMART Health Links spec defines: a link with one file returns it as a JWE (`application/jose`), and `recipient` is read from the query and logged (it was always `anonymous`); a link with more than one file, or a VHL, still gets the manifest / VHL bundle. The manifest now has `status` (`finalized`), file `location`s are always https (they followed `req.secure`, so http behind a proxy without trust proxy), and `embedded` is the JWE itself (it was the base64 of it, as stored)
+- IPS: a VHL share no longer puts the U flag in its link payload - a VHL's link answers with the VHL bundle, not the file
+
+### Tx Conformance Statement
+
+FHIRsmith v0.18.0 passed all 3860 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure, tests v1.9.6, runner v7.0.3)
+
+## [0.17.0] - 2026-10-17
+
+An extensive security review, which hardened many things, but no actual securty notifications needed. Plus improvemnts to text search in terminology filters
+
+### Security
+
+- HTML pages (all modules using the shared page template): content containing `` $` `` or `$'` - which HTML escaping leaves alone - made the template insert a copy of part of itself into the page, garbling it. No way to inject script through it was found, but the page is now built without that substitution
+- Packages: a tarball whose package.json version was not entirely semver (e.g. `1.0.0/../../x`) was accepted, and its mirror file written outside the mirror folder. The version must now be whole semver, and the mirror file must be in the mirror folder
+- Rendered resources: links to `javascript:`, `data:` or `vbscript:` URLs taken from resource content are neutralised
+- tx: values from loaded packages are escaped (and URL-encoded in links) on the problems page, the resource tabs, and the operations form's list of value sets
+- tx: CodeSystems, ValueSets and ConceptMaps whose narrative (or a contained resource's) has active content - script, event handler attributes, `javascript:` URLs, frames, objects, forms, svg and the like - are not loaded, and a warning says what was found. The Original Narrative tab also refuses such a narrative. The check is in `library/narrative-check.js` for other uses. The package value set and concept map caches are renamed so that they are rebuilt and re-checked once
+- xig: the database is downloaded over https (it was http, so it could theoretically have been replaced in transit, and its narratives are shown as they are), and a redirect off https is refused
+- Extension tracker: the profiles page put the resource types from submissions into a script without escaping, so anyone could submit data that ran script on that page. They are now escaped
+- Extension tracker: submissions must carry the token the IG Publisher sends (`token` in the ext-tracker config; without it, no token is needed), and must look like what the IG Publisher sends - the expected properties only, codes, URLs, resource types and element paths where those belong, and limited sizes. Anything else is refused, and the refusal logged
+- Registry: server and registry URLs from registry lists (which other people host) were put into links without escaping, so a listed URL could add script to the registry's pages; and links were made from any URL, including `javascript:`. Links are now escaped, and made only from http(s) URLs
+- Registry: the crawler limits each server's response to `maxResponseMB` (default 100) once unzipped, so a server can't exhaust the registry's memory
+- xig: POST /xig/update, which re-downloads the database (about 3 GB), needed no authentication. It now needs the `updateToken` from the xig config in an `x-update-token` header (or the form now on /xig/stats, which starts an update and returns straight away), and is disabled when no updateToken is configured
+- xig: a search parameter given more than once, or a very long one, is handled (the first is used, and each is capped at 200 characters) instead of failing the page
+- OCL: the configured token can see the private repos of its account, and what it finds is served to anyone through the terminology server. Sources and collections are now served only when they are public (`public_access` View or Edit), whether they are found by discovery or by `$resolveReference`; anything that can't be confirmed public is left out. The token's account should still be one that can see only public repos
+- OCL: a repo path returned by OCL is only used if it is a relative path on the OCL server, so a request carrying the token can't be sent to another host
+- Packages: the crawler limits what a package can cost it: the download (`maxDownloadMB`, default 250), the total unzipped (`maxUnpackedMB`, 4096), the files it reads (`maxFileMB`, 50) and the number of files (`maxFiles`, 250000), all in the packages `crawler` config. Packages are now unpacked as a stream, keeping only package.json, .index.json, ig.ini and one .json file at a time, so a decompression bomb can't exhaust memory
+
+### Added
+
+- `TerminologyCapabilities.expansion.textFilter` describes how text filters match
+- OCL: with a `token=` on the `ocl:` source line, canonical URLs are resolved through OCL's `$resolveReference` (ConceptMap source systems, ValueSet collections and their compose sources), rather than by searching the listings. Without a token nothing changes
+- OCL: a source's latest released version is served as its default version, as OCL itself does; HEAD is still available as version `HEAD` (needs the token)
+- README: what to do after upgrading Node.js (`npm rebuild`, or reinstall)
+
+### Changed
+
+- Text filters on code systems loaded from files and packages ignore case, and accents on Latin, Greek and Cyrillic letters (`colera` finds `Cólera`), and a search of several words matches when each word starts a word of the display or of one designation, in any order (`diabetes tipo 2` finds `Diabetes mellitus tipo 2`). These matches rank below matches of the whole text, shorter displays first.
+- `$expand` with a text filter returns the best matches first on code systems loaded from files and packages, and on OCL code systems, as it already did on SNOMED CT
+- OCL: sources and collections are discovered from the global `/sources/` and `/collections/` listings (falling back to each organisation's), and only organisation-owned ones are served - repos owned by a user are not
+- OCL: a source's mappings are fetched from `{source}/mappings/` instead of walking every concept
+
+### Fixed
+
+- LOINC: text filter matches came in reverse description order (Z to A) when the expansion asked for them sorted. They now come in description order either way
+- LOINC: an `is-a` filter left out the concept itself, so it gave the same codes as `descendent-of`. It now includes the concept, as FHIR defines `is-a`
+- OCL: `$translate` never returned anything from OCL concept maps. The maps declared OCL repo paths as their source and target scopes, which aren't value sets, so every translation failed with not-found; and `NARROWER-THAN` / `BROADER-THAN` mappings had relationship codes that aren't FHIR codes. The scopes are gone, the map types become `source-is-narrower-than-target` / `source-is-broader-than-target` (and `NOT-SAME-AS` becomes `not-related-to`), and `Q-AND-A` and `CONCEPT-SET` mappings, which aren't translations, are left out
+- tx: a package value set or concept map cache whose build was cut short (the server stopped part way through) was used as it was, missing whatever hadn't been written. A cache is now marked complete when it's built, and one without the mark is rebuilt - so existing caches are rebuilt once, on the first start of this version
+
+### Tx Conformance Statement
+
+FHIRsmith v0.17.0 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.2)
+
+## [0.16.1] - 2026-10-16
+
+### Added
+
+- The dashboard always says which FHIRsmith release the server runs, and whether a newer one is available (looked up once a day with the npm audit check; before, the latest release was only looked up, and only mentioned, when the audit found something)
+- README: how to follow releases (GitHub release emails, the releases Atom feed, and the dashboard)
+
+### Fixed
+
+- Packages: SUSHI (and anything else using fhir-package-loader) couldn't download packages from this server: `GET /packages/{id}/{version}` returned the version's JSON document instead of the tarball (since 0.16.0). The rule was "JSON when Accept includes `application/json`", but fhir-package-loader downloads with axios's default `Accept: application/json, text/plain, */*`, and plenty of other HTTP clients send JSON alongside `*/*` by default without wanting it. The version document is now returned only when the request prefers JSON: a JSON type ranked above any `*/*`, `application/*` or tarball type by q-value (`application/json` alone, or `application/json, */*;q=0.1`). Everything else gets the tarball, and `FHIR-Package-Download` still forces it
+- A POST with no Content-Type now says so (it gave "Unsupported Media Type: " with nothing after it)
+- A form post whose Content-Type has a charset (`application/x-www-form-urlencoded; charset=UTF-8`) was refused as an unsupported media type
+- Links in published IGs to a resource by the id it had in its source (`ValueSet/2.16.840.1.113762.1.4.1`, from before ids were prefixed, as in `ValueSet/vsac-2.16.840.1.113762.1.4.1`) work again in a browser: a read of an id nothing has redirects to the one resource that had that id in its source, or lists them when there are several. Other requests still get a 404
+
+### Tx Conformance Statement
+
+FHIRsmith v0.16.1 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.2)
+
+## [0.16.0] - 2026-10-15
+
+### Security
+- 
+- Token: the login session store is now FHIRsmith's own (`library/sqlite-session-store.js`), in place of connect-sqlite3. connect-sqlite3 depends on sqlite3 5, which brought node-gyp 8, tar 6 and @tootallnate/once into every npm install of FHIRsmith (12 advisories, one critical). The `overrides` in package.json kept them out of a clone + `npm ci` (and so out of the Docker image and the repo's own `npm audit`), but npm ignores overrides when installing the published package, so `npm install -g fhirsmith` still got them. Sessions are kept in the same `sessions` table of the token database, in the same layout, so existing logins carry over
+- Dependencies: fhirpath 5 (its ucum-lhc no longer brings csv-parse 4) and node-cron 4 (no longer depends on uuid), for the same reason: the csv-parse and uuid overrides didn't reach npm installs. The csv-parse override is gone
+- Dependencies: natural 8 (uuid 13). Its stemmers are unchanged - every stemmer we use gives the same stem as natural 6 on ~1.6M words (RxNorm, LOINC's translations, and English, French, Spanish, Italian and Portuguese word lists), so existing SNOMED caches and RxNorm databases don't need rebuilding. FHIRsmith now loads only `natural/lib/natural/stemmers`: the package index also loads natural's storage backends, which run dotenv (reading any `.env` in the working directory into the environment, and in natural 8 printing a banner to stdout)
+- Development: jest 30 and jest-junit 17, and `npm run dev` uses Node's own `node --watch` in place of nodemon. With these, `npm audit` is clean for the dev tooling too (jest 29 and nodemon brought braces, and jest's coverage tooling sprintf-js, neither of which has a fixed version). The package.json overrides are down to one, js-yaml 4 for @istanbuljs/load-nyc-config, which only affects the dev install; the rest were no longer doing anything
+- The PR pipeline fails on high/critical advisories anywhere in the dependency tree, on moderate ones in what ships, and audits a fresh install of the packed package (installed the way users install it, so the repo's overrides don't apply)
+
+### Changed
+
+- The npm audit self-check looks up the latest FHIRsmith release, and only tells the administrator to upgrade when there is a newer release to upgrade to; a server already on the latest release says so instead
+
+### Tx Conformance Statement
+
+FHIRsmith v0.16.0 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.1)
+
+## [0.15.1] - 2026-10-15
+
+### Security
+
+- Packages: the SSRF guard on the crawler's outbound requests could be bypassed with an IP address in the URL (`http://127.0.0.1/`, `http://169.254.169.254/`, `http://[::1]/`), because Node makes no DNS lookup for an IP address and the guard only ran there. IP addresses are now checked too
+
+### Added
+
+- Packages: `/packages/npm-check` checks any registry against the npm registry protocol, the way npm clients use it (search by name, package document, version document, tarball), and reports each check with the reason for any failure. In a browser it is a form; otherwise it returns the report as JSON. The checks also run once a day against registry.npmjs.org, and the page says if any fail there. Requests are limited in time and size, may not go to non-public addresses other than loopback (so a server can check itself), and are rate limited per client. `npmCheck` in the packages config sets the limits; `"enabled": false` turns it off
+- Packages: npm-protocol test suites that run the same checks against registry.npmjs.org (the control: if npm changes its behaviour, this is where it shows), and against the packages module with known content
+- Packages: the package document has npm's `time` (each version's publication date, plus `created` and `modified`)
+- Packages: `latest` can be used in place of a version (`/packages/{id}/latest`)
+- Packages: `packages/dedupe-versions.js`, a one-off repair for an existing database: removes duplicate id#version rows, rewrites mirror files that don't match the database, and adds the unique index. It needs nothing but Node 24; see Repairing an older database in packages/readme.md
+
+### Changed
+
+- Packages: `GET /packages/{id}/{version}` returns npm's version document (JSON) when the request's `Accept` asks for `application/json` (or `application/vnd.npm.install-v1+json`), and the tarball otherwise. On the npm registry this URL is always the version document, and npm clients and tools that treat this server as an npm registry (including the HL7 Java tools, when they are configured with a server of npm type) ask for it with `Accept: application/json` and then download from `dist.tarball`. But FHIR clients have always downloaded the tarball from this URL - the Java tools without sending an `Accept` header at all, browsers and curl with ones that don't ask for JSON - so the tarball stays the default, and only a request that explicitly asks for JSON gets the document. The risk is a client that downloads the tarball from here while asking for JSON (typically a generic HTTP wrapper that sets `Accept: application/json` on every request). For those, and as a guarantee for the Java tools, a request with a `FHIR-Package-Download` header (any value; the Java PackageClient sends `tarball`) always gets the tarball, whatever its `Accept`. The response carries `Vary: Accept, FHIR-Package-Download` so caches keep the two apart
+- Packages: `/packages/-/v1/search` puts the package whose id is the whole search text first, as npm does. `/packages/catalog` is unchanged
+- Packages: each id#version is stored once. Simplifier republishes packages that other feeds publish directly, so its copy is a secondary echo: a version already held is not fetched from Simplifier, and a version held only from Simplifier is replaced when it arrives directly from its publisher's feed. A second direct copy from a different GUID is logged as an error and ignored. The database enforces this with a unique index on (Id, Version); on an existing database the server logs a warning until `dedupe-versions.js` has been run
+- Packages: package downloads keep the bytes the server sent: a `.tgz` labelled `Content-Encoding: gzip` is no longer unzipped by the HTTP client
+
+### Fixed
+
+- Packages: the tarball served for some versions didn't match the shasum in the package document (46 of 6961 versions on packages2.fhir.org), so npm clients would reject them. Two causes: the same id#version stored twice from different feeds (the document showed one copy's hash, the mirror held the other), and a tarball that failed validation (e.g. a draft flagged `notForPublication`) overwriting the mirror file before it was rejected. The mirror file is now written only after the package has been validated and stored
+- Packages: packages from feeds that label `.tgz` files `Content-Encoding: x-gzip` (e.g. doc.mednet.swiss) failed with "incorrect header check"
+- Packages: the search, catalog and updates log lines showed `[object Object]` instead of the query
+- Packages: the crawler log showed `??` for an item skipped because another feed had it in the same crawl
+
+### Tx Conformance Statement
+
+FHIRsmith v0.15.1 passed all 3630 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.1)
+
+## [0.15.0] - 2026-10-08
+
+### Added
+
+- Library YAML: a source can give the id prefix for the resources it loads (`npm:hl7.terminology=tho`), so their ids stay the same when sources are added, removed or reordered. Sources without one are numbered, as before. See Resource Ids in tx/README.md
+- `CapabilityStatement.software.releaseDate` (and the TerminologyCapabilities equivalent) is the date the running version was released, taken from its heading in CHANGELOG.md, which is now included in the Docker image. A snapshot reports the time the server started
+- Registry: the crawler records each server's `software.releaseDate`. The Software page uses it to date software other than FHIRsmith, and FHIRsmith releases (including development builds) that the release list doesn't know about yet
+
+### Changed
+
+- **Breaking - resource ids:** every CodeSystem, ValueSet and ConceptMap is served with an id in the id space of its source - `prefix-id`, e.g. `CodeSystem/tho-v3-ActCode` - and the FHIR core package each endpoint loads uses `core` (`CodeSystem/core-administrative-gender`). An unprefixed id is not found by read or by any `[type]/[id]/$operation`. Library CodeSystems used to keep the ids they had in their packages (ValueSets and ConceptMaps were already numbered), and so could clash with the endpoint's core CodeSystems
+- THO overrides the FHIR core packages the same way the Java validator does: where hl7.terminology has a url, the core package's CodeSystems, ValueSets and ConceptMaps with that url are not loaded at all. Older core versions used to stay available by `url|version`, so the server reported versions the validator doesn't know (e.g. v3-MaritalStatus `2018-08-12`). The exception is the R4 v2 tables 0006, 0360 and 0391, which R4 core has in two versions each with the version in the url: those versions stay available, and THO's is the default
+- `software.releaseDate` is no longer the time of the request
+
+### Fixed
+
+- Search: two CodeSystems with the same id from different packages (e.g. v3-MaritalStatus from hl7.fhir.r4.core and hl7.terminology) linked to the same resource, and a read of that id always returned the core one
+- On the R4 endpoint, a ValueSet asked for without a version (e.g. `http://terminology.hl7.org/ValueSet/v3-MaritalStatus`) was the core package's copy rather than hl7.terminology's
+
+### Tx Conformance Statement
+
+FHIRsmith v0.15.0 passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v7.0.0)
+
+## [0.14.2] - 2026-10-06
+
+### Security
+
+- Dependency updates for published advisories, including axios (several high severity), brace-expansion (denial of service), and http-cache-semantics and @tootallnate/once (removed with the old sqlite3 build chain)
+
+### Added
+
+- OpenAPI descriptions for the package server (/packages), the terminology registry (/tx-reg), the TestReport module (/testing) and the R5 terminology endpoints: each serves `openapi.json`, `openapi.yaml` and an HTML reference at `openapi` (JSON for non-browser clients), linked from the module's pages and advertised in an RFC 8631 `Link` header on every response. The FHIR resource schemas are generated from the FHIR definitions, constrained to what each module accepts
+- npm audit self-check: once a day the server checks its installed packages (and FHIRsmith itself) against the npm advisory database - report only, nothing is changed. Findings show as a banner on the home page, in full on the dashboard, and in the log. `npmAudit.enabled` = false turns it off (e.g. for servers with no internet access)
+- Registry: new Software page (/tx-reg/software) listing each registered server's software and version, and for FHIRsmith servers, the release date, its age, and how many releases behind it is. The crawler now records `CapabilityStatement.software.version`
+
+### Changed
+
+- Terminology server: contained resources are supported only for ValueSets that contain ValueSets (which `compose.include.valueSet` can import by `#id`). Any other contained resource is rejected (CONTAINED_RESOURCE_NOT_SUPPORTED) wherever the resource comes from; when loading a package, the offending resource is skipped rather than stopping the load
+- $validate-code: the `inactive` and `status` output parameters describe the code being returned. In a CodeableConcept where a different coding is inactive, that coding still gets its warning, but the parameters are not set for the returned code
+- Registry discovery API follows the tx ecosystem IG: rows carry `fhirVersion` and the IG's security flags (`open`, `token`, ...) alongside the existing security string; candidate lists are only given when `url` is supplied; R-codes (R4, R4B, R5, ...) map to their release versions; and the resolve fallback that returned servers authoritative for a code system but not hosting it has been removed
+- The TerminologyCapabilities statement no longer lists expansion parameters the server doesn't act on (`limitedExpansion`, `_incomplete`, `incomplete-ok` and others); `limitedExpansion`/`incomplete-ok` are no longer read, and no longer part of the expansion cache key (they never had any effect)
+- TestReport module: a TestReport with contained resources is refused
+- Packages and registry page footers say when the crawler last updated the data ("last updated 35 minutes ago"), or "not yet updated" before the first crawl - they used to show a raw `[%crawler-date%]` placeholder
+- Packages crawler log: the start time is shown relative ("35 minutes ago") and the duration in seconds; the end time is dropped
+- Dependencies: sqlite3 6 (connect-sqlite3 now uses the same sqlite3, which drops the old node-gyp/make-fetch-happen chain), and updates for axios, brace-expansion, moment, ip-address, csv-parse and uuid. The PR build now fails only on high/critical advisories in what ships (`npm audit --omit=dev`)
+
+### Fixed
+
+- $expand: RxNorm expansions that asked for a concept's children failed with `SQLITE_MISUSE`; an over-limit expansion of the whole of RxNorm is now refused before it is built
+- $expand: a value set with neither a compose nor an expansion gets a clear error (VALUESET_NO_COMPOSE)
+- $validate-code: in a CodeableConcept, the inactive warning names the coding that is actually inactive (it used to name the first coding), and a later active coding no longer hides the warning from an earlier inactive one
+- Packages: `/status`, `/stats` and `/search` hung instead of answering (the `/:id` route swallowed them)
+- Packages: dependency searches accept `id#version` and `id|version` (as sent by the Java PackageClient) as well as `id@version`; npm search (`/-/v1/search`) honours `text`, `size` and `from`, and accepts the other npm and PackageClient parameters
+- XIG: the version shown on the pages
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
+
+## [0.14.1] - 2026-09-29
+
+### Added
+
+- TestReport module: user administration - the administrator (`adminPassword`) manages users at /testing/admin/users, with rights to edit named links and/or delete reports
+- TestReport module: named links - test script and participant URLs shown by name, maintained at /testing/admin/links
+- TestReport module: the report list shows the test engine, client and server, the number of tests and the run length; a report page shows setup, each test with its operations and assertions, and teardown
+- Test reports from the FHIRsmith build name the test modes they ran with
+
+### Changed
+
+- Security: the publisher and testing web pages require a CSRF token on every form post (lusca), a SameSite=Lax session cookie, and a same-origin `Origin` on posts; the session id is regenerated on login
+- Security: the publisher rate limits task actions (create, approve, delete, retry) and task output reads, as well as logins
+- `server.trustProxy` now defaults to trusting only loopback, link-local and private-network proxies (was `true`, which let anyone reaching the port directly set their own client address and get round the rate limits). See nginx.md - a proxy elsewhere needs to be configured, and the proxy must pass on `Host` or `X-Forwarded-Host`, or form posts are refused
+- $expand: the `displayLanguage` expansion parameter is written without spaces (`en,*;q=0`, not `en, *; q=0`)
+- $translate: `result` is only true if at least one match is a translation - a `not-related-to` (R4: `disjoint`/`unmatched`) or `noMap` match is still returned, but `result` is false
+- SNOMED CT edition names are held in one table (tx/sct/editions.js), used by the provider and the unknown code messages
+
+### Fixed
+
+- $validate-code: when the code is not in the value set, it is looked up in the code system version the value set selects (`compose.include.version`), not the server's default version - so the version and display reported come from the right edition
+- $validate-code: the unknown code message named the SNOMED CT test edition as "unknown"; it is now "Test Edition"
+- Registry: the SNOMED CT test edition (`http://snomed.info/xsct/31000003106`) is labelled, rather than shown as `??`
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3585 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.6, runner v6.10.4)
+
+## [0.14.0] - 2026-09-27
+
+### Added
+
+- New Module: TestReport repository 
+- Initial Implementation of $closure
+- add support for caching across multiple servers
+- better support for web invocation of operations 
+- add ECL control panel
+
+### Changed
+
+- improve home page graphs and cache information
+- better memory management - prevent an operation running the server out of memory 
+- $validate-code: inferSystem is only applied to the code parameter, per its definition - it is ignored for coding and codeableConcept
+- $validate-code: a Coding with neither a system nor a code is reported as one problem, not two (Coding_has_no_system_or_code__cannot_validate)
+- $subsumes: a missing system (codeA/codeB with no system parameter, or a codingA/codingB with no system) is now 400 with issue code invalid and tx-issue-type invalid-data (was 404/422 not-found), with message id SUBSUMPTION_NO_SYSTEM (shared with the Java terminology service); mismatched codingA/codingB systems use SUBSUMPTION_SYSTEM_MISMATCH
+- SNOMED expressions: a refined or conjoined attribute value must be bracketed, per the compositional grammar (405813007=(85562004:272741003=24028007)); the unbracketed form is now rejected, and the renderer emits the brackets (it used to produce expressions other parsers reject)
+
+### Fixed
+
+- Fix processing of sourceScope during $translate operation
+- Fix broken links in HTML references (#256)
+- Fix bug in concept map conversion 
+- Fix issue processing MRCM rules (#287)
+- Fix message about depending on a draft resource (add source info)
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3516 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+closure, tests v1.9.5
+
+## [v0.13.4] - 2026-09-17
+
+### Changed 
+
+- Clean up TxCaps expansion parameter list
+
+### Fixed 
+
+- Fix performance issue with snomed text search
+- clean up release process to avoid version mismatch, and to clean out old dockers
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.13.3] - 2026-09-10
+
+### Fixed
+
+- Fix SNOMED CT display selection on national editions. `_displayRefsetOrder()` knew a display
+  language reference set for only six editions (International, US, UK and the test edition);
+  every other edition fell through to "the first description marked Preferred in any language
+  reference set", which on a multi-language edition means whichever description happened to be
+  stored first. The Belgian edition (11000172109) marks a Preferred synonym in Belgian French
+  (21000172104) and Belgian Dutch (31000172101) as well as in English, so a request that named
+  no `displayLanguage` got French for one concept, Dutch for the next and English for a third.
+  Editions not in the table now default to US then GB English, and the $lookup designation
+  order ranks the edition's display reference set ahead of "preferred anywhere", so the choice
+  no longer depends on import order. An edition with no English language reference set at all
+  still falls back to its own preferred synonym. This changes one tx-ecosystem expectation:
+  `bugs/sct-display-2` recorded "Counselling" for 409063005 on the International edition, which
+  is the GB English preferred term picked only because it is stored before the US one - the same
+  concept already expanded as "Counseling". The expectation is now "Counseling".
+- Fix the language tag on the display designation in $expand. It was hard-coded to `en-US`
+  while its value came from the edition display, so on a multi-language edition a French or
+  Dutch term was published as English - which put it in an implementation guide's English
+  display column and made the real French designation read as a duplicate of it.
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4
+
+## [v0.13.2] - 2026-09-05
+
+### Added
+
+- Add support for publishLibrarySource
+- 
+### Fixed
+
+- Fix error in Snomed CT and ICD-11 where normal form difference and case difference being conflated 
+- Fix error in mime-type subsumption analysis 
+- adjust mime type validation to not be case sensitive
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3507 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.5-SNAPSHOT, runner v6.10.4)
+
+## [v0.13.1] - 2026-09-05
+
+### Fixed 
+
+- Error in ICD-11 provider that made the version page not show 
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3489 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.13.0] - 2026-09-04
+
+### Added
+
+- ICD-11 support, in three parts. `tx/importers/import-icd11.js` builds a SQLite database from
+  the WHO ICD-API - 110,441 concepts across MMS, ICF and the Foundation for the 2026-01 release,
+  in every language the API advertises. The native API is the content source because it is the
+  only one that can enumerate the classification: the FHIR endpoint exposes no all-codes value
+  set, accepts no client-supplied value sets, and its 28 top-level entities report no parent, so
+  nothing there tells a client what the roots are. `tx/importers/export-icd11-codesystem.js`
+  writes the content back out as FHIR CodeSystems, language supplements and the 25,354
+  postcoordination scale ValueSets, optionally as a FHIR NPM package. `tx/cs/cs-icd11.js` is the
+  provider; it is a skeleton at this point - metadata, code location, displays and definitions
+  work, while designations, properties, extendLookup, filters, iteration, subsumption and
+  postcoordinated expressions are still to come. The `icd-11` suite from the tx-ecosystem IG is
+  the specification for the rest of it. Postcoordinated expressions now work:
+  `tx/cs/icd11-expressions.js` parses the short-code, entity-uri and ICF dotted forms,
+  binds each value to the axis it belongs on, and renders the expression back. The binding
+  rule is that an axis not yet carrying a value is preferred over one that is, and required
+  axes come before WHO's declaration order - which is what keeps the two values of
+  1D01.0Y/1G41/1G40 on the two axes a coder meant them for instead of coalescing them onto
+  the first, and what stops a repeated value being silently dropped. `&` asserts that what
+  follows is a value on an axis of the stem, so a value on none of them is an error that
+  names the axes; `/` asserts only cluster membership, so a member that fits an unfilled
+  axis is taken as a value and one that does not starts a new stem. The provider also now
+  answers `concept is-a` / `descendent-of` filters and text search, iterates children and
+  roots, tests subsumption, and builds the 25,354 postcoordination scale value sets on
+  demand from the database rather than shipping them
+
+### Changed
+
+- The tx test runner now names its own output folder (`fhirsmith`) and labels each pass (`r4`,
+  `r5`, `r5-cached`), so the three passes stop writing over each other's expected/actual files.
+  It also passes its mode set to the validator, which was previously falling back to its own
+  default - one that does not include `icd-11`, so every icd-11 test came back "n/a" and was
+  counted as a failure. Needs validator 6.10.5 and validator-wrapper 1.4
+- The R5 -> R4 cross-version conversion dropped `ValueSet.compose.property` - the element a
+  client uses to say which properties it wants back in an expansion. R4 and R3 have nowhere to
+  put it, so it now travels as
+  `http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.property` (the same
+  extension the Java convertors use) and is read back on the way up, with the extension removed
+  so it does not show up twice. Before this, an R4 client that asked for properties got an
+  expansion without them
+- Every OperationOutcome the server emits now carries `details.text` and a tx-issue-type
+  coding in `details.coding`. `diagnostics` is stripped outright by the test harness, so
+  anything a client needs had to stop living *only* there -- it is still sent, and is still
+  the right place for server-specific detail: the four (in fact nine) private
+  `operationOutcome()` helpers that built `{severity, code, diagnostics}` by hand now all
+  delegate to `buildOperationOutcome()` in `tx/library/operation-outcome.js`, and
+  `Issue.asIssue()` falls back to a tx-issue-type derived from the FHIR issue type when an
+  Issue does not name one, so the guarantee holds without revisiting all ~170 Issue
+  construction sites. An informational issue that is not about a code or a value set -- the
+  server banner -- gets text but no coding, since it is not a tx issue
+
+### Fixed
+
+- The exclude branch of `$expand` called `searchFilter(filter, prep, true)` -- the first two
+  arguments the wrong way round, so a provider that implements a text search would have been
+  handed the filter where it expected its own filter context. The other three call sites,
+  and the declared signature, are `(filterContext, filter, sort)`
+- `$lookup` reported a code that is not in the code system as `not-found`; the code system
+  was found, so it is `invalid-code`, which is what the other 62 unknown-code expectations
+  in the tx-ecosystem suite assert
+- `$lookup`'s two top-level catch blocks put `Issue.issueCode` -- a tx-issue-type -- into
+  `OperationOutcome.issue.code`, which takes a FHIR issue type. Two conventions were in use:
+  an `Issue` carries the FHIR issue type in `cause` and the tx-issue-type in `issueCode`,
+  while a plain Error tagged by its thrower carries the FHIR issue type in `issueCode` and
+  the tx-issue-type in `txIssueType`. Every catch block now goes through
+  `outcomeFromError()`, which is the one place that knows about both
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 3489 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11, tests v1.9.4, runner v6.10.4)
+
+## [v0.12.0] - 2026-08-27
+
+### Added
+
+- `$cache-control?mode=check`: ask the server whether a cache-id is still alive. The check is
+  also a keepalive - it resets the cache's idle clock - because a client whose own local cache is
+  absorbing the work is invisible to the server, and its cache would otherwise time out mid-job.
+  An unknown id answers 200 with `valid` = false (not 404), so a client can tell "the server says
+  my cache is gone" from "I could not reach the server"; a live cache also reports `sealed`,
+  `resource-count`, `idle` and the server's idle timeout, so a client can work out how often to
+  check instead of guessing
+- Cache tombstones: the server now records why a cache-id it issued stopped existing - closed by
+  the client, expired after N minutes idle, or cleared with everything else - and says which in
+  the error, with the timings. New `CACHE_ID_CLOSED`, `CACHE_ID_EXPIRED` and `CACHE_ID_CLEARED`
+  messages; `CACHE_ID_UNKNOWN` now means "never issued here", and says that a cache-id is only
+  valid on the server instance and endpoint that issued it (#279)
+- SNOMED CT: MRCM validation of postcoordinated expressions - attribute domain (including the
+  lateralizable body structure rule), range (evaluated as ECL, or as a concrete-value range such
+  as `dec(>#0..)`), cardinality and grouping. A constraint that cannot be resolved leaves the
+  value unchecked rather than rejecting it. The MRCM and lateralizable reference sets are now
+  included in the test SNOMED distribution
+- `$translate`: R4 parameter names are accepted as aliases for the R5 ones (`source`/`target` for
+  the scopes, `targetsystem`, `targetcode`), and R4's `reverse` parameter now does literally what
+  it says - swaps the source and target sides once the parameters are read - while remaining an
+  error in R5+, which names the target concept directly instead
+- `$translate`: reverse translation by naming the target concept (`targetCode`, `targetCoding`,
+  `targetCodeableConcept`), with the source system saying which system the answers come from
+- `$translate`: `ConceptMap.group.element.comment` is read from R6 resources and from the
+  cross-version extension on R5 ones, so a preadopted R5 map and a native R6 map behave the same
+- `$translate`: `originMap` names where a chain of maps started, with every other map consulted
+  along the way reported as a `used-conceptmap`; `group.unmapped` is applied per group, so a
+  mapping in one group no longer suppresses another group's fallback
+- Persistent usage statistics: request counts per module, endpoint and operation are written to a
+  SQLite database every `intervalMinutes`, with both the interval count and the all-time total, so
+  they survive restarts and upgrades. New optional `stats` config block (#255)
+- Support for `ValueSet.compose.property` (R6): a value set can name the properties to return in
+  its own expansion, rather than leaving it to the request
+- Publisher: input validation for GitHub owner and repository, git branch, package id and version -
+  enforced on the server, with matching patterns on the form so the browser objects first
+- Publisher: `large-file-archive` config setting - files the IG Publisher leaves in the web output
+  that are too big for GitHub (>100MB) are moved aside for GitHub-hosted websites, instead of
+  leaving the push to fail
+
+### Changed
+
+- `tx/params.js`: parameter names are now interpreted in exactly one place (`seeParameter`), used
+  by both the request `Parameters` resource and the `valueset-expansion-parameter` extension. A
+  parameter from the request always wins over one embedded in a ValueSet's expansion parameters;
+  accumulating parameters (version rules, designations, properties, supplements) still add
+- An inactive display is now governed by `lenient-display-validation` like every other display
+  check - a warning (and `result` = true) when lenient, an error when not - rather than always
+  being a warning. The display is a designation of the concept, just not a current one
+- tx.fhir.org now loads `fhir.tx.support` rather than `fhir.tx.support.r4`
+
+### Fixed
+
+- The XML parser could be made to loop forever, which on a single-threaded server means the
+  process stops answering anything at all - not just the request that carried the input. Several
+  scans used `indexOf` without checking for -1 and assigned the result to the cursor, sending it
+  backwards; `<ValueSet><x bare></x></ValueSet>` was enough, as was any `<!DOCTYPE` or an
+  unterminated comment. The parser has been rewritten to be total: every delimiter search fails
+  loudly, every loop asserts that it consumed input, nesting past 1000 elements is an error rather
+  than a stack overflow, and a document type declaration is refused outright (FHIR XML has no DTD,
+  and accepting one is how a parser ends up expanding entities on someone else's behalf).
+  Malformed documents now produce a positioned parse error
+- SNOMED CT: normalising an expression discarded a primitive concept's defining attributes, so
+  real subsumption answers were lost. A primitive's definition is necessary but not sufficient, so
+  the concept itself must not be replaced by it - but its attributes are still entailed:
+  `4846001 |Anicteric viral hepatitis|` is primitive and carries an inferred
+  `363698007 |Finding site| = 10200004 |Liver structure|`, so `64572001:{363698007=10200004}`
+  really does subsume it, and the server said not-subsumed. The attributes are now added
+  alongside the concept, which keeps the other direction sound - the primitive stays in the focus
+  as an atom nothing else can match, so its conditions never become sufficient and nothing is
+  reported equivalent to it. Read from the concept's relationships at query time rather than from
+  the stored normal form, so existing caches need no rebuild
+- IETF language codes (`urn:ietf:bcp:47`) are validated properly. Four things were wrong, all
+  visible only through the code system: the registry writes private-use allocations as ranges
+  (`QM..QZ`, `Qaaa..Qabx`, `qaa..qtz`, `XA..XZ`) and those were stored as literal keys nobody
+  could ever look up, so every code inside them read as unregistered while singly-allocated `AA`
+  worked; the 26 grandfathered tags were skipped at load, so registered tags like `i-klingon`
+  were rejected; a variant was never checked against the registry at all, so `en-abcdef` parsed
+  happily; and the registry's `Prefix` field - its only statement about which subtags may go
+  together - was ignored, so `en-cmn` passed even though `cmn` may only follow `zh`. Tags are
+  also matched case-insensitively now, per BCP 47 §2.1.1, so `en-us` is accepted as a way of
+  writing `en-US`. The stricter checks are options on the parser, applied by the code system;
+  Accept-Language parsing is deliberately left as it was. Redundant registry entries such as
+  `zh-Hans` still decompose into language plus script rather than being matched whole
+- Language codes gained `=` filters on `language`, `script` and `region`, and three of the
+  combinations can now be expanded. The BCP 47 grammar is unbounded, so an expansion is only
+  possible where fixing part of a tag leaves a finite list of registry entries to vary: a fixed
+  language gives every region plus the bare language (344 codes), a fixed region gives every
+  language with it (8787, so too-costly unless paged), and language and region together give
+  every script plus the tag with none (275). Anything else - a script on its own, a language with
+  a script, an `exists` filter - answers 422 rather than pretending, and `filterMore` throws
+  rather than returning false so a mistake cannot surface as an empty expansion that reads like
+  "there are none". Every one of these is marked unclosed, since a variant, extension or
+  private-use subtag can always be added. A filter value that is not a registered subtag of the
+  right kind is refused when the filter is built, rather than silently selecting nothing
+- `$subsumes` works for language codes, where it used to answer `not-subsumed` for everything
+  behind a comment reading "No subsumption in language codes". A tag is a set of named
+  components rather than an ordered path, so one tag subsumes another when it states a subset of
+  what the other states and the languages match: `en` subsumes `en-US`, `zh` subsumes
+  `zh-Hans-CN`, `de` subsumes `de-1901`. `en-US` subsumes `en-Latn-US` too, even though the added
+  script sits between the two subtags `en-US` names - that is RFC 4647's extended filtering
+  rather than basic filtering, and it is what keeps the relation transitive. Comparison is
+  case-insensitive, and a grandfathered tag relates only to itself, having no components to
+  compare. Suppress-Script is deliberately not consulted, so `en` subsumes `en-Latn` rather than
+  being equivalent to it
+- A language code written in the wrong case now comes back with a `normalized-code` and an
+  information issue saying so, the way any other case-insensitive code system already behaved -
+  `en-us` validates, and the server answers with `en-US`. BCP 47 recommends lower case for the
+  language, Titlecase for the script and UPPER CASE for the region; the whole mechanism was
+  already in the validator, waiting on the code system to report the canonical spelling of a code
+  rather than echoing what the caller wrote
+- Validating a language code now says which subtag is wrong and why - "the extLanguage 'cmn' in
+  the code 'en-cmn' may only be used with 'zh'" - instead of only "unknown code". The mechanism
+  for this already existed in the validator; the language provider had been discarding the reason
+- `$subsumes` can now report that it cannot determine the relationship, as a 422 carrying
+  `cannot-determine` from the tx-issue-type code system (FHIR-58748). There is no outcome code
+  meaning "unknown", so a server that cannot decide has no honest answer to give and must report
+  an error; answering `not-subsumed` asserts something it has not established. The condition is
+  real in more than one code system, so the error is raised through one shared helper
+  (`cannotDetermineSubsumption`)
+- Media types: subsumption is only decided on parameters the server understands - `charset`,
+  `format`, `delsp` and `version`. Reasoning that a parameter narrows the type, and that two of
+  its values exclude one another, are properties of that parameter's definition, and neither can
+  be asserted for one the server has never seen: `text/plain` vs `text/plain; foo=bar` might be
+  subsumption or might be the same thing. Where an unknown parameter is what the two codes differ
+  in, the answer is now cannot-determine. A parameter carried identically by both codes cannot
+  affect the relationship and is ignored, so it does not trigger a decline, and a type or subtype
+  mismatch stays decidable whatever parameters are present. `boundary` and `profile` are
+  deliberately excluded from the understood list: a differing boundary does not narrow anything
+  (two multipart bodies with different boundaries are the same media type) and profile values can
+  be hierarchical, so neither can be judged by comparing values
+
+- SNOMED CT: `$subsumes` no longer answers `not-subsumed` when it has not established it. Comparing
+  normal forms is sound when it succeeds and not when it fails: SNOMED's OWL axiom reference set
+  carries general concept inclusions and property chains whose entailments are baked into the
+  distributed inferred relationships for precoordinated concepts, but a postcoordinated expression
+  is one the classifier never saw, so they are not available for it. Where either code is an
+  expression and no relationship follows structurally, the server now returns a 422 rather than
+  claiming there is none - the claim would be the one that wrongly drops a code out of a cohort,
+  and `$subsumes` has no outcome code meaning "unknown". Two plain concepts are unaffected: there
+  the transitive closure comes from the classifier's own output and all four outcomes are sound
+
+- SNOMED CT: the MRCM `grouped` flag was parsed into the attribute domain rules and then never
+  read, so an attribute the concept model requires to be in a relationship group could be written
+  outside one and pass validation - `40468003:363698007=10200004` was accepted even though
+  `363698007 |Finding site|` is grouped and the expression is not classifiable. It is now
+  enforced, for expressions wherever they appear ($validate-code, $lookup and $subsumes all
+  validate through the same path), and the message names the attribute and shows the corrected
+  form. Attributes the MRCM marks as ungrouped, such as `272741003 |Laterality|`, are unaffected:
+  the flag is read from the concept model rather than every brace-less refinement being rejected.
+  SNOMED's postcoordination guide treats the ungrouped form as Close To User Form and defines a
+  transformation to the classifiable form; that transformation is not implemented, so the
+  expression is rejected rather than silently repaired
+- Publisher: with no `sessionSecret` configured, the session middleware fell back to a constant
+  written into the source. In an open-source project that is a published signing key - anyone
+  could mint themselves an admin session on any deployment that had missed the setting, and
+  nothing about the server would look wrong. The fallback is now a random secret plus a warning,
+  which fails safe: logins simply do not survive a restart. Session cookies are also marked
+  `Secure` by default now (set `modules.publisher.cookieSecure` false to run over plain HTTP),
+  and `POST /login` is rate limited - it is the one unauthenticated route that runs bcrypt, and
+  bcrypt holds a libuv threadpool thread for ~100ms, so unlimited attempts stall the server's
+  file I/O as well as inviting guessing
+- Publisher: twenty more values reached the task, history and admin pages unescaped -
+  `npm_package_id`, `version`, `status`, `user_name`, `website_name`, `local_folder`,
+  `failure_reason`, the task log messages, and the user and website names on the admin pages.
+  Most are constrained elsewhere, but `failure_reason` and the log messages carry build output
+  from the IG being published, which is not. The earlier fix covered `github_org`, `github_repo`
+  and `git_branch` only; output escaping is the boundary that has to be complete to be worth
+  anything
+- The static file handler for `server.webBase` built its filename with `path.join(webBase, req.path)`
+  and no containment check, so a literal `..` in the request path walked straight out of the
+  directory: `GET /../../etc/passwd` read any file the server user could read. (The encoded forms
+  never worked - Express does not decode `req.path` - and a proxy in front normalises `..` away,
+  which is why this survived.) Paths are now resolved and required to stay inside the configured
+  directory, in `library/path-safety.js` so the rule is testable and reusable; a request that
+  escapes falls through to the next handler instead of being served
+- `POST /packages/crawl` triggered a full registry crawl for anyone who asked. It now requires a
+  shared secret, `modules.packages.crawlToken`, in an `x-crawl-token` header, compared in constant
+  time. With no token configured the endpoint is disabled rather than open: an administrative
+  trigger that silently defaults to unauthenticated is how a deployment ends up exposed with
+  nothing about it looking wrong. The scheduled crawler is unaffected
+
+- `CodeSystem.concept` and `ValueSet.expansion.contains` nest without limit in FHIR, and both are
+  walked recursively in a dozen places - the expansion map, the concept counts, the renderer, the
+  expander's index, the R5-to-R4 converter. A resource of a couple of hundred KB could nest deeply
+  enough to exhaust the JS stack, and hardening those walkers one at a time would not have been
+  enough anyway: `JSON.stringify` itself, which we do not control, overflows at a nesting depth of
+  about 1800 on node 22, so a deep enough resource could not be serialised even if every walker
+  were iterative. Nesting is now bounded once, at construction, at 100 levels - far past SNOMED
+  CT's ~30 or LOINC's ~10, and well clear of anything that breaks - which makes every walker safe
+  by construction, including ones not yet written. The bounding walk is iterative and doubles as
+  the concept count, so the tree is still traversed only once, and an over-nested resource comes
+  back as a 400 rather than a 500
+
+- Publisher: the task output page wrote `github_org`, `github_repo` and `git_branch` into the HTML
+  without escaping. The first two are constrained to letters, digits and punctuation, but a branch
+  name was only checked against git's own rules, which say nothing about markup - so a branch
+  called `<script>...</script>` was stored XSS on a page that needs no login to read. The fields
+  are escaped now, and a branch name carrying `< > " ' &` is refused at the boundary as well
+
+- `$expand`: `status` was lost from imported property declarations, and a concept carrying the
+  same property more than once had the repeats collapsed to a single value
+- Expansion properties are de-duplicated when they arrive from more than one place (the request,
+  an expansion parameter extension, `compose.property`) - a repeat emitted the property twice and
+  changed the cache key
+- `no-cache=true` never busted the cache: the parameter wrote `uid`, which nothing read, instead of
+  the field the cache key hashes
+- Boolean parameters passed as strings (as they always are on a GET) are now accepted, which
+  revives five parameters that were dead on GET requests
+- `$subsumes`: an unknown `codeA`/`codeB` returned a bare OperationOutcome - no
+  `operationoutcome-message-id` extension and no `tx-issue-type#invalid-code` detail code - so
+  clients could not tell what kind of failure it was. It now reports the same issue that
+  `$validate-code` does for an unknown code
+- SNOMED CT import did not record definition status, so every concept looked fully defined. A
+  normal form was then generated for concepts that have no definition to expand, and the result
+  was stored unparseable - which made `$subsumes` fail with a 500 for any post-coordinated
+  expression. **Caches built by the affected importer have to be rebuilt**
+- SNOMED CT `isPrimitive` tested bit 0 of the concept flags, which is part of the status, instead
+  of the primitive bit
+- A concept's own stored normal form was run through the MRCM postcoordination checks when it was
+  read back. Those rules are about expressions a client sends, not about precoordinated content,
+  and they rejected the normal form of any concept defined with a precoordinated-only attribute
+- The expression parser did not resolve attribute names to concept references, so refinements were
+  compared by reference in one direction and by code in the other. Subsumption between two refined
+  expressions could come out true one way and false the other
+- Subsumption checked each refinement group against only the first group whose attribute names
+  lined up. Where several groups share attribute names, the answer depended on the order the
+  groups happened to be in after normalisation
+- `$subsumes` reported an unexpected error in `diagnostics`, which the test runner strips from
+  every issue it compares, so a failing test showed nothing but `severity`/`code`. The message now
+  goes in `details.text` (the same helper elsewhere in the server has the same problem)
+- `$subsumes` ignored a front-loaded cache on a GET: it only looked for `tx-resource` and the
+  cache-id when the request had a Parameters body, so a client that put its code systems in a
+  server-side cache and sent the id in `X-Cache-Id` got "could not be found" for every one of
+  them
+- `$subsumes` reported an unknown code against `codeA`/`codeB` in `expression` even when the code
+  came in as `codingA`/`codingB`
+
+### Changed
+
+- `$subsumes` on UCUM now answers `equivalent` for two different codes that mean the same unit -
+  `1/min` and `min-1`, `N` and `kg.m/s2`, `mg{total}` and `mg`. UCUM still has no hierarchy, so
+  nothing ever subsumes anything; this compares the canonical *form* (which carries the conversion
+  factor), not the canonical units, so `m` and `cm` remain distinct rather than collapsing onto
+  their shared canonical unit
+- `$subsumes` on LOINC is implemented against the multiaxial hierarchy. The importer already
+  builds a full transitive closure from `PATH_TO_ROOT` in ComponentHierarchyBySystem - the same
+  table the `is-a` / `descendent-of` filters use - so subsumption and expansion now agree.
+  Relationships run Part-to-Part and Part-to-code, so two LOINC codes still never subsume each
+  other
+- Mime types support a `base` filter, taking either `type` or `type/subtype`, which selects the
+  codes consistent with it - parameters on the code are ignored, so `text/plain; charset=utf-8`
+  matches a base of `text` and of `text/plain`. Media types cannot be enumerated, so the filter
+  validates a code rather than expanding; a value carrying parameters, a wildcard, or anything
+  that is not a type or type/subtype is rejected
+- A `registered = true` mime type filter can be expanded: the IANA registry is a finite list, so
+  the expander walks it, and the expansion is marked `valueset-unclosed` because every registered
+  type also has unboundedly many parameterised forms that belong to the value set. A second filter
+  in the same include still narrows it, so `registered = true` + `base = text/plain` expands to
+  one code
+- Everything else that cannot be enumerated - the whole code system, a `base` filter on its own,
+  `registered = false` - answers 422 `not-supported` with `CODESYSTEM_NOT_ENUMERABLE`, the same as
+  HGVS, instead of the 500 exception a filter used to raise. Expanding every registered media type
+  at once is a couple of thousand codes, so without a `count` it answers `too-costly` like any
+  other oversized expansion
+- Mime types support a `registered` filter (`true`/`false`), testing whether a media type is in
+  the IANA registry. The provider downloads
+  https://www.iana.org/assignments/media-types/media-types.xml into the terminology cache at
+  startup and keeps only the names; a failed download falls back to the cached copy, and if there
+  is no copy at all, using the filter reports that rather than answering. The download is written
+  to a temporary file and only replaces the cached copy once it has parsed, so a truncated
+  transfer cannot leave behind a registry that looks valid but is short
+- `$subsumes` on mime types understands parameters. A parameter narrows the media type, so
+  `text/plain` subsumes `text/plain; charset=utf-8`, and two spellings of the same type are
+  equivalent - type, subtype and parameter names are matched case-insensitively, as are charset
+  values, and quoted values are unquoted. Type and subtype themselves still have no hierarchy,
+  so a structured syntax suffix does not make `application/fhir+xml` a kind of `application/xml`
+- **Breaking (LOINC import):** the accessory files are now required, not optional. An import
+  missing ComponentHierarchyBySystem previously succeeded and produced a cache with an empty
+  closure, so the server answered `not-subsumed` to everything with no way to tell that apart
+  from a real answer; the same argument applies to the part links and answer lists. Only the
+  linguistic variants stay optional, since a main-only import is a reasonable thing to want and
+  their absence costs designations rather than correctness
+
+- The mime type tests are their own test mode (`mimetypes`) rather than part of `general`, and
+  FHIRsmith's test run declares it. fhir-core gains it in all four places the mode set is
+  declared: the runner default (`TxTestHTTPHandler`) and the local and external terminology
+  service test runs, which will be red until tx-dev implements the filters
+
+### Removed
+
+- `POST /packages/update-package`, along with `forceUpdatePackage` and
+  `deleteVersionsByIdVersion`. Its authentication was conditional on `updateToken`, which was set
+  in no configuration file and not even mentioned in the template, so in practice the endpoint let
+  anyone hand the server a URL to fetch and store - server-side request forgery against anything
+  the host can reach, and a write into the package registry. It existed to push out a corrected
+  package after a bad publish; that is rare enough to do by hand
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 2822 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.3, runner v6.10.3)
+
+## [v0.11.2] - 2026-08-12
+
+### Fixed
+
+- Update snomed test content
+
+### Fixed
+
+- Fix snomed designation handling for languages
+- Fix for SSRF protection in the validator- 
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.3, runner v6.10.1)
+
+## [v0.11.1] - 2026-07-30
+
+### Added
+
+- Cooperative yielding for long terminology operations: after every 25ms of continuous compute the
+  operation yields the event loop (`checkAndYield`), so a heavy $expand can no longer stall every
+  other request on the server. Operations whose client has disconnected are aborted at their next
+  yield point instead of computing a response nobody will read
+- The operation time limit is now configurable (`operationTimeLimit`, seconds) and defaults to 20s
+  (below common client timeouts, so clients see the too-costly OperationOutcome rather than a
+  socket timeout), and is measured against compute time consumed rather than wall-clock, so
+  concurrent operations time-sharing the event loop don't abort each other
+- The Node Blocking chart on the status page now shows the worst single event-loop stall per
+  window as well as the mean
+
+### Fixed
+
+- fix whole-code-system SNOMED CT expansions blocking the server for 30 seconds and then failing:
+  the hierarchy walk read a non-existent `.code` property, so every concept was treated as a
+  duplicate of the first and no expansion size guard could ever stop the walk. This is what caused
+  the rash of client timeouts on tx.fhir.org after the 0.11.0 upgrade
+- the hierarchy walk now visits each concept once rather than once per path to it (SNOMED CT is a
+  poly-hierarchy: the old walk made ~15.8M visits for ~520k concepts)
+- restore the up-front too-costly refusal for expansions that cannot fit the expansion limit (the
+  totalCount size guard was silently dead - method read as a property); expansions with a
+  count/offset window inside the limit still succeed as partial, unclosed expansions
+- re-enable the CPT 1000-code expansion cap (same method-read-as-property bug)
+- fix parameter misalignment in the no-details expansion path (19 arguments passed to a
+  20-parameter function)
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.2, runner v6.9.12)
+
+## [v0.11.0] - 2026-07-30
+
+### Added
+
+- Upgrade the tx registry module to support exclusions and languages
+- Add support for sealed caches 
+
+### Changed
+
+- rework caching
+- Remember filter analysis on cached value sets 
+- Improved Rendering for CodeSystem and ValueSets
+- Update ECL & tests given ECL functionality confirmations
+- Update snomed subset from test IG
+- improved error when multiple cache-id headers passed to the server
+- fix slow crawling for FHIRsmith servers by the tx registry
+- make tx search page size default to 1000 for json/xml and leave it at 20 for html
+- rework batch processing for caches
+
+### Fixed
+
+- Report the FIRST matching coding, not the last, and only one message about status
+- rework how expansions on complex codesystems are handled
+- better handling of expansions on grammar based systems
+- (SNOMED CT) consistent use of designations
+- give preferredForLanguage a display in expansions
+- fix various ECL processing bugs
+- fix precedence order problem loading THO content after core content
+- fix links in metadata statements 
+- fix unhandled promises 
+- fix handling of properties in R4 expansions
+- fix bug validating codes from erroneously coded R4 v2 tables
+ 
+### Tx Conformance Statement
+
+FHIRsmith passed all 2729 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.2, runner v6.9.12
+
+## [v0.10.1] - 2026-06-27
+
+### Fixed
+
+- Terminology: the version-less value set lookup now resolves to the latest version when several versions of the same value set are present (e.g. VSAC date versions), instead of an arbitrary one determined by database row order
+- Rendering: fixed value set links in `renderLinkComma` (read the resolver's `description`/`link` fields and fall back to the raw URI)
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 2503 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.1, runner v6.9.11)
+
+## [v0.10.0] - 2026-06-27
+
+### Added
+
+- Publisher: track the IG Publisher version used for each task, and show it on the tasks list and task detail pages
+- Packages: new `POST /packages/update-package` endpoint to force-refresh specific packages in the registry, bypassing the feed crawler's de-duplication (used to push out a corrected package after a bad publish)
+- Publisher: automatically update SUSHI to the latest release before each draft build and publication run, installed into a FHIRsmith-owned prefix so it needs no root privileges
+
+### Changed
+
+- Rebuilt how caching works (see the tools IG for documentation)
+- Renamed the compare worker/operation
+
+### Fixed
+
+- Publisher: the publication run now verifies that the package about to be published is a real publication build (not a draft) before committing it to the web tree, so a failed publication build can no longer silently ship a `notForPublication` draft package
+- Packages: the crawler now rejects any package flagged `notForPublication` at ingest, instead of only checking the feed entry
+- Registry: better handling of versions on manual queries against the external registry
+- Fixed handling of the cache-control header
+- Corrections to generated test cases
+
+### Security
+
+- SSRF protection: outbound fetches in the packages and registry crawlers now reject any host that resolves to a non-public address (private, loopback, link-local including cloud-metadata, CGNAT, unique-local, etc.). Enforced at connection time, so it also covers redirect targets and DNS rebinding, and prevents leaking registry API keys to a redirected host
+- Path-injection hardening: local-file feed reads in the packages crawler are confined to explicitly-allowed directories; the `update-package` endpoint only accepts http(s) URLs
+- Dependency updates (npm audit)
+
+### Tx Conformance Statement
+
+FHIRsmith passed all 2503 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed, tests v1.9.1, runner v6.9.11)
 
 ## [v0.9.7] - 2026-06-12
 

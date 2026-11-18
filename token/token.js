@@ -11,7 +11,6 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const FacebookStrategy = require('passport-facebook').Strategy;
@@ -19,7 +18,9 @@ const GitHubStrategy = require('passport-github2').Strategy;
 const rateLimit = require('express-rate-limit');
 const lusca = require('lusca');
 const folders = require('../library/folder-setup');
+const { SqliteSessionStore } = require('../library/sqlite-session-store');
 const escape = require('escape-html');
+const { guarded } = require('../library/sqlite-utilities');
 
 
 const Logger = require('../library/logger');
@@ -74,7 +75,7 @@ class TokenModule {
         }
 
         // Create tables
-        this.db.serialize(() => {
+        this.db.serialize(guarded(reject, () => {
           // Users table - enhanced with OAuth data
           this.db.run(`
             CREATE TABLE IF NOT EXISTS users (
@@ -146,7 +147,7 @@ class TokenModule {
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_usage_date ON usage_stats(date)`);
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_security_log_user ON security_log(user_id)`);
           this.db.run(`CREATE INDEX IF NOT EXISTS idx_security_log_event ON security_log(event_type)`);
-        });
+        }));
 
         this.log.info(`Token database initialized: ${dbPath}`);
         resolve();
@@ -155,24 +156,21 @@ class TokenModule {
   }
 
   initializeSession() {
-    const configDb = this.config.database || 'token.db';
-    const sessionDbPath = path.isAbsolute(configDb)
-      ? configDb
-      : folders.ensureFilePath('token', configDb);
+    // sessions live in the module's own database (initializeDatabase has opened it)
+    this.sessionStore = new SqliteSessionStore({ db: this.db, table: 'sessions' });
 
     const sessionConfig = {
-      store: new SQLiteStore({
-        dir: path.dirname(sessionDbPath),
-        db: path.basename(sessionDbPath),
-        table: 'sessions'
-      }),
+      store: this.sessionStore,
       secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
       name: 'fhir.token.sid', // Don't use default session name
       resave: false,
       saveUninitialized: false,
       rolling: true, // Reset expiration on each request
       cookie: {
-        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+        // Secure when the request came over https: 'auto' asks req.secure, which (with
+        // server.trustProxy) follows nginx's X-Forwarded-Proto. It used to depend on NODE_ENV,
+        // which nothing sets, so the cookie was never Secure. config.cookieSecure overrides
+        secure: this.config.cookieSecure ?? 'auto',
         httpOnly: true, // Prevent XSS
         maxAge: 24 * 60 * 60 * 1000, // 24 hours
         sameSite: 'lax' // CSRF protection
@@ -441,12 +439,19 @@ class TokenModule {
     this.router.post('/keys', this.requireAuth.bind(this), this.createApiKey.bind(this));
     this.router.delete('/keys/:id', this.requireAuth.bind(this), this.deleteApiKey.bind(this));
     
-    // JSON API routes for other servers
-    this.router.get('/api/validate/:key', this.validateApiKey.bind(this));
-    this.router.post('/api/usage/:key', this.recordUsage.bind(this));
+    // JSON API routes for other servers. The key goes in a header (Authorization: Bearer, or
+    // X-API-Key), not the path, so that it doesn't end up in access logs
+    this.router.get('/api/validate', this.validateApiKey.bind(this));
+    this.router.post('/api/usage', this.recordUsage.bind(this));
     
     // Statistics
-    this.router.get('/api/stats/:key', this.getUsageStats.bind(this));
+    this.router.get('/api/stats', this.getUsageStats.bind(this));
+  }
+
+  // The API key a request carries: Authorization: Bearer <key>, or X-API-Key: <key>
+  apiKeyFrom(req) {
+    const auth = /^Bearer\s+(\S+)$/i.exec(req.get('Authorization') || '');
+    return auth ? auth[1] : (req.get('X-API-Key') || null);
   }
 
   // Middleware
@@ -528,7 +533,7 @@ class TokenModule {
           }
 
           if (userId) {
-            this.logSecurityEvent(userId, 'logout', req.ip, req.get('User-Agent'), {});
+            void this.logSecurityEvent(userId, 'logout', req.ip, req.get('User-Agent'), {}); // fire-and-forget audit; errors handled internally
           }
 
           res.redirect('/token/login');
@@ -633,7 +638,7 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
+        const apiKey = this.apiKeyFrom(req);
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
           return res.status(400).json({
@@ -706,7 +711,7 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
+        const apiKey = this.apiKeyFrom(req);
         const {count = 1} = req.body;
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
@@ -743,8 +748,8 @@ class TokenModule {
     try {
 
       try {
-        const apiKey = req.params.key;
-        const days = Math.min(parseInt(req.query.days) || 30, 365); // Max 1 year
+        const apiKey = this.apiKeyFrom(req);
+        const days = Math.max(1, Math.min(parseInt(req.query.days) || 30, 365)); // Max 1 year
 
         if (!apiKey || !apiKey.startsWith('tk_')) {
           return res.status(400).json({error: 'Invalid key format'});
@@ -779,7 +784,7 @@ class TokenModule {
       this.db.get(
         'SELECT id FROM users WHERE (email = ?) OR (provider = ? AND provider_id = ?)',
         [userData.email, userData.provider, userData.provider_id],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) {
             reject(err);
             return;
@@ -790,29 +795,29 @@ class TokenModule {
             this.db.run(
               'UPDATE users SET email = ?, name = ?, profile_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
               [userData.email, userData.name, userData.profile_data, row.id],
-              (err) => {
+              guarded(reject, (err) => {
                 if (err) {
                   reject(err);
                 } else {
                   resolve(row.id);
                 }
-              }
+              })
             );
           } else {
             // Create new user
             this.db.run(
               'INSERT INTO users (email, name, provider, provider_id, profile_data) VALUES (?, ?, ?, ?, ?)',
               [userData.email, userData.name, userData.provider, userData.provider_id, userData.profile_data],
-              function(err) {
+              guarded(reject, function(err) {
                 if (err) {
                   reject(err);
                 } else {
                   resolve(this.lastID);
                 }
-              }
+              })
             );
           }
-        }
+        })
       );
     });
   }
@@ -822,10 +827,10 @@ class TokenModule {
       this.db.get(
         'SELECT * FROM users WHERE id = ? AND is_active = 1',
         [userId],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row);
-        }
+        })
       );
     });
   }
@@ -835,10 +840,10 @@ class TokenModule {
       this.db.run(
         'UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?',
         [userId],
-        (err) => {
+        guarded(reject, (err) => {
           if (err) reject(err);
           else resolve();
-        }
+        })
       );
     });
   }
@@ -851,10 +856,10 @@ class TokenModule {
          WHERE user_id = ? 
          ORDER BY created_at DESC`,
         [userId],
-        (err, rows) => {
+        guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        }
+        })
       );
     });
   }
@@ -869,10 +874,10 @@ class TokenModule {
         `INSERT INTO api_keys (user_id, key_hash, key_prefix, name, scopes, expires_at, created_ip) 
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [userId, keyHash, keyPrefix, name, scopes, expiresAt, ip],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) reject(err);
           else resolve(this.lastID);
-        }
+        })
       );
     });
   }
@@ -886,7 +891,7 @@ class TokenModule {
         FROM api_keys ak 
         JOIN users u ON ak.user_id = u.id 
         WHERE ak.key_prefix = ? AND ak.is_active = 1 AND u.is_active = 1
-      `, [keyPrefix], async (err, rows) => {
+      `, [keyPrefix], guarded(reject, async (err, rows) => {
         if (err) {
           reject(err);
           return;
@@ -910,7 +915,7 @@ class TokenModule {
         } catch (error) {
           reject(error);
         }
-      });
+      }));
     });
   }
 
@@ -919,13 +924,13 @@ class TokenModule {
       this.db.run(
         'UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?',
         [keyId, userId],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) {
             reject(err);
           } else {
             resolve(this.changes > 0);
           }
-        }
+        })
       );
     });
   }
@@ -936,10 +941,10 @@ class TokenModule {
       this.db.run(
         'UPDATE api_keys SET last_used = CURRENT_TIMESTAMP WHERE id = ?',
         [keyId],
-        (err) => {
+        guarded(reject, (err) => {
           if (err) reject(err);
           else resolve();
-        }
+        })
       );
     });
   }
@@ -955,10 +960,10 @@ class TokenModule {
           request_count = request_count + ?,
           last_request_ip = ?,
           updated_at = CURRENT_TIMESTAMP
-      `, [keyId, today, count, ip, count, ip], function(err) {
+      `, [keyId, today, count, ip, count, ip], guarded(reject, function(err) {
         if (err) reject(err);
         else resolve();
-      });
+      }));
     });
   }
 
@@ -969,10 +974,10 @@ class TokenModule {
       this.db.get(
         'SELECT request_count FROM usage_stats WHERE api_key_id = ? AND date = ?',
         [keyId, today],
-        (err, row) => {
+        guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row ? row.request_count : 0);
-        }
+        })
       );
     });
   }
@@ -985,24 +990,24 @@ class TokenModule {
         JOIN api_keys ak ON us.api_key_id = ak.id
         WHERE ak.user_id = ? AND us.date >= date('now', '-30 days')
         ORDER BY us.date DESC
-      `, [userId], (err, rows) => {
+      `, [userId], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
   async getApiKeyUsageStats(keyId, days = 30) {
     return new Promise((resolve, reject) => {
       this.db.all(`
-        SELECT date, request_count, last_request_ip
+        SELECT date, request_count
         FROM usage_stats 
         WHERE api_key_id = ? AND date >= date('now', '-${days} days')
         ORDER BY date DESC
-      `, [keyId], (err, rows) => {
+      `, [keyId], guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
   }
 
@@ -1012,13 +1017,13 @@ class TokenModule {
       this.db.run(
         'INSERT INTO security_log (user_id, event_type, ip_address, user_agent, details) VALUES (?, ?, ?, ?, ?)',
         [userId, eventType, ip, userAgent, JSON.stringify(details)],
-        function(err) {
+        guarded(reject, function(err) {
           if (err) {
             // Don't fail the main operation if logging fails
             console.error('Failed to log security event:', err);
           }
           resolve();
-        }
+        })
       );
     });
   }
@@ -1140,7 +1145,7 @@ class TokenModule {
             <td><span class="${statusClass}">${status}</span></td>
             <td>
               ${key.is_active ? 
-                `<button class="btn btn-sm btn-danger" onclick="deleteKey(${key.id}, '${escape(key.name)}')">Delete</button>` :
+                `<button class="btn btn-sm btn-danger" onclick="deleteKey(${Number(key.id)})">Delete</button>` :
                 '<span class="text-muted">-</span>'
               }
             </td>
@@ -1287,16 +1292,19 @@ class TokenModule {
   }
 
   async shutdown() {
+    if (this.sessionStore) {
+      this.sessionStore.close();
+    }
     if (this.db) {
-      await new Promise((resolve) => {
-        this.db.close((err) => {
+      await new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             this.log.error('Error closing database:', err);
           } else {
             this.log.info('Database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }

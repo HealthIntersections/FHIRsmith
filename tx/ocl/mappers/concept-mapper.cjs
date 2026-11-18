@@ -8,13 +8,21 @@ function toConceptContext(concept) {
     return null;
   }
 
-  return {
+  const ctx = {
     code,
     display: concept.display_name || concept.display || concept.name || null,
     definition: concept.description || concept.definition || null,
     retired: concept.retired === true,
       designation: extractDesignations(concept)
   };
+
+  const extras = concept.extras;
+  if (extras && typeof extras === 'object' && !Array.isArray(extras)
+      && Object.keys(extras).length > 0) {
+    ctx.extras = extras;
+  }
+
+  return ctx;
 }
 
 function extractDesignations(concept) {

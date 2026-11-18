@@ -250,3 +250,51 @@ describe('xversion — TerminologyCapabilities codeSystem.content (issue #251 pa
     expect((back.codeSystem[0].extension || []).some(e => e.url === CONTENT_EXT)).toBe(false);
   });
 });
+
+describe('xversion — ValueSet compose.property', () => {
+  const COMPOSE_PROPERTY_EXT = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-ValueSet.compose.property';
+
+  test('R5 -> R4 moves compose.property into the extension', () => {
+    const r5 = { resourceType: 'ValueSet', status: 'active',
+      compose: { property: ['status', 'definition'], include: [{ system: 'http://x' }] } };
+    const out = convertResourceFromR5(r5, '4.0');
+    expect(out.compose.property).toBeUndefined();
+    expect(out.compose.extension.filter(e => e.url === COMPOSE_PROPERTY_EXT).map(e => e.valueString))
+      .toEqual(['status', 'definition']);
+  });
+
+  test('R4 -> R5 lifts compose.property out of the extension and removes it', () => {
+    const r4 = { resourceType: 'ValueSet', status: 'active',
+      compose: { extension: [{ url: COMPOSE_PROPERTY_EXT, valueString: 'status' }], include: [{ system: 'http://x' }] } };
+    const out = convertResourceToR5(r4, '4.0');
+    expect(out.compose.property).toEqual(['status']);
+    expect((out.compose.extension || []).some(e => e.url === COMPOSE_PROPERTY_EXT)).toBe(false);
+  });
+
+  test('R4 -> R5 preserves unrelated extensions while removing only the property ones', () => {
+    const r4 = { resourceType: 'ValueSet', status: 'active',
+      compose: { extension: [
+        { url: 'http://other/ext', valueString: 'keep-me' },
+        { url: COMPOSE_PROPERTY_EXT, valueString: 'definition' }
+      ], include: [{ system: 'http://x' }] } };
+    const out = convertResourceToR5(r4, '4.0');
+    expect(out.compose.property).toEqual(['definition']);
+    expect(out.compose.extension).toEqual([{ url: 'http://other/ext', valueString: 'keep-me' }]);
+  });
+
+  test('round-trip R5 -> R4 -> R5 preserves compose.property, in order', () => {
+    const r5 = { resourceType: 'ValueSet', status: 'active',
+      compose: { property: ['status', 'definition', '*'], include: [{ system: 'http://x' }] } };
+    const r4 = convertResourceFromR5(JSON.parse(JSON.stringify(r5)), '4.0');
+    const back = convertResourceToR5(r4, '4.0');
+    expect(back.compose.property).toEqual(['status', 'definition', '*']);
+    expect((back.compose.extension || []).some(e => e.url === COMPOSE_PROPERTY_EXT)).toBe(false);
+  });
+
+  test('a compose with no property is left alone in both directions', () => {
+    const r5 = { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: 'http://x' }] } };
+    const r4 = convertResourceFromR5(JSON.parse(JSON.stringify(r5)), '4.0');
+    expect(r4.compose.extension).toBeUndefined();
+    expect(convertResourceToR5(r4, '4.0').compose).toEqual({ include: [{ system: 'http://x' }] });
+  });
+});

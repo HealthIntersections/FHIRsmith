@@ -1,0 +1,2090 @@
+{
+  "resourceType": "Bundle",
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:d6f3f5d5-8fd4-4412-a56d-4b91b7f6ce34"
+  },
+  "type": "document",
+  "timestamp": "2024-12-12T00:00:00.000Z",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:97ac1ed5-102d-43a3-8279-8af04b3a7db9",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "0fbf726d-effc-410f-a617-575e84ed6078",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "60591-5",
+              "display": "Patient summary Document"
+            }
+          ]
+        },
+        "date": "2024-12-12",
+        "title": "Patient Summary - Chloe Taylor",
+        "section": [
+          {
+            "title": "Problem List",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11450-4",
+                  "display": "Problem list - Reported"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:d31a5138-e2b5-43ad-990c-8d71e321c17f"
+              },
+              {
+                "reference": "urn:uuid:1f0f046f-546f-4f18-a606-2451f430b788"
+              },
+              {
+                "reference": "urn:uuid:e3065524-dfa7-4dbd-b60c-50e21ecfe7c7"
+              },
+              {
+                "reference": "urn:uuid:a8533272-00c7-4b92-9893-32b7e401462c"
+              },
+              {
+                "reference": "urn:uuid:7ba2d673-655c-4c63-8c0a-1bdaff2e483d"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Category</th><th>Severity</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Bipolar I disorder</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>Oct 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Diagnosed by psychiatry Oct 2024 after a manic episode with psychotic features (inpatient 10 days). Shared care with the community mental health team. Lithium started.</li></ul></td></tr><tr><td>Generalized anxiety disorder</td><td>Problem List Item</td><td>Severe</td><td>Active / Confirmed</td><td>2023</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>With agoraphobic avoidance.</li></ul></td></tr><tr><td>Alcohol use disorder, moderate</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>Jun 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>AUDIT 24 (Oct 2024). Thiamine; withdrawal plan with the drug and alcohol service.</li></ul></td></tr><tr><td>Stimulant (methamphetamine) use disorder</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>Aug 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Smoked, about weekly; last use 5 Dec 2024. Engaged with the drug and alcohol service.</li></ul></td></tr><tr><td>Chronic hepatitis C</td><td>Problem List Item</td><td>--</td><td>Active / Confirmed</td><td>Nov 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Genotype 3, viral load 2.1 million IU/mL; no cirrhosis (elastography 5.8 kPa). Sofosbuvir/velpatasvir started 2 Dec 2024 (12 weeks). SVR12 test due May 2025.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Allergies and Intolerances",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "48765-2",
+                  "display": "Allergies and adverse reactions Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:97cb94e5-f181-4bf0-a994-7505da86c992"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Allergy / intolerance</th><th>Type</th><th>Category</th><th>Criticality</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Codeine</td><td>intolerance</td><td>medication</td><td>low</td><td>Active / Confirmed</td><td>2019</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"5\"><b>Reactions</b><ul><li>Vomiting (moderate) - Vomiting after codeine-containing analgesic, 2019.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Medication Summary",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10160-0",
+                  "display": "History of Medication use Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:8d47c0aa-8127-4ff5-879c-b6ca2caa704d"
+              },
+              {
+                "reference": "urn:uuid:fca24b96-eb19-4c57-a81c-bb9c27924271"
+              },
+              {
+                "reference": "urn:uuid:2c299a7f-c299-47d3-8f16-435cc6929d50"
+              },
+              {
+                "reference": "urn:uuid:37885c2e-8225-4674-8fa9-1bdef3811690"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Medication</th><th>Status</th><th>Reason</th><th>Effective</th><th>Dosage</th></tr></thead><tbody><tr><td>Lithium carbonate 450 mg modified-release tablet</td><td>active</td><td>Bipolar I disorder</td><td>from 18-Oct 24</td><td>450 mg twice daily</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Level 0.7 mmol/L (5 Dec 2024). Levels, renal and thyroid function every 3 months.</li></ul></td></tr><tr><td>Sertraline</td><td>active</td><td>Generalized anxiety disorder</td><td>from 25-Oct 24</td><td>50 mg in the morning</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Only with a mood stabiliser; watch for a switch to mania.</li></ul></td></tr><tr><td>Sofosbuvir 400 mg / velpatasvir 100 mg tablet (Epclusa)</td><td>active</td><td>Chronic hepatitis C</td><td>02-Dec 24 - 24-Feb 25</td><td>1 tablet once daily for 12 weeks</td></tr><tr><td>Thiamine 100 mg tablet</td><td>active</td><td>--</td><td>from 18-Oct 24</td><td>100 mg once daily</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Immunizations",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11369-6",
+                  "display": "History of Immunization note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:284bc25c-48ca-4fa5-b89a-704c00feb0e8"
+              },
+              {
+                "reference": "urn:uuid:704bc072-5c0b-499e-af9d-60781667e90e"
+              },
+              {
+                "reference": "urn:uuid:689e177d-378b-47f6-90d8-bf176cc26438"
+              },
+              {
+                "reference": "urn:uuid:d8bf105c-dcc0-4a80-aabb-9e3b0c3db12a"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Vaccine</th><th>Status</th><th>Date</th><th>Target disease</th><th>Dose</th></tr></thead><tbody><tr><td>Hepatitis B virus antigen-containing vaccine product</td><td>completed</td><td>12-Dec 24</td><td>Viral hepatitis type B</td><td>1</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Non-immune (HBsAb negative); accelerated course started.</li></ul></td></tr><tr><td>Hepatitis A vaccine</td><td>completed</td><td>12-Dec 24</td><td>--</td><td>1</td></tr><tr><td>Human papillomavirus 9-valent vaccine (Gardasil 9)</td><td>completed</td><td>14-Mar 17</td><td>Human papillomavirus infection</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>School program.</li></ul></td></tr><tr><td>Influenza virus antigen-containing vaccine product</td><td>completed</td><td>06-May 24</td><td>Influenza</td><td>--</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Procedures",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47519-4",
+                  "display": "History of Procedures Document"
+                }
+              ]
+            },
+            "emptyReason": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/list-empty-reason",
+                  "code": "nilknown",
+                  "display": "Nil known"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p><i>Nil known</i></p></div>"
+            }
+          },
+          {
+            "title": "Results",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "30954-2",
+                  "display": "Relevant diagnostic tests/laboratory data note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a5c23c01-6f9b-4fd8-b111-3675e79b9dbf"
+              },
+              {
+                "reference": "urn:uuid:931ec201-457e-41dd-8445-51a7f5f1d2ae"
+              },
+              {
+                "reference": "urn:uuid:ae066936-997e-4def-9578-f9737d79c820"
+              },
+              {
+                "reference": "urn:uuid:1a3dd222-43aa-45a5-923b-36d4bb235cc6"
+              },
+              {
+                "reference": "urn:uuid:0fbf2bd7-29e3-4c8e-8b5a-8fb1e996dd43"
+              },
+              {
+                "reference": "urn:uuid:4e33e5dd-85bb-4cc3-b9dd-439533fc2e2a"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Interpretation</th><th>Reference range</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Hepatitis C virus RNA [Units/volume] (viral load) in Serum or Plasma by NAA with probe detection</td><td>2100000 [IU]/mL</td><td>High</td><td>Not detected</td><td>05-Nov 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Alanine aminotransferase [Enzymatic activity/volume] in Serum or Plasma</td><td>68 U/L</td><td>High</td><td>&lt;35</td><td>05-Nov 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Gamma glutamyl transferase [Enzymatic activity/volume] in Serum or Plasma</td><td>95 U/L</td><td>High</td><td>&lt;38</td><td>05-Nov 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Lithium [Moles/volume] in Serum or Plasma</td><td>0.7 mmol/L</td><td>Normal</td><td>0.6-1.0 (therapeutic)</td><td>05-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"6\"><b>Notes</b><ul><li>12 hours after the dose.</li></ul></td></tr><tr><td>Creatinine [Moles/volume] in Serum or Plasma</td><td>64 umol/L</td><td>Normal</td><td>45-90</td><td>05-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Thyrotropin [Units/volume] in Serum or Plasma</td><td>2.1 mU/L</td><td>Normal</td><td>0.5-4.0</td><td>05-Dec 24</td><td>final</td><td>Laboratory</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Vital Signs",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8716-3",
+                  "display": "Vital Signs"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:e923eb90-57f1-44b6-b758-f2a7e5c36bef"
+              },
+              {
+                "reference": "urn:uuid:03d902a0-9ebc-4563-859a-c184f2649547"
+              },
+              {
+                "reference": "urn:uuid:c6f8d13c-22e9-4724-b789-b4758df2e113"
+              },
+              {
+                "reference": "urn:uuid:e826c318-c450-40ef-a40d-4ead0e86c087"
+              },
+              {
+                "reference": "urn:uuid:fc36a3b5-03a8-415a-a59b-5a78304aaeb3"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Blood pressure</td><td>118/72 mm[Hg]</td><td>12-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Heart rate</td><td>88 /min</td><td>12-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body weight</td><td>55 kg</td><td>12-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body height</td><td>166 cm</td><td>12-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body mass index</td><td>20 kg/m2</td><td>12-Dec 24</td><td>final</td><td>Vital Signs</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Pregnancy History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10162-6",
+                  "display": "History of pregnancies Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:0efe52fb-8f2c-4738-b0ac-50dd6a0c5e09"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Pregnancy status</td><td>Not pregnant</td><td>12-Dec 24</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>Urine hCG negative. Lithium is teratogenic: etonogestrel implant inserted 12 Dec 2024.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Social History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "29762-2",
+                  "display": "Social history note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:dc0d7659-6669-471a-8a22-4270ac163082"
+              },
+              {
+                "reference": "urn:uuid:38d15d5f-a5f2-44e6-90b8-02a0e397fdc7"
+              },
+              {
+                "reference": "urn:uuid:6c7d3904-368a-4d15-bf6c-89c7e7948244"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Tobacco smoking status</td><td>Current every day smoker</td><td>12-Dec 24</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>About 10 cigarettes a day; nicotine replacement offered.</li></ul></td></tr><tr><td>Alcoholic drinks per day</td><td>3.5 /d</td><td>12-Dec 24</td><td>final</td><td>Social History</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"4\"><b>Notes</b><ul><li>About 25 standard drinks a week, in binges; less since November.</li></ul></td></tr><tr><td>History of Alcohol use</td><td>Alcohol use disorder - see problem list</td><td>12-Dec 24</td><td>final</td><td>Social History</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Functional Status",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47420-5",
+                  "display": "Functional Status Assessment Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:5ed0c14b-10f4-4735-9ddc-1e3c89dae5dc"
+              },
+              {
+                "reference": "urn:uuid:69121952-04e9-4a79-bbd4-e45ce01b896e"
+              },
+              {
+                "reference": "urn:uuid:42aadc2c-2674-41d9-b3c8-3a5daa5d9678"
+              },
+              {
+                "reference": "urn:uuid:889aaa21-8c35-487f-b849-2c8ccf38519f"
+              },
+              {
+                "reference": "urn:uuid:b8225e0e-0e5f-4c29-93b0-fec8cbb412d1"
+              },
+              {
+                "reference": "urn:uuid:e14b7fc0-d860-4352-a3dd-d559daf6722b"
+              },
+              {
+                "reference": "urn:uuid:14294b18-67cb-44ef-b9a8-1f8a6f42f8ef"
+              },
+              {
+                "reference": "urn:uuid:8ea56067-391c-4db8-894e-48649af168ea"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Emotional functions: SEVERE impairment</td><td>Active</td><td>Jun 24</td></tr><tr><td>Attention functions: MODERATE impairment</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Give information in short pieces, in writing.</li></ul></td></tr><tr><td>Memory functions: MILD impairment</td><td>Active</td><td>--</td></tr><tr><td>Handling stress and other psychological demands: performance SEVERE problem</td><td>Active</td><td>--</td></tr><tr><td>Moving around in different locations: performance SEVERE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Rarely leaves home because of anxiety; telehealth helps.</li></ul></td></tr><tr><td>Remunerative employment: performance COMPLETE problem</td><td>Active</td><td>Aug 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Not working since August 2024.</li></ul></td></tr><tr><td>Health professionals: SUBSTANTIAL facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Community mental health team and the drug and alcohol service.</li></ul></td></tr><tr><td>Immediate family: MILD facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Mother Rebecca supportive; parents recently separated.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Plan of Care",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "18776-5",
+                  "display": "Plan of Care Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:814c6bfb-56bd-4c8d-aa2b-0dd66054d543"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Title</th><th>Status</th><th>Intent</th><th>Period</th><th>Description</th></tr></thead><tbody><tr><td>Mental health, drug and alcohol, and hepatitis C care plan</td><td>active</td><td>plan</td><td>12-Dec 24 - 12-Jun 25</td><td>20-year-old with newly diagnosed bipolar I disorder (lithium), severe generalised anxiety with agoraphobic avoidance, alcohol and methamphetamine use disorders, and chronic hepatitis C (genotype 3, on treatment). Recent major stressors: parents&#39; separation and the end of a relationship.\n\nPlan: mental health treatment plan with the community mental health team (case manager, psychology); lithium levels, renal and thyroid function every 3 months, and lithium safety (no NSAIDs, keep hydrated, report vomiting or diarrhoea). Drug and alcohol service: counselling, consider naltrexone. Complete 12 weeks of sofosbuvir/velpatasvir with weekly dispensing; SVR12 in May 2025; complete hepatitis A and B vaccination. Contraception: implant. Trauma-informed, non-judgemental care; telehealth when she can&#39;t come in. She wants to stop drinking and using, and to get back to her art.</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Alerts",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "104605-1",
+                  "display": "Alert"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:90c82f5b-af8a-4554-a4bf-ea3032562072"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Flag</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Lithium therapy: risk of toxicity with NSAIDs, ACE inhibitors, diuretics or dehydration - check a level if unwell</td><td>active</td><td>from 18-Oct 24</td></tr></tbody></table></div>"
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4",
+          "display": "Chloe Marie Taylor"
+        },
+        "author": [
+          {
+            "reference": "urn:uuid:5c2f51c0-a364-4ecc-96fa-ea53b717fc01",
+            "display": "Dr Priya Raman"
+          }
+        ],
+        "custodian": {
+          "reference": "urn:uuid:74ac7829-3ad9-46bf-89a5-976f3fc04513",
+          "display": "Port Adelaide Family Practice"
+        },
+        "text": {
+          "status": "generated",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p class=\"ips-patient\"><b>Chloe Marie Taylor</b>, female, DoB: 14-Feb 04</p><table class=\"ips-facts\"><tr><td><b>Contact details</b></td><td>phone: 0434567812; email: chloe.taylor94@gmail.com</td></tr><tr><td><b>Address</b></td><td>Unit 4, 18 Commercial Road, Port Adelaide, 5015, AU</td></tr></table><table class=\"ips-facts\"><tr><td><b>Date</b></td><td>12-Dec 24</td></tr><tr><td><b>Status</b></td><td>final</td></tr><tr><td><b>Type</b></td><td>Patient summary Document</td></tr><tr><td><b>Author</b></td><td>Dr Priya Raman</td></tr><tr><td><b>Custodian</b></td><td>Port Adelaide Family Practice</td></tr></table></div>"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "0481432b-71ed-4d02-9595-d4e90bdcd5ea",
+        "name": [
+          {
+            "family": "Taylor",
+            "given": [
+              "Chloe",
+              "Marie"
+            ]
+          }
+        ],
+        "gender": "female",
+        "birthDate": "2004-02-14",
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "0434567812"
+          },
+          {
+            "system": "email",
+            "value": "chloe.taylor94@gmail.com"
+          }
+        ],
+        "address": [
+          {
+            "text": "Unit 4, 18 Commercial Road, Port Adelaide, 5015, AU"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5c2f51c0-a364-4ecc-96fa-ea53b717fc01",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "2283439f-abdd-4ff1-829a-cc16e8902a0d",
+        "name": [
+          {
+            "text": "Dr Priya Raman"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:74ac7829-3ad9-46bf-89a5-976f3fc04513",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "5ab02c38-a4bc-499e-9628-705bbcd6d6a7",
+        "name": "Port Adelaide Family Practice"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d31a5138-e2b5-43ad-990c-8d71e321c17f",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "85b8a071-0a06-46c0-a47a-968eba6a4634",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "371596008",
+              "display": "Bipolar I disorder"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-10",
+        "note": [
+          {
+            "text": "Diagnosed by psychiatry Oct 2024 after a manic episode with psychotic features (inpatient 10 days). Shared care with the community mental health team. Lithium started."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1f0f046f-546f-4f18-a606-2451f430b788",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "c5346871-8c69-45d4-b9b0-2504a8c15d15",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "21897009",
+              "display": "Generalized anxiety disorder"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "severity": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "24484000",
+              "display": "Severe"
+            }
+          ]
+        },
+        "onsetDateTime": "2023",
+        "note": [
+          {
+            "text": "With agoraphobic avoidance."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e3065524-dfa7-4dbd-b60c-50e21ecfe7c7",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "20ecc727-ff58-4661-93f1-a93ed0f3a2ba",
+        "code": {
+          "text": "Alcohol use disorder, moderate"
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-06",
+        "note": [
+          {
+            "text": "AUDIT 24 (Oct 2024). Thiamine; withdrawal plan with the drug and alcohol service."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a8533272-00c7-4b92-9893-32b7e401462c",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "e8437bad-af15-4842-a0ac-e408f3eb833d",
+        "code": {
+          "text": "Stimulant (methamphetamine) use disorder"
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-08",
+        "note": [
+          {
+            "text": "Smoked, about weekly; last use 5 Dec 2024. Engaged with the drug and alcohol service."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7ba2d673-655c-4c63-8c0a-1bdaff2e483d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "fea02168-f093-48ad-8d04-a1192967a892",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "128302006",
+              "display": "Chronic hepatitis C"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11",
+        "note": [
+          {
+            "text": "Genotype 3, viral load 2.1 million IU/mL; no cirrhosis (elastography 5.8 kPa). Sofosbuvir/velpatasvir started 2 Dec 2024 (12 weeks). SVR12 test due May 2025."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:97cb94e5-f181-4bf0-a994-7505da86c992",
+      "resource": {
+        "resourceType": "AllergyIntolerance",
+        "id": "4b3c8266-cf47-4ef9-8e5c-f38309cea3f7",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "387494007",
+              "display": "Codeine"
+            }
+          ]
+        },
+        "type": "intolerance",
+        "category": [
+          "medication"
+        ],
+        "criticality": "low",
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/allergyintolerance-verification",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2019",
+        "reaction": [
+          {
+            "manifestation": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "422400008",
+                    "display": "Vomiting"
+                  }
+                ]
+              }
+            ],
+            "severity": "moderate",
+            "description": "Vomiting after codeine-containing analgesic, 2019."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:8d47c0aa-8127-4ff5-879c-b6ca2caa704d",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "e45e36fe-5277-4f97-986d-e8abca99c414",
+        "medicationCodeableConcept": {
+          "text": "Lithium carbonate 450 mg modified-release tablet"
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-10-18"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "371596008",
+                "display": "Bipolar I disorder"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "450 mg twice daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "Level 0.7 mmol/L (5 Dec 2024). Levels, renal and thyroid function every 3 months."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:fca24b96-eb19-4c57-a81c-bb9c27924271",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "3aa1afe0-a612-48e4-8085-793d664ed719",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "372594008",
+              "display": "Sertraline"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-10-25"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "21897009",
+                "display": "Generalized anxiety disorder"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "50 mg in the morning",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "note": [
+          {
+            "text": "Only with a mood stabiliser; watch for a switch to mania."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:2c299a7f-c299-47d3-8f16-435cc6929d50",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "7c269a71-4ec6-4324-bfb8-1deef6273a82",
+        "medicationCodeableConcept": {
+          "text": "Sofosbuvir 400 mg / velpatasvir 100 mg tablet (Epclusa)"
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-12-02",
+          "end": "2025-02-24"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "128302006",
+                "display": "Chronic hepatitis C"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "1 tablet once daily for 12 weeks",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:37885c2e-8225-4674-8fa9-1bdef3811690",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "934a5db0-7de6-4790-9a32-63d176003cde",
+        "medicationCodeableConcept": {
+          "text": "Thiamine 100 mg tablet"
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-10-18"
+        },
+        "dosage": [
+          {
+            "text": "100 mg once daily",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:284bc25c-48ca-4fa5-b89a-704c00feb0e8",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "a0fd17af-f0d6-4071-80c5-2117133a0a49",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836374004",
+              "display": "Hepatitis B virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-12-12",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "66071002",
+                    "display": "Viral hepatitis type B"
+                  }
+                ]
+              }
+            ],
+            "doseNumberString": "1"
+          }
+        ],
+        "note": [
+          {
+            "text": "Non-immune (HBsAb negative); accelerated course started."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:704bc072-5c0b-499e-af9d-60781667e90e",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "fc5ca87a-9194-4bb0-8808-3534eb7dcbe9",
+        "vaccineCode": {
+          "text": "Hepatitis A vaccine"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-12-12",
+        "protocolApplied": [
+          {
+            "doseNumberString": "1"
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:689e177d-378b-47f6-90d8-bf176cc26438",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "335a6062-608c-4488-a039-9d57dc575d00",
+        "vaccineCode": {
+          "text": "Human papillomavirus 9-valent vaccine (Gardasil 9)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2017-03-14",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "240532009",
+                    "display": "Human papillomavirus infection"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "School program."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:d8bf105c-dcc0-4a80-aabb-9e3b0c3db12a",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "91e9f29b-5665-4040-bcb7-012755548432",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836377006",
+              "display": "Influenza virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-05-06",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "6142004",
+                    "display": "Influenza"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a5c23c01-6f9b-4fd8-b111-3675e79b9dbf",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "a8a01b96-4d15-41cb-9f19-80b918a134ce",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "11011-4",
+              "display": "Hepatitis C virus RNA [Units/volume] (viral load) in Serum or Plasma by NAA with probe detection"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 2100000,
+          "unit": "[IU]/mL",
+          "system": "http://unitsofmeasure.org",
+          "code": "[IU]/mL"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-11-05",
+        "referenceRange": [
+          {
+            "text": "Not detected"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:931ec201-457e-41dd-8445-51a7f5f1d2ae",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "5f52c1db-99f2-4ca3-a614-51577a671a28",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "1742-6",
+              "display": "Alanine aminotransferase [Enzymatic activity/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 68,
+          "unit": "U/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "U/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-11-05",
+        "referenceRange": [
+          {
+            "text": "<35"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ae066936-997e-4def-9578-f9737d79c820",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "8fc2ab4f-3a22-4536-ab9b-1305df4f04b4",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "2324-2",
+              "display": "Gamma glutamyl transferase [Enzymatic activity/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 95,
+          "unit": "U/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "U/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "H",
+                "display": "High"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-11-05",
+        "referenceRange": [
+          {
+            "text": "<38"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:1a3dd222-43aa-45a5-923b-36d4bb235cc6",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "9ea05956-a207-40d5-959b-c892a4654185",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "14334-7",
+              "display": "Lithium [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 0.7,
+          "unit": "mmol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mmol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-05",
+        "referenceRange": [
+          {
+            "text": "0.6-1.0 (therapeutic)"
+          }
+        ],
+        "note": [
+          {
+            "text": "12 hours after the dose."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0fbf2bd7-29e3-4c8e-8b5a-8fb1e996dd43",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "50c5b1a2-3fbc-4a01-a40f-ae5c21e7d6b4",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "14682-9",
+              "display": "Creatinine [Moles/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 64,
+          "unit": "umol/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "umol/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-05",
+        "referenceRange": [
+          {
+            "text": "45-90"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4e33e5dd-85bb-4cc3-b9dd-439533fc2e2a",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "72d50d57-fee0-4425-bc5a-c48e3bbf4682",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "3016-3",
+              "display": "Thyrotropin [Units/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 2.1,
+          "unit": "mU/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "mU/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-05",
+        "referenceRange": [
+          {
+            "text": "0.5-4.0"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e923eb90-57f1-44b6-b758-f2a7e5c36bef",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "bd7a67b2-e463-4372-a4c3-bdd165c9d092",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel with all children optional"
+            }
+          ],
+          "text": "Blood pressure"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        },
+        "component": [
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6",
+                  "display": "Systolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 118,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4",
+                  "display": "Diastolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 72,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:03d902a0-9ebc-4563-859a-c184f2649547",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "982df907-1471-4f9a-a35b-1ca80231201c",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 88,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:c6f8d13c-22e9-4724-b789-b4758df2e113",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "4a5967d1-2583-4994-85ff-bddee26bb6c0",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "29463-7",
+              "display": "Body weight"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 55,
+          "unit": "kg",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e826c318-c450-40ef-a40d-4ead0e86c087",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "920d45b3-04e5-48af-9ecf-6d506634459f",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8302-2",
+              "display": "Body height"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 166,
+          "unit": "cm",
+          "system": "http://unitsofmeasure.org",
+          "code": "cm"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:fc36a3b5-03a8-415a-a59b-5a78304aaeb3",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "2356b596-a428-4636-958f-85afa631d434",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "39156-5",
+              "display": "Body mass index"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 20,
+          "unit": "kg/m2",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg/m2"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0efe52fb-8f2c-4738-b0ac-50dd6a0c5e09",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "acced04b-49ea-452f-9bcf-dfaafe162cd1",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "82810-3",
+              "display": "Pregnancy status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "60001007",
+              "display": "Not pregnant"
+            }
+          ]
+        },
+        "effectiveDateTime": "2024-12-12",
+        "note": [
+          {
+            "text": "Urine hCG negative. Lithium is teratogenic: etonogestrel implant inserted 12 Dec 2024."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:dc0d7659-6669-471a-8a22-4270ac163082",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "59c046c1-aae3-42a2-ad1c-754e515d5474",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "72166-2",
+              "display": "Tobacco smoking status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "449868002",
+              "display": "Smokes tobacco daily"
+            }
+          ],
+          "text": "Current every day smoker"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "note": [
+          {
+            "text": "About 10 cigarettes a day; nicotine replacement offered."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:38d15d5f-a5f2-44e6-90b8-02a0e397fdc7",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "865769a3-7d85-4822-a267-169ce2a64eda",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "74013-4",
+              "display": "Alcoholic drinks per day"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 3.5,
+          "unit": "/d",
+          "system": "http://unitsofmeasure.org",
+          "code": "/d"
+        },
+        "effectiveDateTime": "2024-12-12",
+        "note": [
+          {
+            "text": "About 25 standard drinks a week, in binges; less since November."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6c7d3904-368a-4d15-bf6c-89c7e7948244",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "c16262f5-20f7-4113-a93a-1997005da1bb",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "11331-6",
+              "display": "History of Alcohol use"
+            }
+          ]
+        },
+        "valueString": "Alcohol use disorder - see problem list",
+        "effectiveDateTime": "2024-12-12",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:5ed0c14b-10f4-4735-9ddc-1e3c89dae5dc",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "34796076-eef9-4f8f-a9b5-4414a0ac0b6a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b152.3",
+              "version": "2017a",
+              "display": "Emotional functions: SEVERE impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-06",
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:69121952-04e9-4a79-bbd4-e45ce01b896e",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "e94f3374-ba45-406f-a537-b2267ab9855a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b140.2",
+              "version": "2017a",
+              "display": "Attention functions: MODERATE impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Give information in short pieces, in writing."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:42aadc2c-2674-41d9-b3c8-3a5daa5d9678",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "736b3ca8-7a0d-48aa-9331-b6fe2df93703",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b144.1",
+              "version": "2017a",
+              "display": "Memory functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:889aaa21-8c35-487f-b849-2c8ccf38519f",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "3c351eaf-864a-4078-af1d-5bb19b581c4e",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d240.3",
+              "version": "2017a",
+              "display": "Handling stress and other psychological demands: performance SEVERE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:b8225e0e-0e5f-4c29-93b0-fec8cbb412d1",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "63c99ec1-b145-47ab-94ee-30bd5224009f",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d460.3",
+              "version": "2017a",
+              "display": "Moving around in different locations: performance SEVERE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Rarely leaves home because of anxiety; telehealth helps."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e14b7fc0-d860-4352-a3dd-d559daf6722b",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "5551055b-6ea0-4ac9-a3ef-c1b460d3f1dd",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d850.4",
+              "version": "2017a",
+              "display": "Remunerative employment: performance COMPLETE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-08",
+        "note": [
+          {
+            "text": "Not working since August 2024."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:14294b18-67cb-44ef-b9a8-1f8a6f42f8ef",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "ba141d73-289e-41ed-afec-fbfc7fc748b8",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e355+3",
+              "version": "2017a",
+              "display": "Health professionals: SUBSTANTIAL facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Community mental health team and the drug and alcohol service."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:8ea56067-391c-4db8-894e-48649af168ea",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "a0942e52-85de-47af-b2df-bf30e7211f1a",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e310+1",
+              "version": "2017a",
+              "display": "Immediate family: MILD facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Mother Rebecca supportive; parents recently separated."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:814c6bfb-56bd-4c8d-aa2b-0dd66054d543",
+      "resource": {
+        "resourceType": "CarePlan",
+        "id": "0fe4c577-53fb-44d1-8a3f-cd195c22600f",
+        "title": "Mental health, drug and alcohol, and hepatitis C care plan",
+        "description": "20-year-old with newly diagnosed bipolar I disorder (lithium), severe generalised anxiety with agoraphobic avoidance, alcohol and methamphetamine use disorders, and chronic hepatitis C (genotype 3, on treatment). Recent major stressors: parents' separation and the end of a relationship.\n\nPlan: mental health treatment plan with the community mental health team (case manager, psychology); lithium levels, renal and thyroid function every 3 months, and lithium safety (no NSAIDs, keep hydrated, report vomiting or diarrhoea). Drug and alcohol service: counselling, consider naltrexone. Complete 12 weeks of sofosbuvir/velpatasvir with weekly dispensing; SVR12 in May 2025; complete hepatitis A and B vaccination. Contraception: implant. Trauma-informed, non-judgemental care; telehealth when she can't come in. She wants to stop drinking and using, and to get back to her art.",
+        "status": "active",
+        "period": {
+          "start": "2024-12-12",
+          "end": "2025-06-12"
+        },
+        "intent": "plan",
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:90c82f5b-af8a-4554-a4bf-ea3032562072",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "78aa4bca-2e46-4fc9-b8a9-81650e222a14",
+        "code": {
+          "text": "Lithium therapy: risk of toxicity with NSAIDs, ACE inhibitors, diuretics or dehydration - check a level if unwell"
+        },
+        "status": "active",
+        "period": {
+          "start": "2024-10-18"
+        },
+        "subject": {
+          "reference": "urn:uuid:1106dfe1-ce52-43f4-94d1-de5f4ca55db4"
+        }
+      }
+    }
+  ]
+}

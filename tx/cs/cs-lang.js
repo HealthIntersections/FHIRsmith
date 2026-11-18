@@ -2,6 +2,7 @@ const { CodeSystemProvider, FilterExecutionContext, CodeSystemFactoryProvider} =
 const { Language } = require('../../library/languages');
 const { CodeSystem } = require("../library/codesystem");
 const assert = require('assert');
+const { Issue } = require("../library/operation-outcome");
 
 /**
  * Language component types for filtering
@@ -19,12 +20,155 @@ const LanguageComponent = {
 const CODES_LanguageComponent = Object.values(LanguageComponent);
 
 /**
+ * The components an `=` filter is offered on. These are the three with a bounded list
+ * of registered values behind them, which is what makes an expansion possible at all.
+ */
+const EQUALITY_COMPONENTS = [LanguageComponent.LANG, LanguageComponent.SCRIPT, LanguageComponent.REGION];
+
+/**
  * Filter context for language component filters
+ */
+/**
+ * How this code system validates a tag. Deliberately stricter than the default parse -
+ * see locate().
+ */
+const LANG_VALIDATION_OPTIONS = Object.freeze({ caseInsensitive: true, checkCombinations: true });
+
+/**
+ * Which part of a tag a filter is about, and how a Language exposes it.
+ * @param {Language} lang
+ * @param {string} component
+ * @returns {string} the component's value, '' when the tag does not state it
+ */
+function componentValue(lang, component) {
+  switch (component) {
+    case LanguageComponent.LANG: return lang.language || '';
+    case LanguageComponent.EXTLANG: return lang.extLang.join('-');
+    case LanguageComponent.SCRIPT: return lang.script || '';
+    case LanguageComponent.REGION: return lang.region || '';
+    case LanguageComponent.VARIANT: return lang.variant || '';
+    case LanguageComponent.EXTENSION: return lang.extension || '';
+    case LanguageComponent.PRIVATE_USE: return lang.privateUse.join('-');
+    default: return null;
+  }
+}
+
+/**
+ * `<component> exists true|false` - does the tag state this part at all?
  */
 class IETFLanguageCodeFilter {
   constructor(component, status) {
     this.component = component; // LanguageComponent
     this.status = status; // boolean - true if component must exist, false if must not exist
+  }
+
+  /**
+   * @param {Language} lang
+   * @returns {boolean|string} true/false, or a message when the component is unknown
+   */
+  matches(lang) {
+    const value = componentValue(lang, this.component);
+    if (value === null) {
+      return `Unknown language component: ${this.component}`;
+    }
+    return (value !== '') === this.status;
+  }
+
+  /** Why a code did not match, for the caller. @returns {string} */
+  describe(code) {
+    const action = this.status ? 'does not contain' : 'contains';
+    const requirement = this.status ? 'required' : 'not allowed';
+    return `The language code ${code} ${action} a ${this.component}, and it is ${requirement}`;
+  }
+}
+
+/**
+ * `<component> = <value>` - the tag states this part, with this value.
+ *
+ * Comparison is case-insensitive, like everything else about BCP 47 tags.
+ */
+class IETFLanguageEqualityFilter {
+  constructor(component, value) {
+    this.component = component;
+    this.value = value;
+  }
+
+  matches(lang) {
+    const value = componentValue(lang, this.component);
+    if (value === null) {
+      return `Unknown language component: ${this.component}`;
+    }
+    return value.toLowerCase() === this.value.toLowerCase();
+  }
+
+  describe(code) {
+    return `The language code ${code} does not have a ${this.component} of '${this.value}'`;
+  }
+}
+
+/**
+ * The enumerable combinations.
+ *
+ * The BCP 47 grammar is unbounded, so a filter can only be expanded where fixing part
+ * of a tag leaves a finite list of registry entries to vary. Three combinations do:
+ *
+ *  - language fixed: every region, plus the bare language, since a tag need state no
+ *    region at all
+ *  - region fixed: every language with that region
+ *  - language AND region fixed: every script, plus the tag with no script
+ *
+ * Nothing else is enumerable - a script on its own leaves the language open, and there
+ * are as many tags as there are languages times everything else. Every one of these is
+ * still an incomplete answer, because variants, extensions and private-use subtags can
+ * always be added, so the expansion is marked unclosed.
+ */
+class IETFLanguageEnumerationFilter {
+  /**
+   * @param {string} mode - 'regions' | 'languages' | 'scripts'
+   * @param {object} fixed - { language, region } as far as they are fixed
+   * @param {LanguageDefinitions} definitions
+   * @param {IETFLanguageEqualityFilter[]} sources - the filters this replaces
+   */
+  constructor(mode, fixed, definitions, sources) {
+    this.mode = mode;
+    this.fixed = fixed;
+    this.definitions = definitions;
+    this.sources = sources;
+    this.cursor = 0;
+    this._codes = null;
+  }
+
+  /**
+   * The tags this filter covers, built once on demand.
+   * @returns {string[]}
+   */
+  codes() {
+    if (this._codes === null) {
+      const d = this.definitions;
+      if (this.mode === 'regions') {
+        this._codes = [this.fixed.language]
+          .concat([...d.regions.keys()].map(r => `${this.fixed.language}-${r}`));
+      } else if (this.mode === 'languages') {
+        this._codes = [...d.languages.keys()].map(l => `${l}-${this.fixed.region}`);
+      } else {
+        this._codes = [`${this.fixed.language}-${this.fixed.region}`]
+          .concat([...d.scripts.keys()].map(sc => `${this.fixed.language}-${sc}-${this.fixed.region}`));
+      }
+    }
+    return this._codes;
+  }
+
+  matches(lang) {
+    return this.sources.every(f => f.matches(lang) === true);
+  }
+
+  /**
+   * Only the rules that actually failed - saying `en-GB` has the wrong language, when
+   * it is the region that differs, sends the reader looking in the wrong place.
+   */
+  describe(code, lang) {
+    const failed = lang ? this.sources.filter(f => f.matches(lang) !== true) : this.sources;
+    return (failed.length ? failed : this.sources).map(f => f.describe(code)).join('; ');
   }
 }
 
@@ -86,13 +230,108 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     return super.hasAnyDisplays(langs);
   }
 
+  // ========== Subsumption ==========
+
+  /**
+   * Does one language tag subsume another?
+   *
+   * A tag is a set of named components - language, extended language, script, region,
+   * variant - not an ordered path, so one tag subsumes another when it says a subset of
+   * what the other says: `en` subsumes `en-US`, and `en-US` subsumes `en-Latn-US`,
+   * because everything true of the shorter tag is true of the longer one. The language
+   * itself must match; it is the one component that cannot be left unstated.
+   *
+   * This is RFC 4647's extended filtering rather than basic filtering. Basic filtering
+   * is strictly positional, so it would not have `en-US` subsume `en-Latn-US` - the
+   * script sits between the two subtags the range names. Extended filtering is the
+   * reading that matches what subsumption means, and it is the one that makes the
+   * relation transitive: `en` subsumes `en-US` subsumes `en-Latn-US`.
+   *
+   * Grandfathered tags are atomic. `i-klingon` has no components to compare - it does
+   * not decompose into valid subtags at all - so it relates only to itself.
+   *
+   * Note that Suppress-Script is deliberately not consulted: `en` carries
+   * `Suppress-Script: Latn`, which arguably makes `en-Latn` mean exactly `en`, but the
+   * registry calls that redundant rather than invalid and this server takes no position
+   * on it. So `en` subsumes `en-Latn` rather than being equivalent to it.
+   *
+   * @param {string} codeA
+   * @param {string} codeB
+   * @returns {Promise<string>} equivalent, subsumes, subsumed-by or not-subsumed
+   */
+  async subsumesTest(codeA, codeB) {
+    const a = await this.#ensureContext(codeA);
+    const b = await this.#ensureContext(codeB);
+    if (!(a instanceof Language) || !(b instanceof Language)) {
+      return 'not-subsumed';
+    }
+
+    // A grandfathered tag is matched whole, so the only tag it stands in any relation to
+    // is itself (spelling aside - tags are case-insensitive).
+    if (a.wholeTag || b.wholeTag) {
+      return a.toString().toLowerCase() === b.toString().toLowerCase() ? 'equivalent' : 'not-subsumed';
+    }
+
+    const aCoversB = this.#covers(a, b);
+    const bCoversA = this.#covers(b, a);
+    if (aCoversB && bCoversA) {
+      return 'equivalent';
+    }
+    if (aCoversB) {
+      return 'subsumes';
+    }
+    if (bCoversA) {
+      return 'subsumed-by';
+    }
+    return 'not-subsumed';
+  }
+
+  /**
+   * Is everything `general` states also stated, identically, by `specific`?
+   *
+   * Comparison is case-insensitive throughout: the parts have already been canonicalised
+   * by the parser, but a tag that arrived in the wrong case must still take part in
+   * subsumption on equal terms.
+   *
+   * @param {Language} general
+   * @param {Language} specific
+   * @returns {boolean}
+   * @private
+   */
+  #covers(general, specific) {
+    const same = (x, y) => (x || '').toLowerCase() === (y || '').toLowerCase();
+    const unstatedOrSame = (x, y) => !x || same(x, y);
+
+    if (!same(general.language, specific.language)) {
+      return false;
+    }
+    // Extended languages are ordered and there are at most three, so every one the
+    // general tag names has to appear in the specific tag, in the same order.
+    for (let i = 0; i < general.extLang.length; i++) {
+      if (!same(general.extLang[i], specific.extLang[i])) {
+        return false;
+      }
+    }
+    return unstatedOrSame(general.script, specific.script)
+      && unstatedOrSame(general.region, specific.region)
+      && unstatedOrSame(general.variant, specific.variant)
+      && unstatedOrSame(general.extension, specific.extension)
+      && general.privateUse.every((p, i) => same(p, specific.privateUse[i]));
+  }
+
   // ========== Code Information Methods ==========
 
   async code(code) {
 
     const ctxt = await this.#ensureContext(code);
     if (ctxt instanceof Language) {
-      return ctxt.code;
+      // The CANONICAL casing, not what the caller wrote. BCP 47 s2.1.1 makes tags
+      // case-insensitive but recommends a casing - lower case language, Titlecase
+      // script, UPPER CASE region - and toString() reassembles the tag from parts that
+      // were canonicalised as they were parsed. Returning it here is what lets the
+      // validator notice a difference and hand back a normalized-code, the same way it
+      // does for any other case-insensitive code system.
+      return ctxt.toString();
     }
     throw new Error('Invalid context type');
   }
@@ -236,9 +475,19 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     assert(!code || typeof code === 'string', 'code must be string');
     if (!code) return { context: null, message: 'Empty code' };
 
-    const language = this.languageDefinitions.parse(code);
+    // Validating a code as a member of urn:ietf:bcp:47 is a stricter job than working
+    // out what a client asked for in an Accept-Language header, so this asks for the
+    // full check. The registry's own statements about subtag combinations - the Prefix
+    // on an extlang or variant - are applied, and a variant has to be registered at all.
+    // Case folding is on because BCP 47 s2.1.1 says tags are case-insensitive: 'en-us'
+    // is a valid way to write 'en-US', whatever the conventional casing recommends.
+    //
+    // These are OPTIONS rather than the default so that Accept-Language parsing keeps
+    // the behaviour it was written against - see Language's constructor.
+    const msg = {};
+    const language = this.languageDefinitions.parse(code, msg, LANG_VALIDATION_OPTIONS);
     if (!language) {
-      return { context: null, message: undefined };
+      return { context: null, message: msg.message };
     }
 
     return { context: language, message: null };
@@ -256,6 +505,9 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     if (op === 'exists' && (value === 'true' || value === 'false')) {
       return CODES_LanguageComponent.includes(prop);
     }
+    if (op === '=') {
+      return EQUALITY_COMPONENTS.includes(prop);
+    }
     return false;
   }
 
@@ -266,8 +518,26 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     assert(op != null && typeof op === 'string', 'op must be a non-null string');
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
+    if (op === '=') {
+      if (!EQUALITY_COMPONENTS.includes(prop)) {
+        throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+          this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
+      }
+      // The value has to be a registered subtag of the right kind, or the filter selects
+      // nothing and says nothing about why
+      const known = { language: this.languageDefinitions.languages,
+        script: this.languageDefinitions.scripts, region: this.languageDefinitions.regions }[prop];
+      const canonical = [...known.keys()].find(k => k.toLowerCase() === value.toLowerCase());
+      if (!canonical) {
+        throw new Error(`'${value}' is not a valid ${prop} subtag, so it cannot be filtered on`);
+      }
+      filterContext.filters.push(new IETFLanguageEqualityFilter(prop, canonical));
+      return;
+    }
+
     if (op !== 'exists') {
-      throw new Error(`Unsupported filter operator: ${op}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     if (value !== 'true' && value !== 'false') {
@@ -276,7 +546,8 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
 
     const componentIndex = CODES_LanguageComponent.indexOf(prop);
     if (componentIndex < 0) {
-      throw new Error(`Unsupported filter property: ${prop}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const component = CODES_LanguageComponent[componentIndex];
@@ -288,15 +559,46 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
   async executeFilters(filterContext) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    return filterContext.filters;
+
+    // Whether anything can be enumerated depends on the filters TOGETHER, not one at a
+    // time: language alone gives regions, region alone gives languages, and the two
+    // together give scripts. So the equality filters are collapsed into a single set
+    // that knows which of those it is. Anything else is left alone and acts as a
+    // predicate - see filterCheck.
+    const equality = filterContext.filters.filter(f => f instanceof IETFLanguageEqualityFilter);
+    const language = equality.find(f => f.component === LanguageComponent.LANG);
+    const region = equality.find(f => f.component === LanguageComponent.REGION);
+    const script = equality.find(f => f.component === LanguageComponent.SCRIPT);
+
+    let mode = null;
+    if (language && region && !script) {
+      mode = 'scripts';
+    } else if (language && !region && !script) {
+      mode = 'regions';
+    } else if (region && !language && !script) {
+      mode = 'languages';
+    }
+    if (!mode) {
+      return filterContext.filters;
+    }
+
+    const combined = new IETFLanguageEnumerationFilter(mode,
+      { language: language ? language.value : null, region: region ? region.value : null },
+      this.languageDefinitions, [language, region].filter(f => f));
+    return [combined].concat(filterContext.filters.filter(f => f !== language && f !== region));
   }
 
   async filterSize(filterContext, set) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    assert(set && set instanceof IETFLanguageCodeFilter, 'set must be a IETFLanguageCodeFilter');
 
-    throw new Error('Language valuesets cannot be expanded as they are based on a grammar');
+    if (set instanceof IETFLanguageEnumerationFilter) {
+      return set.codes().length;
+    }
+    throw new Issue('error', 'not-supported', null, 'CODESYSTEM_NOT_ENUMERABLE',
+      'This filter on urn:ietf:bcp:47 cannot be expanded: the language grammar is unbounded, and only '
+      + 'a fixed language (giving its regions), a fixed region (giving its languages), or both '
+      + '(giving the scripts) leave a finite list to enumerate', 'not-supported', 422);
   }
 
   async filtersNotClosed(filterContext) {
@@ -308,103 +610,56 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
   async filterMore(filterContext, set) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    assert(set && set instanceof IETFLanguageCodeFilter, 'set must be a IETFLanguageCodeFilter');
-    throw new Error('Language valuesets cannot be expanded as they are based on a grammar');
+
+    if (set instanceof IETFLanguageEnumerationFilter) {
+      return set.cursor < set.codes().length;
+    }
+    // Throwing rather than answering false: a mistake here would otherwise surface as an
+    // empty expansion, which reads as "there are none" instead of "this cannot be done".
+    throw new Issue('error', 'not-supported', null, 'CODESYSTEM_NOT_ENUMERABLE',
+      'This filter on urn:ietf:bcp:47 cannot be expanded', 'not-supported', 422);
   }
 
   async filterConcept(filterContext, set) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    assert(set && set instanceof IETFLanguageCodeFilter, 'set must be a IETFLanguageCodeFilter');
-    throw new Error('Language valuesets cannot be expanded as they are based on a grammar');
+
+    if (set instanceof IETFLanguageEnumerationFilter) {
+      const code = set.codes()[set.cursor];
+      set.cursor++;
+      return this.languageDefinitions.parse(code, {}, LANG_VALIDATION_OPTIONS);
+    }
+    throw new Issue('error', 'not-supported', null, 'CODESYSTEM_NOT_ENUMERABLE',
+      'This filter on urn:ietf:bcp:47 cannot be expanded', 'not-supported', 422);
   }
 
   async filterLocate(filterContext, set, code) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    assert(set && set instanceof IETFLanguageCodeFilter, 'set must be a IETFLanguageCodeFilter');
+    assert(set && typeof set.matches === 'function', 'set must be a language filter');
     assert(typeof code === 'string', 'code must be non-null string');
 
-    const language = this.languageDefinitions.parse(code);
+    // Same rules as locate(), or a code could pass one path and fail the other
+    const language = this.languageDefinitions.parse(code, {}, LANG_VALIDATION_OPTIONS);
     if (!language) {
       return `Invalid language code: ${code}`;
     }
 
-    const filter = set;
-    let hasComponent = false;
-
-    switch (filter.component) {
-      case LanguageComponent.LANG:
-        hasComponent = !!language.language;
-        break;
-      case LanguageComponent.EXTLANG:
-        hasComponent = !!language.extLang.length;
-        break;
-      case LanguageComponent.SCRIPT:
-        hasComponent = !!language.script;
-        break;
-      case LanguageComponent.REGION:
-        hasComponent = !!language.region;
-        break;
-      case LanguageComponent.VARIANT:
-        hasComponent = !!language.variant;
-        break;
-      case LanguageComponent.EXTENSION:
-        hasComponent = !!language.extension;
-        break;
-      case LanguageComponent.PRIVATE_USE:
-        hasComponent = language.privateUse.length > 0;
-        break;
-      default:
-        return `Unknown language component: ${filter.component}`;
+    const result = set.matches(language);
+    if (typeof result === 'string') {
+      return result;   // the filter could not be evaluated at all
     }
-
-    if (hasComponent === filter.status) {
-      return language;
-    } else {
-      const action = filter.status ? 'does not contain' : 'contains';
-      const requirement = filter.status ? 'required' : 'not allowed';
-      return `The language code ${code} ${action} a ${filter.component}, and it is ${requirement}`;
-    }
+    return result ? language : set.describe(code, language);
   }
+
 
   async filterCheck(filterContext, set, concept) {
 
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
-    assert(set && set instanceof IETFLanguageCodeFilter, 'set must be a IETFLanguageCodeFilter');
+    assert(set && typeof set.matches === 'function', 'set must be a language filter');
     const ctxt = await this.#ensureContext(concept);
 
-
-    const filter = set;
-    let hasComponent = false;
-
-    switch (filter.component) {
-      case LanguageComponent.LANG:
-        hasComponent = !!ctxt.language;
-        break;
-      case LanguageComponent.EXTLANG:
-        hasComponent = ctxt.extLang.length > 0;
-        break;
-      case LanguageComponent.SCRIPT:
-        hasComponent = !!ctxt.script;
-        break;
-      case LanguageComponent.REGION:
-        hasComponent = !!ctxt.region;
-        break;
-      case LanguageComponent.VARIANT:
-        hasComponent = !!ctxt.variant;
-        break;
-      case LanguageComponent.EXTENSION:
-        hasComponent = !!ctxt.extension;
-        break;
-      case LanguageComponent.PRIVATE_USE:
-        hasComponent = ctxt.privateUse.length > 0;
-        break;
-      default:
-        return `Unknown language component: ${filter.component}`;
-    }
-
-    return hasComponent === filter.status;
+    return set.matches(ctxt);
   }
 
 
@@ -420,14 +675,16 @@ class IETFLanguageCodeProvider extends CodeSystemProvider {
     return codeA === codeB;
   }
 
-  async subsumesTest(codeA, codeB) {
-    await this.#ensureContext(codeA);
-    await this.#ensureContext(codeB);
-    return 'not-subsumed'; // No subsumption in language codes
-  }
-
   versionAlgorithm() {
     return null;
+  }
+
+  specialEnumeration() {
+    // The BCP-47 language grammar is unbounded, but a useful base expansion is
+    // the common languages enumerated by the THO "Languages" value set. A whole-
+    // code-system expansion returns that value set marked as an incomplete
+    // (unclosed) expansion, mirroring how UCUM uses its common-units value set.
+    return 'http://terminology.hl7.org/ValueSet/Languages';
   }
 
   isNotClosed() {

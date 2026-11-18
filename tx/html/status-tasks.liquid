@@ -1,0 +1,25 @@
+{%- comment -%}
+  The background tasks under the graphs (stats.taskSummary): one line naming those at work, those
+  whose last run failed (each is a problem in the status line, with its state) and the idle ones,
+  then a row for each at work. Styles are in status-line.liquid; every task is under "More".
+{%- endcomment -%}
+<section class="fs-status fs-status-jobs" aria-labelledby="fs-status-jobs-title">
+  <div class="fs-status-jobs-head">
+    <h{{ level }} id="fs-status-jobs-title">Background tasks</h{{ level }}>
+    <span class="fs-status-idle">
+      {%- if tasks.working.size == 0 %}none at work{% else %}{{ tasks.working.size }} at work{% endif -%}
+      {%- if tasks.failed.size > 0 %} · {{ tasks.failed.size }} failed, under Problems: {{ tasks.failed | join: ', ' | escape }}{% endif -%}
+      {%- if tasks.idle.size > 0 %} · {{ tasks.idle.size }} idle: {{ tasks.idle | join: ', ' | escape }}{% endif -%}
+    </span>
+  </div>
+  {%- if tasks.working.size > 0 %}
+  <table>
+    <thead><tr><th>Task</th><th>Status</th><th>Frequency</th><th>Last seen</th></tr></thead>
+    <tbody>
+    {%- for t in tasks.working %}
+      <tr><td>{{ t.name | escape }}</td><td>{{ t.state | escape }}</td><td>{{ t.frequency | escape }}</td><td>{{ t.ago | escape }}</td></tr>
+    {%- endfor %}
+    </tbody>
+  </table>
+  {%- endif %}
+</section>

@@ -1,10 +1,15 @@
 const path = require('path');
+const fs = require('fs').promises;
+const { assertNoActiveContent } = require('../../library/narrative-check');
 const { AbstractConceptMapProvider } = require('./cm-api');
 const { PackageContentLoader } = require('../../library/package-manager');
 const { ConceptMapDatabase } = require('./cm-database');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
 const {ConceptMap} = require("../library/conceptmap");
+const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
+const { keepForPinnedReference } = require('../library/tho-precedence');
+const { waitForCache } = require('../library/wait-for-cache');
 
 /**
  * Package-based ConceptMap provider using shared database layer
@@ -14,12 +19,19 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
   /**
    * @param {PackageContentLoader} packageLoader - Path to the extracted package folder
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - a tx-worker (cluster.md): the cache is the master's; it
+   *   is only read (ConceptMapDatabase reads with OPEN_READONLY), waited for until the master has
+   *   finished it, and never built or changed
    */
-  constructor(packageLoader) {
+  constructor(packageLoader, options = {}) {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
-    this.dbPath = path.join(packageLoader.packageFolder, '.conceptmaps.db');
+    // -2: caches from before concept maps were checked for active content in their
+    // narrative are rebuilt (see initialize)
+    this.dbPath = path.join(packageLoader.packageFolder, '.conceptmaps-2.db');
+    this.readOnly = !!options.readOnly;
     this.database = new ConceptMapDatabase(this.dbPath);
     this.conceptMapMap = new Map();
     this.initialized = false;
@@ -34,15 +46,37 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     if (this.initialized) {
       return;
     }
+    await this.packageLoader.initialize();
+    if (this.readOnly) {
+      await waitForCache(async () => (await this.database.exists()) && (await this.database.isComplete()),
+        `Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: concept map cache ${this.dbPath}`);
+      this.conceptMapMap = await this.database.loadAllConceptMaps();
+      this.#applyIdPrefix();
+      this.initialized = true;
+      return;
+    }
+    await fs.rm(path.join(this.packageLoader.packageFolder, '.conceptmaps.db'), { force: true }); // the old cache
 
-    const dbExists = await this.database.exists();
+    // A cache is only used once its population finished. One that was cut short
+    // (the process killed part way through) would otherwise be trusted forever,
+    // silently missing whatever hadn't been written yet
+    let dbExists = await this.database.exists();
+    if (dbExists && !(await this.database.isComplete())) {
+      require('../../library/logger').getInstance().child({ module: 'tx' })
+        .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: concept map cache ${this.dbPath} is incomplete - rebuilding it`);
+      await fs.rm(this.dbPath, { force: true });
+      dbExists = false;
+    }
 
     if (!dbExists) {
       await this.database.create();
       await this._populateDatabase();
+      await this.database.markComplete();
     }
 
     this.conceptMapMap = await this.database.loadAllConceptMaps();
+    // nothing, unless the spaceId was assigned before the provider was initialized
+    this.#applyIdPrefix();
     this.initialized = true;
   }
 
@@ -63,7 +97,16 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     for (const entry of conceptMapEntries) {
       const conceptMap = await this.packageLoader.loadFile(entry);
       if (conceptMap.url) {
-        conceptMaps.push(new ConceptMap(conceptMap, this.packageLoader.fhirVersion())); // get in converted to R5 format
+        try {
+          // its narrative is shown as-is in a page, so it must not carry script
+          assertNoActiveContent(conceptMap);
+          conceptMaps.push(new ConceptMap(conceptMap, this.packageLoader.fhirVersion())); // get in converted to R5 format
+        } catch (e) {
+          // one unacceptable concept map (e.g. one with contained resources, which the
+          // server doesn't support) must not stop the rest of the package loading
+          require('../../library/logger').getInstance().child({ module: 'tx' })
+            .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: skipping ConceptMap ${conceptMap.url}: ${e.message}`);
+        }
       }
     }
 
@@ -121,7 +164,9 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
     this._validateSearchParams(searchParams);
 
     if (this.USE_DATABASE_SEARCH) {
-      return await this.database.search(this.spaceId, searchParams, elements);
+      const results = await this.database.search(this.spaceId, searchParams, elements);
+      return this.#excludedIds.size === 0 ? results
+        : results.filter(r => !this.#excludedIds.has(stripIdPrefix(r.id, this.spaceId)));
     } else {
       const matches = [];
       const seen = new Set(); // Track by URL to avoid duplicates from versioned keys
@@ -139,7 +184,7 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
         // Only process each ConceptMap once (use URL to deduplicate)
         const vsUrl = json.url;
-        if (seen.has(vsUrl)) {
+        if (seen.has(vsUrl) || this.#pinnedOnly.has(vs)) {
           continue;
         }
 
@@ -160,6 +205,26 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
           if (param === 'system') {
             // Special handling: match against compose.include[].system
             if (!this._matchSystem(json, searchValue)) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url') {
+            // a left match, on the url as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'url').value;
+            if (!(json.url || '').startsWith(asked)) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:contains') {
+            // the url contains the value, without regard to case (the value is lower cased above)
+            if (!(json.url || '').toLowerCase().includes(searchValue)) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'version') {
+            // version-aware matching, on the version as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'version').value;
+            if (!VersionUtilities.versionSearchMatches(asked, json.version, VersionUtilities.versionAlgorithmOf(json))) {
               isMatch = false;
               break;
             }
@@ -187,9 +252,8 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
 
         if (isMatch) {
           seen.add(vsUrl);
-          // Return with prefixed id
-          const result = { ...json, id: `${this.spaceId}-${json.id}` };
-          matches.push(result);
+          // the id is already prefixed (see assignIds)
+          matches.push(json);
         }
       }
 
@@ -291,24 +355,63 @@ class PackageConceptMapProvider extends AbstractConceptMapProvider {
   }
 
   async fetchConceptMapById(id) {
-    if (!this.spaceId) {
-      return this.conceptMapMap.get(id);
-    } else if (id.startsWith(this.spaceId+"-")) {
-      let key = id.substring(this.spaceId.length + 1);
-      return this.conceptMapMap.get(key);
-    } else {
-      return null;
+    // the map is keyed by the concept map's own id (and its url); the concept map itself
+    // carries the prefixed id, which is how a url key that happens to match is excluded
+    const cm = this.conceptMapMap.get(stripIdPrefix(id, this.spaceId));
+    return cm && cm.id === id ? cm : null;
+  }
+
+  sourcePackage() {
+    return this.packageLoader.id();
+  }
+
+  // the concept maps that keepPinnedOnly restricted, by their own (unprefixed) id, and themselves
+  #excludedIds = new Set();
+  #pinnedOnly = new Set();
+
+  /**
+   * The concept maps with these urls are hl7.terminology's to provide (see
+   * Provider.applyTHOPrecedence): from this (core) package they are only available to a
+   * reference that names their version, where THO doesn't provide that version itself. They
+   * aren't the default for their url, can't be read by id, aren't found by search, and aren't
+   * used for translation unless asked for. Must be called once the provider is initialized -
+   * the database is shared, so it isn't changed.
+   *
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
+   */
+  keepPinnedOnly(thoVersions) {
+    const affected = new Set();
+    for (const cm of this.conceptMapMap.values()) {
+      if (cm && thoVersions.has(cm.url)) {
+        affected.add(cm);
+      }
+    }
+    for (const [key, cm] of [...this.conceptMapMap]) {
+      if (affected.has(cm) && !keepForPinnedReference(key, cm, thoVersions.get(cm.url))) {
+        this.conceptMapMap.delete(key);
+      }
+    }
+    for (const cm of affected) {
+      this.#pinnedOnly.add(cm);
+      this.#excludedIds.add(stripIdPrefix(cm.id, this.spaceId) ?? cm.id);
     }
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing - we don't do any assigning.
+
+  prefixIds() {
+    this.#applyIdPrefix();
+  }
+
+  #applyIdPrefix() {
+    for (const cm of new Set(this.conceptMapMap.values())) {
+      applyIdPrefix(cm, this.spaceId);
+    }
   }
 
   async findConceptMapForTranslation(opContext, conceptMaps, sourceSystem, sourceScope, targetScope, targetSystem) {
     for (let cm of this.conceptMapMap.values()) {
-      if (cm.providesTranslation(sourceSystem, sourceScope, targetScope, targetSystem)) {
+      // a concept map that THO also provides is only used when it's asked for by version
+      if (!this.#pinnedOnly.has(cm) && cm.providesTranslation(sourceSystem, sourceScope, targetScope, targetSystem)) {
         conceptMaps.push(cm);
       }
     }

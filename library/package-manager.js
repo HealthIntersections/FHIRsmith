@@ -351,6 +351,11 @@ class CIBuildClient {
 
 class PackageManager {
     totalDownloaded = 0;
+    /**
+     * {Set<string>} the package folders (id#version, in the cache folder) that fetch and
+     * fetchUrl have returned - what has been used, for pruning the rest (Library.pruneUnusedCaches)
+     */
+    usedPackages = new Set();
 
     /**
      * @param {string[]} packageServers - Ordered list of package server URLs
@@ -377,6 +382,7 @@ class PackageManager {
         // Check cache first
         const cachedPath = await this.checkCache(packageId, resolvedVersion);
         if (cachedPath) {
+            this.usedPackages.add(cachedPath);
             return cachedPath;
         }
 
@@ -386,6 +392,7 @@ class PackageManager {
         this.totalDownloaded = this.totalDownloaded + packageData.length;
         // Extract to cache
         const extractedPath = await this.extractToCache(packageId, resolvedVersion, packageData);
+        this.usedPackages.add(extractedPath);
 
         return extractedPath;
     }
@@ -520,8 +527,10 @@ class PackageManager {
         const packagePath = path.join(this.cacheFolder, packageName);
 
         try {
-            const stats = await fs.stat(packagePath);
-            if (stats.isDirectory()) {
+            // the folder alone is not enough: a download that failed after the folder was made
+            // leaves an empty one, which must not count as the package
+            const stats = await fs.stat(path.join(packagePath, 'package', 'package.json'));
+            if (stats.isFile()) {
                 return packageName;
             }
         } catch (error) {
@@ -542,6 +551,11 @@ class PackageManager {
 
         if (version == "current") {
             const result = await new CIBuildClient().loadFromCIBuild(packageId);
+            return result.stream;
+        }
+        if (version && version.startsWith('current$')) {
+            // the CI build of a branch
+            const result = await new CIBuildClient().loadFromCIBuild(packageId, version.substring('current$'.length));
             return result.stream;
         }
         for (const server of this.packageServers) {
@@ -627,6 +641,7 @@ class PackageManager {
             }
 
             this.totalDownloaded = this.totalDownloaded + packageData.length;
+            this.usedPackages.add(finalName);
             return finalName;
         } catch (error) {
             console.error(`Error fetching package from URL ${url}: ${error.message}`);
@@ -823,7 +838,7 @@ class PackageContentLoader {
 
         try {
             const content = await fs.readFile(filePath, 'utf8');
-            return JSON.parse(content);
+            return normalizeVersionedCanonicals(JSON.parse(content));
         } catch (error) {
             throw new Error(`Failed to load file ${entry.filename}: ${error.message}`);
         }
@@ -923,4 +938,42 @@ class PackageContentLoader {
 }
 
 
-module.exports = { PackageManager, PackageContentLoader };
+/**
+ * Some R4-era core package resources bake a version into the canonical url itself:
+ * hl7.fhir.r4.core#4.0.1 publishes the multi-version v2 tables (0006, 0360, 0391)
+ * as e.g. url "http://terminology.hl7.org/CodeSystem/v2-0360|2.7" with version "0360"
+ * (the table number!). The base packages can never be republished, so normalize at
+ * load time: split the pipe into url + version, on the CodeSystems themselves and on
+ * ValueSet compose include/exclude systems that reference them. Without this,
+ * provider.system() never matches the system in a coding, so validation fails -
+ * silently, in the CodeSystem $validate-code case.
+ */
+function normalizeVersionedCanonicals(resource) {
+    if (!resource || typeof resource !== 'object') {
+        return resource;
+    }
+    if (resource.resourceType === 'CodeSystem' || resource.resourceType === 'ValueSet') {
+        if (typeof resource.url === 'string' && resource.url.includes('|')) {
+            const cut = resource.url.indexOf('|');
+            // the url-embedded version wins over the version element (which is "0360" etc)
+            resource.version = resource.url.substring(cut + 1);
+            resource.url = resource.url.substring(0, cut);
+        }
+        if (resource.resourceType === 'ValueSet' && resource.compose) {
+            for (const list of [resource.compose.include, resource.compose.exclude]) {
+                for (const inc of list || []) {
+                    if (typeof inc.system === 'string' && inc.system.includes('|')) {
+                        const cut = inc.system.indexOf('|');
+                        if (!inc.version) {
+                            inc.version = inc.system.substring(cut + 1);
+                        }
+                        inc.system = inc.system.substring(0, cut);
+                    }
+                }
+            }
+        }
+    }
+    return resource;
+}
+
+module.exports = { PackageManager, PackageContentLoader, normalizeVersionedCanonicals };

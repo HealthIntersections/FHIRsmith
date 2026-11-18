@@ -8,8 +8,12 @@ const TranslateWorker = require('../../tx/workers/translate');
  * should be present for every match, in both directions.
  *
  * These call the helpers directly via the prototype (no provider/sqlite needed);
- * they use only cm.listTranslations(...)/listTranslationsReverse(...), cm.vurl
+ * they use only cm.listGroupsInScope(...)/listTranslationsReverse(...), cm.vurl
  * and this.hasMatch.
+ *
+ * The forward helper walks groups rather than pre-matched translations, so that each
+ * group's own group.unmapped can be consulted when that group has no element for the
+ * concept - hence the stub exposes listGroupsInScope, and the helper is async.
  */
 
 const CM_VURL = 'http://hl7.org/fhir/ConceptMap/example|1.0.0';
@@ -17,10 +21,11 @@ const CM_VURL = 'http://hl7.org/fhir/ConceptMap/example|1.0.0';
 function stubCm() {
   return {
     vurl: CM_VURL,
-    listTranslations() {
+    listGroupsInScope() {
       return [{
-        group: { target: 'http://example.org/target' },
-        match: { target: [{ code: 'T', relationship: 'equivalent', equivalence: 'equal' }] }
+        source: 'http://example.org/source',
+        target: 'http://example.org/target',
+        element: [{ code: 'S', target: [{ code: 'T', relationship: 'equivalent', equivalence: 'equal' }] }]
       }];
     },
     listTranslationsReverse() {
@@ -45,9 +50,9 @@ function originMapOf(output) {
 }
 
 describe('$translate originMap is emitted in both directions (issue #247)', () => {
-  test('forward translate emits originMap (versioned canonical)', () => {
+  test('forward translate emits originMap (versioned canonical)', async () => {
     const output = [];
-    const added = worker().translateUsingGroupsForwards(
+    const added = await worker().translateUsingGroupsForwards(
       stubCm(), { system: 'http://example.org/source', code: 'S' }, null, null, null, output);
     expect(added).toBe(true);
     expect(originMapOf(output)).toBe(CM_VURL);
@@ -61,9 +66,12 @@ describe('$translate originMap is emitted in both directions (issue #247)', () =
     expect(originMapOf(output)).toBe(CM_VURL);
   });
 
-  test('the helpers no longer take an explicit/reverse trailing arg', () => {
-    // 6-arity: cm, coding, targetScope, targetSystem, params, output
-    expect(TranslateWorker.prototype.translateUsingGroupsForwards.length).toBe(6);
+  test('neither helper takes an explicit/reverse trailing arg', () => {
+    // The trailing arguments that do exist are about map chaining, not direction:
+    // forwards is (cm, coding, targetScope, targetSystem, params, output, origin, visited),
+    // where origin carries the start of an unmapped.otherMap chain and visited guards it.
+    // Reverse remains (cm, coding, targetScope, targetSystem, params, output).
+    expect(TranslateWorker.prototype.translateUsingGroupsForwards.length).toBe(8);
     expect(TranslateWorker.prototype.translateUsingGroupsReverse.length).toBe(6);
   });
 });

@@ -313,7 +313,7 @@ class PackageWatcher {
    */
   stop() {
     if (this.watcher) {
-      this.watcher.close();
+      this.watcher.close().catch((err) => this.log.error('Error closing watcher: ' + err.message));
       this.watcher = null;
     }
     if (this.debounceTimer) {

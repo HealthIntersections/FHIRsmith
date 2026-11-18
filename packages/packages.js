@@ -6,6 +6,7 @@
 
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
+const { SqlitePool } = require('../library/sqlite-pool');
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
@@ -14,21 +15,206 @@ const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const Logger = require('../library/logger');
-const {validateParameter} = require("../library/utilities");
+const {validateParameter, Utilities} = require("../library/utilities");
 const {describeCron} = require("../library/cron-utilities");
+const {tokenMatches, tokenConfigured} = require("../library/request-token");
+const { guarded } = require('../library/sqlite-utilities');
 const pckLog = Logger.getInstance().child({ module: 'packages' });
+const packagesOpenApi = require('./openapi');
+const rateLimit = require('express-rate-limit');
+const { runNpmCheck, makeGetter } = require('./npm-check');
+const npmCheckPage = require('./npm-check-page');
+const { FeedCheck } = require('./feed-check');
+const feedCheckPage = require('./feed-check-page');
+const crypto = require('crypto');
+const { NpmSigner, integrityOf } = require('./npm-signing');
+
+// Query parameter rules for validateQueryParams. These are also the contract published in
+// openapi.yaml, and tests/packages/openapi.test.js checks that the two agree - so change
+// both together.
+const SEARCH_PARAMS = {
+  name: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
+  dependson: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|@-]*$/ },
+  pkgcanonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*%?$/ },
+  canonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*$/ },
+  fhirversion: { maxLength: 10, pattern: /^(R2|R2B|R3|R4|R4B|R5|R6)?$/ },
+  dependency: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|@-]*$/ },
+  sort: { maxLength: 20, pattern: /^-?(name|version|date|count|fhirversion|kind|canonical)$/ },
+  objWrapper: { maxLength: 10, pattern: /^(true|false)?$/ },
+  // Sent by the Java PackageClient (org.hl7.fhir.utilities.npm). Accepted, but has no
+  // effect: a search already returns pre-release versions.
+  prerelease: { maxLength: 5, pattern: /^(true|false)?$/ }
+};
+
+// /-/v1/search also takes the npm registry search parameters. npm always sends all of
+// these; quality, popularity and maintenance are ranking weights, accepted and ignored.
+const V1_SEARCH_PARAMS = {
+  ...SEARCH_PARAMS,
+  text: { maxLength: 200, pattern: /^[a-zA-Z0-9._:@/#| -]*$/ },
+  size: { maxLength: 3, pattern: /^\d{1,3}$/ },
+  from: { maxLength: 6, pattern: /^\d{1,6}$/ },
+  quality: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ },
+  popularity: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ },
+  maintenance: { maxLength: 10, pattern: /^(\d+(\.\d+)?)?$/ }
+};
+const V1_SEARCH_MAX_SIZE = 250;
+
+// FHIR release codes accepted by fhirversion=, mapped to the version prefix they select.
+const FHIR_RELEASE_VERSIONS = {
+  'R2': '1.0',
+  'R2B': '1.4',
+  'R3': '3.0',
+  'R4': '4.0',
+  'R4B': '4.3',
+  'R5': '5.0',
+  'R6': '6.0'
+};
+
+// No default for dateValue: a default computed here would be frozen at the date the server
+// started. The /updates handler supplies today's date when none is given.
+const UPDATES_PARAMS = {
+  dateType: { maxLength: 10, pattern: /^(relative|absolute)?$/, default: 'relative' },
+  daysValue: { maxLength: 3, pattern: /^\d{1,3}$/, default: '10' },
+  dateValue: { maxLength: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ }
+};
+
+const BROKEN_PARAMS = {
+  filter: { maxLength: 100, pattern: /^[a-zA-Z0-9._-]*$/ }
+};
+
+// Path parameter rules for GET /:id/:version (also published in openapi.yaml).
+const PACKAGE_ID_PATTERN = /^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/;
+const PACKAGE_ID_MAX_LENGTH = 100;
+const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._-]+$/;
+const PACKAGE_VERSION_MAX_LENGTH = 50;
+
+// GET /npm-check: run the npm registry protocol checks against a registry (also in openapi.yaml)
+const NPM_CHECK_PARAMS = {
+  registry: { maxLength: 500, pattern: /^https?:\/\/[^\s<>"'`]+$/ },
+  package: { maxLength: PACKAGE_ID_MAX_LENGTH, pattern: PACKAGE_ID_PATTERN },
+  version: { maxLength: PACKAGE_VERSION_MAX_LENGTH, pattern: PACKAGE_VERSION_PATTERN }
+};
+
+// npm-check defaults; all can be set under modules.packages.npmCheck in the config
+const NPM_CHECK_DEFAULTS = {
+  enabled: true,
+  maxConcurrentRuns: 2, // across all users; more get a 503
+  runsPerWindow: 10, // per client IP, per 10 minutes
+  requestTimeout: 30000, // ms, per request the checks make
+  maxDownloadMB: 50, // per response, so for the tarball
+  // the npm registry itself, checked once a day so the page can show the checks still hold
+  control: { registry: 'https://registry.npmjs.org', package: 'fhirpath', version: '3.15.0' }
+};
+const NPM_CHECK_CONTROL_MAX_AGE = 24 * 60 * 60 * 1000;
+
+// GET /feed-check: check a package feed as the crawler reads it, storing nothing (also in openapi.yaml)
+const FEED_CHECK_PARAMS = {
+  url: { maxLength: 500, pattern: /^https?:\/\/[^\s<>"'`]+$/ },
+  // the feed's signing keys, as JSON: package-feeds.json's signing block ({required, keys}), or a
+  // whole feed entry with one. Used instead of what the registry lists for the feed
+  signing: { maxLength: 5000, pattern: /^[^<>`]*$/ }
+};
+// feed-check defaults; all can be set under modules.packages.feedCheck in the config. Only one
+// check runs at a time, across all users
+const FEED_CHECK_DEFAULTS = {
+  enabled: true,
+  maxItems: 50, // items checked per run (each one's package is downloaded)
+  maxTotalMB: 500, // downloaded per run; later items are reported but not downloaded
+  keepMinutes: 60 // how long a run's report can be fetched
+};
+const FEED_CHECK_MAX_JOBS = 100;
+const FEED_CHECK_JOB_PATTERN = /^[0-9a-f]{24}$/;
+const MASTER_LIST_MAX_AGE = 60 * 60 * 1000;
+
+// The query string of a request, for logging (the parameters were validated before the handler runs)
+function queryString(req) {
+  const i = req.originalUrl.indexOf('?');
+  return i < 0 ? '' : req.originalUrl.substring(i + 1);
+}
+
+// A request for /{id}/{version} with this header gets the tarball, whatever its Accept header
+// says. The HL7 Java PackageClient sends it; any client that downloads from that URL while
+// asking for JSON can send it too.
+const TARBALL_HEADER = 'FHIR-Package-Download';
+
+// Each id#version is stored once (see PackageCrawler.checkVersion)
+const UNIQUE_ID_VERSION_INDEX = 'CREATE UNIQUE INDEX SK_PackageVersions_IdVersion ON PackageVersions (Id, Version)';
+
+// Each version's dist.integrity and npm registry signature (see npm-signing.js), kept apart
+// from PackageVersions so reading them doesn't mean reading the tarball (Content)
+const PACKAGE_DIST_TABLE = `CREATE TABLE IF NOT EXISTS PackageDist
+         (
+             PackageVersionKey INTEGER PRIMARY KEY,
+             Integrity         TEXT NOT NULL,
+             KeyId             TEXT,
+             Signature         TEXT
+         )`;
+const DEFAULT_SIGNING_KEY_FILE = 'npm-signing-key.pem';
+
+// Publishers' signatures of the packages (fhir:signature in their feeds), kept as they were when
+// the crawler checked them - valid or not - with the outcome (see PackageCrawler.signingFor)
+const PACKAGE_SIGNATURES_TABLE = `CREATE TABLE IF NOT EXISTS PackageSignatures
+         (
+             PackageVersionKey INTEGER PRIMARY KEY,
+             Url               TEXT NOT NULL,
+             KeyId             TEXT,
+             Valid             INTEGER NOT NULL,
+             Message           TEXT,
+             Checked           TEXT NOT NULL,
+             Bundle            TEXT NOT NULL
+         )`;
+
+// The signing information a user gives the feed check: package-feeds.json's signing block
+// ({required, keys: [{keyid, key, expires}]}), or a feed entry that has one. Throws if unusable.
+function parseSigningJson(text) {
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`it isn't JSON (${e.message})`);
+  }
+  const block = json && typeof json === 'object' && json.signing && typeof json.signing === 'object' ? json.signing : json;
+  if (!block || typeof block !== 'object' || !Array.isArray(block.keys) || block.keys.length === 0) {
+    throw new Error('it needs a keys array, as in package-feeds.json\'s signing block');
+  }
+  const keys = block.keys.map((k, i) => {
+    if (!k || typeof k.keyid !== 'string' || typeof k.key !== 'string') {
+      throw new Error(`keys[${i}] needs a keyid and a key`);
+    }
+    try {
+      crypto.createPublicKey({key: Buffer.from(k.key, 'base64'), format: 'der', type: 'spki'});
+    } catch (e) {
+      throw new Error(`keys[${i}].key isn't a base64 public key (SubjectPublicKeyInfo)`);
+    }
+    if (k.expires !== undefined && k.expires !== null && Number.isNaN(Date.parse(k.expires))) {
+      throw new Error(`keys[${i}].expires isn't a date`);
+    }
+    return {keyid: k.keyid, key: k.key, expires: k.expires || null};
+  });
+  return {required: block.required === true, keys};
+}
 
 class PackagesModule {
   constructor(stats) {
     this.router = express.Router();
     this.config = null;
     this.db = null;
+    this.readers = null; // the read connections (openReaders)
     this.crawlerJob = null;
     this.crawler = null;
     this.lastRunTime = null;
     this.totalRuns = 0;
     this.lastCrawlerLog = {};
     this.crawlerRunning = false;
+    // npm registry signatures: the key (null when this server doesn't sign), and the
+    // background job that fills in PackageDist for versions stored without it
+    this.signer = null;
+    // feed checks (/feed-check): id -> {id, url, state, report, error, started, ip}
+    this.feedCheckJobs = new Map();
+    this.feedCheckRunning = false;
+    this.distStatus = { state: 'not started', missing: null, done: 0, failed: 0 };
+    this.distBackfill = null;
+    this.stopping = false;
     this.setupSecurityMiddleware();
     this.setupRoutes();
     this.stats = stats;
@@ -51,6 +237,8 @@ class PackagesModule {
         "frame-ancestors 'none'"
       ].join('; '));
       res.removeHeader('X-Powered-By');
+      // RFC 8631: where to find the machine-readable description of this API
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
       next();
     });
   }
@@ -144,6 +332,10 @@ class PackagesModule {
       } else if (condition.operator === 'IN_SUBQUERY') {
         query += ` AND ${condition.column} IN (${condition.subquery})`;
         params.push(condition.value);
+      } else if (condition.operator === 'TEXT') {
+        // A free-text search term: in the package id or its description
+        query += ' AND (PackageVersions.Id LIKE ? OR CAST(PackageVersions.Description AS TEXT) LIKE ?)';
+        params.push(`%${condition.value}%`, `%${condition.value}%`);
       }
     });
     return { query, params };
@@ -157,6 +349,7 @@ class PackagesModule {
       canonicalUrl = '',
       fhirVersion = '',
       dependency = '',
+      text = '',
       sort = ''
     } = params;
 
@@ -181,13 +374,14 @@ class PackagesModule {
         // Add the missing dependency search logic
         if (dependson) {
           validateParameter(dependson, "dependson", String);
-          versioned = dependson.includes('#');
-          // This requires a subquery to PackageDependencies table
+          versioned = /[#|@]/.test(dependson);
+          // Dependencies are stored as id@version (npm convention), so accept # and | as
+          // the separator too.
           conditions.push({
             column: 'PackageVersions.PackageVersionKey',
             operator: 'IN_SUBQUERY',
             subquery: 'SELECT PackageVersionKey FROM PackageDependencies WHERE Dependency LIKE ?',
-            value: `%${dependson}%`
+            value: `%${dependson.replace(/[#|]/g, '@')}%`
           });
         }
 
@@ -211,7 +405,7 @@ class PackagesModule {
 
         // Add FHIR version search (requires PackageFHIRVersions table)
         if (fhirVersion) {
-          const mappedVersion = this.getVersion(fhirVersion);
+          const mappedVersion = FHIR_RELEASE_VERSIONS[fhirVersion] || fhirVersion;
           conditions.push({
             column: 'PackageVersions.PackageVersionKey',
             operator: 'IN_SUBQUERY',
@@ -223,13 +417,13 @@ class PackagesModule {
         // Add dependency search
         if (dependency) {
           validateParameter(dependency, "dependency", String);
+          // Dependencies are stored as id@version (npm convention). Clients send id#version
+          // or id|version (the Java PackageClient sends |), or just id for any version.
           let depQuery;
-          if (dependency.includes('#')) {
-            depQuery = `${dependency}%`;
-          } else if (dependency.includes('|')) {
-            depQuery = `${dependency.replace('|', '#')}%`;
+          if (/[#|@]/.test(dependency)) {
+            depQuery = `${dependency.replace(/[#|]/g, '@')}%`;
           } else {
-            depQuery = `${dependency}#%`;
+            depQuery = `${dependency}@%`;
           }
 
           conditions.push({
@@ -238,6 +432,12 @@ class PackagesModule {
             subquery: 'SELECT PackageVersionKey FROM PackageDependencies WHERE Dependency LIKE ?',
             value: depQuery
           });
+        }
+
+        // Free text (npm search): every term must appear in the id or the description.
+        // npm qualifiers (keywords:, author:, scope: etc.) have no equivalent here and are ignored.
+        for (const term of text.split(/\s+/).filter(t => t && !/^[a-z-]+:/.test(t))) {
+          conditions.push({ operator: 'TEXT', value: term });
         }
 
         // Build appropriate base query
@@ -254,7 +454,7 @@ class PackagesModule {
 
         const { query, params: queryParams } = this.buildSecureQuery(baseQuery, conditions);
 
-        this.db.all(query + ' ORDER BY PubDate', queryParams, (err, rows) => {
+        this.reader.all(query + ' ORDER BY PubDate', queryParams, guarded(reject, (err, rows) => {
           if (err) {
             reject(err);
             return;
@@ -288,7 +488,7 @@ class PackagesModule {
           });
 
           resolve(this.applySorting(results, sort));
-        });
+        }));
       } catch (error) {
         reject(error);
       }
@@ -392,6 +592,14 @@ class PackagesModule {
   }
 
   async gatherPackageStatistics() {
+    const stats = await this.gatherPackageCounts();
+    // the nav bar offers the feed check only where it's turned on
+    stats.feedCheckLink = this.feedCheckConfig().enabled
+      ? '<a href="/packages/feed-check" style="color: gold">Feed Check</a>  &nbsp;|&nbsp;' : '';
+    return stats;
+  }
+
+  async gatherPackageCounts() {
     try {
       // Get database age info
       const dbAge = this.getDatabaseAgeInfo();
@@ -406,12 +614,14 @@ class PackagesModule {
       // Get counts from database
       const tableCounts = await this.getDatabaseTableCounts();
 
+      // the page footer: the last crawl this run, else when the database was last written
+      const updated = this.lastRunTime || dbAge.lastModified;
       return {
         downloadDate: downloadDate,
+        crawlerStatus: updated ? `last updated ${Utilities.describeAgo(updated)}` : 'not yet updated',
         totalResources: 0, // Packages don't track individual resources
         totalPackages: tableCounts.packages || 0,
         totalVersions: tableCounts.packageVersions || 0,
-        version: '4.0.1',
         crawlerEnabled: this.config.crawler.enabled,
         lastCrawlerRun: this.lastRunTime,
         totalCrawlerRuns: this.totalRuns
@@ -425,7 +635,6 @@ class PackagesModule {
         totalResources: 0,
         totalPackages: 0,
         totalVersions: 0,
-        version: '4.0.1',
         crawlerEnabled: false,
         lastCrawlerRun: null,
         totalCrawlerRuns: 0
@@ -433,8 +642,15 @@ class PackagesModule {
     }
   }
 
+  // The database file, resolved the same way initializeDatabase opens it: a relative
+  // config.database is relative to the data directory, not the working directory.
+  getDatabasePath() {
+    return path.isAbsolute(this.config.database) ? this.config.database : folders.filePath('packages', this.config.database);
+  }
+
   getDatabaseAgeInfo() {
-    if (!fs.existsSync(this.config.database)) {
+    const dbPath = this.getDatabasePath();
+    if (!fs.existsSync(dbPath)) {
       return {
         lastModified: null,
         daysOld: null,
@@ -442,10 +658,11 @@ class PackagesModule {
       };
     }
 
-    const stats = fs.statSync(this.config.database);
+    const stats = fs.statSync(dbPath);
     const lastModified = stats.mtime;
     const now = new Date();
-    const ageInDays = Math.floor((now - lastModified) / (1000 * 60 * 60 * 24));
+    // Clamped: a file timestamp slightly ahead of this clock (e.g. on a network mount) is 'Today', not '-1 days ago'
+    const ageInDays = Math.max(0, Math.floor((now - lastModified) / (1000 * 60 * 60 * 24)));
 
     return {
       lastModified: lastModified,
@@ -457,7 +674,7 @@ class PackagesModule {
   }
 
   async getDatabaseTableCounts() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (!this.db) {
         resolve({packages: 0, packageVersions: 0});
         return;
@@ -467,7 +684,7 @@ class PackagesModule {
       let completedQueries = 0;
       const totalQueries = 2;
 
-      this.db.get('SELECT COUNT(*) as count FROM Packages', [], (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM Packages', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packages = 0;
         } else {
@@ -478,9 +695,9 @@ class PackagesModule {
         if (completedQueries === totalQueries) {
           resolve(counts);
         }
-      });
+      }));
 
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           counts.packageVersions = 0;
         } else {
@@ -491,7 +708,7 @@ class PackagesModule {
         if (completedQueries === totalQueries) {
           resolve(counts);
         }
-      });
+      }));
     });
   }
 
@@ -526,6 +743,9 @@ class PackagesModule {
     content += '<div class="card-body">';
     content += '<p><a href="/packages/search" class="btn btn-primary mb-2">Search Packages</a></p>';
     content += '<p><a href="/packages/log" class="btn btn-secondary mb-2">View Crawler Log</a></p>';
+    if (this.npmCheckConfig().enabled) {
+      content += '<p><a href="/packages/npm-check" class="btn btn-secondary mb-2">Check an npm Registry</a></p>';
+    }
     if (this.config.crawler.enabled) {
       content += '<p><button onclick="triggerCrawl()" class="btn btn-warning mb-2">Manual Crawl</button></p>';
     }
@@ -550,12 +770,26 @@ class PackagesModule {
 
     // Initialize database
     await this.initializeDatabase();
+    await this.dbRun(PACKAGE_DIST_TABLE);
+    await this.dbRun(PACKAGE_SIGNATURES_TABLE);
+    await this.openReaders();
 
     // Ensure mirror directory exists
     await this.ensureMirrorDirectory();
 
+    // npm registry signatures: on unless turned off
+    if (this.config.npmSigning?.enabled !== false) {
+      this.signer = NpmSigner.load(this.getSigningKeyPath(), pckLog);
+      pckLog.info(`Signing packages with npm key ${this.signer.keyid}`);
+    }
+
     // Initialize the crawler
     this.crawler = new PackageCrawler(this.config, this.db, this.stats);
+    this.crawler.signer = this.signer;
+
+    // Versions stored without dist.integrity or a signature by this key get them in the
+    // background; /-/npm/v1/keys is a 404 until they all have them
+    this.startDistBackfill();
 
     // Start the hourly web crawler if enabled
     if (config.crawler.enabled) {
@@ -589,13 +823,141 @@ class PackagesModule {
       }
     } finally {
       this.crawlerRunning = false;
+      // if the backfill couldn't finish (a crawl's transaction rolled back one of its
+      // writes, say), it tries again
+      if (this.distStatus.state === 'incomplete') {
+        this.startDistBackfill();
+      }
     }
+  }
+
+  // The signing key file: npmSigning.keyFile, relative to the database's folder
+  getSigningKeyPath() {
+    const file = this.config.npmSigning?.keyFile || DEFAULT_SIGNING_KEY_FILE;
+    return path.isAbsolute(file) ? file : path.join(path.dirname(this.getDatabasePath()), file);
+  }
+
+  dbRun(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, guarded(reject, function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(this);
+        }
+      }));
+    });
+  }
+
+  dbAll(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows)));
+    });
+  }
+
+  dbGet(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row)));
+    });
+  }
+
+  // Starts the background job that fills in PackageDist, unless it is already running.
+  // Returns its promise.
+  startDistBackfill() {
+    if (!this.distBackfill) {
+      this.distBackfill = this.runDistBackfill()
+        .catch(e => {
+          this.distStatus.state = 'incomplete';
+          pckLog.error('Adding npm integrity and signatures failed: ' + e.message);
+        })
+        .finally(() => {
+          this.distBackfill = null;
+        });
+    }
+    return this.distBackfill;
+  }
+
+  // The keys of versions with no PackageDist row, or (when signing) one not signed by this key
+  async versionsMissingDist() {
+    const sql = `SELECT v.PackageVersionKey AS k, d.Integrity AS Integrity
+                 FROM PackageVersions v LEFT JOIN PackageDist d ON d.PackageVersionKey = v.PackageVersionKey
+                 WHERE d.PackageVersionKey IS NULL` + (this.signer ? ' OR d.KeyId IS NOT ?' : '') + `
+                 ORDER BY v.PackageVersionKey`;
+    return this.dbAll(sql, this.signer ? [this.signer.keyid] : []);
+  }
+
+  // Gives every version its dist.integrity, and its signature when this server signs: the
+  // versions stored before this server did, or signed with an earlier key. A row at a time,
+  // in the background, so the server serves meanwhile; a large tarball is hashed in slices.
+  async runDistBackfill() {
+    // rows for versions that are gone (packages/utilities/dedupe-versions.js deletes versions)
+    await this.dbRun('DELETE FROM PackageDist WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)');
+    await this.dbRun('DELETE FROM PackageSignatures WHERE PackageVersionKey NOT IN (SELECT PackageVersionKey FROM PackageVersions)');
+    const todo = await this.versionsMissingDist();
+    this.distStatus = { state: 'running', missing: todo.length, done: 0, failed: 0 };
+    const what = this.signer ? 'npm integrity and signatures' : 'npm integrity';
+    if (todo.length > 0) {
+      pckLog.info(`Adding ${what} to ${todo.length} package versions, in the background`);
+    }
+    for (const row of todo) {
+      if (this.stopping) {
+        this.distStatus.state = 'stopped';
+        return;
+      }
+      try {
+        await this.fillDist(row.k, row.Integrity);
+        this.distStatus.done++;
+      } catch (e) {
+        this.distStatus.failed++;
+        pckLog.error(`Adding ${what} to package version ${row.k} failed: ${e.message}`);
+      }
+      if (this.distStatus.done % 1000 === 0 && this.distStatus.done > 0) {
+        pckLog.info(`Added ${what} to ${this.distStatus.done} of ${todo.length} package versions`);
+      }
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    // Something stored meanwhile is done by the crawler, but a write here can be lost (it
+    // joins a crawl's transaction, and that rolls back), so count again
+    const left = todo.length === 0 ? 0 : (await this.versionsMissingDist()).length;
+    this.distStatus.missing = left;
+    this.distStatus.state = left === 0 ? 'complete' : 'incomplete';
+    if (todo.length > 0) {
+      if (left === 0) {
+        pckLog.info(`Added ${what} to every package version`);
+      } else {
+        pckLog.warn(`${left} package versions still have no ${what}; trying again after the next crawl`);
+      }
+    }
+  }
+
+  // integrity is the stored one, when only the signature is missing
+  async fillDist(key, integrity) {
+    let hash = null;
+    if (!integrity) {
+      const row = await this.dbGet('SELECT Content, Hash FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+      if (!row) {
+        return; // deleted meanwhile
+      }
+      integrity = await integrityOf(row.Content);
+      hash = row.Hash;
+    }
+    const v = await this.dbGet('SELECT Id, Version, Hash FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+    if (!v) {
+      return;
+    }
+    const keyid = this.signer ? this.signer.keyid : null;
+    const sig = this.signer ? this.signer.sign(v.Id, v.Version, integrity) : null;
+    // Only if the tarball is still the one hashed: the crawler may have replaced it meanwhile
+    // (and then it wrote this row itself)
+    await this.dbRun(`INSERT OR REPLACE INTO PackageDist (PackageVersionKey, Integrity, KeyId, Signature)
+                      SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM PackageVersions WHERE PackageVersionKey = ? AND Hash = ?)`,
+      [key, integrity, keyid, sig, key, hash || v.Hash]);
   }
 
   async initializeDatabase() {
     return new Promise((resolve, reject) => {
       // Use config path if absolute, otherwise resolve relative to data dir
-      const dbPath = path.isAbsolute(this.config.database) ? this.config.database : folders.filePath('packages', this.config.database);
+      const dbPath = this.getDatabasePath();
 
       // Ensure directory exists
       const dbDir = path.dirname(dbPath);
@@ -621,9 +983,14 @@ class PackagesModule {
             this.db.run(`CREATE TABLE IF NOT EXISTS FeedPages (
               Url TEXT PRIMARY KEY,
               VisitedAt TEXT NOT NULL
-            )`, (err) => {
+            )`, guarded(reject, (err) => {
               if (err) pckLog.error('Failed to create FeedPages table:', err.message);
-            });
+            }));
+            // Fails while the database still holds duplicate id#version rows (from before the
+            // crawler checked for them): packages/utilities/dedupe-versions.js removes them
+            this.db.run(UNIQUE_ID_VERSION_INDEX.replace('CREATE UNIQUE INDEX', 'CREATE UNIQUE INDEX IF NOT EXISTS'), guarded(reject, (err) => {
+              if (err) pckLog.warn('PackageVersions has duplicate id#version rows, so they are not yet unique; run packages/utilities/dedupe-versions.js: ' + err.message);
+            }));
             resolve();
           }
         }
@@ -631,6 +998,36 @@ class PackagesModule {
       this.db.run('PRAGMA journal_mode = WAL');
       this.db.run('PRAGMA busy_timeout = 5000');
     });
+  }
+
+  /**
+   * The connections the requests read through (this.reader). A connection runs one query at a
+   * time (library/sqlite-pool.js), and with one for everything, /id, /download (which reads the
+   * tarball out of the database), the catalog and the crawler's writes all queued behind each
+   * other. this.db stays the only one that writes; the readers are opened once the tables are
+   * made, read-write but only read through (WAL: they don't wait for the writer, nor it for
+   * them). Without them (they couldn't be opened, or readConnections is 0) this.db reads too.
+   */
+  async openReaders() {
+    const size = this.config.readConnections ?? 4;
+    if (!(size > 0)) {
+      return;
+    }
+    try {
+      this.readers = await SqlitePool.open(this.getDatabasePath(), {
+        size,
+        mode: sqlite3.OPEN_READWRITE,
+        configure: (db) => new Promise((resolve, reject) => db.run('PRAGMA busy_timeout = 5000', err => err ? reject(err) : resolve()))
+      });
+    } catch (e) {
+      pckLog.warn(`Unable to open the packages database's read connections, so it is read through the one connection: ${e.message}`);
+      this.readers = null;
+    }
+  }
+
+  /** What requests read through: the read connections, or the one connection without them */
+  get reader() {
+    return this.readers || this.db;
   }
 
   async createTables() {
@@ -706,13 +1103,20 @@ class PackagesModule {
          (
              Url       TEXT PRIMARY KEY,
              VisitedAt TEXT NOT NULL
-         )`
+         )`,
+
+        // PackageDist table - each version's dist.integrity and npm signature
+        PACKAGE_DIST_TABLE,
+
+        // PackageSignatures table - the publisher's signature of each version, as checked
+        PACKAGE_SIGNATURES_TABLE
       ];
 
       const indexes = [
         'CREATE INDEX SK_Packages_Id ON Packages (Id, PackageKey)',
         'CREATE INDEX SK_Packages_Canonical ON Packages (Canonical, PackageKey)',
         'CREATE INDEX SK_PackageVersions_Id ON PackageVersions (Id, Version, PackageVersionKey)',
+        UNIQUE_ID_VERSION_INDEX,
         'CREATE INDEX SK_PackageVersions_Canonical ON PackageVersions (Canonical, PackageVersionKey)',
         'CREATE INDEX SK_PackageVersions_PubDate ON PackageVersions (Id, PubDate, PackageVersionKey)',
         'CREATE INDEX SK_PackageVersions_Indexed ON PackageVersions (Indexed, PackageVersionKey)',
@@ -755,13 +1159,13 @@ class PackagesModule {
 
         // Create indexes
         indexes.forEach(sql => {
-          this.db.run(sql, (err) => {
+          this.db.run(sql, guarded(reject, (err) => {
             if (err) {
               handleIndexError(err);
             } else {
               checkIndexesComplete();
             }
-          });
+          }));
         });
       };
 
@@ -772,13 +1176,13 @@ class PackagesModule {
 
       // Create tables first
       tables.forEach(sql => {
-        this.db.run(sql, (err) => {
+        this.db.run(sql, guarded(reject, (err) => {
           if (err) {
             handleTableError(err);
           } else {
             checkTablesComplete();
           }
-        });
+        }));
       });
     });
   }
@@ -815,11 +1219,13 @@ class PackagesModule {
     }
   }
 
-  stopCrawlerJob() {
+  // node-cron 4: stop() may return a promise
+  async stopCrawlerJob() {
     if (this.crawlerJob) {
       this.crawler.shutdown();
-      this.crawlerJob.stop();
+      const job = this.crawlerJob;
       this.crawlerJob = null;
+      await job.stop();
       pckLog.info('Package crawler job stopped');
     }
   }
@@ -895,36 +1301,127 @@ class PackagesModule {
     if (this.config.crawler.enabled) {
       pckLog.info('Starting initial package crawler...');
 
-      // Run crawler in background (non-blocking)
-      setImmediate(async () => {
+      // Run crawler in background (non-blocking); errors are logged inside
+      const crawl = async () => {
         try {
           await this.runCrawler();
           pckLog.info('Initial package crawler completed successfully');
         } catch (error) {
           pckLog.error('Initial package crawler failed:', error.message);
         }
-      });
+      };
+      setImmediate(() => void crawl());
     }
   }
 
   setupRoutes() {
-    // Parameter validation configs
-    const searchParams = {
-      name: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
-      dependson: { maxLength: 100, pattern: /^[a-zA-Z0-9._#-]*$/ },
-      pkgcanonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*%?$/ },
-      canonical: { maxLength: 200, pattern: /^[a-zA-Z0-9._:/-]*$/ },
-      fhirversion: { maxLength: 10, pattern: /^(R2|R2B|R3|R4|R4B|R5|R6)?$/ },
-      dependency: { maxLength: 100, pattern: /^[a-zA-Z0-9._#|-]*$/ },
-      sort: { maxLength: 20, pattern: /^-?(name|version|date|count|fhirversion|kind|canonical)$/ },
-      objWrapper: { maxLength: 10, pattern: /^(true|false)?$/ }
-    };
+    const searchParams = SEARCH_PARAMS;
+    const updatesParams = UPDATES_PARAMS;
 
-    const updatesParams = {
-      dateType: { maxLength: 10, pattern: /^(relative|absolute)?$/, default: 'relative' },
-      daysValue: { maxLength: 3, pattern: /^\d{1,3}$/, default: '10' },
-      dateValue: { maxLength: 10, pattern: /^\d{4}-\d{2}-\d{2}$/, default: new Date().toISOString().split('T')[0] }
-    };
+    // OpenAPI description of this API: /openapi.json, /openapi.yaml, and /openapi (an HTML
+    // reference for browsers, the JSON otherwise). Registered before /:id, which would
+    // otherwise treat "openapi" as a package id.
+    this.router.get('/openapi.json', (req, res) => {
+      const start = Date.now();
+      try {
+        res.type('application/json').send(packagesOpenApi.getJson());
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi.json:', error);
+        res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
+
+    this.router.get('/openapi.yaml', (req, res) => {
+      const start = Date.now();
+      try {
+        res.setHeader('Content-Type', 'application/yaml');
+        res.send(packagesOpenApi.getYaml());
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi.yaml:', error);
+        res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
+
+    this.router.get('/openapi', async (req, res) => {
+      const start = Date.now();
+      const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+      try {
+        if (!acceptsHtml) {
+          res.type('application/json').send(packagesOpenApi.getJson());
+          return;
+        }
+        if (!htmlServer.hasTemplate('packages')) {
+          htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+        }
+        const content = packagesOpenApi.renderHtml();
+        const stats = await this.gatherPackageStatistics();
+        stats.processingTime = Date.now() - start;
+        res.setHeader('Content-Type', 'text/html');
+        res.send(htmlServer.renderPage('packages', 'Package Server API', content, stats));
+      } catch (error) {
+        pckLog.error('Error in /packages/openapi:', error);
+        if (acceptsHtml) {
+          htmlServer.sendErrorResponse(res, 'packages', error);
+        } else {
+          res.status(500).json({error: 'Failed to load the OpenAPI description', message: error.message});
+        }
+      } finally {
+        this.stats.countRequest('openapi', Date.now() - start);
+      }
+    });
+
+    // GET /packages/npm-check - the npm registry protocol checks, against any registry
+    const npmCheckLimiter = rateLimit({
+      windowMs: 10 * 60 * 1000,
+      limit: () => this.npmCheckConfig().runsPerWindow,
+      skip: req => !req.query.registry, // only runs count, not the form
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: {error: 'Too many npm registry checks from this address; try again in a few minutes'}
+    });
+    this.router.get('/npm-check', npmCheckLimiter, this.validateQueryParams(NPM_CHECK_PARAMS), async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveNpmCheck(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/npm-check:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('npm-check', Date.now() - start);
+      }
+    });
+
+    // GET /packages/feed-check - check a package feed as the crawler reads it, storing nothing.
+    // With url, starts a check and redirects to its report; the report page reloads until done.
+    // One check at a time, across all users.
+    this.router.get('/feed-check', this.validateQueryParams(FEED_CHECK_PARAMS), async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveFeedCheck(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/feed-check:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('feed-check', Date.now() - start);
+      }
+    });
+
+    // GET /packages/feed-check/{run} - a feed check's report (while it runs, what it has so far)
+    this.router.get('/feed-check/:run', async (req, res) => {
+      const start = Date.now();
+      try {
+        await this.serveFeedCheckRun(req, res);
+      } catch (error) {
+        pckLog.error('Error in /packages/feed-check/{run}:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('feed-check', Date.now() - start);
+      }
+    });
 
     // GET /packages/catalog - Search packages or get updates
     this.router.get('/catalog', this.validateQueryParams(searchParams), async (req, res) => {
@@ -932,7 +1429,7 @@ class PackagesModule {
       try {
         try {
           await this.serveSearch(req, res);
-          pckLog.info("/catalog" + searchParams);
+          pckLog.info("/catalog?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/catalog:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -942,14 +1439,63 @@ class PackagesModule {
       }
     });
 
+    // GET /packages/-/npm/v1/keys - the key the registry signs packages with, as npm's
+    // registry does (npm audit signatures). A 404 says this registry doesn't sign, which is
+    // also the answer while versions are still being signed: once there are keys, npm reports
+    // a version with no signature as an error.
+    this.router.get('/-/npm/v1/keys', (req, res) => {
+      const start = Date.now();
+      try {
+        if (!this.signer) {
+          res.status(404).json({error: 'This registry does not sign packages'});
+        } else if (this.distStatus.state !== 'complete') {
+          res.status(404).json({error: 'This registry is still signing the packages it holds; try again later'});
+        } else {
+          res.json(this.signer.keysDocument());
+        }
+      } finally {
+        this.stats.countRequest('keys', Date.now() - start);
+      }
+    });
+
+    // GET /packages/-/fhir/v1/signatures/{name}@{version} - the publisher's signature of a
+    // package version (its {package}.tgz.sigstore.json), exactly as the crawler fetched and
+    // checked it. dist['fhir-signature'] in the package document links it, with the outcome.
+    this.router.get('/-/fhir/v1/signatures/:spec', async (req, res) => {
+      const start = Date.now();
+      try {
+        const spec = req.params.spec || '';
+        const at = spec.lastIndexOf('@');
+        const id = at > 0 ? spec.substring(0, at) : '';
+        const version = at > 0 ? spec.substring(at + 1) : '';
+        if (!PACKAGE_ID_PATTERN.test(id) || !PACKAGE_VERSION_PATTERN.test(version) ||
+          id.length > PACKAGE_ID_MAX_LENGTH || version.length > PACKAGE_VERSION_MAX_LENGTH) {
+          res.status(400).json({error: 'Expected {name}@{version}'});
+          return;
+        }
+        const row = await this.dbGet(`SELECT s.Bundle FROM PackageSignatures s
+                                      JOIN PackageVersions v ON v.PackageVersionKey = s.PackageVersionKey
+                                      WHERE v.Id = ? AND v.Version = ?`, [id, version]);
+        if (!row) {
+          res.status(404).json({error: `No signature is held for ${id}#${version}`});
+          return;
+        }
+        res.type('application/json').send(row.Bundle);
+      } catch (error) {
+        pckLog.error('Error in /packages/-/fhir/v1/signatures:', error);
+        res.status(500).json({error: 'Internal server error'});
+      } finally {
+        this.stats.countRequest('signature', Date.now() - start);
+      }
+    });
+
     // GET /packages/-/v1/search - Search packages (v1 API)
-    this.router.get('/-/v1/search', this.validateQueryParams(searchParams), async (req, res) => {
+    this.router.get('/-/v1/search', this.validateQueryParams(V1_SEARCH_PARAMS), async (req, res) => {
       const start = Date.now();
       try {
         try {
-          req.query.objWrapper = 'true';
-          await this.serveSearch(req, res);
-          pckLog.info("/search?" + searchParams);
+          await this.serveV1Search(req, res);
+          pckLog.info("/search?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/-/v1/search:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -969,7 +1515,7 @@ class PackagesModule {
           let days = daysValue || '10';
           let date = dateValue || new Date().toISOString().split('T')[0];
           await this.serveUpdates(req.secure, res, req, dt, days, date);
-          pckLog.info("/updates?" + searchParams);
+          pckLog.info("/updates?" + queryString(req));
         } catch (error) {
           pckLog.error('Error in /packages/updates:', error);
           res.status(500).json({error: 'Internal server error'});
@@ -1055,9 +1601,7 @@ class PackagesModule {
     });
 
     // GET /packages/broken
-    this.router.get('/broken', this.validateQueryParams({
-      filter: { maxLength: 100, pattern: /^[a-zA-Z0-9._-]*$/ }
-    }), async (req, res) => {
+    this.router.get('/broken', this.validateQueryParams(BROKEN_PARAMS), async (req, res) => {
       const start = Date.now();
       try {
         try {
@@ -1081,34 +1625,45 @@ class PackagesModule {
         // Validate path parameters
         const {id, version} = req.params;
 
-        if (!id || !version ||
-          !/^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/.test(id) ||
-          !/^[a-zA-Z0-9._-]+$/.test(version)) {
+        if (!id || !version || !PACKAGE_ID_PATTERN.test(id) || !PACKAGE_VERSION_PATTERN.test(version)) {
           return res.status(400).json({error: `Invalid package id or version format: ${id}`});
         }
 
-        if (id.length > 100 || version.length > 50) {
+        if (id.length > PACKAGE_ID_MAX_LENGTH || version.length > PACKAGE_VERSION_MAX_LENGTH) {
           return res.status(400).json({error: `Package id or version too long: ${id}`});
         }
 
         next();
         pckLog.info(`/download/${id}/${version}`);
-      } finally {
+      } catch (error) {
         this.stats.countRequest('version', Date.now() - start);
+        throw error;
       }
     }, async (req, res) => {
       const start = Date.now();
+      // counted as 'download' (the tarball) or 'version' (its JSON document) - the
+      // daily report counts the downloads as packages served
+      let name = 'version';
       try {
         try {
           const {id, version} = req.params;
-          await this.serveDownload(req.secure, id, version, res);
-          pckLog.info(`/download/${id}/${version}`);
+          // The same URL gives the tarball or (npm) the version's JSON document
+          res.vary('Accept');
+          res.vary(TARBALL_HEADER);
+          if (this.wantsVersionDocument(req)) {
+            await this.serveVersionDocument(req.secure, id, version, req, res);
+            pckLog.info(`/version/${id}/${version}`);
+          } else {
+            name = 'download';
+            await this.serveDownload(req.secure, id, version, res);
+            pckLog.info(`/download/${id}/${version}`);
+          }
         } catch (error) {
           pckLog.error('Error in /packages/:id/:version:', error);
           res.status(500).json({error: 'Internal server error'});
         }
       } finally {
-        this.stats.countRequest('version', Date.now() - start);
+        this.stats.countRequest(name, Date.now() - start);
       }
     });
 
@@ -1125,8 +1680,9 @@ class PackagesModule {
 
         next();
         pckLog.info(`/page/${page}`);
-      } finally {
+      } catch (error) {
         this.stats.countRequest('page', Date.now() - start);
+        throw error;
       }
     }, async (req, res) => {
       const start = Date.now();
@@ -1145,7 +1701,7 @@ class PackagesModule {
     });
 
     // GET /packages/:id - Get package versions
-    this.router.get('/:id', async (req, res) => {
+    this.router.get('/:id', async (req, res, next) => {
       const start = Date.now();
       try {
 
@@ -1153,10 +1709,13 @@ class PackagesModule {
           const {id} = req.params;
           const {sort} = req.query;
 
-          // Don't process routes that are handled elsewhere
-          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates'].includes(id) ||
+          // Don't process routes that are handled elsewhere. These must call next():
+          // returning without responding leaves the request hanging, which is what
+          // /status, /stats and /search (registered after this route) used to do.
+          if (['catalog', 'log', 'broken', 'stats', 'status', 'search', 'updates', 'npm-check', 'feed-check'].includes(id) ||
             id.endsWith('.html') || id === '-') {
-            return; // Let other routes handle these
+            next();
+            return;
           }
 
           await this.serveVersions(id, sort, req.secure, req, res);
@@ -1200,10 +1759,25 @@ class PackagesModule {
       }
     });
 
-    // Manual crawler trigger (existing)
+    // Manual crawler trigger. A crawl is a long, network-heavy job that anyone could
+    // otherwise start at will, so it is gated on a shared secret from the configuration
+    // (modules.packages.crawlToken), sent in the x-crawl-token header. With no token
+    // configured the endpoint is CLOSED - an administrative trigger that silently
+    // defaults to open is how a deployment ends up exposed without anything looking wrong.
     this.router.post('/crawl', async (req, res) => {
       const start = Date.now();
       try {
+        if (!tokenConfigured(this.config.crawlToken)) {
+          // Say which of the two it is: the operator needs to know the endpoint is off
+          // because it was never configured, not that they typed the token wrongly.
+          res.status(403).json({ error: 'forbidden: no crawlToken is configured, so this endpoint is disabled' });
+          return;
+        }
+        if (!tokenMatches(this.config.crawlToken, req.headers['x-crawl-token'])) {
+          pckLog.warn('Rejected /crawl: missing or invalid x-crawl-token (from ' + req.ip + ')');
+          res.status(403).json({ error: 'forbidden: missing or invalid x-crawl-token' });
+          return;
+        }
         try {
           await this.runCrawler();
           res.json({
@@ -1260,10 +1834,6 @@ class PackagesModule {
                 lastRun: this.lastRunTime,
                 totalRuns: this.totalRuns,
                 lastLog: this.lastCrawlerLog || null
-              },
-              paths: {
-                database: this.config.database,
-                mirror: this.config.mirrorPath
               },
               config: {
                 masterUrl: this.config.masterUrl
@@ -1400,6 +1970,8 @@ class PackagesModule {
         htmlServer.loadTemplate('packages', templatePath);
       }
 
+      await this.annotateSignatures(updates, u => u.name, u => u.version);
+
       // Build template variables
       const vars = {
         fromDate: fromDate.split('T')[0], // Just the date part
@@ -1427,6 +1999,37 @@ class PackagesModule {
     }
   }
 
+  // Sets signatureState on each item of a list for an HTML page: its PackageSignatures row (the
+  // publisher's signature, as the crawler checked it), or null when there is none
+  async annotateSignatures(list, idOf, versionOf) {
+    const ids = [...new Set(list.map(idOf).filter(Boolean))];
+    const found = new Map();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const rows = await this.dbAll(`SELECT v.Id, v.Version, s.Valid, s.KeyId, s.Message, s.Checked
+                                     FROM PackageSignatures s JOIN PackageVersions v ON v.PackageVersionKey = s.PackageVersionKey
+                                     WHERE v.Id IN (${chunk.map(() => '?').join(',')})`, chunk);
+      for (const r of rows) {
+        found.set(`${r.Id}#${r.Version}`, r);
+      }
+    }
+    for (const item of list) {
+      item.signatureState = found.get(`${idOf(item)}#${versionOf(item)}`) || null;
+    }
+  }
+
+  // The Signature column: confirmed (the publisher's signature checked out), rejected (it didn't),
+  // or absent (unsigned, or not checked: the feed lists no keys, or signatures are ignored)
+  signatureCell(sig) {
+    if (!sig) {
+      return '<td class="text-muted">absent</td>';
+    }
+    if (sig.Valid) {
+      return `<td title="${escape(`Signed with ${sig.KeyId}; checked ${sig.Checked} UTC`)}"><span class="text-success">confirmed</span></td>`;
+    }
+    return `<td title="${escape(`${sig.Message || 'The signature is not valid'}; checked ${sig.Checked} UTC`)}"><span class="text-danger">rejected</span></td>`;
+  }
+
   generateUpdatesTable(updates) {
     if (updates.length === 0) {
       return '<div class="alert alert-info">No package updates found for the specified time period.</div>';
@@ -1440,6 +2043,7 @@ class PackagesModule {
     table += '<th>Type</th>';
     table += '<th>Published</th>';
     table += '<th>Canonical</th>';
+    table += '<th>Signature</th>';
     table += '</tr></thead><tbody>';
 
     for (const pkg of updates) {
@@ -1450,6 +2054,7 @@ class PackagesModule {
       table += `<td>${escape(pkg.kind)}</td>`;
       table += `<td>${new Date(pkg.date).toLocaleDateString()} ${new Date(pkg.date).toLocaleTimeString()}</td>`;
       table += `<td>${escape(pkg.canonical || '')}</td>`;
+      table += this.signatureCell(pkg.signatureState);
       table += '</tr>';
     }
 
@@ -1466,14 +2071,14 @@ class PackagesModule {
 
     content += '<form method="GET" action="/packages/updates">';
 
-    content += `<input type="radio" name="dateType" id="dateType" value="relative" ${formData.dt == 'relative' ? 'checked' : ''}> `;
-    content += '<label for="relativeDays">Last</label> ';
-    content += `<input type="number" name="daysValue" value="${formData.days}" min="1" max="365" style="width: 80px; margin: 0 5px;"> `;
+    content += `<input type="radio" aria-label="Is Relative?" name="dateType" id="dateType" value="relative" ${formData.dt == 'relative' ? 'checked' : ''}> `;
+    content += '<label for="daysValue">Last</label> ';
+    content += `<input type="number" id="daysValue" aria-label="Number of Days" name="daysValue" value="${formData.days}" min="1" max="365" style="width: 80px; margin: 0 5px;"> `;
     content += '<label>days</label> &nbsp;&nbsp;';
 
-    content += `<input type="radio" name="dateType" id="dateType" value="absolute" ${formData.dt != 'relative' ? 'checked' : ''}> `;
-    content += '<label for="specificDate">Since date:</label> ';
-    content += `<input type="date" name="dateValue" value="${formData.date}" style="margin-left: 5px;"> `;
+    content += `<input type="radio" name="dateType" aria-label="Is Date?" id="dateType" value="absolute" ${formData.dt != 'relative' ? 'checked' : ''}> `;
+    content += '<label for="dateValue">Since date:</label> ';
+    content += `<input type="date" name="dateValue" id="dateValue" aria-label="Date" value="${formData.date}" style="margin-left: 5px;"> `;
     content += '<button type="submit" class="btn btn-primary btn-sm" style="margin-left: 10px;">Update Results</button>';
 
     content += '</form>';
@@ -1501,24 +2106,332 @@ class PackagesModule {
                    WHERE PubDate >= ?
                    ORDER BY PubDate DESC`;
 
-      this.db.all(sql, [date], (err, rows) => {
+      this.reader.all(sql, [date], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           resolve(rows);
         }
-      });
+      }));
     });
+  }
+
+  npmCheckConfig() {
+    const cfg = this.config?.npmCheck || {};
+    const control = cfg.control === false ? null : {...NPM_CHECK_DEFAULTS.control, ...(cfg.control || {})};
+    return {...NPM_CHECK_DEFAULTS, ...cfg, control};
+  }
+
+  // The HTTP client for the checks: the crawler's SSRF-guarded agents, a timeout and a size
+  // cap on every response. Loopback addresses are allowed, so the checks can run against this
+  // server itself; every other non-public address (the server's network, cloud metadata) is not.
+  npmCheckGetter() {
+    const cfg = this.npmCheckConfig();
+    return makeGetter({
+      ...this.crawler.guardedAgents({allowLoopback: true}),
+      timeout: cfg.requestTimeout,
+      maxBytes: cfg.maxDownloadMB * 1024 * 1024,
+      userAgent: 'FHIRsmith npm registry check (+https://github.com/HealthIntersections/FHIRsmith)'
+    });
+  }
+
+  // Runs the checks against the npm registry itself, at most once a day, in the background
+  refreshNpmCheckControl() {
+    const control = this.npmCheckConfig().control;
+    if (!control || this.npmCheckControlRunning) {
+      return;
+    }
+    if (this.npmCheckControlReport && Date.now() - Date.parse(this.npmCheckControlReport.finished) < NPM_CHECK_CONTROL_MAX_AGE) {
+      return;
+    }
+    this.npmCheckControlRunning = true;
+    runNpmCheck({registry: control.registry, pkg: control.package, version: control.version}, this.npmCheckGetter())
+      .then(report => {
+        this.npmCheckControlReport = report;
+        if (report.failed > 0) {
+          pckLog.warn(`npm-check: ${report.failed} checks fail against the control ${control.registry} - they may be out of date`);
+        }
+      })
+      .catch(error => pckLog.error('npm-check control run failed: ' + error.message))
+      .finally(() => {
+        this.npmCheckControlRunning = false;
+      });
+  }
+
+  async serveNpmCheck(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const cfg = this.npmCheckConfig();
+    const fail = (status, message) => {
+      if (acceptsHtml) {
+        return this.sendNpmCheckPage(res, status, `<div class="alert alert-danger">${escape(message)}</div>` +
+          npmCheckPage.renderForm({values: req.query, control: cfg.control, controlReport: this.npmCheckControlReport}));
+      }
+      return res.status(status).json({error: message});
+    };
+
+    if (!cfg.enabled) {
+      const message = 'The npm registry check is not enabled on this server';
+      return acceptsHtml ? this.sendNpmCheckPage(res, 404, `<div class="alert alert-info">${escape(message)}</div>`)
+        : res.status(404).json({error: message});
+    }
+    const {registry, package: pkg, version} = req.query;
+    if (!registry) {
+      if (acceptsHtml) {
+        this.refreshNpmCheckControl();
+        return this.sendNpmCheckPage(res, 200, npmCheckPage.renderForm({values: req.query, control: cfg.control, controlReport: this.npmCheckControlReport}));
+      }
+      return res.status(400).json({error: 'Parameter registry is required'});
+    }
+    // validateQueryParams already refuses a repeated parameter (which Express makes an array);
+    // checked again here so this handler doesn't depend on that
+    if (typeof registry !== 'string' || typeof pkg !== 'string' || typeof version !== 'string') {
+      return fail(400, 'The registry, package and version must each be given once');
+    }
+    if (!pkg || !version) {
+      return fail(400, 'Give the package and version to check, as well as the registry');
+    }
+    let url;
+    try {
+      url = new URL(registry);
+    } catch (e) {
+      return fail(400, `The registry URL isn't valid: ${registry}`);
+    }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return fail(400, 'The registry URL must be http(s), with no user name or password');
+    }
+    if ((this.npmChecksRunning || 0) >= cfg.maxConcurrentRuns) {
+      res.setHeader('Retry-After', '30');
+      return fail(503, 'This server is already running as many npm registry checks as it allows; try again in a minute');
+    }
+
+    this.npmChecksRunning = (this.npmChecksRunning || 0) + 1;
+    let report;
+    try {
+      report = await runNpmCheck({registry, pkg, version}, this.npmCheckGetter());
+    } finally {
+      this.npmChecksRunning--;
+    }
+    pckLog.info(`npm-check ${registry} ${pkg}#${version}: ${report.passed} passed, ${report.failed} failed`);
+    if (acceptsHtml) {
+      this.refreshNpmCheckControl();
+      return this.sendNpmCheckPage(res, 200, npmCheckPage.renderReport({report, control: cfg.control, controlReport: this.npmCheckControlReport}));
+    }
+    res.json(report);
+  }
+
+  feedCheckConfig() {
+    return {...FEED_CHECK_DEFAULTS, ...(this.config?.feedCheck || {})};
+  }
+
+  // The registry's feed list (package-feeds.json), for the feed check; fetched at most hourly
+  async feedCheckMasterList() {
+    if (this.masterListCache && Date.now() - this.masterListCache.at < MASTER_LIST_MAX_AGE) {
+      return this.masterListCache.data;
+    }
+    const reader = Object.create(PackageCrawler.prototype);
+    reader.config = this.config;
+    const data = await reader.fetchJson(this.config.masterUrl);
+    this.masterListCache = {at: Date.now(), data};
+    return data;
+  }
+
+  // Forgets runs older than keepMinutes, and the oldest beyond FEED_CHECK_MAX_JOBS
+  pruneFeedCheckJobs() {
+    const keep = this.feedCheckConfig().keepMinutes * 60 * 1000;
+    for (const [id, job] of this.feedCheckJobs) {
+      if (job.state !== 'running' && Date.now() - job.started > keep) {
+        this.feedCheckJobs.delete(id);
+      }
+    }
+    while (this.feedCheckJobs.size > FEED_CHECK_MAX_JOBS) {
+      this.feedCheckJobs.delete(this.feedCheckJobs.keys().next().value);
+    }
+  }
+
+  async serveFeedCheck(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const cfg = this.feedCheckConfig();
+    const fail = (status, message) => acceptsHtml
+      ? this.sendFeedCheckPage(res, status, `<div class="alert alert-danger">${escape(message)}</div>` + feedCheckPage.renderForm(req.query))
+      : res.status(status).json({error: message});
+
+    if (!cfg.enabled) {
+      return fail(404, 'The feed check is not enabled on this server');
+    }
+    const target = req.query.url;
+    if (!target) {
+      if (acceptsHtml) {
+        return this.sendFeedCheckPage(res, 200, feedCheckPage.renderForm({}));
+      }
+      return res.status(400).json({error: 'Parameter url is required'});
+    }
+    if (typeof target !== 'string') {
+      return fail(400, 'Give the feed URL once');
+    }
+    let url;
+    try {
+      url = new URL(target);
+    } catch (e) {
+      return fail(400, `The URL isn't valid: ${target}`);
+    }
+    // http(s) only: the crawler also reads local files, which a user must never reach
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      return fail(400, 'The feed URL must be http(s), with no user name or password');
+    }
+    let signing = null;
+    if (req.query.signing && String(req.query.signing).trim()) {
+      try {
+        signing = parseSigningJson(String(req.query.signing));
+      } catch (e) {
+        return fail(400, `The signing information isn't usable: ${e.message}`);
+      }
+    }
+    if (this.feedCheckRunning) {
+      res.setHeader('Retry-After', '60');
+      return fail(503, 'A feed check is already running (only one runs at a time); try again in a minute');
+    }
+
+    this.pruneFeedCheckJobs();
+    const job = {id: crypto.randomBytes(12).toString('hex'), url: target, state: 'running', report: null, error: null, started: Date.now()};
+    this.feedCheckJobs.set(job.id, job);
+    this.feedCheckRunning = true;
+    const check = new FeedCheck(this.config, {
+      master: () => this.feedCheckMasterList(),
+      held: (id, version) => this.dbGet('SELECT Hash AS hash FROM PackageVersions WHERE Id = ? AND Version = ?', [id, version]),
+      signing,
+      maxItems: cfg.maxItems,
+      maxTotalMB: cfg.maxTotalMB
+    });
+    check.run(target, report => {
+      job.report = report;
+    }).then(report => {
+      job.report = report;
+      job.state = 'done';
+      const errors = report.items.filter(i => i.status === 'error').length;
+      pckLog.info(`feed-check ${target}: ${report.items.length} items, ${errors} with errors, ${report.errors.length} feed errors`);
+    }).catch(e => {
+      job.state = 'failed';
+      job.error = e.message;
+      pckLog.error(`feed-check ${target} failed: ${e.message}`);
+    }).finally(() => {
+      this.feedCheckRunning = false;
+    });
+
+    const where = `/packages/feed-check/${job.id}`;
+    if (acceptsHtml) {
+      return res.redirect(303, where);
+    }
+    res.status(202).setHeader('Location', where);
+    return res.json({id: job.id, state: job.state, report: where});
+  }
+
+  async serveFeedCheckRun(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    const id = req.params.run;
+    const job = FEED_CHECK_JOB_PATTERN.test(id || '') ? this.feedCheckJobs.get(id) : null;
+    if (!job) {
+      const message = 'There is no feed check with that id (reports are kept for a while after the check)';
+      return acceptsHtml
+        ? this.sendFeedCheckPage(res, 404, `<div class="alert alert-info">${escape(message)}</div>` + feedCheckPage.renderForm({}))
+        : res.status(404).json({error: message});
+    }
+    if (acceptsHtml) {
+      if (job.state === 'running') {
+        res.setHeader('Refresh', '5');
+      }
+      return this.sendFeedCheckPage(res, 200, feedCheckPage.renderJob(job));
+    }
+    return res.json({id: job.id, url: job.url, state: job.state, error: job.error || undefined, report: job.report});
+  }
+
+  async sendFeedCheckPage(res, status, content) {
+    if (!htmlServer.hasTemplate('packages')) {
+      htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+    }
+    const stats = await this.gatherPackageStatistics();
+    res.status(status).setHeader('Content-Type', 'text/html');
+    res.send(htmlServer.renderPage('packages', 'Package Feed Check', content, stats));
+  }
+
+  async sendNpmCheckPage(res, status, content) {
+    if (!htmlServer.hasTemplate('packages')) {
+      htmlServer.loadTemplate('packages', path.join(__dirname, 'packages-template.html'));
+    }
+    const stats = await this.gatherPackageStatistics();
+    res.status(status).setHeader('Content-Type', 'text/html');
+    res.send(htmlServer.renderPage('packages', 'npm Registry Check', content, stats));
+  }
+
+  // GET /{id}/{version} is npm's version document when the request prefers JSON, and the
+  // tarball otherwise - which is what FHIR clients have always got there. Preferring JSON
+  // means ranking it above anything else the request accepts: a JSON type with a higher q
+  // than any */*, application/* or tarball type. Many clients send JSON together with */*
+  // at the same q - axios's default, application/json, text/plain, */*, which is what
+  // SUSHI (fhir-package-loader) sends when it downloads a tarball from here - and they get
+  // the tarball. A request carrying the TARBALL_HEADER always gets the tarball.
+  wantsVersionDocument(req) {
+    if (req.get(TARBALL_HEADER) !== undefined) {
+      return false;
+    }
+    let json = 0;
+    let other = 0;
+    for (const part of String(req.get('accept') || '').split(',')) {
+      const [type, ...params] = part.split(';').map(s => s.trim().toLowerCase());
+      const qParam = params.find(p => p.startsWith('q='));
+      const q = qParam ? parseFloat(qParam.substring(2)) : 1;
+      if (!type || Number.isNaN(q)) {
+        continue;
+      }
+      if (type === 'application/json' || type === 'application/vnd.npm.install-v1+json') {
+        json = Math.max(json, q);
+      } else if (['*/*', 'application/*', 'application/tar+gzip', 'application/gzip', 'application/x-gzip',
+        'application/x-tar', 'application/octet-stream'].includes(type)) {
+        other = Math.max(other, q);
+      }
+    }
+    return json > 0 && json > other;
+  }
+
+  async serveVersionDocument(secure, id, version, req, res) {
+    const packageVersions = await this.getPackageVersions(id);
+    if (packageVersions.length === 0) {
+      res.status(404).json({error: `Package "${id}" not found`});
+      return;
+    }
+    const registry = await this.buildRegistryResponse(id, packageVersions, secure, req);
+    // Resolved as a download is: the exact version, a dist-tag, or the most recently
+    // published pre-release of that version
+    let v = Object.hasOwn(registry.versions, version) ? version
+      : Object.hasOwn(registry['dist-tags'], version) ? registry['dist-tags'][version] : undefined;
+    if (!v) {
+      v = packageVersions.find(pv => pv.Version.startsWith(`${version}-`))?.Version;
+    }
+    if (!v) {
+      res.status(404).json({error: `Version "${version}" of package "${id}" not found`});
+      return;
+    }
+    res.json(registry.versions[v]);
   }
 
   async serveDownload(secure, id, version, res) {
     try {
-      // First try exact version match
-      let packageData = await this.findPackageVersion(id, version, true);
+      // A dist-tag in place of a version (npm). The only tag is latest.
+      if (version === 'latest') {
+        const versions = await this.getPackageVersions(id);
+        if (versions.length > 0) {
+          version = versions[0].Version; // as dist-tags.latest: the most recently published
+        }
+      }
+
+      // First try exact version match. The tarball itself is only read when it is sent from
+      // here: npm.fhir.org redirects every download to the bucket (35k a day), and read each
+      // one's Content - megabytes - out of the database just to see that it was there
+      const withContent = !this.config.bucketPath;
+      let packageData = await this.findPackageVersion(id, version, true, withContent);
 
       // If not found, try fuzzy match (version + '-%' for pre-release versions)
       if (!packageData) {
-        packageData = await this.findPackageVersion(id, version, false);
+        packageData = await this.findPackageVersion(id, version, false, withContent);
       }
 
       if (!packageData) {
@@ -1534,6 +2447,8 @@ class PackagesModule {
         let bucketUrl = this.getBucketUrl(secure);
         const redirectUrl = `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
         res.redirect(redirectUrl);
+        // a download, though the bucket sends it (npm.fhir.org: all of them)
+        void this.incrementDownloadCounts(packageData.PackageVersionKey, id); // fire-and-forget; errors handled internally
         return;
       }
 
@@ -1556,16 +2471,20 @@ class PackagesModule {
     return bucketUrl;
   }
 
-  async findPackageVersion(id, version, exactMatch) {
+  /**
+   * @param {boolean} [withContent] - false: not the tarball (Content), just whether there is one
+   */
+  async findPackageVersion(id, version, exactMatch, withContent = true) {
+    const columns = withContent ? 'PackageVersionKey, Content' : 'PackageVersionKey';
     return new Promise((resolve, reject) => {
       let sql;
       if (exactMatch) {
-        sql = `SELECT PackageVersionKey, Content
+        sql = `SELECT ${columns}
                FROM PackageVersions
                WHERE Id = ?
                  AND Version = ?`;
       } else {
-        sql = `SELECT PackageVersionKey, Content
+        sql = `SELECT ${columns}
                FROM PackageVersions
                WHERE Id = ?
                  AND Version LIKE ?
@@ -1576,13 +2495,13 @@ class PackagesModule {
         ? [id, version]
         : [id, `${version}-%`];
 
-      this.db.get(sql, params, (err, row) => {
+      this.reader.get(sql, params, guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row || null);
         }
-      });
+      }));
     });
   }
 
@@ -1608,7 +2527,7 @@ class PackagesModule {
       // Update download counts after successful response
       // Do this asynchronously to not delay the response
       setImmediate(() => {
-        this.incrementDownloadCounts(packageData.PackageVersionKey, id);
+        void this.incrementDownloadCounts(packageData.PackageVersionKey, id); // fire-and-forget; errors handled internally
       });
 
     } catch (error) {
@@ -1624,10 +2543,10 @@ class PackagesModule {
         this.db.run(
           'UPDATE PackageVersions SET DownloadCount = DownloadCount + 1 WHERE PackageVersionKey = ?',
           [packageVersionKey],
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
         );
       });
 
@@ -1636,10 +2555,10 @@ class PackagesModule {
         this.db.run(
           'UPDATE Packages SET DownloadCount = DownloadCount + 1 WHERE Id = ?',
           [packageId],
-          (err) => {
+          guarded(reject, (err) => {
             if (err) reject(err);
             else resolve();
-          }
+          })
         );
       });
 
@@ -1687,7 +2606,7 @@ class PackagesModule {
 
   async getPackageVersions(id) {
     return new Promise((resolve, reject) => {
-      const sql = `SELECT PackageVersionKey,
+      const sql = `SELECT v.PackageVersionKey,
                           Version,
                           PubDate,
                           FhirVersions,
@@ -1699,18 +2618,24 @@ class PackagesModule {
                           License,
                           Hash,
                           GUID,
-                          Description
-                   FROM PackageVersions
+                          Description,
+                          d.Integrity,
+                          d.KeyId,
+                          d.Signature,
+                          s.Valid AS PublisherSigValid,
+                          s.KeyId AS PublisherSigKeyId
+                   FROM PackageVersions v LEFT JOIN PackageDist d ON d.PackageVersionKey = v.PackageVersionKey
+                     LEFT JOIN PackageSignatures s ON s.PackageVersionKey = v.PackageVersionKey
                    WHERE Id = ?
                    ORDER BY PubDate DESC`;  // Changed from ASC to DESC for most recent first
 
-      this.db.all(sql, [id], (err, rows) => {
+      this.reader.all(sql, [id], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
           resolve(rows);
         }
-      });
+      }));
     });
   }
 
@@ -1723,7 +2648,7 @@ class PackagesModule {
                    FROM PackageDependencies
                    WHERE PackageVersionKey IN (${placeholders})`;
 
-      this.db.all(sql, packageVersionKeys, (err, rows) => {
+      this.reader.all(sql, packageVersionKeys, guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -1744,7 +2669,7 @@ class PackagesModule {
           }
           resolve(deps);
         }
-      });
+      }));
     });
   }
 
@@ -1778,7 +2703,7 @@ class PackagesModule {
 
       const versionObj = {
         name: id,
-        _id: `${id}@${this.interpretVersion(pv.FhirVersions)}`,
+        _id: `${id}@${pv.Version}`,
         version: pv.Version,
         date: new Date(pv.PubDate).toISOString(),
         fhirVersion: this.interpretVersion(pv.FhirVersions),
@@ -1791,6 +2716,23 @@ class PackagesModule {
           tarball: this.buildTarballUrl(id, pv.Version, secure, req)
         }
       };
+      if (pv.Integrity) {
+        versionObj.dist.integrity = pv.Integrity;
+      }
+      if (this.signer && pv.Signature && pv.KeyId === this.signer.keyid) {
+        versionObj.dist.signatures = [{keyid: pv.KeyId, sig: pv.Signature}];
+      }
+      // The publisher's signature, as the crawler checked it. Not dist.attestations: npm would
+      // try to verify these as Sigstore attestations, and can't (see readme)
+      if (pv.PublisherSigValid !== null && pv.PublisherSigValid !== undefined) {
+        versionObj.dist['fhir-signature'] = {
+          url: this.buildSignatureUrl(id, pv.Version, secure, req),
+          status: pv.PublisherSigValid ? 'confirmed' : 'rejected'
+        };
+        if (pv.PublisherSigKeyId) {
+          versionObj.dist['fhir-signature'].keyid = pv.PublisherSigKeyId;
+        }
+      }
 
       // Add optional fields
       if (pv.HomePage) {
@@ -1817,6 +2759,13 @@ class PackagesModule {
       registry.versions[pv.Version] = versionObj;
     }
 
+    // Publication times, as npm gives them: one per version, plus created and modified
+    const dates = packageVersions.map(pv => new Date(pv.PubDate).toISOString()).sort();
+    registry.time = {created: dates[0], modified: dates[dates.length - 1]};
+    for (const pv of packageVersions) {
+      registry.time[pv.Version] = new Date(pv.PubDate).toISOString();
+    }
+
     // Set latest version and description at package level
     registry['dist-tags'].latest = latestVersion;
     if (description) {
@@ -1826,10 +2775,18 @@ class PackagesModule {
     return registry;
   }
 
+  // Where the publisher's signature of a version is served: npm's form of name@version
+  buildSignatureUrl(id, version, secure, req) {
+    const spec = encodeURIComponent(id).replace(/^%40/, '@') + '@' + encodeURIComponent(version);
+    const base = this.config.baseUrl ? this.config.baseUrl.replace(/\/+$/, '')
+      : `${secure ? 'https' : 'http'}://${(req && req.get && req.get('host')) || 'localhost:3000'}`;
+    return `${base}/packages/-/fhir/v1/signatures/${spec}`;
+  }
+
   buildTarballUrl(id, version, secure, req) {
     if (this.config.bucketPath) {
       let bucketUrl = this.getBucketUrl(secure);
-      return `${bucketUrl}${id}-${version}.tgz`;
+      return `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
     } else {
       // Use direct server URL
       const protocol = secure ? 'https' : 'http';
@@ -1847,6 +2804,8 @@ class PackagesModule {
         const templatePath = path.join(__dirname, 'packages-template.html');
         htmlServer.loadTemplate('packages', templatePath);
       }
+
+      await this.annotateSignatures(packageVersions, () => id, pv => pv.Version);
 
       // Get package counts
       const versionCount = packageVersions.length;
@@ -1893,6 +2852,7 @@ class PackagesModule {
     table += '<th>Type</th>';
     table += '<th>Published</th>';
     table += '<th>Downloads</th>';
+    table += '<th>Signature</th>';
     table += '<th>Actions</th>';
     table += '</tr></thead><tbody>';
 
@@ -1903,6 +2863,7 @@ class PackagesModule {
       table += `<td>${escape(this.codeForKind(pv.Kind))}</td>`;
       table += `<td>${new Date(pv.PubDate).toLocaleDateString()}</td>`;
       table += `<td>${(pv.DownloadCount || 0).toLocaleString()}</td>`;
+      table += this.signatureCell(pv.signatureState);
       table += `<td><a href="/packages/${encodeURIComponent(id)}/${escape(pv.Version)}" class="btn btn-sm btn-primary">Download</a></td>`;
       table += '</tr>';
     }
@@ -1971,6 +2932,62 @@ class PackagesModule {
     return escape(text).replace(/\n/g, '<br>');
   }
 
+  // GET /-/v1/search: the npm registry search API. Takes the FHIR search parameters plus
+  // npm's text/size/from, and returns npm's result shape. Without size, every result is
+  // returned (npm's own clients always send size).
+  async serveV1Search(req, res) {
+    const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+    if (acceptsHtml) {
+      await this.serveSearch(req, res);
+      return;
+    }
+
+    const q = req.query;
+    const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+    try {
+      let results = await this.searchPackages({
+        name: q.name,
+        dependson: q.dependson,
+        canonicalPkg: q.pkgcanonical,
+        canonicalUrl: q.canonical,
+        fhirVersion: q.fhirversion,
+        dependency: q.dependency,
+        text: q.text,
+        sort: q.sort
+      }, req, secure);
+
+      // npm puts the package whose name is the search text first. Without a sort, the
+      // rest stay in publication order.
+      if (q.text && !q.sort) {
+        const name = q.text.trim().toLowerCase();
+        const exact = results.filter(r => r.name.toLowerCase() === name);
+        if (exact.length > 0) {
+          results = [...exact, ...results.filter(r => r.name.toLowerCase() !== name)];
+        }
+      }
+
+      const from = parseInt(q.from, 10) || 0;
+      const page = q.size
+        ? results.slice(from, from + Math.min(parseInt(q.size, 10), V1_SEARCH_MAX_SIZE))
+        : results.slice(from);
+
+      res.setHeader('Content-Type', 'application/json');
+      res.json({
+        objects: page.map(pkg => ({
+          // The npm CLI requires maintainers (it calls maintainers.map) and reads keywords
+          package: { ...pkg, keywords: [], maintainers: [] },
+          score: { final: 1, detail: { quality: 1, popularity: 1, maintenance: 1 } },
+          searchScore: 1
+        })),
+        total: results.length,
+        time: new Date().toUTCString()
+      });
+    } catch (error) {
+      pckLog.error('Error in v1 search:', error);
+      res.status(500).json({error: 'Search failed', message: error.message});
+    }
+  }
+
   async serveSearch(req, res) {
     const {
       name = '',
@@ -2013,7 +3030,7 @@ class PackagesModule {
         // Return JSON response
         let responseData;
 
-        if (objWrapper) {
+        if (objWrapper === true || objWrapper === 'true') {
           // V1 API format with object wrapper
           responseData = {
             objects: results.map(pkg => ({package: pkg}))
@@ -2044,6 +3061,7 @@ class PackagesModule {
       // Get total package count
       const packageCount = await this.getTotalPackageCount();
       const downloadCount = await this.getTotalDownloadCount();
+      await this.annotateSignatures(results, r => r.name, r => r.version);
 
       // Build template variables
       const vars = {
@@ -2081,25 +3099,25 @@ class PackagesModule {
 
   async getTotalPackageCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT COUNT(*) as count FROM PackageVersions', [], (err, row) => {
+      this.reader.get('SELECT COUNT(*) as count FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row ? row.count : 0);
         }
-      });
+      }));
     });
   }
 
   async getTotalDownloadCount() {
     return new Promise((resolve, reject) => {
-      this.db.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], (err, row) => {
+      this.reader.get('SELECT SUM(DownloadCount) as total FROM PackageVersions', [], guarded(reject, (err, row) => {
         if (err) {
           reject(err);
         } else {
           resolve(row ? row.total || 0 : 0);
         }
-      });
+      }));
     });
   }
 
@@ -2137,6 +3155,7 @@ class PackagesModule {
     table += `<th>${this.generateSortHeader('Published', 'date', baseUrl, currentSort)}</th>`;
     table += `<th>${this.generateSortHeader('Downloads', 'count', baseUrl, currentSort)}</th>`;
     table += `<th>${this.generateSortHeader('Canonical', 'canonical', baseUrl, currentSort)}</th>`;
+    table += '<th>Signature</th>';
     table += '</tr></thead><tbody>';
 
     for (const pkg of results) {
@@ -2148,6 +3167,7 @@ class PackagesModule {
       table += `<td>${pkg.date ? new Date(pkg.date).toLocaleDateString() : 'N/A'}</td>`;
       table += `<td>${pkg.count ? pkg.count.toLocaleString() : 'N/A'}</td>`;
       table += `<td>${escape(pkg.canonical || '')}</td>`;
+      table += this.signatureCell(pkg.signatureState);
       table += '</tr>';
     }
 
@@ -2201,27 +3221,27 @@ class PackagesModule {
 
     content += '<tr>';
     content += '<td>Id</td>';
-    content += `<td><input type="text" name="name" value="${escape(vars.name)}"></td>`;
+    content += `<td><input type="text" aria-label="Id" name="name" value="${escape(vars.name)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Depends On</td>';
-    content += `<td><input type="text" name="dependson" value="${escape(vars.dependson)}"> <i>includes both direct and indirect dependencies</i></td>`;
+    content += `<td><input type="text" aria-label="Depends On" name="dependson" value="${escape(vars.dependson)}"> <i>includes both direct and indirect dependencies</i></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Canonical (Package)</td>';
-    content += `<td><input type="text" name="pkgcanonical" value="${escape(vars.canonicalPkg)}"></td>`;
+    content += `<td><input type="text" aria-label="Canonical (Package)" name="pkgcanonical" value="${escape(vars.canonicalPkg)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>Canonical (Resource)</td>';
-    content += `<td><input type="text" name="canonical" value="${escape(vars.canonicalUrl)}"></td>`;
+    content += `<td><input type="text" aria-label="Canonical (Resource)" name="canonical" value="${escape(vars.canonicalUrl)}"></td>`;
     content += '</tr>';
 
     content += '<tr>';
     content += '<td>FHIR Version</td>';
-    content += '<td><select name="fhirversion">';
+    content += '<td><select name="fhirversion" aria-label="FHIR Version">';
     content += '<option value=""></option>';
     content += `<option value="R2" ${vars.r2selected}>R2</option>`;
     content += `<option value="R3" ${vars.r3selected}>R3</option>`;
@@ -2249,18 +3269,6 @@ class PackagesModule {
     return str.replace(/'/g, "''");
   }
 
-  getVersion(fhirVersion) {
-    // Map common FHIR version aliases to actual versions
-    const versionMap = {
-      'R2': '1.0.2',
-      'R3': '3.0.2',
-      'R4': '4.0.1',
-      'R5': '5.0.0'
-    };
-
-    return versionMap[fhirVersion] || fhirVersion;
-  }
-
   interpretVersion(fhirVersions) {
     if (!fhirVersions) return '';
 
@@ -2284,7 +3292,7 @@ class PackagesModule {
   buildPackageUrl(id, version, secure = false, req = null) {
     if (this.config.bucketPath) {
       let bucketUrl = this.getBucketUrl(secure);
-      return `${bucketUrl}${id}-${version}.tgz`;
+      return `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
     } else {
       // Use direct server URL
       const protocol = secure ? 'https' : 'http';
@@ -2321,6 +3329,15 @@ class PackagesModule {
         case 'count':
           comparison = (a.count || 0) - (b.count || 0);
           break;
+        case 'fhirversion':
+          comparison = this.compareVersions(a.fhirVersion || '', b.fhirVersion || '');
+          break;
+        case 'kind':
+          comparison = (a.kind || '').localeCompare(b.kind || '');
+          break;
+        case 'canonical':
+          comparison = (a.canonical || '').localeCompare(b.canonical || '');
+          break;
         default:
           return 0;
       }
@@ -2329,97 +3346,97 @@ class PackagesModule {
     });
   }
 
+  // Semver-style comparison: numeric major.minor.patch, then a version with a pre-release
+  // label (1.0.0-ballot) sorts before the release (1.0.0). Anything unparseable falls back
+  // to string order, so the result is always a number (Array.sort misbehaves on NaN).
   compareVersions(a, b) {
-    const aParts = a.split('.').map(Number);
-    const bParts = b.split('.').map(Number);
+    const parse = v => {
+      const [core, ...pre] = String(v).trim().split('-');
+      return { nums: core.split('.').map(n => parseInt(n, 10)), pre: pre.join('-') };
+    };
+    const va = parse(a);
+    const vb = parse(b);
 
-    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-      const aPart = aParts[i] || 0;
-      const bPart = bParts[i] || 0;
-
+    for (let i = 0; i < Math.max(va.nums.length, vb.nums.length); i++) {
+      const aPart = va.nums[i] || 0;
+      const bPart = vb.nums[i] || 0;
+      if (Number.isNaN(aPart) || Number.isNaN(bPart)) {
+        return String(a).localeCompare(String(b));
+      }
       if (aPart !== bPart) {
         return aPart - bPart;
       }
     }
 
-    return 0;
+    if (va.pre === vb.pre) {
+      return 0;
+    }
+    if (!va.pre) {
+      return 1;
+    }
+    if (!vb.pre) {
+      return -1;
+    }
+    return va.pre.localeCompare(vb.pre, undefined, { numeric: true });
   }
 
-  generateSearchHtml(req, results, params) {
-    // Simplified HTML generation - you'd want to use a proper template engine
-    const {name, dependson, canonicalPkg, canonicalUrl, fhirVersion} = params;
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>FHIR Package Search</title>
-      <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .search-form { background: #f5f5f5; padding: 20px; margin-bottom: 20px; }
-        .search-form input, .search-form select { margin: 5px; padding: 5px; }
-        .results { margin-top: 20px; }
-        .package { border: 1px solid #ddd; margin: 10px 0; padding: 15px; }
-        .package-name { font-weight: bold; font-size: 1.2em; }
-        .package-details { color: #666; margin-top: 5px; }
-      </style>
-    </head>
-    <body>
-      <h1>FHIR Package Search</h1>
-      
-      <form class="search-form" method="GET">
-        <input type="text" name="name" placeholder="Package name" value="${escape(name)}">
-        <input type="text" name="dependson" placeholder="Depends on" value="${escape(dependson)}">
-        <input type="text" name="canonicalPkg" placeholder="Canonical package" value="${escape(canonicalPkg)}">
-        <input type="text" name="canonicalUrl" placeholder="Canonical URL" value="${escape(canonicalUrl)}">
-        <select name="fhirVersion">
-          <option value="">Any FHIR version</option>
-          <option value="R2" ${fhirVersion === 'R2' ? 'selected' : ''}>R2</option>
-          <option value="R3" ${fhirVersion === 'R3' ? 'selected' : ''}>R3</option>
-          <option value="R4" ${fhirVersion === 'R4' ? 'selected' : ''}>R4</option>
-          <option value="R5" ${fhirVersion === 'R5' ? 'selected' : ''}>R5</option>
-        </select>
-        <button type="submit">Search</button>
-      </form>
-      
-      <div class="results">
-        <h2>Results (${results.length} packages found)</h2>
-        ${results.map(pkg => `
-          <div class="package">
-            <div class="package-name">
-              <a href="${pkg.url}">${escape(pkg.name)}</a> v${escape(pkg.version)}
-            </div>
-            <div class="package-details">
-              <strong>FHIR Version:</strong> ${escape(pkg.fhirVersion)}<br>
-              <strong>Type:</strong> ${escape(pkg.kind)}<br>
-              <strong>Canonical:</strong> ${escape(pkg.canonical)}<br>
-              ${pkg.description ? `<strong>Description:</strong> ${escape(pkg.description)}<br>` : ''}
-              ${pkg.date ? `<strong>Published:</strong> ${new Date(pkg.date).toLocaleDateString()}<br>` : ''}
-              ${pkg.count ? `<strong>Downloads:</strong> ${pkg.count}<br>` : ''}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    </body>
-    </html>
-  `;
+  /**
+   * The paragraph for the server's daily report: packages served (tarball
+   * downloads) and package versions newly indexed by the crawler in the period.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    const counts = this.stats.countsSince(since, now);
+    const downloads = counts.operations.download || 0;
+    const sentences = [`${plural(downloads, 'package')} ${downloads === 1 ? 'was' : 'were'} served (${plural(counts.total, 'request')} in all).`];
+    if (this.db) {
+      try {
+        const row = await new Promise((resolve, reject) => this.db.get(
+          'SELECT COUNT(*) AS n, COUNT(DISTINCT Id) AS ids FROM PackageVersions WHERE Indexed > ?',
+          [new Date(since).toISOString().replace('T', ' ').substring(0, 19)],
+          guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+        sentences.push(row.n === 0
+          ? 'No new package versions were found.'
+          : `${plural(row.n, 'new package version')} ${row.n === 1 ? 'was' : 'were'} found, of ${plural(row.ids, 'package')}.`);
+      } catch (e) {
+        sentences.push(`The new packages could not be counted: ${e.message}.`);
+      }
+    }
+    return sentences.join(' ');
   }
 
   async shutdown() {
     pckLog.info('Shutting down Packages module...');
 
-    this.stopCrawlerJob();
+    await this.stopCrawlerJob();
+
+    this.stopping = true;
+    if (this.distBackfill) {
+      await this.distBackfill;
+    }
+
+    if (this.readers) {
+      const readers = this.readers;
+      this.readers = null;
+      await new Promise((resolve) => readers.close((err) => {
+        if (err) {
+          pckLog.error('Error closing the packages database read connections:', err.message);
+        }
+        resolve();
+      }));
+    }
 
     // Close database connection
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             pckLog.error('Error closing packages database:', err.message);
           } else {
             pckLog.info('Packages database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
 
@@ -2464,7 +3481,7 @@ class PackagesModule {
     return new Promise((resolve, reject) => {
       const sql = 'SELECT Id, Version FROM PackageVersions';
 
-      this.db.all(sql, [], (err, rows) => {
+      this.reader.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2479,7 +3496,7 @@ class PackagesModule {
 
           resolve(validPackages);
         }
-      });
+      }));
     });
   }
 
@@ -2491,7 +3508,7 @@ class PackagesModule {
                         PackageVersions
                    WHERE PackageDependencies.PackageVersionKey = PackageVersions.PackageVersionKey`;
 
-      this.db.all(sql, [], (err, rows) => {
+      this.reader.all(sql, [], guarded(reject, (err, rows) => {
         if (err) {
           reject(err);
         } else {
@@ -2527,7 +3544,7 @@ class PackagesModule {
 
           resolve(brokenDeps);
         }
-      });
+      }));
     });
   }
 
@@ -2626,7 +3643,7 @@ class PackagesModule {
     content += '</table>';
 
     // Help info
-    content += '<h5>About This Report</h5>';
+    content += '<h3>About This Report</h3>';
     content += '<p>This report shows packages that have dependencies which cannot be resolved. A dependency is considered broken if:</p>';
     content += '<ul>';
     content += '<li>The referenced package does not exist</li>';
@@ -2675,13 +3692,14 @@ class PackagesModule {
 
       if (logData) {
         if (logData.startTime) {
-          content += `<tr><td>Start Time:</td><td>${new Date(logData.startTime).toLocaleString()}</td></tr>`;
-        }
-        if (logData.endTime) {
-          content += `<tr><td>End Time:</td><td>${new Date(logData.endTime).toLocaleString()}</td></tr>`;
+          // relative, because the server's local clock means nothing to the reader
+          content += `<tr><td>Started:</td><td title="${new Date(logData.startTime).toISOString()}">${this.formatTimeAgo(logData.startTime)}</td></tr>`;
         }
         if (logData.runTime) {
-          content += `<tr><td>Duration:</td><td>${logData.runTime}</td></tr>`;
+          const ms = parseInt(logData.runTime, 10);
+          if (!isNaN(ms)) {
+            content += `<tr><td>Duration:</td><td>${(ms / 1000).toFixed(1)} seconds</td></tr>`;
+          }
         }
         if (logData.totalBytes) {
           content += `<tr><td>Total Bytes:</td><td>${logData.totalBytes.toLocaleString()}</td></tr>`;
@@ -2717,6 +3735,24 @@ class PackagesModule {
     return content;
   }
 
+  formatTimeAgo(time) {
+    const secs = Math.max(0, Math.round((Date.now() - new Date(time).getTime()) / 1000));
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (secs < 60) {
+      return plural(secs, 'second');
+    }
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) {
+      return plural(mins, 'minute');
+    }
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) {
+      const rem = mins % 60;
+      return rem ? `${hours} hour${hours === 1 ? '' : 's'} ${rem} minute${rem === 1 ? '' : 's'} ago` : plural(hours, 'hour');
+    }
+    return plural(Math.floor(hours / 24), 'day');
+  }
+
 // Add this new method to format the crawler log as readable text
   formatCrawlerLog(logData) {
     let output = '';
@@ -2727,7 +3763,9 @@ class PackagesModule {
 
     if (logData.feeds && logData.feeds.length > 0) {
       for (const feed of logData.feeds) {
-        if (feed.exception || feed.rateLimited) {
+        if (feed.skipped) {
+          output += `Feed: ${feed.url}: skipped - ${feed.skipped}\n`;
+        } else if (feed.exception || feed.rateLimited) {
           // Feed itself had an error
           const error = feed.rateLimited ? feed.rateLimitMessage : feed.exception;
           output += `Feed: ${feed.url}: ${error}\n`;
@@ -2741,6 +3779,9 @@ class PackagesModule {
               if (item.error && item.status !== 'Already Processed') {
                 const guid = item.guid || 'unknown';
                 output += `  error: ${guid}: ${item.error}\n`;
+              }
+              if (item.signature && !item.signature.startsWith('valid') && item.signature !== 'unsigned') {
+                output += `  signature: ${item.guid || 'unknown'}: ${item.signature}\n`;
               }
             }
           }
@@ -2757,12 +3798,12 @@ class PackagesModule {
   getStatus() {
     return {
       enabled: true,
+      // No file system paths here: this is served publicly (/packages/status and the
+      // server health check)
       database: {
-        connected: this.db ? true : false,
-        path: this.config.database
+        connected: this.db ? true : false
       },
       mirror: {
-        path: this.config.mirrorPath,
         exists: fs.existsSync(this.config.mirrorPath)
       },
       crawler: {
@@ -2771,6 +3812,16 @@ class PackagesModule {
         schedule: this.config.crawler.schedule,
         lastRun: this.lastRunTime,
         totalRuns: this.totalRuns
+      },
+      npmSigning: {
+        enabled: this.signer ? true : false,
+        keyid: this.signer ? this.signer.keyid : undefined,
+        // complete: every version has its integrity (and signature); running, incomplete
+        // (tried again after the next crawl), stopped
+        state: this.distStatus.state,
+        missing: this.distStatus.missing,
+        done: this.distStatus.done,
+        failed: this.distStatus.failed
       }
     };
   }
@@ -2840,5 +3891,12 @@ class PackagesModule {
     }
   }
 }
+
+PackagesModule.QUERY_PARAMS = { search: SEARCH_PARAMS, v1Search: V1_SEARCH_PARAMS, updates: UPDATES_PARAMS, broken: BROKEN_PARAMS, npmCheck: NPM_CHECK_PARAMS };
+PackagesModule.FHIR_RELEASE_VERSIONS = FHIR_RELEASE_VERSIONS;
+PackagesModule.PATH_PARAMS = {
+  id: { maxLength: PACKAGE_ID_MAX_LENGTH, pattern: PACKAGE_ID_PATTERN },
+  version: { maxLength: PACKAGE_VERSION_MAX_LENGTH, pattern: PACKAGE_VERSION_PATTERN }
+};
 
 module.exports = PackagesModule;

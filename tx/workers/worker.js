@@ -7,6 +7,7 @@ const {Issue} = require("../library/operation-outcome");
 const {Languages} = require("../../library/languages");
 const {ConceptMap} = require("../library/conceptmap");
 const {Renderer} = require("../library/renderer");
+const {editionName} = require("../sct/editions");
 
 // The cache-id travels as an HTTP header (not an operation parameter) so proxies /
 // load-balancers can act on it and the server can reject it before parsing the body.
@@ -32,6 +33,15 @@ class TerminologyWorker {
   additionalResources = []; // Resources provided via tx-resource parameter or cache
   foundParameters = [];
   renderer;
+
+  // ValueSetChecker reads both of these off whatever worker it is given, so they belong to
+  // every worker that can construct one - not just the validate and expand workers that
+  // happen to have declared them first. A worker without them fails inside the checker with
+  // "Cannot read properties of undefined (reading 'size')", a long way from the cause.
+  // ValidateWorker and ExpandWorker redeclare them; a subclass field initialiser overrides
+  // the base one, so their behaviour is unchanged.
+  requiredSupplements = new Set();
+  usedSupplements = new Set();
 
   /**
    * @param {OperationContext} opContext - Operation context
@@ -73,6 +83,15 @@ class TerminologyWorker {
    */
   deadCheck(place = 'unknown') {
     this.opContext.deadCheck(place);
+  }
+
+  /**
+   * deadCheck plus a cooperative event-loop yield (see OperationContext.checkAndYield).
+   * Use this (awaited) from long-running loops in async code.
+   * @param {string} place - Location identifier for debugging
+   */
+  async checkAndYield(place = 'unknown') {
+    await this.opContext.checkAndYield(place);
   }
 
   /**
@@ -128,9 +147,10 @@ class TerminologyWorker {
         }
       }
       const found = matches[latest];
-      if (this.additionalResourcesCacheId && this.log) {
-        this.log.info(`cache-id '${this.additionalResourcesCacheId}': using cached ${found.resourceType} ${found.url}${found.version ? '|' + found.version : ''} for lookup of ${url}${version ? '|' + version : ''}`);
-      }
+      // enable for logging
+      // if (this.additionalResourcesCacheId && this.log) {
+      //   this.log.info(`cache-id '${this.additionalResourcesCacheId}': using cached ${found.resourceType} ${found.url}${found.version ? '|' + found.version : ''} for lookup of ${url}${version ? '|' + version : ''}`);
+      // }
       return found;
     }
   }
@@ -154,29 +174,31 @@ class TerminologyWorker {
     if (!noVParams) {
       version = this.determineVersionBase(url, version, params);
     }
-    let codeSystemResource = null;
-    let provider = null;
-    const supplements = this.loadSupplements(url, version, statedSupplements);
-
     // First check additional resources
-    codeSystemResource = this.findInAdditionalResources(url, version, 'CodeSystem', !nullOk);
+    const codeSystemResource = this.findInAdditionalResources(url, version, 'CodeSystem', !nullOk);
 
-    if (codeSystemResource) {
-      if (codeSystemResource.content === 'complete') {
+    const build = async (supplements) => {
+      let provider = null;
+      if (codeSystemResource && codeSystemResource.content === 'complete') {
         // Create provider from complete code system
         provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
       }
-    }
+      // If no provider from additional resources, try main provider
+      if (!provider) {
+        provider = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
+      }
+      // If still no provider but we have a code system with allowed content mode
+      if (!provider && codeSystemResource && kinds.includes(codeSystemResource.content)) {
+        provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
+      }
+      // Track for lifecycle cleanup at end of request, at once: what follows can throw (a client
+      // that has gone, in loadSupplements). Providers built from a factory open a fresh sqlite
+      // connection that needs releasing; resource-built providers and others are no-ops.
+      this.opContext.registerProvider(provider);
+      return provider;
+    };
 
-    // If no provider from additional resources, try main provider
-    if (!provider) {
-      provider = await this.provider.getCodeSystemProvider(this.opContext, url, version, supplements);
-    }
-
-    // If still no provider but we have a code system with allowed content mode
-    if (!provider && codeSystemResource && kinds.includes(codeSystemResource.content)) {
-      provider = await this.provider.createCodeSystemProvider(this.opContext, codeSystemResource, supplements);
-    }
+    let provider = await this.buildWithSupplements(url, version, statedSupplements, build);
 
     if (!provider && !nullOk) {
       if (!version) {
@@ -190,16 +212,41 @@ class TerminologyWorker {
         }
       }
     }
-    if (provider) {
-      if (checkVer) {
-        this.checkVersion(url, provider.version(), params, provider.versionAlgorithm(), op);
-      }
-      // Track for lifecycle cleanup at end of request. Providers built from
-      // a factory open a fresh sqlite connection that needs releasing;
-      // resource-built providers and others without close() are no-ops.
-      this.opContext.registerProvider(provider);
+    if (provider && checkVer) {
+      this.checkVersion(url, provider.version(), params, provider.versionAlgorithm(), op);
     }
 
+    return provider;
+  }
+
+  /**
+   * Build a code system provider with the supplements that apply to it.
+   *
+   * The supplements are first chosen for the version asked for. When no version was asked for
+   * (or only part of one), it's the version the provider turned out to be that decides which
+   * apply: a supplement pinned to another version of the code system (supplements = url|2.80 on
+   * LOINC 2.83) is not used - so an operation that requires it fails - and one pinned to this
+   * version is (the server's own supplements aren't found at all when there's no version to
+   * match them against - #387)
+   *
+   * @param {string} url - Code system URL
+   * @param {string} version - the version asked for, if any
+   * @param {Set<string>} statedSupplements - Supplements invoked in context
+   * @param {function(CodeSystem[]): Promise<CodeSystemProvider|null>} build - makes the provider
+   *   with the given supplements (and registers it for release at the end of the operation)
+   * @returns {Promise<CodeSystemProvider|null>}
+   */
+  async buildWithSupplements(url, version, statedSupplements, build) {
+    const supplements = this.loadSupplements(url, version, statedSupplements);
+    let provider = await build(supplements);
+    const actual = provider ? provider.version() : null;
+    if (actual && actual !== version) {
+      const fitting = this.loadSupplements(url, actual, statedSupplements);
+      const key = (list) => list.map(cs => cs.vurl || cs.url).sort().join(' ');
+      if (key(fitting) !== key(supplements)) {
+        provider = await build(fitting);
+      }
+    }
     return provider;
   }
 
@@ -264,10 +311,52 @@ class TerminologyWorker {
    * @returns {Array<CodeSystem>} Supplement code systems
    */
   loadSupplements(url, version = '', statedSupplements) {
+    return this.#oneVersionEach(this.#findSupplements(url, version, statedSupplements), statedSupplements);
+  }
+
+  /**
+   * Only one version of a supplement applies. When more than one is in scope (the server has
+   * one, and the request passes another in tx-resource), the one the request names by version
+   * (useSupplement url|version, or a value set's supplement extension) wins; failing that, the
+   * request's own over the server's; failing that, the latest
+   *
+   * @param {CodeSystem[]} supplements - server ones first, then the request's
+   * @param {Set<string>} statedSupplements
+   * @returns {CodeSystem[]}
+   */
+  #oneVersionEach(supplements, statedSupplements) {
+    const byUrl = new Map();
+    for (const cs of supplements) {
+      if (!byUrl.has(cs.url)) {
+        byUrl.set(cs.url, []);
+      }
+      byUrl.get(cs.url).push(cs);
+    }
+    if ([...byUrl.values()].every(list => list.length === 1)) {
+      return supplements;
+    }
+    const result = [];
+    for (const list of byUrl.values()) {
+      if (list.length === 1) {
+        result.push(list[0]);
+        continue;
+      }
+      let chosen = statedSupplements ? list.find(cs => cs.version && statedSupplements.has(cs.vurl)) : null;
+      if (!chosen) {
+        chosen = list.find(cs => (this.additionalResources || []).includes(cs));
+      }
+      if (!chosen) {
+        chosen = list.reduce((a, b) => (VersionUtilities.compareVersionsGeneral(b.version, a.version) > 0 ? b : a));
+      }
+      result.push(chosen);
+    }
+    return result;
+  }
+
+  #findSupplements(url, version, statedSupplements) {
     const supplements = [];
 
     supplements.push(...this.provider.loadSupplements(url, version, statedSupplements));
-    // todo: look in provider for supplements
 
     if (!this.additionalResources) {
       return supplements;
@@ -278,14 +367,16 @@ class TerminologyWorker {
       if (resource.resourceType === 'CodeSystem' && resource instanceof CodeSystem) {
         const cs = resource;
         // Check if this code system supplements the target URL
-        const supplementsUrl = cs.jsonObj.supplements;
+        // (supplementsUrl rather than jsonObj.supplements: a resource from the shared
+        // resource cache answers it without being loaded - see resource-cache-sqlite.js)
+        const supplementsUrl = cs.supplementsUrl;
 
         if (!supplementsUrl) {
           continue;
         }
 
-        // we consider either language packs or specified supplements
-        if (!(cs.isLangPack() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
+        // we consider either global supplements or specified supplements
+        if (!(cs.isGlobalSupplement() || (statedSupplements && (statedSupplements.has(cs.url) || statedSupplements.has(cs.vurl))))) {
           continue;
         }
         if (this.hasSupplement(cs, supplements)) {
@@ -305,7 +396,11 @@ class TerminologyWorker {
           } else {
             // Version specified, check if it matches the tail of supplements URL
             const supplementsVersion = supplementsUrl.substring(`${url}|`.length);
-            if (supplementsVersion === version || VersionUtilities.versionMatches(supplementsVersion, version)) {
+            // not every code system's versions are semver (SNOMED CT's are URIs, ICF's are dates):
+            // versionMatches throws on those, so match by the version's own algorithm, as
+            // CodeSystem.isSupplementFor does for the server's own supplements
+            if (supplementsVersion === version || VersionUtilities.versionMatchesByAlgorithm(supplementsVersion, version,
+                VersionUtilities.guessVersionAlgorithmFromVersion(version))) {
               supplements.push(cs);
             }
           }
@@ -359,14 +454,22 @@ class TerminologyWorker {
       return null;
     }
     if (url.startsWith("#")) {
+      // A local reference: per FHIR, #id is resolved against the contained resources of
+      // the resource being processed - which, when that is itself a contained value set,
+      // means its container's (contained resources are all siblings in one list)
       if (source) {
-        if (source.jsonObj) {
-          source = source.jsonObj;
-        }
-        for (const contained of source.contained || []) {
-          if (contained.id === url.substring(1)) {
+        const container = source.container || source;
+        const json = container.jsonObj || container;
+        for (const contained of json.contained || []) {
+          if (contained && contained.id === url.substring(1)) {
+            if (contained.resourceType !== 'ValueSet') {
+              // the resource wrappers already reject this; this is the second line of defence
+              throw new Issue('error', 'not-supported', null, 'CONTAINED_RESOURCE_NOT_SUPPORTED',
+                `The reference '${url}' is to a contained ${contained.resourceType}, not a ValueSet`, 'not-supported', 400);
+            }
             const ret = this.wrapRawResource(contained);
             ret.isContained = true;
+            ret.container = container.jsonObj ? container : this.wrapRawResource(container);
             return ret;
           }
         }
@@ -392,7 +495,12 @@ class TerminologyWorker {
 
     // Then try the provider
     if (this.provider && this.provider.findValueSet) {
-      const vs = await this.provider.findValueSet(this.opContext, effectiveUrl, effectiveVersion);
+      // an implicit value set in the generic form (http://snomed.info/sct?fhir_vs...) is drawn
+      // from the code system version the request asks for, if it asks for one
+      const systemVersionFor = this.params && this.params.requestedSystemVersion
+        ? (system) => this.params.requestedSystemVersion(system)
+        : null;
+      const vs = await this.provider.findValueSet(this.opContext, effectiveUrl, effectiveVersion, systemVersionFor);
       if (vs) {
         return vs;
       }
@@ -453,13 +561,28 @@ class TerminologyWorker {
   /**
    * Process a ValueSet, recording context and extracting embedded expansion parameters
    * @param {Object} vs - ValueSet resource (raw JSON)
-   * @param {Object} params - Parameters resource to add extracted params to
+   * @param {TxParameters} params - the parameters to add what the ValueSet declares to.
+   *   Note: this is the caller's parameters, not this.params - the worker's own
+   *   params is null when expanding an imported ValueSet
    */
+  /** The circular reference key seeValueSet tracks for a value set */
+  valueSetContextKey(vs) {
+    return vs.contextKey !== undefined ? vs.contextKey : (vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null);
+  }
+
+  /** Finished processing a value set: see OperationContext.unseeContext */
+  unseeValueSet(vs) {
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.unseeContext(key);
+    }
+  }
+
   seeValueSet(vs, params) {
     // Build canonical URL from url and version
-    const vurl = vs.url ? (vs.url + (vs.version ? '|' + vs.version : '')) : null;
-    if (vurl) {
-      this.opContext.seeContext(vurl);
+    const key = this.valueSetContextKey(vs);
+    if (key) {
+      this.opContext.seeContext(key);
     }
     // Check for expansion parameter extensions on compose
     if (vs.jsonObj.compose && vs.jsonObj.compose.extension) {
@@ -473,12 +596,14 @@ class TerminologyWorker {
           if (nameExt && valueExt) {
             const name = nameExt.valueString || nameExt.valueCode;
             if (name) {
-              this.params.seeParameter(name, valueExt, false);
+              params.seeParameter(name, valueExt, false);
             }
           }
         }
       }
     }
+    // R6's ValueSet.compose.property
+    params.seeCompose(vs.jsonObj.compose);
     if (!params.FHTTPLanguages && vs.jsonObj.language) {
       params.HTTPLanguages = Languages.fromAcceptLanguage(vs.jsonObj.language, this.languages, !this.isValidating());
     }
@@ -657,28 +782,86 @@ class TerminologyWorker {
       // The cache must already exist: caches are created explicitly via
       // $cache-control?mode=start, which is the only thing that mints a cache-id.
       // A cache-id the server doesn't know is an unambiguous, server-authoritative
-      // error condition (never created, or expired / released) - report it with a
-      // specific coded issue rather than silently auto-creating a fresh cache and
-      // then failing obscurely later when a by-reference resource can't be found.
+      // error condition - report it with a specific coded issue rather than silently
+      // auto-creating a fresh cache and then failing obscurely later when a
+      // by-reference resource can't be found. The cache keeps a tombstone for every
+      // id it has retired, so describeMissing() names which fate this id met
+      // (never issued here / closed by the client / idle-expired) instead of
+      // offering the client a list of possibilities to guess between.
       if (!this.opContext.resourceCache.has(cacheId)) {
-        throw new Issue('error', 'not-found', null, 'CACHE_ID_UNKNOWN',
-          this.i18n.translate('CACHE_ID_UNKNOWN', this.opContext.langs, [cacheId]),
+        // A comma in the cache-id means the request carried multiple X-Cache-Id
+        // headers (Node joins duplicate headers with ", "): server-minted ids are
+        // single uuids. This happens when a client attaches a new cache-id header
+        // without clearing the old one (e.g. IG publisher builds where a second
+        // client context wrapped the same HTTP client) - report that specifically,
+        // because the generic "unknown cache" message sends people looking for an
+        // expiry problem that isn't there.
+        if (cacheId.includes(',')) {
+          throw new Issue('error', 'invalid', null, 'CACHE_ID_DUPLICATE',
+            `The request carried multiple ${CACHE_ID_HEADER} headers (combined value '${cacheId}'). ` +
+            'This is a client error: each request must carry exactly one cache-id. It usually means the client ' +
+            'started a second cache on a connection that already had one, without removing the first header.',
+            'cache-id-duplicate', 400);
+        }
+        // The issue *code* stays cache-id-unknown for every fate: clients switch on
+        // the coding, and all three mean the same thing to them (this cache is gone,
+        // don't retry). Only the human-readable diagnostics differ.
+        const { messageId, params } = this.opContext.resourceCache.describeMissing(cacheId);
+        throw new Issue('error', 'not-found', null, messageId,
+          this.i18n.translate(messageId, this.opContext.langs, params),
           'cache-id-unknown', 404);
       }
 
-      // The cache exists: merge any resources supplied on this request into it
-      // (incremental population is allowed), then expose the full cache contents.
-      const toCache = txResources.concat(primaryResources);
-      if (toCache.length > 0) {
-        this.opContext.resourceCache.add(cacheId, toCache);
+      // The cache exists. If it is unsealed, merge any resources supplied on this
+      // request into it (incremental population). If it is sealed, the cache is
+      // fixed at what it was created with: resources supplied now are still used
+      // for this request (via additionalResources below) but are NOT added to the
+      // shared cache, so a sealed cache never grows.
+      if (!this.opContext.resourceCache.isSealed(cacheId)) {
+        const toCache = txResources.concat(primaryResources);
+        if (toCache.length > 0) {
+          this.addToClientCache(cacheId, toCache);
+        }
+        this.additionalResources = this.opContext.resourceCache.get(cacheId);
+      } else {
+        // Sealed: expose the cache contents plus this request's own inline
+        // resources (used for this call only), without mutating the cache.
+        this.additionalResources = this.opContext.resourceCache.get(cacheId)
+          .concat(txResources, primaryResources);
       }
-
-      this.additionalResources = this.opContext.resourceCache.get(cacheId);
       this.additionalResourcesCacheId = cacheId;
     } else {
       // No cache-id, just use the tx-resources directly
       this.additionalResources = txResources;
     }
+  }
+
+  /**
+   * Add resources to the client side cache cacheId. If that would take the cache over
+   * cacheMaxConcepts, the cache is dropped and this throws the 404 cache-id-unknown
+   * (CACHE_ID_DISCARDED_TOO_BIG), in the request's language: the operation is not performed.
+   * @param {string} cacheId
+   * @param {Object[]} resources
+   */
+  addToClientCache(cacheId, resources) {
+    try {
+      this.opContext.resourceCache.add(cacheId, resources);
+    } catch (e) {
+      throw this.translateCacheIssue(e);
+    }
+  }
+
+  /**
+   * The resource cache raises its limits (CACHE_ID_DISCARDED_TOO_BIG, CACHE_REQUEST_TOO_BIG,
+   * CACHE_START_TOO_BIG) in English, with their parameters: put the message in the request's language
+   * @param {Error} e
+   * @returns {Error} e
+   */
+  translateCacheIssue(e) {
+    if (e && e.msgId && e.msgParams) {
+      e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
+    }
+    return e;
   }
 
   /**
@@ -993,12 +1176,12 @@ class TerminologyWorker {
   }
 
   presentVersionList(items) {
-    if (items.length === 0) return '';
-    if (items.length === 1) return items[0];
-    if (items.length === 2) return `${items[0]} or ${items[1]}`;
-
-    const lastItem = items.pop();
-    return `${items.join(', ')} and ${lastItem}`;
+    // a code system with no version is listed as one (null): say so, rather than 'null'
+    const list = items.map(v => (v === null || v === undefined || v === '') ? '(no version)' : v);
+    if (list.length === 0) return '';
+    if (list.length === 1) return list[0];
+    if (list.length === 2) return `${list[0]} or ${list[1]}`;
+    return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
   }
 
   checkNoLockedDate(url, compose) {
@@ -1018,8 +1201,44 @@ class TerminologyWorker {
   }
 }
 
+
+/**
+ * Choose the message id to use when reporting an unknown code, based on the
+ * code system and whether a version is known. SNOMED CT gets its own message
+ * because the edition is named in the message (see SCTVersion below)
+ * @param {string} url - code system url
+ * @param {string} version - code system version (may be null)
+ * @returns {string} message id
+ */
+function Unknown_Code_in_VersionSCT(url, version) {
+  if (url === 'http://snomed.info/sct') {
+    return 'Unknown_Code_in_Version_SCT';
+  } else if (version) {
+    return 'Unknown_Code_in_Version';
+  } else {
+    return 'Unknown_Code_in';
+  }
+}
+
+/**
+ * Human readable name for the SNOMED CT edition in a SNOMED CT version URI.
+ * Returns '' for anything that isn't a versioned SNOMED CT reference
+ * @param {string} url - code system url
+ * @param {string} ver - code system version
+ * @returns {string} edition name, or ''
+ */
+function SCTVersion(url, ver) {
+  if (url !== 'http://snomed.info/sct' || !ver) {
+    return '';
+  }
+  const s = ver.split('/');
+  return (s.length >= 5 && editionName(s[4])) || 'unknown';
+}
+
 module.exports = {
   TerminologyWorker,
   TerminologySetupError,
-  CACHE_ID_HEADER
+  CACHE_ID_HEADER,
+  Unknown_Code_in_VersionSCT,
+  SCTVersion
 };

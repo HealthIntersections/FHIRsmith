@@ -226,7 +226,7 @@ describe('Lookup Worker', () => {
   describe('GET /tx/r5/CodeSystem/:id/$lookup', () => {
     test('should lookup by instance id', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$lookup')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$lookup')
         .query({ code: 'male' })
         .set('Accept', 'application/json');
 
@@ -249,7 +249,7 @@ describe('Lookup Worker', () => {
 
     test('should return 400 when code is missing for instance lookup', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$lookup')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$lookup')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(400);
@@ -260,7 +260,7 @@ describe('Lookup Worker', () => {
   describe('POST /tx/r5/CodeSystem/:id/$lookup', () => {
     test('should lookup by instance id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/CodeSystem/administrative-gender/$lookup')
+        .post('/tx/r5/CodeSystem/core-administrative-gender/$lookup')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({

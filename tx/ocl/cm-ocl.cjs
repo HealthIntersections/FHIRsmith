@@ -3,8 +3,17 @@ const { ConceptMap } = require('../library/conceptmap');
 const { PAGE_SIZE } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
+const { stripIdPrefix } = require('../library/resource-ids');
+const { OclReferenceResolver, isOclRepoPath } = require('./resolve/reference-resolver');
+const Logger = require('../../library/logger');
+const oclCmLog = Logger.getInstance().child({ module: 'ocl-cm' });
 
 const DEFAULT_MAX_SEARCH_PAGES = 10;
+
+// OCL map types that relate concepts without mapping one to the other, so they must
+// not surface as $translate matches: CIEL uses Q-AND-A (question -> answer) and
+// CONCEPT-SET (set -> member). Unknown types still map to related-to.
+const NON_TRANSLATION_MAP_TYPES = new Set(['Q-AND-A', 'CONCEPT-SET']);
 
 class OCLConceptMapProvider extends AbstractConceptMapProvider {
   constructor(config = {}) {
@@ -22,9 +31,18 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     this._sourceCandidatesCache = new Map();
     this._sourceUrlsByCanonical = new Map();
     this._canonicalBySourceUrl = new Map();
+
+    // Asks OCL which repo holds a canonical instead of guessing via text search.
+    // Disabled unless a token is configured, in which case #candidateSourceUrls
+    // keeps using its existing search.
+    this.referenceResolver = new OclReferenceResolver({
+      httpClient: this.httpClient,
+      token: options.token || null,
+      logger: oclCmLog
+    });
   }
 
-  assignIds(ids) {
+  prefixIds() {
     if (!this.spaceId) {
       return;
     }
@@ -33,13 +51,18 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     this._idMap.clear();
 
     for (const cm of unique) {
-      if (!cm.id.startsWith(`${this.spaceId}-`)) {
-        const nextId = `${this.spaceId}-${cm.id}`;
-        cm.id = nextId;
-        cm.jsonObj.id = nextId;
-      }
+      this.#prefixId(cm);
       this._idMap.set(cm.id, cm);
-      ids.add(`ConceptMap/${cm.id}`);
+    }
+  }
+
+  // concept maps are served in this provider's id space - including the ones that arrive
+  // after the spaceId is assigned
+  #prefixId(cm) {
+    if (this.spaceId && cm.id && !cm.id.startsWith(`${this.spaceId}-`)) {
+      const nextId = `${this.spaceId}-${cm.id}`;
+      cm.id = nextId;
+      cm.jsonObj.id = nextId;
     }
   }
 
@@ -56,7 +79,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
 
     const mappingId = this.#extractMappingId(url);
     if (mappingId) {
-      return await this.fetchConceptMapById(mappingId);
+      return await this.#fetchMappingById(mappingId);
     }
 
     try {
@@ -81,14 +104,15 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     if (this._idMap.has(id)) {
       return this._idMap.get(id);
     }
+    // only ids in this provider's space - the rest is the OCL mapping id
+    const rawId = stripIdPrefix(id, this.spaceId);
+    return rawId ? await this.#fetchMappingById(rawId) : null;
+  }
 
-    let rawId = id;
-    if (this.spaceId && id.startsWith(`${this.spaceId}-`)) {
-      rawId = id.substring(this.spaceId.length + 1);
-    }
-
-    if (this._idMap.has(rawId)) {
-      return this._idMap.get(rawId);
+  async #fetchMappingById(rawId) {
+    const id = this.spaceId ? `${this.spaceId}-${rawId}` : rawId;
+    if (this._idMap.has(id)) {
+      return this._idMap.get(id);
     }
 
     try {
@@ -107,8 +131,12 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   async searchConceptMaps(searchParams, _elements) {
     this._validateSearchParams(searchParams);
 
+    // Keep the canonical exactly as supplied. Lower-casing it was harmless while
+    // every consumer compared through #norm() (which lower-cases anyway), but
+    // $resolveReference matches the canonical exactly, and OCL has no
+    // .../fhir/codesystem/x -- only .../fhir/CodeSystem/X.
     const params = Object.fromEntries(
-      searchParams.map(({ name, value }) => [name, String(value).toLowerCase()])
+      searchParams.map(({ name, value }) => [name, String(value)])
     );
     const sourceSystem = params['source-system'] || params.source || null;
     const targetSystem = params['target-system'] || params.target || null;
@@ -131,7 +159,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   async #collectMappingsForSearch(sourceSystem, targetSystem) {
     const systemUrl = sourceSystem || targetSystem;
     const candidates = await this.#candidateSourceUrls(systemUrl);
-    const sourcePaths = candidates.filter(s => String(s || '').startsWith('/orgs/'));
+    const sourcePaths = candidates.filter(isOclRepoPath);
 
     if (sourcePaths.length === 0) {
       return [];
@@ -140,29 +168,19 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     const allMappings = [];
     for (const sourcePath of sourcePaths) {
       const normalizedPath = this.#normalizeSourcePath(sourcePath);
-      let concepts;
       try {
-        concepts = await this.#fetchAllPages(
-          `${normalizedPath}concepts/`, { limit: PAGE_SIZE }, this.maxSearchPages
+        // Ask the source for its mappings directly. Walking concepts and asking
+        // each one costs a request per concept and, worse, only ever sees the
+        // first maxSearchPages of them -- for LOINC that is 1000 of 184683
+        // concepts (0.5%), so any mapping past that point was silently invisible.
+        // Verified live: both paths return the identical mapping set.
+        const mappings = await this.#fetchAllPages(
+          `${normalizedPath}mappings/`, { limit: PAGE_SIZE }, this.maxSearchPages
         );
+        allMappings.push(...mappings);
       } catch (_err) {
+        // source exposes no mappings endpoint or is inaccessible — skip
         continue;
-      }
-
-      for (const concept of concepts) {
-        const code = concept.id || concept.mnemonic;
-        if (!code) {
-          continue;
-        }
-        try {
-          const mappings = await this.#fetchAllPages(
-            `${normalizedPath}concepts/${encodeURIComponent(code)}/mappings/`,
-            { limit: PAGE_SIZE }, 2
-          );
-          allMappings.push(...mappings);
-        } catch (_err) {
-          // concept has no mappings or endpoint inaccessible — skip
-        }
       }
     }
 
@@ -187,7 +205,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       const sourceCode = mapping.from_concept_code || mapping.fromConceptCode;
       const targetCode = mapping.to_concept_code || mapping.toConceptCode;
 
-      if (!fromSource || !toSource || !sourceCode || !targetCode) {
+      if (!fromSource || !toSource || !sourceCode || !targetCode || !this.#isTranslation(mapping)) {
         continue;
       }
 
@@ -245,8 +263,8 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
         name: id,
         title: `${sourceId} to ${targetId}`,
         status: 'active',
-        sourceScopeUri: group.sourceCanonical,
-        targetScopeUri: group.targetCanonical,
+        // No sourceScope/targetScope: a scope is a ValueSet, and $translate resolves it and
+        // checks the code against it. The systems are carried by the group instead.
         group: [{
           source: group.sourceCanonical,
           target: group.targetCanonical,
@@ -283,7 +301,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     const targetCandidates = await this.#candidateSourceUrls(targetSystem);
 
     const mappings = [];
-    const sourcePaths = sourceCandidates.filter(s => String(s || '').startsWith('/orgs/'));
+    const sourcePaths = sourceCandidates.filter(isOclRepoPath);
 
     if (sourceCode && sourcePaths.length > 0) {
       for (const sourcePath of sourcePaths) {
@@ -378,6 +396,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   }
 
   #indexConceptMap(cm) {
+    this.#prefixId(cm);
     this.conceptMapMap.set(cm.url, cm);
     if (cm.version) {
       this.conceptMapMap.set(`${cm.url}|${cm.version}`, cm);
@@ -402,7 +421,7 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     const sourceCode = mapping.from_concept_code || mapping.fromConceptCode;
     const targetCode = mapping.to_concept_code || mapping.toConceptCode;
 
-    if (!source || !target || !sourceCode || !targetCode) {
+    if (!source || !target || !sourceCode || !targetCode || !this.#isTranslation(mapping)) {
       return null;
     }
 
@@ -422,8 +441,10 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       name: `mapping-${id}`,
       title: mapping.name || `Mapping ${id}`,
       status: 'active',
-      sourceScopeUri: mapping.from_collection_url || mapping.fromCollectionUrl || source,
-      targetScopeUri: mapping.to_collection_url || mapping.toCollectionUrl || target,
+      // No sourceScope/targetScope: a scope is a ValueSet canonical, which $translate resolves
+      // and checks the code against. OCL only offers repo paths here (from_source_url or
+      // from_collection_url), which resolve to no ValueSet and made every translation fail
+      // with not-found. The systems are carried by the group instead.
       group: [
         {
           source: sourceCanonical,
@@ -453,19 +474,30 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
     return new ConceptMap(json, 'R5');
   }
 
+  // OCL map_type expresses "from concept <relation> to concept", which lines up
+  // with the R5 ConceptMapRelationship codes (source <relation> target).
   #toRelationship(mapType) {
-    switch ((mapType || '').toUpperCase()) {
+    switch (this.#normalizeMapType(mapType)) {
       case 'SAME-AS':
         return 'equivalent';
       case 'NARROWER-THAN':
-        return 'narrower-than';
+        return 'source-is-narrower-than-target';
       case 'BROADER-THAN':
-        return 'broader-than';
+        return 'source-is-broader-than-target';
       case 'NOT-EQUIVALENT':
+      case 'NOT-SAME-AS':
         return 'not-related-to';
       default:
         return 'related-to';
     }
+  }
+
+  #isTranslation(mapping) {
+    return !NON_TRANSLATION_MAP_TYPES.has(this.#normalizeMapType(mapping.map_type || mapping.mapType));
+  }
+
+  #normalizeMapType(mapType) {
+    return String(mapType || '').trim().toUpperCase().replace(/[\s_]+/g, '-');
   }
 
   async #searchMappings(params = {}, maxPages = this.maxSearchPages) {
@@ -515,14 +547,71 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
       }
     }
 
-    const discovered = await this.#resolveSourceCandidatesFromOcl(systemUrl);
-    for (const item of discovered) {
-      result.add(item);
+    // Ask OCL which repo holds this canonical. An authoritative answer makes the
+    // heuristic text search below unnecessary; without one we fall back to it.
+    const resolved = await this.#resolveViaReferenceResolver(systemUrl);
+    if (resolved) {
+      result.add(resolved);
+    } else {
+      const discovered = await this.#resolveSourceCandidatesFromOcl(systemUrl);
+      for (const item of discovered) {
+        result.add(item);
+      }
     }
 
     const out = Array.from(result);
     this._sourceCandidatesCache.set(cacheKey, out);
     return out;
+  }
+
+  /**
+   * Resolve a canonical to its OCL repo via $resolveReference.
+   * Returns null when the resolver is disabled (no token), the endpoint is
+   * unavailable, or OCL cannot resolve the canonical -- in every case the caller
+   * falls back to the existing search.
+   */
+  async #resolveViaReferenceResolver(systemUrl) {
+    // Say why once, rather than per lookup: for a tokenless deployment this is the
+    // expected steady state, not an error.
+    if (!this.referenceResolver.isEnabled()) {
+      if (!this._resolverDisabledLogged) {
+        this._resolverDisabledLogged = true;
+        oclCmLog.info(
+          `$resolveReference not in use (${this.referenceResolver.disabledReason}); using source search`
+        );
+      }
+      return null;
+    }
+
+    let resolved;
+    try {
+      resolved = await this.referenceResolver.resolve(systemUrl);
+    } catch (error) {
+      oclCmLog.warn(`$resolveReference lookup failed for ${systemUrl}: ${error.message}`);
+      return null;
+    }
+
+    if (!resolved?.resolved || !resolved.repoUrl) {
+      oclCmLog.info(`$resolveReference did not resolve ${systemUrl}; falling back to source search`);
+      return null;
+    }
+
+    // Logged on success too: resolver and search return the same thing, so without
+    // this there is no way -- from outside or from the logs -- to tell which path ran.
+    oclCmLog.info(`$resolveReference resolved ${systemUrl} -> ${resolved.repoUrl}`);
+
+    // Keep the canonical<->repo caches coherent with the search path's bookkeeping.
+    // Index under what was asked, but record OCL's own canonical_url as the repo's
+    // canonical: echoing the request back would store whatever spelling the caller
+    // used rather than the repo's actual identity.
+    const canonicalKey = this.#norm(systemUrl);
+    if (!this._sourceUrlsByCanonical.has(canonicalKey)) {
+      this._sourceUrlsByCanonical.set(canonicalKey, new Set());
+    }
+    this._sourceUrlsByCanonical.get(canonicalKey).add(resolved.repoUrl);
+    this._canonicalBySourceUrl.set(this.#norm(resolved.repoUrl), resolved.canonical || systemUrl);
+
+    return resolved.repoUrl;
   }
 
   async #resolveSourceCandidatesFromOcl(systemUrl) {
@@ -565,17 +654,52 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
   }
 
   async #ensureCanonicalForSourceUrls(sourceUrls) {
+    // Deduplicate the repo paths that still need a canonical.
+    const pending = [];
+    const seen = new Set();
     for (const sourceUrl of sourceUrls || []) {
       const sourceKey = this.#norm(sourceUrl);
-      if (!sourceKey || this._canonicalBySourceUrl.has(sourceKey)) {
+      if (!sourceKey || this._canonicalBySourceUrl.has(sourceKey) || seen.has(sourceKey)) {
         continue;
       }
-
       const sourcePath = String(sourceUrl || '').trim();
-      if (!sourcePath.startsWith('/orgs/')) {
+      if (!isOclRepoPath(sourcePath)) {
         continue;
       }
+      seen.add(sourceKey);
+      pending.push(sourcePath);
+    }
 
+    if (pending.length === 0) {
+      return;
+    }
+
+    // One $resolveReference batch instead of one GET per source: the result
+    // carries the repo's canonical_url. Anything the batch cannot resolve falls
+    // through to the per-source GETs below, so behaviour without a token (or on
+    // failure) is unchanged.
+    if (this.referenceResolver.isEnabled()) {
+      try {
+        const results = await this.referenceResolver.resolveReferences(pending);
+        if (Array.isArray(results)) {
+          for (let i = 0; i < pending.length; i++) {
+            const r = results[i];
+            if (!r?.resolved || !r.canonical) {
+              continue;
+            }
+            const resolvedSourceUrl = r.repoUrl || pending[i];
+            this.#recordCanonicalForSource(pending[i], resolvedSourceUrl, r.canonical);
+          }
+        }
+      } catch (error) {
+        oclCmLog.warn(`$resolveReference batch for source canonicals failed: ${error.message}`);
+      }
+    }
+
+    for (const sourcePath of pending) {
+      if (this._canonicalBySourceUrl.has(this.#norm(sourcePath))) {
+        continue;
+      }
       try {
         const response = await this.httpClient.get(sourcePath);
         const source = response.data || {};
@@ -584,18 +708,24 @@ class OCLConceptMapProvider extends AbstractConceptMapProvider {
         if (!canonical) {
           continue;
         }
-
-        const canonicalKey = this.#norm(canonical);
-        if (!this._sourceUrlsByCanonical.has(canonicalKey)) {
-          this._sourceUrlsByCanonical.set(canonicalKey, new Set());
-        }
-        this._sourceUrlsByCanonical.get(canonicalKey).add(resolvedSourceUrl);
-        this._canonicalBySourceUrl.set(this.#norm(resolvedSourceUrl), canonical);
+        this.#recordCanonicalForSource(sourcePath, resolvedSourceUrl, canonical);
       } catch (e) {
         // Ignore source lookup failures and continue resolving remaining sources.
         continue;
       }
     }
+  }
+
+  #recordCanonicalForSource(requestedPath, resolvedSourceUrl, canonical) {
+    const canonicalKey = this.#norm(canonical);
+    if (!this._sourceUrlsByCanonical.has(canonicalKey)) {
+      this._sourceUrlsByCanonical.set(canonicalKey, new Set());
+    }
+    this._sourceUrlsByCanonical.get(canonicalKey).add(resolvedSourceUrl);
+    this._canonicalBySourceUrl.set(this.#norm(resolvedSourceUrl), canonical);
+    // Also index under the exact path we were asked about, so the "already
+    // resolved" checks hit even when OCL's repo url differs in shape.
+    this._canonicalBySourceUrl.set(this.#norm(requestedPath), canonical);
   }
 
   #queryTokenFromSystem(systemUrl) {

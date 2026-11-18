@@ -84,6 +84,37 @@ describe('FHIR CodeSystem Provider', () => {
 
     });
 
+    describe('lookupName()', () => {
+      const langs = async (header) => Languages.fromAcceptLanguage(header, await TestUtilities.loadLanguageDefinitions(), false);
+
+      test('is the title, not the name', async () => {
+        expect(simpleProvider.lookupName(await langs('en'))).toBe('Simple Test Code System');
+      });
+
+      test('is the title as written when no languages are given', () => {
+        expect(simpleProvider.lookupName()).toBe('Simple Test Code System');
+        expect(deProvider.lookupName()).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('uses the translation of the title for the requested language', async () => {
+        expect(deProvider.lookupName(await langs('en'))).toBe('Test Code System with Multiple Languages');
+        expect(deProvider.lookupName(await langs('de'))).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('falls back to the title when there is no translation for the language', async () => {
+        expect(deProvider.lookupName(await langs('fr'))).toBe('Testcodesystem mit mehreren Sprachen');
+      });
+
+      test('falls back to the name when there is no title', () => {
+        const noTitle = factory.build(opContext, [], new CodeSystem({ ...simpleCS.jsonObj, title: undefined }));
+        expect(noTitle.lookupName()).toBe('SimpleTestCodeSystem');
+      });
+
+      test('does not change name()', () => {
+        expect(deProvider.name()).toBe('TestCodeSystemMultiLangDE');
+      });
+    });
+
     describe('system()', () => {
       test('should return correct system URI', () => {
         expect(simpleProvider.system()).toBe('http://hl7.org/fhir/test/CodeSystem/simple');
@@ -1394,7 +1425,10 @@ describe('FHIR CodeSystem Provider', () => {
           expect(await simpleProvider.doesFilter('concept', 'is-a', 'code1')).toBe(true);
           expect(await simpleProvider.doesFilter('code', 'descendent-of', 'code2')).toBe(true);
           expect(await simpleProvider.doesFilter('concept', 'is-not-a', 'code1')).toBe(true);
+          expect(await simpleProvider.doesFilter('concept', 'descendent-leaf', 'code2')).toBe(true);
+          expect(await simpleProvider.doesFilter('concept', 'child-of', 'code2')).toBe(true);
           expect(await simpleProvider.doesFilter('code', 'in', 'code1,code2')).toBe(true);
+          expect(await simpleProvider.doesFilter('concept', 'not-in', 'code1,code2a')).toBe(true);
           expect(await simpleProvider.doesFilter('code', '=', 'code1')).toBe(true);
           expect(await simpleProvider.doesFilter('code', 'regex', 'code.*')).toBe(true);
 
@@ -1411,6 +1445,12 @@ describe('FHIR CodeSystem Provider', () => {
           // Unsupported filters
           expect(await simpleProvider.doesFilter('unknown', '=', 'value')).toBe(false);
           expect(await simpleProvider.doesFilter('code', 'unsupported-op', 'value')).toBe(false);
+        });
+
+        test('should refuse an unsupported filter: 422 not-supported', async () => {
+          await expect(simpleProvider.filter(filterContext, true, 'unknown', '=', 'value'))
+            .rejects.toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422,
+              message: 'The filter "unknown = value" is not understood or supported' });
         });
       });
 
@@ -1458,6 +1498,112 @@ describe('FHIR CodeSystem Provider', () => {
             lastRating = item.rating;
           });
         });
+
+        describe('across accents and words', () => {
+          let ptProvider;
+
+          beforeEach(() => {
+            ptProvider = factory.build(opContext, [], new CodeSystem({
+              resourceType: 'CodeSystem',
+              url: 'http://example.org/icd-10-cm-pt',
+              status: 'active',
+              content: 'complete',
+              language: 'pt',
+              concept: [
+                {code: 'A00', display: 'Cólera'},
+                {code: 'E119', display: 'Diabetes mellitus tipo 2 sem complicações'},
+                {code: 'E11', display: 'Diabetes mellitus tipo 2'},
+                {code: 'I21', display: 'Enfarte agudo do miocárdio', designation: [{language: 'en', value: 'Acute myocardial infarction'}]},
+                {code: 'E10', display: 'Diabetes mellitus tipo 1'}
+              ]
+            }));
+          });
+
+          const codes = (results) => results.concepts.map(item => item.concept.code);
+
+          test('should match whatever the accents and case', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('colera'), true))).toEqual(['A00']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('MIOCÁRDIO'), true))).toEqual(['I21']);
+          });
+
+          test('should ignore accents only on Latin, Greek and Cyrillic letters', async () => {
+            const provider = factory.build(opContext, [], new CodeSystem({
+              resourceType: 'CodeSystem',
+              url: 'http://example.org/scripts',
+              status: 'active',
+              content: 'complete',
+              concept: [
+                {code: 'heart', display: 'Καρδιά'},
+                {code: 'tree', display: 'Ёлка'},
+                {code: 'cancer', display: 'がん'},
+                {code: 'kan', display: 'かん'},
+                {code: 'book', display: 'किताब'}
+              ]
+            }));
+            const search = async (text) => codes(await provider.searchFilter(filterContext, new SearchFilterText(text), true));
+            expect(await search('καρδια')).toEqual(['heart']);
+            expect(await search('елка')).toEqual(['tree']);
+            expect(await search('がん')).toEqual(['cancer']);
+            expect(await search('かん')).toEqual(['kan']);
+            expect(await search('कतब')).toEqual([]);
+          });
+
+          test('should match a search whose words start words of the display, in any order', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes tipo 2'), true))).toEqual(['E11', 'E119']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('enfarte miocardio'), true))).toEqual(['I21']);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('tipo 2 diab'), true))).toEqual(['E11', 'E119']);
+          });
+
+          test('should match a search whose words all start words of one designation', async () => {
+            // the English designation is searched when English is asked for (a text filter
+            // searches one language: the request's, else the code system's - Portuguese here)
+            const english = new Languages();
+            english.add(new Language('en'));
+            const enContext = await ptProvider.getPrepContext(false, english);
+            expect(codes(await ptProvider.searchFilter(enContext, new SearchFilterText('myocardial acute'), true))).toEqual(['I21']);
+            expect(codes(await ptProvider.searchFilter(enContext, new SearchFilterText('acute miocardio'), true))).toEqual([]);
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('myocardial acute'), true))).toEqual([]);
+          });
+
+          test('should search a supplement\'s designations in the language searched', async () => {
+            const supplement = new CodeSystem({
+              resourceType: 'CodeSystem', url: 'http://example.org/icd-10-cm-pt-de', status: 'active',
+              content: 'supplement', supplements: 'http://example.org/icd-10-cm-pt',
+              concept: [{code: 'A00', designation: [{language: 'de', value: 'Cholera'}]}]
+            });
+            const withSupplement = factory.build(opContext, [supplement], ptProvider.codeSystem);
+            const german = new Languages();
+            german.add(new Language('de'));
+            const deContext = await withSupplement.getPrepContext(false, german);
+            expect(codes(await withSupplement.searchFilter(deContext, new SearchFilterText('cholera'), true))).toEqual(['A00']);
+            // with no language asked for, the code system's own (Portuguese) is searched
+            expect(codes(await withSupplement.searchFilter(filterContext, new SearchFilterText('cholera'), true))).toEqual([]);
+            expect(codes(await withSupplement.searchFilter(filterContext, new SearchFilterText('colera'), true))).toEqual(['A00']);
+          });
+
+          test('should not match a word that is only inside another word', async () => {
+            expect(codes(await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes ellitus'), true))).toEqual([]);
+          });
+
+          test('should rate a match of the words of a shorter display higher', async () => {
+            const results = await ptProvider.searchFilter(filterContext, new SearchFilterText('diabetes 2'), true);
+            expect(codes(results)).toEqual(['E11', 'E119']);
+          });
+
+          test('should rate a match of the whole search above a match of its words', async () => {
+            const results = await ptProvider.searchFilter(filterContext, new SearchFilterText('tipo 2'), true);
+            const words = await ptProvider.searchFilter(filterContext, new SearchFilterText('2 tipo'), true);
+            expect(Math.min(...results.concepts.map(item => item.rating))).toBeGreaterThan(Math.max(...words.concepts.map(item => item.rating)));
+          });
+
+          test('should rate a match of the words the same whatever separates them in the search', async () => {
+            const rating = async (search) => (await ptProvider.searchFilter(filterContext, new SearchFilterText(search), true))
+              .concepts.find(item => item.concept.code === 'E11').rating;
+            const spaced = await rating('2   ,   tipo   ...   diabetes');
+            expect(spaced).toBe(await rating('2 tipo diabetes'));
+            expect(spaced).toBeLessThan(30);
+          });
+        });
       });
 
       describe('Concept/Code Filters', () => {
@@ -1479,6 +1625,23 @@ describe('FHIR CodeSystem Provider', () => {
           expect(results.findConceptByCode('code2aI')).toBeDefined();
           expect(results.findConceptByCode('code2aII')).toBeDefined();
           expect(results.findConceptByCode('code2b')).toBeDefined();
+        });
+
+        test('should filter by descendent-leaf relationship', async () => {
+          // R5: the descendants with no children - not code2 itself, and not code2a, which has children
+          const results = await simpleProvider.filter(filterContext, true, 'code', 'descendent-leaf', 'code2');
+          expect(results.size()).toBe(3);
+
+          expect(results.findConceptByCode('code2aI')).toBeDefined();
+          expect(results.findConceptByCode('code2aII')).toBeDefined();
+          expect(results.findConceptByCode('code2b')).toBeDefined();
+          expect(results.findConceptByCode('code2')).toBeNull();
+          expect(results.findConceptByCode('code2a')).toBeNull();
+        });
+
+        test('descendent-leaf of a leaf is empty', async () => {
+          const results = await simpleProvider.filter(filterContext, true, 'concept', 'descendent-leaf', 'code1');
+          expect(results.size()).toBe(0);
         });
 
         test('should filter by is-not-a relationship', async () => {
@@ -1517,10 +1680,18 @@ describe('FHIR CodeSystem Provider', () => {
           expect(results.findConceptByCode('code1')).toBeNull();
         });
 
+        test('a regex matches the whole code, alternation included', async () => {
+          const results = await simpleProvider.filter(filterContext, true, 'code', 'regex', 'code2|code3');
+          expect(results.findConceptByCode('code2')).toBeDefined();
+          expect(results.findConceptByCode('code3')).toBeDefined();
+          expect(results.findConceptByCode('code2a')).toBeNull(); // ^code2|code3$ would have matched it
+          expect(results.size()).toBe(2);
+        });
+
         test('should handle invalid regex gracefully', async () => {
           await expect(
             simpleProvider.filter(filterContext, true, 'code', 'regex', '[invalid')
-          ).rejects.toThrow('The regex \'[invalid\' is not valid: error parsing regexp: missing closing ]: `[invalid$`');
+          ).rejects.toThrow('The regex \'[invalid\' is not valid: error parsing regexp: missing closing ]: `[invalid)$`');
         });
       });
 

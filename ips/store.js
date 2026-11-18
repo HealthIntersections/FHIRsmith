@@ -1,0 +1,1109 @@
+//
+// Copyright 2026, Health Intersections Pty Ltd (http://www.healthintersections.com.au)
+//
+// Licensed under BSD-3: https://opensource.org/license/bsd-3-clause
+//
+
+/**
+ * SQLite storage for the /ips module: projects, their managers, the users, and the IPS
+ * documents in each project, with the search index over them.
+ *
+ * A document is kept whole, as the JSON that was stored (with the server's id and
+ * meta.lastUpdated), alongside a few columns the list page shows and the status of its
+ * processing. Document ids are one serial across the whole database, so an id names
+ * one document whichever project it is asked for in. The submitter's IP address is
+ * recorded for tracing abuse, and is never returned by anything in this module.
+ *
+ * @module ips/store
+ */
+
+const Database = require('better-sqlite3');
+const { indexDocument, parseSearch, compositionOf, patientOf, identifierClause } = require('./search');
+const patients = require('./patients');
+
+// the most document JSON one search page carries
+const MAX_PAGE_BYTES = 32 * 1024 * 1024;
+
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS projects (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    code         TEXT UNIQUE NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    -- the token submissions must carry (the web form, or an Authorization header). The
+    -- project's managers need to read it back to hand it out, so it is not hashed
+    token        TEXT,
+    created      TEXT NOT NULL
+  );
+
+  -- the people who can manage projects. The administrator is not in here: their login is
+  -- in the configuration
+  CREATE TABLE IF NOT EXISTS users (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    login          TEXT UNIQUE NOT NULL,
+    name           TEXT NOT NULL,
+    password_hash  TEXT NOT NULL,
+    created        TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS project_managers (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS documents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    received        TEXT NOT NULL,      -- meta.lastUpdated
+    received_ms     INTEGER NOT NULL,
+    ip              TEXT,               -- never shared
+    source          TEXT NOT NULL,      -- 'api' or 'form'
+    status          TEXT NOT NULL,      -- submitted | processing | processed | error
+    status_message  TEXT,
+    processed_ms    INTEGER,
+    size            INTEGER NOT NULL,
+    -- for the list page
+    patient_name    TEXT,
+    patient_gender  TEXT,
+    patient_birth   TEXT,
+    comp_date       TEXT,
+    comp_title      TEXT,
+    nationality     TEXT,               -- the nation the document is from (nationality step), if known
+    json            TEXT NOT NULL,
+    -- the analysed copy: the document as the processing steps adorned it (pipeline.js)
+    analysed_json   TEXT
+  );
+
+  -- the project's patients: each document's Patient is matched to one (patients.js), and the
+  -- patient's resource is what the documents have said about them, cumulatively
+  CREATE TABLE IF NOT EXISTS patients (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_ms  INTEGER NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    name        TEXT,
+    birth_date  TEXT,
+    gender      TEXT,
+    json        TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS patients_project ON patients (project_id);
+  -- what a patient is matched on: kind 'id' (system|value) or 'name' (the name's key)
+  CREATE TABLE IF NOT EXISTS patient_keys (
+    patient_id  INTEGER NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    PRIMARY KEY (patient_id, kind, key)
+  );
+  CREATE INDEX IF NOT EXISTS patient_keys_key ON patient_keys (kind, key);
+
+  -- what each processing step made of a document (see pipeline.js): one row per step
+  CREATE TABLE IF NOT EXISTS document_results (
+    doc_id    INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    step      TEXT NOT NULL,
+    made_ms   INTEGER NOT NULL,
+    json      TEXT NOT NULL,
+    PRIMARY KEY (doc_id, step)
+  );
+
+  -- the AI assessment calls made, per project: for the daily cap, and what they cost
+  CREATE TABLE IF NOT EXISTS ai_calls (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    at_ms         INTEGER NOT NULL,
+    model         TEXT,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cost_usd      REAL
+  );
+  CREATE INDEX IF NOT EXISTS ai_calls_project ON ai_calls (project_id, at_ms);
+
+  -- clinical profiles (StructureDefinitions on Composition), across all projects
+  CREATE TABLE IF NOT EXISTS clinical_profiles (
+    id          TEXT PRIMARY KEY,   -- private: the StructureDefinition's id is 'profile-' + this
+    title       TEXT NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    json        TEXT NOT NULL
+  );
+
+  -- reports (reports.js): a ViewDefinition run over every document, into a table of its own in the
+  -- reports database, and SQL statements over that table; across all projects
+  CREATE TABLE IF NOT EXISTS reports (
+    id          TEXT PRIMARY KEY,   -- the ViewDefinition's name, which is also its table's name
+    title       TEXT NOT NULL,
+    description TEXT,
+    source      TEXT NOT NULL,      -- what the view runs over: uploaded | transformed | outcomes
+    view_json   TEXT NOT NULL,      -- the ViewDefinition
+    sql_json    TEXT NOT NULL,      -- the statements: [{name, sql}]
+    generation  INTEGER NOT NULL,   -- goes up when the view or source changes: the table is rebuilt
+    updated_ms  INTEGER NOT NULL
+  );
+
+  -- national profiles: the profile a national IG defines for an IPS document (the Bundle), across all projects
+  CREATE TABLE IF NOT EXISTS national_profiles (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id  TEXT NOT NULL,      -- the IG's package id
+    version     TEXT NOT NULL,      -- the package version
+    url         TEXT NOT NULL,      -- the canonical URL of the IG's profile on Bundle
+    jurisdiction TEXT,              -- the country (ISO 3166 two-letter code) or region (UN M49 three digits)
+    snomed_edition TEXT,            -- the SNOMED CT edition the IG takes for granted (its module id), if any
+    updated_ms  INTEGER NOT NULL,
+    UNIQUE (package_id, version)
+  );
+
+  CREATE TABLE IF NOT EXISTS ips_index (
+    doc_id   INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    res      TEXT NOT NULL,     -- Bundle | Composition | Patient
+    param    TEXT NOT NULL,
+    type     TEXT NOT NULL,
+    str      TEXT,
+    str_lc   TEXT,
+    sys      TEXT,
+    code     TEXT,
+    lo       INTEGER,
+    hi       INTEGER,
+    ref      TEXT
+  );
+
+  -- each time the processing pipeline was started on a document, and how it ended: running,
+  -- finished (whether or not the document was fine), failed (the pipeline threw), or
+  -- interrupted (the server stopped while it ran). For the daily report. No foreign key: a run
+  -- still happened after its document is deleted
+  CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_id      INTEGER NOT NULL,
+    started_ms  INTEGER NOT NULL,
+    ended_ms    INTEGER,
+    outcome     TEXT NOT NULL
+  );
+
+  -- what the SHL viewer retrieved (viewer.js): the link, the log of what it did, the documents.
+  -- Kept for a while (modules.ips.viewer.keepMinutes), so the page can be looked at again and a
+  -- document added to a project without fetching it again; then dropped
+  CREATE TABLE IF NOT EXISTS shl_views (
+    token       TEXT PRIMARY KEY,   -- random: the page's address
+    created_ms  INTEGER NOT NULL,
+    expires_ms  INTEGER NOT NULL,
+    link        TEXT NOT NULL,      -- what was given: the viewer URL, shlink or HC1
+    json        TEXT NOT NULL       -- the result: state, payload, vhl, documents, trace, added
+  );
+
+  -- how long each processing step took, for the averages on the queue page: one row per step
+  -- that did its work (not one that failed, or was skipped); the most recent are kept
+  CREATE TABLE IF NOT EXISTS step_timings (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    step    TEXT NOT NULL,
+    doc_id  INTEGER NOT NULL,   -- no foreign key: the time still counts after the document is deleted
+    at_ms   INTEGER NOT NULL,
+    ms      INTEGER NOT NULL,
+    size    INTEGER NOT NULL    -- the document's size, as stored (bytes)
+  );
+  CREATE INDEX IF NOT EXISTS idx_step_timings_step ON step_timings(step, id);
+
+  CREATE INDEX IF NOT EXISTS idx_pipeline_runs_started ON pipeline_runs(started_ms);
+  CREATE INDEX IF NOT EXISTS idx_pipeline_runs_running ON pipeline_runs(outcome, doc_id);
+  CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id, id);
+  CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status, id);
+  CREATE INDEX IF NOT EXISTS idx_ips_index_doc ON ips_index(doc_id, res, param);
+  CREATE INDEX IF NOT EXISTS idx_ips_index_str ON ips_index(res, param, str_lc);
+  CREATE INDEX IF NOT EXISTS idx_ips_index_code ON ips_index(res, param, code);
+  CREATE INDEX IF NOT EXISTS idx_ips_index_date ON ips_index(res, param, lo);
+  CREATE INDEX IF NOT EXISTS idx_ips_index_ref ON ips_index(res, param, ref);
+  CREATE INDEX IF NOT EXISTS idx_project_managers_user ON project_managers(user_id);
+`;
+
+function str(v, max = 200) {
+  return typeof v === 'string' && v !== '' ? v.substring(0, max) : null;
+}
+
+/** A HumanName as text: its text, or prefix given family suffix. */
+function nameText(n) {
+  if (!n || typeof n !== 'object') {
+    return null;
+  }
+  if (typeof n.text === 'string' && n.text.trim()) {
+    return n.text.trim();
+  }
+  const parts = [].concat(n.prefix || [], n.given || [], n.family || [], n.suffix || []).filter(s => typeof s === 'string' && s);
+  return parts.length ? parts.join(' ') : null;
+}
+
+/** What the list page shows for a document. */
+function summaryOf(bundle) {
+  const comp = compositionOf(bundle);
+  const patient = patientOf(bundle, comp);
+  const names = Array.isArray(patient?.name) ? patient.name : [];
+  // the official or usual name first, if there is one
+  const best = names.find(n => n?.use === 'official') || names.find(n => n?.use === 'usual') || names.find(n => n?.use !== 'old') || names[0];
+  return {
+    patient_name: str(nameText(best)),
+    patient_gender: str(patient?.gender, 20),
+    patient_birth: str(patient?.birthDate, 20),
+    comp_date: str(comp?.date, 40),
+    comp_title: str(comp?.title, 300)
+  };
+}
+
+// the step averages on the queue page are over each step's most recent runs: this many
+const STEP_TIMINGS_SAMPLE = 100;
+// and this many are kept
+const STEP_TIMINGS_KEPT = 1000;
+
+/** A national_profiles row, as the store gives it. */
+function nationalProfileOf(r) {
+  return { id: r.id, jurisdiction: r.jurisdiction || null, packageId: r.package_id, version: r.version, url: r.url, snomedEdition: r.snomed_edition || null, updated_ms: r.updated_ms };
+}
+
+function reportOf(r) {
+  return {
+    id: r.id, title: r.title, description: r.description || null, source: r.source,
+    view: JSON.parse(r.view_json), statements: JSON.parse(r.sql_json), generation: r.generation, updated_ms: r.updated_ms
+  };
+}
+
+class IpsStore {
+  /**
+   * @param {string} dbPath - file name, or ':memory:'
+   */
+  constructor(dbPath) {
+    this.db = new Database(dbPath);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('foreign_keys = ON');
+    this.db.exec(SCHEMA);
+    this.migrate();
+    this.stmts = {
+      insertDoc: this.db.prepare(`
+        INSERT INTO documents (project_id, received, received_ms, ip, source, status, size,
+          patient_name, patient_gender, patient_birth, comp_date, comp_title, json)
+        VALUES (@project_id, @received, @received_ms, @ip, @source, 'submitted', @size,
+          @patient_name, @patient_gender, @patient_birth, @comp_date, @comp_title, @json)`),
+      setJson: this.db.prepare('UPDATE documents SET json = ? WHERE id = ?'),
+      insertIndex: this.db.prepare(`
+        INSERT INTO ips_index (doc_id, res, param, type, str, str_lc, sys, code, lo, hi, ref)
+        VALUES (@doc_id, @res, @param, @type, @str, @str_lc, @sys, @code, @lo, @hi, @ref)`),
+      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, json, analysed_json FROM documents WHERE id = ?'),
+      saveAnalysed: this.db.prepare('UPDATE documents SET analysed_json = ? WHERE id = ?'),
+      deleteDoc: this.db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?'),
+      countDocs: this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE project_id = ?'),
+      countAll: this.db.prepare('SELECT COUNT(*) AS n FROM documents'),
+      nextSubmitted: this.db.prepare("SELECT id FROM documents WHERE status = 'submitted' ORDER BY id LIMIT 1"),
+      claim: this.db.prepare("UPDATE documents SET status = 'processing', status_message = NULL WHERE id = ? AND status = 'submitted'"),
+      // only a document being processed is finished: one requeued or deleted meanwhile isn't
+      finish: this.db.prepare("UPDATE documents SET status = ?, status_message = ?, processed_ms = ? WHERE id = ? AND status = 'processing'"),
+      // a document being processed is left alone: its pipeline would finish it over the requeue
+      requeue: this.db.prepare("UPDATE documents SET status = 'submitted', status_message = NULL, processed_ms = NULL, analysed_json = NULL, nationality = NULL WHERE id = ? AND project_id = ? AND status <> 'processing'"),
+      saveResult: this.db.prepare('INSERT OR REPLACE INTO document_results (doc_id, step, made_ms, json) VALUES (?, ?, ?, ?)'),
+      readResult: this.db.prepare('SELECT made_ms, json FROM document_results WHERE doc_id = ? AND step = ?'),
+      resultSteps: this.db.prepare('SELECT step, made_ms FROM document_results WHERE doc_id = ? ORDER BY step'),
+      clearResults: this.db.prepare('DELETE FROM document_results WHERE doc_id = ?'),
+      resetProcessing: this.db.prepare("UPDATE documents SET status = 'submitted' WHERE status = 'processing'"),
+      startRun: this.db.prepare("INSERT INTO pipeline_runs (doc_id, started_ms, outcome) VALUES (?, ?, 'running')"),
+      // the run ends whether or not the document is still there to take the outcome
+      endRun: this.db.prepare("UPDATE pipeline_runs SET outcome = ?, ended_ms = ? WHERE doc_id = ? AND outcome = 'running'"),
+      interruptRuns: this.db.prepare("UPDATE pipeline_runs SET outcome = 'interrupted', ended_ms = ? WHERE outcome = 'running'"),
+      countRuns: this.db.prepare('SELECT outcome, COUNT(*) AS n FROM pipeline_runs WHERE started_ms > ? AND started_ms <= ? GROUP BY outcome')
+    };
+    this.matchUnmatched();
+  }
+
+  /** Bring a database made by an earlier version of the module up to date. */
+  migrate() {
+    const has = (table, col) => this.db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+    if (!has('documents', 'analysed_json')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN analysed_json TEXT');
+    }
+    if (!has('documents', 'patient_id')) {
+      // the project patient the document's Patient was matched to, and how (JSON)
+      this.db.exec('ALTER TABLE documents ADD COLUMN patient_id INTEGER');
+      this.db.exec('ALTER TABLE documents ADD COLUMN patient_match TEXT');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS documents_patient ON documents (patient_id)');
+    if (!has('documents', 'nationality')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN nationality TEXT');
+    }
+    if (!has('national_profiles', 'jurisdiction')) {
+      this.db.exec('ALTER TABLE national_profiles ADD COLUMN jurisdiction TEXT');
+    }
+    if (!has('national_profiles', 'snomed_edition')) {
+      this.db.exec('ALTER TABLE national_profiles ADD COLUMN snomed_edition TEXT');
+    }
+    if (!has('projects', 'ai_json')) {
+      // the project's AI assessment settings (JSON; the API key encrypted)
+      this.db.exec('ALTER TABLE projects ADD COLUMN ai_json TEXT');
+    }
+    if (!has('ai_calls', 'id')) {
+      // the first shape of ai_calls had no id and no usage columns: rebuild it, keeping the calls
+      this.db.exec(`
+        ALTER TABLE ai_calls RENAME TO ai_calls_old;
+        CREATE TABLE ai_calls (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+          at_ms         INTEGER NOT NULL,
+          model         TEXT,
+          input_tokens  INTEGER,
+          output_tokens INTEGER,
+          cost_usd      REAL
+        );
+        INSERT INTO ai_calls (project_id, at_ms) SELECT project_id, at_ms FROM ai_calls_old;
+        DROP TABLE ai_calls_old;
+        CREATE INDEX IF NOT EXISTS ai_calls_project ON ai_calls (project_id, at_ms);`);
+    }
+  }
+
+  close() {
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
+  }
+
+  // ---- clinical profiles ----
+
+  /** All the clinical profiles: {id, title, updated_ms, constraints}, by title. */
+  profiles() {
+    return this.db.prepare('SELECT id, title, updated_ms, json FROM clinical_profiles ORDER BY title COLLATE NOCASE, id').all()
+      .map(r => {
+        const sd = JSON.parse(r.json);
+        const el = sd?.differential?.element?.[0];
+        return { id: r.id, title: r.title, updated_ms: r.updated_ms, constraints: Array.isArray(el?.constraint) ? el.constraint.length : 0 };
+      });
+  }
+
+  /** @returns {Object|null} the StructureDefinition */
+  profile(id) {
+    const r = this.db.prepare('SELECT json FROM clinical_profiles WHERE id = ?').get(id);
+    return r ? JSON.parse(r.json) : null;
+  }
+
+  saveProfile(id, sd, nowMs = Date.now()) {
+    this.db.prepare('INSERT INTO clinical_profiles (id, title, updated_ms, json) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_ms = excluded.updated_ms, json = excluded.json')
+      .run(id, sd.title, nowMs, JSON.stringify(sd));
+  }
+
+  deleteProfile(id) {
+    return this.db.prepare('DELETE FROM clinical_profiles WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- national profiles ----
+
+  /** All the national profiles: {id, jurisdiction, packageId, version, url, snomedEdition, updated_ms}, by package id and version. */
+  nationalProfiles() {
+    return this.db.prepare('SELECT id, package_id, version, url, jurisdiction, snomed_edition, updated_ms FROM national_profiles ORDER BY package_id, version, id').all()
+      .map(nationalProfileOf);
+  }
+
+  /** @returns {Object|null} {id, jurisdiction, packageId, version, url, snomedEdition, updated_ms} */
+  nationalProfile(id) {
+    const r = this.db.prepare('SELECT id, package_id, version, url, jurisdiction, snomed_edition, updated_ms FROM national_profiles WHERE id = ?').get(id);
+    return r ? nationalProfileOf(r) : null;
+  }
+
+  /** The national profile for a package id and version, or null. */
+  nationalProfileByPackage(packageId, version) {
+    const r = this.db.prepare('SELECT id FROM national_profiles WHERE package_id = ? AND version = ?').get(packageId, version);
+    return r ? this.nationalProfile(r.id) : null;
+  }
+
+  /** @returns {number} the new national profile's id */
+  createNationalProfile(packageId, version, url, jurisdiction, snomedEdition = null, nowMs = Date.now()) {
+    return Number(this.db.prepare('INSERT INTO national_profiles (package_id, version, url, jurisdiction, snomed_edition, updated_ms) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(packageId, version, url, jurisdiction || null, snomedEdition || null, nowMs).lastInsertRowid);
+  }
+
+  /** @returns {boolean} whether there was such a national profile */
+  updateNationalProfile(id, packageId, version, url, jurisdiction, snomedEdition = null, nowMs = Date.now()) {
+    return this.db.prepare('UPDATE national_profiles SET package_id = ?, version = ?, url = ?, jurisdiction = ?, snomed_edition = ?, updated_ms = ? WHERE id = ?')
+      .run(packageId, version, url, jurisdiction || null, snomedEdition || null, nowMs, id).changes > 0;
+  }
+
+  deleteNationalProfile(id) {
+    return this.db.prepare('DELETE FROM national_profiles WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- reports (reports.js) ----
+
+  /** All reports, by id: {id, title, description, source, view, statements, generation, updated_ms} */
+  reports() {
+    return this.db.prepare('SELECT * FROM reports ORDER BY id').all().map(reportOf);
+  }
+
+  /** @returns {Object|null} */
+  report(id) {
+    const r = this.db.prepare('SELECT * FROM reports WHERE id = ?').get(id);
+    return r ? reportOf(r) : null;
+  }
+
+  saveReport(report) {
+    this.db.prepare(`INSERT INTO reports (id, title, description, source, view_json, sql_json, generation, updated_ms)
+      VALUES (@id, @title, @description, @source, @view_json, @sql_json, @generation, @updated_ms)
+      ON CONFLICT (id) DO UPDATE SET title = excluded.title, description = excluded.description, source = excluded.source,
+        view_json = excluded.view_json, sql_json = excluded.sql_json, generation = excluded.generation, updated_ms = excluded.updated_ms`).run({
+      id: report.id,
+      title: report.title,
+      description: report.description || null,
+      source: report.source,
+      view_json: JSON.stringify(report.view),
+      sql_json: JSON.stringify(report.statements || []),
+      generation: report.generation,
+      updated_ms: Date.now()
+    });
+  }
+
+  deleteReport(id) {
+    return this.db.prepare('DELETE FROM reports WHERE id = ?').run(id).changes > 0;
+  }
+
+  /**
+   * The documents a report table is built from, in id order after afterId: those the pipeline
+   * has finished with (processed, or stopped by an error). One being processed, or waiting,
+   * gets its rows from the pipeline's reports step when it gets there.
+   */
+  reportDocuments(afterId, limit) {
+    return this.db.prepare(`SELECT id, project_id, json, analysed_json FROM documents
+      WHERE id > ? AND status IN ('processed', 'error') ORDER BY id LIMIT ?`).all(afterId, limit);
+  }
+
+  /** How many documents reportDocuments() goes through, all told. */
+  countReportDocuments() {
+    return this.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status IN ('processed', 'error')").get().n;
+  }
+
+  // ---- projects ----
+
+  /** All projects, with their document counts and managers; by name. */
+  projects() {
+    const rows = this.db.prepare(`
+      SELECT p.id, p.code, p.name, p.description, p.created,
+        (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS documents
+      FROM projects p ORDER BY p.name COLLATE NOCASE, p.code`).all();
+    const managers = this.db.prepare(`
+      SELECT pm.project_id, u.id, u.login, u.name FROM project_managers pm JOIN users u ON u.id = pm.user_id ORDER BY u.login`).all();
+    const byProject = new Map();
+    for (const m of managers) {
+      if (!byProject.has(m.project_id)) {
+        byProject.set(m.project_id, []);
+      }
+      byProject.get(m.project_id).push({ id: m.id, login: m.login, name: m.name });
+    }
+    for (const p of rows) {
+      p.managers = byProject.get(p.id) || [];
+    }
+    return rows;
+  }
+
+  /** @returns {Object|null} the project, including its token */
+  projectByCode(code) {
+    return this.db.prepare('SELECT * FROM projects WHERE code = ?').get(code) || null;
+  }
+
+  projectById(id) {
+    return this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id) || null;
+  }
+
+  createProject(code, name, description) {
+    const r = this.db.prepare('INSERT INTO projects (code, name, description, created) VALUES (?, ?, ?, ?)')
+      .run(code, name, description || null, new Date().toISOString());
+    return Number(r.lastInsertRowid);
+  }
+
+  updateProject(id, name, description) {
+    return this.db.prepare('UPDATE projects SET name = ?, description = ? WHERE id = ?').run(name, description || null, id).changes > 0;
+  }
+
+  /** A project's AI assessment settings ({enabled, provider, baseUrl, model, keyEnc, dailyCap}), or {}. */
+  projectAi(project) {
+    if (!project || typeof project.ai_json !== 'string') {
+      return {};
+    }
+    try {
+      const v = JSON.parse(project.ai_json);
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    } catch {
+      return {};
+    }
+  }
+
+  setProjectAi(id, settings) {
+    return this.db.prepare('UPDATE projects SET ai_json = ? WHERE id = ?').run(settings ? JSON.stringify(settings) : null, id).changes > 0;
+  }
+
+  /** Record an AI assessment call for a project (the daily cap). @returns {number} its id */
+  recordAiCall(projectId, atMs = Date.now()) {
+    return Number(this.db.prepare('INSERT INTO ai_calls (project_id, at_ms) VALUES (?, ?)').run(projectId, atMs).lastInsertRowid);
+  }
+
+  /** What a call used, once it has answered: the model, the tokens, the cost (when known). */
+  finishAiCall(id, { model, input, output, cost }) {
+    this.db.prepare('UPDATE ai_calls SET model = ?, input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?')
+      .run(model || null, Number.isFinite(input) ? input : null, Number.isFinite(output) ? output : null, Number.isFinite(cost) ? cost : null, id);
+  }
+
+  /** The AI assessment calls a project has made since a time. */
+  aiCallsSince(projectId, sinceMs) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM ai_calls WHERE project_id = ? AND at_ms >= ?').get(projectId, sinceMs).n;
+  }
+
+  /**
+   * What a project's AI assessments have used since a time: calls, tokens, cost (the sum
+   * of the calls with a known cost, and how many had one).
+   */
+  aiUsage(projectId, sinceMs = 0) {
+    return this.db.prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens), 0) AS input, COALESCE(SUM(output_tokens), 0) AS output,
+      COALESCE(SUM(cost_usd), 0) AS cost, SUM(cost_usd IS NOT NULL) AS costed FROM ai_calls WHERE project_id = ? AND at_ms >= ?`).get(projectId, sinceMs);
+  }
+
+  /** Set (or, with null, clear) the token submissions to the project must carry. */
+  setProjectToken(id, token) {
+    return this.db.prepare('UPDATE projects SET token = ? WHERE id = ?').run(token || null, id).changes > 0;
+  }
+
+  /** Delete a project and everything in it. @returns {boolean} whether there was one */
+  deleteProject(id) {
+    return this.db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
+  }
+
+  /** Replace the set of users who manage a project. */
+  setProjectManagers(projectId, userIds) {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM project_managers WHERE project_id = ?').run(projectId);
+      const ins = this.db.prepare('INSERT OR IGNORE INTO project_managers (project_id, user_id) VALUES (?, ?)');
+      for (const u of userIds) {
+        ins.run(projectId, u);
+      }
+    })();
+  }
+
+  /** The ids of the projects a user manages. */
+  managedProjectIds(userId) {
+    return this.db.prepare('SELECT project_id FROM project_managers WHERE user_id = ?').all(userId).map(r => r.project_id);
+  }
+
+  // ---- users ----
+
+  /** @returns {Array} users, without their password hashes, with the codes of the projects they manage */
+  users() {
+    const rows = this.db.prepare('SELECT id, login, name, created FROM users ORDER BY login').all();
+    const pm = this.db.prepare('SELECT pm.user_id, p.code FROM project_managers pm JOIN projects p ON p.id = pm.project_id ORDER BY p.code').all();
+    const by = new Map();
+    for (const m of pm) {
+      if (!by.has(m.user_id)) {
+        by.set(m.user_id, []);
+      }
+      by.get(m.user_id).push(m.code);
+    }
+    for (const u of rows) {
+      u.projects = by.get(u.id) || [];
+    }
+    return rows;
+  }
+
+  /** @returns {Object|null} the user, including the password hash */
+  userByLogin(login) {
+    return this.db.prepare('SELECT * FROM users WHERE login = ?').get(login) || null;
+  }
+
+  userById(id) {
+    return this.db.prepare('SELECT id, login, name FROM users WHERE id = ?').get(id) || null;
+  }
+
+  createUser(login, name, passwordHash) {
+    const r = this.db.prepare('INSERT INTO users (login, name, password_hash, created) VALUES (?, ?, ?, ?)')
+      .run(login, name, passwordHash, new Date().toISOString());
+    return Number(r.lastInsertRowid);
+  }
+
+  updateUser(id, name, passwordHash) {
+    const n = this.db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id).changes;
+    if (n > 0 && passwordHash) {
+      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
+    }
+    return n > 0;
+  }
+
+  deleteUser(id) {
+    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+  }
+
+  // ---- documents ----
+
+  /**
+   * Store a document that has already been validated. The bundle gets its id (the
+   * serial the database assigns) and meta.lastUpdated here, and is indexed.
+   *
+   * @param {number} projectId
+   * @param {Object} bundle - the document; changed in place (id, meta.lastUpdated)
+   * @param {{ip?: string, source: string, receivedMs: number}} info
+   * @returns {number} the document's id
+   */
+  insert(projectId, bundle, info) {
+    const received = new Date(info.receivedMs).toISOString();
+    bundle.meta = { ...(bundle.meta || {}), lastUpdated: received };
+    delete bundle.meta.versionId;
+    return this.db.transaction(() => {
+      // the id is the serial, so the row is inserted first, then the JSON is written with it
+      const r = this.stmts.insertDoc.run({
+        project_id: projectId, received, received_ms: info.receivedMs, ip: info.ip || null,
+        source: info.source, size: 0, ...summaryOf(bundle), json: '{}'
+      });
+      const id = Number(r.lastInsertRowid);
+      // id first in the JSON, as it is in the spec's examples
+      const stored = { resourceType: 'Bundle', id: String(id), meta: bundle.meta };
+      for (const [k, v] of Object.entries(bundle)) {
+        if (!(k in stored)) {
+          stored[k] = v;
+        }
+      }
+      const json = JSON.stringify(stored);
+      this.db.prepare('UPDATE documents SET json = ?, size = ? WHERE id = ?').run(json, Buffer.byteLength(json, 'utf8'), id);
+      for (const row of indexDocument(stored)) {
+        this.stmts.insertIndex.run({ doc_id: id, ...row });
+      }
+      this.matchPatient(projectId, id, stored, info.receivedMs);
+      // give the caller what was stored
+      for (const k of Object.keys(bundle)) {
+        delete bundle[k];
+      }
+      Object.assign(bundle, stored);
+      return id;
+    })();
+  }
+
+  /**
+   * @param {number} id
+   * @param {number} [projectId] - if given, the document must be in this project
+   * @returns {Object|null} the row, with the bundle parsed as .bundle
+   */
+  read(id, projectId) {
+    if (!Number.isInteger(id)) {
+      return null;
+    }
+    const row = this.stmts.readDoc.get(id);
+    if (!row || (projectId !== undefined && row.project_id !== projectId)) {
+      return null;
+    }
+    row.bundle = JSON.parse(row.json);
+    delete row.json;
+    row.analysed = row.analysed_json ? JSON.parse(row.analysed_json) : null;
+    delete row.analysed_json;
+    row.match = row.patient_match ? JSON.parse(row.patient_match) : null;
+    delete row.patient_match;
+    return row;
+  }
+
+  /** Keep the analysed copy of a document (null to drop it). */
+  saveAnalysed(id, bundle) {
+    this.stmts.saveAnalysed.run(bundle ? JSON.stringify(bundle) : null, id);
+  }
+
+  /** @returns {boolean} whether there was such a document in the project */
+  delete(id, projectId) {
+    if (!Number.isInteger(id)) {
+      return false;
+    }
+    return this.db.transaction(() => {
+      const row = this.db.prepare('SELECT patient_id FROM documents WHERE id = ? AND project_id = ?').get(id, projectId);
+      const done = this.stmts.deleteDoc.run(id, projectId).changes > 0;
+      if (done && row && row.patient_id) {
+        this.rebuildPatient(row.patient_id);
+      }
+      return done;
+    })();
+  }
+
+  // ---- patients ----
+
+  /**
+   * Match a document's Patient to one of the project's patients (patients.js), or make a new
+   * one; link the document to it, and add what the document says to the patient's resource.
+   * Part of storing the document (call it in the insert's transaction).
+   */
+  matchPatient(projectId, docId, bundle, receivedMs) {
+    const resource = patientOf(bundle);
+    if (!resource) {
+      this.db.prepare('UPDATE documents SET patient_id = NULL, patient_match = ? WHERE id = ?').run(JSON.stringify({ method: 'none', detail: 'The document has no Patient' }), docId);
+      return null;
+    }
+    const keys = patients.keysOf(resource);
+    let match = null;
+    const conflicts = [];
+    // 1. an identifier
+    if (keys.identifiers.length > 0) {
+      const ph = keys.identifiers.map(() => '?').join(',');
+      const found = this.db.prepare(`SELECT DISTINCT p.id, p.json, p.updated_ms FROM patient_keys k JOIN patients p ON p.id = k.patient_id
+        WHERE p.project_id = ? AND k.kind = 'id' AND k.key IN (${ph}) ORDER BY p.updated_ms DESC`).all(projectId, ...keys.identifiers);
+      for (const f of found) {
+        const why = patients.conflict(keys, patients.keysOf(JSON.parse(f.json)));
+        if (why) {
+          conflicts.push(`patient ${f.id} has the same identifier, but a different ${why}`);
+        } else if (!match) {
+          match = { patientId: f.id, method: 'identifier', detail: 'The same identifier' };
+        }
+      }
+    }
+    // 2. the name and the birth date
+    if (!match && keys.names.length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(keys.birthDate)) {
+      const ph = keys.names.map(() => '?').join(',');
+      const found = this.db.prepare(`SELECT DISTINCT p.id, p.json, p.updated_ms FROM patient_keys k JOIN patients p ON p.id = k.patient_id
+        WHERE p.project_id = ? AND p.birth_date = ? AND k.kind = 'name' AND k.key IN (${ph}) ORDER BY p.updated_ms DESC`).all(projectId, keys.birthDate, ...keys.names);
+      for (const f of found) {
+        const why = patients.conflict(keys, patients.keysOf(JSON.parse(f.json)));
+        if (why) {
+          conflicts.push(`patient ${f.id} has the same name and birth date, but a different ${why}`);
+        } else if (!match) {
+          match = { patientId: f.id, method: 'demographics', detail: 'The same name and birth date' };
+        }
+      }
+    }
+    const lastUpdated = new Date(receivedMs).toISOString();
+    let patientId;
+    let previous = null;
+    if (match) {
+      patientId = match.patientId;
+      previous = JSON.parse(this.db.prepare('SELECT json FROM patients WHERE id = ?').get(patientId).json);
+    } else {
+      patientId = Number(this.db.prepare("INSERT INTO patients (project_id, created_ms, updated_ms, json) VALUES (?, ?, ?, '{}')").run(projectId, receivedMs, receivedMs).lastInsertRowid);
+      match = { method: 'new', detail: conflicts.length > 0 ? `Not seen before (${conflicts.join('; ')})` : 'Not seen before' };
+    }
+    this.savePatient(patientId, patients.mergePatient(previous, resource, patientId, lastUpdated), receivedMs);
+    const record = { method: match.method, detail: match.detail };
+    this.db.prepare('UPDATE documents SET patient_id = ?, patient_match = ? WHERE id = ?').run(patientId, JSON.stringify(record), docId);
+    return { patientId, ...record };
+  }
+
+  /** Store a patient's cumulative resource, and the keys it is matched on. */
+  savePatient(patientId, resource, updatedMs) {
+    const keys = patients.keysOf(resource);
+    this.db.prepare('UPDATE patients SET updated_ms = ?, name = ?, birth_date = ?, gender = ?, json = ? WHERE id = ?')
+      .run(updatedMs, patients.displayName(resource) || null, keys.birthDate || null, keys.gender || null, JSON.stringify(resource), patientId);
+    this.db.prepare('DELETE FROM patient_keys WHERE patient_id = ?').run(patientId);
+    const add = this.db.prepare('INSERT OR IGNORE INTO patient_keys (patient_id, kind, key) VALUES (?, ?, ?)');
+    for (const k of keys.identifiers) {
+      add.run(patientId, 'id', k);
+    }
+    for (const k of keys.names) {
+      add.run(patientId, 'name', k);
+    }
+  }
+
+  /** Make a patient's resource again from its documents (one of them was deleted); remove it if it has none. */
+  rebuildPatient(patientId) {
+    const docs = this.db.prepare('SELECT json, received_ms FROM documents WHERE patient_id = ? ORDER BY received_ms, id').all(patientId);
+    if (docs.length === 0) {
+      this.db.prepare('DELETE FROM patients WHERE id = ?').run(patientId);
+      return;
+    }
+    let resource = null;
+    let last = 0;
+    for (const d of docs) {
+      const p = patientOf(JSON.parse(d.json));
+      if (p) {
+        resource = patients.mergePatient(resource, p, patientId, new Date(d.received_ms).toISOString());
+        last = d.received_ms;
+      }
+    }
+    this.savePatient(patientId, resource || { resourceType: 'Patient', id: String(patientId) }, last);
+  }
+
+  /** Match the documents that have not been (received before patients were matched), oldest first. */
+  matchUnmatched() {
+    const rows = this.db.prepare('SELECT id, project_id, received_ms, json FROM documents WHERE patient_match IS NULL ORDER BY received_ms, id').all();
+    if (rows.length === 0) {
+      return;
+    }
+    this.db.transaction(() => {
+      for (const r of rows) {
+        this.matchPatient(r.project_id, r.id, JSON.parse(r.json), r.received_ms);
+      }
+    })();
+  }
+
+  /** The project's patients: id, name, birth date, gender, when last updated, how many documents. */
+  patients(projectId) {
+    return this.db.prepare(`SELECT p.id, p.name, p.birth_date, p.gender, p.created_ms, p.updated_ms, p.json,
+        (SELECT COUNT(*) FROM documents d WHERE d.patient_id = p.id) AS documents
+      FROM patients p WHERE p.project_id = ? ORDER BY p.updated_ms DESC, p.id DESC`).all(projectId)
+      .map(r => ({ ...r, resource: JSON.parse(r.json) }));
+  }
+
+  /** One of the project's patients, or null. */
+  patient(projectId, patientId) {
+    const r = Number.isInteger(patientId) ? this.db.prepare('SELECT * FROM patients WHERE id = ? AND project_id = ?').get(patientId, projectId) : null;
+    return r ? { ...r, resource: JSON.parse(r.json) } : null;
+  }
+
+  /** A patient's documents, the most recently received first: id, received, title, date, how matched. */
+  patientDocuments(patientId) {
+    return this.db.prepare('SELECT id, received, received_ms, status, comp_title, comp_date, patient_match FROM documents WHERE patient_id = ? ORDER BY received_ms DESC, id DESC').all(patientId)
+      .map(r => ({ ...r, match: r.patient_match ? JSON.parse(r.patient_match) : null }));
+  }
+
+  /** The project's patients with an identifier (system|value, or just a value). */
+  patientsByIdentifier(projectId, identifier) {
+    const i = identifier.indexOf('|');
+    const rows = i >= 0
+      ? this.db.prepare("SELECT DISTINCT k.patient_id AS id FROM patient_keys k JOIN patients p ON p.id = k.patient_id WHERE p.project_id = ? AND k.kind = 'id' AND k.key = ?").all(projectId, identifier)
+      : this.db.prepare("SELECT DISTINCT k.patient_id AS id FROM patient_keys k JOIN patients p ON p.id = k.patient_id WHERE p.project_id = ? AND k.kind = 'id' AND k.key LIKE ? ESCAPE '\\'").all(projectId, '%|' + identifier.replace(/[\\%_]/g, c => '\\' + c));
+    return rows.map(r => r.id);
+  }
+
+  count(projectId) {
+    return projectId === undefined ? this.stmts.countAll.get().n : this.stmts.countDocs.get(projectId).n;
+  }
+
+  /** How many documents were received in (sinceMs, nowMs], over all projects */
+  countReceived(sinceMs, nowMs) {
+    return this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE received_ms > ? AND received_ms <= ?').get(sinceMs, nowMs).n;
+  }
+
+  /**
+   * Run a parsed search (see search.js) over a project's documents.
+   *
+   * @param {number} projectId
+   * @param {Object} search - from parseSearch
+   * @param {{withJson?: boolean, identifier?: string}} options - include the stored JSON
+   *   (FHIR API), or just the columns the HTML list needs; identifier is the web
+   *   filter's partial match on the id or patient identifiers
+   * @returns {{total: number, rows: Object[], truncated: boolean}} truncated: the page was
+   *   cut short of _count by the byte budget (the next page starts at offset + rows.length)
+   */
+  search(projectId, search, options = {}) {
+    const where = ['d.project_id = ?', ...search.where];
+    const args = [projectId, ...search.args];
+    const idc = identifierClause(options.identifier);
+    if (idc) {
+      where.push(idc.sql);
+      args.push(...idc.args);
+    }
+    const w = 'WHERE ' + where.join(' AND ');
+    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM documents d ${w}`).get(...args).n;
+    if (search.summaryCount || search.count === 0) {
+      return { total, rows: [] };
+    }
+    if (!options.withJson) {
+      const cols = 'd.id, d.received, d.source, d.status, d.status_message, d.size, d.patient_name, d.patient_gender, d.patient_birth, d.comp_date, d.comp_title, d.nationality';
+      const rows = this.db.prepare(`SELECT ${cols} FROM documents d ${w} ORDER BY ${search.orderBy} LIMIT ? OFFSET ?`)
+        .all(...args, ...search.orderArgs, search.count, search.offset);
+      return { total, rows, truncated: false };
+    }
+    // the documents themselves: a page is cut short once it holds MAX_PAGE_BYTES of them (but
+    // always at least one), so that _count=500 of 10MB documents is not a 5GB response
+    const ids = this.db.prepare(`SELECT d.id, d.size FROM documents d ${w} ORDER BY ${search.orderBy} LIMIT ? OFFSET ?`)
+      .all(...args, ...search.orderArgs, search.count, search.offset);
+    const keep = [];
+    let bytes = 0;
+    for (const r of ids) {
+      if (keep.length > 0 && bytes + r.size > MAX_PAGE_BYTES) {
+        break;
+      }
+      keep.push(r.id);
+      bytes += r.size;
+    }
+    const rows = keep.map(id => this.db.prepare('SELECT id, received, json FROM documents WHERE id = ?').get(id));
+    return { total, rows, truncated: keep.length < ids.length };
+  }
+
+  /** The documents of a project the list page shows, all of them, newest first. */
+  list(projectId) {
+    return this.search(projectId, parseSearch({ _count: String(1000) })).rows;
+  }
+
+  // ---- the processing queue ----
+
+  /**
+   * Take the oldest submitted document for processing, marking it 'processing'.
+   * @returns {Object|null} the row (as read()) or null if nothing is waiting
+   */
+  claimNext(nowMs = Date.now()) {
+    return this.db.transaction(() => {
+      const next = this.stmts.nextSubmitted.get();
+      if (!next || this.stmts.claim.run(next.id).changes === 0) {
+        return null;
+      }
+      this.stmts.startRun.run(next.id, nowMs);
+      return this.read(next.id);
+    })();
+  }
+
+  // ---- the SHL viewer ----
+
+  /** Keep (or replace) what the viewer retrieved; drops the ones that have expired. */
+  saveView(token, link, result, keepMs, nowMs = Date.now()) {
+    this.db.prepare('DELETE FROM shl_views WHERE expires_ms <= ?').run(nowMs);
+    const existing = this.db.prepare('SELECT created_ms FROM shl_views WHERE token = ?').get(token);
+    this.db.prepare('INSERT OR REPLACE INTO shl_views (token, created_ms, expires_ms, link, json) VALUES (?, ?, ?, ?, ?)')
+      .run(token, existing ? existing.created_ms : nowMs, nowMs + keepMs, link, JSON.stringify(result));
+  }
+
+  /** @returns {{token: string, created: string, expires: string, link: string, result: Object}|null} unless it has expired */
+  readView(token, nowMs = Date.now()) {
+    const r = this.db.prepare('SELECT token, created_ms, expires_ms, link, json FROM shl_views WHERE token = ? AND expires_ms > ?').get(token, nowMs);
+    return r ? { token: r.token, created: new Date(r.created_ms).toISOString(), expires: new Date(r.expires_ms).toISOString(), link: r.link, result: JSON.parse(r.json) } : null;
+  }
+
+  /**
+   * The documents (in any project) with the same Bundle.identifier - the same document, as
+   * far as can be told.
+   * @returns {Array<{id: number, project_code: string, project_name: string}>}
+   */
+  findByIdentifier(system, value) {
+    return this.db.prepare(`SELECT d.id, p.code AS project_code, p.name AS project_name FROM documents d JOIN projects p ON p.id = d.project_id
+      WHERE json_extract(d.json, '$.identifier.value') = ? AND json_extract(d.json, '$.identifier.system') IS ? ORDER BY d.id`)
+      .all(value, system === undefined ? null : system);
+  }
+
+  /**
+   * Record how long a step took with a document; only the most recent STEP_TIMINGS_KEPT
+   * of each step are kept.
+   */
+  recordStepTime(step, docId, ms, size, nowMs = Date.now()) {
+    this.db.prepare('INSERT INTO step_timings (step, doc_id, at_ms, ms, size) VALUES (?, ?, ?, ?, ?)').run(step, docId, nowMs, Math.max(0, Math.round(ms)), Math.max(0, size || 0));
+    this.db.prepare(`DELETE FROM step_timings WHERE step = ? AND id <= (SELECT id FROM step_timings WHERE step = ? ORDER BY id DESC LIMIT 1 OFFSET ${STEP_TIMINGS_KEPT})`).run(step, step);
+  }
+
+  /**
+   * How long each step takes: over its most recent `sample` runs, the average time, and the
+   * time per KB of document (all the time over all the KB, so big documents count for what
+   * they are).
+   * @returns {Object<string, {runs: number, avgMs: number, msPerKb: number|null, last: string}>} by step
+   */
+  stepTimings(sample = STEP_TIMINGS_SAMPLE) {
+    const out = {};
+    const rows = this.db.prepare(`SELECT step, COUNT(*) AS n, AVG(ms) AS avg_ms, SUM(ms) AS total_ms, SUM(size) AS total_bytes, MAX(at_ms) AS last_ms
+      FROM (SELECT step, ms, size, at_ms, ROW_NUMBER() OVER (PARTITION BY step ORDER BY id DESC) AS rn FROM step_timings) WHERE rn <= ? GROUP BY step`).all(sample);
+    for (const r of rows) {
+      out[r.step] = {
+        runs: r.n,
+        avgMs: r.avg_ms,
+        msPerKb: r.total_bytes > 0 ? r.total_ms / (r.total_bytes / 1024) : null,
+        last: new Date(r.last_ms).toISOString()
+      };
+    }
+    return out;
+  }
+
+  /**
+   * The processing queue, for its page: the document being processed (if any), then the
+   * documents waiting, in the order they will be taken (oldest first, as claimNext does).
+   * @param {number} [limit] - the most waiting documents to list
+   * @returns {{processing: Array<Object>, waiting: Array<Object>, waitingTotal: number}}
+   */
+  queue(limit = 200) {
+    const cols = 'd.id, d.project_id, p.code AS project_code, p.name AS project_name, d.status, d.received, d.source, d.size, d.patient_name, d.comp_title';
+    const from = 'FROM documents d JOIN projects p ON p.id = d.project_id';
+    const processing = this.db.prepare(`SELECT ${cols} ${from} WHERE d.status = 'processing' ORDER BY d.id`).all();
+    const waiting = this.db.prepare(`SELECT ${cols} ${from} WHERE d.status = 'submitted' ORDER BY d.id LIMIT ?`).all(limit);
+    const waitingTotal = this.db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'submitted'").get().n;
+    return { processing, waiting, waitingTotal };
+  }
+
+  /**
+   * Record the outcome of processing a document: ok, the pipeline finished (the document
+   * is processed); not ok, it failed (the document is in error).
+   */
+  finish(id, ok, message, nowMs = Date.now()) {
+    this.db.transaction(() => {
+      this.stmts.finish.run(ok ? 'processed' : 'error', message || null, nowMs, id);
+      this.stmts.endRun.run(ok ? 'finished' : 'failed', nowMs, id);
+    })();
+  }
+
+  /**
+   * The pipeline runs started in (sinceMs, nowMs], by how they ended.
+   * @returns {{started: number, finished: number, failed: number, interrupted: number, running: number}}
+   */
+  countRuns(sinceMs, nowMs) {
+    const out = { started: 0, finished: 0, failed: 0, interrupted: 0, running: 0 };
+    for (const r of this.stmts.countRuns.all(sinceMs, nowMs)) {
+      if (Object.prototype.hasOwnProperty.call(out, r.outcome)) {
+        out[r.outcome] = r.n;
+      }
+      out.started += r.n;
+    }
+    return out;
+  }
+
+  /**
+   * Put a document back in the queue - not while it is being processed.
+   * @returns {'queued'|'processing'|null} null when there is no such document
+   */
+  requeue(id, projectId) {
+    if (!Number.isInteger(id)) {
+      return null;
+    }
+    const row = this.db.prepare('SELECT status FROM documents WHERE id = ? AND project_id = ?').get(id, projectId);
+    if (!row) {
+      return null;
+    }
+    if (row.status === 'processing' || this.stmts.requeue.run(id, projectId).changes === 0) {
+      return 'processing';
+    }
+    this.stmts.clearResults.run(id);
+    return 'queued';
+  }
+
+  // ---- the processing steps' results ----
+
+  /** Keep what a step made of a document, replacing any earlier run's. */
+  saveResult(docId, step, result) {
+    this.stmts.saveResult.run(docId, step, Date.now(), JSON.stringify(result));
+  }
+
+  /** @returns {{made: string, result: Object}|null} what a step made of a document */
+  readResult(docId, step) {
+    const row = this.stmts.readResult.get(docId, step);
+    return row ? { made: new Date(row.made_ms).toISOString(), result: JSON.parse(row.json) } : null;
+  }
+
+  /**
+   * Record where a step is with a document - waiting, running, done or failed - with its
+   * note or error, merged into whatever result the step has kept.
+   */
+  saveStepStatus(docId, step, status, message) {
+    const existing = this.readResult(docId, step);
+    const result = existing ? existing.result : {};
+    result.status = status;
+    result.message = message || null;
+    this.saveResult(docId, step, result);
+  }
+
+  /** Drop every step's result for a document (it is being processed again). */
+  clearResults(docId) {
+    this.stmts.clearResults.run(docId);
+  }
+
+  /** The nation a document is from (an ISO 3166 code), or null: the nationality step's answer, for the list. */
+  setNationality(docId, jurisdiction) {
+    this.db.prepare('UPDATE documents SET nationality = ? WHERE id = ?').run(jurisdiction || null, docId);
+  }
+
+  /** The steps that have results for a document. */
+  resultSteps(docId) {
+    return this.stmts.resultSteps.all(docId).map(r => r.step);
+  }
+
+  /**
+   * Anything left 'processing' was being worked on when the server stopped; it goes back
+   * in the queue, and its pipeline run was interrupted. Called at startup. @returns {number} how many
+   */
+  resetProcessing(nowMs = Date.now()) {
+    return this.db.transaction(() => {
+      this.stmts.interruptRuns.run(nowMs);
+      return this.stmts.resetProcessing.run().changes;
+    })();
+  }
+
+  /** How many documents are in each state, for the dashboard. */
+  statusCounts(projectId) {
+    const rows = projectId === undefined
+      ? this.db.prepare('SELECT status, COUNT(*) AS n FROM documents GROUP BY status').all()
+      : this.db.prepare('SELECT status, COUNT(*) AS n FROM documents WHERE project_id = ? GROUP BY status').all(projectId);
+    const out = {};
+    for (const r of rows) {
+      out[r.status] = r.n;
+    }
+    return out;
+  }
+}
+
+module.exports = { STEP_TIMINGS_SAMPLE, IpsStore, summaryOf, nameText, MAX_PAGE_BYTES };

@@ -14,6 +14,7 @@ const pako = require('pako');
 const base45 = require('base45');
 const fs = require('fs');
 const folders = require('../library/folder-setup');
+const { guarded, failRequest } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
 const shlLog = Logger.getInstance().child({ module: 'shl' });
@@ -278,7 +279,7 @@ class SHLModule {
           shlLog.info('Connected to SHL SQLite database at "'+dbPath+'"');
 
           // Check if tables already exist before creating them
-          this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='SHL'", (err, row) => {
+          this.db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='SHL'", guarded(reject, (err, row) => {
             if (err) {
               reject(err);
             } else if (row) {
@@ -288,7 +289,7 @@ class SHLModule {
               // Tables don't exist, create them
               this.createTables().then(resolve).catch(reject);
             }
-          });
+          }));
         }
       });
     });
@@ -339,32 +340,32 @@ class SHLModule {
         }
       };
 
-      this.db.run(createSHLTable, (err) => {
+      this.db.run(createSHLTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHL table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
 
-      this.db.run(createSHLFilesTable, (err) => {
+      this.db.run(createSHLFilesTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHLFiles table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
 
-      this.db.run(createSHLViewsTable, (err) => {
+      this.db.run(createSHLViewsTable, guarded(reject, (err) => {
         if (err) {
           shlLog.error('Error creating SHLViews table:', err.message);
           reject(err);
         } else {
           checkComplete();
         }
-      });
+      }));
     });
   }
 
@@ -418,23 +419,25 @@ class SHLModule {
     }
   }
 
-  stopCleanupJob() {
+  // node-cron 4: stop() may return a promise
+  async stopCleanupJob() {
     if (this.cleanupJob) {
-      this.cleanupJob.stop();
+      const job = this.cleanupJob;
       this.cleanupJob = null;
+      await job.stop();
     }
   }
 
   cleanupExpiredEntries() {
     const deleteSql = 'DELETE FROM SHL WHERE expires_at < datetime("now")';
 
-    this.db.run(deleteSql, function(err) {
+    this.db.run(deleteSql, guarded(null, function(err) {
       if (err) {
         shlLog.error('SHL cleanup error:', err.message);
       } else if (this.changes > 0) {
         shlLog.info(`Cleaned up ${this.changes} expired SHL entries`);
       }
-    });
+    }));
   }
 
   generateUUID() {
@@ -676,7 +679,7 @@ class SHLModule {
     });
 
     // SHL create endpoint
-    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res) => {
+    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res, next) => {
       const start = Date.now();
       try {
         const {vhl, password, days} = req.body;
@@ -716,7 +719,7 @@ class SHLModule {
 
         const insertSql = 'INSERT INTO SHL (uuid, vhl, expires_at, password) VALUES (?, ?, ?, ?)';
 
-        this.db.run(insertSql, [uuid, vhl, expiryDateString, newPassword], function (err) {
+        this.db.run(insertSql, [uuid, vhl, expiryDateString, newPassword], guarded(next, function (err) {
           if (err) {
             return res.status(500).json({error: 'Failed to create SHL entry: ' + err.message});
           }
@@ -728,14 +731,14 @@ class SHLModule {
             pword: newPassword,
             link: `https://${host}/shl/access/${uuid}`
           });
-        });
+        }));
       } finally {
         this.stats.countRequest('create', Date.now() - start);
       }
     });
 
     // SHL upload endpoint
-    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res) => {
+    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
       const start = Date.now();
       try {
         const {uuid, pword, files} = req.body;
@@ -756,7 +759,7 @@ class SHLModule {
 
         const checkSHLSql = 'SELECT vhl, password FROM SHL WHERE uuid = ?';
 
-        this.db.get(checkSHLSql, [uuid], (err, row) => {
+        this.db.get(checkSHLSql, [uuid], guarded(next, (err, row) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -771,7 +774,7 @@ class SHLModule {
 
           const deleteExistingFilesSql = 'DELETE FROM SHLFiles WHERE shl_uuid = ?';
 
-          this.db.run(deleteExistingFilesSql, [uuid], (err) => {
+          this.db.run(deleteExistingFilesSql, [uuid], guarded(next, (err) => {
             if (err) {
               return res.status(500).json({error: 'Failed to clear existing files'});
             }
@@ -781,13 +784,13 @@ class SHLModule {
                 const fileId = this.generateUUID();
                 const insertFileSql = 'INSERT INTO SHLFiles (id, shl_uuid, cnt, type) VALUES (?, ?, ?, ?)';
 
-                this.db.run(insertFileSql, [fileId, uuid, f.cnt, f.type], function (err) {
+                this.db.run(insertFileSql, [fileId, uuid, f.cnt, f.type], guarded(reject, function (err) {
                   if (err) {
                     reject(err);
                   } else {
                     resolve();
                   }
-                });
+                }));
               });
             });
 
@@ -799,23 +802,33 @@ class SHLModule {
                 shlLog.error('File upload error:', error);
                 res.status(500).json({error: 'Failed to upload files'});
               });
-          });
-        });
+          }));
+        }));
       } finally {
         this.stats.countRequest('upload', Date.now() - start);
       }
     });
 
-    // Helper function for the shared access logic
+    // Helper function for the shared access logic.
+    //
+    // POST is the manifest request. GET is only defined by the SHL spec for the
+    // U flag (direct file access): the client does GET {url}?recipient=... and
+    // expects the single encrypted file (JWE) back, not a manifest. The flag is
+    // not sent to or stored on the server, so a GET is taken to mean U. If the
+    // SHL has more than one file (U isn't valid for it), or it's a VHL, GET
+    // keeps returning the manifest / VHL bundle as before.
     const handleSHLAccess = (req, res) => {
       const start = Date.now();
       try {
         const {uuid} = req.params;
+        const isGet = req.method === 'GET';
 
         let recipient, embeddedLengthMax;
 
-        if (req.method === 'GET') {
-          recipient = 'anonymous';
+        if (isGet) {
+          recipient = typeof req.query.recipient === 'string' && req.query.recipient.length > 0
+            ? req.query.recipient.substring(0, 255)
+            : 'anonymous';
           embeddedLengthMax = undefined;
         } else {
           ({recipient, embeddedLengthMax} = req.body);
@@ -833,7 +846,7 @@ class SHLModule {
 
         const checkSHLSql = 'SELECT uuid, vhl FROM SHL WHERE uuid = ? AND expires_at > datetime("now")';
 
-        this.db.get(checkSHLSql, [uuid], (err, shlRow) => {
+        this.db.get(checkSHLSql, [uuid], guarded(failRequest(res), (err, shlRow) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -844,36 +857,49 @@ class SHLModule {
 
           const logAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
 
-          this.db.run(logAccessSql, [uuid, recipient, clientIP], function (logErr) {
+          this.db.run(logAccessSql, [uuid, recipient, clientIP], guarded(failRequest(res), (logErr) => {
             if (logErr) {
               shlLog.error('Failed to log SHL access:', logErr.message);
             }
 
             const getFilesSql = 'SELECT id, cnt, type FROM SHLFiles WHERE shl_uuid = ?';
 
-            this.db.all(getFilesSql, [uuid], (err, fileRows) => {
+            this.db.all(getFilesSql, [uuid], guarded(failRequest(res), (err, fileRows) => {
               if (err) {
                 return res.status(500).json({error: 'Failed to retrieve files'});
               }
 
+              // U flag: return the one file directly
+              if (isGet && !shlRow.vhl && fileRows.length === 1) {
+                try {
+                  res.set('Content-Type', 'application/jose');
+                  return res.send(Buffer.from(fileRows[0].cnt, 'base64'));
+                } catch (decodeErr) {
+                  return res.status(500).json({error: 'Failed to decode file content'});
+                }
+              }
+
+              // SHL links are always https; the server always sits behind an https proxy
               const host = req.get('host') || 'localhost:3000';
-              const protocol = req.secure ? 'https' : 'http';
               const maxLength = embeddedLengthMax ? parseInt(embeddedLengthMax) : undefined;
 
               const files = fileRows.map(file => {
                 const fileResponse = {
                   contentType: file.type,
-                  location: `${protocol}://${host}/shl/file/${file.id}`
+                  location: `https://${host}/shl/file/${file.id}`
                 };
 
-                if (maxLength === undefined || file.cnt.length <= maxLength) {
-                  fileResponse.embedded = file.cnt;
+                // cnt is stored base64-encoded; embedded must be the JWE compact serialization itself
+                const jwe = Buffer.from(file.cnt, 'base64').toString('utf8');
+                if (maxLength === undefined || jwe.length <= maxLength) {
+                  fileResponse.embedded = jwe;
                 }
 
                 return fileResponse;
               });
 
-              const standardResponse = {files};
+              // finalized: content is fixed for the life of the link (expired links 404 above)
+              const standardResponse = {status: 'finalized', files};
 
               if (shlRow.vhl && vhlProcessor) {
                 try {
@@ -886,9 +912,9 @@ class SHLModule {
               } else {
                 res.json(standardResponse);
               }
-            });
-          });
-        });
+            }));
+          }));
+        }));
       } finally {
         this.stats.countRequest('access', Date.now() - start);
       }
@@ -899,7 +925,7 @@ class SHLModule {
     this.router.post('/access/:uuid', this.validateJsonBody(['recipient'], ['embeddedLengthMax']), handleSHLAccess);
 
     // SHL file endpoint - serves individual files
-    this.router.get('/file/:fileId', (req, res) => {
+    this.router.get('/file/:fileId', (req, res, next) => {
       const start = Date.now();
       try {
         const {fileId} = req.params;
@@ -915,7 +941,7 @@ class SHLModule {
 
         const getFileSql = 'SELECT id, shl_uuid, cnt, type FROM SHLFiles WHERE id = ?';
 
-        this.db.get(getFileSql, [fileId], (err, fileRow) => {
+        this.db.get(getFileSql, [fileId], guarded(next, (err, fileRow) => {
           if (err) {
             return res.status(500).json({error: 'Database error'});
           }
@@ -927,17 +953,17 @@ class SHLModule {
           const logMasterAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
           const logFileAccessSql = 'INSERT INTO SHLViews (shl_uuid, recipient, ip_address) VALUES (?, ?, ?)';
 
-          this.db.run(logMasterAccessSql, [fileRow.shl_uuid, null, clientIP], function (logErr) {
+          this.db.run(logMasterAccessSql, [fileRow.shl_uuid, null, clientIP], guarded(next, function (logErr) {
             if (logErr) {
               shlLog.error('Failed to log master SHL file access:', logErr.message);
             }
-          });
+          }));
 
-          this.db.run(logFileAccessSql, [fileRow.id, null, clientIP], function (logErr) {
+          this.db.run(logFileAccessSql, [fileRow.id, null, clientIP], guarded(next, function (logErr) {
             if (logErr) {
               shlLog.error('Failed to log file-specific access:', logErr.message);
             }
-          });
+          }));
 
           try {
             const fileBuffer = Buffer.from(fileRow.cnt, 'base64');
@@ -946,7 +972,7 @@ class SHLModule {
           } catch (decodeErr) {
             res.status(500).json({error: 'Failed to decode file content'});
           }
-        });
+        }));
       } finally {
         this.stats.countRequest('file', Date.now() - start);
       }
@@ -983,6 +1009,11 @@ class SHLModule {
           try {
             const jwk = this.pemToJwk(certPem, keyPem);
 
+            // the CWT claims, keyed by integers as CWT and the GDHCN have them (a JS object's
+            // keys would be encoded as text: "1", "-260"): 1 is the issuer, -260 the health
+            // certificate, whose 5 is the list of links
+            const claims = new Map([[1, issuer], [-260, new Map([[5, [url]]])]]);
+            // the same, for the steps shown in the response (JSON keys are always text)
             const payload = {
               "1": issuer,
               "-260": {
@@ -990,7 +1021,7 @@ class SHLModule {
               }
             };
 
-            const cborEncoded = CBOR.encode(payload);
+            const cborEncoded = CBOR.encode(claims);
             const coseSigned = await this.createCOSESign1(cborEncoded, jwk, kid);
             const deflated = pako.deflate(coseSigned);
             const base45Encoded = base45.encode(deflated);
@@ -1057,10 +1088,42 @@ class SHLModule {
     });
   }
 
+  /**
+   * The paragraph for the server's daily report: links (QR codes) created in
+   * the period, in either form, how often links were accessed, and the
+   * documents stored behind them.
+   */
+  async dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.db) {
+      return 'The database is not open.';
+    }
+    const get = (sql, params) => new Promise((resolve, reject) =>
+      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+    // created_at is CURRENT_TIMESTAMP: UTC, 'YYYY-MM-DD HH:MM:SS'
+    const utc = ms => new Date(ms).toISOString().replace('T', ' ').substring(0, 19);
+    try {
+      const created = await get(
+        'SELECT SUM(CASE WHEN vhl THEN 0 ELSE 1 END) AS shl, SUM(CASE WHEN vhl THEN 1 ELSE 0 END) AS vhl FROM SHL WHERE created_at > ? AND created_at <= ?',
+        [utc(since), utc(now)]);
+      const views = await get('SELECT COUNT(*) AS n FROM SHLViews WHERE created_at > ? AND created_at <= ?', [utc(since), utc(now)]);
+      const files = await get('SELECT COUNT(*) AS n, COUNT(DISTINCT shl_uuid) AS links FROM SHLFiles', []);
+      const shl = created.shl || 0;
+      const vhl = created.vhl || 0;
+      const total = shl + vhl;
+      const sentences = [];
+      sentences.push(`${plural(total, 'QR code')} ${total === 1 ? 'was' : 'were'} served (${shl} SMART Health ${shl === 1 ? 'Link' : 'Links'}, ${plural(vhl, 'Verifiable Health Link')}), and links were accessed ${plural(views.n, 'time')}.`);
+      sentences.push(`${plural(files.n, 'document')} ${files.n === 1 ? 'is' : 'are'} stored to serve ${plural(files.links, 'QR code')}.`);
+      return sentences.join(' ');
+    } catch (e) {
+      return `The database could not be read: ${e.message}.`;
+    }
+  }
+
   async shutdown() {
     shlLog.info('Shutting down SHL module...');
 
-    this.stopCleanupJob();
+    await this.stopCleanupJob();
 
     // Stop FHIR validator
     if (this.fhirValidator) {
@@ -1074,15 +1137,15 @@ class SHLModule {
     }
 
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db.close((err) => {
+      return new Promise((resolve, reject) => {
+        this.db.close(guarded(reject, (err) => {
           if (err) {
             shlLog.error('Error closing SHL database:', err.message);
           } else {
             shlLog.info('SHL database connection closed');
           }
           resolve();
-        });
+        }));
       });
     }
   }

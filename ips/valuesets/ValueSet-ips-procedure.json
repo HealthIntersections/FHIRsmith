@@ -1,0 +1,116 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-procedure",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-procedure",
+  "name": "IpsProcedure",
+  "title": "Procedures (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 71388002 |Procedure|, other than 14734007 |Administrative procedure|, 59524001 |Blood bank procedure|, 389067005 |Community health procedure|, 442006003 |Determination of information related to transfusion|, 225288009 |Environmental care procedure|, 308335008 |Patient encounter procedure|, 710135002 |Promotion of health| and 389084004 |Staff related procedure|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "descendent-of",
+            "value": "71388002"
+          }
+        ]
+      }
+    ],
+    "exclude": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "14734007"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "59524001"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "389067005"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "442006003"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "225288009"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "308335008"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "710135002"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "389084004"
+          }
+        ]
+      }
+    ]
+  }
+}

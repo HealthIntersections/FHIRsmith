@@ -328,7 +328,6 @@ describe('UCUM Library Tests', () => {
         }
 
         const elapsed = Date.now() - start;
-        console.log(`Performance test elapsed: ${elapsed}ms`);
         expect(elapsed).toBeLessThan(5000); // Should complete in reasonable time
       });
     });
@@ -508,7 +507,6 @@ try {
   const xmlPath = path.join(__dirname, '../data/UcumFunctionalTests.xml');
   const xmlContent = readFileSync(xmlPath, 'utf8');
   functionalTestCases = parseXmlTestCases(xmlContent);
-  console.log(`Loaded ${functionalTestCases.length} functional test cases from XML`);
 } catch (error) {
   console.warn('Could not load UcumFunctionalTests.xml - skipping XML tests:', error.message);
   functionalTestCases = [];
@@ -697,8 +695,6 @@ if (functionalTestCases.length > 0) {
           throw new Error(`Test case ${targetId} not found`);
         }
 
-        // console.log(`Running specific test: ${targetId} (${testCase.type})`);
-
         switch (testCase.type) {
           case 'validation':
             runValidationCase(testCase);
@@ -718,14 +714,13 @@ if (functionalTestCases.length > 0) {
           default:
             throw new Error(`Unknown test type: ${testCase.type}`);
         }
-
-        // console.log(`✓ Test ${targetId} passed`);
       });
     });
   }); // End of describe block for XML tests
 } else {
   describe('UCUM XML Functional Tests from UcumFunctionalTests.xml', () => {
     test('XML tests skipped - could not load test file', () => {
+      // eslint-disable-next-line no-console -- why the XML tests are skipped
       console.log('UcumFunctionalTests.xml not found or could not be parsed - XML tests skipped');
     });
   });
@@ -775,11 +770,8 @@ function parseXmlTestCases(xmlContent) {
   // Process each section type
   for (const sectionType of validSectionTypes) {
     if (!ucumTests[sectionType]) {
-      // console.log(`No ${sectionType} section found`);
       continue;
     }
-
-    // console.log(`Processing ${sectionType} section...`);
 
     const section = ucumTests[sectionType];
     let cases = section.case;

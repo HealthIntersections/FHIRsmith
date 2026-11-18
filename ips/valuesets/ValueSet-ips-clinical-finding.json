@@ -1,0 +1,26 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-clinical-finding",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-clinical-finding",
+  "name": "IpsClinicalFinding",
+  "title": "Clinical findings (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 404684003 |Clinical finding|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "404684003"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -4,14 +4,20 @@ const inquirer = require('inquirer');
 const path = require('path');
 const readline = require('readline');
 const chalk = require('chalk');
-const natural = require('natural');
 
 const {
-  SnomedStrings, SnomedWords, SnomedStems, SnomedReferences,
+  SnomedStrings, SnomedReferences,
   SnomedDescriptions, SnomedDescriptionIndex, SnomedConceptList,
-  SnomedRelationshipList, SnomedReferenceSetMembers, SnomedReferenceSetIndex
+  SnomedRelationshipList, SnomedReferenceSetMembers, SnomedReferenceSetIndex,
+  SNOMED_CACHE_VERSION
 } = require('../sct/structures');
 const {SnomedExpressionServices} = require("../sct/expressions");
+const { SnomedTextIndexes } = require('../sct/text-index');
+const terminal = require('./terminal');
+const { languageByte, LANGUAGE_CODES } = require('../sct/languages');
+
+// definitionStatusId values from the RF2 concept file
+const SNOMED_DEFINITION_STATUS_PRIMITIVE = 900000000000074008n;
 
 class SnomedModule extends BaseTerminologyModule {
 
@@ -57,6 +63,7 @@ class SnomedModule extends BaseTerminologyModule {
         .option('-v, --version <version>', 'Version in YYYYMMDD format (e.g., 20250801)')
         .option('-u, --uri <uri>', 'Version URI (overrides edition/version if provided)')
         .option('-l, --language <code>', 'Default language code (overrides edition default if provided)')
+        .option('--license <file>', 'The license the edition is distributed under (a text file), carried in the cache')
         .option('-y, --yes', 'Skip confirmations')
         .action(async (options) => {
           await this.handleImportCommand({...globalOptions, ...options});
@@ -103,16 +110,16 @@ class SnomedModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
   }
 
   async confirmImport(config) {
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
 
     if (config.edition) {
       const editions = {
@@ -122,26 +129,28 @@ class SnomedModule extends BaseTerminologyModule {
         // ... other editions
       };
       const editionName = editions[config.edition] || `Edition ${config.edition}`;
-      console.log(`  Edition: ${chalk.white(editionName)} (${config.edition})`);
+      terminal.log(`  Edition: ${chalk.white(editionName)} (${config.edition})`);
     }
 
     if (config.version) {
-      console.log(`  Version: ${chalk.white(config.version)}`);
+      terminal.log(`  Version: ${chalk.white(config.version)}`);
     }
 
     if (config.uri) {
-      console.log(`  Version URI: ${chalk.white(config.uri)}`);
+      terminal.log(`  Version URI: ${chalk.white(config.uri)}`);
     }
 
     if (config.language) {
-      console.log(`  Language: ${chalk.white(config.language)}`);
+      terminal.log(`  Language: ${chalk.white(config.language)}`);
     }
 
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(`  License: ${chalk.white(config.license)}`);
+
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -195,7 +204,8 @@ class SnomedModule extends BaseTerminologyModule {
       "999000021000000109": "UK Clinical Edition",
       "5631000179106": "Uruguayan Edition",
       "21000325107": "Chilean Edition",
-      "5991000124107": "US Edition + ICD10CM"
+      "5991000124107": "US Edition + ICD10CM",
+      "11010000107": "LOINC Extension"
     };
 
     // Filename patterns for edition codes (2-letter country codes in filenames)
@@ -222,7 +232,8 @@ class SnomedModule extends BaseTerminologyModule {
       'EE': '11000181102',
       'CZ': '11000279109',
       'KR': '11000267109',
-      'IN': '1121000189102'
+      'IN': '1121000189102',
+      'LO': '11010000107' // the LOINC Extension: sct2_Concept_Snapshot_LO1010000_20261021.txt
     };
 
     const INTERNATIONAL_MODULE = "900000000000207008";
@@ -354,7 +365,7 @@ class SnomedModule extends BaseTerminologyModule {
     } catch (error) {
       // Silent fail - auto-detection is best-effort
       if (this.config?.verbose) {
-        console.log(`Auto-detection warning: ${error.message}`);
+        terminal.log(`Auto-detection warning: ${error.message}`);
       }
     }
 
@@ -447,7 +458,8 @@ class SnomedModule extends BaseTerminologyModule {
       "999000021000000109": { name: "UK Clinical Edition", needsBase: true, lang: "en-GB" },
       "5631000179106": { name: "Uruguayan Edition", needsBase: true, lang: "es-UY" },
       "21000325107": { name: "Chilean Edition", needsBase: false, lang: "es-CL" },
-      "5991000124107": { name: "US Edition + ICD10CM", needsBase: true, lang: "en-US" }
+      "5991000124107": { name: "US Edition + ICD10CM", needsBase: true, lang: "en-US" },
+      "11010000107": { name: "LOINC Extension", needsBase: true, lang: "en-US" }
     };
 
     const questions = [];
@@ -618,6 +630,16 @@ class SnomedModule extends BaseTerminologyModule {
       });
     }
 
+    // The license the edition is distributed under: the cache carries it, wherever it goes
+    if (!options.license) {
+      additionalQuestions.push({
+        type: 'input',
+        name: 'license',
+        message: 'License file (the license the edition is distributed under, carried in the cache):',
+        validate: (input) => licenseFileProblem(input) || true
+      });
+    }
+
     // Manual URI input if neither edition/version nor URI was provided
     if (!autoUri && !options.uri) {
       additionalQuestions.push({
@@ -652,13 +674,17 @@ class SnomedModule extends BaseTerminologyModule {
     if (!config.uri) {
       throw new Error('Version URI could not be determined');
     }
+    const licenseProblem = licenseFileProblem(config.license);
+    if (licenseProblem) {
+      throw new Error(licenseProblem);
+    }
 
     return config;
   }
 
   async runImportWithoutConfigSaving(config) {
     try {
-      console.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
+      terminal.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -677,7 +703,7 @@ class SnomedModule extends BaseTerminologyModule {
       this.stopProgress();
       this.logError(`${this.getName()} import failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       process.exit(1);
     }
@@ -813,10 +839,10 @@ class SnomedModule extends BaseTerminologyModule {
       const stats = await this.validateSnomedDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Concept files: ${stats.conceptFiles}`);
-      console.log(`  Description files: ${stats.descriptionFiles}`);
-      console.log(`  Relationship files: ${stats.relationshipFiles}`);
-      console.log(`  Refset directories: ${stats.refsetDirectories}`);
+      terminal.log(`  Concept files: ${stats.conceptFiles}`);
+      terminal.log(`  Description files: ${stats.descriptionFiles}`);
+      terminal.log(`  Relationship files: ${stats.relationshipFiles}`);
+      terminal.log(`  Refset directories: ${stats.refsetDirectories}`);
 
     } catch (error) {
       this.logError(`Validation failed: ${error.message}`);
@@ -835,31 +861,32 @@ class SnomedModule extends BaseTerminologyModule {
 
     try {
       // Load and analyze the cache file
-      const { SnomedFileReader } = require('./cs-snomed-structures');
+      const { SnomedFileReader } = require('../sct/structures');
       const reader = new SnomedFileReader(cachePath);
       const data = await reader.loadSnomedData();
 
       this.logSuccess('Cache file status:');
-      console.log(`  Cache Version: ${data.cacheVersion}`);
-      console.log(`  Version URI: ${data.versionUri}`);
-      console.log(`  Version Date: ${data.versionDate}`);
-      console.log(`  Edition: ${data.edition}`);
-      console.log(`  SNOMED Version: ${data.version}`);
+      terminal.log(`  Cache Version: ${data.cacheVersion}`);
+      terminal.log(`  Version URI: ${data.versionUri}`);
+      terminal.log(`  Version Date: ${data.versionDate}`);
+      terminal.log(`  Edition: ${data.edition}`);
+      terminal.log(`  SNOMED Version: ${data.version}`);
+      terminal.log(`  License: ${data.license.length.toLocaleString()} bytes`);
 
       // Create structure instances to get counts
       const concepts = new SnomedConceptList(data.concept);
       const descriptions = new SnomedDescriptions(data.desc);
       const relationships = new SnomedRelationshipList(data.rel);
 
-      console.log(`  Concepts: ${concepts.count().toLocaleString()}`);
-      console.log(`  Descriptions: ${descriptions.count().toLocaleString()}`);
-      console.log(`  Relationships: ${relationships.count().toLocaleString()}`);
-      console.log(`  Active Roots: ${data.activeRoots.length}`);
-      console.log(`  Inactive Roots: ${data.inactiveRoots.length}`);
+      terminal.log(`  Concepts: ${concepts.count().toLocaleString()}`);
+      terminal.log(`  Descriptions: ${descriptions.count().toLocaleString()}`);
+      terminal.log(`  Relationships: ${relationships.count().toLocaleString()}`);
+      terminal.log(`  Active Roots: ${data.activeRoots.length}`);
+      terminal.log(`  Inactive Roots: ${data.inactiveRoots.length}`);
 
       const fileStat = fs.statSync(cachePath);
-      console.log(`  File Size: ${(fileStat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`);
-      console.log(`  Last Modified: ${fileStat.mtime.toISOString()}`);
+      terminal.log(`  File Size: ${(fileStat.size / (1024 * 1024 * 1024)).toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${fileStat.mtime.toISOString()}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -921,7 +948,7 @@ class SnomedImporterWithProgress {
         message += ` (${rate.toLocaleString()} items/sec)`;
       }
 
-      console.log(message);
+      terminal.log(message);
 
       // Clean up
       this.taskStartTimes.delete(taskName);
@@ -1039,34 +1066,12 @@ class ConceptTracker {
 
 // Main SNOMED CT importer class
 class SnomedImporter {
-  static LANGUAGE_STEMMERS = {
-    'en': natural.PorterStemmer,        // English
-    'en-US': natural.PorterStemmer,     // English (US)
-    'en-GB': natural.PorterStemmer,     // English (GB)
-    'fr': natural.PorterStemmerFr,      // French
-    'es': natural.PorterStemmerEs,      // Spanish
-    'it': natural.PorterStemmerIt,      // Italian
-    'pt': natural.PorterStemmerPt,      // Portuguese
-    'nl': natural.PorterStemmerNl,      // Dutch
-    'no': natural.PorterStemmerNo,      // Norwegian
-    'ru': natural.PorterStemmerRu,      // Russian
-    'sv': natural.PorterStemmer,        // Swedish (fallback to English)
-    'da': natural.PorterStemmer,        // Danish (fallback to English)
-    'de': natural.PorterStemmer         // German (fallback to English)
-  };
-
-  // Word flags (matching Pascal constants)
-  static FLAG_WORD_DEP = 1;    // Word appears in active descriptions
-  static FLAG_WORD_FSN = 2;    // Word appears in FSN (Fully Specified Name)
-
   constructor(config, progressReporter = null) {
     this.config = config;
     this.progressReporter = progressReporter;
 
     // Initialize data structures
     this.strings = new SnomedStrings();
-    this.words = new SnomedWords();
-    this.stems = new SnomedStems();
     this.refs = new SnomedReferences();
     this.descriptions = new SnomedDescriptions();
     this.descriptionIndex = new SnomedDescriptionIndex();
@@ -1096,6 +1101,13 @@ class SnomedImporter {
 
   async run() {
     try {
+      // The license goes into the cache: read it first, rather than find out it's missing
+      // after hours of import
+      const licenseProblem = licenseFileProblem(this.config.license);
+      if (licenseProblem) {
+        throw new Error(licenseProblem);
+      }
+      this.license = fs.readFileSync(this.config.license);
 
       // Discover files
       this.files = this.discoverFiles();
@@ -1127,11 +1139,14 @@ class SnomedImporter {
       // Step 6: Build description cache
       this.buildDescriptionCache();
 
-      // Step 7-9: Process words and stems
-      this.processWords();
-
       // Step 10: Read relationships
       await this.readRelationships();
+
+      // Step 10a: Read alternate identifiers (e.g. the LOINC codes of the LOINC Extension)
+      await this.readIdentifiers();
+
+      // Step 10b: Read concrete value relationships (sct2_RelationshipConcreteValues)
+      await this.readConcreteValues();
 
       // Step 11: Link concepts
       this.linkConcepts();
@@ -1152,7 +1167,7 @@ class SnomedImporter {
       await this.saveCache();
 
     } catch (error) {
-      console.error('DEBUG: Import failed with error:', error);
+      terminal.error('DEBUG: Import failed with error:', error);
       throw new Error(`Import failed: ${error.message}`);
     }
   }
@@ -1162,6 +1177,8 @@ class SnomedImporter {
       concepts: [],
       descriptions: [],
       relationships: [],
+      identifiers: [],
+      concreteValues: [],
       refsetDirectories: []
     };
 
@@ -1170,7 +1187,7 @@ class SnomedImporter {
     // extension content is layered on top.
     if (this.config.base) {
       if (this.config.verbose) {
-        console.log(`Loading base edition from: ${this.config.base}`);
+        terminal.log(`Loading base edition from: ${this.config.base}`);
       }
       this._scanDirectory(this.config.base, files);
     }
@@ -1215,9 +1232,13 @@ class SnomedImporter {
       } else if (firstLine.startsWith('id\teffectiveTime\tactive\tmoduleId\tsourceId\tdestinationId\trelationshipGroup\ttypeId\tcharacteristicTypeId\tmodifierId') &&
           !filePath.includes('StatedRelationship')) {
         files.relationships.push(filePath);
+      } else if (files.identifiers && firstLine.startsWith('alternateIdentifier\teffectiveTime\tactive\tmoduleId\tidentifierSchemeId\treferencedComponentId')) {
+        files.identifiers.push(filePath);
+      } else if (files.concreteValues && firstLine.startsWith('id\teffectiveTime\tactive\tmoduleId\tsourceId\tvalue\trelationshipGroup\ttypeId\tcharacteristicTypeId\tmodifierId')) {
+        files.concreteValues.push(filePath);
       }
     } catch (error) {
-      console.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
+      terminal.log(`DEBUG: Error reading file ${filePath}: ${error.message}`);
     }
   }
 
@@ -1342,11 +1363,16 @@ class SnomedImporter {
 
     for (let i = 0; i < this.conceptList.length; i++) {
       const concept = this.conceptList[i];
-      const flags = concept.active ? 0 : 1;
+      // Bits 0-3 are the status (MASK_CONCEPT_STATUS); bit 4 (MASK_CONCEPT_PRIMITIVE) says the
+      // concept is primitive. Without the primitive bit every concept looks fully defined, and
+      // normal form generation then runs for concepts that have no definition to expand.
+      let flags = concept.active ? 0 : 1;
+      if (concept.definitionStatusId === SNOMED_DEFINITION_STATUS_PRIMITIVE) {
+        flags |= SnomedConceptList.MASK_CONCEPT_PRIMITIVE;
+      }
       const effectiveTime = this.convertDateToSnomedDate(concept.effectiveTime);
 
       concept.index = this.concepts.addConcept(concept.id, effectiveTime, flags);
-      concept.stems = []; // Initialize stems array
 
       if (i % 1000 === 0) {
         progressBar?.update(i);
@@ -1452,18 +1478,30 @@ class SnomedImporter {
     progressBar?.start(this.descriptionList.length, 0);
 
     const indexEntries = [];
+    // concepts the descriptions refer to (as module, type or case significance) that the
+    // source doesn't have: an extension imported without the edition it extends
+    const missing = new Map(); // id -> what it was used as
 
     for (let i = 0; i < this.descriptionList.length; i++) {
       const desc = this.descriptionList[i];
       const concept = this.conceptMap.get(desc.conceptId);
 
       if (concept) {
-        const termOffset = this.addString(desc.term);
-        const effectiveTime = this.convertDateToSnomedDate(desc.effectiveTime);
-        const lang = this.mapLanguageCode(desc.languageCode);
         const kind = this.conceptMap.get(desc.typeId);
         const module = this.conceptMap.get(desc.moduleId);
         const caps = this.conceptMap.get(desc.caseSignificanceId);
+        if (!kind || !module || !caps) {
+          for (const [c, id, what] of [[kind, desc.typeId, 'description type'], [module, desc.moduleId, 'module'],
+            [caps, desc.caseSignificanceId, 'case significance']]) {
+            if (!c && !missing.has(String(id))) {
+              missing.set(String(id), what);
+            }
+          }
+          continue;
+        }
+        const termOffset = this.addString(desc.term);
+        const effectiveTime = this.convertDateToSnomedDate(desc.effectiveTime);
+        const lang = this.mapLanguageCode(desc.languageCode);
 
         const descOffset = this.descriptions.addDescription(
             termOffset, desc.id, effectiveTime, concept.index,
@@ -1480,6 +1518,12 @@ class SnomedImporter {
       if (i % 1000 === 0) {
         progressBar?.update(i);
       }
+    }
+
+    if (missing.size > 0) {
+      const some = [...missing.entries()].slice(0, 5).map(([id, what]) => `${id} (as ${what})`).join(', ');
+      throw new Error(`The descriptions refer to ${missing.size} concept(s) that the source doesn't have: ${some}. ` +
+        'If this is an extension, import it with --base <the RF2 directory of the edition it extends>');
     }
 
     this.descriptions.doneBuild();
@@ -1507,14 +1551,15 @@ class SnomedImporter {
     const month = parseInt(dateStr.substring(4, 6));
     const day = parseInt(dateStr.substring(6, 8));
 
-    // Create target date
-    const targetDate = new Date(year, month - 1, day);
-
-    // Pascal TDateTime epoch: December 30, 1899
-    const pascalEpoch = new Date(1899, 11, 30); // Month is 0-based in JS
+    // Days since the Pascal TDateTime epoch (December 30, 1899), counted in UTC. Local dates are
+    // not whole days apart: 1899 local time is the zone's historical mean time (e.g. +9:39:52 in
+    // Melbourne) and today's has daylight saving, so the difference came out a day short in zones
+    // ahead of UTC, and every effectiveTime in a cache built there was a day early
+    const targetDate = Date.UTC(year, month - 1, day);
+    const pascalEpoch = Date.UTC(1899, 11, 30); // Month is 0-based in JS
 
     // Calculate days difference
-    const daysDiff = Math.floor((targetDate - pascalEpoch) / (1000 * 60 * 60 * 24));
+    const daysDiff = Math.round((targetDate - pascalEpoch) / (1000 * 60 * 60 * 24));
 
     // Ensure it fits in 16 bits (0-65535) and is positive
     if (daysDiff < 0 || daysDiff > 65535) {
@@ -1524,197 +1569,140 @@ class SnomedImporter {
     return daysDiff;
   }
 
+  /**
+   * The byte a description's language is stored as (tx/sct/languages.js). RF2 language codes
+   * are ISO 639-1, which the table covers; anything else is recorded as English, and said so
+   * once per code
+   * @param {string} code
+   * @returns {number}
+   */
   mapLanguageCode(code) {
-    // Map language codes to bytes - simplified
-    const langMap = {
-      'en': 1,
-      'en-US': 1,
-      'en-GB': 1,
-      'fr': 2,
-      'nl': 3,
-      'es': 4,
-      'sv': 5,
-      'da': 6,
-      'de': 7,
-      'it': 8,
-      'cs': 9
-    };
-    return langMap[code] || 1;
+    const b = languageByte(code);
+    if (b) {
+      return b;
+    }
+    if (!this._unknownLanguages) {
+      this._unknownLanguages = new Set();
+    }
+    if (!this._unknownLanguages.has(code)) {
+      this._unknownLanguages.add(code);
+      terminal.warn(`Warning: description language "${code}" is not an ISO 639-1 code; recorded as English`);
+    }
+    return 1;
   }
 
-  processWords() {
-    const progressBar = this.progressReporter?.createTaskProgressBar('Processing Words');
-    progressBar?.start(this.descriptionList.length, 0);
+  /**
+   * The edition's default description language, as the language byte the cache's
+   * default-language slot holds (the server searches it when a request names no
+   * language): config.language - the edition's language from the editions table, or
+   * --language - if the edition has active descriptions in it, else 1 (English).
+   * Caches imported before this hold 1 whatever the edition.
+   */
+  defaultLanguageByte() {
+    const lang = languageByte(this.config.language);
+    return lang && this.descriptions.activeLanguages().has(lang) ? lang : 1;
+  }
 
-    // Maps to track words and stems
-    const wordMap = new Map(); // word -> {flags, stem, conceptSet}
-    const stemMap = new Map(); // stem -> Set of concept list positions (not concept.index!)
-
-    // Create a map from concept.index to conceptList position for fast lookup
-    const conceptIndexToPosition = new Map();
-    for (let i = 0; i < this.conceptList.length; i++) {
-      conceptIndexToPosition.set(this.conceptList[i].index, i);
-    }
-
-    // Process each description to extract words
-    for (let i = 0; i < this.descriptionList.length; i++) {
-      const desc = this.descriptionList[i];
-      const concept = this.conceptMap.get(desc.conceptId);
-
-      if (concept) {
-        const isActive = desc.active;
-        const isFSN = desc.typeId === BigInt('900000000000003001'); // RF2_MAGIC_FSN
-
-        // Use concept list position instead of concept.index
-        const conceptPosition = conceptIndexToPosition.get(concept.index);
-        if (conceptPosition !== undefined) {
-          this.extractWords(desc.term, desc.languageCode, conceptPosition, isActive, isFSN, wordMap, stemMap);
+  /**
+   * Read the alternate identifier files (sct2_Identifier). Each active row gives a
+   * concept a code in another scheme - the LOINC Extension, for instance, gives each
+   * of its concepts its LOINC code (scheme 30051010000102 |LOINC code identifier|).
+   * Kept as [scheme, module, code, conceptId] for the concepts in this edition; where
+   * a row appears more than once (Full files, or base + extension) the latest wins.
+   */
+  async readIdentifiers() {
+    const rows = new Map(); // scheme|code|concept -> {effectiveTime, active, row}
+    for (const file of this.files.identifiers || []) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(file),
+        crlfDelay: Infinity
+      });
+      let lineCount = 0;
+      for await (const line of rl) {
+        lineCount++;
+        if (lineCount === 1 || !line) continue;
+        const parts = line.split('\t');
+        if (parts.length < 6) continue;
+        const [code, effectiveTime, active, moduleId, schemeId, conceptId] = parts.map(p => p.trim());
+        const key = schemeId + '|' + code + '|' + conceptId;
+        const prior = rows.get(key);
+        if (!prior || prior.effectiveTime <= effectiveTime) {
+          rows.set(key, { effectiveTime, active: active === '1', row: [schemeId, moduleId, code, conceptId] });
         }
       }
-
-      if (i % 1000 === 0) {
-        progressBar?.update(i);
+    }
+    this.identifiers = [];
+    let missing = 0;
+    for (const r of rows.values()) {
+      if (!r.active) continue;
+      let known = false;
+      try {
+        known = this.conceptMap.has(BigInt(r.row[3]));
+      } catch {
+        known = false;
+      }
+      if (known) {
+        this.identifiers.push(r.row);
+      } else {
+        missing++;
       }
     }
-
-    if (this.progressReporter) {
-      this.progressReporter.completeTask('Processing Words', this.descriptionList.length, this.descriptionList.length);
+    this.identifiers.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
+    if (this.identifiers.length > 0 || missing > 0) {
+      terminal.log(`Alternate identifiers: ${this.identifiers.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
     }
+  }
 
-    // Build words index
-    const wordsProgressBar = this.progressReporter?.createTaskProgressBar('Building Words Index');
-    wordsProgressBar?.start(wordMap.size, 0);
-
-    this.words.startBuild();
-    let wordIndex = 0;
-
-    for (const [word, wordData] of wordMap) {
-      // Reverse the DEP flag like Pascal does (xor with FLAG_WORD_DEP)
-      const flags = wordData.flags ^ SnomedImporter.FLAG_WORD_DEP;
-      this.words.addWord(this.addString(word), flags);
-
-      if (wordIndex % 1000 === 0) {
-        wordsProgressBar?.update(wordIndex);
-      }
-      wordIndex++;
-    }
-
-    this.words.doneBuild();
-
-    if (this.progressReporter) {
-      this.progressReporter.completeTask('Building Words Index', wordMap.size, wordMap.size);
-    }
-
-    // Build stems index
-    const stemsProgressBar = this.progressReporter?.createTaskProgressBar('Building Stems Index');
-    stemsProgressBar?.start(stemMap.size, 0);
-
-    this.stems.startBuild();
-    let stemIndex = 0;
-
-    for (const [stem, conceptPositionSet] of stemMap) {
-      // Convert concept positions to concept indices for the final index
-      const conceptIndices = Array.from(conceptPositionSet).map(pos => this.conceptList[pos].index);
-      const stemStringIndex = this.addString(stem);
-      const conceptRefsIndex = this.refs.addReferences(conceptIndices);
-
-      this.stems.addStem(stemStringIndex, conceptRefsIndex);
-
-      // Add stem references back to concepts - NOW USING DIRECT ARRAY ACCESS!
-      for (const conceptPosition of conceptPositionSet) {
-        const conceptObj = this.conceptList[conceptPosition]; // O(1) lookup!
-        if (!conceptObj.stems) {
-          conceptObj.stems = [];
+  /**
+   * Read the concrete value relationship files (sct2_RelationshipConcreteValues_*):
+   * the numeric and string attribute values of concepts (strength, count of base of
+   * active ingredient, ...). Kept as rows [sourceId, typeId, group, value] - the value
+   * as written in RF2 ("#500", "#5.5", "\"text\"", "true") - for the ECL evaluator;
+   * they are not relationships to concepts, so they do not join the relationship
+   * table. Only active, inferred rows; where a row appears more than once the latest
+   * effectiveTime wins.
+   */
+  async readConcreteValues() {
+    const rows = new Map(); // id -> {effectiveTime, active, row}
+    for (const file of this.files.concreteValues || []) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(file),
+        crlfDelay: Infinity
+      });
+      let lineCount = 0;
+      for await (const line of rl) {
+        lineCount++;
+        if (lineCount === 1 || !line) continue;
+        const parts = line.split('\t');
+        if (parts.length < 10) continue;
+        const [id, effectiveTime, active, , sourceId, value, group, typeId, characteristicTypeId] = parts.map(p => p.trim());
+        if (characteristicTypeId !== '900000000000011006') continue; // inferred only
+        const prior = rows.get(id);
+        if (!prior || prior.effectiveTime <= effectiveTime) {
+          rows.set(id, { effectiveTime, active: active === '1', row: [sourceId, typeId, parseInt(group, 10) || 0, value] });
         }
-        conceptObj.stems.push(stemStringIndex);
-      }
-
-      if (stemIndex % 1000 === 0) {
-        stemsProgressBar?.update(stemIndex);
-      }
-      stemIndex++;
-    }
-
-    this.stems.doneBuild();
-
-    if (this.progressReporter) {
-      this.progressReporter.completeTask('Building Stems Index', stemMap.size, stemMap.size);
-    }
-
-    // Mark stems on concepts
-    const markingStemsBar = this.progressReporter?.createTaskProgressBar('Marking Stems');
-    markingStemsBar?.start(this.conceptList.length, 0);
-
-    for (let i = 0; i < this.conceptList.length; i++) {
-      const concept = this.conceptList[i];
-
-      if (concept.stems && concept.stems.length > 0) {
-        // Sort stems and add to concept
-        concept.stems.sort((a, b) => a - b);
-        const stemsRefsIndex = this.refs.addReferences(concept.stems);
-        this.concepts.setStems(concept.index, stemsRefsIndex);
-      }
-
-      if (i % 1000 === 0) {
-        markingStemsBar?.update(i);
       }
     }
-
-    if (this.progressReporter) {
-      this.progressReporter.completeTask('Marking Stems', this.conceptList.length, this.conceptList.length);
+    this.concreteValues = [];
+    let missing = 0;
+    for (const r of rows.values()) {
+      if (!r.active) continue;
+      let known = false;
+      try {
+        known = this.conceptMap.has(BigInt(r.row[0])) && this.conceptMap.has(BigInt(r.row[1]));
+      } catch {
+        known = false;
+      }
+      if (known) {
+        this.concreteValues.push(r.row);
+      } else {
+        missing++;
+      }
     }
-  }
-
-  // Add this new method to extract words from description text:
-  extractWords(text, languageCode, conceptPosition, isActive, isFSN, wordMap, stemMap) {
-    // Get appropriate stemmer for language
-    const stemmer = SnomedImporter.LANGUAGE_STEMMERS[languageCode] || natural.PorterStemmer;
-
-    // Split text on punctuation and whitespace (matching Pascal logic)
-    const separators = /[,\s:.!@#$%^&*(){}[\]|\\;"<>?/~`\-_+=]+/;
-    const words = text.split(separators);
-
-    for (let word of words) {
-      word = word.trim().toLowerCase();
-
-      // Filter words (matching Pascal conditions)
-      if (!word || this.isInteger(word) || word.length <= 2) {
-        continue;
-      }
-
-      // Get or create word entry
-      let wordData = wordMap.get(word);
-      if (!wordData) {
-        const stem = stemmer.stem(word);
-        wordData = {
-          flags: 0,
-          stem: stem,
-          conceptSet: new Set()
-        };
-        wordMap.set(word, wordData);
-      }
-
-      // Update word flags
-      if (isFSN) {
-        wordData.flags |= SnomedImporter.FLAG_WORD_FSN;
-      }
-      if (isActive) {
-        wordData.flags |= SnomedImporter.FLAG_WORD_DEP; // Will be reversed later like Pascal
-      }
-
-      // Add concept position to stem mapping (not concept.index!)
-      let stemConceptSet = stemMap.get(wordData.stem);
-      if (!stemConceptSet) {
-        stemConceptSet = new Set();
-        stemMap.set(wordData.stem, stemConceptSet);
-      }
-      stemConceptSet.add(conceptPosition);
+    this.concreteValues.sort((a, b) => (a.join('|') < b.join('|') ? -1 : 1));
+    if (this.concreteValues.length > 0 || missing > 0) {
+      terminal.log(`Concrete values: ${this.concreteValues.length}${missing ? ` (${missing} for concepts not in this edition, ignored)` : ''}`);
     }
-  }
-
-  // Helper method to check if string is an integer
-  isInteger(str) {
-    return /^\d+$/.test(str);
   }
 
   async readRelationships() {
@@ -2128,7 +2116,7 @@ class SnomedImporter {
 
   async processRefsets() {
     if (this.files.refsetDirectories.length === 0) {
-      console.log('No reference set directories found');
+      terminal.log('No reference set directories found');
       this.refsetIndex.doneBuild();
       this.refsetMembers.doneBuild();
       return;
@@ -2244,7 +2232,7 @@ class SnomedImporter {
       const parts = fileName.split('_');
 
       if (parts.length < 3) {
-        console.log(`Skipping file with unexpected name format: ${fileName}`);
+        terminal.log(`Skipping file with unexpected name format: ${fileName}`);
         return;
       }
 
@@ -2268,19 +2256,16 @@ class SnomedImporter {
         lineNumber++;
 
         if (lineNumber === 1) {
-          // Parse headers
+          // Parse headers. Map reference sets (simple, complex, extended) are loaded like
+          // any other: ECL ^ and ?fhir_vs=refset/ can name any reference set, and the
+          // ICD-10 maps are among the most used.
           headers = line.split('\t').map(h => h.trim());
-
-          // Skip if this looks like a mapping reference set
-          if (line.toLowerCase().includes('map')) {
-            return;
-          }
           continue;
         }
 
         const fields = line.split('\t');
         if (fields.length < 6) {
-          console.log(`Skipping line ${lineNumber} with insufficient fields: ${fields.length}`);
+          terminal.log(`Skipping line ${lineNumber} with insufficient fields: ${fields.length}`);
           continue; // Minimum fields required
         }
 
@@ -2316,14 +2301,14 @@ class SnomedImporter {
         try {
           member.id = this.parseGUID(id);
         } catch (error) {
-          console.log(`Invalid GUID in ${fileName}: ${id}`);
+          terminal.log(`Invalid GUID in ${fileName}: ${id}`);
           continue;
         }
 
         // Find module concept
         const moduleConcept = this.conceptMap.get(BigInt(moduleId));
         if (!moduleConcept) {
-          console.log(`Module concept not found: ${moduleId}`);
+          terminal.log(`Module concept not found: ${moduleId}`);
           continue;
         }
         member.module = moduleConcept.index;
@@ -2356,7 +2341,7 @@ class SnomedImporter {
             // Try to find as relationship (simplified - would need relationship ID lookup)
             member.kind = 3; // Other/unknown
             member.ref = 0;
-            console.log(`Component not found: ${referencedComponentId}`);
+            terminal.log(`Component not found: ${referencedComponentId}`);
             continue;
           }
         }
@@ -2379,7 +2364,7 @@ class SnomedImporter {
       }
 
     } catch (error) {
-      console.error(`Error processing reference set ${filePath}:`, error);
+      terminal.error(`Error processing reference set ${filePath}:`, error);
     }
   }
 
@@ -2407,6 +2392,16 @@ class SnomedImporter {
       const refSet = new RefSet(refSetId);
       refSet.title = displayName;
       refSet.isLangRefset = isLangRefset;
+      // Set the reference set's defining-concept index at creation time, using
+      // this refset's own id. Doing it here (rather than once after the member
+      // loop) is essential when a single RF2 file contains members for more than
+      // one reference set (e.g. the association file carries both 734139008 and
+      // 900000000000526001) — otherwise only the last refset in the file gets a
+      // valid index and the others collapse to index 0.
+      const refSetConcept = this.conceptMap.get(BigInt(refSetId));
+      if (refSetConcept) {
+        refSet.index = refSetConcept.index;
+      }
       this.refSets.set(refSetId, refSet);
     }
     return this.refSets.get(refSetId);
@@ -2457,7 +2452,7 @@ class SnomedImporter {
               value = descResult.index;
               type = 2; // Description
             } else {
-              console.log(`Referenced component not found: ${field}`);
+              terminal.log(`Referenced component not found: ${field}`);
               value = 0;
               type = 1;
             }
@@ -2585,6 +2580,14 @@ class SnomedImporter {
 
     // Index concepts - optimized version
     for (const concept of this.conceptList) {
+      // Store the concept's module (resolved to its concept index) so that
+      // $lookup can report the 'module' property. Modules whose concept is not
+      // part of the subset are skipped (moduleId stays 0 / property omitted).
+      const moduleConcept = this.conceptMap.get(concept.moduleId);
+      if (moduleConcept && moduleConcept.index != null) {
+        this.concepts.setModuleId(concept.index, moduleConcept.index);
+      }
+
       const refSetRefs = [];
       const refSetValues = [];
 
@@ -2653,8 +2656,6 @@ class SnomedImporter {
     // Create the expression services - we need all structures to be ready
     const snomedStructures = {
       strings: this.strings,
-      words: this.words,
-      stems: this.stems,
       refs: this.refs,
       descriptions: this.descriptions,
       descriptionIndex: this.descriptionIndex,
@@ -2706,7 +2707,7 @@ class SnomedImporter {
       } catch (error) {
         // Log the error but continue processing other concepts
         if (this.config.verbose) {
-          console.warn(`Warning: Could not build normal form for concept ${concept.id}: ${error.message}`);
+          terminal.warn(`Warning: Could not build normal form for concept ${concept.id}: ${error.message}`);
         }
       }
 
@@ -2721,7 +2722,7 @@ class SnomedImporter {
     }
 
     if (this.config.verbose) {
-      console.log(`Normal forms: ${normalFormsAdded} concepts have non-trivial normal forms`);
+      terminal.log(`Normal forms: ${normalFormsAdded} concepts have non-trivial normal forms`);
     }
   }
 
@@ -2734,21 +2735,36 @@ class SnomedImporter {
 
     progressBar?.update(25);
 
+    // The text indexes (tx/sct/text-index.js), so that the server builds nothing when the
+    // cache loads or is searched
+    const textIndexes = await SnomedTextIndexes.build(this, LANGUAGE_CODES, (which) => {
+      if (this.config.verbose) {
+        terminal.log(`Building the text index for ${which}`);
+      }
+    });
+
+    progressBar?.update(40);
+
     // Write the binary cache file using our writer
     const writer = new SnomedCacheWriter(this.config.dest);
 
     progressBar?.update(50);
 
+    const identifiers = this.identifiers || [];
+    const concreteValues = this.concreteValues || [];
     await writer.writeCache({
-      version: '17', // Current version
+      // the only format the server reads: see SNOMED_CACHE_VERSION
+      version: SNOMED_CACHE_VERSION,
+      license: this.license,
+      textIndexes: textIndexes.serialize(),
+      identifiers: identifiers,
+      concreteValues: concreteValues,
       versionUri: this.isTesting ? this.config.uri.replace("/sct/", "/xsct/") : this.config.uri,
       versionDate: this.extractDateFromUri(this.config.uri),
 
       strings: this.strings.master,
       refs: this.refs.master,
       desc: this.descriptions.master,
-      words: this.words.master,
-      stems: this.stems.master,
       concept: this.concepts.master,
       rel: this.relationships.master,
       refSetIndex: this.refsetIndex.master,
@@ -2758,7 +2774,7 @@ class SnomedImporter {
       isAIndex: this.isAIndex, // Simplified
       inactiveRoots: this.inactiveRoots || [],
       activeRoots: this.activeRoots || [],
-      defaultLanguage: 1
+      defaultLanguage: this.defaultLanguageByte()
     });
 
     if (this.progressReporter) {
@@ -2787,6 +2803,24 @@ class SnomedImporter {
   }
 }
 
+/**
+ * What's wrong with the --license file given, or null if nothing is
+ * @param {string} file
+ * @returns {string|null}
+ */
+function licenseFileProblem(file) {
+  if (!file) {
+    return 'A license file is required (--license): the license the edition is distributed under, which the cache carries';
+  }
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) {
+    return `License file not found: ${file}`;
+  }
+  if (fs.statSync(file).size === 0) {
+    return `License file is empty: ${file}`;
+  }
+  return null;
+}
+
 // Cache file writer that matches Pascal TWriter format
 class SnomedCacheWriter {
   constructor(filePath) {
@@ -2803,12 +2837,14 @@ class SnomedCacheWriter {
     buffers.push(this.writeString(data.versionUri));
     buffers.push(this.writeString(data.versionDate));
 
+    // The license the edition is distributed under, near the start, where anyone looking at
+    // the file finds it
+    buffers.push(this.writeBytes(data.license));
+
     // Write byte arrays
     buffers.push(this.writeBytes(data.strings));
     buffers.push(this.writeBytes(data.refs));
     buffers.push(this.writeBytes(data.desc));
-    buffers.push(this.writeBytes(data.words));
-    buffers.push(this.writeBytes(data.stems));
     buffers.push(this.writeBytes(data.concept));
     buffers.push(this.writeBytes(data.rel));
     buffers.push(this.writeBytes(data.refSetIndex));
@@ -2826,6 +2862,18 @@ class SnomedCacheWriter {
       buffers.push(this.writeUInt64(root));
     }
     buffers.push(this.writeInteger(data.defaultLanguage));
+
+    // alternate identifiers, as JSON: [[scheme, module, code, conceptId], ...]
+    buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.identifiers || []), 'utf8')));
+    // concrete value relationships, as JSON: [[sourceId, typeId, group, value], ...]
+    buffers.push(this.writeBytes(Buffer.from(JSON.stringify(data.concreteValues || []), 'utf8')));
+
+    // The text indexes, at a multiple of 8 in the file, so that the server reads their arrays
+    // where they are: a byte with the pad's length, then the pad. The section's own length
+    // (writeBytes: 5 bytes) and that byte come first
+    const at = buffers.reduce((n, b) => n + b.length, 0) + 5 + 1;
+    const pad = (8 - (at % 8)) % 8;
+    buffers.push(this.writeBytes(Buffer.concat([Buffer.from([pad]), Buffer.alloc(pad), data.textIndexes])));
 
     // Write to file
     const finalBuffer = Buffer.concat(buffers);

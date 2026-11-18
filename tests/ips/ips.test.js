@@ -1,0 +1,3746 @@
+const express = require('express');
+const request = require('supertest');
+
+const IpsModule = require('../../ips/ips');
+const { validateDocument } = require('../../ips/ips');
+const { parseSearch, indexDocument, listQueryToSearch, resolveParam } = require('../../ips/search');
+const { STEPS, CHECK_EXTENSION, TRANSLATION_EXTENSION } = require('../../ips/pipeline');
+const { fakeService } = require('./fake-ai');
+const render = require('../../ips/render');
+const profiles = require('../../ips/profiles');
+const htmlServer = require('../../library/html-server');
+
+const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
+htmlServer.useLog(quietLog);
+
+function makeStats() {
+  return {
+    counts: {},
+    countRequest(name) { this.counts[name] = (this.counts[name] || 0) + 1; },
+    addTask() {}, task() {}, taskDone() {}, taskError() {}
+  };
+}
+
+/** A small but well-formed IPS document. */
+function ips(overrides = {}) {
+  const { patient = {}, composition = {}, ...bundle } = overrides;
+  return {
+    resourceType: 'Bundle',
+    type: 'document',
+    identifier: { system: 'urn:oid:2.16.840.1.113883.19.5', value: 'doc-1' },
+    timestamp: '2026-03-01T10:00:00Z',
+    entry: [
+      {
+        fullUrl: 'urn:uuid:comp-1',
+        resource: {
+          resourceType: 'Composition',
+          id: 'comp-1',
+          status: 'final',
+          type: { coding: [{ system: 'http://loinc.org', code: '60591-5', display: 'Patient summary Document' }] },
+          subject: { reference: 'urn:uuid:pat-1' },
+          date: '2026-03-01T09:30:00Z',
+          author: [{ reference: 'urn:uuid:pract-1' }],
+          title: 'Patient Summary as of 1 March 2026',
+          text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Summary for <b>Jane Smith</b></p></div>' },
+          section: [
+            {
+              title: 'Allergies and Intolerances',
+              code: { coding: [{ system: 'http://loinc.org', code: '48765-2' }] },
+              text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><table><tr><td>Penicillin</td></tr></table></div>' },
+              entry: [{ reference: 'urn:uuid:allergy-1' }]
+            },
+            {
+              title: 'Medication Summary',
+              code: { coding: [{ system: 'http://loinc.org', code: '10160-0' }] },
+              text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>No known medications</p></div>' }
+            }
+          ],
+          ...composition
+        }
+      },
+      {
+        fullUrl: 'urn:uuid:pat-1',
+        resource: {
+          resourceType: 'Patient',
+          id: 'pat-1',
+          identifier: [{ system: 'urn:oid:1.2.36.146.595.217.0.1', value: 'MRN-12345' }],
+          active: true,
+          name: [{ use: 'official', family: 'Smith', given: ['Jane', 'Alexandra'] }, { use: 'nickname', given: ['Janie'] }],
+          telecom: [{ system: 'phone', value: '+61 3 9999 0000' }, { system: 'email', value: 'jane@example.org' }],
+          gender: 'female',
+          birthDate: '1970-05-06',
+          address: [{ line: ['1 Collins St'], city: 'Melbourne', state: 'VIC', postalCode: '3000', country: 'AU' }],
+          ...patient
+        }
+      },
+      { fullUrl: 'urn:uuid:pract-1', resource: { resourceType: 'Practitioner', id: 'pract-1', name: [{ family: 'Jones' }] } },
+      { fullUrl: 'urn:uuid:allergy-1', resource: { resourceType: 'AllergyIntolerance', id: 'allergy-1', patient: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: 'http://snomed.info/sct', code: '91936005', display: 'Allergy to penicillin' }], text: 'Penicillin' } } }
+    ],
+    ...bundle
+  };
+}
+
+// mirrors the body parsers server.js puts in front of every module
+async function makeApp(config = {}) {
+  const app = express();
+  app.set('trust proxy', 'loopback');
+  app.use(express.raw({ type: 'application/fhir+json', limit: '50mb' }));
+  app.use(express.raw({ type: 'application/fhir+xml', limit: '50mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  const mod = new IpsModule(makeStats(), quietLog);
+  await mod.initialize({
+    database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false,
+    processing: { enabled: false }, ...config
+  }, app);
+  app.use('/ips', mod.router);
+  return { app, mod };
+}
+
+function post(app, code, body, headers = {}) {
+  let r = request(app).post(`/ips/${code}/Bundle`).set('Content-Type', 'application/fhir+json');
+  for (const [k, v] of Object.entries(headers)) {
+    r = r.set(k, v);
+  }
+  return r.send(typeof body === 'string' ? body : JSON.stringify(body));
+}
+
+const csrfOf = async (agent) => {
+  const page = await agent.get('/ips/login');
+  return page.text.match(/name="_csrf" value="([^"]+)"/)[1];
+};
+const form = async (agent, url, data = {}, headers = {}) => {
+  const _csrf = await csrfOf(agent);
+  return agent.post(url).type('form').set(headers).send({ ...data, _csrf });
+};
+const loginAs = async (app, login, password) => {
+  const agent = request.agent(app);
+  const res = await form(agent, '/ips/login', { login, password });
+  return { agent, res };
+};
+
+describe('validateDocument', () => {
+  test('accepts a well-formed document', () => {
+    expect(validateDocument(ips())).toEqual([]);
+  });
+
+  test('rejects things that are not document bundles', () => {
+    expect(validateDocument([])).toHaveLength(1);
+    expect(validateDocument({ resourceType: 'Patient' })[0]).toMatch(/Bundle, not Patient/);
+    expect(validateDocument(ips({ type: 'collection' }))[0]).toMatch(/type 'document'/);
+    expect(validateDocument(ips({ entry: [] }))).toEqual(['The Bundle has no entries']);
+  });
+
+  test('requires a Composition first, with a Patient subject in the bundle', () => {
+    const b = ips();
+    b.entry.reverse();
+    expect(validateDocument(b)[0]).toMatch(/first entry must be a Composition, not a AllergyIntolerance/);
+    const noPatient = ips();
+    noPatient.entry = noPatient.entry.filter(e => e.resource.resourceType !== 'Patient');
+    expect(validateDocument(noPatient)).toEqual(["The Composition's subject must be a Patient in the bundle"]);
+  });
+
+  test('rejects active content in any narrative', () => {
+    const b = ips();
+    b.entry[1].resource.text = { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><script>alert(1)</script></div>' };
+    expect(validateDocument(b)[0]).toMatch(/active content/);
+    const c = ips();
+    c.entry[0].resource.section[0].text.div = '<div><img src="x" onerror="alert(1)"/></div>';
+    expect(validateDocument(c)[0]).toMatch(/active content/);
+  });
+});
+
+describe('indexing', () => {
+  test('indexes the bundle, the composition and the patient', () => {
+    const rows = indexDocument(ips());
+    const of = (res, param) => rows.filter(r => r.res === res && r.param === param);
+    expect(of('Bundle', 'identifier')).toMatchObject([{ sys: 'urn:oid:2.16.840.1.113883.19.5', code: 'doc-1' }]);
+    expect(of('Bundle', 'composition').map(r => r.ref).sort()).toEqual(['Composition/comp-1', 'urn:uuid:comp-1']);
+    expect(of('Composition', 'type')).toMatchObject([{ sys: 'http://loinc.org', code: '60591-5' }]);
+    expect(of('Composition', 'date')[0].lo).toBe(Date.parse('2026-03-01T09:30:00Z'));
+    expect(of('Composition', 'patient')).toMatchObject([{ ref: 'urn:uuid:pat-1' }]);
+    expect(of('Composition', 'section').map(r => r.code).sort()).toEqual(['10160-0', '48765-2']);
+    expect(of('Patient', 'name').map(r => r.str).sort()).toEqual(['Alexandra', 'Jane', 'Janie', 'Smith']);
+    expect(of('Patient', 'family').map(r => r.str)).toEqual(['Smith']);
+    expect(of('Patient', 'gender')).toMatchObject([{ code: 'female' }]);
+    expect(of('Patient', 'birthdate')[0]).toMatchObject({ lo: Date.UTC(1970, 4, 6), hi: Date.UTC(1970, 4, 7) });
+    expect(of('Patient', 'identifier')).toMatchObject([{ sys: 'urn:oid:1.2.36.146.595.217.0.1', code: 'MRN-12345' }]);
+    expect(of('Patient', 'email')).toMatchObject([{ sys: 'email', code: 'jane@example.org' }]);
+    expect(of('Patient', 'address-city').map(r => r.str)).toEqual(['Melbourne']);
+    expect(of('Patient', 'active')).toMatchObject([{ code: 'true' }]);
+  });
+
+  test('finds the patient by Type/id references too, and falls back to the first Patient', () => {
+    const b = ips({ composition: { subject: { reference: 'Patient/pat-1' } } });
+    expect(indexDocument(b).some(r => r.res === 'Patient' && r.param === 'family')).toBe(true);
+    const c = ips({ composition: { subject: { reference: 'Patient/nobody' } } });
+    expect(indexDocument(c).some(r => r.res === 'Patient' && r.param === 'family')).toBe(true);
+  });
+});
+
+describe('parseSearch', () => {
+  test('resolves chains', () => {
+    expect(resolveParam('identifier')).toMatchObject({ res: 'Bundle', param: 'identifier' });
+    expect(resolveParam('composition.date')).toMatchObject({ res: 'Composition', param: 'date' });
+    expect(resolveParam('composition.patient.name')).toMatchObject({ res: 'Patient', param: 'name' });
+    expect(resolveParam('composition.subject.birthdate')).toMatchObject({ res: 'Patient', param: 'birthdate' });
+    expect(resolveParam('composition.patient:Patient.gender')).toMatchObject({ res: 'Patient', param: 'gender' });
+    expect(resolveParam('composition.author.name')).toBeNull();
+    expect(resolveParam('patient.name')).toBeNull();
+    expect(resolveParam('composition.nope')).toBeNull();
+  });
+
+  test('reports unknown parameters and bad values', () => {
+    const s = parseSearch({ 'composition.patient.name': 'x', foo: 'y', 'composition.date': 'yesterday', 'processing-status': 'lost' });
+    expect(s.unknown).toEqual(['foo']);
+    expect(s.errors).toHaveLength(2);
+    expect(s.where).toHaveLength(1);
+  });
+
+  test('handles modifiers, lists and sorting', () => {
+    const s = parseSearch({ 'composition.patient.gender:not': 'male', 'composition.patient.identifier': 'urn:a|1,|2', 'composition.title:missing': 'true', _sort: '-composition.date,_id', _count: '10', _offset: '20' });
+    expect(s.where[0]).toMatch(/^NOT EXISTS/);
+    expect(s.where[1]).toContain('(i.sys = ? AND i.code = ?) OR (i.sys IS NULL AND i.code = ?)');
+    expect(s.where[2]).toMatch(/^NOT EXISTS/);
+    expect(s.orderBy).toMatch(/MIN\(i.lo\).*DESC, d.id ASC, d.id DESC/);
+    expect(s.orderArgs).toEqual(['Composition', 'date']);
+    expect(s.count).toBe(10);
+    expect(s.offset).toBe(20);
+  });
+
+  test('the web filter becomes a FHIR search', () => {
+    expect(listQueryToSearch({ name: ' smith ', gender: 'female', date: '2026-03-01', identifier: '123', status: 'submitted', _count: '20' })).toEqual({
+      'composition.patient.name:contains': 'smith', 'composition.patient.gender': 'female', 'composition.date': '2026-03-01',
+      'processing-status': 'submitted', _count: '20'
+    });
+  });
+});
+
+describe('the FHIR API', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo Project', 'For testing');
+  });
+  afterEach(() => mod.shutdown());
+
+  test('unknown projects are 404', async () => {
+    expect((await post(app, 'nope', ips())).status).toBe(404);
+    expect((await request(app).get('/ips/nope')).status).toBe(404);
+    expect((await request(app).get('/ips/nope').set('Accept', 'text/html')).status).toBe(404);
+    expect((await request(app).get('/ips/admin').set('Accept', 'text/html')).status).toBe(404);
+  });
+
+  test('stores a document with a serial id and lastUpdated, and returns it', async () => {
+    const res = await post(app, 'demo', ips());
+    expect(res.status).toBe(201);
+    expect(res.headers.location).toMatch(/\/ips\/demo\/Bundle\/1$/);
+    expect(res.body.resourceType).toBe('Bundle');
+    expect(res.body.id).toBe('1');
+    expect(Object.keys(res.body).slice(0, 3)).toEqual(['resourceType', 'id', 'meta']);
+    expect(res.body.meta.lastUpdated).toBeDefined();
+    expect(res.body.entry).toHaveLength(4);
+    const second = await post(app, 'demo', ips());
+    expect(second.body.id).toBe('2');
+
+    const read = await request(app).get('/ips/demo/Bundle/1');
+    expect(read.status).toBe(200);
+    expect(read.headers['content-type']).toMatch(/application\/fhir\+json/);
+    expect(read.body.id).toBe('1');
+    expect(read.body.entry[1].resource.name[0].family).toBe('Smith');
+    expect((await request(app).get('/ips/demo/Bundle/99')).status).toBe(404);
+    expect((await request(app).get('/ips/demo/Bundle/abc')).status).toBe(404);
+  });
+
+  test('ids are one serial across projects, and a document is only in its own project', async () => {
+    mod.store.createProject('other', 'Other', null);
+    await post(app, 'demo', ips());
+    const res = await post(app, 'other', ips());
+    expect(res.body.id).toBe('2');
+    expect((await request(app).get('/ips/demo/Bundle/2')).status).toBe(404);
+    expect((await request(app).get('/ips/other/Bundle/2')).status).toBe(200);
+  });
+
+  test('honours Prefer: return', async () => {
+    const minimal = await post(app, 'demo', ips(), { Prefer: 'return=minimal' });
+    expect(minimal.status).toBe(201);
+    expect(minimal.text).toBe('');
+    const oo = await post(app, 'demo', ips(), { Prefer: 'return=OperationOutcome' });
+    expect(oo.body.resourceType).toBe('OperationOutcome');
+  });
+
+  test('rejects bad submissions', async () => {
+    expect((await post(app, 'demo', '{not json')).status).toBe(400);
+    const r = await post(app, 'demo', { resourceType: 'Patient' });
+    expect(r.status).toBe(400);
+    expect(r.body.issue[0].details.text).toMatch(/Bundle, not Patient/);
+    expect((await request(app).post('/ips/demo/Bundle').set('Content-Type', 'text/plain').send('x')).status).toBe(415);
+    const big = await makeApp({ maxSize: 500 });
+    big.mod.store.createProject('demo', 'Demo', null);
+    expect((await post(big.app, 'demo', ips())).status).toBe(413);
+    big.mod.shutdown();
+  });
+
+  test('also accepts application/json', async () => {
+    const res = await request(app).post('/ips/demo/Bundle').set('Content-Type', 'application/json').send(ips());
+    expect(res.status).toBe(201);
+  });
+
+  test('requires the project token when one is set', async () => {
+    mod.store.setProjectToken(1, 'secret-token');
+    expect((await post(app, 'demo', ips())).status).toBe(401);
+    expect((await post(app, 'demo', ips(), { Authorization: 'Bearer wrong' })).status).toBe(401);
+    expect((await post(app, 'demo', ips(), { Authorization: 'Bearer secret-token' })).status).toBe(201);
+    expect((await post(app, 'demo', ips(), { Authorization: 'secret-token' })).status).toBe(201);
+    const cs = await request(app).get('/ips/demo/metadata');
+    expect(cs.body.rest[0].documentation).toMatch(/requires/);
+  });
+
+  test('searches, with chained parameters', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips({ patient: { name: [{ family: 'Nguyen', given: ['Minh'] }], gender: 'male', birthDate: '1985-12-24', identifier: [{ value: 'X-77' }] }, composition: { date: '2025-11-30', title: 'Older summary' } }));
+    const search = async (q) => {
+      const res = await request(app).get('/ips/demo/Bundle').query(q);
+      expect(res.status).toBe(200);
+      return res.body;
+    };
+    expect((await search({})).total).toBe(2);
+    expect((await search({ 'composition.patient.name': 'ngu' })).entry.map(e => e.resource.id)).toEqual(['2']);
+    expect((await search({ 'composition.patient.name': 'minh' })).total).toBe(1);
+    expect((await search({ 'composition.patient.name:exact': 'minh' })).total).toBe(0);
+    expect((await search({ 'composition.patient.family': 'Smith', 'composition.patient.given': 'alex' })).total).toBe(1);
+    expect((await search({ 'composition.patient.gender': 'male' })).total).toBe(1);
+    expect((await search({ 'composition.patient.gender:not': 'male' })).total).toBe(1);
+    expect((await search({ 'composition.patient.birthdate': 'lt1980' })).entry[0].resource.id).toBe('1');
+    expect((await search({ 'composition.patient.birthdate': 'ge1980-01-01' })).entry[0].resource.id).toBe('2');
+    expect((await search({ 'composition.patient.identifier': 'MRN-12345' })).total).toBe(1);
+    expect((await search({ 'composition.patient.identifier': 'urn:oid:1.2.36.146.595.217.0.1|MRN-12345' })).total).toBe(1);
+    expect((await search({ 'composition.patient.identifier': 'urn:oid:other|MRN-12345' })).total).toBe(0);
+    expect((await search({ 'composition.subject.identifier': '|X-77' })).total).toBe(1);
+    expect((await search({ 'composition.date': '2026-03-01' })).total).toBe(1);
+    expect((await search({ 'composition.date': '2026' })).total).toBe(1);
+    expect((await search({ 'composition.date': 'le2025-12-31' })).total).toBe(1);
+    expect((await search({ 'composition.title': 'older' })).total).toBe(1);
+    expect((await search({ 'composition.type': 'http://loinc.org|60591-5' })).total).toBe(2);
+    expect((await search({ 'composition.section': '48765-2' })).total).toBe(2);
+    expect((await search({ 'composition.patient': 'urn:uuid:pat-1' })).total).toBe(2);
+    expect((await search({ 'composition.patient': 'Patient/pat-1' })).total).toBe(0);
+    expect((await search({ composition: 'Composition/comp-1' })).total).toBe(2);
+    expect((await search({ composition: 'comp-1' })).total).toBe(2);
+    expect((await search({ identifier: 'doc-1' })).total).toBe(2);
+    expect((await search({ type: 'document' })).total).toBe(2);
+    expect((await search({ _id: '2' })).total).toBe(1);
+    expect((await search({ 'processing-status': 'submitted' })).total).toBe(2);
+    expect((await search({ 'processing-status': 'processed' })).total).toBe(0);
+    expect((await search({ 'composition.patient.name': 'ngu,smi' })).total).toBe(2);
+    expect((await search({ 'composition.patient.address-city': 'melb' })).total).toBe(2);
+    expect((await search({ 'composition.patient.email:missing': 'true' })).total).toBe(0);
+    expect((await search({ _sort: 'composition.patient.birthdate' })).entry.map(e => e.resource.id)).toEqual(['1', '2']);
+    expect((await search({ _sort: '-composition.patient.name' })).entry.map(e => e.resource.id)).toEqual(['2', '1']);
+    expect((await search({ _sort: 'composition.date' })).entry.map(e => e.resource.id)).toEqual(['2', '1']);
+    const count = await search({ _summary: 'count' });
+    expect(count.total).toBe(2);
+    expect(count.entry).toBeUndefined();
+    const paged = await search({ _count: '1', _sort: '_id' });
+    expect(paged.entry.map(e => e.resource.id)).toEqual(['1']);
+    expect(paged.link.find(l => l.relation === 'next').url).toContain('_offset=1');
+    expect(paged.entry[0].fullUrl).toMatch(/\/ips\/demo\/Bundle\/1$/);
+    // a number too big for SQLite is a bad request, not a server error
+    const huge = await request(app).get('/ips/demo/Bundle?_offset=99999999999999999999').set('Accept', 'application/fhir+json');
+    expect(huge.status).toBe(400);
+    expect(JSON.stringify(huge.body)).toContain('_offset must be a non-negative integer');
+  });
+
+  test('unknown parameters are ignored with a warning, or refused when handling is strict', async () => {
+    await post(app, 'demo', ips());
+    const lenient = await request(app).get('/ips/demo/Bundle').query({ foo: 'bar' });
+    expect(lenient.body.total).toBe(1);
+    expect(lenient.body.entry.find(e => e.search.mode === 'outcome').resource.issue[0].details.text).toMatch(/foo/);
+    const strict = await request(app).get('/ips/demo/Bundle').query({ foo: 'bar' }).set('Prefer', 'handling=strict');
+    expect(strict.status).toBe(400);
+    expect((await request(app).get('/ips/demo/Bundle').query({ 'composition.date': 'tomorrow' })).status).toBe(400);
+  });
+
+  test('metadata describes the project', async () => {
+    const res = await request(app).get('/ips/demo/metadata');
+    expect(res.status).toBe(200);
+    expect(res.body.resourceType).toBe('CapabilityStatement');
+    expect(res.body.fhirVersion).toBe('4.0.1');
+    expect(res.body.implementation.url).toMatch(/\/ips\/demo$/);
+    const names = res.body.rest[0].resource[0].searchParam.map(p => p.name);
+    expect(names).toEqual(expect.arrayContaining(['_id', 'composition', 'composition.date', 'composition.patient.name']));
+  });
+
+  test('counts requests', async () => {
+    await post(app, 'demo', ips());
+    await request(app).get('/ips/demo/Bundle/1');
+    expect(mod.stats.counts).toMatchObject({ create: 1, read: 1 });
+  });
+});
+
+describe('the web pages', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo Project', 'For <testing>');
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips({ patient: { name: [{ family: 'Nguyen', given: ['Minh'] }], gender: 'male', birthDate: '1985-12-24', identifier: [{ value: 'X-77' }] }, composition: { date: '2025-11-30', title: 'Older summary' } }));
+  });
+  afterEach(() => mod.shutdown());
+
+  const html = (url) => request(app).get(url).set('Accept', 'text/html');
+
+  test('the root lists the projects', async () => {
+    const res = await html('/ips');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('Demo Project');
+    expect(res.text).toContain('For &lt;testing&gt;');
+    expect(res.text).toContain('href="/ips/login"');
+  });
+
+  test('the project page lists and filters documents', async () => {
+    const all = await html('/ips/demo');
+    expect(all.status).toBe(200);
+    // the nav bar links to the project
+    expect(all.text).toContain('<a href="/ips" style="color: gold">IPS</a> &nbsp;|&nbsp; <a href="/ips/demo" style="color: gold">Demo Project</a>');
+    expect((await html('/ips')).text).not.toContain('style="color: gold">Demo Project');
+    expect(all.text).toContain('2 documents');
+    expect(all.text).toContain('Jane Alexandra Smith');
+    expect(all.text).toContain('Minh Nguyen');
+    expect(all.text).not.toContain('delete');
+    // the banner, the actions, the search box and the documentation at the foot
+    expect(all.text).toContain('<div class="ips-banner"><div class="ips-project-name"><b>Demo Project</b></div>');
+    expect(all.text).toContain('<a class="btn btn-primary" href="/ips/demo/submit">Submit a document</a>');
+    expect(all.text).not.toContain('/ips/demo/settings');
+    expect(all.text).toContain('<form method="get" action="/ips/demo" class="ips-filter ips-search mb-3">');
+    expect(all.text).toContain('<a href="/ips/demo/metadata">CapabilityStatement</a>');
+    expect(all.text).toContain('<code>POST /ips/demo/Bundle</code></td><td>submit a document; the response');
+    expect(all.text.indexOf('<h3>Documentation</h3>')).toBeGreaterThan(all.text.indexOf('Minh Nguyen'));
+    mod.store.setProjectToken(1, 'secret-token');
+    expect((await html('/ips/demo')).text).toContain('submit a document (this project requires a token: <code>Authorization: Bearer {token}</code>)');
+    mod.store.setProjectToken(1, null);
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/settings">Settings</a>');
+    expect((await html('/ips/demo?name=ngu')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?gender=female')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?date=2026-03-01')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?identifier=MRN')).text).toContain('1-1 of 1 document');
+    // '2' is in the second document's id, and in the first patient's MRN
+    expect((await html('/ips/demo?identifier=2')).text).toContain('1-2 of 2 documents');
+    expect((await html('/ips/demo?identifier=1')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?identifier=345')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?identifier=X-7&gender=male')).text).toContain('1-1 of 1 document');
+    expect((await html('/ips/demo?status=processed')).text).toContain('0-0 of 0 documents');
+    expect((await html('/ips/demo?composition.title=older')).text).toContain('1-1 of 1 document');
+    // a bad value shows everything, with the problem
+    const bad = await html('/ips/demo?date=soon');
+    expect(bad.text).toContain('2 documents');
+    expect(bad.text).toContain('not a valid date');
+    // GET Bundle with Accept: text/html is the same page
+    expect((await html('/ips/demo/Bundle?name=ngu')).text).toContain('1-1 of 1 document');
+  });
+
+  test('a document is shown as its assembled narrative, or as JSON', async () => {
+    const page = await html('/ips/demo/Bundle/1');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('Summary for <b>Jane Smith</b>');
+    expect(page.text).toContain('Allergies and Intolerances');
+    expect(page.text).toContain('<td>Penicillin</td>');
+    expect(page.text).toContain('No known medications');
+    expect(page.text).toContain('<a class="ips-step ips-step-waiting" title="validation - waiting" href="/ips/demo/Bundle/1?view=validation"><span class="ips-step-icon">&#9790;</span> Validation</a>');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?download=1">Download</a>');
+    expect(page.text).not.toContain('Process again');
+    const term = await html('/ips/demo/Bundle/1?view=terminology');
+    expect(term.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=terminology">Terminology</a></li>');
+    expect(term.text).toContain('<code>AllergyIntolerance.code</code>');
+    expect(term.text).not.toContain('<code>Composition.type</code>');
+    expect(term.text).toContain('>Allergies and Intolerances</th>');
+    expect(term.text).toContain('<a href="https://browser.ihtsdotools.org/" title="http://snomed.info/sct">SNOMED CT</a>');
+    expect(term.text).not.toContain('CodeSystem?url=');
+    const json = await html('/ips/demo/Bundle/1?view=source');
+    expect(json.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=source">Source</a></li>');
+    expect(json.text).toContain('<pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;Bundle&quot;');
+    // the old name still works
+    expect((await html('/ips/demo/Bundle/1?view=json')).text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=source">Source</a></li>');
+    const structure = await html('/ips/demo/Bundle/1?view=structure');
+    expect(structure.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=structure">Structure</a></li>');
+    expect(structure.text).toMatch(/<img src="\/assets\/images\/icon_person.png" alt="" width="16" height="16"\/> subject<\/td><td>Patient<\/td><td title="Reference: urn:uuid:pat-1">pat-1<\/td>/);
+    expect(structure.text).toContain('<td><b>Allergies and Intolerances</b></td>');
+    // the allergy's patient is the subject, already shown
+    expect(structure.text).toMatch(/<tr [^>]*class="ips-tt-seen"[^>]*><td [^>]*><img src="\/assets\/images\/icon_person.png" alt="" width="16" height="16"\/> patient<\/td><td>Patient<\/td>/);
+    expect(structure.text).toContain('<td><b>Medication Summary</b> <i>(empty)</i></td>');
+    // the tabs, in order
+    expect([...page.text.matchAll(/<li(?: class="active")?><a href="\/ips\/demo\/Bundle\/1\?view=[a-z]+">([^<]+)<\/a><\/li>/g)].map(m => m[1]))
+      .toEqual(['Narrative', 'Structure', 'Analysis', 'Translation', 'Terminology', 'Validation', 'National Profiles', 'Clinical Profiles', 'AI Assessment', 'Source']);
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=narrative" class="active" title="The narrative in the document as it was submitted">Provided</a>');
+    expect((await html('/ips/demo/Bundle/9')).status).toBe(404);
+    const dl = await request(app).get('/ips/demo/Bundle/1?download=1').set('Accept', 'text/html');
+    expect(dl.headers['content-type']).toMatch(/fhir\+json/);
+    expect(dl.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.json"');
+    expect(dl.body.resourceType).toBe('Bundle');
+    const fhir = await request(app).get('/ips/demo/Bundle/1?_format=json').set('Accept', 'text/html');
+    expect(fhir.headers['content-type']).toMatch(/fhir\+json/);
+  });
+
+  test('documents can be submitted through the form', async () => {
+    const agent = request.agent(app);
+    const page = await agent.get('/ips/demo/submit');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('name="bundle"');
+    expect(page.text).not.toContain('name="token"');
+    // no login: no CSRF token, and no session started for the visitor
+    expect(page.text).not.toContain('name="_csrf"');
+    expect(page.headers['set-cookie']).toBeUndefined();
+    const res = await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()) });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/ips/demo/Bundle/3');
+    expect(mod.store.read(3).source).toBe('form');
+    const bad = await agent.post('/ips/demo/submit').type('form').send({ bundle: '{"resourceType": "Patient"}' });
+    expect(bad.status).toBe(400);
+    expect(bad.text).toContain('Bundle, not Patient');
+    expect(bad.text).toContain('&quot;resourceType&quot;: &quot;Patient&quot;');
+    // but never from another site
+    const foreign = await agent.post('/ips/demo/submit').type('form').set('Origin', 'https://evil.example.org').send({ bundle: JSON.stringify(ips()) });
+    expect(foreign.status).toBe(403);
+  });
+
+  test('the form needs the token when the project has one', async () => {
+    mod.store.setProjectToken(1, 'tok');
+    const page = await html('/ips/demo/submit');
+    expect(page.text).toContain('name="token"');
+    const agent = request.agent(app);
+    expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()) })).status).toBe(401);
+    expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()), token: 'wrong' })).status).toBe(401);
+    expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()), token: 'tok' })).status).toBe(302);
+  });
+});
+
+describe('logins, administration and management', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+  });
+  afterEach(() => mod.shutdown());
+
+  test('the administrator logs in with the configured login', async () => {
+    expect((await loginAs(app, 'admin', 'wrong')).res.status).toBe(401);
+    expect((await loginAs(app, 'root', 'admin-secret')).res.status).toBe(401);
+    const { agent, res } = await loginAs(app, 'admin', 'admin-secret');
+    expect(res.status).toBe(302);
+    const page = await agent.get('/ips');
+    expect(page.text).toContain('Logged in as <b>Administrator</b>');
+    expect(page.text).toContain('/ips/admin/projects');
+    await form(agent, '/ips/logout');
+    expect((await agent.get('/ips/admin/projects')).status).toBe(302);
+  });
+
+  test('the administrator\'s login name is configurable, and without a password there is none', async () => {
+    const other = await makeApp({ adminUsername: 'boss' });
+    expect((await loginAs(other.app, 'admin', 'admin-secret')).res.status).toBe(401);
+    expect((await loginAs(other.app, 'boss', 'admin-secret')).res.status).toBe(302);
+    other.mod.shutdown();
+    const none = await makeApp({ adminPassword: undefined });
+    expect((await loginAs(none.app, 'admin', '')).res.status).toBe(401);
+    none.mod.shutdown();
+  });
+
+  test('the administrator creates projects and users, and assigns managers', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await form(agent, '/ips/admin/users', { login: 'mgr', name: 'Manager', password: 'password1' })).status).toBe(302);
+    expect((await form(agent, '/ips/admin/users', { login: 'short', name: 'Short', password: 'x' })).status).toBe(400);
+    expect((await form(agent, '/ips/admin/users', { login: 'admin', name: 'Impostor', password: 'password1' })).status).toBe(400);
+    expect((await form(agent, '/ips/admin/users', { login: 'mgr', name: 'Again', password: 'password1' })).status).toBe(409);
+    const userId = mod.store.userByLogin('mgr').id;
+
+    expect((await form(agent, '/ips/admin/projects', { code: 'Bad Code', name: 'X' })).status).toBe(400);
+    expect((await form(agent, '/ips/admin/projects', { code: 'login', name: 'X' })).status).toBe(400);
+    expect((await form(agent, '/ips/admin/projects', { code: 'demo', name: '' })).status).toBe(400);
+    expect((await form(agent, '/ips/admin/projects', { code: 'demo', name: 'Demo', description: 'd', manager: String(userId) })).status).toBe(302);
+    expect((await form(agent, '/ips/admin/projects', { code: 'demo', name: 'Demo 2' })).status).toBe(409);
+    const projects = mod.store.projects();
+    expect(projects).toHaveLength(1);
+    expect(projects[0].managers.map(m => m.login)).toEqual(['mgr']);
+    const page = await agent.get('/ips/admin/projects');
+    expect(page.text).toContain('value="' + userId + '" checked');
+
+    // take the manager off, then put them back
+    expect((await form(agent, `/ips/admin/projects/${projects[0].id}`, { name: 'Demo Renamed', description: '' })).status).toBe(302);
+    expect(mod.store.projects()[0].managers).toEqual([]);
+    expect(mod.store.projects()[0].name).toBe('Demo Renamed');
+    await form(agent, `/ips/admin/projects/${projects[0].id}`, { name: 'Demo', manager: [String(userId)] });
+    expect(mod.store.projects()[0].managers).toHaveLength(1);
+    expect((await agent.get('/ips/admin/users')).text).toContain('<code>demo</code>');
+  });
+
+  test('ordinary users cannot administer', async () => {
+    mod.store.createUser('u', 'User', require('bcrypt').hashSync('password1', 4));
+    const { agent, res } = await loginAs(app, 'u', 'password1');
+    expect(res.status).toBe(302);
+    expect((await agent.get('/ips/admin/projects')).status).toBe(403);
+    expect((await agent.get('/ips/admin/users')).status).toBe(403);
+    expect((await form(agent, '/ips/admin/projects', { code: 'x1', name: 'X' })).status).toBe(403);
+  });
+
+  test('managers set the token and delete documents; others cannot', async () => {
+    const bcrypt = require('bcrypt');
+    const pid = mod.store.createProject('demo', 'Demo', null);
+    mod.store.createProject('other', 'Other', null);
+    const uid = mod.store.createUser('mgr', 'Manager', bcrypt.hashSync('password1', 4));
+    mod.store.createUser('bystander', 'Bystander', bcrypt.hashSync('password1', 4));
+    mod.store.setProjectManagers(pid, [uid]);
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+
+    expect((await request(app).get('/ips/demo/settings')).status).toBe(302);
+    const by = (await loginAs(app, 'bystander', 'password1')).agent;
+    expect((await by.get('/ips/demo/settings')).status).toBe(403);
+    expect((await form(by, '/ips/demo/Bundle/1/delete')).status).toBe(403);
+    expect((await by.get('/ips/demo').set('Accept', 'text/html')).text).not.toContain('/delete"');
+
+    const mgr = (await loginAs(app, 'mgr', 'password1')).agent;
+    expect((await mgr.get('/ips/other/settings')).status).toBe(403);
+    const settings = await mgr.get('/ips/demo/settings');
+    expect(settings.status).toBe(200);
+    expect(settings.text).toContain('submissions are open');
+    expect((await form(mgr, '/ips/demo/settings', { token: 'has space' })).status).toBe(400);
+    expect((await form(mgr, '/ips/demo/settings', { token: 'my-token' })).status).toBe(200);
+    expect(mod.store.projectByCode('demo').token).toBe('my-token');
+    expect((await post(app, 'demo', ips())).status).toBe(401);
+    await form(mgr, '/ips/demo/settings', { token: '', generate: '1' });
+    expect(mod.store.projectByCode('demo').token).toMatch(/^[0-9a-f-]{36}$/);
+    await form(mgr, '/ips/demo/settings', { token: '' });
+    expect(mod.store.projectByCode('demo').token).toBeNull();
+
+    const list = await mgr.get('/ips/demo').set('Accept', 'text/html');
+    expect(list.text).toContain('/ips/demo/Bundle/1/delete');
+    expect(list.text).toContain('/ips/demo/settings');
+    const del = await form(mgr, '/ips/demo/Bundle/1/delete');
+    expect(del.status).toBe(302);
+    expect((await request(app).get('/ips/demo/Bundle/1')).status).toBe(404);
+    expect((await form(mgr, '/ips/demo/Bundle/1/delete')).status).toBe(404);
+    expect((await request(app).get('/ips/demo/Bundle')).body.total).toBe(1);
+
+    // the administrator manages every project
+    const admin = (await loginAs(app, 'admin', 'admin-secret')).agent;
+    expect((await admin.get('/ips/demo/settings')).status).toBe(200);
+    expect((await form(admin, '/ips/demo/Bundle/2/delete')).status).toBe(302);
+    expect(mod.store.count()).toBe(0);
+  });
+
+  test('deleting a project deletes its documents; deleting a user drops them as a manager', async () => {
+    const pid = mod.store.createProject('demo', 'Demo', null);
+    const uid = mod.store.createUser('mgr', 'Manager', 'x');
+    mod.store.setProjectManagers(pid, [uid]);
+    await post(app, 'demo', ips());
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    await form(agent, `/ips/admin/users/${uid}/delete`);
+    expect(mod.store.projects()[0].managers).toEqual([]);
+    await form(agent, `/ips/admin/projects/${pid}/delete`);
+    expect(mod.store.projects()).toEqual([]);
+    expect(mod.store.count()).toBe(0);
+    expect(mod.store.db.prepare('SELECT COUNT(*) AS n FROM ips_index').get().n).toBe(0);
+  });
+
+  test('form posts need a CSRF token once logged in', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const res = await agent.post('/ips/admin/projects').type('form').send({ code: 'demo', name: 'Demo' });
+    expect(res.status).toBe(403);
+    expect(res.text).toContain('did not come from this site');
+  });
+});
+
+describe('the terminology server', () => {
+  test('a path on this server is dispatched in-process', async () => {
+    const { app, mod } = await makeApp({ txServer: '/tx/r4' });
+    app.get('/tx/r4/CodeSystem', (req, res) => res.json({ resourceType: 'Bundle', total: 1, url: req.query.url }));
+    app.post('/tx/r4/CodeSystem/\\$validate-code', (req, res) => {
+      res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'Parameters', echo: JSON.parse(req.body.toString()) }));
+    });
+    expect(mod.tx.internal).toBe(true);
+    expect(mod.tx.codeSystemLink('http://hl7.org/fhir/x')).toBe('/tx/r4/CodeSystem?url=http%3A%2F%2Fhl7.org%2Ffhir%2Fx');
+    const r = await mod.tx.get('/CodeSystem', { url: 'http://hl7.org/fhir/x' });
+    expect(r.status).toBe(200);
+    expect(r.resource).toMatchObject({ total: 1, url: 'http://hl7.org/fhir/x' });
+    const v = await mod.tx.post('/CodeSystem/$validate-code', { resourceType: 'Parameters', parameter: [] });
+    expect(v.resource.echo).toEqual({ resourceType: 'Parameters', parameter: [] });
+    expect((await mod.tx.get('/Nowhere')).status).toBe(404);
+    // and the page links code systems there
+    mod.store.createProject('demo', 'Demo', null);
+    const d = ips();
+    d.entry[3].resource.code.coding.push({ system: 'http://terminology.hl7.org/CodeSystem/v3-ActCode', code: 'PCPR' });
+    await post(app, 'demo', d);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain('href="/tx/r4/CodeSystem?url=http%3A%2F%2Fterminology.hl7.org');
+    expect(page.text).toContain('<a href="https://browser.ihtsdotools.org/" title="http://snomed.info/sct">SNOMED CT</a>');
+    mod.shutdown();
+  });
+
+  test('an external server is used by URL, and other values are refused', async () => {
+    const { mod } = await makeApp({ txServer: 'https://tx.fhir.org/r4/' });
+    expect(mod.tx.internal).toBe(false);
+    expect(mod.tx.url).toBe('https://tx.fhir.org/r4');
+    expect(mod.tx.codeSystemLink('http://hl7.org/fhir/x')).toBe('https://tx.fhir.org/r4/CodeSystem?url=http%3A%2F%2Fhl7.org%2Ffhir%2Fx');
+    mod.shutdown();
+    await expect(makeApp({ txServer: 'tx.fhir.org' })).rejects.toThrow(/http\(s\) URL or a path/);
+    const bare = new IpsModule(makeStats(), quietLog);
+    await expect(bare.initialize({ database: ':memory:', txServer: '/tx/r4', processing: { enabled: false } })).rejects.toThrow(/needs the Express app/);
+    bare.shutdown();
+  });
+});
+
+describe('hardening', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('narratives are emitted as parsed, so one cannot run into the next', async () => {
+    const d = ips();
+    d.entry[0].resource.text.div = '<div xmlns="http://www.w3.org/1999/xhtml"><p>hello</p><a href="';
+    d.entry[0].resource.section[0].text.div = '" onmouseover="alert(1)">hover me</a>';
+    expect((await post(app, 'demo', d)).status).toBe(201);
+    const page = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(page.text).not.toContain('onmouseover="alert(1)">');
+    expect(page.text).toContain('<p>hello</p></div></div>');
+    expect(page.text).toContain('&gt;hover me');
+  });
+
+  test('a search page is cut by its byte budget, and paging follows on', async () => {
+    const { MAX_PAGE_BYTES } = require('../../ips/store');
+    for (let i = 0; i < 3; i++) {
+      await post(app, 'demo', ips());
+    }
+    // pretend each document is 60% of the budget
+    mod.store.db.prepare('UPDATE documents SET size = ?').run(Math.ceil(MAX_PAGE_BYTES * 0.6));
+    const first = (await request(app).get('/ips/demo/Bundle').query({ _count: '10', _sort: '_id' })).body;
+    expect(first.total).toBe(3);
+    expect(first.entry.map(e => e.resource.id)).toEqual(['1']);
+    const next = first.link.find(l => l.relation === 'next').url;
+    expect(next).toContain('_offset=1');
+    const second = (await request(app).get(new URL(next).pathname + new URL(next).search)).body;
+    expect(second.entry.map(e => e.resource.id)).toEqual(['2']);
+  });
+
+  test('index rows per parameter and sort keys are capped', async () => {
+    const { MAX_VALUES_PER_PARAM } = require('../../ips/search');
+    const d = ips();
+    d.entry[1].resource.identifier = Array.from({ length: MAX_VALUES_PER_PARAM + 50 }, (_, i) => ({ value: `id-${i}` }));
+    await post(app, 'demo', d);
+    expect(mod.store.db.prepare("SELECT COUNT(*) AS n FROM ips_index WHERE res = 'Patient' AND param = 'identifier'").get().n).toBe(MAX_VALUES_PER_PARAM);
+    expect((await request(app).get('/ips/demo/Bundle').query({ _sort: '_id,_id,_id,_id,_id,_id,_id,_id' })).status).toBe(200);
+    expect((await request(app).get('/ips/demo/Bundle').query({ _sort: '_id,composition.date,composition.title,composition.patient.name,composition.patient.gender,identifier' })).status).toBe(400);
+  });
+
+  test('internal errors say nothing about the inside', async () => {
+    mod.store.search = () => { throw new Error('SQLITE_FULL: database or disk is full at /var/secret'); };
+    const api = await request(app).get('/ips/demo/Bundle');
+    expect(api.status).toBe(500);
+    expect(api.text).not.toContain('secret');
+    expect(api.body.issue[0].details.text).toBe('Internal error');
+    const page = await request(app).get('/ips/demo').set('Accept', 'text/html');
+    expect(page.status).toBe(500);
+    expect(page.text).not.toContain('secret');
+  });
+
+  test('an unknown login takes a password comparison too, and control characters stay out of the log', async () => {
+    const logged = [];
+    mod.log = { info: (m) => logged.push(m), warn() {}, error() {}, debug() {} };
+    const spy = jest.spyOn(require('bcrypt'), 'compare');
+    try {
+      expect((await loginAs(app, 'nobody\u0007x', 'password1')).res.status).toBe(401);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(logged.some(m => m.includes("failed login for 'nobody?x'"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('verdicts in a submitted document are not shown as analysis', async () => {
+    const d = ips();
+    d.entry[3].resource.code.extension = [{ url: CHECK_EXTENSION, extension: [{ url: 'result', valueCode: 'in' }, { url: 'valueSet', valueCanonical: 'http://x' }] }];
+    await post(app, 'demo', d);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).not.toContain('ips-check-in" title=');
+    expect(page.text).not.toContain('name="problems"');
+  });
+});
+
+describe('the processing queue', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('documents start submitted and are processed in turn', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    const seen = [];
+    const logged = [];
+    mod.log = { info: (m) => logged.push(m), warn() {}, error: (m) => logged.push('ERROR ' + m), debug() {} };
+    mod.steps = [{ name: 'test', run: async (row, project) => {
+      seen.push([row.id, project.code]);
+      if (row.id === 2) {
+        throw new Error('boom');
+      }
+      return 'looked at it';
+    } }];
+    expect(mod.store.statusCounts()).toEqual({ submitted: 2 });
+    expect(await mod.processQueue()).toBe(2);
+    // each step's start and end is logged
+    expect(logged.filter(m => /: test /.test(m))).toEqual([
+      "IPS module: document 1 ('demo'): test starting",
+      expect.stringMatching(/^IPS module: document 1: test done in \d+ ms - looked at it$/),
+      "IPS module: document 2 ('demo'): test starting",
+      expect.stringMatching(/^ERROR IPS module: document 2: test failed after \d+ ms: boom$/)
+    ]);
+    expect(seen).toEqual([[1, 'demo'], [2, 'demo']]);
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'looked at it' });
+    expect(mod.store.read(2)).toMatchObject({ status: 'error', status_message: 'test: boom' });
+    expect(mod.store.statusCounts('x')).toEqual({});
+    expect((await request(app).get('/ips/demo/Bundle').query({ 'processing-status': 'error' })).body.total).toBe(1);
+    expect(await mod.processQueue()).toBe(0);
+    // with nothing to do a document is processed straight away
+    mod.steps = [];
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(3)).toMatchObject({ status: 'processed', status_message: null });
+  });
+
+  test('a manager can queue a document again', async () => {
+    mod.steps = [];
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status).toBe('processed');
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const page = await agent.get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(page.text).toContain('Process again');
+    expect((await form(agent, '/ips/demo/Bundle/1/requeue')).status).toBe(302);
+    expect(mod.store.read(1).status).toBe('submitted');
+    expect((await form(agent, '/ips/demo/Bundle/7/requeue')).status).toBe(404);
+  });
+
+  test('the queue waits while the validator is starting', async () => {
+    mod.steps = [];
+    await post(app, 'demo', ips());
+    let release;
+    mod.validatorStarting = new Promise(r => { release = r; });
+    expect(await mod.processQueue()).toBe(0);
+    expect(mod.store.read(1).status).toBe('submitted');
+    release();
+    mod.validatorStarting = null;
+    expect(await mod.processQueue()).toBe(1);
+  });
+
+  test('the queue page shows the document being processed, its step, and what is waiting', async () => {
+    await post(app, 'demo', ips());
+    mod.store.createProject('other', 'Other', null);
+    await post(app, 'other', ips());
+    await post(app, 'demo', ips());
+    // nothing running yet, and nothing measured
+    let page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toContain('<h3>How long the steps take</h3>');
+    expect(page.text).toContain('<tr><td>Jurisdiction</td><td colspan="4"><i>not measured yet</i></td></tr>');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('Processing is turned off on this server');
+    expect(page.text).toContain('No document is being processed.');
+    expect(page.text).toContain('<h3>Waiting (3)</h3>');
+    expect(page.text).toContain('<a href="/ips/demo">Demo</a> &raquo; <a href="/ips/demo/Bundle/1">Document 1</a>');
+    expect(page.text).toContain('<a href="/ips/other">Other</a> &raquo; <a href="/ips/other/Bundle/2">Document 2</a>');
+    // linked from the top menu, on every page
+    expect(page.text).toContain('<a href="/ips/queue" style="color: gold">Processing queue</a>');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('href="/ips/queue"');
+    // a step that waits to be let go, so the page can be looked at while it runs
+    let release;
+    let entered;
+    const inside = new Promise(r => { entered = r; });
+    mod.steps = [{ name: 'nationality', run: async () => 'first' }, { name: 'analysis', run: async (row) => {
+      if (row.id === 1) {
+        entered();
+        await new Promise(r => { release = r; });
+      }
+      return 'second';
+    } }];
+    const run = mod.processQueue();
+    await inside;
+    page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toContain('Processing is running.');
+    expect(page.text).toContain('<a href="/ips/demo">Demo</a> &raquo; <a href="/ips/demo/Bundle/1">Document 1</a>: <b>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="jurisdiction - done: first" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toContain('<a class="ips-step ips-step-running" title="analysis - running" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toMatch(/Up to: <b>Analysis<\/b> \(for \d+ s\); processing for \d+ s/);
+    expect(page.text).toContain('<h3>Waiting (2)</h3>');
+    expect(page.text).toMatch(/<tr><td>1<\/td><td><a href="\/ips\/other">Other<\/a> &raquo; <a href="\/ips\/other\/Bundle\/2">Document 2<\/a><\/td>/);
+    expect(page.text).toMatch(/<tr><td>2<\/td><td><a href="\/ips\/demo">Demo<\/a> &raquo; <a href="\/ips\/demo\/Bundle\/3">Document 3<\/a><\/td>/);
+    const json = await request(app).get('/ips/queue').set('Accept', 'application/json');
+    expect(json.body).toMatchObject({ state: 'running', processing: [{ id: 1, project: 'demo', step: 'analysis' }], waiting: [{ id: 2, project: 'other' }, { id: 3, project: 'demo' }], waitingTotal: 2 });
+    release();
+    expect(await run).toBe(3);
+    // each step's time was recorded, for each document
+    expect(mod.store.stepTimings()).toEqual({
+      nationality: { runs: 3, avgMs: expect.any(Number), msPerKb: expect.any(Number), last: expect.any(String) },
+      analysis: { runs: 3, avgMs: expect.any(Number), msPerKb: expect.any(Number), last: expect.any(String) }
+    });
+    page = await request(app).get('/ips/queue').set('Accept', 'text/html');
+    expect(page.text).toMatch(/<tr><td>Jurisdiction<\/td><td>\d+ ms<\/td><td>[\d.]+ ms\/KB<\/td><td>3<\/td>/);
+    expect((await request(app).get('/ips/queue').set('Accept', 'application/json')).body.steps).toEqual([
+      { step: 'nationality', runs: 3, averageMs: expect.any(Number), msPerKb: expect.any(Number) },
+      { step: 'analysis', runs: 3, averageMs: expect.any(Number), msPerKb: expect.any(Number) }
+    ]);
+    expect(page.text).toContain('No document is being processed.');
+    expect(page.text).toContain('Nothing is waiting to be processed.');
+    // 'queue' can't be a project's code
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await form(agent, '/ips/admin/projects', { code: 'queue', name: 'Queue' })).status).toBe(400);
+  });
+
+  test('step times: failed and skipped steps do not count, and only the most recent are kept and averaged', async () => {
+    const store = mod.store;
+    for (let i = 0; i < 1005; i++) {
+      store.recordStepTime('validation', 1, i < 905 ? 1000 : 10, 2048);
+    }
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM step_timings WHERE step = 'validation'").get().n).toBe(1000);
+    // the last 100: all 10 ms, for 2 KB
+    expect(store.stepTimings().validation).toMatchObject({ runs: 100, avgMs: 10, msPerKb: 5 });
+    await post(app, 'demo', ips());
+    mod.steps = [{ name: 'ai', run: async (row) => { mod.store.saveResult(row.id, 'ai', { skipped: 'not enabled' }); return 'ai: skipped'; } },
+      { name: 'analysis', run: async () => { throw new Error('boom'); } }];
+    await mod.processQueue();
+    expect(Object.keys(store.stepTimings())).toEqual(['validation']);
+  });
+
+  test('documents left processing at shutdown are queued again at startup', async () => {
+    await post(app, 'demo', ips());
+    mod.store.claimNext();
+    expect(mod.store.read(1).status).toBe('processing');
+    expect(mod.store.resetProcessing()).toBe(1);
+    expect(mod.store.read(1).status).toBe('submitted');
+  });
+});
+
+describe('the validation step', () => {
+  let app;
+  let mod;
+  const outcome = {
+    resourceType: 'OperationOutcome',
+    issue: [
+      { severity: 'error', code: 'invariant', details: { text: 'Constraint failed: dom-6' }, expression: ['Bundle.entry[1].resource'] },
+      { severity: 'warning', code: 'code-invalid', diagnostics: 'Unknown code', location: ['Bundle.entry[0].resource.type', 'Line 12, Col 3'] },
+      { severity: 'information', code: 'informational', details: { text: 'All OK <b>' } }
+    ]
+  };
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.steps = STEPS.filter(s => s.name === 'validation');
+  });
+  afterEach(() => mod.shutdown());
+
+  const fakeValidator = (running = true) => ({
+    calls: [],
+    isRunning: () => running,
+    jarVersion: () => '6.5.0',
+    async validate(resource, options) {
+      this.calls.push({ resource: JSON.parse(resource), options });
+      return outcome;
+    },
+    async stop() {}
+  });
+
+  test('validates against the IPS profile and keeps the outcome', async () => {
+    mod.validator = fakeValidator();
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(1);
+    expect(mod.validator.calls).toHaveLength(1);
+    expect(mod.validator.calls[0].resource.id).toBe('1');
+    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'], timeout: 120000 });
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'validation: 1 error, 1 warning, 1 note' });
+    const r = mod.store.readResult(1, 'validation');
+    expect(r.result).toMatchObject({ profiles: ['http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips'], validatorVersion: '6.5.0', counts: { error: 1, warning: 1, information: 1, fatal: 0 } });
+    expect(r.result.outcome).toEqual(outcome);
+    expect(mod.store.resultSteps(1)).toEqual(['validation']);
+    expect(mod.store.readResult(1, 'piqi')).toBeNull();
+
+    // the page
+    const page = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=validation">Validation</a></li>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="validation - done: validation: 1 error, 1 warning, 1 note" href="');
+    expect(page.text).toContain('with validator 6.5.0');
+    expect(page.text).toContain('<b>1 error, 1 warning, 1 note</b>');
+    expect(page.text).toContain('Constraint failed: dom-6');
+    expect(page.text).toContain('<summary class="btn btn-default ips-btn">Show the OperationOutcome</summary><pre class="ips-json">{\n  &quot;resourceType&quot;: &quot;OperationOutcome&quot;');
+    // the severity colours the code; paths can break at the dots
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #c82333" title="error">invariant</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[1].<wbr/>resource</code></td>');
+    // slashes and hyphens break too
+    expect(render.renderValidation({ status: 'processed', results: { validation: { made: 'now', result: { status: 'done', counts: {}, outcome: { resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', expression: ['Bundle.entry[0].resource/*Composition/ab-cd*/.identifier'] }] } } } } }))
+      .toContain('<code>Bundle.<wbr/>entry[0].<wbr/>resource/<wbr/>*Composition/<wbr/>ab-<wbr/>cd*/<wbr/>.<wbr/>identifier</code>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #8a6100" title="warning">code-invalid</span></td><td class="ips-path"><code>Bundle.<wbr/>entry[0].<wbr/>resource.<wbr/>type</code><br/><code>Line 12, Col 3</code>');
+    expect(page.text).toContain('<span class="ips-badge" style="background-color: #117a8b" title="information">informational</span>');
+    expect(page.text).toContain('Unknown code');
+    expect(page.text).toContain('All OK &lt;b&gt;');
+    expect(page.text).toContain('name="level"');
+
+    // hiding the lesser issues
+    const warnings = await request(app).get('/ips/demo/Bundle/1?view=validation&level=warning').set('Accept', 'text/html');
+    expect(warnings.text).toContain('Constraint failed: dom-6');
+    expect(warnings.text).toContain('Unknown code');
+    // hidden from the table (the raw OperationOutcome at the bottom still has it)
+    expect(warnings.text).not.toContain('<td>All OK &lt;b&gt;</td>');
+    expect(warnings.text).toContain('Showing 2 of 3 issues (warnings and above)');
+    expect(warnings.text).toContain('<option value="warning" selected>');
+    const errors = await request(app).get('/ips/demo/Bundle/1?view=validation&level=error').set('Accept', 'text/html');
+    expect(errors.text).toContain('Constraint failed: dom-6');
+    expect(errors.text).not.toContain('<td>Unknown code</td>');
+    expect(errors.text).toContain('Showing 1 of 3 issues (errors and above)');
+    // the summary line still counts everything
+    expect(errors.text).toContain('<b>1 error, 1 warning, 1 note</b>');
+    // an unknown level shows everything
+    expect((await request(app).get('/ips/demo/Bundle/1?view=validation&level=bogus').set('Accept', 'text/html')).text).toContain('<td>All OK &lt;b&gt;</td>');
+
+    // re-running replaces the result
+    mod.store.requeue(1, 1);
+    await mod.processQueue();
+    expect(mod.validator.calls).toHaveLength(2);
+    expect(mod.store.resultSteps(1)).toEqual(['validation']);
+    // deleting the document deletes the result
+    mod.store.delete(1, 1);
+    expect(mod.store.db.prepare('SELECT COUNT(*) AS n FROM document_results').get().n).toBe(0);
+  });
+
+  test('configured profiles are used instead', async () => {
+    mod.config.validator = { profiles: ['http://example.org/p'] };
+    mod.validator = fakeValidator();
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.validator.calls[0].options).toEqual({ profiles: ['http://example.org/p'], timeout: 120000 });
+  });
+
+  test('without a validator the document fails processing, and the page says so', async () => {
+    await post(app, 'demo', ips());
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    expect(waiting.text).toContain('waiting in the queue');
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'error', status_message: 'validation: The validator is not configured (modules.ips.validator)' });
+    const page = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    // the reason is for managers, not the public
+    expect(page.text).toContain("The validation step failed (the reason is shown to the project's managers).");
+    expect(page.text).not.toContain('The validator is not configured');
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const mine = await agent.get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    expect(mine.text).toContain('The validation step failed: The validator is not configured (modules.ips.validator).');
+    expect(mine.text).toContain('<a class="ips-step ips-step-failed" title="validation - failed: The validator is not configured (modules.ips.validator)" href="');
+    expect(page.text).toContain('<a class="ips-step ips-step-failed" title="validation - failed" href="');
+    expect(mine.text).toContain('>Process again</button>');
+    mod.validator = fakeValidator(false);
+    mod.store.requeue(1, 1);
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('validation: The validator is not running');
+  });
+});
+
+describe('the national profiles step', () => {
+  let app;
+  let mod;
+  const AU = 'http://hl7.org.au/fhir/ips/StructureDefinition/au-ips-bundle';
+  const NZ = 'http://hl7.org.nz/fhir/ips/StructureDefinition/nz-ips-bundle';
+  const XX = 'http://example.org/fhir/StructureDefinition/xx-bundle';
+  const failing = { resourceType: 'OperationOutcome', issue: [
+    { severity: 'error', code: 'structure', details: { text: 'Bundle.identifier: minimum required = 1' }, expression: ['Bundle'] },
+    { severity: 'information', code: 'informational', details: { text: 'Just a note' } }] };
+  const passing = { resourceType: 'OperationOutcome', issue: [{ severity: 'warning', code: 'business-rule', details: { text: 'A warning only' } }] };
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.steps = STEPS.filter(s => s.name === 'national');
+  });
+  afterEach(() => mod.shutdown());
+
+  const fakeValidator = () => ({
+    calls: [],
+    loads: [],
+    isRunning: () => true,
+    jarVersion: () => '6.5.0',
+    async loadIG(packageId, version) {
+      this.loads.push(`${packageId}#${version}`);
+      return packageId === 'hl7.fhir.xx.ips'
+        ? { resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found', details: { text: 'Package not found' } }] }
+        : { resourceType: 'OperationOutcome', issue: [{ severity: 'information', code: 'informational', details: { text: 'Loaded' } }] };
+    },
+    async validate(resource, options) {
+      this.calls.push(options);
+      return options.profiles[0] === AU ? failing : passing;
+    },
+    async stop() {}
+  });
+
+  test('with no national profiles, there is nothing to do', async () => {
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: none' });
+    expect(mod.store.readResult(1, 'national').result).toMatchObject({ profiles: [] });
+    const page = await request(app).get('/ips/demo/Bundle/1?view=national').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=national">National Profiles</a></li>');
+    expect(page.text).toContain('There were no <a href="/ips/national-profiles">national profiles</a> to validate the document against');
+  });
+
+  test('the document is validated against each, and passes when there are no errors', async () => {
+    mod.validator = fakeValidator();
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    mod.store.createNationalProfile('hl7.fhir.nz.ips', '2.0.0', NZ, 'NZ');
+    mod.store.createNationalProfile('hl7.fhir.xx.ips', '0.1.0', XX, '150');
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(2);
+    // each package is loaded once; the one that won't load isn't validated against
+    expect(mod.validator.loads).toEqual(['hl7.fhir.au.ips#1.0.0', 'hl7.fhir.nz.ips#2.0.0', 'hl7.fhir.xx.ips#0.1.0']);
+    expect(mod.validator.calls).toEqual([
+      { profiles: [AU], timeout: 120000 }, { profiles: [NZ], timeout: 120000 },
+      { profiles: [AU], timeout: 120000 }, { profiles: [NZ], timeout: 120000 }]);
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: 1 passed, 1 failed, 1 not checked' });
+    const r = mod.store.readResult(1, 'national').result;
+    expect(r.validatorVersion).toBe('6.5.0');
+    expect(r.profiles.map(p => [p.packageId, p.pass])).toEqual([['hl7.fhir.au.ips', false], ['hl7.fhir.nz.ips', true], ['hl7.fhir.xx.ips', null]]);
+    expect(r.profiles[0]).toMatchObject({ version: '1.0.0', url: AU, counts: { error: 1, warning: 0, information: 1, fatal: 0 }, outcome: failing });
+    expect(r.profiles[2].error).toBe('The validator could not load hl7.fhir.xx.ips#0.1.0: Package not found');
+
+    // the list
+    const page = await request(app).get('/ips/demo/Bundle/1?view=national').set('Accept', 'text/html');
+    expect(page.text).toContain('<td><code>AU</code> Australia</td><td><a href="/ips/demo/Bundle/1?view=national&amp;np=0"><code>hl7.fhir.au.ips#1.0.0</code></a>');
+    expect(page.text).toContain('<td><code>150</code> Europe</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #c82333">Failed</span></td><td>1 error, 1 note</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #1e7e34">Passed</span></td><td>1 warning</td>');
+    expect(page.text).toContain('<span class="ips-badge" style="background: #8a6100">Not checked</span></td><td><span class="ips-small">(not validated)</span>');
+
+    // one profile's validation, as the validation view shows it
+    const au = await request(app).get('/ips/demo/Bundle/1?view=national&np=0').set('Accept', 'text/html');
+    expect(au.text).toContain('<a href="/ips/demo/Bundle/1?view=national">National profiles</a> &raquo; hl7.fhir.au.ips#1.0.0');
+    expect(au.text).toContain(`against <code>${AU}</code>`);
+    expect(au.text).toContain('<b>1 error, 1 note</b>');
+    expect(au.text).toContain('Bundle.identifier: minimum required = 1');
+    expect(au.text).toContain('<input type="hidden" name="view" value="national"/><input type="hidden" name="np" value="0"/>');
+    expect(au.text).toContain('Show the OperationOutcome');
+    // errors only, unless asked for more
+    expect(au.text).toContain('<option value="error" selected>Errors only</option>');
+    expect(au.text).toContain('Showing 1 of 2 issues (errors and above)');
+    const filtered = await request(app).get('/ips/demo/Bundle/1?view=national&np=0&level=error').set('Accept', 'text/html');
+    expect(filtered.text).toContain('Showing 1 of 2 issues (errors and above)');
+    const everything = await request(app).get('/ips/demo/Bundle/1?view=national&np=0&level=information').set('Accept', 'text/html');
+    expect(everything.text).toContain('<option value="information" selected>Everything</option>');
+    expect(everything.text).not.toContain('Showing 1 of 2 issues');
+    // the document's own validation still shows everything by default
+    const own = await request(app).get('/ips/demo/Bundle/1?view=validation').set('Accept', 'text/html');
+    expect(own.text).not.toContain('<option value="error" selected>');
+    // the one that wasn't validated: why, for managers
+    const xx = await request(app).get('/ips/demo/Bundle/1?view=national&np=2').set('Accept', 'text/html');
+    expect(xx.text).toContain("could not be validated against this profile (the reason is shown to the project's managers)");
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo/Bundle/1?view=national&np=2').set('Accept', 'text/html')).text).toContain('Package not found');
+    // a profile that isn't there: the list
+    expect((await request(app).get('/ips/demo/Bundle/1?view=national&np=7').set('Accept', 'text/html')).text).toContain('np=1"><code>hl7.fhir.nz.ips#2.0.0</code>');
+
+    // changing the national profiles: a package that failed to load is tried again
+    expect((await form(agent, '/ips/national-profiles', { jurisdiction: 'GB', packageId: 'hl7.fhir.yy.ips', version: '1.0.0', url: XX })).status).toBe(302);
+    mod.store.requeue(1, 1);
+    await mod.processQueue();
+    expect(mod.validator.loads.filter(l => l === 'hl7.fhir.xx.ips#0.1.0')).toHaveLength(2);
+  });
+
+  test('a package is loaded by posting {ig: id#version} to the validator service\'s /loadIG', async () => {
+    // the validator service: what it was asked, and what it answers
+    const http = require('http');
+    const seen = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        seen.push({ method: req.method, url: req.url, type: req.headers['content-type'], body });
+        res.setHeader('Content-Type', 'application/fhir+json');
+        res.end(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'information', code: 'informational', details: { text: 'IG loaded successfully' } }] }));
+      });
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    try {
+      // the wrapper's own loadIG() (fhir-validator-wrapper 1.6.1 and later post the body), as start() leaves it
+      const FhirValidator = require('fhir-validator-wrapper');
+      mod.validator = new FhirValidator('validator_cli.jar', { info() {}, warn() {}, error() {}, debug() {} });
+      mod.validator.baseUrl = `http://127.0.0.1:${server.address().port}`;
+      mod.validator.isReady = true;
+      await mod.loadNationalPackage('hl7.fhir.au.ps', 'current');
+      expect(seen).toEqual([{ method: 'POST', url: '/loadIG', type: 'application/json', body: '{"ig":"hl7.fhir.au.ps#current"}' }]);
+      // once
+      await mod.loadNationalPackage('hl7.fhir.au.ps', 'current');
+      expect(seen).toHaveLength(1);
+    } finally {
+      await new Promise(r => server.close(r));
+    }
+  });
+
+  test('the national profiles\' packages are loaded when the validator starts, before any document is processed', async () => {
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    mod.store.createNationalProfile('hl7.fhir.xx.ips', '0.1.0', XX, '150');
+    mod.validator = fakeValidator();
+    await mod.loadNationalPackages();
+    expect(mod.validator.loads).toEqual(['hl7.fhir.au.ips#1.0.0', 'hl7.fhir.xx.ips#0.1.0']);
+    // and not again for the document
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.validator.loads).toHaveLength(2);
+  });
+
+  test('without a validator, documents fail processing (when there are national profiles)', async () => {
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'error', status_message: 'national: The validator is not configured (modules.ips.validator)' });
+  });
+});
+
+describe('the terminology step', () => {
+  let app;
+  let mod;
+  let calls;
+  const VS = 'http://healthintersections.com.au/fhirsmith/ValueSet/';
+  const FALLBACK = VS + 'ips-international-codes';
+  const SCT = 'http://snomed.info/sct';
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    calls = [];
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    // a terminology server: 91936005 (penicillin allergy) is in the allergy value set, LOINC
+    // codes starting 1234 are observation codes, 'intl' is in the fallback (as is any LOINC
+    // code), no-known-immunizations is a vaccine code; a code of 'boom' breaks the server,
+    // 'odd' gets an answer with no result. In an HL7 code system, every code but 'bad' exists
+    app.post('/tx/r4/ValueSet/\\$validate-code', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const coding = p.parameter.find(x => x.name === 'coding').valueCoding;
+      const vs = p.parameter.find(x => x.name === 'valueSet')?.resource?.url || p.parameter.find(x => x.name === 'url')?.valueUri;
+      calls.push({ vs, coding, txResources: p.parameter.filter(x => x.name === 'tx-resource').map(x => x.resource.url) });
+      res.type('application/fhir+json');
+      if (coding.code === 'boom') {
+        return res.status(500).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'exception', details: { text: 'kaboom' } }] }));
+      }
+      if (coding.code === 'odd') {
+        return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [] }));
+      }
+      const result = (vs === VS + 'ips-allergy-code' && coding.code === '91936005') ||
+        (vs === VS + 'ips-observation-code' && coding.system === 'http://loinc.org' && coding.code.startsWith('1234')) ||
+        (vs === VS + 'ips-vaccine' && coding.code === 'no-known-immunizations') ||
+        (vs === VS + 'ips-condition-severity' && coding.code === '6736007') ||
+        (vs === FALLBACK && (coding.system === 'http://loinc.org' || coding.code === 'intl' || coding.code === '91936005'));
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: result }, { name: 'message', valueString: result ? 'ok' : 'nope' }, ...(coding.code === 'intl' ? [{ name: 'inactive', valueBoolean: true }] : [])] }));
+    });
+    app.post('/tx/r4/CodeSystem/\\$validate-code', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const system = p.parameter.find(x => x.name === 'url').valueUri;
+      const code = p.parameter.find(x => x.name === 'code').valueCode;
+      calls.push({ system, code });
+      res.type('application/fhir+json');
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: code !== 'bad' }] }));
+    });
+    // translation: a LOINC answer 'LA-mod' translates to SNOMED 6736007 (two maps say so, one
+    // of them narrower); 'intl' has no translation; 'boom' and 'tboom' break the server
+    app.post('/tx/r4/ConceptMap/\\$translate', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const cc = p.parameter.find(x => x.name === 'sourceCodeableConcept').valueCodeableConcept;
+      const target = p.parameter.find(x => x.name === 'targetScope').valueUri;
+      calls.push({ translate: cc, target, txResources: p.parameter.filter(x => x.name === 'tx-resource').map(x => x.resource.url) });
+      res.type('application/fhir+json');
+      if (cc.coding.some(c => c.code === 'boom' || c.code === 'tboom')) {
+        return res.status(500).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'exception', details: { text: 'kaboom' } }] }));
+      }
+      if (cc.coding.some(c => c.code === 'LA-mod')) {
+        return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: true },
+          { name: 'match', part: [{ name: 'relationship', valueCode: 'equivalent' }, { name: 'concept', valueCoding: { system: SCT, code: '6736007', display: 'Moderate' } }, { name: 'originMap', valueCanonical: 'http://example.org/ConceptMap/loinc-sct' }] },
+          { name: 'match', part: [{ name: 'equivalence', valueCode: 'wider' }, { name: 'concept', valueCoding: { system: SCT, code: '6736007' } }, { name: 'source', valueUri: 'http://example.org/ConceptMap/other' }] },
+          { name: 'match', part: [{ name: 'relationship', valueCode: 'source-is-narrower-than-target' }, { name: 'concept', valueCoding: { system: SCT, code: '272141005', display: 'Severities' } }] }] }));
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: false }, { name: 'message', valueString: 'No ConceptMap is available' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'terminology');
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const checks = (bundle) => {
+    const out = {};
+    const walk = (node, path) => {
+      if (Array.isArray(node)) {
+        node.forEach((n, i) => walk(n, `${path}[${i}]`));
+      } else if (node && typeof node === 'object') {
+        const ext = (node.extension || []).find(e => e.url === CHECK_EXTENSION);
+        if (ext) {
+          out[path] = ext.extension.find(e => e.url === 'result').valueCode;
+        }
+        for (const [k, v] of Object.entries(node)) {
+          if (k !== 'extension') {
+            walk(v, path ? `${path}.${k}` : k);
+          }
+        }
+      }
+    };
+    walk(bundle, '');
+    return out;
+  };
+  const extOf = (concept) => concept.extension.find(e => e.url === CHECK_EXTENSION).extension;
+  const msg = (concept) => extOf(concept).find(e => e.url === 'message').valueString;
+
+  // an Observation with the given code, in the medication section (the second section)
+  const withObservation = (code, extra = {}, system = 'http://loinc.org') => {
+    const d = ips();
+    d.entry[0].resource.section[1].entry = [{ reference: 'urn:uuid:obs-1' }];
+    d.entry.push({ fullUrl: 'urn:uuid:obs-1', resource: { resourceType: 'Observation', id: 'obs-1', status: 'final', code: { coding: [{ system, code }] }, ...extra } });
+    return d;
+  };
+
+  test('the value sets are read at startup', () => {
+    expect(mod.valueSets.loaded).toBe(true);
+    expect(mod.valueSets.valueSetFor('AllergyIntolerance.code')).toBe(VS + 'ips-allergy-code');
+  });
+
+  test('checks each concept against its element\'s value set and writes the verdict into the analysed copy, leaving the master alone', async () => {
+    await post(app, 'demo', withObservation('odd'));
+    expect(await mod.processQueue()).toBe(1);
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 0 not in, 1 unknown');
+    expect(checks(row.bundle)).toEqual({});
+    expect(checks(row.analysed)).toEqual({
+      'entry[3].resource.code': 'in',
+      'entry[4].resource.code': 'unknown'
+    });
+    expect(extOf(row.analysed.entry[3].resource.code)).toEqual([
+      { url: 'result', valueCode: 'in' },
+      { url: 'valueSet', valueCanonical: VS + 'ips-allergy-code' },
+      { url: 'coding', valueCoding: { system: SCT, code: '91936005', display: 'Allergy to penicillin' } },
+      { url: 'message', valueString: `${SCT}|91936005 is in ${VS}ips-allergy-code` }
+    ]);
+    // the value set went with the request, and the coding as it is
+    const c = calls.find(x => x.vs === VS + 'ips-allergy-code');
+    expect(c.txResources).toEqual([]);
+    // the code, not its display: the answer is cached by code, so a document with a wrong
+    // display can't decide it for the documents after it
+    expect(c.coding).toEqual({ system: SCT, code: '91936005' });
+    // the server could not say for 'odd', against the element's value set or the fallback
+    expect(calls.filter(x => x.coding?.code === 'odd').map(x => x.vs)).toEqual([VS + 'ips-observation-code', FALLBACK]);
+    expect(msg(row.analysed.entry[4].resource.code)).toBe(`Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result`);
+    // the JSON view is still the master
+    const json = await request(app).get('/ips/demo/Bundle/1');
+    expect(JSON.stringify(json.body)).not.toContain(CHECK_EXTENSION);
+  });
+
+  test('a coding that misses the element\'s value set but is international is marked so', async () => {
+    const d = withObservation('intl', {}, SCT);
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(checks(row.analysed)['entry[4].resource.code']).toBe('international');
+    expect(extOf(row.analysed.entry[4].resource.code)).toEqual([
+      { url: 'result', valueCode: 'international' },
+      { url: 'valueSet', valueCanonical: FALLBACK },
+      { url: 'coding', valueCoding: { system: SCT, code: 'intl' } },
+      { url: 'message', valueString: `${SCT}|intl is in ${FALLBACK}, but not in ${VS}ips-observation-code (the code is inactive)` }
+    ]);
+    expect(row.status_message).toBe('terminology: 1 in, 1 international only, 0 not in, 0 unknown');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain(`<span class="ips-check ips-check-international" title="${SCT}|intl is in ${FALLBACK}, but not in ${VS}ips-observation-code (the code is inactive)\nValue set: ${FALLBACK}">&#9888;</span> <span class="ips-small">ips-international-codes</span>`);
+  });
+
+  test('an element with no value set of its own takes any international code, including an HL7 one', async () => {
+    const d = withObservation('1234-5', {
+      method: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' }] },
+      // a code that no HL7 code system has, and a local one
+      dataAbsentReason: { coding: [{ system: 'http://terminology.hl7.org/CodeSystem/x', code: 'bad' }, { system: 'http://example.org/local', code: 'zz' }] }
+    });
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(checks(row.analysed)).toEqual({
+      'entry[3].resource.code': 'in',
+      'entry[4].resource.code': 'in',
+      'entry[4].resource.method': 'in',
+      'entry[4].resource.dataAbsentReason': 'not-in'
+    });
+    expect(extOf(row.analysed.entry[4].resource.method)).toEqual([
+      { url: 'result', valueCode: 'in' },
+      { url: 'system', valueUri: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod' },
+      { url: 'coding', valueCoding: { system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' } },
+      { url: 'message', valueString: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod|M is a code in an HL7 terminology' }
+    ]);
+    // the HL7 codes were asked of their code systems, the local one of the fallback value set
+    expect(calls.filter(c => c.system)).toEqual([{ system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationMethod', code: 'M' }, { system: 'http://terminology.hl7.org/CodeSystem/x', code: 'bad' }]);
+    expect(calls.find(c => c.coding?.code === 'zz').vs).toBe(FALLBACK);
+    expect(msg(row.analysed.entry[4].resource.dataAbsentReason)).toBe('No coding is in an international terminology (SNOMED CT International, LOINC, or an HL7 terminology)');
+    expect(row.status_message).toBe('terminology: 3 in, 0 international only, 1 not in, 0 unknown');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain('>&#10003;</span> <span class="ips-small">v3-ObservationMethod</span>');
+  });
+
+  test('the resources a value set draws on go with the question', async () => {
+    const d = ips();
+    d.entry[0].resource.section.push({ title: 'Immunizations', code: { coding: [{ system: 'http://loinc.org', code: '11369-6' }] }, text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>None</p></div>' }, entry: [{ reference: 'urn:uuid:imm-1' }] });
+    d.entry.push({ fullUrl: 'urn:uuid:imm-1', resource: { resourceType: 'Immunization', id: 'imm-1', status: 'completed', patient: { reference: 'urn:uuid:pat-1' }, vaccineCode: { coding: [{ system: 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips', code: 'no-known-immunizations' }] } } });
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(checks(mod.store.read(1).analysed)['entry[4].resource.vaccineCode']).toBe('in');
+    const c = calls.find(x => x.vs === VS + 'ips-vaccine');
+    expect(c.txResources).toEqual(['http://hl7.org/fhir/uv/ips/ValueSet/absent-or-unknown-immunizations-uv-ips', 'http://hl7.org/fhir/uv/ips/CodeSystem/absent-unknown-uv-ips']);
+  });
+
+  test('a cross when no coding is anywhere, and a question mark when the server fails', async () => {
+    // an observation with a text-only value, and a code the server breaks on
+    const d = withObservation('1234-5', { valueCodeableConcept: { text: 'just text' } });
+    d.entry[3].resource.code = { coding: [{ system: SCT, code: '12345' }, { system: SCT, code: 'boom' }] };
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(checks(row.analysed)).toEqual({ 'entry[3].resource.code': 'unknown', 'entry[4].resource.code': 'in', 'entry[4].resource.valueCodeableConcept': 'not-in' });
+    expect(msg(row.analysed.entry[4].resource.valueCodeableConcept)).toBe('The concept has no codings');
+    expect(msg(row.analysed.entry[3].resource.code)).toMatch(/Could not be determined.*kaboom/);
+    // 12345 was asked of the allergy value set and the fallback, boom of both too
+    expect(calls.filter(c => c.coding?.code === '12345').map(c => c.vs)).toEqual([VS + 'ips-allergy-code', FALLBACK]);
+    expect(calls.filter(c => c.coding?.code === 'boom')).toHaveLength(2);
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 1 not in, 1 unknown');
+    // and a plain miss
+    d.entry[3].resource.code = { coding: [{ system: SCT, code: '12345' }] };
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const miss = mod.store.read(2);
+    expect(checks(miss.analysed)['entry[3].resource.code']).toBe('not-in');
+    expect(msg(miss.analysed.entry[3].resource.code)).toBe(`No coding is in ${VS}ips-allergy-code, and none is in an international terminology (SNOMED CT International, LOINC, or an HL7 terminology)`);
+    expect(extOf(miss.analysed.entry[3].resource.code).find(e => e.url === 'valueSet')).toEqual({ url: 'valueSet', valueCanonical: VS + 'ips-allergy-code' });
+  });
+
+  test('the questions asked for one document are bounded, and identical concepts are asked once', async () => {
+    const pipeline = require('../../ips/pipeline');
+    const d = ips();
+    // twenty allergies with the same (cached) code and twenty with their own
+    for (let i = 0; i < 40; i++) {
+      d.entry[0].resource.section[0].entry.push({ reference: `urn:uuid:a${i}` });
+      d.entry.push({ fullUrl: `urn:uuid:a${i}`, resource: { resourceType: 'AllergyIntolerance', id: `a${i}`, patient: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: SCT, code: i < 20 ? 'same' : `c${i}` }] } } });
+    }
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    // 1 (the fixture's allergy) + 2 (same: the value set, then the fallback) + 20 x 2 = 43 questions, not 81
+    expect(calls).toHaveLength(43);
+    expect(row.status_message).toBe('terminology: 1 in, 0 international only, 40 not in, 0 unknown');
+    expect(pipeline.MAX_CHECKS_PER_DOCUMENT).toBeGreaterThan(43);
+  });
+
+  test('the answer cache is bounded', async () => {
+    const { checkConcept, MAX_CACHED_ANSWERS } = require('../../ips/pipeline');
+    mod.txCache = new Map();
+    for (let i = 0; i < MAX_CACHED_ANSWERS; i++) {
+      mod.txCache.set(`k${i}`, { result: false });
+    }
+    await checkConcept(mod, { coding: [{ system: SCT, code: 'new' }] }, VS + 'ips-allergy-code');
+    expect(mod.txCache.size).toBe(MAX_CACHED_ANSWERS);
+    expect(mod.txCache.has('k0')).toBe(false);
+    expect(mod.txCache.has(`${VS}ips-allergy-code|${SCT}||new`)).toBe(true);
+    expect(mod.txCache.has(`${FALLBACK}|${SCT}||new`)).toBe(true);
+    // over budget: unknown, without a question
+    const n = calls.length;
+    const out = await checkConcept(mod, { coding: [{ system: SCT, code: 'another' }] }, VS + 'ips-allergy-code', { left: 0 });
+    expect(out.result).toBe('unknown');
+    expect(out.message).toMatch(/more codes than are checked/);
+    expect(calls).toHaveLength(n);
+  });
+
+  test('answers are cached across documents, and a resubmitted analysed copy is checked afresh', async () => {
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const n = calls.length;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(calls.length).toBe(n);
+    // resubmit the analysed copy: its old extensions are stripped, not trusted
+    const analysed = mod.store.read(1).analysed;
+    analysed.entry[3].resource.code.extension[0].extension[0].valueCode = 'not-in';
+    await post(app, 'demo', analysed);
+    await mod.processQueue();
+    expect(checks(mod.store.read(3).analysed)['entry[3].resource.code']).toBe('in');
+    expect(mod.store.read(3).analysed.entry[3].resource.code.extension).toHaveLength(1);
+  });
+
+  test('the terminology view shows the verdicts', async () => {
+    await post(app, 'demo', withObservation('odd'));
+    const before = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(before.text).not.toContain('ips-check-in" title=');
+    expect(before.text).toContain('until the document has been processed');
+    expect((await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html')).text).toContain('There is no translation record for this document - the document is waiting in the queue');
+    await mod.processQueue();
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain(`<span class="ips-check ips-check-in" title="${SCT}|91936005 is in ${VS}ips-allergy-code\nValue set: ${VS}ips-allergy-code">&#10003;</span> <span class="ips-small">ips-allergy-code</span>`);
+    expect(page.text).toContain(`ips-check-unknown" title="Could not be determined - http://loinc.org|odd in ${VS}ips-observation-code: The terminology server gave no result; http://loinc.org|odd in ${FALLBACK}: The terminology server gave no result\nValue set: ${VS}ips-observation-code">?</span> <span class="ips-small">ips-observation-code</span>`);
+    expect(page.text).not.toContain('until the document has been processed');
+    // the terminology view's concept rows are unchanged by the extensions
+    expect((page.text.match(/class="btn btn-default ips-copy"/g) || []).length).toBe((before.text.match(/class="btn btn-default ips-copy"/g) || []).length);
+    // only the problems: the allergy (in) goes, the observation (unknown) stays, with its section
+    expect(before.text).not.toContain('name="problems"');
+    expect(page.text).toContain('name="problems" value="1" onchange');
+    const problems = await request(app).get('/ips/demo/Bundle/1?view=terminology&problems=1').set('Accept', 'text/html');
+    expect(problems.text).toContain('name="problems" value="1" checked');
+    expect(problems.text).toContain('Showing 1 of 2 concepts');
+    expect(problems.text).not.toContain('<code>AllergyIntolerance.code</code>');
+    expect(problems.text).not.toContain('>Allergies and Intolerances</th>');
+    expect(problems.text).toContain('<code>Observation.code</code>');
+    expect(problems.text).toContain('>Medication Summary</th>');
+    expect(problems.text).not.toContain('class="ips-section">Composition</th>');
+  });
+
+  // a Condition in the medication section (the second section), with a severity
+  const withCondition = (severity) => {
+    const d = ips();
+    d.entry[0].resource.section[1].entry = [{ reference: 'urn:uuid:cond-1' }];
+    d.entry.push({ fullUrl: 'urn:uuid:cond-1', resource: { resourceType: 'Condition', id: 'cond-1', subject: { reference: 'urn:uuid:pat-1' }, code: { coding: [{ system: SCT, code: 'intl' }] }, severity } });
+    return d;
+  };
+
+  test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('translate: 1 of 2 concepts translated (2 codings added); terminology: 2 in, 1 international only, 0 not in, 0 unknown');
+    // the master is untouched; the analysed copy has the new codings, each saying where it came from
+    expect(row.bundle.entry[4].resource.severity.coding).toHaveLength(1);
+    const sev = row.analysed.entry[4].resource.severity;
+    expect(sev.coding).toEqual([
+      { system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' },
+      { system: SCT, code: '6736007', display: 'Moderate', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: '/tx/r4' }, { url: 'conceptMap', valueCanonical: 'http://example.org/ConceptMap/loinc-sct' }, { url: 'relationship', valueCode: 'equivalent' }] }] },
+      { system: SCT, code: '272141005', display: 'Severities', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: '/tx/r4' }, { url: 'relationship', valueCode: 'source-is-narrower-than-target' }] }] }
+    ]);
+    // the check after translation finds the translated coding
+    expect(checks(row.analysed)['entry[4].resource.severity']).toBe('in');
+    expect(extOf(sev).find(e => e.url === 'coding').valueCoding).toMatchObject({ system: SCT, code: '6736007' });
+    // what was sent: the concept as submitted, the element's value set as the target, the value set as tx-resource
+    const t = calls.filter(c => c.translate);
+    expect(t.map(x => x.target)).toEqual([VS + 'ips-condition-code', VS + 'ips-condition-severity']);
+    expect(t[1].translate).toEqual({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] });
+    expect(t[1].txResources).toEqual([VS + 'ips-condition-severity']);
+    // the condition's code was international only: tried, not translated; the allergy was in: not tried
+    expect(t[0].translate).toEqual({ coding: [{ system: SCT, code: 'intl' }] });
+    expect(calls.filter(c => c.translate && c.translate.coding[0].code === '91936005')).toHaveLength(0);
+    // the page shows the translated codings
+    const page = await request(app).get('/ips/demo/Bundle/1?view=terminology').set('Accept', 'text/html');
+    expect(page.text).toContain('>6736007</a></code> "Moderate" <span class="ips-translated" title="translated by /tx/r4 with http://example.org/ConceptMap/loinc-sct (equivalent)">translated, equivalent</span>');
+    expect(page.text).toContain('>272141005</a></code> "Severities" <span class="ips-translated" title="translated by /tx/r4 (source-is-narrower-than-target)">translated, source-is-narrower-than-target</span>');
+    // the step's record, and the translation view
+    const rec = mod.store.readResult(1, 'translate').result;
+    expect(rec).toMatchObject({ status: 'done', server: '/tx/r4', counts: { tried: 2, translated: 1, codings: 2, failed: 0 } });
+    expect(rec.entries.map(e => [e.path, e.outcome, e.target.split('/').pop(), e.ownValueSet])).toEqual([
+      ['AllergyIntolerance.code', 'not-needed', 'ips-allergy-code', true],
+      ['Condition.code', 'no-translation', 'ips-condition-code', true],
+      ['Condition.severity', 'translated', 'ips-condition-severity', true]
+    ]);
+    expect(rec.entries[1]).toMatchObject({ check: { result: 'international' }, message: 'No ConceptMap is available', added: [] });
+    expect(rec.entries[2].added).toEqual([
+      { coding: { system: SCT, code: '6736007', display: 'Moderate' }, relationship: 'equivalent', conceptMap: 'http://example.org/ConceptMap/loinc-sct' },
+      { coding: { system: SCT, code: '6736007' }, relationship: 'wider', conceptMap: 'http://example.org/ConceptMap/other', present: true },
+      { coding: { system: SCT, code: '272141005', display: 'Severities' }, relationship: 'source-is-narrower-than-target', conceptMap: null }
+    ]);
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=translation">Translation</a></li>');
+    expect(view.text).toContain('<b>1 of 2 concepts translated (2 codings added)</b>');
+    expect(view.text).toContain('<td><code>Condition.severity</code></td><td><ul><li><code>LOINC|LA-mod</code> "Moderate"</li></ul></td><td><span title="http://healthintersections.com.au/fhirsmith/ValueSet/ips-condition-severity">ips-condition-severity</span></td><td><span class="ips-badge" style="background-color: #1e7e34">Translated</span></td><td>2 codings added<ul><li><code>SNOMED CT|6736007</code> "Moderate" <i>equivalent</i> from <code>http://example.org/ConceptMap/loinc-sct</code></li><li><code>SNOMED CT|6736007</code> <i>wider</i> from <code>http://example.org/ConceptMap/other</code> (already in the concept)</li><li><code>SNOMED CT|272141005</code> "Severities" <i>source-is-narrower-than-target</i></li></ul></td></tr>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #6c757d">Not needed</span></td><td>http://snomed.info/sct|91936005 is in http://healthintersections.com.au/fhirsmith/ValueSet/ips-allergy-code</td>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #c82333">No translation</span></td><td>No ConceptMap is available</td>');
+    // the translations are cached: the same document again asks nothing
+    const n = calls.length;
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    await mod.processQueue();
+    expect(calls.length).toBe(n);
+    expect(mod.store.read(2).analysed.entry[4].resource.severity.coding).toHaveLength(3);
+  });
+
+  test('SNOMED CT codes with no version are translated as the edition of the document\'s nation - but checked as they are', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'translate' || s.name === 'terminology');
+    const US = '731000124108';
+    mod.store.createNationalProfile('hl7.fhir.us.pcs', '1.0.0', 'http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs', 'US', US);
+    // a national profile for another nation doesn't count
+    mod.store.createNationalProfile('hl7.fhir.au.ps', '1.0.0', 'http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle', 'AU', '32506021000036107');
+    const d = withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] });
+    d.meta = { profile: ['http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs'] };
+    d.entry[4].resource.stage = [{ type: { coding: [{ system: SCT, version: 'http://snomed.info/sct/900000000000207008', code: 'staged' }, { system: SCT, code: 'other' }] } }];
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const t = calls.filter(c => c.translate);
+    // the condition's code: SNOMED CT with no version - sent as the US edition
+    expect(t.find(c => c.translate.coding[0].code === 'intl').translate).toEqual({ coding: [{ system: SCT, version: `http://snomed.info/sct/${US}`, code: 'intl' }] });
+    // a version that is there stays; other systems are left alone
+    expect(t.find(c => c.translate.coding[0].code === 'staged').translate.coding).toEqual([
+      { system: SCT, version: 'http://snomed.info/sct/900000000000207008', code: 'staged' }, { system: SCT, version: `http://snomed.info/sct/${US}`, code: 'other' }]);
+    expect(t.find(c => c.translate.coding[0].code === 'LA-mod').translate.coding[0].version).toBeUndefined();
+    // the terminology check takes the codes as they are
+    expect(calls.filter(c => !c.translate && c.coding && c.coding.code === 'intl').every(c => c.coding.version === undefined)).toBe(true);
+    // the master and the analysed copy keep the code as it was
+    expect(mod.store.read(1).analysed.entry[4].resource.code.coding[0]).toEqual({ system: SCT, code: 'intl' });
+    const rec = mod.store.readResult(1, 'translate').result;
+    expect(rec.defaultEdition).toEqual({ edition: US, packageId: 'hl7.fhir.us.pcs', version: '1.0.0', jurisdiction: 'US' });
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('SNOMED CT codes with no version were translated as codes of the <span title="http://snomed.info/sct/731000124108">US Edition</span> - the SNOMED CT edition of the national profile <code>hl7.fhir.us.pcs#1.0.0</code>, for US');
+
+    // no nation (or none with an edition): the codes go as they are
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
+    const before = calls.length;
+    mod.txCache = new Map();
+    await mod.processQueue();
+    const t2 = calls.slice(before).filter(c => c.translate);
+    expect(t2.find(c => c.translate.coding[0].code === 'intl').translate).toEqual({ coding: [{ system: SCT, code: 'intl' }] });
+    expect(mod.store.readResult(2, 'translate').result.defaultEdition).toBeUndefined();
+  });
+
+  test('a coding the concept already has: the same system and code, in the same edition', () => {
+    const { hasCoding } = require('../../ips/pipeline');
+    const usCoding = { system: SCT, version: 'http://snomed.info/sct/731000124108', code: '763875007' };
+    const intl = { system: SCT, version: 'http://snomed.info/sct/900000000000207008/version/20250801', code: '763875007' };
+    // the same code in the International Edition is a different coding
+    expect(hasCoding([usCoding], intl)).toBe(false);
+    // the same edition, another release: the same coding
+    expect(hasCoding([{ ...intl, version: 'http://snomed.info/sct/900000000000207008' }], intl)).toBe(true);
+    expect(hasCoding([usCoding], { ...usCoding, version: 'http://snomed.info/sct/731000124108/version/20250901' })).toBe(true);
+    // no version on either side: the same coding
+    expect(hasCoding([{ system: SCT, code: '763875007' }], intl)).toBe(true);
+    expect(hasCoding([usCoding], { system: SCT, code: '763875007' })).toBe(true);
+    // other systems compare versions as they are
+    expect(hasCoding([{ system: 'http://loinc.org', version: '2.81', code: '1-8' }], { system: 'http://loinc.org', version: '2.83', code: '1-8' })).toBe(false);
+    expect(hasCoding([{ system: 'http://loinc.org', code: '1-8' }], { system: 'http://loinc.org', code: '1-9' })).toBe(false);
+  });
+
+  test('a concept with no value set of its own is translated into the fallback, a failed translation is logged, and a resubmitted copy is cleaned', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
+    const logged = [];
+    mod.log = { info() {}, warn: (m) => logged.push(m), error() {}, debug() {} };
+    const d = withCondition({ coding: [{ system: 'http://loinc.org', code: 'boom' }] });
+    d.entry[4].resource.stage = [{ type: { coding: [{ system: 'http://example.org/local', code: 'zz' }] } }];
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    // boom: the check could not say (unknown), so it was not translated; zz: not in, translated into the fallback (nothing came back)
+    expect(row.status_message).toBe('translate: 0 of 2 concepts translated (0 codings added); terminology: 1 in, 1 international only, 1 not in, 1 unknown');
+    expect(calls.filter(c => c.translate).map(c => [c.translate.coding[0].code, c.target])).toEqual([['intl', VS + 'ips-condition-code'], ['zz', FALLBACK]]);
+    expect(logged).toEqual([]);
+    const entries = mod.store.readResult(1, 'translate').result.entries;
+    expect(entries.map(e => [e.path, e.outcome])).toEqual([['AllergyIntolerance.code', 'not-needed'], ['Condition.code', 'no-translation'], ['Condition.severity', 'not-checked'], ['Condition.stage[0].type', 'no-translation']]);
+    expect(entries[3]).toMatchObject({ ownValueSet: false, target: FALLBACK });
+    const view = await request(app).get('/ips/demo/Bundle/1?view=translation').set('Accept', 'text/html');
+    expect(view.text).toContain('>ips-international-codes</span> <small>(fallback)</small></td>');
+    expect(view.text).toContain('<span class="ips-badge" style="background-color: #a35200">Not checked</span></td><td>Could not be determined - ');
+    // a server failure on the translation itself: logged, and the document still processed
+    await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'tboom' }] }));
+    await mod.processQueue();
+    const row2 = mod.store.read(2);
+    expect(row2.status).toBe('processed');
+    expect(row2.status_message).toMatch(/^translate: 0 of 2 concepts translated \(0 codings added\), 1 not translated \(see the log\); terminology/);
+    expect(logged).toEqual(['IPS module: document 2: Condition.severity could not be translated: kaboom']);
+    expect(mod.store.readResult(2, 'translate').result.entries[2]).toMatchObject({ outcome: 'failed', message: 'kaboom' });
+    expect((await request(app).get('/ips/demo/Bundle/2?view=translation').set('Accept', 'text/html')).text).toContain('<span class="ips-badge" style="background-color: #c82333">Failed</span></td><td>kaboom</td>');
+    const { translateConcept } = require('../../ips/pipeline');
+    expect(await translateConcept(mod.tx, mod.valueSets, { coding: [{ system: 'http://loinc.org', code: 'tboom' }] }, VS + 'ips-condition-severity')).toEqual({ matches: [], message: 'kaboom', failed: true });
+    // resubmitting an analysed copy: the translation extensions go, the codings stay
+    const analysed = mod.store.read(1).analysed;
+    analysed.entry[4].resource.stage[0].type.coding.push({ system: SCT, code: '91936005', extension: [{ url: TRANSLATION_EXTENSION, extension: [{ url: 'server', valueUri: 'http://elsewhere' }] }] });
+    await post(app, 'demo', analysed);
+    await mod.processQueue();
+    const row3 = mod.store.read(3);
+    expect(row3.analysed.entry[4].resource.stage[0].type.coding[1]).toEqual({ system: SCT, code: '91936005' });
+  });
+
+  test('a display lookup the server couldn\'t answer is asked again; a definite answer is kept', async () => {
+    let down = true;
+    let asked = 0;
+    app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
+      asked++;
+      res.type('application/fhir+json');
+      if (down) {
+        return res.status(503).send('busy');
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'display', valueString: 'Allergy to penicillin (looked up)' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'narrative');
+    const d = ips();
+    delete d.entry[3].resource.code.text;
+    delete d.entry[3].resource.code.coding[0].display;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(1);
+    expect(mod.store.readResult(1, 'narrative').result.html).not.toContain('(looked up)');
+    down = false;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+    expect(mod.store.readResult(2, 'narrative').result.html).toContain('Allergy to penicillin (looked up)');
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(asked).toBe(2);
+  });
+
+  test('the narrative step generates the narrative into the analysed copy, looking up displays, and the page shows it', async () => {
+    app.get('/tx/r4/CodeSystem/\\$lookup', (req, res) => {
+      calls.push({ lookup: `${req.query.system}|${req.query.code}` });
+      res.type('application/fhir+json');
+      if (req.query.code === '91936005') {
+        return res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'name', valueString: 'SNOMED CT' }, { name: 'display', valueString: 'Allergy to penicillin (looked up)' }] }));
+      }
+      res.status(404).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found' }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'narrative');
+    const d = ips();
+    delete d.entry[3].resource.code.text;
+    delete d.entry[3].resource.code.coding[0].display;
+    await post(app, 'demo', d);
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html');
+    expect(waiting.text).toContain('no generated narrative for this document - the document is waiting in the queue');
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('narrative: 2 sections (1 display lookup)');
+    // the allergy's code was looked up (the Composition's type has a display; the section codes are not shown)
+    expect(calls.map(c => c.lookup).filter(Boolean)).toEqual(['http://snomed.info/sct|91936005']);
+    const r = mod.store.readResult(1, 'narrative').result;
+    expect(r.status).toBe('done');
+    expect(r.html).toContain('<h1>Patient Summary as of 1 March 2026</h1><p class="ips-patient"><b>Jane Alexandra Smith</b>, female, DoB: 06-May 70, ( 1.2.36.146.595.217.0.1: MRN-12345 )</p>');
+    expect(r.html).toContain('<h2>Allergies and Intolerances</h2><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table>');
+    expect(r.html).toContain('<h2>Medication Summary</h2><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p>');
+    expect(r.sections.map(s => s.title)).toEqual(['Allergies and Intolerances', 'Medication Summary']);
+    // written into the analysed copy, not the master
+    expect(row.bundle.entry[0].resource.text.div).toContain('Summary for <b>Jane Smith</b>');
+    expect(row.analysed.entry[0].resource.text).toEqual({ status: 'generated', div: expect.stringContaining('<p class="ips-patient"><b>Jane Alexandra Smith</b>') });
+    expect(row.analysed.entry[0].resource.text.div).not.toContain('<h1>');
+    expect(row.analysed.entry[0].resource.section[0].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><table class="ips-section"><thead><tr><th>Allergy / intolerance</th></tr></thead><tbody><tr><td>Allergy to penicillin (looked up)</td></tr></tbody></table></div>');
+    expect(row.analysed.entry[0].resource.section[1].text.div).toBe('<div xmlns="http://www.w3.org/1999/xhtml"><p class="ips-as-submitted"><i>Narrative as submitted</i></p><p>No known medications</p></div>');
+    // the page
+    const page = await request(app).get('/ips/demo/Bundle/1?view=narrative&narrative=generated').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=narrative&amp;narrative=generated" class="active" title="The narrative this server generates for the document">Generated</a>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="narrative - done: narrative: 2 sections (1 display lookup)" href="/ips/demo/Bundle/1?view=narrative&amp;narrative=generated">');
+    // the old view name still lands on it
+    expect((await request(app).get('/ips/demo/Bundle/1?view=generated').set('Accept', 'text/html')).text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated">');
+    expect(page.text).toContain('with 1 display lookup</p><div class="ips-narrative ips-generated"><div xmlns="http://www.w3.org/1999/xhtml"><h3>Patient Summary as of 1 March 2026</h3>');
+    // the Narrative tab is still the submitted narrative
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).toContain('Summary for <b>Jane Smith</b>');
+    // the same document again: the lookups are remembered
+    const n = calls.length;
+    await post(app, 'demo', d);
+    await mod.processQueue();
+    expect(calls.length).toBe(n);
+    expect(mod.store.read(2).status_message).toBe('narrative: 2 sections');
+  });
+
+  test('without a terminology server or the value sets the step fails', async () => {
+    mod.valueSets = null;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('terminology: The value sets have not been loaded');
+    const other = await makeApp();
+    other.mod.steps = STEPS.filter(s => s.name === 'terminology');
+    other.mod.store.createProject('demo', 'Demo', null);
+    await post(other.app, 'demo', ips());
+    await other.mod.processQueue();
+    expect(other.mod.store.read(1).status_message).toBe('terminology: No terminology server is configured (modules.ips.txServer)');
+    other.mod.shutdown();
+  });
+
+  test('a document being processed is not requeued, and a pipeline only finishes what it is processing', async () => {
+    const { mod: mod2, app: app2 } = await makeApp({});
+    try {
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const row = mod2.store.claimNext();
+      expect(row.id).toBe(1);
+      mod2.store.saveResult(1, 'validation', { ok: true });
+      // mid-pipeline: refused, and nothing is lost
+      expect(mod2.store.requeue(1, 1)).toBe('processing');
+      expect(mod2.store.readResult(1, 'validation')).not.toBeNull();
+      mod2.store.finish(1, true, 'done');
+      expect(mod2.store.read(1).status).toBe('processed');
+      expect(mod2.store.requeue(1, 1)).toBe('queued');
+      expect(mod2.store.requeue(9, 1)).toBeNull();
+      // a pipeline that finishes after its document was requeued leaves it queued
+      mod2.store.finish(1, true, 'stale');
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
+  test('queue runs never overlap, even while the terminology server is being looked for', async () => {
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/slow/r4' });
+    try {
+      // the tx module still loading: an answer that takes a while, and then isn't one
+      let release;
+      app2.get('/slow/r4/metadata', (req, res) => { release = () => res.status(503).send('loading'); });
+      mod2.steps = [];
+      mod2.store.createProject('demo', 'Demo', null);
+      await post(app2, 'demo', ips());
+      const first = mod2.processQueue();
+      await new Promise(r => setTimeout(r, 20));
+      // a second tick while the first waits: nothing, and no second run
+      expect(await mod2.processQueue()).toBe(0);
+      release();
+      // a 503 is "not there yet": the document waits
+      expect(await first).toBe(0);
+      expect(mod2.txMissing).toBe(true);
+      expect(mod2.store.read(1).status).toBe('submitted');
+    } finally {
+      mod2.shutdown();
+    }
+  });
+
+  test('a path that nothing answers at is waited for, then reported, once, and as unknown', async () => {
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
+    const warned = [];
+    const logged = [];
+    mod2.log = { info() {}, warn: (m) => warned.push(m), error: (m) => logged.push(m), debug() {} };
+    mod2.steps = STEPS.filter(s => s.name === 'terminology');
+    mod2.store.createProject('demo', 'Demo', null);
+    await post(app2, 'demo', ips());
+    await post(app2, 'demo', ips());
+    // just started: the tx module may still be loading, so the documents wait
+    expect(await mod2.processQueue()).toBe(0);
+    expect(warned.filter(m => /the terminology server \/nowhere\/r4 on this server is not there \(yet\): nothing answers/.test(m))).toHaveLength(1);
+    // past the grace period, they are processed without it
+    mod2.startedAt -= 10 * 60 * 1000;
+    mod2.txCheckedAt = 0;
+    expect(await mod2.processQueue()).toBe(2);
+    mod2.txCheckedAt = 0;
+    await mod2.processQueue();
+    expect(warned.filter(m => /is not there \(yet\)/.test(m))).toHaveLength(1);
+    expect(logged.filter(m => /still no terminology server at \/nowhere\/r4 on this server \(nothing answers\)/.test(m))).toHaveLength(1);
+    const row = mod2.store.read(1);
+    expect(row.status_message).toBe('terminology: 0 in, 0 international only, 0 not in, 1 unknown');
+    expect(JSON.stringify(row.analysed)).toContain('The terminology server is not configured correctly');
+    expect(JSON.stringify(row.analysed)).not.toContain('/nowhere/r4');
+    mod2.shutdown();
+  });
+});
+
+describe('the AI assessment step', () => {
+  let svc;
+  let app;
+  let mod;
+  beforeAll(async () => { svc = await fakeService(); });
+  afterAll(() => svc.server.close());
+  beforeEach(async () => {
+    svc.calls.length = 0;
+    ({ app, mod } = await makeApp({ sessionSecret: 'the-secret', ai: { provider: 'openai', baseUrl: svc.url + '/v1', model: 'server-model', apiKey: 'server-key', dailyCap: 2, prices: { 'server-model': { input: 2, output: 10 } } } }));
+    mod.steps = STEPS.filter(s => s.name === 'ai');
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const aiView = (id = 1) => request(app).get(`/ips/demo/Bundle/${id}?view=ai`).set('Accept', 'text/html').then(r => r.text);
+
+  test('is off unless the project turns it on, and then uses the server account up to the daily cap', async () => {
+    await post(app, 'demo', ips());
+    expect(await aiView()).toContain('There is no AI assessment for this document - the document is waiting in the queue');
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: not enabled for this project');
+    expect(await aiView()).toContain('The document was not assessed: not enabled for this project.');
+    expect(svc.calls).toHaveLength(0);
+    // the submit page says nothing about AI
+    expect((await request(app).get('/ips/demo/submit')).text).not.toContain('external AI service');
+    // on
+    mod.store.setProjectAi(1, { enabled: true });
+    expect((await request(app).get('/ips/demo/submit')).text).toContain('Documents submitted to this project are sent to an external AI service');
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const row = mod.store.read(2);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('ai: grade A, 0 findings (server-model-2026)');
+    expect(svc.calls).toHaveLength(1);
+    expect(svc.calls[0].auth).toBe('Bearer server-key');
+    expect(svc.calls[0].body.messages[0].content).toContain('International Patient Summary');
+    // the document went without its narratives
+    const sent = svc.calls[0].body.messages[1].content;
+    expect(sent).toContain('"resourceType":"Bundle"');
+    expect(sent).not.toContain('Summary for <b>Jane Smith</b>');
+    expect(svc.calls[0].body.messages[0].content).toContain('narratives have been removed');
+    const r = mod.store.readResult(2, 'ai').result;
+    expect(r).toMatchObject({ status: 'done', provider: 'openai', model: 'server-model-2026', account: 'server', usage: { input: 100, output: 20 }, assessment: { grade: 'A', consistency: [], missing: [], terminology: [] } });
+    // 100 tokens at $2/M + 20 at $10/M (the price list matches the model's prefix)
+    expect(r.cost).toBeCloseTo(0.0004, 8);
+    expect(r.bytesSent).toBeGreaterThan(1000);
+    const page = await aiView(2);
+    expect(page).toContain('<li class="active"><a href="/ips/demo/Bundle/2?view=ai">AI Assessment</a></li>');
+    expect(page).toContain("by server-model-2026 (openai, the server's account), without the narrative");
+    expect(page).toContain('100 tokens in, 20 out ($0.0004)');
+    expect(page).toContain('<span class="ips-badge ips-grade" style="background-color: #1e7e34">Grade A</span> Consistent (');
+    expect(page).toContain('<h3>Consistency and integrity</h3><p><i>No findings</i></p>');
+    expect(page).toContain('<summary class="btn btn-default ips-btn">Show the model&#39;s answer</summary>');
+    // the cap: two a day
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(3).status_message).toMatch(/^ai: grade A/);
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(4).status_message).toBe("ai: the project's daily cap of 2 assessments is spent");
+    expect(svc.calls).toHaveLength(2);
+    // the project's own cap, and the narrative as submitted
+    mod.store.setProjectAi(1, { enabled: true, dailyCap: 3, sendNarrative: true });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(5).status_message).toMatch(/^ai: grade A/);
+    expect(mod.store.aiCallsSince(1, 0)).toBe(3);
+    // the usage, on the settings page
+    expect(mod.store.aiUsage(1, 0)).toEqual({ calls: 3, input: 300, output: 60, cost: expect.closeTo(0.0012, 8), costed: 3 });
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const settings = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(settings.text).toContain('<tr><td>Today</td><td>3</td><td>300</td><td>60</td><td>$0.0012</td></tr>');
+    expect(settings.text).toContain('<tr><td>All time</td><td>3</td><td>300</td><td>60</td><td>$0.0012</td></tr>');
+    const withNarrative = svc.calls[2].body;
+    expect(withNarrative.messages[1].content).toContain('Summary for <b>Jane Smith</b>');
+    expect(withNarrative.messages[0].content).toContain('what does the narrative say that the structured data does not back up');
+    expect(await aiView(5)).toContain(', with the narrative as submitted');
+  });
+
+  test('copes with answers that are not quite JSON, and with a service that fails', async () => {
+    mod.store.setProjectAi(1, { enabled: true, dailyCap: 10 });
+    mod.config.ai.model = 'prose';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: grade C, 3 findings (prose-2026)');
+    const page = await aiView(1);
+    expect(page).toContain('style="background-color: #8a6100">Grade C</span> Some issues</p>');
+    expect(page).toContain('<tr><td><span class="ips-badge" style="background-color: #c82333">high</span></td><td>x</td><td>y</td></tr>');
+    expect(page).toContain('<h4>Missing</h4><ul><li>z</li></ul>');
+    expect(page).toContain('<td><span class="ips-badge" style="background-color: #8a6100">medium</span></td><td>t</td><td><code>http://snomed.info/sct|1</code></td></tr>');
+    mod.config.ai.model = 'bad-json';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(2).status_message).toBe('ai: bad-json-2026 answered, but not with the expected JSON - the answer was cut off at 16384 tokens (modules.ips.ai.maxTokens) (see the AI view)');
+    expect(await aiView(2)).toContain('<p><b>The model did not answer with the expected JSON.</b> Its answer was cut off at the limit of 16,384 tokens - raise <code>modules.ips.ai.maxTokens</code>. Its answer:</p><pre class="ips-json">Sure! Here you go: {&quot;grade&quot;');
+    // a failure: the step fails, the document is in error, and the cap still counts the call
+    mod.config.ai.model = 'boom';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(3)).toMatchObject({ status: 'error', status_message: 'ai: The AI service (openai, boom) answered HTTP 500: kaboom' });
+    expect(mod.store.aiCallsSince(1, 0)).toBe(3);
+    // a failed call has no usage; a service that says what it cost is believed
+    expect(mod.store.aiUsage(1, 0)).toMatchObject({ calls: 3, costed: 0, cost: 0 });
+    mod.config.ai.model = 'router';
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.readResult(4, 'ai').result.cost).toBe(0.0042);
+    expect(mod.store.aiUsage(1, 0)).toMatchObject({ calls: 4, costed: 1, cost: 0.0042 });
+    const { agent: mgr } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await mgr.get('/ips/demo/settings').set('Accept', 'text/html')).text).toContain('<td>$0.0042 <small>(3 calls with no known cost)</small></td>');
+    expect(await aiView(3)).toContain("The ai step failed (the reason is shown to the project's managers).");
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/demo/Bundle/3?view=ai').set('Accept', 'text/html')).text).toContain('The ai step failed: The AI service (openai, boom) answered HTTP 500: kaboom.');
+    // too big to send
+    mod.config.ai.model = 'ok';
+    mod.config.ai.maxBytes = 100;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(5).status_message).toMatch(/^ai: the document is too big to send \(\d+ bytes; the limit is 100\)$/);
+    // no account anywhere
+    delete mod.config.ai;
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(6).status_message).toBe('ai: no AI account: the project has none and the server has no default (modules.ips.ai)');
+  });
+
+  test('a project keeps its own account, through the settings page, with the key encrypted', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const page = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(page.text).toContain('<h3>AI assessment</h3>');
+    expect(page.text).toContain('This server has a default account (server-model)');
+    expect(page.text).toContain('Currently: <b>off</b>, using the server\'s default account</p>');
+    // bad input
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', apiKey: 'sk-own', dailyCap: 'lots' })).status).toBe(400);
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', apiKey: 'sk-own', baseUrl: 'nope' })).status).toBe(400);
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: '', apiKey: 'sk-own' })).status).toBe(400);
+    // the account
+    const saved = await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own', dailyCap: '5', narrative: 'send' });
+    expect(saved.status).toBe(200);
+    expect(saved.text).toContain('The AI assessment settings have been saved');
+    expect(saved.text).toContain("Currently: <b>on</b>, with the project's own account (Anthropic (Messages API), model <code>claude</code>)");
+    expect(saved.text).toContain('leave blank to keep the current key');
+    const stored = mod.store.projectAi(mod.store.projectById(1));
+    expect(stored).toMatchObject({ enabled: true, provider: 'anthropic', model: 'claude', dailyCap: 5, sendNarrative: true });
+    expect(saved.text).toContain('<option value="send" selected>');
+    expect(stored.keyEnc.startsWith('v1:')).toBe(true);
+    expect(JSON.stringify(mod.store.projectById(1))).not.toContain('sk-own');
+    expect(mod.aiAccountFor(mod.store.projectById(1))).toEqual({ account: { provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' }, source: 'project' });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('ai: grade A, 0 findings (claude)');
+    expect(svc.calls[0]).toMatchObject({ shape: 'anthropic', key: 'sk-own' });
+    expect(await aiView(1)).toContain("by claude (anthropic, the project's account)");
+    // a save with no key keeps the key; forgetting it goes back to the server's
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: '', dailyCap: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBe(stored.keyEnc);
+    // the key doesn't follow the account to another host, or another provider: it must be given again
+    const moved = await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: 'https://elsewhere.example.org', model: 'claude', apiKey: '' });
+    expect(moved.text).toContain('The stored API key was removed because the provider or base URL changed');
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    const again = mod.store.projectAi(mod.store.projectById(1)).keyEnc;
+    expect(again).toBeTruthy();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', baseUrl: svc.url, model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    // a trailing slash isn't another host
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url, model: 'claude', apiKey: 'sk-own' });
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', baseUrl: svc.url + '/', model: 'claude', apiKey: '' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeTruthy();
+    expect(mod.store.projectAi(mod.store.projectById(1)).dailyCap).toBeUndefined();
+    await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'anthropic', model: 'claude', clearKey: '1' });
+    expect(mod.store.projectAi(mod.store.projectById(1)).keyEnc).toBeNull();
+    expect(mod.aiAccountFor(mod.store.projectById(1)).source).toBe('server');
+    // a key the server can't read any more: the server's default, with a warning
+    mod.store.setProjectAi(1, { enabled: true, provider: 'openai', model: 'm', keyEnc: 'v1:AAAA:AAAA:AAAA' });
+    const logged = [];
+    mod.log = { info() {}, warn: (m) => logged.push(m), error() {}, debug() {} };
+    expect(mod.aiAccountFor(mod.store.projectById(1)).source).toBe('server');
+    expect(logged[0]).toMatch(/AI key for 'demo' cannot be read/);
+    // without a secret, keys can't be kept
+    mod.aiSecret = null;
+    expect((await form(agent, '/ips/demo/settings', { form: 'ai', enabled: '1', provider: 'openai', model: 'm', apiKey: 'sk-x' })).status).toBe(400);
+    const noSecret = await agent.get('/ips/demo/settings').set('Accept', 'text/html');
+    expect(noSecret.text).toContain('This server cannot keep a key for the project');
+  });
+});
+
+describe('sharing as SHL / VHL', () => {
+  let app;
+  let mod;
+  let calls;
+  const jose = require('jose');
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ shl: { server: '/shl', password: 'shl-secret', days: 7, viewer: 'https://viewer.example.org/#' } }));
+    calls = [];
+    // a fake shl module on this app
+    const entries = new Map();
+    app.use('/shl', express.json({ limit: '5mb' }));
+    app.post('/shl/create', (req, res) => {
+      calls.push({ create: req.body, host: req.get('host') });
+      if (req.body.password !== 'shl-secret') {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const uuid = `u${entries.size + 1}`;
+      entries.set(uuid, { pword: 'p' + uuid, vhl: req.body.vhl, files: [] });
+      res.status(201).json({ uuid, pword: 'p' + uuid, link: `https://${req.get('host')}/shl/access/${uuid}` });
+    });
+    app.post('/shl/upload', (req, res) => {
+      calls.push({ upload: req.body });
+      const e = entries.get(req.body.uuid);
+      if (!e || e.pword !== req.body.pword) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      e.files = req.body.files;
+      res.json({ msg: 'ok' });
+    });
+    app.post('/shl/sign', (req, res) => {
+      calls.push({ sign: req.body });
+      const label = JSON.parse(Buffer.from(req.body.url.replace(/^shlink:\/\//, ''), 'base64url').toString('utf8')).label;
+      if (label.includes('boom')) {
+        return res.status(500).json({ error: 'no certificate' });
+      }
+      res.json({ signature: 'SIGNED(' + req.body.url.length + ')' });
+    });
+    mod.shlEntries = entries;
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
+    await post(app, 'demo', ips());
+    // the buttons are on the source view, under the original / modified switch
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('Share as VHL</button>');
+    expect(page.text).toContain('id="ips-share"');
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('shl');
+    expect(r.body.link).toBe('https://example.org/shl/access/u1');
+    expect(r.body.qr).toMatch(/^<svg /);
+    expect(r.body.bytes).toBeGreaterThan(1000);
+    expect(r.body.text.startsWith('https://viewer.example.org/#shlink:/')).toBe(true);
+    // the shlink payload: the manifest link, the key, the label
+    const payload = JSON.parse(Buffer.from(r.body.text.substring(r.body.text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+    expect(payload).toEqual({ url: 'https://example.org/shl/access/u1', flag: 'U', key: expect.any(String), label: 'Patient Health Document for Jane Alexandra Smith' });
+    // what the server stored decrypts with that key to the document
+    expect(calls[0]).toEqual({ create: { password: 'shl-secret', days: 7, vhl: false }, host: 'example.org' });
+    const stored = mod.shlEntries.get('u1').files;
+    expect(stored).toEqual([{ cnt: expect.any(String), type: 'application/fhir+json' }]);
+    const jwe = Buffer.from(stored[0].cnt, 'base64').toString('utf8');
+    const { plaintext, protectedHeader } = await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'));
+    expect(protectedHeader).toEqual({ alg: 'dir', enc: 'A256GCM', cty: 'application/fhir+json' });
+    expect(JSON.parse(Buffer.from(plaintext).toString('utf8'))).toEqual(mod.store.read(1).bundle);
+    expect(calls.some(c => c.sign)).toBe(false);
+    // the expiry: the configured days
+    expect(new Date(r.body.expires).getTime() - Date.now()).toBeGreaterThan(6.9 * 24 * 60 * 60 * 1000);
+    // without scripts: a page
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'shl' });
+    expect(html.status).toBe(200);
+    expect(html.text).toContain('<h3>Document 1 as an SHL</h3><div class="ips-share-code"><svg ');
+    expect(html.text).toContain('<textarea class="ips-share-text" readonly rows="3">https://viewer.example.org/#shlink:/');
+  });
+
+  test('shares the modified copy of a document, once there is one', async () => {
+    await post(app, 'demo', ips());
+    const form = { kind: 'shl', source: 'modified' };
+    const share = () => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send(form);
+    // not processed: there is no modified copy
+    const none = await share();
+    expect(none.status).toBe(409);
+    expect(none.body.error).toMatch(/has not been processed yet/);
+    const empty = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
+    expect(empty.text).toContain('it has not been processed yet');
+    expect(empty.text).not.toContain('Share as SHL');
+    const modified = structuredClone(mod.store.read(1).bundle);
+    modified.id = 'modified-copy';
+    mod.store.saveAnalysed(1, modified);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=source&amp;source=modified" class="active"');
+    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('&quot;modified-copy&quot;');
+    const r = await share();
+    expect(r.status).toBe(200);
+    expect(r.body.source).toBe('modified');
+    const payload = JSON.parse(Buffer.from(r.body.text.substring(r.body.text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+    const jwe = Buffer.from(mod.shlEntries.get('u1').files[0].cnt, 'base64').toString('utf8');
+    const { plaintext } = await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'));
+    expect(JSON.parse(Buffer.from(plaintext).toString('utf8'))).toEqual(modified);
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'vhl', source: 'modified' });
+    expect(html.text).toContain('<h3>Document 1 (modified) as a VHL</h3>');
+  });
+
+  test('shares a document as a VHL: the link signed by the SHL server, the QR of HC1:', async () => {
+    await post(app, 'demo', ips());
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'vhl' });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('vhl');
+    expect(calls[0].create).toEqual({ password: 'shl-secret', days: 7, vhl: true });
+    const sign = calls.find(c => c.sign).sign;
+    expect(sign.url.startsWith('shlink://')).toBe(true);
+    const vhlPayload = JSON.parse(Buffer.from(sign.url.substring('shlink://'.length), 'base64url').toString('utf8'));
+    expect(vhlPayload.flag).toBeUndefined();
+    expect(vhlPayload.url).toMatch(/^https:\/\/example.org\/shl\/access\//);
+    expect(r.body.text).toBe(`HC1:SIGNED(${sign.url.length})`);
+    expect(r.body.qr).toMatch(/^<svg /);
+    const html = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'text/html').type('form').send({ kind: 'vhl' });
+    expect(html.text).toContain('<h3>Document 1 as a VHL</h3>');
+    expect(html.text).toContain('A Verifiable Health Link, signed as the GDHCN does it');
+  });
+
+  test('reports failures, and refuses cross-site posts and unknown documents', async () => {
+    await post(app, 'demo', ips());
+    mod.shl.password = 'wrong';
+    const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
+    expect(r.status).toBe(502);
+    expect(r.body).toEqual({ error: 'The SHL server answered HTTP 401 to /create' });
+    mod.shl.password = 'shl-secret';
+    // a signing failure
+    const d = ips({ patient: { name: [{ family: 'boom' }] } });
+    await post(app, 'demo', d);
+    const v = await request(app).post('/ips/demo/Bundle/2/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'vhl' });
+    expect(v.status).toBe(502);
+    expect(v.body.error).toBe('The SHL server answered HTTP 500 to /sign');
+    expect((await request(app).post('/ips/demo/Bundle/9/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
+    expect((await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://evil.example').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(403);
+    // not configured: no buttons, and the post is refused
+    const other = await makeApp();
+    other.mod.store.createProject('demo', 'Demo', null);
+    await post(other.app, 'demo', ips());
+    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(other.app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
+    other.mod.shutdown();
+  });
+
+  test('the client checks its configuration', () => {
+    const { ShlClient } = require('../../ips/share');
+    expect(() => new ShlClient({ password: 'x' })).toThrow(/server is required/);
+    expect(() => new ShlClient({ server: '/shl' })).toThrow(/password is required/);
+    expect(() => new ShlClient({ server: 'ftp://x', password: 'x' })).toThrow(/http\(s\) URL or a path/);
+    expect(() => new ShlClient({ server: '/shl', password: 'x' })).toThrow(/needs the app/);
+    const c = new ShlClient({ server: 'https://x.org/shl/', password: 'x' });
+    expect(c.url).toBe('https://x.org/shl');
+    expect(c.internal).toBe(false);
+    expect(c.days).toBe(100);
+  });
+});
+
+describe('the editor', () => {
+  let app;
+  let mod;
+  const minimal = () => ({
+    patient: { family: 'Doe', given: 'Jo', gender: 'male', birthDate: '1980-01-01' }, document: { author: 'Dr A' },
+    sections: { problems: { mode: 'data', rows: [{ code: { system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension' }, clinicalStatus: 'active' }] }, allergies: { mode: 'empty', emptyReason: 'nilknown' }, medications: { mode: 'narrative', narrative: 'none' } }
+  });
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    // a terminology server that is there, and expands with a filter
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    app.post('/tx/r4/ValueSet/\\$expand', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const filter = p.parameter.find(x => x.name === 'filter')?.valueString || '';
+      const vs = p.parameter.find(x => x.name === 'valueSet')?.resource?.url;
+      res.type('application/fhir+json');
+      if (filter === 'boom') {
+        return res.status(500).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'exception', details: { text: 'kaboom' } }] }));
+      }
+      if (filter === 'zzzz') {
+        return res.send(JSON.stringify({ resourceType: 'ValueSet', url: vs, expansion: { total: 0 } }));
+      }
+      res.send(JSON.stringify({ resourceType: 'ValueSet', url: vs, expansion: { contains: [{ system: 'http://snomed.info/sct', code: '38341003', display: `Hypertension (${filter})` }, { system: 'http://snomed.info/sct', code: '1' }] } }));
+    });
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const compose = (body, accept = 'application/json') => request(app).post('/ips/demo/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', accept).send(body);
+
+  test('compose lists the document creators; the general editor page carries the schema and the scripts', async () => {
+    const choice = await request(app).get('/ips/demo/compose').set('Accept', 'text/html');
+    expect(choice.status).toBe(200);
+    expect(choice.text).toContain('<h3>Compose a document</h3>');
+    expect(choice.text).toContain('<a class="btn btn-primary" href="/ips/demo/compose/general">General IPS editor</a>');
+    expect(choice.text).toContain('<a class="btn btn-primary" href="/ips/demo/compose/patient">Patient IPS editor</a>');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/compose">Compose a document</a>');
+    const page = await request(app).get('/ips/demo/compose/general').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>General IPS editor</h3>');
+    expect(page.text).toContain('<div id="ips-editor"></div>');
+    // with its version, so a changed script isn't taken from a browser's cache
+    expect(page.text).toMatch(/<script src="\/ips\/editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
+    expect(page.text).toMatch(/<script src="\/ips\/doc-actions\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
+    expect(page.text).toContain('"urls":{"build":"/ips/compose/build","model":"/ips/compose/model","lookup":"/ips/compose/lookup","back":"/ips/demo"}');
+    expect(page.text).toContain('"key":"problems"');
+    expect(page.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
+    expect(page.text).toContain('"model":null');
+    // the test patients: documents to load
+    expect(page.text).toMatch(/"testPatients":\[\{"key":"1-retired-man","name":"Retired man","url":"\/ips\/assets\/test-patients\/1-retired-man\.json\?v=[A-Za-z0-9_-]{12}"\}/);
+    const script = await request(app).get('/ips/editor.js');
+    expect(script.status).toBe(200);
+    expect(script.text).toContain('window.IPS_EDITOR');
+    expect((await request(app).get('/ips/doc-actions.js')).text).toContain('window.IpsDocActions');
+    // without a project: the user picks the project to submit to
+    const free = await request(app).get('/ips/compose/general').set('Accept', 'text/html');
+    expect(free.status).toBe(200);
+    expect(free.text).toContain('"project":null,"projects":[{"code":"demo","name":"Demo","needsToken":false}]');
+    expect((await request(app).get('/ips/compose').set('Accept', 'text/html')).text).toContain('<a class="btn btn-primary" href="/ips/compose/patient">Patient IPS editor</a>');
+    // without a terminology server: no lookups
+    const other = await makeApp();
+    other.mod.store.createProject('demo', 'Demo', null);
+    expect((await request(other.app).get('/ips/demo/compose/general').set('Accept', 'text/html')).text).toContain('"lookup":null');
+    expect((await request(other.app).get('/ips/demo/lookup?vs=ips-condition-code&q=hyp')).status).toBe(503);
+    expect((await request(other.app).get('/ips/compose/lookup?vs=ips-condition-code&q=hyp')).status).toBe(503);
+    other.mod.shutdown();
+  });
+
+  test('looks codes up in our value sets', async () => {
+    const r = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ matches: [{ system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension (hyper)' }, { system: 'http://snomed.info/sct', code: '1', display: '1' }] });
+    expect((await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=h')).body).toEqual({ matches: [] });
+    expect((await request(app).get('/ips/demo/lookup?vs=nonsense&q=hyper')).status).toBe(400);
+    // nothing at the path: the page says so, and lookups answer 503 with the reason
+    const { app: app2, mod: mod2 } = await makeApp({ txServer: '/nowhere/r4' });
+    try {
+      mod2.store.createProject('demo', 'Demo', null);
+      const none = await request(app2).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+      expect(none.status).toBe(503);
+      expect(none.body.error).toBe('Nothing answers at the terminology server /nowhere/r4 on this server yet (modules.ips.txServer)');
+      // and when it arrives (the tx module loads after this one), lookups work
+      app2.get('/nowhere/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+      app2.post('/nowhere/r4/ValueSet/\\$expand', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'ValueSet', expansion: { contains: [{ system: 'http://snomed.info/sct', code: '1', display: 'One' }] } })));
+      mod2.txCheckedAt = 0;
+      const later = await request(app2).get('/ips/demo/lookup?vs=ips-condition-code&q=hyper');
+      expect(later.status).toBe(200);
+      expect(later.body.matches).toEqual([{ system: 'http://snomed.info/sct', code: '1', display: 'One' }]);
+    } finally {
+      mod2.shutdown();
+    }
+    expect((await request(app).get('/ips/demo/lookup?vs=../x&q=hyper')).status).toBe(400);
+    // nothing matches: an empty expansion, not a failure
+    const nothing = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=zzzz');
+    expect(nothing.status).toBe(200);
+    expect(nothing.body).toEqual({ matches: [] });
+    const boom = await request(app).get('/ips/demo/lookup?vs=ips-condition-code&q=boom');
+    expect(boom.status).toBe(502);
+    expect(boom.body.error).toBe('The terminology server could not look that up (HTTP 500: kaboom)');
+  });
+
+  test('submits a composed document into the project, or hands it back', async () => {
+    const r = await compose({ action: 'submit', model: minimal() });
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: 1, url: '/ips/demo/Bundle/1' });
+    const row = mod.store.read(1);
+    expect(row.source).toBe('editor');
+    expect(row.patient_name).toBe('Jo Doe');
+    expect(row.bundle.entry[0].resource.section).toHaveLength(3);
+    expect(mod.store.statusCounts()).toEqual({ submitted: 1 });
+    // download: the document, not stored
+    const d = await compose({ action: 'download', model: minimal() }, 'application/fhir+json');
+    expect(d.status).toBe(200);
+    expect(d.headers['content-disposition']).toBe('attachment; filename="ips.json"');
+    expect(d.body.resourceType).toBe('Bundle');
+    expect(mod.store.statusCounts()).toEqual({ submitted: 1 });
+    // problems come back as a list
+    const bad = await compose({ action: 'submit', model: { patient: {}, document: {}, sections: {} } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems).toContain('The patient needs a family name');
+    expect((await compose({ action: 'submit' })).body.problems).toEqual(['The model must be an object']);
+    // the token, when the project has one
+    mod.store.setProjectToken(1, 'tok');
+    expect((await compose({ action: 'submit', model: minimal() })).status).toBe(401);
+    expect((await compose({ action: 'submit', model: minimal(), token: 'tok' })).status).toBe(201);
+    expect((await compose({ action: 'download', model: minimal() }, 'application/fhir+json')).status).toBe(200);
+    expect((await request(app).get('/ips/demo/compose/general').set('Accept', 'text/html')).text).toContain('"needsToken":true');
+    // cross-site: refused
+    expect((await request(app).post('/ips/demo/compose').set('Origin', 'http://evil.example').set('Host', 'example.org').send({ action: 'submit', model: minimal() })).status).toBe(403);
+  });
+
+  test('edits an existing document: the page starts from it', async () => {
+    await compose({ action: 'submit', model: minimal() });
+    const doc = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(doc.text).toContain('<form method="get" action="/ips/demo/compose/general" class="ips-inline"><input type="hidden" name="from" value="1"/><button type="submit" class="btn btn-default" title="Open this document in the editor; submitting makes a new document">Edit</button></form>');
+    // the old address of the editor goes to the general editor
+    const old = await request(app).get('/ips/demo/compose?from=1').set('Accept', 'text/html');
+    expect(old.status).toBe(302);
+    expect(old.headers.location).toBe('/ips/demo/compose/general?from=1');
+    const page = await request(app).get('/ips/demo/compose/general?from=1').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>Edit document 1</h3>');
+    expect(page.text).toContain('"model":{"patient":{"family":"Doe","given":"Jo","gender":"male","birthDate":"1980-01-01"}');
+    expect(page.text).toContain('"medications":{"mode":"narrative","narrative":"none"}');
+    expect((await request(app).get('/ips/demo/compose/general?from=9').set('Accept', 'text/html')).status).toBe(404);
+    expect((await request(app).get('/ips/demo/compose/general?from=x').set('Accept', 'text/html')).status).toBe(200);
+  });
+});
+
+describe('the document creators: building, checking, loading, sharing and submitting', () => {
+  let app;
+  let mod;
+  const fs = require('fs');
+  const path = require('path');
+  const TP_DIR = path.join(__dirname, '../../ips/patient-editor/test-patients');
+  const testPatient = (name) => JSON.parse(fs.readFileSync(path.join(TP_DIR, name), 'utf8'));
+  const model = (meds = { mode: 'empty', emptyReason: 'nilknown' }) => ({
+    patient: { family: 'Doe', given: 'Jo', gender: 'male', birthDate: '1980-01-01' }, document: { author: 'Dr A' },
+    sections: { problems: { mode: 'data', rows: [{ code: { system: 'http://snomed.info/sct', code: '38341003', display: 'Hypertension' }, clinicalStatus: 'active' }] }, allergies: { mode: 'empty', emptyReason: 'nilknown' }, medications: meds }
+  });
+  const call = (url, body, origin = 'http://example.org') => request(app).post(url).set('Origin', origin).set('Host', 'example.org').set('Accept', 'application/json').send(body);
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('the general editor builds the document as it goes, and says what stops it being a minimal IPS', async () => {
+    const ok = await call('/ips/compose/build', { model: model() });
+    expect(ok.status).toBe(200);
+    expect(ok.body.problems).toEqual([]);
+    expect(ok.body.bundle.resourceType).toBe('Bundle');
+    // a narrative alone doesn't make the medications section
+    const narrative = await call('/ips/compose/build', { model: model({ mode: 'narrative', narrative: 'none' }) });
+    expect(narrative.body.bundle).toBeTruthy();
+    expect(narrative.body.problems).toEqual(["The medications section has no entries, and doesn't say why it is empty"]);
+    const empty = await call('/ips/compose/build', { model: { patient: {}, document: {}, sections: {} } });
+    expect(empty.body.bundle).toBeNull();
+    expect(empty.body.problems).toContain('The patient needs a family name');
+    expect((await call('/ips/compose/build', { model: model() }, 'http://evil.example')).status).toBe(403);
+  });
+
+  test('checks a document: a document Bundle, and a minimal IPS', async () => {
+    const bundle = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    expect((await call('/ips/compose/check', { bundle })).body).toEqual({ problems: [] });
+    expect((await call('/ips/compose/check', {})).body).toEqual({ problems: ['There is no document'] });
+    expect((await call('/ips/compose/check', { bundle: { resourceType: 'Patient' } })).body.problems).toEqual(['The resource must be a Bundle, not Patient']);
+    const comp = bundle.entry[0].resource;
+    const changed = JSON.parse(JSON.stringify(bundle));
+    changed.entry[0].resource = { ...comp, type: { coding: [{ system: 'http://loinc.org', code: '34133-9' }] }, section: comp.section.filter(x => x.code.coding[0].code !== '10160-0') };
+    expect((await call('/ips/compose/check', { bundle: changed })).body.problems).toEqual([
+      "The Composition's type must be the IPS code (LOINC 60591-5, Patient summary Document)",
+      'The document has no medications section (LOINC 10160-0); the IPS requires one'
+    ]);
+  });
+
+  test('loads a document into the general editor', async () => {
+    const bundle = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    const r = await call('/ips/compose/model', { bundle });
+    expect(r.status).toBe(200);
+    expect(r.body.model.patient).toMatchObject({ family: 'Doe', given: 'Jo' });
+    expect((await call('/ips/compose/model', { bundle: { resourceType: 'Bundle', type: 'collection' } })).status).toBe(400);
+  });
+
+  test("the test patients are minimal IPS documents: the general editor's (a GP's summaries, which it loads exactly) and the patient editor's", async () => {
+    const GENERAL = path.join(__dirname, '../../ips/general-editor/test-patients');
+    const { PATIENTS } = require('../../ips/general-editor/make-test-patients');
+    const files = fs.readdirSync(GENERAL).filter(f => f.endsWith('.json'));
+    expect(files).toHaveLength(5);
+    for (const f of files) {
+      const bundle = JSON.parse(fs.readFileSync(path.join(GENERAL, f), 'utf8'));
+      expect({ f, problems: (await call('/ips/compose/check', { bundle })).body.problems }).toEqual({ f, problems: [] });
+      // the editor reads back the model it was made from
+      const model = (await call('/ips/compose/model', { bundle })).body.model;
+      const source = PATIENTS.find(p => `${p.file}.json` === f).model;
+      expect(model.patient).toMatchObject({ family: source.patient.family, birthDate: source.patient.birthDate });
+      for (const [key, section] of Object.entries(source.sections)) {
+        expect({ f, key, rows: (model.sections[key].rows || []).length }).toEqual({ f, key, rows: (section.rows || []).length });
+      }
+      // functional status in ICF
+      const functional = bundle.entry.map(e => e.resource).filter(r => r.resourceType === 'Condition' && r.code?.coding?.[0]?.system === 'http://hl7.org/fhir/sid/icf');
+      expect(functional.length).toBeGreaterThan(3);
+      expect(functional[0].code.coding[0].version).toBe('2017a');
+    }
+    for (const f of fs.readdirSync(TP_DIR).filter(x => x.endsWith('.json'))) {
+      expect({ f, problems: (await call('/ips/compose/check', { bundle: testPatient(f) })).body.problems }).toEqual({ f, problems: [] });
+    }
+  });
+
+  test('submits a document from an editor to the project named, with its token', async () => {
+    const bundle = testPatient('2-new-mother.json');
+    expect((await call('/ips/compose/submit', { bundle })).status).toBe(404);
+    expect((await call('/ips/compose/submit', { bundle, project: 'nope' })).body.error).toBe("There is no project 'nope'");
+    const r = await call('/ips/compose/submit', { bundle, project: 'demo', editor: 'patient' });
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: 1, url: '/ips/demo/Bundle/1' });
+    expect(mod.store.read(1).source).toBe('patient-editor');
+    const general = (await call('/ips/compose/build', { model: model() })).body.bundle;
+    expect((await call('/ips/compose/submit', { bundle: general, project: 'demo', editor: 'general' })).status).toBe(201);
+    expect(mod.store.read(2).source).toBe('editor');
+    // not a minimal IPS: refused, with the problems
+    const noMeds = JSON.parse(JSON.stringify(general));
+    noMeds.entry[0].resource.section = noMeds.entry[0].resource.section.filter(x => x.code.coding[0].code !== '10160-0');
+    const bad = await call('/ips/compose/submit', { bundle: noMeds, project: 'demo' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.problems).toEqual(['The document has no medications section (LOINC 10160-0); the IPS requires one']);
+    mod.store.setProjectToken(1, 'tok');
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo' })).status).toBe(401);
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' })).status).toBe(201);
+    const page = (await request(app).get('/ips/compose/general').set('Accept', 'text/html')).text;
+    expect(page).toContain('"projects":[{"code":"demo","name":"Demo","needsToken":true}]');
+    expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' }, 'http://evil.example')).status).toBe(403);
+  });
+
+  test('sharing needs the SHL server to be configured', async () => {
+    const r = await call('/ips/compose/share', { bundle: testPatient('1-retired-man.json'), kind: 'shl' });
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('Sharing is not configured on this server (modules.ips.shl)');
+  });
+
+  test('the patient editor: its page, and the files it needs, served by the module', async () => {
+    const page = await request(app).get('/ips/compose/patient').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<h3>Patient IPS editor</h3>');
+    expect(page.text).toContain('<form id="form" method="POST" onsubmit="event.preventDefault(); scheduleGenerate(0);">');
+    expect(page.text).not.toContain('Generate Document');
+    expect(page.text).toContain('window.PATIENT_EDITOR = {"assets":"/ips/assets/patient-editor","actions":{"editor":"patient","project":null,');
+    expect(page.text).toContain('<a href="/ips/view">SHL viewer</a>');
+    expect(page.text).toContain('url("/ips/assets/patient-editor/images/ui-anim_basic_16x16.gif")');
+    expect(page.text).not.toContain('{{');
+    // the scripts it loads: its own, and the libraries, all from this server
+    const srcs = [...page.text.matchAll(/<script src="([^"]+)"/g)].map(m => m[1]).filter(u => u.startsWith('/ips/'));
+    expect(srcs.length).toBe(10);
+    expect(page.text).not.toMatch(/<script src="https?:/);
+    for (const u of srcs) {
+      const r = await request(app).get(u.replace(/&amp;/g, '&'));
+      expect({ u, status: r.status }).toEqual({ u, status: 200 });
+    }
+    const js = await request(app).get('/ips/assets/patient-editor/js/passport.js');
+    expect(js.headers['content-type']).toMatch(/^application\/javascript/);
+    expect(js.headers.etag).toBeTruthy();
+    expect((await request(app).get('/ips/assets/patient-editor/js/passport.js').set('If-None-Match', js.headers.etag)).status).toBe(304);
+    expect((await request(app).get('/ips/assets/patient-editor/i18n/en.json')).body.actions.testPatient5).toBe('Young woman');
+    expect((await request(app).get('/ips/assets/patient-editor/images/health-intersections.png')).headers['content-type']).toBe('image/png');
+    // only the files in the list
+    expect((await request(app).get('/ips/assets/patient-editor/page.html')).status).toBe(404);
+    expect((await request(app).get('/ips/assets/patient-editor/../ips.js')).status).toBe(404);
+    expect((await request(app).get('/ips/assets/nothing.js')).status).toBe(404);
+    // for a project: submits to it
+    const forProject = await request(app).get('/ips/demo/compose/patient').set('Accept', 'text/html');
+    expect(forProject.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
+  });
+});
+
+describe('the document creators: sharing', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ shl: { server: '/shl', password: 'shl-secret', days: 7 } }));
+    app.use('/shl', express.json({ limit: '5mb' }));
+    app.post('/shl/create', (req, res) => res.status(201).json({ uuid: 'u1', pword: 'pu1', link: `https://${req.get('host')}/shl/access/u1`, days: req.body.days }));
+    app.post('/shl/upload', (req, res) => res.json({ msg: 'ok' }));
+    app.post('/shl/sign', (req, res) => res.json({ signature: 'SIGNED' }));
+  });
+  afterEach(() => mod.shutdown());
+
+  test('shares a document from an editor: an SHL that opens in this server\'s viewer, or a VHL', async () => {
+    const fs = require('fs');
+    const path = require('path');
+    const bundle = JSON.parse(fs.readFileSync(path.join(__dirname, '../../ips/patient-editor/test-patients/1-retired-man.json'), 'utf8'));
+    const send = (body) => request(app).post('/ips/compose/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').send(body);
+    const r = await send({ bundle, kind: 'shl', days: 3 });
+    expect(r.status).toBe(200);
+    expect(r.body.kind).toBe('shl');
+    expect(r.body.qr).toMatch(/^<svg /);
+    expect(r.body.text.startsWith('http://example.org/ips/view#shlink:/')).toBe(true);
+    expect(Date.parse(r.body.expires) - Date.now()).toBeLessThan(3 * 24 * 60 * 60 * 1000 + 60000);
+    const v = await send({ bundle, kind: 'vhl' });
+    expect(v.status).toBe(200);
+    expect(v.body.text).toBe('HC1:SIGNED');
+    // not a minimal IPS: not shared
+    const bad = await send({ bundle: { ...bundle, entry: [bundle.entry[0]] }, kind: 'shl' });
+    expect(bad.status).toBe(400);
+  });
+});
+
+describe('national profiles', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+  });
+  afterEach(() => mod.shutdown());
+
+  const AU = { jurisdiction: 'AU', packageId: 'hl7.fhir.au.ips', version: '1.0.0', url: 'http://hl7.org.au/fhir/ips/StructureDefinition/au-ips-bundle' };
+
+  test('the administrator adds, edits and deletes them', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await agent.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('There are no national profiles yet');
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(302);
+    const [np] = mod.store.nationalProfiles();
+    expect(np).toMatchObject(AU);
+
+    // the same package and version again
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(409);
+    // what's wrong with the details
+    expect((await form(agent, '/ips/national-profiles', { ...AU, packageId: 'Not A Package' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, packageId: 'nodots' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, version: '' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, version: '1.0 beta' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, url: 'not a url' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, url: 'ftp://example.org/x' })).status).toBe(400);
+    // the jurisdiction: an ISO 3166 country code, or a UN M49 region - not a user-assigned code, nor a country's numeric code
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: '' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'XX' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'AUS' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: '036' })).status).toBe(400);
+    expect((await form(agent, '/ips/national-profiles', { ...AU, jurisdiction: 'Australia' })).status).toBe(400);
+
+    const page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain(`action="/ips/national-profiles/${np.id}"`);
+    expect(page.text).toContain('value="hl7.fhir.au.ips"');
+    expect(page.text).toContain('name="jurisdiction"');
+    expect(page.text).toContain('value="AU"/><span class="ips-small">Australia</span>');
+    expect((await agent.get('/ips').set('Accept', 'text/html')).text).toContain('<a href="/ips/national-profiles">National profiles</a>');
+
+    // edit: a new version, for a region (Australia and New Zealand); a country code is taken in lower case too
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, version: '1.1.0', jurisdiction: '053' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id)).toMatchObject({ ...AU, version: '1.1.0', jurisdiction: '053' });
+    expect((await agent.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('<span class="ips-small">Australia and New Zealand</span>');
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, version: '1.1.0', jurisdiction: 'nz' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).jurisdiction).toBe('NZ');
+    // an edit that would make a duplicate
+    expect((await form(agent, '/ips/national-profiles', AU)).status).toBe(302);
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, AU)).status).toBe(409);
+    expect((await form(agent, '/ips/national-profiles/99999', { ...AU, version: '2.0.0' })).status).toBe(404);
+
+    expect((await form(agent, `/ips/national-profiles/${np.id}/delete`)).status).toBe(302);
+    expect(mod.store.nationalProfiles().map(x => x.version)).toEqual(['1.0.0']);
+  });
+
+  test('a national profile can say which SNOMED CT edition its IG takes for granted - or none', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    // none: the select's empty option
+    expect((await form(agent, '/ips/national-profiles', { ...AU, snomedEdition: '' })).status).toBe(302);
+    const [np] = mod.store.nationalProfiles();
+    expect(np.snomedEdition).toBeNull();
+    let page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<th>SNOMED CT Edition</th>');
+    expect(page.text).toContain(`<select form="np-${np.id}" name="snomedEdition"`);
+    expect(page.text).toContain('<option value="" selected>(none)</option>');
+    expect(page.text).toContain('<option value="32506021000036107">Australian Edition (with drug extension)</option>');
+    // an edition, by its module id
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: '32506021000036107' })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).snomedEdition).toBe('32506021000036107');
+    page = await agent.get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<option value="32506021000036107" selected>Australian Edition (with drug extension)</option>');
+    expect((await request(app).get('/ips/national-profiles').set('Accept', 'application/json')).body).toEqual([{ ...AU, snomedEdition: '32506021000036107' }]);
+    const anon = await request(app).get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(anon.text).toContain('<td><span title="http://snomed.info/sct/32506021000036107">Australian Edition (with drug extension)</span></td>');
+    // not one of the editions offered
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: '31000003106' })).status).toBe(400);
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU, snomedEdition: 'AU' })).status).toBe(400);
+    // and back to none
+    expect((await form(agent, `/ips/national-profiles/${np.id}`, { ...AU })).status).toBe(302);
+    expect(mod.store.nationalProfile(np.id).snomedEdition).toBeNull();
+  });
+
+  test('a database made before the SNOMED CT edition was asked for gets the column', () => {
+    const before = mod.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'national_profiles'").get().sql.replace(/\n\s*snomed_edition TEXT,[^\n]*/, '');
+    expect(before).not.toContain('snomed_edition');
+    mod.store.db.exec('DROP TABLE national_profiles');
+    mod.store.db.exec(before);
+    mod.store.db.prepare("INSERT INTO national_profiles (package_id, version, url, jurisdiction, updated_ms) VALUES ('hl7.fhir.au.ips', '1.0.0', 'http://x/y', 'AU', 1)").run();
+    mod.store.migrate();
+    expect(mod.store.nationalProfiles()).toMatchObject([{ packageId: 'hl7.fhir.au.ips', snomedEdition: null }]);
+    mod.store.createNationalProfile('hl7.fhir.nz.ips', '1.0.0', 'http://x/z', 'NZ', '21000210109');
+    expect(mod.store.nationalProfileByPackage('hl7.fhir.nz.ips', '1.0.0').snomedEdition).toBe('21000210109');
+  });
+
+  test('everyone can see them, only the administrator can change them', async () => {
+    mod.store.createNationalProfile(AU.packageId, AU.version, AU.url, AU.jurisdiction);
+    const page = await request(app).get('/ips/national-profiles').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<td><code>AU</code> Australia</td><td><code>hl7.fhir.au.ips</code>');
+    expect(page.text).not.toContain('<form');
+    expect((await request(app).get('/ips/national-profiles').set('Accept', 'application/json')).body).toEqual([AU]);
+
+    // not logged in: off to the login page; a manager: refused
+    const anon = request.agent(app);
+    expect((await form(anon, '/ips/national-profiles', { ...AU, version: '2.0.0' })).status).toBe(302);
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    await form(agent, '/ips/admin/users', { login: 'mgr', name: 'Manager', password: 'password1' });
+    const mgr = (await loginAs(app, 'mgr', 'password1')).agent;
+    expect((await mgr.get('/ips/national-profiles').set('Accept', 'text/html')).text).toContain('Only the administrator can change them');
+    expect((await form(mgr, '/ips/national-profiles', { ...AU, version: '2.0.0' })).status).toBe(403);
+    const id = mod.store.nationalProfiles()[0].id;
+    expect((await form(mgr, `/ips/national-profiles/${id}/delete`)).status).toBe(403);
+    expect(mod.store.nationalProfiles()).toHaveLength(1);
+  });
+
+  test('national-profiles is not a project code', async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    expect((await form(agent, '/ips/admin/projects', { code: 'national-profiles', name: 'X' })).status).toBe(400);
+  });
+});
+
+describe('clinical profiles', () => {
+  let app;
+  let mod;
+  const L = 'http://loinc.org';
+  const S = 'http://snomed.info/sct';
+  const rule = `Bundle.section('${L}', '11450-4', 1, '*').entry('${S}', '38341003').exists()`;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    app.post('/tx/r4/ValueSet/\\$expand', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const vs = p.parameter.find(x => x.name === 'valueSet').resource;
+      const filter = p.parameter.find(x => x.name === 'filter').valueString;
+      res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'ValueSet', expansion: { contains: [{ system: vs.compose.include[0].system, code: '123', display: `Thing (${filter})` }] } }));
+    });
+  });
+  afterEach(() => mod.shutdown());
+
+  // the administrator, and the token the editor sends
+  const asAdmin = async () => {
+    const { agent } = await loginAs(app, 'admin', 'admin-secret');
+    const page = await agent.get('/ips/StructureDefinition/new').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    const csrf = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]).csrf;
+    const send = (url, body) => agent.post(url).set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').send({ ...body, _csrf: csrf });
+    return { agent, send };
+  };
+
+  test('the administrator makes, edits, downloads, uploads and deletes them; everyone can read them', async () => {
+    const { agent, send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'Cardiology referral', constraints: [{ human: 'A problem list with hypertension', expression: rule }, { human: 'At least two sections', expression: 'Bundle.entry.count() >= 2' },
+      { human: 'Hypertension is active', expression: `Bundle.resources('${S}', '38341003', 'Condition').all(clinicalStatus.coding.code = 'active')` }] });
+    expect(made.status).toBe(201);
+    expect(made.body.url).toMatch(/^\/ips\/StructureDefinition\/profile-[a-f0-9]{12}$/);
+    const id = made.body.id;
+    // as FHIR, to anyone
+    const sd = (await request(app).get(`/ips/StructureDefinition/${id}`).set('Host', 'example.org')).body;
+    expect(sd).toMatchObject({ resourceType: 'StructureDefinition', id, url: `http://example.org/ips/StructureDefinition/${id}`, name: 'CardiologyReferral', title: 'Cardiology referral' });
+    expect(sd.differential.element[0].constraint.map(c => [c.key, c.severity, c.human])).toEqual([['cp-1', 'error', 'A problem list with hypertension'], ['cp-2', 'error', 'At least two sections'], ['cp-3', 'error', 'Hypertension is active']]);
+    const list = (await request(app).get('/ips/StructureDefinition')).body;
+    expect(list).toMatchObject({ resourceType: 'Bundle', type: 'searchset', total: 1 });
+    const dl = await request(app).get(`/ips/StructureDefinition/${id}?download=1`);
+    expect(dl.headers['content-disposition']).toBe('attachment; filename="CardiologyReferral.json"');
+    // the pages: the rule as words for a shaped one, the expression for the other; no editing for a visitor
+    const page = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
+    expect(page.text).toContain('<td>A problem list with hypertension</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> [1..*]</td><td>Code is <b>SNOMED CT|38341003</b></td></tr>');
+    expect(page.text).toContain('<th style="width: 40%">Expectation</th><th>Section</th><th>Entry</th></tr>');
+    expect(page.text).toContain('<code>Bundle.entry.count() &gt;= 2</code>');
+    expect(page.text).toContain('<td>Hypertension is active</td><td>Conditions where Code is <b>SNOMED CT|38341003</b></td><td><code>.all(clinicalStatus.coding.code = &#39;active&#39;)</code></td></tr>');
+    expect(page.text).toContain('<th style="width: 40%">Expectation</th><th>Resource Set</th><th>Rule</th></tr>');
+    // in three parts, in order
+    const parts = ['Required sections and entries', 'Rules about resources', 'Other rules'].map(t => page.text.indexOf(`<h4>${t}</h4>`));
+    expect(parts.every(i => i > 0) && parts[0] < parts[1] && parts[1] < parts[2]).toBe(true);
+    expect(page.text).not.toContain('/edit');
+    expect(page.text).not.toContain('cp-1');
+    const home = await request(app).get('/ips').set('Accept', 'text/html');
+    expect(home.text).toContain('<a href="/ips/StructureDefinition">Clinical profiles</a>');
+    const listPage = await request(app).get('/ips/StructureDefinition').set('Accept', 'text/html');
+    expect(listPage.text).toContain('Cardiology referral');
+    expect(listPage.text).not.toContain('New profile');
+    // the administrator's editor gets the shapes
+    const editor = await agent.get(`/ips/StructureDefinition/${id}/edit`).set('Accept', 'text/html');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: '*' }, entry: { system: S, code: '38341003', min: null, max: null } } });
+    expect(cfg.profile.constraints[1].shape).toBeNull();
+    expect(cfg.profile.constraints[1].rshape).toBeNull();
+    expect(cfg.profile.constraints[2].rshape).toEqual({ type: 'Condition', system: S, code: '38341003', rest: ".all(clinicalStatus.coding.code = 'active')" });
+    expect(cfg.parts.map(p => p[0])).toEqual(['section', 'resource', 'other']);
+    expect(cfg.resourceTypes).toContain('Condition');
+    expect(cfg.sections[0]).toEqual({ code: '11450-4', title: 'Problem List' });
+    expect(cfg.urls).toEqual({ save: `/ips/StructureDefinition/${id}`, lookup: '/ips/lookup', lookupVs: '/ips/lookup-vs', back: `/ips/StructureDefinition/${id}` });
+    // an edit keeps the url and the kept keys
+    const saved = await send(`/ips/StructureDefinition/${id}`, { title: 'Cardiology referral v2', constraints: [{ key: 'cp-2', human: 'At least two sections', expression: 'Bundle.entry.count() >= 2' }, { human: 'Medications', expression: `Bundle.section('${L}', '10160-0', 1, 1).exists()` }] });
+    expect(saved.status).toBe(200);
+    const after = mod.store.profile(id.substring(8));
+    expect(after.url).toBe(sd.url);
+    expect(after.name).toBe('CardiologyReferralV2');
+    expect(after.differential.element[0].constraint.map(c => c.key)).toEqual(['cp-2', 'cp-4']);
+    // problems come back, and nothing changes
+    const bad = await send(`/ips/StructureDefinition/${id}`, { title: '', constraints: [{ human: 'x', expression: 'Bundle.(' }] });
+    expect(bad.status).toBe(422);
+    expect(bad.body.problems[0]).toBe('The profile needs a title');
+    expect(mod.store.profile(id.substring(8)).title).toBe('Cardiology referral v2');
+    // an upload makes a new one, with its own id and url
+    const up = await send('/ips/StructureDefinition', { upload: dl.body });
+    expect(up.status).toBe(201);
+    expect(up.body.id).not.toBe(id);
+    const copy = (await request(app).get(`/ips/StructureDefinition/${up.body.id}`).set('Host', 'example.org')).body;
+    expect(copy.url).toBe(`http://example.org/ips/StructureDefinition/${up.body.id}`);
+    expect(copy.differential.element[0].constraint.map(c => [c.key, c.human])).toEqual([['cp-1', 'A problem list with hypertension'], ['cp-2', 'At least two sections'], ['cp-3', 'Hypertension is active']]);
+    const rejected = await send('/ips/StructureDefinition', { upload: { ...dl.body, snapshot: { element: [] } } });
+    expect(rejected.status).toBe(422);
+    expect(rejected.body.problems[0]).toMatch(/snapshot/);
+    expect((await send(`/ips/StructureDefinition/${id}`, { upload: dl.body })).status).toBe(400);
+    // a title can't become script in the delete confirmation: it is an escaped attribute
+    const trick = await send('/ips/StructureDefinition', { title: "x');alert(1);('", constraints: [] });
+    const trickPage = await agent.get(trick.body.url).set('Accept', 'text/html');
+    expect(trickPage.text).toContain('data-confirm="Delete the clinical profile x&#39;);alert(1);(&#39;?"');
+    expect(trickPage.text).not.toContain('onsubmit=');
+    // delete
+    const del = await form(agent, `/ips/StructureDefinition/${id}/delete`);
+    expect(del.status).toBe(302);
+    expect((await request(app).get(`/ips/StructureDefinition/${id}`)).status).toBe(404);
+    expect((await request(app).get('/ips/StructureDefinition/profile-nothere')).status).toBe(404);
+  });
+
+  test('the administrator adds, edits and deletes a rule at a time, on the profile\'s page', async () => {
+    const { agent, send } = await asAdmin();
+    const vs = 'http://example.org/ValueSet/heart';
+    const made = await send('/ips/StructureDefinition', { title: 'Rows', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4', 1, 1).exists()` }, { human: 'Two entries', expression: 'Bundle.entry.count() >= 2' }] });
+    const id = made.body.id;
+    const at = `/ips/StructureDefinition/${id}`;
+    // the same page as a visitor's, with the rows' actions and the script
+    const page = await agent.get(at).set('Accept', 'text/html');
+    expect(page.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td><td class="ips-pf-actions">');
+    expect(page.text).toContain(`action="${at}/constraint/cp-1/delete"`);
+    expect(page.text).toContain('<button type="button" class="btn btn-default ips-pf-add" data-part="resource">');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]);
+    expect(cfg.mode).toBe('rows');
+    expect(page.text).toMatch(/<script src="\/ips\/profile-editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
+    expect(cfg.urls.constraint).toBe(`${at}/constraint`);
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: 1 }, entry: null } });
+    const visitor = await request(app).get(at).set('Accept', 'text/html');
+    expect(visitor.text).not.toContain('IPS_PROFILE');
+    expect(visitor.text).not.toContain('class="ips-pf-actions"');
+    expect(visitor.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td></tr>');
+    // add: a new key, at the end
+    const added = await send(`${at}/constraint`, { human: 'Heart things', expression: `Bundle.section('http://example.org/cs', 'x1', 0, 2).entryIn('${vs}', 1, '*').exists()` });
+    expect(added.status).toBe(201);
+    expect(added.body.key).toBe('cp-3');
+    const shown = await request(app).get(at).set('Accept', 'text/html');
+    expect(shown.text).toContain(`<td>Heart things</td><td>http://example.org/cs|x1 [0..2]</td><td>Code is in <b>${vs}</b> [1..*]</td></tr>`);
+    // edit: the key stays, the others are as they were
+    const edited = await send(`${at}/constraint/cp-1`, { human: 'Problems, with a SNOMED one', expression: `Bundle.section('${L}', '11450-4').entry('${S}', '38341003', 1, 1).exists()` });
+    expect(edited.status).toBe(200);
+    expect(edited.body.key).toBe('cp-1');
+    let cs = mod.store.profile(id.substring(8)).differential.element[0].constraint;
+    expect(cs.map(c => [c.key, c.human])).toEqual([['cp-1', 'Problems, with a SNOMED one'], ['cp-2', 'Two entries'], ['cp-3', 'Heart things']]);
+    expect(mod.store.profile(id.substring(8)).title).toBe('Rows');
+    // what is wrong is said of the rule, and nothing changes
+    const bad = await send(`${at}/constraint/cp-2`, { human: '', expression: 'Bundle.(' });
+    expect(bad.status).toBe(422);
+    expect(bad.body.problems[0]).toBe('The rule has no description');
+    expect((await send(`${at}/constraint/cp-9`, { human: 'x', expression: 'true' })).status).toBe(404);
+    // delete one
+    const del = await form(agent, `${at}/constraint/cp-2/delete`);
+    expect(del.status).toBe(302);
+    expect(del.headers.location).toBe(at);
+    cs = mod.store.profile(id.substring(8)).differential.element[0].constraint;
+    expect(cs.map(c => c.key)).toEqual(['cp-1', 'cp-3']);
+    // a new one after a delete doesn't take a key that was used
+    expect((await send(`${at}/constraint`, { human: 'Any', expression: 'true' })).body.key).toBe('cp-4');
+    // only the administrator
+    expect((await request(app).post(`${at}/constraint`).send({ human: 'x', expression: 'true' })).status).toBe(403);
+    mod.store.createUser('jo', 'Jo', await require('bcrypt').hash('jo-secret', 4));
+    const jo = (await loginAs(app, 'jo', 'jo-secret')).agent;
+    const joPage = await jo.get(at).set('Accept', 'text/html');
+    expect(joPage.text).not.toContain('class="ips-pf-actions"');
+    expect((await form(jo, `${at}/constraint/cp-1/delete`)).status).toBe(403);
+  });
+
+  test('a rule about resources is shown as its resource set and, for the known tails, the rule in words', async () => {
+    const AU = 'http://hl7.org.au/fhir/ips/StructureDefinition/Bundle-au-ips';
+    mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
+    const other = profiles.build({ id: '0123456789ab', url: 'http://example.org/ips/StructureDefinition/profile-0123456789ab', title: 'Medication safety', constraints: [] });
+    mod.store.saveProfile('0123456789ab', other);
+    const rule = (key, human, expression) => ({ key, human, expression });
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://example.org/ips/StructureDefinition/profile-abcdef012345', title: 'Tails', constraints: [
+      rule('cp-1', 'Given', `Bundle.resources('${S}', '387517004', 'MedicationAdministration').exists()`),
+      rule('cp-2', 'Same patient', `Bundle.resources('${S}', '38341003').all(sameSubject())`),
+      rule('cp-3', 'Same subject', "Bundle.resourcesIn('http://example.org/ValueSet/x', 'FamilyMemberHistory').all( sameSubject() )"),
+      rule('cp-4', 'Australian', `Bundle.resources('${S}', '38341003', 'Condition').conformsTo('${AU}')`),
+      rule('cp-5', 'Ours', `Bundle.resources('${S}', '38341003', 'Condition').all(conformsTo('${other.url}'))`),
+      rule('cp-6', 'Unknown', `Bundle.resources('${S}', '38341003', 'Condition').conformsTo('http://nowhere.org/sd')`),
+      rule('cp-7', 'A problem', `Bundle.resources('${S}', '38341003', 'Condition').category.hasCoding('http://terminology.hl7.org/CodeSystem/condition-category', 'problem-list-item')`),
+      rule('cp-8', 'Counted', `Bundle.resources('${L}', '8480-6', 'Observation').count() = 1`),
+      rule('cp-9', 'Each a problem', `Bundle.resources('${S}', '38341003', 'Condition').all(category.hasCoding('http://terminology.hl7.org/CodeSystem/condition-category', 'problem-list-item', '4.0.1'))`),
+      rule('cp-10', 'Onset', `Bundle.resources('${S}', '38341003', 'Condition').onset.exists()`),
+      rule('cp-11', 'Coded', `Bundle.resources('${S}', '38341003', 'Condition').code.text.exists()`),
+      rule('cp-12', 'Too deep', `Bundle.resources('${S}', '38341003', 'Condition').code.coding.code.exists()`),
+      rule('cp-13', 'Old name', `Bundle.resources('${S}', '38341003').samePatient()`),
+      rule('cp-14', 'One at a time', `Bundle.resources('${S}', '38341003').sameSubject()`)] });
+    mod.store.saveProfile('abcdef012345', sd);
+    const page = await request(app).get('/ips/StructureDefinition/profile-abcdef012345').set('Accept', 'text/html');
+    const row = (human, set, rule) => `<td>${human}</td><td>${set}</td><td>${rule}</td></tr>`;
+    expect(page.text).toContain(row('Given', 'MedicationAdministrations where Code is <b>SNOMED CT|387517004</b>', 'Must be present somewhere'));
+    expect(page.text).toContain(row('Same patient', 'Any resource where Code is <b>SNOMED CT|38341003</b>', 'Patient must match the Document'));
+    expect(page.text).toContain(row('Same subject', 'FamilyMemberHistories where Code is in <b>http://example.org/ValueSet/x</b>', 'Patient must match the Document'));
+    expect(page.text).toContain(row('Australian', 'Conditions where Code is <b>SNOMED CT|38341003</b>', `Conform to <b>AU national profile (hl7.fhir.au.ips#1.0.0)</b> <span class="ips-small">(${AU})</span>`));
+    expect(page.text).toContain(row('Ours', 'Conditions where Code is <b>SNOMED CT|38341003</b>', `Conform to <b>Medication safety</b> <span class="ips-small">(${other.url})</span>`));
+    expect(page.text).toContain(row('Unknown', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Conform to <b>http://nowhere.org/sd</b>'));
+    expect(page.text).toContain(row('A problem', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Has category <b>condition-category|problem-list-item</b>'));
+    expect(page.text).toContain(row('Counted', 'Observations where Code is <b>LOINC|8480-6</b>', '<code>.count() = 1</code>'));
+    expect(page.text).toContain(row('Each a problem', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Has category <b>condition-category|problem-list-item</b> <span class="ips-small">(version 4.0.1)</span>'));
+    expect(page.text).toContain(row('Onset', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Must have an <code>onset</code>'));
+    expect(page.text).toContain(row('Coded', 'Conditions where Code is <b>SNOMED CT|38341003</b>', 'Must have a <code>code.text</code>'));
+    // no deeper than one dot, and the subject only as .all(sameSubject())
+    expect(page.text).toContain(row('Too deep', 'Conditions where Code is <b>SNOMED CT|38341003</b>', '<code>.code.coding.code.exists()</code>'));
+    expect(page.text).toContain(row('Old name', 'Any resource where Code is <b>SNOMED CT|38341003</b>', '<code>.samePatient()</code>'));
+    expect(page.text).toContain(row('One at a time', 'Any resource where Code is <b>SNOMED CT|38341003</b>', '<code>.sameSubject()</code>'));
+  });
+
+  test('profiles stored on Composition are moved onto Bundle when the module starts', async () => {
+    const dir = require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'ips-pf-'));
+    const db = require('path').join(dir, 'ips.db');
+    const first = await makeApp({ database: db });
+    const old = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Old', constraints: [{ key: 'cp-1', human: 'Problems', expression: `Composition.section('${L}', '11450-4').exists()` }] });
+    old.type = 'Composition';
+    old.baseDefinition = 'http://hl7.org/fhir/StructureDefinition/Composition';
+    first.mod.store.saveProfile('abcdef012345', old);
+    first.mod.shutdown();
+    const second = await makeApp({ database: db });
+    try {
+      const sd = second.mod.store.profile('abcdef012345');
+      expect(sd.type).toBe('Bundle');
+      expect(sd.differential.element[0].constraint[0].expression).toBe(`Bundle.section('${L}', '11450-4').exists()`);
+    } finally {
+      second.mod.shutdown();
+      require('fs').rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the browser scripts come from memory, with an ETag', async () => {
+    for (const name of ['editor.js', 'profile-editor.js']) {
+      const r = await request(app).get(`/ips/${name}`);
+      expect(r.status).toBe(200);
+      expect(r.headers['content-type']).toMatch(/^application\/javascript/);
+      expect(r.headers['cache-control']).toBe('public, max-age=3600');
+      expect(r.text).toBe(require('fs').readFileSync(require('path').join(__dirname, '../../ips', name), 'utf8'));
+      const again = await request(app).get(`/ips/${name}`).set('If-None-Match', r.headers.etag);
+      expect(again.status).toBe(304);
+    }
+  });
+
+  test('only the administrator changes them, or looks codes up', async () => {
+    expect((await request(app).post('/ips/StructureDefinition').send({ title: 'x', constraints: [] })).status).toBe(403);
+    const visitor = request.agent(app);
+    expect((await visitor.get('/ips/StructureDefinition/new')).status).toBe(302);
+    expect((await visitor.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(401);
+    mod.store.createUser('jo', 'Jo', await require('bcrypt').hash('jo-secret', 4));
+    const { agent } = await loginAs(app, 'jo', 'jo-secret');
+    expect((await agent.get('/ips/StructureDefinition/new')).status).toBe(403);
+    expect((await agent.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(403);
+  });
+
+  test('the administrator finds value sets: ours first, then the terminology server\'s', async () => {
+    const searches = [];
+    app.get('/tx/r4/ValueSet', (req, res) => {
+      searches.push(req.query);
+      const all = [{ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', version: '1.1.0', title: 'Problems - IPS' }, { url: 'http://x.org/vs/conditions', title: 'Some conditions' }];
+      const hits = req.query.url ? all.filter(v => v.url === req.query.url) : all.filter(v => v.title.toLowerCase().includes(req.query.title));
+      res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'Bundle', type: 'searchset', entry: hits.map(v => ({ resource: { resourceType: 'ValueSet', ...v } })) }));
+    });
+    const { agent } = await asAdmin();
+    const ours = 'http://healthintersections.com.au/fhirsmith/ValueSet/ips-condition-code';
+    const found = (await agent.get('/ips/lookup-vs?q=Condition')).body.matches;
+    expect(found.find(v => v.url === ours)).toMatchObject({ own: true });
+    // ours come first
+    expect(found.findIndex(v => !v.own)).toBeGreaterThan(found.findIndex(v => v.url === ours));
+    expect(found).toContainEqual({ url: 'http://x.org/vs/conditions', version: null, title: 'Some conditions', own: false });
+    expect(searches[0]).toMatchObject({ title: 'condition', _elements: 'url,version,title,name', _count: '20' });
+    // by canonical: ours is found without asking; another is asked for by url
+    expect((await agent.get(`/ips/lookup-vs?url=${encodeURIComponent(ours)}`)).body.matches).toHaveLength(1);
+    expect(searches).toHaveLength(1);
+    const ips = (await agent.get(`/ips/lookup-vs?url=${encodeURIComponent('http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips|1.1.0')}`)).body.matches;
+    expect(ips).toEqual([{ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', version: '1.1.0', title: 'Problems - IPS', own: false }]);
+    expect(searches[1]).toMatchObject({ url: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips' });
+    expect((await agent.get('/ips/lookup-vs?url=http://nowhere.org/vs')).body.matches).toEqual([]);
+    expect((await agent.get('/ips/lookup-vs?q=a')).body.matches).toEqual([]);
+    expect((await request(app).get('/ips/lookup-vs?q=Condition')).status).toBe(401);
+    // a profile's value set rules, as the page shows them
+    const { send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'By value set', constraints: [
+      { human: 'Problems are coded', expression: `Bundle.section('${L}', '11450-4').entryIn('${ours}', 1, '*').exists()` },
+      { human: 'Some IPS problem', expression: "Bundle.resourcesIn('http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', 'Condition').exists()" }] });
+    expect(made.status).toBe(201);
+    const page = await request(app).get(made.body.url).set('Accept', 'text/html');
+    expect(page.text).toContain(`<td>Code is in <b>Conditions (IPS international exchange)</b> <span class="ips-small">(${ours})</span> [1..*]</td>`);
+    expect(page.text).toContain('<td>Conditions where Code is in <b>http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips</b></td><td>Must be present somewhere</td></tr>');
+    const editor = await agent.get(`${made.body.url}/edit`).set('Accept', 'text/html');
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
+    expect(cfg.urls.lookupVs).toBe('/ips/lookup-vs');
+    expect(cfg.profile.constraints[0].shape.entry).toEqual({ valueSet: ours, min: 1, max: '*' });
+    expect(cfg.profile.constraints[1].rshape).toEqual({ type: 'Condition', valueSet: 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips', rest: '.exists()' });
+  });
+
+  test('the administrator looks codes up in any code system', async () => {
+    const { agent } = await asAdmin();
+    const r = await agent.get('/ips/lookup?system=http://snomed.info/sct&q=asth');
+    expect(r.body).toEqual({ matches: [{ system: 'http://snomed.info/sct', code: '123', display: 'Thing (asth)' }] });
+    expect((await agent.get('/ips/lookup?system=not a uri&q=asth')).status).toBe(400);
+    // 'lookup' is not a project
+    expect(mod.store.projectByCode('lookup')).toBeFalsy();
+  });
+});
+
+describe('the profiles step', () => {
+  let app;
+  let mod;
+  const L = 'http://loinc.org';
+  const VS = 'http://example.org/ValueSet/allergies';
+  const add = (id, title, constraints) => {
+    const sd = profiles.build({ id, url: `http://example.org/ips/StructureDefinition/profile-${id}`, title, constraints: constraints.map((c, i) => ({ key: `cp-${i + 1}`, ...c })) });
+    mod.store.saveProfile(id, sd);
+  };
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
+    app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
+    // membership: every coded allergy is in the allergies value set; other value sets are unknown
+    app.post('/tx/r4/ValueSet/\\$validate-code', (req, res) => {
+      const p = JSON.parse(req.body.toString());
+      const url = p.parameter.find(x => x.name === 'url')?.valueUri;
+      res.type('application/fhir+json');
+      if (url !== VS) {
+        return res.status(404).send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'not-found', details: { text: `Unknown value set ${url}` } }] }));
+      }
+      res.send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'result', valueBoolean: true }] }));
+    });
+    mod.steps = STEPS.filter(s => s.name === 'profiles');
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('checks the document against each profile, and the view shows it', async () => {
+    add('aaaaaaaaaaa1', 'Allergies only', [
+      { human: 'An allergies section', expression: `Bundle.section('${L}', '48765-2', 1, 1).exists()` },
+      { human: 'Coded allergies', expression: `Bundle.section('${L}', '48765-2').entryIn('${VS}', 1, '*').exists()` }]);
+    add('aaaaaaaaaaa2', 'Full summary', [
+      { human: 'An allergies section', expression: `Bundle.section('${L}', '48765-2').exists()` },
+      { human: 'A problem list', expression: `Bundle.section('${L}', '11450-4').exists()` },
+      { human: 'At least five sections', expression: 'Bundle.section.count() >= 5' }]);
+    add('aaaaaaaaaaa3', 'Problems by value set', [
+      { human: 'Some known problem', expression: "Bundle.resourcesIn('http://example.org/ValueSet/unknown').exists()" }]);
+    add('aaaaaaaaaaa4', 'Broken', [{ human: 'Not evaluable', expression: "Bundle.resourcesIn('nope').exists()" }]);
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(1);
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('profiles: 1 conform, 1 do not, 2 could not be fully checked');
+    const r = mod.store.readResult(1, 'profiles').result;
+    const byTitle = Object.fromEntries(r.profiles.map(p => [p.title, p]));
+    expect(byTitle['Allergies only']).toMatchObject({ id: 'profile-aaaaaaaaaaa1', outcome: 'conforms', constraints: 2, failed: [] });
+    expect(byTitle['Full summary']).toMatchObject({ outcome: 'fails', failed: [{ key: 'cp-2', human: 'A problem list', reason: 'failed' }, { key: 'cp-3', human: 'At least five sections', reason: 'failed' }] });
+    expect(byTitle['Problems by value set'].outcome).toBe('unknown');
+    expect(byTitle['Problems by value set'].failed[0]).toMatchObject({ reason: 'unresolved', message: expect.stringContaining('Unknown value set http://example.org/ValueSet/unknown') });
+    expect(byTitle.Broken.failed[0]).toMatchObject({ reason: 'error', message: expect.stringMatching(/must be a canonical URL/) });
+    expect(r.unresolved).toEqual([{ valueSet: 'http://example.org/ValueSet/unknown', message: 'Unknown value set http://example.org/ValueSet/unknown' }]);
+    // the view
+    const page = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=profiles">Clinical Profiles</a></li>');
+    expect(page.text).toContain('<a href="/ips/StructureDefinition/profile-aaaaaaaaaaa1">Allergies only</a></td><td><span class="ips-badge" style="background: #1e7e34">Conforms</span></td><td><span class="ips-small">(none)</span>');
+    expect(page.text).toContain('Does not conform</span></td><td><ul style="margin: 0; padding-left: 18px"><li>A problem list</li><li>At least five sections</li></ul>');
+    expect(page.text).toContain('<li>Some known problem <span class="ips-small">(could not be checked: a value set the terminology server could not answer for)</span></li>');
+    // the reason is for managers
+    expect(page.text).not.toContain('Unknown value set');
+  });
+
+  test('a rule that can\'t be decided is never a pass, and a profile deleted meanwhile is passed over', async () => {
+    // .empty() over an unanswerable value set would be true: it is "could not be checked"
+    add('aaaaaaaaaab1', 'Nothing contraindicated', [{ human: 'No contraindicated medication', expression: "Bundle.resourcesIn('http://example.org/ValueSet/unknown').empty()" }]);
+    add('aaaaaaaaaab2', 'Gone', [{ human: 'x', expression: 'true' }]);
+    const real = mod.store.profile.bind(mod.store);
+    mod.store.profile = (id) => (id === 'aaaaaaaaaab2' ? null : real(id));
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    const r = mod.store.readResult(1, 'profiles').result;
+    expect(r.profiles.map(p => [p.title, p.outcome])).toEqual([['Nothing contraindicated', 'unknown']]);
+    expect(mod.store.read(1).status).toBe('processed');
+  });
+
+  test('no profiles, and a document not yet checked', async () => {
+    await post(app, 'demo', ips());
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(waiting.text).toContain('The document has not been checked against the clinical profiles - the document is waiting in the queue.');
+    await mod.processQueue();
+    expect(mod.store.read(1).status_message).toBe('profiles: none defined');
+    const page = await request(app).get('/ips/demo/Bundle/1?view=profiles').set('Accept', 'text/html');
+    expect(page.text).toContain('There were no <a href="/ips/StructureDefinition">clinical profiles</a> to check the document against when it was processed.');
+  });
+
+  test('runs after the terminology step and before the AI step', () => {
+    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+  });
+});
+
+describe('the module reads its own request bodies', () => {
+  // as server.js mounts it: no body parsers in front of /ips
+  let app;
+  let mod;
+  beforeEach(async () => {
+    app = express();
+    mod = new IpsModule(makeStats(), quietLog);
+    await mod.initialize({ database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false, processing: { enabled: false }, maxSize: 20000 }, app);
+    app.use('/ips', mod.router);
+    mod.store.createProject('open', 'Open', null);
+    mod.store.createProject('closed', 'Closed', null);
+    mod.store.setProjectToken(mod.store.projectByCode('closed').id, 'the-token');
+  });
+  afterEach(() => mod.shutdown());
+
+  test('a document arrives as fhir+json or json, no bigger than maxSize, and the token comes first', async () => {
+    const r1 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()));
+    expect(r1.status).toBe(201);
+    const r2 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/json').send(JSON.stringify(ips()));
+    expect(r2.status).toBe(201);
+    // too big: refused by the module's own limit, as an OperationOutcome
+    const big = ips({ composition: { title: 'x'.repeat(30000) } });
+    const r3 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r3.status).toBe(413);
+    expect(r3.body.resourceType).toBe('OperationOutcome');
+    expect(JSON.stringify(r3.body)).toContain("Documents can't be bigger than 20000 bytes");
+    // no token: refused before the body is read, however big it is
+    const r4 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(big));
+    expect(r4.status).toBe(401);
+    const r5 = await request(app).post('/ips/closed/Bundle').set('Content-Type', 'application/fhir+json').set('Authorization', 'Bearer the-token').send(JSON.stringify(ips()));
+    expect(r5.status).toBe(201);
+    // not JSON
+    const r6 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send('{ nope');
+    expect(r6.status).toBe(400);
+    expect(r6.body.resourceType).toBe('OperationOutcome');
+  });
+
+  test('the editor\'s JSON has its own limit, and says so as JSON', async () => {
+    const r = await request(app).post('/ips/open/compose').set('Origin', 'http://example.org').set('Host', 'example.org').set('Content-Type', 'application/json').set('Accept', 'application/json')
+      .send(JSON.stringify({ action: 'download', model: { pad: 'x'.repeat(3 * 1024 * 1024) } }));
+    expect(r.status).toBe(413);
+    expect(r.body.error).toMatch(/too big/);
+  });
+});
+
+describe('the structure view', () => {
+  const doc = (comp, ...rest) => ({ resourceType: 'Bundle', type: 'document', entry: [
+    { fullUrl: 'http://example.org/fhir/Composition/c', resource: { resourceType: 'Composition', id: 'c', title: 'IPS', ...comp } }, ...rest] });
+  // the rows whose path is path: [row, ...]
+  const rows = (h, path) => h.split('<tr ').filter(r => r.includes(`/> ${path}</td>`));
+  const row = (h, path) => {
+    const found = rows(h, path);
+    expect(found.length).toBe(1);
+    return found[0];
+  };
+  const cells = (r) => [...r.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map(m => m[1]);
+
+  test('a document with no Composition', () => {
+    expect(render.renderStructure({ resourceType: 'Bundle', entry: [] })).toContain('The document has no Composition.');
+  });
+
+  test('a tree table: path, type, id, details, with the Composition at the root', () => {
+    const h = render.renderStructure(doc({ date: '2026-03-01T09:30:00+10:00' }));
+    expect(h).toContain('<thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead>');
+    const r = row(h, 'Composition');
+    expect(r).toContain('<img src="/assets/images/icon_document.png"');
+    expect(cells(r).slice(1)).toEqual(['Composition', 'c', 'IPS <span class="ips-tt-when">01-Mar 26 09:30 (+10:00)</span>']);
+  });
+
+  test('relative references resolve against the referring entry, and what does not resolve is external', () => {
+    const h = render.renderStructure(doc({ subject: { reference: 'Patient/p' }, custodian: { reference: 'Organization/o' } },
+      { fullUrl: 'http://example.org/fhir/Patient/p', resource: { resourceType: 'Patient', id: 'p', name: [{ family: 'Smith', given: ['Jane'] }], birthDate: '1970-05-06',
+        managingOrganization: { reference: 'Organization/o' } } }));
+    const subject = row(h, 'subject');
+    expect(subject).toContain('icon_person.png');
+    expect(cells(subject).slice(1)).toEqual(['Patient', 'p', 'Jane Smith <span class="ips-tt-when">06-May 70</span>']);
+    expect(subject).toContain('<td title="Reference: Patient/p">p</td>');
+    for (const path of ['managingOrganization', 'custodian']) {
+      const r = row(h, path);
+      expect(r).toContain('class="ips-tt-missing"');
+      expect(r).toContain('icon_external.png');
+      expect(cells(r).slice(1)).toEqual(['Organization', 'o', '<i>(not in document)</i>']);
+    }
+  });
+
+  test('#id is a contained resource of the referring resource, or of the one that contains it', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'Meds', entry: [{ reference: 'urn:uuid:m' }] }] },
+      { fullUrl: 'urn:uuid:m', resource: { resourceType: 'MedicationStatement', id: 'm', medicationReference: { reference: '#med' }, effectivePeriod: { start: '2025-01-02' },
+        contained: [{ resourceType: 'Medication', id: 'med', code: { text: 'Aspirin' }, manufacturer: { reference: '#org' } }, { resourceType: 'Organization', id: 'org', name: 'Acme' }] } }));
+    // what a statement is comes from the Medication it refers to
+    expect(cells(row(h, 'entry[0]')).slice(1)).toEqual(['MedicationStatement', 'm', 'Aspirin <span class="ips-tt-when">02-Jan 25</span>']);
+    const med = row(h, 'medicationReference');
+    expect(med).toContain('icon_medication.png');
+    expect(cells(med).slice(1)).toEqual(['Medication', 'med', 'Aspirin <i>(contained)</i>']);
+    const org = row(h, 'manufacturer');
+    expect(org).toContain('icon_organization.png');
+    expect(cells(org).slice(1)).toEqual(['Organization', 'org', 'Acme <i>(contained)</i>']);
+  });
+
+  test('sections nest, and say what they refer to besides their entries', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'Outer', section: [{ title: 'Inner', author: [{ reference: 'urn:uuid:x' }] }] }, { title: 'Nothing' }] }));
+    const outer = row(h, 'section[0]');
+    const inner = row(h, 'section[0].section[0]');
+    expect(outer).toContain('icon_section.png');
+    expect(cells(outer).slice(1)).toEqual(['Section', '', '<b>Outer</b>']);
+    const id = (r) => /data-tt-id="(\d+)"/.exec(r)[1];
+    expect(inner).toContain(`data-tt-parent="${id(outer)}"`);
+    expect(row(h, 'author[0]')).toContain(`data-tt-parent="${id(inner)}"`);
+    expect(row(h, 'author[0]')).toContain('class="ips-tt-missing"');
+    expect(cells(row(h, 'section[1]'))[3]).toBe('<b>Nothing</b> <i>(empty)</i>');
+  });
+
+  test('a resource is expanded once, where it is first shown; resources start closed, sections open', () => {
+    const h = render.renderStructure(doc({ subject: { reference: 'urn:uuid:p' }, section: [{ title: 'S', entry: [{ reference: 'urn:uuid:p' }] }] },
+      { fullUrl: 'urn:uuid:p', resource: { resourceType: 'Patient', id: 'p', generalPractitioner: [{ reference: 'urn:uuid:q' }] } },
+      { fullUrl: 'urn:uuid:q', resource: { resourceType: 'Practitioner', id: 'q', name: [{ text: 'Dr Who' }] } }));
+    expect(rows(h, 'generalPractitioner[0]').length).toBe(1);
+    const subject = row(h, 'subject');
+    expect(subject).toContain('class="ips-tt-parent ips-tt-closed"');
+    expect(subject).toContain('<button type="button" class="ips-tt-toggle"');
+    expect(row(h, 'generalPractitioner[0]')).toContain(' hidden>');
+    expect(row(h, 'section[0]')).toContain('class="ips-tt-parent"');
+    expect(row(h, 'section[0]')).not.toContain(' hidden>');
+    const seen = row(h, 'entry[0]');
+    expect(seen).toContain('class="ips-tt-seen"');
+    expect(seen).not.toContain(' hidden>');
+    expect(cells(seen)[3]).toBe('<i>(shown at Composition.subject)</i>');
+  });
+
+  test('the tree lines: a continuing ancestor line, and the last child\'s line stops at its joint', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'A', author: [{ reference: 'urn:uuid:x' }] }, { title: 'B' }] }));
+    // section[0] is not the last child: its line runs the full height; section[1] is: it stops
+    expect(row(h, 'section[0]')).toContain('background-position: 10px 0px, 10px 12px; background-size: 1px 100%, 12px 1px;');
+    expect(row(h, 'section[1]')).toContain('background-position: 10px 0px, 10px 12px; background-size: 1px 12px, 12px 1px;');
+    // author[0] is under section[0], which has a sibling after it: that line carries on through
+    expect(row(h, 'author[0]')).toContain('background-position: 10px 0px, 30px 0px, 30px 12px; background-size: 1px 100%, 1px 12px, 12px 1px;');
+  });
+
+  test('what and when, by resource', () => {
+    const r = (resource) => ({ fullUrl: `urn:uuid:${resource.id}`, resource });
+    const h = render.renderStructure(doc({ section: [{ title: 'S', entry: ['a', 'b', 'c', 'd', 'e', 'f'].map(x => ({ reference: `urn:uuid:${x}` })) }] },
+      r({ resourceType: 'Condition', id: 'a', code: { coding: [{ system: 'http://snomed.info/sct', code: '195967001', display: 'Asthma' }] }, onsetDateTime: '2020-04', recordedDate: '2021-01-01' }),
+      r({ resourceType: 'Observation', id: 'b', code: { text: 'Weight' }, valueQuantity: { value: 72, unit: 'kg' }, effectiveDateTime: '2026-02-03', issued: '2026-02-04T00:00:00Z' }),
+      r({ resourceType: 'MedicationStatement', id: 'c', medicationCodeableConcept: { text: 'Paracetamol' }, dateAsserted: '2026-01-01' }),
+      r({ resourceType: 'Immunization', id: 'd', vaccineCode: { coding: [{ code: 'X' }] }, occurrenceDateTime: '2019-06-07' }),
+      r({ resourceType: 'Provenance', id: 'e', recorded: '2026-03-01T00:00:00Z' }),
+      r({ resourceType: 'Basic', id: 'f', meta: { lastUpdated: '2026-03-02T01:02:03Z' } })));
+    const details = (x) => cells(rows(h, 'entry[' + x + ']')[0])[3];
+    expect(details(0)).toBe('Asthma <span class="ips-tt-when">Apr 20</span>');
+    expect(details(1)).toBe('Weight: 72 kg <span class="ips-tt-when">03-Feb 26</span>');
+    expect(details(2)).toBe('Paracetamol <span class="ips-tt-when">01-Jan 26</span>');
+    expect(details(3)).toBe('X <span class="ips-tt-when">07-Jun 19</span>');
+    expect(rows(h, 'entry[4]')[0]).toContain('icon_audit.png');
+    expect(rows(h, 'entry[5]')[0]).toContain('icon_other.png');
+    expect(details(5)).toBe('<span class="ips-tt-when">02-Mar 26 01:02 (UTC)</span>');
+    expect(rows(h, 'entry[0]')[0]).toContain('icon_clinical.png');
+  });
+
+  test('values from the document are escaped', () => {
+    const h = render.renderStructure(doc({ subject: { reference: '<b>x</b>' }, section: [{ title: '<i>t</i>' }] }));
+    expect(h).not.toContain('<b>x</b>');
+    expect(h).toContain('&lt;b&gt;x&lt;/b&gt;');
+    expect(h).toContain('<b>&lt;i&gt;t&lt;/i&gt;</b>');
+  });
+});
+
+describe('the nationality step', () => {
+  const { determineNationality, nationalityText } = require('../../ips/nationality');
+  const US_PCS = 'http://hl7.org/fhir/us/pcs/StructureDefinition/Bundle-us-pcs';
+  const AU_PS = 'http://hl7.org.au/fhir/ps/StructureDefinition/au-ps-bundle';
+  const RACE = 'http://hl7.org/fhir/us/core/StructureDefinition/us-core-race';
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('the signs of a nation: the US and AU Patient Summary profiles, and US Core extensions', () => {
+    expect(determineNationality(ips({ meta: { profile: [US_PCS] } }))).toMatchObject({ jurisdiction: 'US', reasons: [{ jurisdiction: 'US', text: `the Bundle claims the US Patient Summary profile (${US_PCS})` }] });
+    // a profile with a version is the profile
+    expect(determineNationality(ips({ meta: { profile: [AU_PS + '|1.0.0'] } })).jurisdiction).toBe('AU');
+    // a US Core extension anywhere: here on the patient
+    const us = determineNationality(ips({ patient: { extension: [{ url: RACE, extension: [{ url: 'text', valueString: 'x' }] }] } }));
+    expect(us).toMatchObject({ jurisdiction: 'US', reasons: [{ jurisdiction: 'US', text: 'US Core extension is used (us-core-race)' }] });
+    expect(nationalityText(us)).toBe('From US: US Core extension is used (us-core-race)');
+    // nothing to go on
+    const none = determineNationality(ips());
+    expect(none).toEqual({ jurisdiction: null, reasons: [] });
+    expect(nationalityText(none)).toMatch(/^Jurisdiction unknown: nothing in the document says which jurisdiction it is from/);
+    // signs of two nations: unknown, and the reasons say which
+    const both = determineNationality(ips({ meta: { profile: [AU_PS] }, patient: { extension: [{ url: RACE }] } }));
+    expect(both.jurisdiction).toBeNull();
+    expect(both.reasons.map(r => r.jurisdiction)).toEqual(['US', 'AU']);
+    expect(nationalityText(both)).toMatch(/^Jurisdiction unknown: the document has signs of more than one jurisdiction \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
+  });
+
+  test('the step runs first, and the nation shows on the list, the document banner and the analysis', async () => {
+    expect(STEPS[0].name).toBe('nationality');
+    mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'analysis');
+    await post(app, 'demo', ips({ meta: { profile: [US_PCS] } }));
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ nationality: 'US' });
+    expect(mod.store.read(1).status_message).toMatch(/^jurisdiction: US; analysis:/);
+    expect(mod.store.read(2)).toMatchObject({ nationality: null });
+
+    const list = await request(app).get('/ips/demo').set('Accept', 'text/html');
+    expect(list.text).toContain('<th>Jurisdiction</th>');
+    expect(list.text).toContain('<td title="United States of America">US</td>');
+    expect(list.text).toContain('<td title="Not known">??</td>');
+
+    const page = await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html');
+    expect(page.text).toContain('<div class="ips-banner ips-banner-flagged"><img class="ips-flag" src="/assets/images/flags/us.svg"');
+    expect(page.text).toContain('title="analysis - done');
+    const unknown = await request(app).get('/ips/demo/Bundle/2').set('Accept', 'text/html');
+    expect(unknown.text).toContain('<img class="ips-flag" src="/assets/images/flags/unknown.svg" alt="Jurisdiction unknown"');
+
+    const analysis = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(analysis.text).toContain(`<ul><li class="ips-an-nation">From US: the Bundle claims the US Patient Summary profile (${US_PCS})</li>`);
+    // only on the Composition
+    expect(analysis.text.split('ips-an-nation"').length).toBe(2);
+
+    // processing again forgets it until the step has run again
+    expect(mod.store.requeue(1, mod.store.read(1).project_id)).toBeTruthy();
+    expect(mod.store.read(1).nationality).toBeNull();
+  });
+});
+
+describe('the analysis step', () => {
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+  });
+
+  test('the step analyses the document as submitted, and the page shows it with the structure', async () => {
+    mod.steps = STEPS.filter(s => s.name === 'analysis');
+    const d = ips({ patient: { extension: [{ url: 'http://example.org/x' }], modifierExtension: [{ url: 'http://example.org/m' }] } });
+    await post(app, 'demo', d);
+    const waiting = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(waiting.text).toContain('There is no analysis of this document - the document is waiting in the queue');
+    await mod.processQueue();
+    const row = mod.store.read(1);
+    expect(row.status).toBe('processed');
+    expect(row.status_message).toBe('analysis: 2 of 6 resources and sections with something to note, 2 extensions');
+    const r = mod.store.readResult(1, 'analysis').result;
+    expect(r.items.e1.map(f => f.kind)).toEqual(['extension', 'modifier', 'narrative']);
+    // only the analysis step ran, so the nationality is unknown, and the allergy's SNOMED CT code has no edition
+    expect(r.items.e0[0].kind).toBe('error');
+    expect(r.items.e0[0].text).toMatch(/^1 SNOMED CT code does not say which edition it is from .* The International Edition of SNOMED CT is assumed$/);
+    // the allergy has no narrative, but nothing else to say
+    expect(r.items.e3).toEqual([{ kind: 'ok', text: 'All OK' }, { kind: 'narrative', text: 'No narrative' }]);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=analysis">Analysis</a></li>');
+    expect(page.text).toContain('<a class="ips-step ips-step-done" title="analysis - done: analysis: 2 of 6 resources and sections with something to note, 2 extensions" href="/ips/demo/Bundle/1?view=analysis">');
+    expect(page.text).toContain('<td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td><td>Patient</td>');
+    expect(page.text).toContain('<li class="ips-an-extension">Extension <code>http://example.org/x</code> on <code>Patient</code>: <i>not known</i></li>');
+    // "Only show problems": the patient (extensions) is a problem; the allergy (All OK, no narrative) and the patient met again are not
+    expect(page.text).toContain('<label><input type="checkbox" id="ips-an-problems"/> Only show problems</label>');
+    expect(page.text).toContain('<tr class="ips-an-node"><td class="ips-an-path"><img src="/assets/images/icon_person.png" alt="" width="16" height="16"/> Composition.subject</td>');
+    expect(page.text).toMatch(/<tr class="ips-an-node" data-ok="1"><td class="ips-an-path"><img [^>]*\/> Composition\.section\[0\]\.entry\[0\]<\/td>/);
+    expect(page.text).toContain('<tr class="ips-an-findings ips-tt-seen" data-ok="1"><td colspan="4"><i>Analysed at Composition.subject</i></td></tr>');
+    expect(page.text).toContain("localStorage.getItem(KEY) === '1'");
+    expect(page.text).toContain('<li class="ips-an-modifier">Modifier extension <code>http://example.org/m</code> on <code>Patient</code>');
+    // the allergy's patient is the subject, met again
+    expect(page.text).toContain(' Composition.section[0].entry[0].resolve().patient</td>');
+    expect(page.text).toContain('<td colspan="4"><i>Analysed at Composition.subject</i></td>');
+    // a reference to something not in the document has no rows
+    expect(page.text).not.toContain('not in document');
+    expect(page.text).toContain('<li class="ips-an-ok">All OK</li><li class="ips-an-narrative">No narrative</li>');
+  });
+
+  test('what "Only show problems" hides: All OK, with or without narrative - but a section needs narrative', () => {
+    const { analysisOk } = require('../../ips/render');
+    const ok = { kind: 'ok', text: 'All OK' };
+    const has = { kind: 'narrative', text: 'Has narrative (generated)' };
+    const none = { kind: 'narrative', text: 'No narrative' };
+    expect(analysisOk([ok, has], false)).toBe(true);
+    expect(analysisOk([ok, none], false)).toBe(true);
+    expect(analysisOk([ok, has], true)).toBe(true);
+    expect(analysisOk([ok, none], true)).toBe(false);
+    // the Composition's negation is a note, unless there's more than one approach (attention)
+    expect(analysisOk([ok, { kind: 'negation', text: 'Negation: none observed' }, has], false)).toBe(true);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x' }, has], false)).toBe(false);
+    // a known extension is nothing to look at; an unknown one, or a modifier extension, is
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, has], false)).toBe(true);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: false }, has], false)).toBe(false);
+    expect(analysisOk([{ kind: 'modifier', url: 'http://example.org/x', found: true }, has], false)).toBe(false);
+    expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, none], true)).toBe(false);
+    expect(analysisOk([], false)).toBe(false);
+    expect(analysisOk(undefined, false)).toBe(false);
+  });
+
+  test('extension definitions come from the validator (lookupCanonical), and are remembered', async () => {
+    const asked = [];
+    mod.validator = {
+      isRunning: () => true,
+      async lookupCanonical(url) {
+        asked.push(url);
+        if (url === 'http://example.org/x') {
+          return { resourceType: 'StructureDefinition', url, name: 'X', title: 'Example <ext>', description: 'An example' };
+        }
+        if (url === 'http://example.org/broken') {
+          throw new Error('Canonical lookup failed: HTTP 500');
+        }
+        return null;
+      }
+    };
+    mod.steps = STEPS.filter(s => s.name === 'analysis');
+    const patient = { extension: [{ url: 'http://example.org/x' }, { url: 'http://example.org/unknown' }, { url: 'http://example.org/broken' },
+      { url: 'http://hl7.org/fhir/StructureDefinition/textLink' }] };
+    await post(app, 'demo', ips({ patient }));
+    await mod.processQueue();
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<code>http://example.org/x</code> on <code>Patient</code>: <span class="ips-an-known" title="Example &lt;ext&gt;: An example">known</span></li>');
+    expect(page.text).toContain('<code>http://example.org/unknown</code> on <code>Patient</code>: <i>not known</i></li>');
+    expect(page.text).toContain('<code>http://example.org/broken</code> on <code>Patient</code>: <i>not known</i></li>');
+    // textLink is not mentioned
+    expect(page.text).not.toContain('<code>http://hl7.org/fhir/StructureDefinition/textLink</code>');
+    expect(asked).toEqual(['http://example.org/x', 'http://example.org/unknown', 'http://example.org/broken']);
+    // again: the answers are remembered, but a failure is asked again
+    await post(app, 'demo', ips({ patient }));
+    await mod.processQueue();
+    expect(asked.slice(3)).toEqual(['http://example.org/broken']);
+    // once a national profile's package has loaded, what wasn't found is asked again
+    mod.validator.loadIG = async () => ({ resourceType: 'OperationOutcome', issue: [] });
+    await mod.loadNationalPackage('hl7.fhir.us.core', '6.1.0');
+    expect(await mod.lookupExtension('http://example.org/unknown')).toBeNull();
+    expect(asked.slice(4)).toEqual(['http://example.org/unknown']);
+    // a validator that isn't running, or a wrapper without lookupCanonical: no definitions, and no error
+    mod.validator = { isRunning: () => false, lookupCanonical: async () => { throw new Error('not this'); } };
+    expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
+    mod.validator = { isRunning: () => true };
+    expect(await mod.lookupExtension('http://example.org/zz')).toBeNull();
+  });
+});
+
+describe('the SHL viewer', () => {
+  const http = require('http');
+  const crypto = require('crypto');
+  const jose = require('jose');
+  const CBOR = require('cbor');
+  const pako = require('pako');
+  const base45 = require('base45');
+  let app;
+  let mod;
+  let shl;
+  let shlUrl;
+  let links;
+  const seen = [];
+  const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' });
+
+  // a fake SHL server: each link is { flag, passcode, files: [jwe], vhlStyle, attempts }
+  beforeAll(async () => {
+    const s = express();
+    s.use(express.json());
+    s.get('/access/:id', (req, res) => {
+      seen.push({ method: 'GET', url: req.url });
+      const l = links.get(req.params.id);
+      if (!l) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      res.set('Content-Type', 'application/jose').send(l.files[0]);
+    });
+    s.post('/access/:id', (req, res) => {
+      seen.push({ method: 'POST', url: req.url, body: req.body });
+      const l = links.get(req.params.id);
+      if (!l) {
+        return res.status(404).json({ error: 'not found' });
+      }
+      if (l.passcode && req.body.passcode !== l.passcode) {
+        l.attempts--;
+        return res.status(401).json({ remainingAttempts: l.attempts });
+      }
+      const location = (i) => `${shlUrl}/file/${req.params.id}/${i}`;
+      if (l.vhlStyle) {
+        // as this server's shl module answers for a VHL: a Bundle of DocumentReferences
+        return res.json({ resourceType: 'Bundle', type: 'searchset', entry: l.files.map((f, i) => ({ resource: { resourceType: 'DocumentReference', id: `d${i}`, content: [{ url: location(i), contentType: 'application/fhir+json' }] } })) });
+      }
+      res.set('Access-Control-Allow-Origin', '*').json({ files: l.files.map((f, i) => (i === 0 ? { contentType: 'application/fhir+json', embedded: f } : { contentType: 'application/fhir+json', location: location(i) })) });
+    });
+    s.get('/file/:id/:n', (req, res) => {
+      seen.push({ method: 'GET', url: req.url });
+      res.set('Content-Type', 'application/jose').send(links.get(req.params.id).files[Number(req.params.n)]);
+    });
+    shl = http.createServer(s);
+    await new Promise(r => shl.listen(0, '127.0.0.1', r));
+    shlUrl = `http://127.0.0.1:${shl.address().port}`;
+  });
+  afterAll(() => new Promise(r => shl.close(r)));
+
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp({ viewer: { allowPrivateAddresses: true, trust: [{ kid: 'test-kid', name: 'the test issuer', certificate: keys.publicKey.export({ type: 'spki', format: 'pem' }) }] } }));
+    mod.store.createProject('demo', 'Demo', null);
+    mod.store.setProjectToken(mod.store.createProject('locked', 'Locked', null), 'the-token');
+    links = new Map();
+    seen.length = 0;
+  });
+  afterEach(() => mod.shutdown());
+
+  /** A link to a document on the fake server: the shlink payload, encoded. */
+  async function link(id, { docs = [ips()], flag, passcode, vhlStyle } = {}) {
+    const key = crypto.randomBytes(32);
+    const files = [];
+    for (const d of docs) {
+      files.push(await new jose.CompactEncrypt(new TextEncoder().encode(JSON.stringify(d)))
+        .setProtectedHeader({ alg: 'dir', enc: 'A256GCM', cty: 'application/fhir+json' }).encrypt(key));
+    }
+    links.set(id, { files, passcode, vhlStyle, attempts: 3 });
+    const payload = { url: `${shlUrl}/access/${id}`, key: key.toString('base64url'), label: 'Jane\'s summary', ...(flag ? { flag } : {}) };
+    return Buffer.from(JSON.stringify(payload)).toString('base64url');
+  }
+
+  /** Open a link in the viewer: the page it lands on. */
+  async function open(text, extra = {}) {
+    const r = await request(app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: text, ...extra });
+    expect(r.status).toBe(303);
+    const page = await request(app).get(r.headers.location).set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    return { url: r.headers.location, page: page.text };
+  }
+
+  test('the home page says how to make this server the viewer for an SHL or a VHL', async () => {
+    const home = await request(app).get('/ips').set('Accept', 'text/html').set('Host', 'example.org');
+    expect(home.text).toContain('<h3>Using this server as the viewer for your SMART Health Links</h3>');
+    expect(home.text).toContain('the link (and the QR code) is <code>http://example.org/ips/view#shlink:/{payload}</code>');
+    expect(home.text).toContain('or link to <code>http://example.org/ips/view#HC1:...</code> with the <code>HC1:...</code> text percent-encoded');
+    // not when there is no viewer
+    const off = await makeApp({ viewer: { enabled: false } });
+    try {
+      expect((await request(off.app).get('/ips').set('Accept', 'text/html')).text).not.toContain('Using this server as the viewer');
+    } finally {
+      off.mod.shutdown();
+    }
+  });
+
+  test('the first page takes the link from the address, or pasted in; the menu links to it', async () => {
+    const page = await request(app).get('/ips/view').set('Accept', 'text/html').set('Host', 'example.org');
+    expect(page.status).toBe(200);
+    expect(page.text).toContain('<form method="post" action="/ips/view" id="ips-viewer-form">');
+    expect(page.text).toContain('put <code>http://example.org/ips/view#</code> in front of the <code>shlink:/...</code>');
+    expect(page.text).toContain('This is a public test service');
+    expect(page.text).toContain("hash.indexOf('shlink:/')");
+    expect(page.text).toContain('<a href="/ips/view" style="color: gold">SHL viewer</a>');
+    // nothing given, or not a link
+    expect((await request(app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: '' })).status).toBe(400);
+    const { page: junk } = await open('hello there');
+    expect(junk).toContain('The document could not be retrieved: This is not an SHL');
+  });
+
+  test('opens a U link: shows the narrative and every step, and adds the document to a project', async () => {
+    const { url, page } = await open(`https://example.org/ips/view#shlink:/${await link('u1', { flag: 'U' })}`);
+    expect(seen[0]).toEqual({ method: 'GET', url: `/access/u1?${new URLSearchParams({ recipient: 'FHIRsmith IPS viewer (example.org)' })}` });
+    expect(page).toContain('<b>Jane&#39;s summary</b>');
+    expect(page).toContain('flags: direct file');
+    expect(page).toContain('<p>Summary for <b>Jane Smith</b></p>');
+    expect(page).toContain('An SHL, opened with the viewer https://example.org/ips/view#');
+    expect(page).toContain('The key: ');
+    expect(page).toContain('The file (flag U): HTTP 200');
+    expect(page).toContain('there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('It is an IPS document: Composition.type is LOINC 60591-5');
+    // the decrypted content is in the log
+    expect(page).toContain('&quot;Patient Summary as of 1 March 2026&quot;');
+    expect(page).toContain('Adding the document to a project makes it visible to everyone');
+    expect(page).toContain('<option value="locked">Locked (needs a token)</option>');
+
+    const add = (data) => request(app).post(`${url}/add`).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send(data);
+    expect((await add({ doc: '0', project: 'locked' })).text).toContain('The submission token for Locked is missing or wrong');
+    expect((await add({ doc: '0', project: 'nope' })).status).toBe(400);
+    expect((await add({ doc: '5', project: 'demo' })).status).toBe(400);
+    const added = await add({ doc: '0', project: 'demo' });
+    expect(added.status).toBe(303);
+    expect(added.headers.location).toBe('/ips/demo/Bundle/1');
+    expect(mod.store.read(1)).toMatchObject({ source: 'shl', status: 'submitted', patient_name: 'Jane Alexandra Smith' });
+    // with the token
+    expect((await add({ doc: '0', project: 'locked', token: 'the-token' })).headers.location).toBe('/ips/locked/Bundle/2');
+    // the page says so, and that it is here already
+    const again = await request(app).get(url).set('Accept', 'text/html');
+    expect(again.text).toContain('Added to <a href="/ips/demo">Demo</a> as <a href="/ips/demo/Bundle/1">document 1</a>.');
+    expect(again.text).toContain('This document (the same Bundle.identifier) is already here: <a href="/ips/demo/Bundle/1">Demo, document 1</a>; <a href="/ips/locked/Bundle/2">Locked, document 2</a>.');
+  });
+
+  test('a manifest link: embedded files and locations; documents that are not IPS can be looked at, not added', async () => {
+    const other = ips();
+    other.entry[0].resource.type = { coding: [{ system: 'http://loinc.org', code: '34133-9' }] };
+    const { url, page } = await open(`shlink:/${await link('m1', { docs: [ips(), other, { resourceType: 'Patient' }] })}`);
+    expect(seen[0]).toEqual({ method: 'POST', url: '/access/m1', body: { recipient: 'FHIRsmith IPS viewer (example.org)' } });
+    expect(seen.slice(1).map(x => x.url)).toEqual(['/file/m1/1', '/file/m1/2']);
+    expect(page).toContain('The manifest lists 3 files');
+    // the manifest allows cross-origin reads; the files don't
+    expect(page).not.toContain('The manifest: there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('File 2 (location): there is no Access-Control-Allow-Origin header');
+    expect(page).toContain('document 1 of 2');
+    expect(page).toContain('It is a Patient, not a Bundle: only IPS documents are supported here');
+    expect(page).toContain("so it can't be added to a project");
+    expect((await request(app).post(`${url}/add`).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ doc: '1', project: 'demo' })).text)
+      .toContain('Only an IPS document can be added to a project');
+  });
+
+  test('a link with a passcode asks for it, and says when it is wrong', async () => {
+    const { url, page } = await open(`shlink:/${await link('p1', { flag: 'P', passcode: 'open-sesame' })}`);
+    expect(page).toContain('This link needs a passcode');
+    expect(seen).toHaveLength(0);
+    const post = (passcode) => request(app).post(url).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ passcode });
+    expect((await post('wrong')).status).toBe(303);
+    let p = (await request(app).get(url).set('Accept', 'text/html')).text;
+    expect(p).toContain('The passcode was not accepted - 2 attempts left');
+    expect(seen[0].body).toEqual({ recipient: 'FHIRsmith IPS viewer (example.org)', passcode: 'wrong' });
+    await post('open-sesame');
+    p = (await request(app).get(url).set('Accept', 'text/html')).text;
+    expect(p).toContain('<p>Summary for <b>Jane Smith</b></p>');
+    // the log goes on from the first try
+    expect(p).toContain('The link needs a passcode (flag P): asking for it');
+    expect(p).toContain('Trying again, with the passcode the user gave');
+    // the passcode can be given up front too
+    const { page: direct } = await open(`shlink:/${await link('p2', { flag: 'P', passcode: 'pc' })}`, { passcode: 'pc' });
+    expect(direct).toContain('<p>Summary for <b>Jane Smith</b></p>');
+  });
+
+  test('a VHL: its signature is checked, and the DocumentReference Bundle a VHL server gives is read', async () => {
+    const shlink = `shlink://${await link('v1', { vhlStyle: true })}`;
+    const prot = CBOR.encode(new Map([[1, -7], [4, 'test-kid']]));
+    const payload = CBOR.encode(new Map([[1, 'XX'], [-260, new Map([[5, [shlink]]])]]));
+    const sig = crypto.sign('sha256', CBOR.encode(['Signature1', prot, Buffer.alloc(0), payload]), { key: keys.privateKey, dsaEncoding: 'ieee-p1363' });
+    const hc1 = 'HC1:' + base45.encode(Buffer.from(pako.deflate(CBOR.encode(new CBOR.Tagged(18, [prot, new Map(), payload, sig])))));
+    const { page } = await open(hc1);
+    expect(page).toContain('A Verifiable Health Link, issued by XX, <b>signature good</b> (the test issuer)');
+    expect(page).toContain('The manifest is a FHIR Bundle (as a VHL server gives it)');
+    expect(page).toContain('content.url is not a FHIR element - it should be content.attachment.url (used anyway)');
+    expect(page).toContain('<p>Summary for <b>Jane Smith</b></p>');
+  });
+
+  test('failures say what went wrong', async () => {
+    const gone = Buffer.from(JSON.stringify({ url: `${shlUrl}/access/nothing`, key: crypto.randomBytes(32).toString('base64url') })).toString('base64url');
+    const { page } = await open(`shlink:/${gone}`);
+    expect(page).toContain('The document could not be retrieved: The SHL server does not know the link');
+    expect(page).toContain('The manifest: HTTP 404');
+    // a wrong key
+    const l = JSON.parse(Buffer.from(await link('k1', { flag: 'U' }), 'base64url').toString('utf8'));
+    l.key = crypto.randomBytes(32).toString('base64url');
+    const { page: wrong } = await open(`shlink:/${Buffer.from(JSON.stringify(l)).toString('base64url')}`);
+    expect(wrong).toContain('Decryption failed: the key is wrong');
+    // an expired page
+    expect((await request(app).get('/ips/view/aaaaaaaaaaaaaaaaaaaaaaaa').set('Accept', 'text/html')).status).toBe(404);
+  });
+
+  test('private addresses are refused unless the configuration allows them', async () => {
+    const strict = await makeApp({});
+    try {
+      const payload = Buffer.from(JSON.stringify({ url: 'https://127.0.0.1:1/access/x', key: crypto.randomBytes(32).toString('base64url'), flag: 'U' })).toString('base64url');
+      const r = await request(strict.app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: `shlink:/${payload}` });
+      const page = await request(strict.app).get(r.headers.location).set('Accept', 'text/html');
+      expect(page.text).toContain('Blocked request to non-public address 127.0.0.1');
+      // and http
+      const http1 = Buffer.from(JSON.stringify({ url: `${shlUrl}/access/x`, key: crypto.randomBytes(32).toString('base64url') })).toString('base64url');
+      const r2 = await request(strict.app).post('/ips/view').set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send({ link: `shlink:/${http1}` });
+      expect((await request(strict.app).get(r2.headers.location).set('Accept', 'text/html')).text).toContain('The url must be https');
+    } finally {
+      strict.mod.shutdown();
+    }
+  });
+
+  test('turned off, there is no viewer, and shared links name the configured viewer', async () => {
+    const off = await makeApp({ viewer: { enabled: false } });
+    try {
+      expect((await request(off.app).get('/ips/view').set('Accept', 'text/html')).status).toBe(404);
+    } finally {
+      off.mod.shutdown();
+    }
+  });
+});
+
+describe("a document's page title", () => {
+  test('IPS #{id}: the title, with the patient when the title lacks them; the patient and date when there is no title', async () => {
+    const { app, mod } = await makeApp();
+    try {
+      mod.store.createProject('demo', 'Demo', null);
+      await post(app, 'demo', ips());
+      const titleOf = async (id) => (await request(app).get(`/ips/demo/Bundle/${id}`).set('Accept', 'text/html')).text.match(/<title>([^<]*)<\/title>/)[1];
+      expect(await titleOf(1)).toBe('FHIRsmith: IPS #1: Patient Summary as of 1 March 2026 - Jane Alexandra Smith');
+      const untitled = ips();
+      delete untitled.entry[0].resource.title;
+      await post(app, 'demo', untitled);
+      expect(await titleOf(2)).toBe('FHIRsmith: IPS #2: Jane Alexandra Smith, 2026-03-01');
+    } finally {
+      mod.shutdown();
+    }
+  });
+});
+
+describe('patients: matching, the Patient endpoint, $summary', () => {
+  let app;
+  let mod;
+  // the fixture's document, with its Patient changed
+  const withPatient = (change) => {
+    const doc = ips();
+    const pat = doc.entry.find(e => e.resource.resourceType === 'Patient').resource;
+    change(pat);
+    return doc;
+  };
+  const json = (url) => request(app).get(url).set('Accept', 'application/fhir+json');
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.store.createProject('other', 'Other', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  test('matches by identifier, then by name and birth date; a conflicting birth date or gender makes a new patient', async () => {
+    await post(app, 'demo', ips());
+    expect(mod.store.read(1).patient_id).toBe(1);
+    expect(mod.store.read(1).match).toEqual({ method: 'new', detail: 'Not seen before' });
+    // the same identifier, another phone number
+    await post(app, 'demo', withPatient(p => { p.telecom = [{ system: 'phone', value: '0400 000 000' }]; }));
+    expect(mod.store.read(2)).toMatchObject({ patient_id: 1, match: { method: 'identifier' } });
+    // no identifier: the same name, as text and in another order, and the same birth date
+    await post(app, 'demo', withPatient(p => { delete p.identifier; p.name = [{ text: 'Smith, Jane Alexandra' }]; }));
+    expect(mod.store.read(3)).toMatchObject({ patient_id: 1, match: { method: 'demographics' } });
+    // the same identifier, but another birth date: someone else
+    await post(app, 'demo', withPatient(p => { p.birthDate = '1999-01-01'; }));
+    expect(mod.store.read(4).patient_id).toBe(2);
+    expect(mod.store.read(4).match.detail).toBe('Not seen before (patient 1 has the same identifier, but a different birth date)');
+    // the same name, no birth date: not enough
+    await post(app, 'demo', withPatient(p => { delete p.identifier; delete p.birthDate; }));
+    expect(mod.store.read(5).patient_id).toBe(3);
+    // the same name and birth date, another gender
+    await post(app, 'demo', withPatient(p => { delete p.identifier; p.gender = 'male'; }));
+    expect(mod.store.read(6).patient_id).toBe(4);
+    // another project: its own patients
+    await post(app, 'other', ips());
+    expect(mod.store.read(7)).toMatchObject({ patient_id: 5, match: { method: 'new' } });
+  });
+
+  test("the patient's resource is cumulative, with this server's id", async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => {
+      p.id = 'example';
+      p.telecom = [{ system: 'phone', value: '0400 000 000' }];
+      p.identifier.push({ system: 'http://ns.example.org/other', value: 'X1' });
+      p.generalPractitioner = [{ reference: 'urn:uuid:pract-1' }];
+    }));
+    const r = await json('/ips/demo/Patient/1');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ resourceType: 'Patient', id: '1', gender: 'female', birthDate: '1970-05-06' });
+    expect(r.body.telecom.map(t => t.value)).toEqual(['0400 000 000', '+61 3 9999 0000', 'jane@example.org']);
+    expect(r.body.identifier.map(i => i.value)).toEqual(['MRN-12345', 'X1']);
+    expect(r.body.generalPractitioner).toBeUndefined();
+    expect(r.body.text).toBeUndefined();
+    expect((await json('/ips/demo/Patient/9')).status).toBe(404);
+    expect((await json('/ips/demo/Patient/x')).status).toBe(404);
+    // the page: who, and the documents
+    const page = await request(app).get('/ips/demo/Patient/1').set('Accept', 'text/html');
+    expect(page.text).toContain('<title>FHIRsmith: Patient #1: Jane Alexandra Smith</title>');
+    expect(page.text).toContain('<a href="/ips/demo/Bundle/2">2</a>');
+    expect(page.text).toContain('matched by identifier');
+    // and the document's page links to it
+    expect((await request(app).get('/ips/demo/Bundle/2').set('Accept', 'text/html')).text).toContain('Patient <a href="/ips/demo/Patient/1">#1</a>: matched by identifier');
+    expect((await request(app).get('/ips/demo').set('Accept', 'text/html')).text).toContain('<a class="btn btn-default" href="/ips/demo/Patient">Patients</a>');
+  });
+
+  test('searches the patients', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.identifier = [{ system: 'urn:x', value: 'B' }]; p.name = [{ text: 'Bob Brown' }]; p.gender = 'male'; p.birthDate = '1980-02-03'; }));
+    const ids = async (q) => {
+      const r = await json(`/ips/demo/Patient${q}`);
+      return (r.body.entry || []).filter(e => e.search.mode === 'match').map(e => e.resource.id);
+    };
+    expect(await ids('')).toEqual(['2', '1']);
+    expect((await json('/ips/demo/Patient')).body.total).toBe(2);
+    expect(await ids('?name=jan')).toEqual(['1']);
+    expect(await ids('?family=smith')).toEqual(['1']);
+    expect(await ids('?family=brown')).toEqual(['2']); // a name that is only text
+    expect(await ids('?given=alex')).toEqual(['1']);
+    expect(await ids('?birthdate=1980')).toEqual(['2']);
+    expect(await ids('?birthdate=1970-05-06')).toEqual(['1']);
+    expect(await ids('?gender=female')).toEqual(['1']);
+    expect(await ids('?identifier=urn:oid:1.2.36.146.595.217.0.1|MRN-12345')).toEqual(['1']);
+    expect(await ids('?identifier=B')).toEqual(['2']);
+    expect(await ids('?_id=2')).toEqual(['2']);
+    expect(await ids('?_count=1')).toEqual(['2']);
+    expect((await json('/ips/demo/Patient?_count=1')).body.link.find(l => l.relation === 'next').url).toMatch(/\/ips\/demo\/Patient\?_count=1&_offset=1$/);
+    expect((await json('/ips/demo/Patient?birthdate=soon')).status).toBe(400);
+    const unknown = await json('/ips/demo/Patient?colour=blue');
+    expect(JSON.stringify(unknown.body.entry.find(e => e.search.mode === 'outcome').resource)).toContain("Unknown search parameter 'colour' was ignored");
+    const page = await request(app).get('/ips/demo/Patient?name=bob').set('Accept', 'text/html');
+    expect(page.text).toContain('<a href="/ips/demo/Patient/2">Bob Brown</a>');
+    expect(page.text).not.toContain('Jane Alexandra Smith</a>');
+  });
+
+  test('$summary: the latest document received - the modified copy, unless the setting says the original', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.telecom = []; }));
+    const r = await json('/ips/demo/Patient/1/$summary');
+    expect(r.status).toBe(200);
+    expect(r.body.id).toBe('2');
+    // processed: the modified copy
+    const modified = { ...mod.store.read(2).bundle, language: 'en-AU' };
+    mod.store.saveAnalysed(2, modified);
+    expect((await json('/ips/demo/Patient/1/$summary')).body.language).toBe('en-AU');
+    mod.config.summarySource = 'original';
+    expect((await json('/ips/demo/Patient/1/$summary')).body.language).toBeUndefined();
+    // by identifier
+    expect((await json('/ips/demo/Patient/$summary?identifier=urn:oid:1.2.36.146.595.217.0.1|MRN-12345')).body.id).toBe('2');
+    expect((await json('/ips/demo/Patient/$summary?identifier=nobody')).status).toBe(404);
+    expect((await json('/ips/demo/Patient/$summary')).status).toBe(400);
+    expect((await json('/ips/demo/Patient/7/$summary')).status).toBe(404);
+    // an identifier two patients have
+    await post(app, 'demo', withPatient(p => { p.birthDate = '2001-01-01'; }));
+    expect((await json('/ips/demo/Patient/$summary?identifier=MRN-12345')).status).toBe(422);
+  });
+
+  test('deleting documents rebuilds the patient, and the last one removes it; documents from before are matched at startup', async () => {
+    await post(app, 'demo', ips());
+    await post(app, 'demo', withPatient(p => { p.telecom = [{ system: 'phone', value: '0400 000 000' }]; }));
+    expect(mod.store.patient(1, 1).resource.telecom).toHaveLength(3);
+    mod.store.delete(2, 1);
+    expect(mod.store.patient(1, 1).resource.telecom.map(t => t.value)).toEqual(['+61 3 9999 0000', 'jane@example.org']);
+    mod.store.delete(1, 1);
+    expect(mod.store.patient(1, 1)).toBeNull();
+    // documents with no patient yet (stored before patients were matched)
+    await post(app, 'demo', ips());
+    mod.store.db.exec('UPDATE documents SET patient_id = NULL, patient_match = NULL; DELETE FROM patients');
+    mod.store.matchUnmatched();
+    expect(mod.store.read(3)).toMatchObject({ patient_id: 3, match: { method: 'new' } });
+  });
+
+  test('the CapabilityStatement has the Patient endpoint and $summary', async () => {
+    const cs = (await json('/ips/demo/metadata')).body;
+    const p = cs.rest[0].resource.find(r => r.type === 'Patient');
+    expect(p.interaction.map(i => i.code)).toEqual(['read', 'search-type']);
+    expect(p.operation).toEqual([{ name: 'summary', definition: 'http://hl7.org/fhir/uv/ips/OperationDefinition/summary' }]);
+  });
+});

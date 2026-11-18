@@ -125,6 +125,38 @@ describe('CountryCodeServices', () => {
     });
   });
 
+  describe('Reserved and formerly used codes', () => {
+    test('EU is an active code: a jurisdiction, exceptionally reserved but used', async () => {
+      const eu = (await provider.locate('EU')).context;
+      expect(eu).not.toBeNull();
+      expect(await provider.display(eu)).toBe('European Union');
+      expect(await provider.isInactive(eu)).toBe(false);
+      expect(await provider.getStatus(eu)).toBeNull();
+      expect(await provider.definition(eu)).toMatch(/^Exceptionally reserved in ISO 3166-1 for the European Union/);
+    });
+
+    test('formerly used codes are inactive, and say what they were', async () => {
+      for (const code of ['AN', 'BU', 'CS', 'NT', 'SU', 'TP', 'YU', 'ZR', 'DD', 'FX']) {
+        const c = (await provider.locate(code)).context;
+        expect(c).not.toBeNull();
+        expect(await provider.isInactive(c)).toBe(true);
+        expect(await provider.getStatus(c)).toBe('inactive');
+      }
+      const yu = (await provider.locate('YU')).context;
+      expect(await provider.display(yu)).toBe('Yugoslavia');
+      expect(await provider.definition(yu)).toBe('Formerly used for Yugoslavia, until 2003: no longer assigned (ISO 3166-3: YUCS)');
+    });
+
+    test('the other reserved codes are not codes', async () => {
+      for (const code of ['UK', 'EZ', 'UN', 'IC', 'EA', 'AC', 'TA', 'DG', 'CP']) {
+        expect((await provider.locate(code)).context).toBeNull();
+      }
+      // the user-assigned and X / Z arrangements are as they were
+      expect((await provider.locate('XK')).context.userDefined).toBe(true);
+      expect(await provider.display((await provider.locate('ZZ')).context)).toBe('Unknown or Invalid Territory');
+    });
+  });
+
   describe('Iterator Functionality', () => {
     test('should create iterator for all concepts', async () => {
       const iterator = await provider.iterator(null);
@@ -261,6 +293,23 @@ describe('CountryCodeServices', () => {
       expect(results[0].code).toBe('US');
     });
 
+    test('a pattern with alternation matches whole codes only', async () => {
+      // '^' + 'US|CA' + '$' would be "starts with US or ends with CA", taking in USA
+      const ctxt = await provider.getPrepContext(false);
+      await provider.filter(ctxt, true, 'code', 'regex', 'US|CA');
+      const filters = await provider.executeFilters(ctxt);
+      const filter = filters[0];
+
+      const results = [];
+      filter.cursor = -1;
+      while (await provider.filterMore(ctxt, filter)) {
+        const concept = await provider.filterConcept(ctxt, filter);
+        results.push(concept.code);
+      }
+
+      expect(results.sort()).toEqual(['CA', 'US']);
+    });
+
     test('should filter all 2-letter codes', async () => {
       const ctxt = await provider.getPrepContext(false);
       await provider.filter(ctxt, true, 'code', 'regex', '[A-Z]{2}');
@@ -361,8 +410,7 @@ describe('CountryCodeServices', () => {
       const filter = filters[0];
 
       const result = await provider.filterLocate(ctxt, filter, 'CAN');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in filter', async () => {
@@ -385,13 +433,13 @@ describe('CountryCodeServices', () => {
     test('should throw error for unsupported property', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'display', 'regex', 'test')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "display regex test" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for unsupported operator', async () => {
       await expect(
         provider.filter(await provider.getPrepContext(false), true, 'code', 'equals', 'US')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "code equals US" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should throw error for invalid regex', async () => {

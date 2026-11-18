@@ -1,0 +1,11 @@
+{
+  "comment": "Advisories the CI npm audit steps accept (utilities/audit-check.js). Each entry needs a reason, and an expiry date after which it fails again so it gets looked at. Remove an entry once a fixed version is installed - the check warns when an entry no longer matches anything.",
+  "advisories": [
+    {
+      "id": "GHSA-fc5q-39xc-vjpf",
+      "package": "picomatch",
+      "reason": "ReDoS from crafted glob patterns; no fixed release (<=4.0.7, the latest). Shipped only via sqlite3 -> node-gyp -> tinyglobby, which runs at install time with node-gyp's own patterns; otherwise jest/typescript-eslint dev tooling. FHIRsmith never passes untrusted patterns to it.",
+      "until": "2027-02-28"
+    }
+  ]
+}

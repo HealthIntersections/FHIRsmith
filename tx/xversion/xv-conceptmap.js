@@ -1,4 +1,70 @@
 const {VersionUtilities} = require("../../library/version-utilities");
+const { mapShared, convertOnce } = require("./xv-shared");
+
+// R4/R3 have no ConceptMap.group.unmapped.valueSet or .relationship. The Java version
+// convertors carry them across as these cross-version extensions, so read them back.
+const EXT_UNMAPPED_VALUESET = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-ConceptMap.group.unmapped.valueSet';
+const EXT_UNMAPPED_RELATIONSHIP = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-ConceptMap.group.unmapped.relationship';
+
+/**
+ * R4 spells group.unmapped differently: the target map is 'url' rather than 'otherMap',
+ * and the 'provided' mode is called 'use-source-code' in R5.
+ */
+function unmappedToR5(unmapped) {
+  if (!unmapped) {
+    return;
+  }
+  if (unmapped.mode === 'provided') {
+    unmapped.mode = 'use-source-code';
+  }
+  if (unmapped.url !== undefined && unmapped.otherMap === undefined) {
+    unmapped.otherMap = unmapped.url;
+    delete unmapped.url;
+  }
+  for (const ext of unmapped.extension || []) {
+    if (ext.url === EXT_UNMAPPED_VALUESET && unmapped.valueSet === undefined) {
+      unmapped.valueSet = ext.valueCanonical || ext.valueUri;
+    }
+    if (ext.url === EXT_UNMAPPED_RELATIONSHIP && unmapped.relationship === undefined) {
+      unmapped.relationship = ext.valueCode || ext.valueString;
+    }
+  }
+  if (unmapped.extension) {
+    unmapped.extension = unmapped.extension.filter(e => e.url !== EXT_UNMAPPED_VALUESET && e.url !== EXT_UNMAPPED_RELATIONSHIP);
+    if (unmapped.extension.length === 0) {
+      delete unmapped.extension;
+    }
+  }
+}
+
+/** The inverse of unmappedToR5. */
+function unmappedFromR5(unmapped) {
+  if (!unmapped || !(unmapped.mode === 'use-source-code' || unmapped.otherMap !== undefined ||
+      unmapped.valueSet !== undefined || unmapped.relationship !== undefined)) {
+    return unmapped;
+  }
+  // a copy: the stored map is not changed (copy on write, see conceptMapFromR5)
+  const copy = { ...unmapped };
+  if (copy.mode === 'use-source-code') {
+    copy.mode = 'provided';
+  }
+  if (copy.otherMap !== undefined) {
+    copy.url = copy.otherMap;
+    delete copy.otherMap;
+  }
+  if (copy.valueSet !== undefined || copy.relationship !== undefined) {
+    copy.extension = [...(copy.extension || [])];
+  }
+  if (copy.valueSet !== undefined) {
+    copy.extension.push({url: EXT_UNMAPPED_VALUESET, valueCanonical: copy.valueSet});
+    delete copy.valueSet;
+  }
+  if (copy.relationship !== undefined) {
+    copy.extension.push({url: EXT_UNMAPPED_RELATIONSHIP, valueCode: copy.relationship});
+    delete copy.relationship;
+  }
+  return copy;
+}
 
 /**
  * Converts input ConceptMap to R5 format (modifies input object for performance)
@@ -45,8 +111,30 @@ function conceptMapToR5(jsonObj, sourceVersion) {
     // Convert equivalence to relationship in group.element.target
     if (jsonObj.group && Array.isArray(jsonObj.group)) {
       jsonObj.group.forEach(group => {
+        unmappedToR5(group.unmapped);
         if (group.element && Array.isArray(group.element)) {
           group.element.forEach(element => {
+            // R4 has no element.noMap. A target with equivalence = 'unmatched' and no
+            // code is R4's way of saying the same thing: there is positively no map
+            // for this concept. Lift it to noMap and drop the placeholder target, so
+            // everything downstream sees one R5 shape. This mirrors what the Java
+            // convertors do (ConceptMap40_50.convertSourceElementComponent), including
+            // their reservation of 'unmatched' for noMap - a real 'not-related-to'
+            // target converts to 'disjoint' and carries a code, so it is untouched here.
+            if (element.target && Array.isArray(element.target)) {
+              const noMapTargets = element.target.filter(t => t.equivalence === 'unmatched' && !t.code);
+              if (noMapTargets.length > 0) {
+                element.noMap = true;
+                const comment = noMapTargets.find(t => t.comment);
+                if (comment && !element.comment) {
+                  element.comment = comment.comment;
+                }
+                element.target = element.target.filter(t => !(t.equivalence === 'unmatched' && !t.code));
+                if (element.target.length === 0) {
+                  delete element.target;
+                }
+              }
+            }
             if (element.target && Array.isArray(element.target)) {
               element.target.forEach(target => {
                 if (target.equivalence && !target.relationship) {
@@ -67,114 +155,104 @@ function conceptMapToR5(jsonObj, sourceVersion) {
 }
 
 /**
- * Converts R5 ConceptMap to target version format (clones object first)
- * @param {Object} r5Obj - The R5 format ConceptMap object
+ * Converts R5 ConceptMap to target version format, copy on write (see xv-shared.js): the top
+ * level is copied; in the groups, only what changes is, so a large map whose targets need no
+ * change shares them all, and the converted groups are kept for the next time (convertOnce)
+ * @param {Object} r5Obj - The R5 format ConceptMap object (not changed)
  * @param {string} targetVersion - Target FHIR version
- * @returns {Object} New object in target version format
+ * @returns {Object} New object in target version format (sharing parts with r5Obj)
  * @private
  */
 function conceptMapFromR5(r5Obj, targetVersion) {
   if (VersionUtilities.isR5Ver(targetVersion)) {
     return r5Obj; // No conversion needed
   }
-
-  // Clone the object to avoid modifying the original
-  const cloned = JSON.parse(JSON.stringify(r5Obj));
-
-  if (VersionUtilities.isR4Ver(targetVersion)) {
-    return conceptMapR5ToR4(cloned);
-  } else if (VersionUtilities.isR3Ver(targetVersion)) {
-    return conceptMapR5ToR3(cloned);
+  // R3 is converted as R4 is
+  if (!VersionUtilities.isR4Ver(targetVersion) && !VersionUtilities.isR3Ver(targetVersion)) {
+    throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
   }
 
-  throw new Error(`Unsupported target FHIR version: ${targetVersion}`);
-}
-
-/**
- * Converts R5 ConceptMap to R4 format
- * @param {Object} r5Obj - Cloned R5 ConceptMap object
- * @returns {Object} R4 format ConceptMap
- * @private
- */
-function conceptMapR5ToR4(r5Obj) {
+  const out = { ...r5Obj };
   // Remove R5-specific elements
-  if (r5Obj.versionAlgorithmString) {
-    delete r5Obj.versionAlgorithmString;
-  }
-  if (r5Obj.versionAlgorithmCoding) {
-    delete r5Obj.versionAlgorithmCoding;
-  }
-  if (r5Obj.property) {
-    delete r5Obj.property;
-  }
-  if (r5Obj.additionalAttribute) {
-    delete r5Obj.additionalAttribute;
-  }
+  delete out.versionAlgorithmString;
+  delete out.versionAlgorithmCoding;
+  delete out.property;
+  delete out.additionalAttribute;
 
   // Convert identifier array back to single object
-  if (r5Obj.identifier && Array.isArray(r5Obj.identifier)) {
+  if (Array.isArray(r5Obj.identifier)) {
     if (r5Obj.identifier.length > 0) {
-      r5Obj.identifier = r5Obj.identifier[0]; // Take first identifier
+      out.identifier = r5Obj.identifier[0]; // Take first identifier
     } else {
-      delete r5Obj.identifier;
+      delete out.identifier;
     }
   }
 
   // Convert sourceScope/targetScope back to source/target + version
   if (r5Obj.sourceScope) {
     const parts = r5Obj.sourceScope.split('|');
-    r5Obj.source = parts[0];
+    out.source = parts[0];
     if (parts.length > 1) {
-      r5Obj.sourceVersion = parts[1];
+      out.sourceVersion = parts[1];
     }
-    delete r5Obj.sourceScope;
+    delete out.sourceScope;
   }
-
   if (r5Obj.targetScope) {
     const parts = r5Obj.targetScope.split('|');
-    r5Obj.target = parts[0];
+    out.target = parts[0];
     if (parts.length > 1) {
-      r5Obj.targetVersion = parts[1];
+      out.targetVersion = parts[1];
     }
-    delete r5Obj.targetScope;
+    delete out.targetScope;
   }
 
   // Convert relationship back to equivalence in group.element.target
-  if (r5Obj.group && Array.isArray(r5Obj.group)) {
-    r5Obj.group.forEach(group => {
-      if (group.element && Array.isArray(group.element)) {
-        group.element.forEach(element => {
-          if (element.target && Array.isArray(element.target)) {
-            element.target.forEach(target => {
-              // If we have both equivalence and relationship, prefer equivalence for R4
-              if (target.relationship && !target.equivalence) {
-                target.equivalence = convertRelationshipToEquivalence(target.relationship);
-              }
-              // Remove R5-only relationship field
-              delete target.relationship;
-            });
-          }
-        });
-      }
-    });
+  if (Array.isArray(r5Obj.group)) {
+    out.group = convertOnce(r5Obj.group, 'cm-r4', groups => mapShared(groups, groupFromR5));
   }
-
-  return r5Obj;
+  return out;
 }
 
-/**
- * Converts R5 ConceptMap to R3 format
- * @param {Object} r5Obj - Cloned R5 ConceptMap object
- * @returns {Object} R3 format ConceptMap
- * @private
- */
-function conceptMapR5ToR3(r5Obj) {
-  // First apply R4 conversions
-  const r4Obj = conceptMapR5ToR4(r5Obj);
-
-  return r4Obj;
+/** A group (the same object if nothing in it changes) @private */
+function groupFromR5(group) {
+  const unmapped = unmappedFromR5(group.unmapped);
+  const element = Array.isArray(group.element) ? mapShared(group.element, elementFromR5) : group.element;
+  if (unmapped === group.unmapped && element === group.element) {
+    return group;
+  }
+  const copy = { ...group };
+  if (unmapped !== group.unmapped) {
+    copy.unmapped = unmapped;
+  }
+  if (element !== group.element) {
+    copy.element = element;
+  }
+  return copy;
 }
 
+/** An element (the same object if none of its targets changes) @private */
+function elementFromR5(element) {
+  if (!Array.isArray(element.target)) {
+    return element;
+  }
+  const target = mapShared(element.target, targetFromR5);
+  return target === element.target ? element : { ...element, target };
+}
+
+/** A target: relationship becomes equivalence (the same object if it has no relationship) @private */
+function targetFromR5(target) {
+  if (target.relationship === undefined) {
+    return target;
+  }
+  const copy = { ...target };
+  // If we have both equivalence and relationship, prefer equivalence for R4
+  if (target.relationship && !target.equivalence) {
+    copy.equivalence = convertRelationshipToEquivalence(target.relationship);
+  }
+  // Remove R5-only relationship field
+  delete copy.relationship;
+  return copy;
+}
 
 /**
  * Converts R3/R4 equivalence to R5 relationship
@@ -182,16 +260,23 @@ function conceptMapR5ToR3(r5Obj) {
  * @returns {string} R5 relationship value
  * @private
  */
+// The two vocabularies name the relationship from opposite ends. R3/R4 equivalence
+// describes the TARGET ('wider' = the target is wider than the source); R5 relationship
+// describes the SOURCE ('source-is-narrower-than-target'). So wider <-> narrower-than-
+// target, and narrower <-> broader-than-target. These tables follow the Java convertors
+// (ConceptMap30_50 / ConceptMap40_50), which are the reference.
 function convertEquivalenceToRelationship(equivalence) {
   const equivalenceToRelationship = {
     'relatedto': 'related-to',
     'equivalent': 'equivalent',
     'equal': 'equivalent',
-    'wider': 'source-is-broader-than-target',
-    'subsumes': 'source-is-broader-than-target',
-    'narrower': 'source-is-narrower-than-target',
-    'specializes': 'source-is-narrower-than-target',
-    'inexact': 'not-related-to',
+    'wider': 'source-is-narrower-than-target',
+    'subsumes': 'source-is-narrower-than-target',
+    'narrower': 'source-is-broader-than-target',
+    'specializes': 'source-is-broader-than-target',
+    'inexact': 'related-to',
+    // Java gives no relationship for 'unmatched' (a target-less 'unmatched' is lifted to
+    // element.noMap before this is reached); R5 requires one, so not-related-to it is
     'unmatched': 'not-related-to',
     'disjoint': 'not-related-to'
   };
@@ -208,9 +293,11 @@ function convertRelationshipToEquivalence(relationship) {
   const relationshipToEquivalence = {
     'related-to': 'relatedto',
     'equivalent': 'equivalent',
-    'source-is-broader-than-target': 'wider',
-    'source-is-narrower-than-target': 'narrower',
-    'not-related-to': 'unmatched'
+    'source-is-narrower-than-target': 'wider',
+    'source-is-broader-than-target': 'narrower',
+    // 'unmatched' is reserved for "no map" (see conceptMapToR5); a real not-related-to
+    // target is disjoint, as in the Java convertors
+    'not-related-to': 'disjoint'
   };
   return relationshipToEquivalence[relationship] || 'relatedto';
 }

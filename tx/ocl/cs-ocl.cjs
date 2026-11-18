@@ -1,19 +1,25 @@
 const fs = require('fs/promises');
+const path = require('path');
 const { AbstractCodeSystemProvider } = require('../cs/cs-provider-api');
 const { CodeSystemProvider, CodeSystemFactoryProvider, CodeSystemContentMode, FilterExecutionContext } = require('../cs/cs-api');
+const { BaseCSServices } = require('../cs/cs-base');
 const { CodeSystem } = require('../library/codesystem');
 const { SearchFilterText } = require('../library/designations');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MARKER_EXTENSION } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
-const { CACHE_CS_DIR, CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
+const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
+const { PublicAccessChecker } = require('./resolve/public-access');
+const { CACHE_CS_DIR, CACHE_VS_DIR, DISCOVERY_SNAPSHOT_PATH, getCacheFilePath } = require('./cache/cache-paths');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs, cleanupStaleTmpFiles } = require('./cache/cache-utils');
 const { computeCodeSystemFingerprint } = require('./fingerprint/fingerprint');
 const { OCLBackgroundJobQueue } = require('./jobs/background-queue');
 const { OCLConceptFilterContext } = require('./model/concept-filter-context');
 const { toConceptContext } = require('./mappers/concept-mapper');
-const { patchSearchWorkerForOCLCodeFiltering } = require('./shared/patches');
+const { patchSearchWorkerForOCLCodeFiltering, patchProviderForOCLFactorySync } = require('./shared/patches');
 const regexUtilities = require("../../library/regex-utilities");
+const Logger = require('../../library/logger');
+const oclLog = Logger.getInstance().child({ module: 'ocl' });
 
 patchSearchWorkerForOCLCodeFiltering();
 
@@ -36,9 +42,23 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     const options = typeof config === 'string' ? { baseUrl: config } : (config || {});
 
     this.org = options.org || null;
+    this.cluster = options.cluster || null;
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
+
+    // Resolves each source's DEFAULT version (latest release, else HEAD) so both
+    // get registered. Disabled without a token, in which case discovery stays
+    // HEAD-only exactly as before.
+    this.publicAccess = new PublicAccessChecker({ httpClient: this.httpClient, logger: oclLog });
+    this.referenceResolver = new OclReferenceResolver({
+      httpClient: this.httpClient,
+      token: options.token || null,
+      logger: oclLog,
+      publicAccess: this.publicAccess
+    });
+    this._defaultVersionByCanonical = new Map();
+    this._headMetaByCanonical = new Map();
 
     this._codeSystemsByCanonical = new Map();
     this._idToCodeSystem = new Map();
@@ -51,6 +71,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._initializePromise = null;
     this._organizationIdsCache = null;
     this._organizationIdsFetchPromise = null;
+    this._followerCacheMtimes = new Map();
+    this._followerSnapshotMtimeMs = null;
+    this._lastSnapshotHash = null;
   }
 
   async initialize() {
@@ -65,18 +88,28 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
 
     this._initializePromise = (async () => {
       try {
-        const sources = await this.#fetchSourcesForDiscovery();
-        console.log(`[OCL] Fetched ${sources.length} sources`);
+        if (this.cluster !== 'follower') {
+          await cleanupStaleTmpFiles(CACHE_CS_DIR);
+        }
 
-        const snapshot = this.#buildSourceSnapshot(sources);
-        this.#applySnapshot(snapshot);
+        if (this.cluster === 'follower') {
+          await this.#initializeFromDiscoverySnapshot();
+        } else {
+          const sources = await this.#fetchSourcesForDiscovery();
+          oclLog.info(`Fetched ${sources.length} sources`);
 
-        console.log(`[OCL] Loaded ${this._codeSystemsByCanonical.size} code systems`);
+          const snapshot = this.#buildSourceSnapshot(sources);
+          await this.#augmentSnapshotWithDefaultVersions(snapshot);
+          this.#applySnapshot(snapshot);
+          await this.#writeDiscoverySnapshot(snapshot);
+        }
+
+        oclLog.info(`Loaded ${this._codeSystemsByCanonical.size} code systems${this.cluster === 'follower' ? ' (follower, from discovery snapshot)' : ''}`);
         this._initialized = true;
       } catch (error) {
-        console.error(`[OCL] Initialization failed:`, error.message);
+        oclLog.error(`Initialization failed: ${error.message}`);
         if (error.response) {
-          console.error(`[OCL] HTTP ${error.response.status}: ${error.response.statusText}`);
+          oclLog.error(`HTTP ${error.response.status}: ${error.response.statusText}`);
         }
         throw error;
       }
@@ -89,15 +122,12 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     }
   }
 
-  assignIds(ids) {
+  prefixIds() {
+    const codeSystems = [...new Set(this._idToCodeSystem.values())];
     this._usedIds.clear();
-    for (const cs of this._idToCodeSystem.values()) {
-      if (!cs.id || ids.has(`CodeSystem/${cs.id}`)) {
-        cs.id = String(ids.size);
-        cs.jsonObj.id = cs.id;
-      }
-      ids.add(`CodeSystem/${cs.id}`);
-      this._usedIds.add(cs.id);
+    this._idToCodeSystem.clear();
+    for (const cs of codeSystems) {
+      this.#trackCodeSystemId(cs);
       this._idToCodeSystem.set(cs.id, cs);
     }
   }
@@ -121,7 +151,11 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       return this.#emptyChanges();
     }
 
-    this.#scheduleRefresh();
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerCacheCheck();
+    } else {
+      this.#scheduleRefresh();
+    }
     if (!this._pendingChanges) {
       return this.#emptyChanges();
     }
@@ -131,11 +165,175 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     return out;
   }
 
+  async #initializeFromDiscoverySnapshot() {
+    await ensureCacheDirectories(CACHE_CS_DIR);
+
+    const snapshotData = await this.#readDiscoverySnapshot();
+    if (!snapshotData) {
+      oclLog.warn('Follower: no discovery snapshot available yet; will retry on next refresh cycle');
+      return;
+    }
+
+    const snapshot = this.#deserializeSnapshot(snapshotData);
+    this.#applySnapshot(snapshot);
+
+    const mtimeMs = getColdCacheMtimeMs(DISCOVERY_SNAPSHOT_PATH);
+    if (mtimeMs != null) {
+      this._followerSnapshotMtimeMs = mtimeMs;
+    }
+
+    oclLog.info(`Follower: initialized ${snapshot.size} code systems from discovery snapshot`);
+  }
+
+  #scheduleFollowerCacheCheck() {
+    if (this._refreshPromise) {
+      return;
+    }
+
+    this._refreshPromise = (async () => {
+      try {
+        const mtimeMs = getColdCacheMtimeMs(DISCOVERY_SNAPSHOT_PATH);
+        if (mtimeMs == null) {
+          return;
+        }
+        if (this._followerSnapshotMtimeMs != null && mtimeMs <= this._followerSnapshotMtimeMs) {
+          return;
+        }
+
+        const snapshotData = await this.#readDiscoverySnapshot();
+        if (!snapshotData) {
+          return;
+        }
+
+        const nextSnapshot = this.#deserializeSnapshot(snapshotData);
+        const changes = this.#diffSnapshots(this._sourceStateByCanonical, nextSnapshot);
+        this.#applySnapshot(nextSnapshot);
+        this._followerSnapshotMtimeMs = mtimeMs;
+
+        for (const cs of [...(changes.added || []), ...(changes.changed || [])]) {
+          const entry = nextSnapshot.get(cs.url);
+          for (const meta of [entry?.meta, entry?.headMeta]) {
+            if (!meta) {
+              continue;
+            }
+            if (OCLSourceCodeSystemFactory.hasExactFactory(meta.canonicalUrl, meta.version || null)) {
+              const factory = OCLSourceCodeSystemFactory.findFactoryByKey(meta.canonicalUrl, meta.version || null);
+              if (factory) {
+                factory.reloadColdCacheIfChanged();
+              }
+              continue;
+            }
+            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta, this.cluster);
+            if (factory) {
+              oclLog.info(`Follower: factory created for ${meta.canonicalUrl}|${meta.version || ''}`);
+            }
+          }
+        }
+
+        if (changes.added.length > 0 || changes.changed.length > 0 || changes.deleted.length > 0) {
+          this._pendingChanges = changes;
+          oclLog.info(`Follower: snapshot update — ${changes.added.length} new, ${changes.changed.length} updated, ${changes.deleted.length} removed`);
+        }
+      } catch (error) {
+        oclLog.error(`Follower snapshot check failed: ${error.message}`);
+      } finally {
+        this._refreshPromise = null;
+      }
+    })();
+  }
+
   async close() {
   }
 
   getSourceMetas() {
-    return Array.from(this.sourceMetaByUrl.values());
+    // Default metas first: registerProvider's unversioned key is first-wins, so
+    // the release (when one exists) becomes what a versionless request gets,
+    // matching OCL's own resolution. HEAD variants stay reachable via |HEAD.
+    return [
+      ...this.sourceMetaByUrl.values(),
+      ...this._headMetaByCanonical.values()
+    ];
+  }
+
+  /**
+   * Resolve each source's DEFAULT version via one chunked $resolveReference
+   * batch: OCL answers with the latest release, or HEAD when none is released.
+   * For sources whose default is a release, the snapshot entry becomes the
+   * release (CodeSystem resource, meta, versioned concepts URL) and the HEAD
+   * variant is kept as an extra meta, so BOTH versions get factories.
+   *
+   * Only canonicals that are new or whose listing checksum changed are
+   * re-resolved, so a steady-state refresh costs no extra requests. A no-op
+   * without a token: discovery stays HEAD-only exactly as before.
+   */
+  async #augmentSnapshotWithDefaultVersions(snapshot) {
+    if (!this.referenceResolver.isEnabled()) {
+      return;
+    }
+
+    const previousSnapshot = this._sourceStateByCanonical;
+    const toResolve = [];
+    for (const [canonicalUrl, entry] of snapshot.entries()) {
+      entry.baseChecksum = entry.checksum;
+      const previous = previousSnapshot.get(canonicalUrl);
+      const previousBase = previous?.baseChecksum ?? previous?.checksum ?? null;
+      if (!this._defaultVersionByCanonical.has(canonicalUrl) || previousBase !== entry.baseChecksum) {
+        toResolve.push(canonicalUrl);
+      }
+    }
+
+    if (toResolve.length > 0) {
+      const results = await this.referenceResolver.resolveReferences(toResolve, { bypassCache: true });
+      if (Array.isArray(results)) {
+        toResolve.forEach((canonicalUrl, i) => {
+          const r = results[i];
+          if (r?.resolved && r.result?.version) {
+            this._defaultVersionByCanonical.set(canonicalUrl, r.result.version);
+          } else {
+            this._defaultVersionByCanonical.delete(canonicalUrl);
+          }
+        });
+      } else {
+        // Resolver unavailable: keep whatever defaults we knew; new canonicals
+        // stay HEAD-only until a later cycle succeeds.
+        oclLog.warn('Default-version resolution unavailable; keeping previous defaults');
+      }
+    }
+
+    let releaseCount = 0;
+    for (const [canonicalUrl, entry] of snapshot.entries()) {
+      const defaultVersion = this._defaultVersionByCanonical.get(canonicalUrl);
+      const headVersion = entry.meta?.version || null;
+      if (!defaultVersion || defaultVersion === headVersion) {
+        continue;
+      }
+      const conceptsUrl = entry.meta?.conceptsUrl;
+      if (!conceptsUrl || !conceptsUrl.endsWith('concepts/')) {
+        continue;
+      }
+
+      const baseRepo = conceptsUrl.slice(0, -'concepts/'.length);
+      const releaseJson = structuredClone(entry.cs.jsonObj);
+      releaseJson.version = defaultVersion;
+      const releaseCs = new CodeSystem(releaseJson, 'R5', true);
+      const releaseMeta = {
+        ...entry.meta,
+        version: defaultVersion,
+        conceptsUrl: `${baseRepo}${encodeURIComponent(defaultVersion)}/concepts/`,
+        codeSystem: releaseCs
+      };
+
+      entry.headMeta = entry.meta;
+      entry.meta = releaseMeta;
+      entry.cs = releaseCs;
+      // A release being published or deleted must surface as "changed".
+      entry.checksum = `${entry.baseChecksum}|default=${defaultVersion}`;
+      releaseCount++;
+    }
+
+    if (releaseCount > 0) {
+      oclLog.info(`${releaseCount} code system(s) defaulting to a released version (HEAD kept as |HEAD)`);
+    }
   }
 
   #scheduleRefresh() {
@@ -147,11 +345,31 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       try {
         const sources = await this.#fetchSourcesForDiscovery();
         const nextSnapshot = this.#buildSourceSnapshot(sources);
+        await this.#augmentSnapshotWithDefaultVersions(nextSnapshot);
         const changes = this.#diffSnapshots(this._sourceStateByCanonical, nextSnapshot);
         this.#applySnapshot(nextSnapshot);
+        await this.#writeDiscoverySnapshot(nextSnapshot);
+
+        for (const cs of [...(changes.added || []), ...(changes.changed || [])]) {
+          const entry = nextSnapshot.get(cs.url);
+          for (const meta of [entry?.meta, entry?.headMeta]) {
+            if (!meta) {
+              continue;
+            }
+            if (OCLSourceCodeSystemFactory.hasExactFactory(meta.canonicalUrl, meta.version || null)) {
+              continue;
+            }
+            const factory = OCLSourceCodeSystemFactory.createForDiscoveredSource(this.httpClient, meta, this.cluster);
+            if (factory) {
+              oclLog.info(`Factory created for ${meta.canonicalUrl}|${meta.version || ''}`);
+            }
+          }
+        }
+
+        this.#scheduleProactiveWarmUp();
         this._pendingChanges = changes;
       } catch (error) {
-        console.error('[OCL] Incremental source refresh failed:', error.message);
+        oclLog.error(`Incremental source refresh failed: ${error.message}`);
         this._pendingChanges = this.#emptyChanges();
       } finally {
         this._refreshPromise = null;
@@ -180,10 +398,37 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
   }
 
   async #fetchSourcesForDiscovery() {
+    // Prefer the global listing: one paginated crawl instead of one listing per
+    // org (N+1 requests). Org-only policy: user-owned sources are experimental by
+    // convention and not visible to the terminology service, so filter them out.
+    try {
+      const all = await this.#fetchAllPages('/sources/');
+      if (Array.isArray(all) && all.length > 0) {
+        const seen = new Set();
+        const orgOwned = [];
+        for (const source of all) {
+          if (!source || typeof source !== 'object' || !isOrgOwned(source)) {
+            continue;
+          }
+          const key = this.#sourceIdentity(source);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          orgOwned.push(source);
+        }
+        if (orgOwned.length > 0) {
+          // Public-only: a private source the token can see must not be served.
+          return await this.publicAccess.filterPublic(orgOwned);
+        }
+      }
+    } catch (error) {
+      oclLog.warn(`Global /sources/ listing failed (${error.message}); falling back to per-org discovery`);
+    }
+
     const organizations = await this.#fetchOrganizationIds();
     if (organizations.length === 0) {
-      // Fallback for OCL instances that expose global listing but not org listing.
-      return await this.#fetchAllPages('/sources/');
+      return [];
     }
 
     const allSources = [];
@@ -193,7 +438,9 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       const endpoint = `/orgs/${encodeURIComponent(orgId)}/sources/`;
       const sources = await this.#fetchAllPages(endpoint);
       for (const source of sources) {
-        if (!source || typeof source !== 'object') {
+        // Org-only policy applies to the per-org fallback too, not just the global
+        // listing (an org listing can still surface non-org-owned entries).
+        if (!source || typeof source !== 'object' || !isOrgOwned(source)) {
           continue;
         }
         const key = this.#sourceIdentity(source);
@@ -205,7 +452,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       }
     }
 
-    return allSources;
+    // Public-only: a private source the token can see must not be served.
+    return await this.publicAccess.filterPublic(allSources);
   }
 
   async #fetchOrganizationIds() {
@@ -275,6 +523,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
     this._codeSystemsByCanonical.clear();
     this._idToCodeSystem.clear();
     this.sourceMetaByUrl.clear();
+    this._headMetaByCanonical.clear();
     this._usedIds.clear();
 
     for (const [canonicalUrl, entry] of snapshot.entries()) {
@@ -299,9 +548,114 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       this._codeSystemsByCanonical.set(canonicalUrl, cs);
       this._idToCodeSystem.set(cs.id, cs);
       this.sourceMetaByUrl.set(canonicalUrl, meta);
+      if (entry.headMeta) {
+        this._headMetaByCanonical.set(canonicalUrl, entry.headMeta);
+      }
     }
 
     this._sourceStateByCanonical = snapshot;
+  }
+
+  #stripConcepts(jsonObj) {
+    if (!jsonObj) {
+      return null;
+    }
+    const { concept, ...rest } = jsonObj;
+    return rest;
+  }
+
+  async #writeDiscoverySnapshot(snapshot) {
+    try {
+      await ensureCacheDirectories(CACHE_CS_DIR);
+      const entries = [];
+      for (const [canonicalUrl, entry] of snapshot.entries()) {
+        const item = {
+          canonicalUrl,
+          checksum: entry.checksum || null,
+          meta: this.#serializeMeta(entry.meta),
+          csJson: this.#stripConcepts(entry.cs?.jsonObj)
+        };
+        if (entry.headMeta) {
+          item.headMeta = this.#serializeMeta(entry.headMeta);
+          item.headCsJson = this.#stripConcepts(entry.headMeta.codeSystem?.jsonObj);
+        }
+        entries.push(item);
+      }
+      const payload = JSON.stringify({ version: 1, entries }, null, 2);
+
+      const crypto = require('crypto');
+      const newHash = crypto.createHash('sha256').update(payload).digest('hex');
+      if (newHash === this._lastSnapshotHash) {
+        return;
+      }
+
+      await atomicWriteFile(DISCOVERY_SNAPSHOT_PATH, payload);
+      this._lastSnapshotHash = newHash;
+      oclLog.info(`Discovery snapshot written (${entries.length} entries)`);
+    } catch (error) {
+      oclLog.error(`Failed to write discovery snapshot: ${error.message}`);
+    }
+  }
+
+  #serializeMeta(meta) {
+    if (!meta) {
+      return null;
+    }
+    return {
+      id: meta.id,
+      shortCode: meta.shortCode,
+      owner: meta.owner,
+      name: meta.name,
+      description: meta.description,
+      canonicalUrl: meta.canonicalUrl,
+      version: meta.version,
+      conceptsUrl: meta.conceptsUrl,
+      checksum: meta.checksum
+    };
+  }
+
+  async #readDiscoverySnapshot() {
+    try {
+      const data = await fs.readFile(DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+      return JSON.parse(data);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclLog.error(`Failed to read discovery snapshot: ${error.message}`);
+      }
+      return null;
+    }
+  }
+
+  #deserializeSnapshot(snapshotData) {
+    const snapshot = new Map();
+    if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+      return snapshot;
+    }
+    for (const item of snapshotData.entries) {
+      if (!item.canonicalUrl || !item.csJson) {
+        continue;
+      }
+      const cs = new CodeSystem(item.csJson, 'R5', true);
+      const meta = item.meta ? { ...item.meta, codeSystem: cs } : null;
+      const entry = { cs, meta, checksum: item.checksum || null };
+      if (item.headMeta && item.headCsJson) {
+        const headCs = new CodeSystem(item.headCsJson, 'R5', true);
+        entry.headMeta = { ...item.headMeta, codeSystem: headCs };
+      }
+      snapshot.set(item.canonicalUrl, entry);
+    }
+    return snapshot;
+  }
+
+  #scheduleProactiveWarmUp() {
+    if (this.cluster !== 'leader') {
+      return;
+    }
+    for (const [, factory] of OCLSourceCodeSystemFactory.factoriesByKey.entries()) {
+      if (factory) {
+        factory.scheduleBackgroundLoad('proactive-warm');
+      }
+    }
   }
 
   #diffSnapshots(previousSnapshot, nextSnapshot) {
@@ -326,7 +680,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       const versionChanged = (previousEntry.cs.version || null) !== (nextEntry.cs.version || null);
       if (checksumChanged || versionChanged) {
         if (checksumChanged) {
-          console.log(`[OCL] CodeSystem checksum changed: ${canonicalUrl} (${previousChecksum} -> ${nextChecksum})`);
+          oclLog.info(`CodeSystem checksum changed: ${canonicalUrl} (${previousChecksum} -> ${nextChecksum})`);
         }
         changed.push(nextEntry.cs);
       }
@@ -346,9 +700,11 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       return;
     }
 
-    if (!cs.id || this._usedIds.has(cs.id)) {
+    // code systems are served in this provider's id space
+    const prefix = this.spaceId ? `${this.spaceId}-` : '';
+    if (!cs.id || !cs.id.startsWith(prefix) || this._usedIds.has(cs.id)) {
       const raw = cs.id || cs.name || cs.url || 'ocl-cs';
-      const base = this.spaceId ? `${this.spaceId}-${raw}` : String(raw);
+      const base = raw.startsWith(prefix) ? String(raw) : `${prefix}${raw}`;
       let candidate = base;
       let index = 1;
       while (this._usedIds.has(candidate)) {
@@ -553,8 +909,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       const result = await fetchAllPages(this.httpClient, path, {
         pageSize: PAGE_SIZE,
         baseUrl: this.baseUrl,
-        logger: console,
-        loggerPrefix: '[OCL]'
+        logger: oclLog,
+        loggerPrefix: ''
       });
       // Extra check: payload must be object or array
       if (!result || (typeof result !== 'object' && !Array.isArray(result))) {
@@ -563,8 +919,8 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
       return result;
     } catch (error) {
       if (error.response) {
-        console.error(`[OCL] HTTP ${error.response.status}: ${error.response.statusText}`);
-        console.error('[OCL] Response:', error.response.data);
+        oclLog.error(`HTTP ${error.response.status}: ${error.response.statusText}`);
+        oclLog.error(`Response: ${JSON.stringify(error.response.data)}`);
       }
       throw error;
     }
@@ -586,7 +942,7 @@ class OCLCodeSystemProvider extends AbstractCodeSystemProvider {
   }
 }
 
-class OCLSourceCodeSystemProvider extends CodeSystemProvider {
+class OCLSourceCodeSystemProvider extends BaseCSServices {
   constructor(opContext, supplements, client, meta, sharedCaches = null) {
     super(opContext, supplements);
     this.httpClient = client;
@@ -724,6 +1080,36 @@ class OCLSourceCodeSystemProvider extends CodeSystemProvider {
         }
       }
       this._listSupplementDesignations(ctxt.code, displays);
+    }
+  }
+
+  async extendLookup(ctxt, props, params) {
+    const context = await this.#ensureContext(ctxt);
+    const extras = context && context.extras;
+    if (!extras || typeof extras !== 'object') {
+      return;
+    }
+    for (const [key, value] of Object.entries(extras)) {
+      if (!key || value === null || value === undefined) {
+        continue;
+      }
+      if (!this._hasProp(props, key, true)) {
+        continue;
+      }
+      const part = [{ name: 'code', valueCode: key }];
+      if (typeof value === 'boolean') {
+        part.push({ name: 'value', valueBoolean: value });
+      } else if (typeof value === 'number' && Number.isInteger(value)) {
+        part.push({ name: 'value', valueInteger: value });
+      } else if (typeof value === 'number' && Number.isFinite(value)) {
+        part.push({ name: 'value', valueDecimal: value });
+      } else if (typeof value === 'string') {
+        part.push({ name: 'value', valueString: value });
+      } else {
+        // Extras may hold arbitrary JSON (arrays, objects); serialize rather than drop data.
+        part.push({ name: 'value', valueString: JSON.stringify(value) });
+      }
+      params.push({ name: 'property', part });
     }
   }
 
@@ -1251,6 +1637,18 @@ class OCLSourceCodeSystemProvider extends CodeSystemProvider {
 
 class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   static factoriesByKey = new Map();
+  static #sharedI18n = null;
+
+  static createForDiscoveredSource(httpClient, meta, cluster = null) {
+    if (!OCLSourceCodeSystemFactory.#sharedI18n) {
+      return null;
+    }
+    return new OCLSourceCodeSystemFactory(OCLSourceCodeSystemFactory.#sharedI18n, httpClient, meta, cluster);
+  }
+
+  static findFactoryByKey(system, version = null) {
+    return OCLSourceCodeSystemFactory.#findFactory(system, version);
+  }
 
   static #normalizeSystem(system) {
     return normalizeCanonicalSystem(system);
@@ -1317,10 +1715,14 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     factory.#applyConceptsToCodeSystemResource(codeSystem || factory.meta?.codeSystem || null);
   }
 
-  constructor(i18n, client, meta) {
+  constructor(i18n, client, meta, cluster = null) {
     super(i18n);
+    if (!OCLSourceCodeSystemFactory.#sharedI18n) {
+      OCLSourceCodeSystemFactory.#sharedI18n = i18n;
+    }
     this.httpClient = client;
     this.meta = meta;
+    this.cluster = cluster;
     this.sharedConceptCache = new Map();
     this.sharedPageCache = new Map();
     this.sharedPendingConceptRequests = new Map();
@@ -1332,21 +1734,40 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.backgroundLoadProgress = { processed: 0, total: null };
     this.materializedConceptList = null;
     this.materializedConceptCount = -1;
+    this._coldCacheLoadedMtimeMs = null;
+    this._coldCacheLoad = null; // the load in progress, if any (see #loadColdCache)
     OCLSourceCodeSystemFactory.factoriesByKey.set(this.#resourceKey(), this);
 
     const unversionedKey = `${this.system()}|`;
     if (!OCLSourceCodeSystemFactory.factoriesByKey.has(unversionedKey)) {
       OCLSourceCodeSystemFactory.factoriesByKey.set(unversionedKey, this);
     }
-    
-    // Load cold cache at construction
+
     this.#loadColdCache();
   }
 
-  async #loadColdCache() {
+  /**
+   * Load the concepts from the cold cache file. One load at a time: a follower calls this on
+   * requests (reloadColdCacheIfChanged), and the read and parse of a large source take a while -
+   * without this, every request that arrived while a load was going on started another, each
+   * parsing the whole file again (synchronously)
+   */
+  #loadColdCache() {
+    if (!this._coldCacheLoad) {
+      this._coldCacheLoad = this.#readColdCache().finally(() => {
+        this._coldCacheLoad = null;
+      });
+    }
+    return this._coldCacheLoad;
+  }
+
+  async #readColdCache() {
     const canonicalUrl = this.system();
     const version = this.version();
     const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, canonicalUrl, version);
+    // the modification time of the file as read: taken before reading it, so that if the master
+    // rewrites it while it is read, the newer file is still seen as newer next time
+    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
 
     try {
       const data = await fs.readFile(cacheFilePath, 'utf-8');
@@ -1373,9 +1794,13 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
       this.#applyConceptsToCodeSystemResource(this.meta?.codeSystem || null);
 
+      if (mtimeMs != null) {
+        this._coldCacheLoadedMtimeMs = mtimeMs;
+      }
+
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        console.error(`[OCL] Failed to load cold cache for CodeSystem ${canonicalUrl}:`, error.message);
+        oclLog.error(`Failed to load cold cache for CodeSystem ${canonicalUrl}: ${error.message}`);
       }
     }
   }
@@ -1398,11 +1823,11 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
         concepts
       };
 
-      await fs.writeFile(cacheFilePath, JSON.stringify(cacheData, null, 2), 'utf-8');
-      
+      await atomicWriteFile(cacheFilePath, JSON.stringify(cacheData, null, 2));
+
       return fingerprint;
     } catch (error) {
-      console.error(`[OCL] Failed to save cold cache for CodeSystem ${canonicalUrl}:`, error.message);
+      oclLog.error(`Failed to save cold cache for CodeSystem ${canonicalUrl}: ${error.message}`);
       return null;
     }
   }
@@ -1461,7 +1886,27 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     });
   }
 
+  reloadColdCacheIfChanged() {
+    const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, this.system(), this.version());
+    const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+    if (mtimeMs == null) {
+      return false;
+    }
+    if (this._coldCacheLoadedMtimeMs != null && mtimeMs <= this._coldCacheLoadedMtimeMs) {
+      return false;
+    }
+    if (this._coldCacheLoad) {
+      return false; // a load is already going on; a newer file is picked up next time
+    }
+    this.#loadColdCache();
+    return true;
+  }
+
   scheduleBackgroundLoad(reason = 'request') {
+    if (this.cluster === 'follower') {
+      this.reloadColdCacheIfChanged();
+      return;
+    }
     this.#syncWarmStateWithChecksum();
     const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, this.system(), this.version());
     const cacheAgeMs = getColdCacheAgeMs(cacheFilePath);
@@ -1542,9 +1987,9 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
         }
       }
 
-      console.log(`[OCL] CodeSystem loaded: ${this.system()} (${count} concepts)`);
+      oclLog.info(`CodeSystem loaded: ${this.system()} (${count} concepts)`);
     } catch (error) {
-      console.error(`[OCL] CodeSystem background load failed: ${key}: ${error.message}`);
+      oclLog.error(`CodeSystem background load failed: ${key}: ${error.message}`);
     }
   }
 
@@ -1660,7 +2105,7 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
         this.meta.codeSystem.jsonObj.content = CodeSystemContentMode.NotPresent;
         delete this.meta.codeSystem.jsonObj.concept;
       }
-      console.log(`[OCL] CodeSystem checksum changed, invalidated warm cache: ${this.#resourceKey()}`);
+      oclLog.info(`CodeSystem checksum changed, invalidated warm cache: ${this.#resourceKey()}`);
     }
   }
 
@@ -1782,11 +2227,14 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   }
 
   #resourceKey() {
-    const crypto = require('crypto');
+    // Plain `system|version`, matching how hasExactFactory/#findFactory build
+    // their lookup keys. This used to be a SHA-256 of the same string, which
+    // meant exact-version lookups could NEVER match a registered factory (plain
+    // string vs hash) — only the unversioned `system|` alias ever worked. The
+    // key is only used for in-memory maps, job keys and logs, so hashing bought
+    // nothing and broke version-aware matching.
     const normalizedSystem = OCLSourceCodeSystemFactory.#normalizeSystem(this.system());
-    const base = `${normalizedSystem}|${this.version() || ''}`;
-    const hash = crypto.createHash('sha256').update(base).digest('hex');
-    return hash;
+    return `${normalizedSystem}|${this.version() || ''}`;
   }
 
   currentChecksum() {
@@ -1824,8 +2272,11 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
   }
 }
 
+patchProviderForOCLFactorySync(() => OCLSourceCodeSystemFactory.factoriesByKey);
+
 module.exports = {
   OCLCodeSystemProvider,
+  OCLSourceCodeSystemProvider,
   OCLSourceCodeSystemFactory,
   OCLBackgroundJobQueue
 };

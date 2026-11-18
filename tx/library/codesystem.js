@@ -3,6 +3,8 @@ const {CanonicalResource} = require("./canonical-resource");
 const {codeSystemFromR5, codeSystemToR5} = require("../xversion/xv-codesystem");
 const {getValuePrimitive} = require("../../library/utilities");
 const {VersionUtilities} = require("../../library/version-utilities");
+const {countNested} = require("./nesting-limit");
+const regexUtilities = require("../../library/regex-utilities");
 
 const CodeSystemContentMode = Object.freeze({
   Complete: 'complete',
@@ -33,18 +35,31 @@ class CodeSystem extends CanonicalResource {
     super(jsonObj, fhirVersion);
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = codeSystemToR5(this.jsonObj, fhirVersion);
-    if (!noMaps) {
-      try {
+    try {
+      // Bound the nesting before anything walks the concept tree recursively - see
+      // nesting-limit.js. It has to precede validate(), which recurses itself, and it
+      // runs on the noMaps path too: validate() is skipped there, but the count below
+      // and every later consumer still walk the tree. The count is a by-product, so
+      // callers (e.g. the resource cache) get a cheap O(1) sense of the resource size
+      // without a second traversal.
+      // Optional chaining because this runs ahead of validate()'s "expected object"
+      // guard, and a null body must still get that message rather than a TypeError.
+      this._conceptCount = countNested(this.jsonObj?.concept, 'concept', 'Invalid CodeSystem: concept');
+      if (!noMaps) {
         this.validate();
-      } catch (e) {
-        const id = this.jsonObj?.url ? `${this.jsonObj.url}|${this.jsonObj.version || ''}` : this.jsonObj?.name || 'unknown';
-        throw new Error(`${e.message} (in ${id})`);
       }
+    } catch (e) {
+      const id = this.jsonObj?.url ? `${this.jsonObj.url}|${this.jsonObj.version || ''}` : this.jsonObj?.name || 'unknown';
+      const wrapped = new Error(`${e.message} (in ${id})`);
+      // Don't let the rewrap swallow the HTTP shape the thrower asked for.
+      if (e.statusCode) { wrapped.statusCode = e.statusCode; }
+      if (e.issueCode) { wrapped.issueCode = e.issueCode; }
+      throw wrapped;
+    }
+    this.checkContained();
+    if (!noMaps) {
       this.buildMaps();
     }
-    // Precalculated at construction so callers (e.g. the resource cache) have a
-    // cheap O(1) sense of how large this resource is.
-    this._conceptCount = CodeSystem._countConcepts(this.jsonObj.concept);
   }
 
   /**
@@ -54,25 +69,6 @@ class CodeSystem extends CanonicalResource {
    */
   conceptCount() {
     return this._conceptCount;
-  }
-
-  /**
-   * Recursively count concepts (including nested `concept` children).
-   * @param {Array} concepts
-   * @returns {number}
-   */
-  static _countConcepts(concepts) {
-    if (!Array.isArray(concepts)) {
-      return 0;
-    }
-    let n = 0;
-    for (const c of concepts) {
-      n++;
-      if (c && c.concept) {
-        n += CodeSystem._countConcepts(c.concept);
-      }
-    }
-    return n;
   }
 
   /**
@@ -649,16 +645,107 @@ class CodeSystem extends CanonicalResource {
     this.jsonObj.id = value;
   }
 
+  /**
+   * @returns {string|null} the supplement's type, from the codesystem-supplement-type extension
+   *   (lang-pack, properties, extension-codes...), or null if it doesn't say
+   */
+  supplementType() {
+    const ext = (this.jsonObj.extension || []).find(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type');
+    return ext ? getValuePrimitive(ext) : null;
+  }
+
+  /**
+   * @returns {boolean} true if this is a language pack (codesystem-supplement-type = lang-pack). A
+   *   language pack is only used when it is referenced, unless it is also global (isGlobalSupplement)
+   */
   isLangPack() {
-    // todo: this is a temporary work around until fhir.tx.support.r4#0.37.0 is released that properly marks this as a language pack
+    return this.supplementType() === 'lang-pack';
+  }
+
+  /**
+   * A global supplement is used for the code system it supplements whether or not it is
+   * referenced: a lang-pack or extension-codes supplement marked with codesystem-supplement-global
+   * = true. Any other supplement is only used when it is referenced.
+   *
+   * @returns {boolean} true if this is a global supplement
+   */
+  isGlobalSupplement() {
+    // todo: a work around until fhir.tx.support.r4 is re-released with this language pack marked global
     if (this.jsonObj.url === 'https://terminology.dhp.uz/fhir/CodeSystem/loinc-supplement-uz') {
       return true;
     }
-    return (this.jsonObj.extension || []).find(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-type' && getValuePrimitive(x) == 'lang-pack');
+    if (!['lang-pack', 'extension-codes'].includes(this.supplementType())) {
+      return false;
+    }
+    const ext = (this.jsonObj.extension || []).find(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-supplement-global');
+    return !!ext && getValuePrimitive(ext) === true;
+  }
+
+  /**
+   * @returns {boolean} true if this is an extension-codes supplement (codesystem-supplement-type) - one
+   *   that defines codes in the reserved code space of the code system it supplements
+   */
+  isExtensionCodes() {
+    return this.supplementType() === 'extension-codes';
+  }
+
+  /**
+   * The code spaces the code system's steward has reserved for users to define their own codes in (the
+   * codesystem-reservedCodeSpace extension: reservedCodeSpace is a regular expression that a code must
+   * match in full, and default-display is the display of a code in the space that nothing defines -
+   * 'User-assigned' if it doesn't say). Compiled with re2, since the expressions can come from a request
+   *
+   * @returns {{regex: Object, defaultDisplay: string}[]} the code spaces (empty if there are none)
+   */
+  reservedCodeSpaces() {
+    if (this._reservedCodeSpaces === undefined) {
+      this._reservedCodeSpaces = [];
+      for (const ext of (this.jsonObj.extension || []).filter(x => x.url == 'http://hl7.org/fhir/StructureDefinition/codesystem-reservedCodeSpace')) {
+        const rcs = (ext.extension || []).find(x => x.url == 'reservedCodeSpace');
+        const pattern = rcs ? getValuePrimitive(rcs) : null;
+        if (pattern) {
+          const dd = (ext.extension || []).find(x => x.url == 'default-display');
+          try {
+            this._reservedCodeSpaces.push({
+              regex: regexUtilities.compile('^(?:' + pattern + ')$', this.caseInsensitive() ? 'i' : ''),
+              defaultDisplay: (dd && getValuePrimitive(dd)) || 'User-assigned'
+            });
+          } catch (e) {
+            // an expression that doesn't compile reserves nothing
+          }
+        }
+      }
+    }
+    return this._reservedCodeSpaces;
+  }
+
+  /**
+   * @param {string} code - the code
+   * @returns {{regex: Object, defaultDisplay: string}|null} the reserved code space the code is in, if it is in one
+   */
+  reservedCodeSpaceFor(code) {
+    return code ? (this.reservedCodeSpaces().find(rcs => rcs.regex.test(code)) || null) : null;
+  }
+
+  /**
+   * @param {string} code - the code
+   * @returns {boolean} true if the code is in a code space reserved for users to define their own codes
+   */
+  isInReservedCodeSpace(code) {
+    return this.reservedCodeSpaceFor(code) != null;
   }
 
   isPropUri(code, uri) {
     return (this.jsonObj.property || []).find(x => x.code == code && x.uri == uri);
+  }
+
+  /**
+   * The canonical of the code system this one supplements (CodeSystem.supplements),
+   * or undefined if it isn't a supplement.
+   * @returns {string|undefined}
+   */
+  get supplementsUrl() {
+    return this.jsonObj.supplements;
   }
 
   isSupplementFor(url, version) {

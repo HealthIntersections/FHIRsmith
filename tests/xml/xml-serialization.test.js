@@ -139,8 +139,11 @@ describe('R4 Fixtures - XML -> JSON -> XML', () => {
     const element = FhirXmlBase.parseXmlString(srcXml);
     const json = FhirXmlBase.convertElementToFhirJson(element, 'Bundle');
     expect(json.resourceType).toBe('Bundle');
-    const reXml = BundleXML.toXml(json, 4);
-    expect(reXml).toContain('<Bundle');
+    // There is no Bundle XML parser (BundleXML has no fromXml): the generic conversion used here
+    // doesn't read an entry's resource as a resource, so it has no resourceType. Written out, that
+    // was <undefined xmlns=...>; a resource type is now checked like any element name, and refused
+    expect(json.entry.some(e => e.resource && !e.resource.resourceType)).toBe(true);
+    expect(() => BundleXML.toXml(json, 4)).toThrow(/is not an element name/);
   });
 });
 
@@ -307,8 +310,9 @@ describe('R5 Fixtures - XML -> JSON -> XML', () => {
     const element = FhirXmlBase.parseXmlString(srcXml);
     const json = FhirXmlBase.convertElementToFhirJson(element, 'Bundle');
     expect(json.resourceType).toBe('Bundle');
-    const reXml = BundleXML.toXml(json, 5);
-    expect(reXml).toContain('<Bundle');
+    // as for R4: no Bundle XML parser, so the entries' resources have no resourceType, and are refused
+    expect(json.entry.some(e => e.resource && !e.resource.resourceType)).toBe(true);
+    expect(() => BundleXML.toXml(json, 5)).toThrow(/is not an element name/);
   });
 });
 

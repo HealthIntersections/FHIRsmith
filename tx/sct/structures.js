@@ -1,9 +1,31 @@
 const fs = require('fs');
+const path = require('path');
+const { mapFile, prewarmFile } = require('./mmap');
+
+// The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
+// one in place (nothing writes to a loaded structure, and the file stays loaded for the life
+// of the process); any other buffer is copied, so the structure owns its bytes.
+const fileBuffers = new WeakSet();
+
+function adopt(buffer) {
+  if (!buffer) return Buffer.alloc(0);
+  return fileBuffers.has(buffer.buffer) ? buffer : Buffer.from(buffer);
+}
+
+// A structure made from a buffer is a loaded one, and is read-only: it may be sharing the
+// cache file's memory (see adopt). Only a structure the importer creates empty and builds can
+// be written to. Every method that changes a structure calls this first.
+function checkWritable(structure) {
+  if (structure.readOnly) {
+    throw new Error(`${structure.constructor.name} is read-only: it was loaded from a cache file, and can only be changed while importing`);
+  }
+}
 
 
 class SnomedStrings {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.decoder = new TextDecoder('utf-8');
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
@@ -28,11 +50,13 @@ class SnomedStrings {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
 
   reopen() {
+    checkWritable(this);
     this.builder = [this.master];
     this.currentOffset = this.master.length; // SET: offset to current master length
   }
@@ -75,6 +99,7 @@ class SnomedStrings {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -84,137 +109,10 @@ class SnomedStrings {
   }
 }
 
-class SnomedWords {
-  constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
-    this.builder = null;
-  }
-
-  getEntry(index) {
-    const offset = index * 5;
-
-    if (offset > this.master.length - 5) {
-      throw new Error('invalid index');
-    }
-
-    // Read 4-byte cardinal (little-endian) + 1-byte flag
-    const stringIndex = this.master.readUInt32LE(offset);
-    const flags = this.master.readUInt8(offset + 4);
-
-    return { index: stringIndex, flags };
-  }
-
-  getString(index) {
-    const entry = this.getEntry(index);
-    return entry.index;
-  }
-
-  count() {
-    return Math.floor(this.master.length / 5);
-  }
-
-  startBuild() {
-    this.builder = [];
-  }
-
-  addWord(index, flags) {
-    if (!this.builder) {
-      throw new Error('Must call startBuild() first');
-    }
-
-    // Create 5-byte record: 4-byte index + 1-byte flag
-    const record = Buffer.allocUnsafe(5);
-    record.writeUInt32LE(index, 0);  // 4-byte cardinal (little-endian)
-    record.writeUInt8(flags, 4);     // 1-byte flag
-
-    this.builder.push(record);
-  }
-
-  doneBuild() {
-    if (!this.builder) {
-      throw new Error('No build in progress');
-    }
-
-    this.master = Buffer.concat(this.builder);
-    this.builder = null;
-  }
-
-  clear() {
-    this.master = Buffer.alloc(0);
-  }
-
-  get length() {
-    return this.master.length;
-  }
-}
-
-class SnomedStems {
-  constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
-    this.builder = null;
-  }
-
-  getEntry(index) {
-    const offset = index * 8;
-
-    if (offset > this.master.length - 7) {
-      throw new Error('invalid index');
-    }
-
-    // Read two 4-byte cardinals (little-endian)
-    const stringIndex = this.master.readUInt32LE(offset);
-    const reference = this.master.readUInt32LE(offset + 4);
-
-    return { index: stringIndex, reference };
-  }
-
-  getString(index) {
-    const entry = this.getEntry(index);
-    return entry.index;
-  }
-
-  count() {
-    return Math.floor(this.master.length / 8);
-  }
-
-  startBuild() {
-    this.builder = [];
-  }
-
-  addStem(index, reference) {
-    if (!this.builder) {
-      throw new Error('Must call startBuild() first');
-    }
-
-    // Create 8-byte record: two 4-byte cardinals
-    const record = Buffer.allocUnsafe(8);
-    record.writeUInt32LE(index, 0);      // First 4-byte cardinal
-    record.writeUInt32LE(reference, 4);  // Second 4-byte cardinal
-
-    this.builder.push(record);
-  }
-
-  doneBuild() {
-    if (!this.builder) {
-      throw new Error('No build in progress');
-    }
-
-    this.master = Buffer.concat(this.builder);
-    this.builder = null;
-  }
-
-  clear() {
-    this.master = Buffer.alloc(0);
-  }
-
-  get length() {
-    return this.master.length;
-  }
-}
-
 class SnomedReferences {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
     this.MAGIC_NO_CHILDREN = 0xFFFFFFFF; // Assuming this constant - adjust as needed
@@ -254,6 +152,45 @@ class SnomedReferences {
     return result;
   }
 
+  /**
+   * Whether the list at index holds value, for a list stored in ascending order (a concept's
+   * closure: see the importer's buildConceptClosure). A binary search of the buffer itself:
+   * getReferences copies the whole list first, which for a top-level concept's descendants
+   * (hundreds of thousands) costs milliseconds, every call
+   * @param {number} index - the list
+   * @param {number} value
+   * @returns {boolean}
+   */
+  hasSortedReference(index, value) {
+    if (index === this.MAGIC_NO_CHILDREN || index === 0) {
+      return false;
+    }
+    if (this.builder && index >= this.master.length) {
+      this.post();
+    }
+    if (index >= this.master.length) {
+      throw new Error(`Wrong length index getting Snomed list. asked for ${index}, limit is ${this.master.length}`);
+    }
+    const count = this.master.readUInt32LE(index);
+    if (index + 4 + count * 4 > this.master.length) {
+      throw new Error(`Wrong length index (${index}, ${count}) getting Snomed list (length = ${this.master.length})`);
+    }
+    let lo = 0;
+    let hi = count - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const v = this.master.readUInt32LE(index + 4 + mid * 4);
+      if (v === value) {
+        return true;
+      } else if (v < value) {
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return false;
+  }
+
   getLength(index) {
     if (index > this.master.length) {
       throw new Error('Wrong length index getting Snomed list');
@@ -263,8 +200,12 @@ class SnomedReferences {
   }
 
   startBuild() {
-    this.builder = [];
-    this.currentOffset = 0; // RESET: offset when starting build
+    checkWritable(this);
+    // 0 means "no list" (getReferences), so no list may start there: the first 4 bytes are an
+    // empty list nothing refers to. (Until cache format 21 the stems lists came first, and
+    // happened to keep every real list off 0.)
+    this.builder = [Buffer.alloc(4)];
+    this.currentOffset = 4;
   }
 
   addReferences(cardinalArray) {
@@ -316,6 +257,7 @@ class SnomedReferences {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -342,7 +284,8 @@ class SnomedDescriptions {
   static FLAG_PendingMove = 11;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -382,6 +325,7 @@ class SnomedDescriptions {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -417,7 +361,44 @@ class SnomedDescriptions {
     return currentOffset;
   }
 
+  /**
+   * The concepts that have an active description in the language (the RF2 language code
+   * byte) whose term passes test, for descriptions [start, end) by position, leaving out
+   * descriptions of type skipKind (a concept index, or -1 for none). Reads the records in
+   * place rather than decoding each one, since a scan covers the whole edition. Adds the
+   * concept indexes to out (a Set); returns how many descriptions there are.
+   */
+  matchActiveTerms(start, end, lang, strings, test, out, skipKind = -1) {
+    const size = SnomedDescriptions.DESC_SIZE;
+    const count = Math.floor(this.master.length / size);
+    const last = Math.min(end, count);
+    for (let i = start; i < last; i++) {
+      const offset = i * size;
+      if (this.master.readUInt8(offset + 4) === 0 || this.master.readUInt8(offset + 31) !== lang
+        || this.master.readUInt32LE(offset + 21) === skipKind) {
+        continue;
+      }
+      if (test(strings.getEntry(this.master.readUInt32LE(offset)))) {
+        out.add(this.master.readUInt32LE(offset + 13));
+      }
+    }
+    return count;
+  }
+
+  /** The language code bytes that active descriptions use */
+  activeLanguages() {
+    const size = SnomedDescriptions.DESC_SIZE;
+    const langs = new Set();
+    for (let offset = 0; offset + size <= this.master.length; offset += size) {
+      if (this.master.readUInt8(offset + 4) !== 0) {
+        langs.add(this.master.readUInt8(offset + 31));
+      }
+    }
+    return langs;
+  }
+
   setRefsets(index, refsets, valueses) {
+    checkWritable(this);
     if (index >= this.master.length) {
       throw new Error('Wrong length index getting snomed Desc Details');
     }
@@ -441,6 +422,7 @@ class SnomedDescriptions {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -452,7 +434,8 @@ class SnomedDescriptions {
 
 class SnomedDescriptionIndex {
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
   }
 
@@ -488,6 +471,7 @@ class SnomedDescriptionIndex {
   }
 
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -517,6 +501,7 @@ class SnomedDescriptionIndex {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -531,13 +516,15 @@ class SnomedDescriptionIndex {
 }
 
 class SnomedConceptList {
+  // bytes 30-33 of each record are unused (they were the concept's stems, before cache format 21)
   static CONCEPT_SIZE = 56;
   static MASK_CONCEPT_STATUS = 0x0F;
   static MASK_CONCEPT_PRIMITIVE = 0x10;
   static MAGIC_NO_CHILDREN = 0xFFFFFFFF;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -643,11 +630,6 @@ class SnomedConceptList {
     return this.master.readUInt8(index + 29);
   }
 
-  getStems(index) {
-    this.#checkPostBuildAccess(index);
-    return this.master.readUInt32LE(index + 30);
-  }
-
   getModuleId(index) {
     this.#checkPostBuildAccess(index);
     return this.master.readUInt32LE(index + 36);
@@ -669,6 +651,7 @@ class SnomedConceptList {
   }
 
   setNormalFormDuringBuild(index, value) {
+    checkWritable(this);
     // Special version that can be called during building phase
     // This bypasses the post-build access check for normal forms specifically
     if (index >= this.master.length) {
@@ -709,67 +692,74 @@ class SnomedConceptList {
 
   // All the setter methods - these require doneBuild() to have been called
   setParents(index, active, inactive) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(active, index + 9);
     this.master.writeUInt32LE(inactive, index + 52);
   }
 
   setDescriptions(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 13);
   }
 
+  setModuleId(index, moduleIndex) {
+    checkWritable(this);
+    this.#checkPostBuildAccess(index);
+    this.master.writeUInt32LE(moduleIndex, index + 36);
+  }
+
   setInbounds(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 17);
   }
 
   setOutbounds(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 21);
   }
 
   setAllDesc(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 25);
   }
 
   setDepth(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt8(value, index + 29);
   }
 
-  setStems(index, value) {
-    this.#checkPostBuildAccess(index);
-    this.master.writeUInt32LE(value, index + 30);
-  }
-
   setDate(index, effectiveTime) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt16LE(effectiveTime, index + 34);
   }
 
-  setModuleId(index, value) {
-    this.#checkPostBuildAccess(index);
-    this.master.writeUInt32LE(value, index + 36);
-  }
-
   setStatus(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 40);
   }
 
   setRefsets(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 44);
   }
 
   setNormalForm(index, value) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt32LE(value, index + 48);
   }
 
   setFlag(index, flags) {
+    checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt8(flags, index + 8);
   }
@@ -780,6 +770,7 @@ class SnomedConceptList {
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -831,6 +822,7 @@ class SnomedConceptList {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -846,7 +838,8 @@ class SnomedRelationshipList {
   static REFSET_SIZE_LANG = 32;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -871,12 +864,37 @@ class SnomedRelationshipList {
     };
   }
 
+  // The fields relationship matching needs (source, target, type, active, group), without
+  // decoding the rest of the row: no BigInt for the identity, so much cheaper than
+  // getRelationship() in a loop over thousands of rows (ECL refinements)
+  getRelationshipCore(index) {
+    if (index >= this.master.length) {
+      throw new Error('Wrong length index getting snomed relationship Details');
+    }
+    return {
+      source: this.master.readUInt32LE(index + 0),
+      target: this.master.readUInt32LE(index + 4),
+      relType: this.master.readUInt32LE(index + 8),
+      active: this.master.readUInt8(index + 26) !== 0,
+      group: this.master.readInt32LE(index + 28)
+    };
+  }
+
+  // Whether the relationship row at index is active, without decoding the whole row
+  isActive(index) {
+    if (index >= this.master.length) {
+      throw new Error('Wrong length index getting snomed relationship Details');
+    }
+    return this.master.readUInt8(index + 26) !== 0;
+  }
+
   count() {
     return Math.floor(this.master.length / SnomedRelationshipList.RELATIONSHIP_SIZE);
   }
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -924,6 +942,7 @@ class SnomedRelationshipList {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -937,7 +956,8 @@ class SnomedReferenceSetMembers {
   static MAGIC_NO_CHILDREN = 0xFFFFFFFF;
 
   constructor(buffer = null) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.currentOffset = 0; // ADD: Track offset directly
   }
@@ -1006,7 +1026,37 @@ class SnomedReferenceSetMembers {
     return result;
   }
 
+  /**
+   * The languages of the descriptions a reference set's members point at, as
+   * language byte -> member count. Reads the member records in place (a language
+   * reference set has a member per description, over a million in the
+   * International Edition), skipping members that are not descriptions.
+   *
+   * @param {number} index - the reference set's membersByRef
+   * @param {SnomedDescriptions} descriptions
+   * @returns {Map<number, number>}
+   */
+  descriptionLanguages(index, descriptions) {
+    const result = new Map();
+    if (index === SnomedReferenceSetMembers.MAGIC_NO_CHILDREN || index + 5 > this.master.length) {
+      return result;
+    }
+    const count = this.master.readUInt32LE(index);
+    const ids = this.master.readUInt8(index + 4) !== 0;
+    const size = ids ? 31 : 9; // [id 16, module 4, date 2] kind 1, ref 4, values 4
+    let offset = index + 5 + (ids ? 22 : 0);
+    for (let i = 0; i < count && offset + 5 <= this.master.length; i++, offset += size) {
+      if (this.master.readUInt8(offset) !== 1) continue; // 1 = description
+      const ref = this.master.readUInt32LE(offset + 1);
+      if (ref + SnomedDescriptions.DESC_SIZE > descriptions.master.length) continue;
+      const lang = descriptions.master.readUInt8(ref + 31);
+      result.set(lang, (result.get(lang) || 0) + 1);
+    }
+    return result;
+  }
+
   startBuild() {
+    checkWritable(this);
     this.builder = [];
     this.currentOffset = 0; // RESET: offset when starting build
   }
@@ -1101,6 +1151,7 @@ class SnomedReferenceSetMembers {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
     this.currentOffset = 0; // RESET: offset when clearing
   }
@@ -1115,7 +1166,8 @@ class SnomedReferenceSetIndex {
   static REFSET_SIZE_NOLANG = 28;
 
   constructor(buffer = null, hasLangs = true) {
-    this.master = buffer ? Buffer.from(buffer) : Buffer.alloc(0);
+    this.master = adopt(buffer);
+    this.readOnly = !!buffer;
     this.builder = null;
     this.hasLangs = hasLangs;
     this.recordSize = hasLangs ? SnomedReferenceSetIndex.REFSET_SIZE_LANG : SnomedReferenceSetIndex.REFSET_SIZE_NOLANG;
@@ -1186,6 +1238,7 @@ class SnomedReferenceSetIndex {
 
   // Build methods
   startBuild() {
+    checkWritable(this);
     this.builder = [];
   }
 
@@ -1222,6 +1275,7 @@ class SnomedReferenceSetIndex {
   }
 
   clear() {
+    checkWritable(this);
     this.master = Buffer.alloc(0);
   }
 
@@ -1231,16 +1285,96 @@ class SnomedReferenceSetIndex {
 }
 
 
+/**
+ * The SNOMED CT cache format the importer writes and the server reads: the only one it reads.
+ *
+ * 21 (November 2026) is 20 plus the license the edition is distributed under (the importer's
+ * --license file, right after the header) and the text indexes, built at import (at the end),
+ * less the old words and stems sections, which nothing read.
+ * 20 was the first written with every ISO 639-1 description language, the edition's language
+ * in the default-language slot, and effective dates that don't depend on the time zone the
+ * import ran in; 19 added concrete values, 18 alternate identifiers. A cache in any other
+ * format has to be imported again.
+ */
+const SNOMED_CACHE_VERSION = '21';
+
 class SnomedFileReader {
-  constructor(filePath) {
+  /**
+   * @param {string} filePath
+   * @param {string} [loadMode] 'read' (default): read the file into memory. 'mmap': map it
+   *   read-only, so its pages are file-backed and shared with the page cache. 'prewarm': mapped,
+   *   then read through once in the background at startup, so its pages are already in the
+   *   page cache when requests arrive; startup doesn't wait for it. Where mapping is not
+   *   available (see mmap.js) the file is read, and `mapped` stays false.
+   * @param {object} [log] - a logger with warn(); says why a file that was to be mapped was read
+   */
+  constructor(filePath, loadMode = 'read', log = null) {
     this.filePath = filePath;
+    this.loadMode = loadMode;
+    this.log = log;
     this.buffer = null;
+    this.mapped = false; // true once load() has the buffer as a memory mapping of the file
     this.offset = 0;
   }
 
+  /**
+   * Whether a cache file is in the format this server reads (SNOMED_CACHE_VERSION), without
+   * loading it
+   * @param {string} filePath
+   * @returns {boolean}
+   */
+  static isCurrent(filePath) {
+    const head = Buffer.alloc(16);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      return reader.readString() === SNOMED_CACHE_VERSION;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The edition version URI in a cache file's header, without loading the file.
+   * @param {string} filePath
+   * @returns {string|null}
+   */
+  static versionUri(filePath) {
+    const head = Buffer.alloc(1024);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      reader.readString(); // cache version
+      return reader.readString();
+    } catch {
+      return null;
+    }
+  }
+
   async load() {
-    // Read entire file into buffer
-    this.buffer = await fs.promises.readFile(this.filePath);
+    const warn = this.log ? (msg) => this.log.warn(msg) : undefined;
+    const mapped = this.loadMode !== 'read' ? mapFile(this.filePath, warn) : null;
+    this.mapped = mapped !== null;
+    this.buffer = mapped || await fs.promises.readFile(this.filePath);
+    fileBuffers.add(this.buffer.buffer);
+    if (mapped && this.loadMode === 'prewarm') {
+      // not awaited: the server starts while the file is read into the page cache
+      this.prewarmed = prewarmFile(this.filePath).catch(() => null);
+    }
     this.offset = 0;
   }
 
@@ -1316,38 +1450,40 @@ class SnomedFileReader {
   async loadSnomedData() {
     await this.load();
 
+    const cacheVersion = this.readString();
+    if (cacheVersion !== SNOMED_CACHE_VERSION) {
+      throw new Error(`SNOMED CT cache ${path.basename(this.filePath)} is in cache format ${cacheVersion}, ` +
+        `and this server only reads format ${SNOMED_CACHE_VERSION}: import the edition again with this version's importer`);
+    }
     const result = {
-      cacheVersion: this.readString(),  // This is "16" or "17" - the cache format version
+      cacheVersion,  // SNOMED_CACHE_VERSION
       versionUri: this.readString(),
       versionDate: this.readString(),
       isTesting: false,
-
-      // Version-dependent settings
-      hasLangs: false,  // Default for older versions
-      isUTF16: false,   // Will be determined by version
+      hasLangs: true,
 
       // Extract edition and version from URI
       edition: null,
       version: null,
-
-      // Structure data
-      strings: this.readBytes(),
-      refs: this.readBytes(),
-      desc: this.readBytes(),
-      words: this.readBytes(),
-      stems: this.readBytes(),
-      concept: this.readBytes(),
-      rel: this.readBytes(),
-      refSetIndex: this.readBytes(),
-      refSetMembers: this.readBytes(),
-      descRef: this.readBytes(),
-
-      // Additional data
-      isAIndex: this.readInteger(),
-      inactiveRoots: [],
-      activeRoots: [],
-      defaultLanguage: null // Will be read last
     };
+    // The license the edition is distributed under (the importer's --license file), carried
+    // in the cache so that it goes wherever the cache goes; the server doesn't read it
+    result.license = this.readBytes();
+
+    // Structure data
+    result.strings = this.readBytes();
+    result.refs = this.readBytes();
+    result.desc = this.readBytes();
+    result.concept = this.readBytes();
+    result.rel = this.readBytes();
+    result.refSetIndex = this.readBytes();
+    result.refSetMembers = this.readBytes();
+    result.descRef = this.readBytes();
+
+    // Additional data
+    result.isAIndex = this.readInteger();
+    result.inactiveRoots = [];
+    result.activeRoots = [];
 
     result.isTesting = result.versionUri.includes("/xsct/");
     // Parse edition and version from URI
@@ -1357,39 +1493,35 @@ class SnomedFileReader {
       result.version = uriParts[6];
     }
 
-    // Determine settings based on cache version string (matching Pascal logic)
-    if (result.cacheVersion === '17') { // SNOMED_CACHE_VERSION_CURRENT
-      result.hasLangs = true;
-    } else if (result.cacheVersion === '16') { // Assuming this is UTF8 version for now
-      result.isUTF16 = false;
-      result.hasLangs = false;
-    } else {
-      throw new Error(`Unsupported SNOMED cache version: ${result.cacheVersion}`);
-    }
-
     const inactiveRootsLength = this.readInteger();
-
     for (let i = 0; i < inactiveRootsLength; i++) {
       result.inactiveRoots.push(this.readUInt64());
     }
-
-    // Read active roots array
     const activeRootsLength = this.readInteger();
     for (let i = 0; i < activeRootsLength; i++) {
       result.activeRoots.push(this.readUInt64());
     }
 
-    // Read default language LAST
+    // The edition's default description language, as a language byte (tx/sct/languages.js)
     result.defaultLanguage = this.readInteger();
+
+    // Alternate identifiers: [[scheme, module, code, conceptId], ...]
+    result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
+    // Concrete value relationships: [[sourceId, typeId, group, value], ...]
+    result.concreteValues = JSON.parse(this.readBytes().toString('utf8'));
+
+    // The text indexes (tx/sct/text-index.js SnomedTextIndexes), after a pad byte count and
+    // the pad that puts them at a multiple of 8 in the file
+    const textIndexes = this.readBytes();
+    result.textIndexes = textIndexes.subarray(1 + textIndexes[0]);
 
     return result;
   }
 }
 
 module.exports = {
+  SNOMED_CACHE_VERSION,
   SnomedStrings,
-  SnomedWords,
-  SnomedStems,
   SnomedReferences,
   SnomedDescriptions,
   SnomedDescriptionIndex,

@@ -1,6 +1,14 @@
 base:
   url: https://storage.googleapis.com/tx-fhir-org
 
+# Each source is type[!]:details[=prefix] - see tx/README.md.
+#
+# The prefix (after the last '=') is the id space for the resources the source provides:
+# with npm:hl7.terminology=tho, THO's v3-ActCode is CodeSystem/tho-v3-ActCode. Every
+# resource is served with a prefixed id - never the id it has in its source, which other
+# sources may share - and each endpoint's own FHIR core package uses 'core'. A source with
+# no prefix gets a number, which changes when sources are added, removed or reordered, so
+# any source whose resources people link to by id should have one.
 sources:
   - internal:lang
   - internal:country
@@ -11,35 +19,33 @@ sources:
   - internal:urls
   - internal:hgvs
   - ucum:tx/data/ucum-essence.xml
-  - loinc:loinc-2.77-a.db
-  - loinc!:Loinc_2.82.db
-  - rxnorm:rxnorm_03022026.db
+  - loinc:loinc-2.77-c.db
+  - loinc!:Loinc_2.83f.db
+  - rxnorm:rxnorm_20261005-a.cache
   - ndc:ndc-20211101.db
   - unii:unii_20240622.db
-  - snomed:sct_intl_20240201.cache
-  - snomed!:sct_intl_20250201.cache
-#  - snomed:sct_se_20231130.cache
-#  - snomed:sct_au_20230731.cache
-#  - snomed:sct_be_20231115.cache
-  - snomed:sct_ch_20230607.cache
-  - snomed:sct_dk_20260331.cache
-  - snomed:sct_ips_20241216.cache
-  - snomed:sct_nl_20240930.cache
-  - snomed:sct_uk_20230412.cache
-  - snomed:sct_us_20230301.cache
-  - snomed:sct_us_20240301.cache
-  - snomed:sct_us_20250901.cache
-  - snomed:sct_test_20250814.cache
+  - snomed:sct_intl_20250201-21.cache
+  - snomed!:sct_intl_20260701-21.cache
+  - snomed:sct_nl_20260930-21.cache
+  - snomed:sct_uk_20261021-21.cache
+  - snomed:sct_us_20240301-21.cache
+  - snomed:sct_us_20250901-21.cache
+  - snomed:sct_us_20260901-21.cache
+  - snomed:sct_loinc_20261021-21.cache
+  - snomed:sct_test_20250909-21.cache
   - cpt:CodeSystem-cpt.db|cpt-2023-fragment-0.1.db
   - omop:omop_v20250227.db
-  - npm:hl7.terminology
-  - npm:fhir.tx.support.r4
-  - npm:ihe.formatcode.fhir
-  - npm:fhir.dicom
-  - npm:hl7.fhir.us.core
-  - npm:us.cdc.phinvads
-  - npm:hl7.fhir.uv.sdc
-  - internal:vsac
+  - npm:hl7.terminology=tho
+  - npm:fhir.tx.support=tx
+  - npm:fhir.tx.support.tests
+  - npm:ihe.formatcode.fhir=ihe
+  - npm:fhir.dicom=dicom
+  - npm:hl7.fhir.us.core=us
+  - npm:us.cdc.phinvads=cdc
+  - npm:hl7.fhir.uv.sdc=sdc
+  - npm:hl7.fhir.uv.ips=ips
+  - internal:vsac=vsac
+  - icd11:icd11-2026-01-c.db
 
 ignored:
   - urn:iso:std:iso:3166#20210120

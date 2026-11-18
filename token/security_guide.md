@@ -17,7 +17,7 @@ This guide covers the security considerations and proper implementation of Passp
   saveUninitialized: false,    // Don't create sessions until something stored
   rolling: true,               // Reset expiration on each request
   cookie: {
-    secure: NODE_ENV === 'production', // HTTPS only in production
+    secure: this.config.cookieSecure ?? 'auto', // Secure when the request came over https (req.secure)
     httpOnly: true,            // Prevent XSS access to cookies
     maxAge: 24 * 60 * 60 * 1000, // 24 hour expiration
     sameSite: 'lax'           // CSRF protection
