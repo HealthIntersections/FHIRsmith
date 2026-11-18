@@ -33,6 +33,7 @@ const native = require('./sct-native');
 const E = require('../sct/expressions');
 const { cannotDetermineSubsumption } = require('../cs/cs-api');
 const { DesignationUse } = require('../library/designations');
+const { LANGUAGE_REFSET_DIALECTS } = require('../cs/cs-snomed');
 
 /** an expression located natively */
 class NativeExprContext {
@@ -95,24 +96,85 @@ class SnomedV2Provider extends SqliteV2Provider {
     return !!(d && d.use && d.use.system === SCT && (d.use.code === SYNONYM || d.use.code === FSN));
   }
 
+  /**
+   * Each designation's acceptability as [[refset id, acceptability id], ...] (d.accs). A v5 file's
+   * designations come with their rank and not their acceptability (store.designationRows); the
+   * dialect rules below need to know which language reference set prefers which term, so the
+   * concept's acceptability rows are read here, in one statement, for the concepts that have two
+   * preferred terms in one language or an edition with more than one display reference set.
+   */
+  _needAcceptability(c) {
+    if (c.accsRead) return;
+    c.accsRead = true;
+    const parse = (acc) => (acc ? String(acc).split(',').map((x) => x.split(':').map(Number)) : []);
+    if (!this.store.hasAcceptability || c.desigs.every((d) => d.acc != null)) {
+      for (const d of c.desigs) d.accs = parse(d.acc);
+      return;
+    }
+    const q = this.store.stmt(`SELECT a.designation_id, a.refset_id, a.acceptability_id FROM designation_acceptability a
+      WHERE a.designation_id IN (SELECT d.designation_id FROM designation d WHERE d.concept_id = +?)`).raw(true);
+    const rows = q.all(c.id);
+    const by = new Map();
+    for (const r of rows) {
+      if (!by.has(r[0])) by.set(r[0], []);
+      by.get(r[0]).push([r[1], r[2]]);
+    }
+    for (const d of c.desigs) d.accs = by.get(d.id) || [];
+  }
+
+  /**
+   * As cs-snomed.js designations(): English dialects. Where the International edition's US and GB
+   * English reference sets prefer different terms, both are preferred synonyms in language 'en'.
+   * The one preferred in the edition's display reference set stands for the language (and is the
+   * display); the other is reported under its dialect's tag (en-GB), so that a request for that
+   * dialect gets it.
+   */
   async _designations(context, displays, significantOnly = false) {
     const c = await this._ensure(context);
     if (!c) return;
-    if (!c.desigs && c.displayOnly) {
+    if (!c.desigs && c.displayOnly && !this._displayOnlyNeedsDialects()) {
       this._displayOnly(c, displays);
       return;
     }
     this._needDesigs(c);
     const refsets = this.f.displayRefsetIds();
-    const isPreferredIn = (d, ids) => !!d.acc && d.acc.split(',').some((a) => { const [r, v] = a.split(':'); return v === String(this.f.preferredId()) && (!ids || ids.includes(Number(r))); });
+    const preferred = this.f.preferredId();
+    const isPreferredIn = (d, ids) => !!d.acc && d.acc.split(',').some((a) => { const [r, v] = a.split(':'); return v === String(preferred) && (!ids || ids.includes(Number(r))); });
     // v5 files: the rank the importer stored (0 preferred in a display refset, 1 in another, 2 not)
     const rankOf = (d) => (d.rank != null ? d.rank : (!d.use || d.use.code !== SYNONYM ? 2 : isPreferredIn(d, refsets) ? 0 : isPreferredIn(d, null) ? 1 : 2));
     const use = (d) => (d.use ? { system: SCT, code: d.use.code, display: d.use.display } : null);
+    // the active preferred synonyms; which reference set prefers which matters when a language
+    // has two of them, or the edition has more than one display reference set to choose between
+    const prefs = c.desigs.filter((d) => d.active && d.use && d.use.code === SYNONYM && rankOf(d) <= 1);
+    const dialects = this.f.dialectRefsets();
+    const detailed = refsets.length > 1 || new Set(prefs.map((d) => d.language)).size < prefs.length;
+    if (detailed) this._needAcceptability(c);
+    const prefersIn = (d, refset) => d.accs.some(([r, v]) => r === refset && v === preferred);
+    // the position of the first display reference set that prefers the designation (cs-snomed.js _displayRefsetRank)
+    const displayRank = (d) => {
+      if (!detailed) return rankOf(d) === 0 ? 0 : Infinity;
+      const i = refsets.findIndex((r) => prefersIn(d, r));
+      return i < 0 ? Infinity : i;
+    };
+    // the dialects a designation is the preferred term of (cs-snomed.js _preferredDialects)
+    const dialectsOf = (d) => (detailed ? dialects.filter((x) => x.lang === d.language && prefersIn(d, x.id)).map((x) => x.tag) : []);
     if (significantOnly) {
-      const lang = 'en';
-      displays.addDesignation(true, 'active', lang === 'en' ? 'en-US' : lang, null, c.row.display || '');
+      // the display's tag: the dialect of the display reference set that chose it, or else the
+      // language of the term (cs-snomed.js getDisplayNameEx, with its fallbacks: a synonym
+      // preferred in any reference set, the FSN, the first active description)
+      const tagOf = (d, x) => (x && x.lang === d.language ? x.tag : d.language === 'en' ? 'en-US' : d.language);
+      let tag = null;
+      for (let i = 0; i < refsets.length && !tag; i++) {
+        const d = prefs.find((x) => (detailed ? prefersIn(x, refsets[i]) : rankOf(x) === 0));
+        if (d) tag = tagOf(d, dialects.find((e) => e.id === refsets[i]));
+      }
+      if (!tag) {
+        const live = c.desigs.filter((d) => d.active);
+        const d = prefs[0] || live.find((x) => x.use && x.use.code === FSN) || live[0];
+        if (d) tag = tagOf(d, null);
+      }
+      displays.addDesignation(true, 'active', tag || 'en-US', null, c.row.display || '');
       const seenFsn = new Set();
-      const seenSyn = new Set();
       for (const d of c.desigs) {
         if (!d.active || !d.use) continue;
         if (d.use.code === FSN && !seenFsn.has(d.language)) {
@@ -120,19 +182,58 @@ class SnomedV2Provider extends SqliteV2Provider {
           displays.addDesignation(false, 'active', d.language, use(d), d.term);
         }
       }
-      for (const d of c.desigs) {
-        if (!d.active || !d.use || d.use.code !== SYNONYM || seenSyn.has(d.language)) continue;
-        if (rankOf(d) <= 1) {
-          seenSyn.add(d.language);
-          displays.addDesignation(false, 'active', d.language, use(d), d.term);
-        }
+      // per language, the preferred synonym the display reference sets put first; then each
+      // other dialect's preferred term, under the dialect's tag, where it is a different term
+      const prefSyns = new Map();
+      const dialectSyns = new Map();
+      for (const d of prefs) {
+        const rank = displayRank(d);
+        const cur = prefSyns.get(d.language);
+        if (!cur || rank < cur.rank) prefSyns.set(d.language, { d, rank });
+        for (const t of dialectsOf(d)) if (!dialectSyns.has(t)) dialectSyns.set(t, d);
+      }
+      for (const { d } of prefSyns.values()) displays.addDesignation(false, 'active', d.language, use(d), d.term);
+      for (const [t, d] of dialectSyns) {
+        if (d.term !== prefSyns.get(d.language).d.term) displays.addDesignation(false, 'active', t, use(d), d.term);
       }
     } else {
-      // each designation ranked once, not in every comparison
-      const list = c.desigs.map((d, i) => ({ d, i, r: rankOf(d) })).sort((a, b) => (a.r - b.r) || (a.i - b.i));
-      for (const { d } of list) displays.addDesignation(false, d.active ? 'active' : 'inactive', d.language, use(d), d.term);
+      // each designation ranked once, not in every comparison: preferred in a display reference
+      // set (in their order), then preferred in another, then the rest
+      const other = refsets.length;
+      const fine = (d) => {
+        const r = rankOf(d);
+        if (r !== 0) return other + r - 1;
+        const dr = displayRank(d);
+        return dr < other ? dr : 0;
+      };
+      const list = c.desigs.map((d, i) => ({ d, i, r: fine(d) })).sort((a, b) => (a.r - b.r) || (a.i - b.i));
+      // the first preferred synonym of a language stands for it; another is reported in its dialect
+      const languageTerms = new Map();
+      for (const { d, r } of list) {
+        let language = d.language;
+        if (d.active && r <= other) {
+          const tags = dialectsOf(d);
+          const taken = languageTerms.get(language);
+          if (!taken) languageTerms.set(language, tags);
+          else language = tags.find((t) => !taken.includes(t)) || language;
+        }
+        displays.addDesignation(false, d.active ? 'active' : 'inactive', language, use(d), d.term);
+      }
     }
     this._listSupplementDesignations(c.code, displays);
+  }
+
+  /**
+   * A page read for its displays only (an English-or-default request) shows the edition's display.
+   * That answers en-US only when the edition's display reference set is US English: an edition
+   * whose display is another dialect's (the UK editions: GB English) reads the designations for
+   * a request that names en-US, to find the US preferred term.
+   */
+  _displayOnlyNeedsDialects() {
+    const d = this.f.displayDialect();
+    if (!d || d === 'en-US') return false;
+    const langs = this.opContext && this.opContext.langs;
+    return !!langs && (langs.languages || []).some((l) => l.code && l.code !== '*' && l.code !== d.split('-')[0]);
   }
 
   /** the concept's text definition (900000000000550004), as the release states it */
@@ -611,6 +712,12 @@ class SnomedV2Factory extends SqliteV2Factory {
 
   displayRefsetIds() { return this._displayRefsets; }
 
+  /** the dialect language reference sets this file has: [{id, lang, tag}] (cs-snomed.js LANGUAGE_REFSET_DIALECTS) */
+  dialectRefsets() { return this._dialectRefsets; }
+
+  /** the dialect (en-GB) of the edition's first display reference set, or null when it is not a known dialect's */
+  displayDialect() { return this._displayDialect; }
+
   /** another loaded version of this edition is later than this one */
   laterVersionLoaded() {
     const mine = this.version();
@@ -627,6 +734,10 @@ class SnomedV2Factory extends SqliteV2Factory {
     this._preferredId = this.store.idOf(PREFERRED);
     this._displayRefsets = [].concat(this.store.config.displayRefsets || ['900000000000509007'])
       .map((c) => this.store.idOf(String(c))).filter((x) => x != null);
+    this._dialectRefsets = LANGUAGE_REFSET_DIALECTS
+      .map((d) => ({ id: this.store.idOf(String(d.refset)), lang: d.lang, tag: d.tag })).filter((d) => d.id != null);
+    const first = this._dialectRefsets.find((d) => d.id === this._displayRefsets[0]);
+    this._displayDialect = first ? first.tag : null;
   }
 
   async build(opContext, supplements) {
