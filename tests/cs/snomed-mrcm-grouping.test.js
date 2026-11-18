@@ -44,66 +44,66 @@ describeIfCache('MRCM attribute grouping', () => {
   }, 120000);
 
   /** Validate exactly as locate() does - parser with no concept list, then checkExpression. */
-  function check(expression) {
-    services.checkExpression(new SnomedExpressionParser().parse(expression));
+  async function check(expression) {
+    await services.checkExpression(new SnomedExpressionParser().parse(expression));
   }
 
   /** Validate, and return the (possibly transformed) expression. */
-  function checked(expression) {
+  async function checked(expression) {
     const e = new SnomedExpressionParser().parse(expression);
-    services.checkExpression(e);
+    await services.checkExpression(e);
     return e;
   }
 
   describe('attributes the MRCM marks as grouped are self-grouped when written ungrouped', () => {
     // Close To User Form -> Classifiable Form ("Adding a Self-grouped Attribute"),
     // as Ontoserver and Snowstorm do. Until Oct 2026 the ungrouped spelling was rejected.
-    test('accepts an ungrouped |Finding site|, and moves it into a group of its own', () => {
-      const e = checked('40468003:363698007=10200004');
+    test('accepts an ungrouped |Finding site|, and moves it into a group of its own', async () => {
+      const e = await checked('40468003:363698007=10200004');
       expect(e.refinements).toHaveLength(0);
       expect(e.refinementGroups).toHaveLength(1);
       expect(e.refinementGroups[0].refinements).toHaveLength(1);
       expect(e.refinementGroups[0].refinements[0].name.code).toBe('363698007');
     });
 
-    test('accepts the same refinement inside a group, unchanged', () => {
-      const e = checked('40468003:{363698007=10200004}');
+    test('accepts the same refinement inside a group, unchanged', async () => {
+      const e = await checked('40468003:{363698007=10200004}');
       expect(e.refinements).toHaveLength(0);
       expect(e.refinementGroups).toHaveLength(1);
     });
 
-    test('self-groups an ungrouped |Associated morphology| too, so the rule is not hard-coded to one attribute', () => {
-      const e = checked('64572001:116676008=57977008');
+    test('self-groups an ungrouped |Associated morphology| too, so the rule is not hard-coded to one attribute', async () => {
+      const e = await checked('64572001:116676008=57977008');
       expect(e.refinements).toHaveLength(0);
       expect(e.refinementGroups).toHaveLength(1);
     });
 
-    test('accepts several grouped attributes together', () => {
-      expect(() => check('64572001:{363698007=10200004,116676008=57977008}')).not.toThrow();
+    test('accepts several grouped attributes together', async () => {
+      await expect(check('64572001:{363698007=10200004,116676008=57977008}')).resolves.not.toThrow();
     });
 
-    test('a mixed expression where one refinement escaped the braces gets a second group, not a merged one', () => {
-      const e = checked('64572001:{363698007=10200004},116676008=57977008');
+    test('a mixed expression where one refinement escaped the braces gets a second group, not a merged one', async () => {
+      const e = await checked('64572001:{363698007=10200004},116676008=57977008');
       expect(e.refinements).toHaveLength(0);
       expect(e.refinementGroups).toHaveLength(2);
       expect(e.refinementGroups[1].refinements[0].name.code).toBe('116676008');
     });
 
-    test('the self-grouped form renders with braces', () => {
-      const e = checked('40468003:363698007=10200004');
+    test('the self-grouped form renders with braces', async () => {
+      const e = await checked('40468003:363698007=10200004');
       expect(services.renderExpression(e)).toContain('{');
     });
   });
 
   describe('attributes the MRCM marks as ungrouped', () => {
-    test('leaves |Laterality| outside a group, because the concept model says it is ungrouped', () => {
-      const e = checked('39607008:272741003=24028007');
+    test('leaves |Laterality| outside a group, because the concept model says it is ungrouped', async () => {
+      const e = await checked('39607008:272741003=24028007');
       expect(e.refinements).toHaveLength(1);
       expect(e.refinementGroups).toHaveLength(0);
     });
 
-    test('accepts a lateralised body structure nested inside a grouped |Finding site|', () => {
-      expect(() => check('64572001:{363698007=(39607008:272741003=24028007)}')).not.toThrow();
+    test('accepts a lateralised body structure nested inside a grouped |Finding site|', async () => {
+      await expect(check('64572001:{363698007=(39607008:272741003=24028007)}')).resolves.not.toThrow();
     });
   });
 
@@ -111,8 +111,8 @@ describeIfCache('MRCM attribute grouping', () => {
     test.each([
       ['a plain concept', '40468003'],
       ['a conjunction', '40468003+3738000']
-    ])('%s', (_label, expression) => {
-      expect(() => check(expression)).not.toThrow();
+    ])('%s', async (_label, expression) => {
+      await expect(check(expression)).resolves.not.toThrow();
     });
   });
 });

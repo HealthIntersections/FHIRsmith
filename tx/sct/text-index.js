@@ -1,25 +1,24 @@
 'use strict';
 
 /**
- * In-memory word index for free-text SNOMED CT search ($expand ... filter=).
+ * Word index for free-text SNOMED CT search ($expand ... filter=, and ECL term filters).
  *
- * The cache files produced by the Pascal importer carry no words/stems
- * index, and the ones produced by the JS importer carry one keyed on
- * language-specific stems of every description (inactive ones included). So
- * rather than depend on what a given cache happens to hold, the index is
- * built here, in memory, the first time an edition is text-searched.
+ * The importer builds it and the cache file carries it (cache format 21): one index for all
+ * the edition's languages and, when it has descriptions in more than one, one for each. The
+ * server reads them where they are in the cache file (memory-mapped, or read) - nothing is
+ * built when the cache loads or when it is searched.
  *
  * It follows the rules every provider's text search follows (text-match.js):
  *
  *  - every word (text-match words: folded, Unicode letters, marks and digits)
  *    of every ACTIVE description is a "word"
- *  - words[] is sorted, so a filter word matches every word it is the start
- *    of (a user who has typed "radioth" finds "radiotherapy"); a filter word
+ *  - words are sorted (by their UTF-8 bytes), so a filter word matches every word it is the
+ *    start of (a user who has typed "radioth" finds "radiotherapy"); a filter word
  *    of a single letter or digit only matches that word
  *  - each word is also filed under its stem, in the language of the
  *    descriptions it is in, so a filter word matches the other inflections of
  *    the same stem ("fractures" finds "fracture")
- *  - postings[w] is the ascending list of concept ORDINALS (reference /
+ *  - postings(w) is the ascending list of concept ORDINALS (reference /
  *    CONCEPT_SIZE) whose active descriptions contain word w
  *  - wordCounts[ordinal] is the number of distinct words the concept has,
  *    used to rank concepts whose terms are mostly the filter above ones where
@@ -27,10 +26,9 @@
  *
  * The index finds the concepts with every filter word (stop words aside)
  * somewhere in their active descriptions; rankMatches then keeps those with
- * every word in one description (one name), as the rules have it. For the
- * full International Edition the build takes a few seconds and the index a
- * few tens of MB; it yields to the event loop as it goes, and a search takes
- * milliseconds once it exists.
+ * every word in one description (one name), as the rules have it. Since the indexes are built
+ * at import, a change to what decides the words or stems (text-match.js) means a new
+ * TEXT_INDEX_VERSION, and every edition imported again.
  */
 
 const { words: textWords, stem: stemOf, TextQuery, STOP_WORDS } = require('../library/text-match');
@@ -65,20 +63,144 @@ function yieldToEventLoop() {
   return new Promise(resolve => setImmediate(resolve));
 }
 
+// The version of the text index layout and of the rules that built it (tokenizing, folding,
+// stemming - text-match.js). The importer writes it with the indexes; a cache whose indexes
+// say another version is refused, and has to be imported again. Change it when anything that
+// decides which words or stems an index holds changes.
+const TEXT_INDEX_VERSION = 1;
+
+// SnomedTextIndexes.lang for the index of every language
+const ALL_LANGUAGES = 0xFFFFFFFF;
+
+function align(n, to) {
+  return (n + to - 1) & ~(to - 1);
+}
+
+/**
+ * A typed array over buf at rel - a view when it is aligned (a memory-mapped or read cache
+ * file: no copy), else a copy
+ */
+function typedView(Type, buf, rel, length) {
+  const at = buf.byteOffset + rel;
+  if (at % Type.BYTES_PER_ELEMENT === 0) {
+    return new Type(buf.buffer, at, length);
+  }
+  const copy = new Type(length);
+  buf.copy(Buffer.from(copy.buffer), 0, rel, rel + length * Type.BYTES_PER_ELEMENT);
+  return copy;
+}
+
+/**
+ * Strings sorted by their UTF-8 bytes, held as one block of bytes and the offset of each:
+ * binary searched without decoding
+ */
+class SortedStrings {
+  constructor(bytes, offsets) {
+    this.bytes = bytes;       // Buffer
+    this.offsets = offsets;   // Uint32Array, count + 1
+  }
+
+  static from(sortedBuffers) {
+    const offsets = new Uint32Array(sortedBuffers.length + 1);
+    let total = 0;
+    for (let i = 0; i < sortedBuffers.length; i++) {
+      offsets[i] = total;
+      total += sortedBuffers[i].length;
+    }
+    offsets[sortedBuffers.length] = total;
+    return new SortedStrings(Buffer.concat(sortedBuffers, total), offsets);
+  }
+
+  get length() {
+    return this.offsets.length - 1;
+  }
+
+  get(i) {
+    return this.bytes.toString('utf8', this.offsets[i], this.offsets[i + 1]);
+  }
+
+  // the first i whose string is not below key (a Buffer)
+  lowerBound(key) {
+    let lo = 0;
+    let hi = this.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (key.compare(this.bytes, this.offsets[mid], this.offsets[mid + 1]) > 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    return lo;
+  }
+
+  equals(i, key) {
+    return this.offsets[i + 1] - this.offsets[i] === key.length &&
+      key.compare(this.bytes, this.offsets[i], this.offsets[i + 1]) === 0;
+  }
+
+  startsWith(i, key) {
+    return this.offsets[i + 1] - this.offsets[i] >= key.length &&
+      key.compare(this.bytes, this.offsets[i], this.offsets[i] + key.length) === 0;
+  }
+
+  indexOf(key) {
+    const i = this.lowerBound(key);
+    return i < this.length && this.equals(i, key) ? i : -1;
+  }
+}
+
+const byBytes = (a, b) => Buffer.compare(a, b);
+
 class SnomedTextIndex {
-  constructor(words, postings, stemWords, wordCounts, conceptSize) {
-    this.words = words;           // sorted string[]
-    this.postings = postings;     // Uint32Array[] parallel to words
-    this.stemWords = stemWords;   // Map stem -> word ids (number[])
-    this.wordCounts = wordCounts; // Uint16Array by concept ordinal
-    this.conceptSize = conceptSize;
-    this.scratch = new Uint8Array(wordCounts.length);
+  /**
+   * @param {object} parts
+   * @param {SortedStrings} parts.words - every word, sorted by its UTF-8 bytes
+   * @param {Uint32Array} parts.postingOffsets - word id -> start in postingData (words + 1)
+   * @param {Uint32Array} parts.postingData - concept ordinals, ascending for each word
+   * @param {SortedStrings} parts.stems - every stem, sorted by its UTF-8 bytes
+   * @param {Uint32Array} parts.stemWordOffsets - stem id -> start in stemWordIds (stems + 1)
+   * @param {Uint32Array} parts.stemWordIds - the word ids of each stem
+   * @param {Uint16Array} parts.wordCounts - concept ordinal -> distinct words
+   * @param {number} parts.conceptSize
+   */
+  constructor(parts) {
+    this.words = parts.words;
+    this.postingOffsets = parts.postingOffsets;
+    this.postingData = parts.postingData;
+    this.stems = parts.stems;
+    this.stemWordOffsets = parts.stemWordOffsets;
+    this.stemWordIds = parts.stemWordIds;
+    this.wordCounts = parts.wordCounts;
+    this.conceptSize = parts.conceptSize;
+    this.scratch = null; // allocated by the first search
+  }
+
+  /** An index with no words (for a language the edition has no descriptions in) */
+  static empty(conceptSize) {
+    const none = new SortedStrings(Buffer.alloc(0), new Uint32Array(1));
+    return new SnomedTextIndex({
+      words: none, postingOffsets: new Uint32Array(1), postingData: new Uint32Array(0),
+      stems: none, stemWordOffsets: new Uint32Array(1), stemWordIds: new Uint32Array(0),
+      wordCounts: new Uint16Array(0), conceptSize
+    });
+  }
+
+  /** The concept ordinals of the word with this id (ascending) */
+  postings(id) {
+    return this.postingData.subarray(this.postingOffsets[id], this.postingOffsets[id + 1]);
+  }
+
+  /** The ids of the words filed under this stem, or null */
+  stemWords(stem) {
+    const i = this.stems.indexOf(Buffer.from(stem, 'utf8'));
+    return i < 0 ? null : this.stemWordIds.subarray(this.stemWordOffsets[i], this.stemWordOffsets[i + 1]);
   }
 
   /**
-   * Build the index for a loaded edition. Yields to the event loop every
-   * BUILD_SLICE ms of work.
-   * @param {object} sct - SnomedServices
+   * Build the index for an edition (the importer does this, and the cache carries it). Yields
+   * to the event loop every BUILD_SLICE ms of work.
+   * @param {object} sct - what it reads: concepts, refs, descriptions, strings
    * @param {number|null} lang - only descriptions in this language (byte), or null for all
    * @param {Object<number, string>} [languageCodes] - language byte -> code, for the stemmers
    * @returns {Promise<SnomedTextIndex>}
@@ -135,37 +257,132 @@ class SnomedTextIndex {
       wordCounts[ordinal] = Math.min(distinct, 0xFFFF);
     }
 
-    // Final layout: words sorted, postings as typed arrays, stems -> words
-    // (each word under its stem in each language it is in).
-    const words = [...wordIds.keys()].sort();
-    const postings = new Array(words.length);
-    const stemWords = new Map();
+    // Final layout: words sorted by their bytes, postings in one block, stems -> words (each
+    // word under its stem in each language it is in)
+    const sorted = [...wordIds.keys()].map(word => ({ word, bytes: Buffer.from(word, 'utf8') }));
+    sorted.sort((a, b) => byBytes(a.bytes, b.bytes));
+    let total = 0;
+    for (const { word } of sorted) {
+      total += lists[wordIds.get(word)].length;
+    }
+    const postingOffsets = new Uint32Array(sorted.length + 1);
+    const postingData = new Uint32Array(total);
+    const stemMap = new Map();
+    let at = 0;
     sliceStart = performance.now();
-    for (let i = 0; i < words.length; i++) {
+    for (let i = 0; i < sorted.length; i++) {
       if ((i & 0xFF) === 0 && performance.now() - sliceStart >= BUILD_SLICE) {
         await yieldToEventLoop();
         sliceStart = performance.now();
       }
-      const word = words[i];
-      const id = wordIds.get(word);
-      postings[i] = Uint32Array.from(lists[id]);
+      const id = wordIds.get(sorted[i].word);
+      postingOffsets[i] = at;
+      postingData.set(lists[id], at);
+      at += lists[id].length;
       lists[id] = null;
       const stems = new Set();
       for (let b = 0; b < 32; b++) {
         if (langMasks[id] & (1 << b)) {
-          stems.add(stemOf(word, languageCodes[b] || 'en'));
+          stems.add(stemOf(sorted[i].word, languageCodes[b] || 'en'));
         }
       }
       for (const stem of stems) {
-        let ids = stemWords.get(stem);
+        let ids = stemMap.get(stem);
         if (!ids) {
           ids = [];
-          stemWords.set(stem, ids);
+          stemMap.set(stem, ids);
         }
         ids.push(i);
       }
     }
-    return new SnomedTextIndex(words, postings, stemWords, wordCounts, conceptSize);
+    postingOffsets[sorted.length] = at;
+
+    const stemList = [...stemMap.keys()].map(stem => ({ stem, bytes: Buffer.from(stem, 'utf8') }));
+    stemList.sort((a, b) => byBytes(a.bytes, b.bytes));
+    let stemTotal = 0;
+    for (const { stem } of stemList) {
+      stemTotal += stemMap.get(stem).length;
+    }
+    const stemWordOffsets = new Uint32Array(stemList.length + 1);
+    const stemWordIds = new Uint32Array(stemTotal);
+    at = 0;
+    for (let i = 0; i < stemList.length; i++) {
+      const ids = stemMap.get(stemList[i].stem);
+      stemWordOffsets[i] = at;
+      stemWordIds.set(ids, at);
+      at += ids.length;
+    }
+    stemWordOffsets[stemList.length] = at;
+
+    return new SnomedTextIndex({
+      words: SortedStrings.from(sorted.map(w => w.bytes)),
+      postingOffsets, postingData,
+      stems: SortedStrings.from(stemList.map(s => s.bytes)),
+      stemWordOffsets, stemWordIds,
+      wordCounts, conceptSize
+    });
+  }
+
+  /**
+   * The index as bytes, for the cache file. Every array starts at a multiple of 4 from the
+   * start, so where the start is aligned in the file, deserialize reads them in place.
+   * @returns {Buffer}
+   */
+  serialize() {
+    const header = [this.conceptSize, this.wordCounts.length, this.words.length, this.stems.length,
+      this.postingData.length, this.stemWordIds.length, this.words.bytes.length, this.stems.bytes.length];
+    const sections = [
+      Buffer.from(new Uint32Array(header).buffer),
+      typedBytes(this.words.offsets), typedBytes(this.postingOffsets), typedBytes(this.postingData),
+      typedBytes(this.stems.offsets), typedBytes(this.stemWordOffsets), typedBytes(this.stemWordIds),
+      typedBytes(this.wordCounts), this.words.bytes, this.stems.bytes
+    ];
+    const parts = [];
+    let length = 0;
+    for (const s of sections) {
+      parts.push(s);
+      length += s.length;
+      const pad = align(length, 4) - length;
+      if (pad > 0) {
+        parts.push(Buffer.alloc(pad));
+        length += pad;
+      }
+    }
+    return Buffer.concat(parts, length);
+  }
+
+  /**
+   * An index from what serialize wrote, over buf (no copy where buf is aligned)
+   * @param {Buffer} buf
+   * @returns {SnomedTextIndex}
+   */
+  static deserialize(buf) {
+    const h = typedView(Uint32Array, buf, 0, 8);
+    const [conceptSize, conceptCount, wordCount, stemCount, postingTotal, stemWordTotal, wordBytes, stemBytes] = h;
+    let rel = 32;
+    const take = (Type, length) => {
+      const view = typedView(Type, buf, rel, length);
+      rel = align(rel + length * Type.BYTES_PER_ELEMENT, 4);
+      return view;
+    };
+    const takeBytes = (length) => {
+      const view = buf.subarray(rel, rel + length);
+      rel = align(rel + length, 4);
+      return view;
+    };
+    const wordOffsets = take(Uint32Array, wordCount + 1);
+    const postingOffsets = take(Uint32Array, wordCount + 1);
+    const postingData = take(Uint32Array, postingTotal);
+    const stemOffsets = take(Uint32Array, stemCount + 1);
+    const stemWordOffsets = take(Uint32Array, stemCount + 1);
+    const stemWordIds = take(Uint32Array, stemWordTotal);
+    const wordCounts = take(Uint16Array, conceptCount);
+    const words = new SortedStrings(takeBytes(wordBytes), wordOffsets);
+    const stems = new SortedStrings(takeBytes(stemBytes), stemOffsets);
+    if (rel > buf.length) {
+      throw new Error('SNOMED CT text index is truncated');
+    }
+    return new SnomedTextIndex({ words, postingOffsets, postingData, stems, stemWordOffsets, stemWordIds, wordCounts, conceptSize });
   }
 
   /**
@@ -176,27 +393,19 @@ class SnomedTextIndex {
    * @returns {number[]}
    */
   wordsFor(token) {
+    const key = Buffer.from(token.word, 'utf8');
     const ids = new Set();
-    let lo = 0;
-    let hi = this.words.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this.words[mid] < token.word) {
-        lo = mid + 1;
-      } else {
-        hi = mid;
-      }
-    }
+    const lo = this.words.lowerBound(key);
     if (token.whole) {
-      if (lo < this.words.length && this.words[lo] === token.word) {
+      if (lo < this.words.length && this.words.equals(lo, key)) {
         ids.add(lo);
       }
       return [...ids];
     }
-    for (let i = lo; i < this.words.length && this.words[i].startsWith(token.word); i++) {
+    for (let i = lo; i < this.words.length && this.words.startsWith(i, key); i++) {
       ids.add(i);
     }
-    const stemmed = this.stemWords.get(token.stem);
+    const stemmed = token.stem ? this.stemWords(token.stem) : null;
     if (stemmed) {
       for (const i of stemmed) {
         ids.add(i);
@@ -221,7 +430,7 @@ class SnomedTextIndex {
       const ids = this.wordsFor(token);
       let size = 0;
       for (const id of ids) {
-        size += this.postings[id].length;
+        size += this.postingOffsets[id + 1] - this.postingOffsets[id];
       }
       return { ids, size };
     });
@@ -230,16 +439,16 @@ class SnomedTextIndex {
       return [];
     }
 
-    const mark = this.scratch;
+    const mark = this.scratch ??= new Uint8Array(this.wordCounts.length);
     // Candidates: the union for the rarest token.
     let candidates;
     const first = perToken[0].ids;
     if (first.length === 1) {
-      candidates = Array.from(this.postings[first[0]]);
+      candidates = Array.from(this.postings(first[0]));
     } else {
       mark.fill(0);
       for (const id of first) {
-        for (const ordinal of this.postings[id]) {
+        for (const ordinal of this.postings(id)) {
           mark[ordinal] = 1;
         }
       }
@@ -258,13 +467,106 @@ class SnomedTextIndex {
       }
       mark.fill(0);
       for (const id of perToken[t].ids) {
-        for (const ordinal of this.postings[id]) {
+        for (const ordinal of this.postings(id)) {
           mark[ordinal] = 1;
         }
       }
       candidates = candidates.filter(o => mark[o] === 1);
     }
     return candidates;
+  }
+}
+
+function typedBytes(arr) {
+  return Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+
+/**
+ * The text indexes of an edition, as the cache carries them: one for all its languages, and,
+ * when it has descriptions in more than one, one for each; and the languages it has active
+ * descriptions in.
+ */
+class SnomedTextIndexes {
+  /**
+   * @param {number[]} languages - the language bytes of the active descriptions
+   * @param {Map<number|null, SnomedTextIndex>} indexes - null for all languages
+   */
+  constructor(languages, indexes) {
+    this.languages = new Set(languages);
+    this.indexes = indexes;
+  }
+
+  get all() {
+    return this.indexes.get(null) || null;
+  }
+
+  /**
+   * Build them all for an edition (the importer)
+   * @param {object} sct - concepts, refs, descriptions, strings
+   * @param {Object<number, string>} languageCodes
+   * @param {function(string)} [progress] - told which index is being built
+   */
+  static async build(sct, languageCodes, progress = () => {}) {
+    const languages = [...sct.descriptions.activeLanguages()].sort((a, b) => a - b);
+    const indexes = new Map();
+    progress('all languages');
+    indexes.set(null, await SnomedTextIndex.build(sct, null, languageCodes));
+    if (languages.length > 1) {
+      for (const lang of languages) {
+        progress(languageCodes[lang] || `language ${lang}`);
+        indexes.set(lang, await SnomedTextIndex.build(sct, lang, languageCodes));
+      }
+    }
+    return new SnomedTextIndexes(languages, indexes);
+  }
+
+  /**
+   * As bytes: [version, language count, languages..., index count, (lang, offset, length)...],
+   * then each index at a multiple of 8 from the start
+   * @returns {Buffer}
+   */
+  serialize() {
+    const entries = [...this.indexes.entries()].map(([lang, index]) => ({ lang, bytes: index.serialize() }));
+    const head = [TEXT_INDEX_VERSION, this.languages.size, ...this.languages, entries.length];
+    let offset = align((head.length + entries.length * 3) * 4, 8);
+    for (const e of entries) {
+      e.offset = offset;
+      head.push(e.lang === null ? ALL_LANGUAGES : e.lang, offset, e.bytes.length);
+      offset = align(offset + e.bytes.length, 8);
+    }
+    const out = Buffer.alloc(offset);
+    Buffer.from(new Uint32Array(head).buffer).copy(out, 0);
+    for (const e of entries) {
+      e.bytes.copy(out, e.offset);
+    }
+    return out;
+  }
+
+  /**
+   * @param {Buffer} buf - what serialize wrote
+   * @returns {SnomedTextIndexes}
+   */
+  static deserialize(buf) {
+    const u32 = (i) => buf.readUInt32LE(i * 4);
+    const version = u32(0);
+    if (version !== TEXT_INDEX_VERSION) {
+      throw new Error(`its text indexes are version ${version}, and this server reads version ${TEXT_INDEX_VERSION}`);
+    }
+    const languageCount = u32(1);
+    const languages = [];
+    for (let i = 0; i < languageCount; i++) {
+      languages.push(u32(2 + i));
+    }
+    let at = 2 + languageCount;
+    const count = u32(at++);
+    const indexes = new Map();
+    for (let i = 0; i < count; i++) {
+      const lang = u32(at++);
+      const offset = u32(at++);
+      const length = u32(at++);
+      indexes.set(lang === ALL_LANGUAGES ? null : lang, SnomedTextIndex.deserialize(buf.subarray(offset, offset + length)));
+    }
+    return new SnomedTextIndexes(languages, indexes);
   }
 }
 
@@ -409,6 +711,8 @@ async function rankMatches(sct, index, ordinals, query, langCode, lang, includeI
 
 module.exports = {
   SnomedTextIndex,
+  SnomedTextIndexes,
+  TEXT_INDEX_VERSION,
   rankMatches,
   filterTokens,
   tokenize,

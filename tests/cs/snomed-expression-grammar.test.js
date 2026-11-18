@@ -178,48 +178,50 @@ describeIfCache('rendered expressions re-parse', () => {
     services = new SnomedServices(data).expressionServices;
   }, 120000);
 
-  // Concept ids from the test distribution: 272741003 |Laterality| is ungrouped in the
-  // MRCM, 116676008 |Associated morphology| and 363698007 |Finding site| are grouped, so
-  // these are the shapes that actually mix an attribute set with a group.
+  // Concept ids from the test distribution: 411116001 |Has manufactured dose form| is
+  // ungrouped in the MRCM, 762949000 |Has precise active ingredient| and 363698007 |Finding
+  // site| are grouped, so these are the shapes that actually mix an attribute set with a group
+  // (and the MRCM allows them on 763158003 |Medicinal product|).
   const expressions = [
     '40468003:{363698007=10200004}',
-    '64572001:272741003=24028007,{116676008=57977008}',
-    '64572001:272741003=24028007{116676008=57977008}'
+    '763158003:411116001=420692007,{762949000=126081001}',
+    '763158003:411116001=420692007{762949000=126081001}'
   ];
 
-  test.each(expressions)('%s round-trips through the minimal renderer', (expression) => {
+  test.each(expressions)('%s round-trips through the minimal renderer', async (expression) => {
     const rendered = services.renderExpression(
-      services.parseExpression(expression), SnomedServicesRenderOption.Minimal);
+      await services.parseExpression(expression), SnomedServicesRenderOption.Minimal);
 
     // This is the bug: the server handed this string back as `normalized-code` and then
     // refused to parse it.
-    expect(() => services.parseExpression(rendered)).not.toThrow();
+    await expect(services.parseExpression(rendered)).resolves.not.toThrow();
 
     const again = services.renderExpression(
-      services.parseExpression(rendered), SnomedServicesRenderOption.Minimal);
+      await services.parseExpression(rendered), SnomedServicesRenderOption.Minimal);
     expect(again).toBe(rendered);
   });
 
-  test('the two spellings normalise to one form, and it is the one with the comma', () => {
-    const render = (e) => services.renderExpression(
-      services.parseExpression(e), SnomedServicesRenderOption.Minimal);
-    const withComma = '64572001:272741003=24028007,{116676008=57977008}';
-    const without = '64572001:272741003=24028007{116676008=57977008}';
-    expect(render(without)).toBe(render(withComma));
-    expect(render(without)).toBe(withComma);
+  test('the two spellings normalise to one form, and it is the one with the comma', async () => {
+    const render = async (e) => services.renderExpression(
+      await services.parseExpression(e), SnomedServicesRenderOption.Minimal);
+    const withComma = '763158003:411116001=420692007,{762949000=126081001}';
+    const without = '763158003:411116001=420692007{762949000=126081001}';
+    expect(await render(without)).toBe(await render(withComma));
+    expect(await render(without)).toBe(withComma);
   });
 
-  test('a nested value is rendered in brackets, so it re-parses', () => {
-    const expression = '40468003:{363698007=(10200004:272741003=24028007)}';
+  test('a nested value is rendered in brackets, so it re-parses', async () => {
+    // 30737000 |Renal medulla| is a lateralizable body structure
+    const expression = '40468003:{363698007=(30737000:272741003=24028007)}';
     const rendered = services.renderExpression(
-      services.parseExpression(expression), SnomedServicesRenderOption.Minimal);
+      await services.parseExpression(expression), SnomedServicesRenderOption.Minimal);
     expect(rendered).toBe(expression);
-    expect(() => services.parseExpression(rendered)).not.toThrow();
+    await expect(services.parseExpression(rendered)).resolves.not.toThrow();
   });
 
-  test('a group-only expression gains no leading comma', () => {
+  test('a group-only expression gains no leading comma', async () => {
     expect(services.renderExpression(
-      services.parseExpression('40468003:{363698007=10200004}'), SnomedServicesRenderOption.Minimal))
+      await services.parseExpression('40468003:{363698007=10200004}'), SnomedServicesRenderOption.Minimal))
       .toBe('40468003:{363698007=10200004}');
   });
 });

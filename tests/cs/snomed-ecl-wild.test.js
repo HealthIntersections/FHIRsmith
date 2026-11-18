@@ -24,7 +24,7 @@ describe('ECL wild: terms', () => {
     snomedServices = factory.snomedServices;
   });
 
-  const codes = (ecl) => (snomedServices.filterECL(ecl, true, opContext).descendants || [])
+  const codes = async (ecl) => ((await snomedServices.filterECL(ecl, true, opContext)).descendants || [])
     .map(i => snomedServices.concepts.getConceptId(i).toString()).sort();
   const matches = (value, term) => snomedServices._eclTermMatcher({ kind: 'wild', value })(term);
 
@@ -32,7 +32,7 @@ describe('ECL wild: terms', () => {
   // linear from that: they are generous, because a CI run (coverage, every suite in one process,
   // a shared machine) can take several times as long as a quiet machine, and once took 614 ms
   // over a limit of 100 for the query on the whole test cache
-  test('a wild: term with many *s is quick', () => {
+  test('a wild: term with many *s is quick', async () => {
     const term = 'Structure of left lower lobe of lung and something else here';
     let start = Date.now();
     expect(matches('*'.repeat(30) + 'x', term)).toBe(false);
@@ -42,14 +42,14 @@ describe('ECL wild: terms', () => {
 
     // the same query with one '*': many '*'s are one, so it takes about as long
     start = Date.now();
-    const endsInX = codes('* {{ D term = wild:"*x" }}');
+    const endsInX = await codes('* {{ D term = wild:"*x" }}');
     const once = Date.now() - start;
     start = Date.now();
-    expect(codes('* {{ D term = wild:"' + '*'.repeat(30) + 'x" }}')).toEqual(endsInX);
+    expect(await codes('* {{ D term = wild:"' + '*'.repeat(30) + 'x" }}')).toEqual(endsInX);
     expect(Date.now() - start).toBeLessThan(5 * once + 2000);
   });
 
-  test('wild: terms match as before', () => {
+  test('wild: terms match as before', async () => {
     const term = 'Structure of left lower lobe of lung (body structure)';
     expect(matches('*lobe*', term)).toBe(true);
     expect(matches('STRUCTURE OF*', term)).toBe(true);
@@ -63,7 +63,7 @@ describe('ECL wild: terms', () => {
     expect(matches('café*', 'Café au lait spots')).toBe(true);
   });
 
-  test('wild: edge cases', () => {
+  test('wild: edge cases', async () => {
     // no '*': the whole term, ignoring case
     expect(matches('liver structure', 'Liver structure')).toBe(true);
     expect(matches('liver', 'Liver structure')).toBe(false);
@@ -87,16 +87,16 @@ describe('ECL wild: terms', () => {
     // an empty term
     expect(matches('a*', '')).toBe(false);
 
-    expect(codes('<< 10200004 {{ D term = wild:"Liver structure" }}')).toHaveLength(1);
-    expect(codes('<< 10200004 {{ D term = wild:"**lobe***" }}')).toEqual(codes('<< 10200004 {{ D term = wild:"*lobe*" }}'));
-    expect(codes('<< 10200004 {{ D term = wild:"*lobe*" }}').length).toBeGreaterThan(0);
+    expect(await codes('<< 10200004 {{ D term = wild:"Liver structure" }}')).toHaveLength(1);
+    expect(await codes('<< 10200004 {{ D term = wild:"**lobe***" }}')).toEqual(await codes('<< 10200004 {{ D term = wild:"*lobe*" }}'));
+    expect((await codes('<< 10200004 {{ D term = wild:"*lobe*" }}')).length).toBeGreaterThan(0);
   });
 });
 
 describe('wildTermMatcher, in the ECL module', () => {
   const { wildTermMatcher } = require('../../tx/sct/ecl');
 
-  test('the matcher the provider uses: anchored, case-insensitive, runs of * as one', () => {
+  test('the matcher the provider uses: anchored, case-insensitive, runs of * as one', async () => {
     expect(wildTermMatcher('*hema*oma')('Subdural HEMATOMA')).toBe(true);
     expect(wildTermMatcher('hema*')('subdural hematoma')).toBe(false);
     expect(wildTermMatcher('a***b')('aXb')).toBe(true);

@@ -13,7 +13,9 @@ const folders = require('../../library/folder-setup');
 // produced one, else the copy committed under tx/data.
 const testCachePath = folders.ensureFilePath('snomed-testing.cache');
 const committedCachePath = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
-const cacheFile = fs.existsSync(testCachePath) ? testCachePath
+// (the scratch copy only if it's in the current cache format: one from an older version's run isn't)
+const { SnomedFileReader } = require('../../tx/sct/structures');
+const cacheFile = fs.existsSync(testCachePath) && SnomedFileReader.isCurrent(testCachePath) ? testCachePath
     : (fs.existsSync(committedCachePath) ? committedCachePath : null);
 
 describe('SNOMED text search', () => {
@@ -64,22 +66,27 @@ describe('SNOMED text search', () => {
       return result.matches.map(m => m.term.toString());
     }
 
-    test('builds an index on first search and reuses it', async () => {
-      expect(sct._textIndex).toBeNull();
-      await search('appendicitis');
+    test('the index comes with the cache', () => {
       expect(sct._textIndex).toBeInstanceOf(SnomedTextIndex);
-      const first = sct._textIndex;
-      await search('appendicitis');
-      expect(sct._textIndex).toBe(first);
+      expect(sct.getTextIndex(null)).toBe(sct._textIndex);
     });
 
-    test('concurrent first searches share one build', async () => {
-      const fresh = new SnomedServicesFactory(i18n, cacheFile);
-      await fresh.load();
-      const services = fresh.snomedServices;
-      const [a, b] = await Promise.all([services.getTextIndex(null), services.getTextIndex(null)]);
-      expect(a).toBe(b);
-    }, 60000);
+    test('an index read from the cache is the one the importer built', async () => {
+      const { SnomedTextIndex: Index } = require('../../tx/sct/text-index');
+      const built = await Index.build(sct, null);
+      const read = sct._textIndex;
+      expect(read.words.length).toBe(built.words.length);
+      for (const id of [0, Math.floor(built.words.length / 2), built.words.length - 1]) {
+        expect(read.words.get(id)).toBe(built.words.get(id));
+        expect(Array.from(read.postings(id))).toEqual(Array.from(built.postings(id)));
+      }
+      expect(Array.from(read.wordCounts)).toEqual(Array.from(built.wordCounts));
+      expect(Index.deserialize(built.serialize()).words.length).toBe(built.words.length);
+    });
+
+    test('a language the edition has no descriptions in has an empty index', () => {
+      expect(sct.getTextIndex(200).search([{ word: 'liver', stem: 'liver', whole: false }])).toEqual([]);
+    });
 
     test('finds the concept named by the filter', async () => {
       expect(await search('appendicitis')).toContain('74400008');
@@ -103,7 +110,7 @@ describe('SNOMED text search', () => {
     test('every word has to be in one description', async () => {
       // 1059007 is "Opisthorchiasis" and "Cat liver fluke infection": both words are the
       // concept's, but no one description has them both
-      const index = await sct.getTextIndex(null);
+      const index = sct.getTextIndex(null);
       const query = new SearchFilterText('opisthorchiasis liver').query;
       expect(index.search(query.tokens('en')).length).toBeGreaterThan(0);
       expect(await search('opisthorchiasis liver')).not.toContain('1059007');
@@ -126,19 +133,9 @@ describe('SNOMED text search', () => {
       expect(all.length).toBeGreaterThanOrEqual(active.length);
     });
 
-    test('an unindexable filter still searches, by scan', async () => {
-      const scanned = await sct.searchFilter(new SearchFilterText('a'), false, null);
-      // every term containing "a" - the point is that it does not throw or
-      // silently return nothing
-      expect(scanned.matches.length).toBeGreaterThan(0);
-    });
-
-    test('scanSearch requires all the filter words', async () => {
-      const both = await sct.scanSearch('fracture tibia', false, null);
-      const codes = both.matches.map(m => m.term.toString());
-      expect(codes).toContain('6990005'); // Fracture of shaft of tibia
-      const neither = await sct.scanSearch('fracture zzzz', false, null);
-      expect(neither.matches).toEqual([]);
+    test('a one-letter filter searches that word', async () => {
+      const found = await sct.searchFilter(new SearchFilterText('a'), false, null);
+      expect(found.matches.length).toBeGreaterThan(0);
     });
 
     describe('the edition default language', () => {
@@ -149,7 +146,6 @@ describe('SNOMED text search', () => {
       // the concepts with a Dutch description with the word "hematoom" ("hematoom",
       // "intrahepatisch hematoom"; "leverhematoom" is one word)
       const DUTCH = ['262798009', '35566002'];
-      const membersOf = (refsetId) => sct.refSetIndex.getMembersByConcept(sct.concepts.findConcept(refsetId).index);
       const servicesWith = (slot) => new SnomedServices({ ...factory._sharedData, defaultLanguage: slot });
       const codes = async (services, text, languages = null) => {
         const provider = new SnomedProvider(new OperationContext('en', i18n), [], services);
@@ -158,28 +154,10 @@ describe('SNOMED text search', () => {
         return f.matches.map(m => m.term.toString()).sort();
       };
 
-      test('original-server cache: the slot names the default language reference set', async () => {
-        // the slot holds the reference set's membersByRef (51756144 - US English
-        // 900000000000509007 - in sct_intl_20250201.cache); its language is that of the
-        // descriptions it holds
-        const english = servicesWith(membersOf(900000000000509007n));
-        expect(english.defaultLanguage).toBe(1);
-        expect(await codes(english, 'appendicitis')).toContain('74400008');
-
-        const dutch = servicesWith(membersOf(1000601000003105n));
-        expect(dutch.defaultLanguage).toBe(3);
-        expect(await codes(dutch, 'hematoom')).toEqual(DUTCH);
-        expect(await codes(dutch, 'appendicitis')).toEqual([]);
-        // a request that names a language still gets that language
-        expect(await codes(dutch, 'appendicitis', [{ language: 'en' }])).toContain('74400008');
-        expect(await codes(dutch, 'hematoom', [{ language: 'en' }])).toEqual([]);
-      }, 60000);
-
       test('importer cache: the slot holds the language', async () => {
         const dutch = servicesWith(3);
         expect(dutch.defaultLanguage).toBe(3);
         expect(await codes(dutch, 'hematoom')).toEqual(DUTCH);
-        // older importer caches hold 1 whatever the edition: English
         const english = servicesWith(1);
         expect(english.defaultLanguage).toBe(1);
         expect(await codes(english, 'hematoom')).toEqual([]);
@@ -207,21 +185,6 @@ describe('SNOMED text search', () => {
         expect(services.defaultLanguage).toBe(1);
         expect(await codes(services, 'appendicitis')).toContain('74400008');
       }, 60000);
-    });
-
-    test('the scan yields through the operation context', async () => {
-      // The scan is the expensive path (a full pass over the edition), so it
-      // must hand the event loop back as it goes - see checkAndYield.
-      const opContext = new OperationContext('en', i18n, 'test-scan', 20);
-      const calls = [];
-      const realCheckAndYield = opContext.checkAndYield.bind(opContext);
-      opContext.checkAndYield = async (place) => {
-        calls.push(place);
-        return realCheckAndYield(place);
-      };
-      await sct.scanSearch('fracture', false, opContext);
-      expect(calls.length).toBeGreaterThan(0);
-      expect(calls[0]).toBe('sct:searchFilter');
     });
 
   });

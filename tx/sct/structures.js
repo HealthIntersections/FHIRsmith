@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const { mapFile, prewarmFile } = require('./mmap');
 
 // The ArrayBuffers of cache files loaded by SnomedFileReader. A structure uses its section of
@@ -108,140 +109,6 @@ class SnomedStrings {
   }
 }
 
-class SnomedWords {
-  constructor(buffer = null) {
-    this.master = adopt(buffer);
-    this.readOnly = !!buffer;
-    this.builder = null;
-  }
-
-  getEntry(index) {
-    const offset = index * 5;
-
-    if (offset > this.master.length - 5) {
-      throw new Error('invalid index');
-    }
-
-    // Read 4-byte cardinal (little-endian) + 1-byte flag
-    const stringIndex = this.master.readUInt32LE(offset);
-    const flags = this.master.readUInt8(offset + 4);
-
-    return { index: stringIndex, flags };
-  }
-
-  getString(index) {
-    const entry = this.getEntry(index);
-    return entry.index;
-  }
-
-  count() {
-    return Math.floor(this.master.length / 5);
-  }
-
-  startBuild() {
-    checkWritable(this);
-    this.builder = [];
-  }
-
-  addWord(index, flags) {
-    if (!this.builder) {
-      throw new Error('Must call startBuild() first');
-    }
-
-    // Create 5-byte record: 4-byte index + 1-byte flag
-    const record = Buffer.allocUnsafe(5);
-    record.writeUInt32LE(index, 0);  // 4-byte cardinal (little-endian)
-    record.writeUInt8(flags, 4);     // 1-byte flag
-
-    this.builder.push(record);
-  }
-
-  doneBuild() {
-    if (!this.builder) {
-      throw new Error('No build in progress');
-    }
-
-    this.master = Buffer.concat(this.builder);
-    this.builder = null;
-  }
-
-  clear() {
-    checkWritable(this);
-    this.master = Buffer.alloc(0);
-  }
-
-  get length() {
-    return this.master.length;
-  }
-}
-
-class SnomedStems {
-  constructor(buffer = null) {
-    this.master = adopt(buffer);
-    this.readOnly = !!buffer;
-    this.builder = null;
-  }
-
-  getEntry(index) {
-    const offset = index * 8;
-
-    if (offset > this.master.length - 7) {
-      throw new Error('invalid index');
-    }
-
-    // Read two 4-byte cardinals (little-endian)
-    const stringIndex = this.master.readUInt32LE(offset);
-    const reference = this.master.readUInt32LE(offset + 4);
-
-    return { index: stringIndex, reference };
-  }
-
-  getString(index) {
-    const entry = this.getEntry(index);
-    return entry.index;
-  }
-
-  count() {
-    return Math.floor(this.master.length / 8);
-  }
-
-  startBuild() {
-    checkWritable(this);
-    this.builder = [];
-  }
-
-  addStem(index, reference) {
-    if (!this.builder) {
-      throw new Error('Must call startBuild() first');
-    }
-
-    // Create 8-byte record: two 4-byte cardinals
-    const record = Buffer.allocUnsafe(8);
-    record.writeUInt32LE(index, 0);      // First 4-byte cardinal
-    record.writeUInt32LE(reference, 4);  // Second 4-byte cardinal
-
-    this.builder.push(record);
-  }
-
-  doneBuild() {
-    if (!this.builder) {
-      throw new Error('No build in progress');
-    }
-
-    this.master = Buffer.concat(this.builder);
-    this.builder = null;
-  }
-
-  clear() {
-    checkWritable(this);
-    this.master = Buffer.alloc(0);
-  }
-
-  get length() {
-    return this.master.length;
-  }
-}
-
 class SnomedReferences {
   constructor(buffer = null) {
     this.master = adopt(buffer);
@@ -334,8 +201,11 @@ class SnomedReferences {
 
   startBuild() {
     checkWritable(this);
-    this.builder = [];
-    this.currentOffset = 0; // RESET: offset when starting build
+    // 0 means "no list" (getReferences), so no list may start there: the first 4 bytes are an
+    // empty list nothing refers to. (Until cache format 21 the stems lists came first, and
+    // happened to keep every real list off 0.)
+    this.builder = [Buffer.alloc(4)];
+    this.currentOffset = 4;
   }
 
   addReferences(cardinalArray) {
@@ -646,6 +516,7 @@ class SnomedDescriptionIndex {
 }
 
 class SnomedConceptList {
+  // bytes 30-33 of each record are unused (they were the concept's stems, before cache format 21)
   static CONCEPT_SIZE = 56;
   static MASK_CONCEPT_STATUS = 0x0F;
   static MASK_CONCEPT_PRIMITIVE = 0x10;
@@ -759,11 +630,6 @@ class SnomedConceptList {
     return this.master.readUInt8(index + 29);
   }
 
-  getStems(index) {
-    this.#checkPostBuildAccess(index);
-    return this.master.readUInt32LE(index + 30);
-  }
-
   getModuleId(index) {
     this.#checkPostBuildAccess(index);
     return this.master.readUInt32LE(index + 36);
@@ -866,12 +732,6 @@ class SnomedConceptList {
     checkWritable(this);
     this.#checkPostBuildAccess(index);
     this.master.writeUInt8(value, index + 29);
-  }
-
-  setStems(index, value) {
-    checkWritable(this);
-    this.#checkPostBuildAccess(index);
-    this.master.writeUInt32LE(value, index + 30);
   }
 
   setDate(index, effectiveTime) {
@@ -1001,6 +861,22 @@ class SnomedRelationshipList {
       defining: this.master.readUInt8(index + 27) !== 0,
       group: this.master.readInt32LE(index + 28), // Signed integer
       identity: this.master.readBigUInt64LE(index + 32)
+    };
+  }
+
+  // The fields relationship matching needs (source, target, type, active, group), without
+  // decoding the rest of the row: no BigInt for the identity, so much cheaper than
+  // getRelationship() in a loop over thousands of rows (ECL refinements)
+  getRelationshipCore(index) {
+    if (index >= this.master.length) {
+      throw new Error('Wrong length index getting snomed relationship Details');
+    }
+    return {
+      source: this.master.readUInt32LE(index + 0),
+      target: this.master.readUInt32LE(index + 4),
+      relType: this.master.readUInt32LE(index + 8),
+      active: this.master.readUInt8(index + 26) !== 0,
+      group: this.master.readInt32LE(index + 28)
     };
   }
 
@@ -1409,6 +1285,19 @@ class SnomedReferenceSetIndex {
 }
 
 
+/**
+ * The SNOMED CT cache format the importer writes and the server reads: the only one it reads.
+ *
+ * 21 (November 2026) is 20 plus the license the edition is distributed under (the importer's
+ * --license file, right after the header) and the text indexes, built at import (at the end),
+ * less the old words and stems sections, which nothing read.
+ * 20 was the first written with every ISO 639-1 description language, the edition's language
+ * in the default-language slot, and effective dates that don't depend on the time zone the
+ * import ran in; 19 added concrete values, 18 alternate identifiers. A cache in any other
+ * format has to be imported again.
+ */
+const SNOMED_CACHE_VERSION = '21';
+
 class SnomedFileReader {
   /**
    * @param {string} filePath
@@ -1426,6 +1315,30 @@ class SnomedFileReader {
     this.buffer = null;
     this.mapped = false; // true once load() has the buffer as a memory mapping of the file
     this.offset = 0;
+  }
+
+  /**
+   * Whether a cache file is in the format this server reads (SNOMED_CACHE_VERSION), without
+   * loading it
+   * @param {string} filePath
+   * @returns {boolean}
+   */
+  static isCurrent(filePath) {
+    const head = Buffer.alloc(16);
+    const fd = fs.openSync(filePath, 'r');
+    let n;
+    try {
+      n = fs.readSync(fd, head, 0, head.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const reader = new SnomedFileReader(filePath);
+    reader.buffer = head.subarray(0, n);
+    try {
+      return reader.readString() === SNOMED_CACHE_VERSION;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1537,38 +1450,40 @@ class SnomedFileReader {
   async loadSnomedData() {
     await this.load();
 
+    const cacheVersion = this.readString();
+    if (cacheVersion !== SNOMED_CACHE_VERSION) {
+      throw new Error(`SNOMED CT cache ${path.basename(this.filePath)} is in cache format ${cacheVersion}, ` +
+        `and this server only reads format ${SNOMED_CACHE_VERSION}: import the edition again with this version's importer`);
+    }
     const result = {
-      cacheVersion: this.readString(),  // the cache format version: "16" to "20" (see staleCacheReasons)
+      cacheVersion,  // SNOMED_CACHE_VERSION
       versionUri: this.readString(),
       versionDate: this.readString(),
       isTesting: false,
-
-      // Version-dependent settings
-      hasLangs: false,  // Default for older versions
-      isUTF16: false,   // Will be determined by version
+      hasLangs: true,
 
       // Extract edition and version from URI
       edition: null,
       version: null,
-
-      // Structure data
-      strings: this.readBytes(),
-      refs: this.readBytes(),
-      desc: this.readBytes(),
-      words: this.readBytes(),
-      stems: this.readBytes(),
-      concept: this.readBytes(),
-      rel: this.readBytes(),
-      refSetIndex: this.readBytes(),
-      refSetMembers: this.readBytes(),
-      descRef: this.readBytes(),
-
-      // Additional data
-      isAIndex: this.readInteger(),
-      inactiveRoots: [],
-      activeRoots: [],
-      defaultLanguage: null // Will be read last
     };
+    // The license the edition is distributed under (the importer's --license file), carried
+    // in the cache so that it goes wherever the cache goes; the server doesn't read it
+    result.license = this.readBytes();
+
+    // Structure data
+    result.strings = this.readBytes();
+    result.refs = this.readBytes();
+    result.desc = this.readBytes();
+    result.concept = this.readBytes();
+    result.rel = this.readBytes();
+    result.refSetIndex = this.readBytes();
+    result.refSetMembers = this.readBytes();
+    result.descRef = this.readBytes();
+
+    // Additional data
+    result.isAIndex = this.readInteger();
+    result.inactiveRoots = [];
+    result.activeRoots = [];
 
     result.isTesting = result.versionUri.includes("/xsct/");
     // Parse edition and version from URI
@@ -1578,83 +1493,35 @@ class SnomedFileReader {
       result.version = uriParts[6];
     }
 
-    // Determine settings based on cache version string (matching Pascal logic)
-    if (['17', '18', '19', '20'].includes(result.cacheVersion)) { // 18 = 17 + alternate identifiers; 19 = 18 + concrete values; 20 - see staleCacheReasons
-      result.hasLangs = true;
-    } else if (result.cacheVersion === '16') { // Assuming this is UTF8 version for now
-      result.isUTF16 = false;
-      result.hasLangs = false;
-    } else {
-      throw new Error(`Unsupported SNOMED cache version: ${result.cacheVersion}`);
-    }
-
     const inactiveRootsLength = this.readInteger();
-
     for (let i = 0; i < inactiveRootsLength; i++) {
       result.inactiveRoots.push(this.readUInt64());
     }
-
-    // Read active roots array
     const activeRootsLength = this.readInteger();
     for (let i = 0; i < activeRootsLength; i++) {
       result.activeRoots.push(this.readUInt64());
     }
 
-    // Read default language
+    // The edition's default description language, as a language byte (tx/sct/languages.js)
     result.defaultLanguage = this.readInteger();
 
-    // Alternate identifiers (version 18): [[scheme, module, code, conceptId], ...]
-    result.identifiers = [];
-    if (['18', '19', '20'].includes(result.cacheVersion)) {
-      result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
-    }
-    // Concrete value relationships (version 19): [[sourceId, typeId, group, value], ...].
-    // null (not []) when the cache predates them, so the server can tell "none" from
-    // "not loaded".
-    result.concreteValues = null;
-    if (['19', '20'].includes(result.cacheVersion)) {
-      result.concreteValues = JSON.parse(this.readBytes().toString('utf8'));
-    }
+    // Alternate identifiers: [[scheme, module, code, conceptId], ...]
+    result.identifiers = JSON.parse(this.readBytes().toString('utf8'));
+    // Concrete value relationships: [[sourceId, typeId, group, value], ...]
+    result.concreteValues = JSON.parse(this.readBytes().toString('utf8'));
+
+    // The text indexes (tx/sct/text-index.js SnomedTextIndexes), after a pad byte count and
+    // the pad that puts them at a multiple of 8 in the file
+    const textIndexes = this.readBytes();
+    result.textIndexes = textIndexes.subarray(1 + textIndexes[0]);
 
     return result;
   }
 }
 
-/**
- * Why a SNOMED CT cache in an older format should be imported again with the current
- * importer, or [] if it shouldn't. The server logs these when it loads the cache, and puts
- * them in the daily report.
- *
- * Format 20 (November 2026) is the first written by an importer with all of: every ISO 639-1
- * description language (tx/sct/languages.js; before, any language beyond en, fr, nl, es, sv,
- * da, de, it and cs was recorded as English), the edition's language in the default-language
- * slot (before, English whatever the edition), and effective dates that don't depend on the
- * time zone the import ran in (before, a cache built ahead of UTC had every date a day early).
- * Caches older than 19 also have no concrete values.
- *
- * @param {string} cacheVersion - as the cache file records it
- * @returns {string[]}
- */
-function staleCacheReasons(cacheVersion) {
-  const v = parseInt(cacheVersion, 10);
-  if (!(v < 20)) {
-    return [];
-  }
-  const reasons = [];
-  if (v < 19) {
-    reasons.push('it has no concrete values (an ECL refinement on one is reported as unsupported)');
-  }
-  reasons.push('descriptions in languages other than en, fr, nl, es, sv, da, de, it and cs may be labelled English');
-  reasons.push('a text or display filter with no request language may search English rather than the edition\'s own language');
-  reasons.push('if it was built in a time zone ahead of UTC, its effective dates are a day early');
-  return reasons;
-}
-
 module.exports = {
-  staleCacheReasons,
+  SNOMED_CACHE_VERSION,
   SnomedStrings,
-  SnomedWords,
-  SnomedStems,
   SnomedReferences,
   SnomedDescriptions,
   SnomedDescriptionIndex,
