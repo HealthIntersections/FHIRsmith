@@ -258,11 +258,12 @@ class TerminologyWorker {
   async listVersions(url) {
     const versions = new Set();
 
-    // Check additional resources
+    // Check additional resources (a supplement can have the url of the code system it supplements,
+    // but its version is not a version of that code system)
     if (this.additionalResources) {
       for (const resource of this.additionalResources) {
         this.deadCheck('listVersions-additional');
-        if (resource.url === url && resource.version) {
+        if (resource.resourceType === 'CodeSystem' && resource.content !== 'supplement' && resource.url === url && resource.version) {
           versions.add(resource.version);
         }
       }
