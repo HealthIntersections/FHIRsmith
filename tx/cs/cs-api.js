@@ -966,7 +966,11 @@ class CodeSystemProvider {
    * @param {String} filter user entered text search
    * @param {boolean} sort ?
    **/
-  async searchFilter(filterContext, filter, sort) { throw new Error("Text Search is not supported"); } // ? must override?
+  async searchFilter(filterContext, filter, sort) {
+    // a provider that has no text search needn't override this: the request asked for a text
+    // filter this code system doesn't have, which is the client's problem, not a server error
+    throw new Issue('error', 'not-supported', null, null, "Text Search is not supported", null, 422);
+  }
 
   /**
    * Used for searching ucum (see specialEnumeration)
