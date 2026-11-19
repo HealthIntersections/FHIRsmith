@@ -215,7 +215,7 @@ counts in the statistics database for the period. The modules that report:
 
 | Module | Reports |
 |---|---|
-| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub, with Google), failed logins for accounts that exist, the user accounts (disabled, new), and the sessions logged in now |
+| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub, with Google), failed logins (altogether, for names that aren't accounts, and for each account), the user accounts (disabled, new), and the sessions logged in now |
 | Terminology server | how many of each operation were performed, over all its endpoints |
 | Terminology server registry | client requests answered by the API, servers registered, and any server that answered none of the registry's scans in the period |
 | Packages | packages served (tarball downloads) and new package versions found by the crawler |

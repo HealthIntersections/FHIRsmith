@@ -136,8 +136,22 @@ describe('who is asking', () => {
 
   test('safeReturn stays on this server', () => {
     expect(safeReturn('/ips/demo?x=1')).toBe('/ips/demo?x=1');
-    for (const bad of ['//evil.example', '/\\evil.example', 'https://evil.example', 'javascript:alert(1)', '/a\r\nLocation: x', undefined]) {
+    // an encoded URL in the query is fine: only an encoded / or \ straight after the first / isn't
+    expect(safeReturn('/tx/r4/ValueSet?url=http%3A%2F%2Fexample.org')).toBe('/tx/r4/ValueSet?url=http%3A%2F%2Fexample.org');
+    for (const bad of ['//evil.example', '/\\evil.example', 'https://evil.example', 'javascript:alert(1)', '/a\r\nLocation: x',
+      '/%2Fevil.example', '/%5cevil.example', '/a\tb', '/a\u0000', '', 'x'.repeat(10) + '/', '/' + 'x'.repeat(2000), undefined, 42]) {
       expect(safeReturn(bad, '/home')).toBe('/home');
+    }
+  });
+
+  test('redirects back go only to paths on this server', async () => {
+    const app = makeApp();
+    const { agent } = await login(app, 'nobody-here', GOOD);
+    await makeUser('person', GOOD);
+    for (const [ret, to] of [['/module/page', '/module/page'], ['//evil.example/x', '/auth/account'], ['/%2f%2fevil.example', '/auth/account'], ['https://evil.example', '/auth/account']]) {
+      const _csrf = await csrfOf(agent);
+      const res = await agent.post('/auth/login').type('form').send({ login: 'person', password: GOOD, return: ret, _csrf });
+      expect(res.headers.location).toBe(to);
     }
   });
 
@@ -559,7 +573,7 @@ describe('logging in with Google', () => {
     await viaGoogle(request.agent(app));
     expect(auth.store.users()).toHaveLength(1);
     expect(auth.store.userByGoogle('1001').google_email).toBe('jane@example.org');
-    expect(auth.dailyReport({ since: Date.now() - 60000, now: Date.now() + 1000 })).toMatch(/^2 logins, /);
+    expect(auth.dailyReport({ since: Date.now() - 60000, now: Date.now() + 1000 })).toMatch(/^2 logins\. /);
   });
 
   test('an address Google hasn\'t verified, a bad code, or a made-up state is refused', async () => {
@@ -765,7 +779,7 @@ describe('the daily report', () => {
     expect(auth.dailyReport({ since: Date.now() - 86400000, now: Date.now() })).toBe('');
   });
 
-  test('logins, failed logins for accounts that exist, the accounts, and the sessions logged in', async () => {
+  test('logins, failed logins altogether and by account, the accounts, and the sessions logged in', async () => {
     const app = makeApp();
     const since = Date.now() - 1000;
     await makeUser('person', GOOD);
@@ -774,17 +788,25 @@ describe('the daily report', () => {
     const { agent } = await login(app, 'person', GOOD);
     await login(app, 'person', GOOD);
     await login(app, 'person', 'wrong-password');
+    await login(app, 'person', 'wrong-again');
     await login(app, 'gone-away', GOOD);
-    // not an account: not counted
+    // names that aren't accounts: counted in the total
     await login(app, 'nobody', GOOD);
+    await login(app, 'admin', 'guess');
+    await login(app, 'root', 'guess');
     expect((await agent.get('/module/page')).text).toBe('hello person');
     const report = auth.dailyReport({ since, now: Date.now() + 1000 });
-    expect(report).toBe('2 logins, and 2 failed logins for accounts that exist. 2 user accounts (1 disabled), 2 of them new. 2 sessions are logged in now.');
+    expect(report).toBe('2 logins. 6 failed logins: 3 for names that aren\'t accounts, and 3 for accounts that exist (person 2, gone-away 1). ' +
+      '2 user accounts (1 disabled), 2 of them new. 2 sessions are logged in now.');
     // by how, when there was more than one way
     auth.store.recordLogin('login', 'github', 1);
-    expect(auth.dailyReport({ since, now: Date.now() + 1000 })).toMatch(/^3 logins \(2 with a password, 1 with GitHub\), and 2 failed/);
+    expect(auth.dailyReport({ since, now: Date.now() + 1000 })).toMatch(/^3 logins \(2 with a password, 1 with GitHub\)\. 6 failed/);
     // the next period has none of them
-    expect(auth.dailyReport({ since: Date.now() + 1000, now: Date.now() + 2000 })).toMatch(/^0 logins, and 0 failed logins/);
+    expect(auth.dailyReport({ since: Date.now() + 1000, now: Date.now() + 2000 })).toMatch(/^0 logins\. No failed logins\. /);
+    // one, for a name that isn't an account
+    const t = Date.now() + 3000;
+    auth.store.db.prepare("INSERT INTO login_events (at, kind, method, user_id) VALUES (?, 'failed', 'password', NULL)").run(new Date(t).toISOString());
+    expect(auth.dailyReport({ since: t - 1, now: t + 1 })).toMatch(/^0 logins\. 1 failed login: 1 for a name that isn't an account\. /);
   });
 });
 

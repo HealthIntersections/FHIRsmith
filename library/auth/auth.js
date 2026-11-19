@@ -75,9 +75,33 @@ function presentedToken(req) {
   return null;
 }
 
-/** A return path that stays on this server: a local path, never //host or /\host */
+/**
+ * Is this a path on this server - one a redirect can't turn into another site? It starts with
+ * one /, not // or /\ (which browsers take as //host), nor an encoded / or \ there; it has no
+ * control characters; and it isn't too long. (Named so that code scanning - CodeQL
+ * js/server-side-unvalidated-url-redirection - takes it as the check it is)
+ */
+function isLocalUrl(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 2000 &&
+    value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it looks for
+    !/^\/(%2f|%5c)/i.test(value) && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+/**
+ * Redirect back to where the user was: `value` if it's a path on this server, else `fallback`
+ * (a path the server chose). Every redirect to a place a request named goes through this
+ */
+function redirectBack(res, value, fallback) {
+  if (isLocalUrl(value)) {
+    return res.redirect(value);
+  }
+  return res.redirect(fallback);
+}
+
+/** A return path that stays on this server: a local path (isLocalUrl), else the fallback */
 function safeReturn(value, fallback = '/') {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\') || value.length > 2000 || /[\r\n]/.test(value)) {
+  if (!isLocalUrl(value)) {
     return fallback;
   }
   return value;
@@ -612,11 +636,28 @@ class Auth {
     const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub'], [c.google, 'with Google']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
     const total = c => c.password + c.github + c.google;
     const logins = total(s.logins);
-    const failed = total(s.failed);
+    const known = total(s.failed);
+    const failed = known + s.failedUnknown;
     const sentences = [];
-    let first = `${plural(logins, 'login')}${logins > 0 && how(s.logins).length > 1 ? ` (${how(s.logins).join(', ')})` : ''}`;
-    first += `, and ${plural(failed, 'failed login')} for accounts that exist${failed > 0 && how(s.failed).length > 1 ? ` (${how(s.failed).join(', ')})` : ''}.`;
+    const first = `${plural(logins, 'login')}${logins > 0 && how(s.logins).length > 1 ? ` (${how(s.logins).join(', ')})` : ''}.`;
     sentences.push(first.charAt(0).toUpperCase() + first.slice(1));
+    // failed logins altogether, and by account. (A GitHub or Google login that was cancelled or
+    // abandoned isn't one: only a wrong password, or a disabled account, is)
+    if (failed === 0) {
+      sentences.push('No failed logins.');
+    } else {
+      const SHOWN = 10;
+      const accounts = s.failedAccounts.slice(0, SHOWN).map(a => `${a.login} ${a.n}`).join(', ') +
+        (s.failedAccounts.length > SHOWN ? `, and ${s.failedAccounts.length - SHOWN} more` : '');
+      const parts = [];
+      if (s.failedUnknown > 0) {
+        parts.push(`${s.failedUnknown} for ${s.failedUnknown === 1 ? 'a name that isn\'t an account' : 'names that aren\'t accounts'}`);
+      }
+      if (known > 0) {
+        parts.push(`${known} for ${s.failedAccounts.length === 1 ? 'an account that exists' : 'accounts that exist'} (${accounts})`);
+      }
+      sentences.push(`${plural(failed, 'failed login')}: ${parts.join(', and ')}.`);
+    }
     const disabled = s.users - s.enabled;
     sentences.push(`${plural(s.users, 'user account')}${disabled > 0 ? ` (${disabled} disabled)` : ''}` +
       `${s.made > 0 ? `, ${s.made} of them new` : ''}.`);
@@ -701,4 +742,4 @@ class Auth {
   }
 }
 
-module.exports = { Auth, Principal, presentedToken, safeReturn, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };
+module.exports = { Auth, Principal, presentedToken, safeReturn, isLocalUrl, redirectBack, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };

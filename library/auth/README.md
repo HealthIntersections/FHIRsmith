@@ -279,8 +279,9 @@ clinical and national profiles and reports, publisher websites, and the users th
 
 When there are any accounts, the daily report ([CONFIGURATION.md](../../CONFIGURATION.md#email-and-the-daily-report))
 starts with a paragraph on them: the logins in the period (with a password, with GitHub, with Google), the
-failed logins for accounts that exist (a wrong password, or a disabled account - a name that
-isn't an account isn't counted), the user accounts (how many are disabled, how many are new)
+failed logins altogether, how many were for names that aren't accounts, and how many for each
+account that exists (a wrong password, or a disabled account). A GitHub or Google login that was
+cancelled or abandoned isn't a failed login. Then the user accounts (how many are disabled, how many are new)
 and the sessions logged in now. Logins and failed logins are kept in the auth database
 (`login_events`) for 90 days.
 

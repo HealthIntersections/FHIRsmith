@@ -12,7 +12,7 @@ const escape = require('escape-html');
 const bcrypt = require('bcrypt');
 const oauth = require('./oauth');
 const { AuthStore } = require('./store');
-const { safeReturn, SERVER, ADMINISTRATOR, MIN_PASSWORD } = require('./auth');
+const { safeReturn, redirectBack, SERVER, ADMINISTRATOR, MIN_PASSWORD } = require('./auth');
 
 const TEMPLATE = 'root';
 // accounts, passwords, GitHub, roles and API tokens, for the people who use the pages
@@ -148,8 +148,8 @@ function buildRouter(auth) {
   r.get('/login', session, csrf, h((req, res) => sendLogin(auth, req, res, 200)));
   r.post('/login', sameOrigin, limiter, session, form, csrf, h((req, res) => login(auth, req, res)));
   r.post('/logout', sameOrigin, session, form, csrf, h((req, res) => {
-    const back = safeReturn(str(req.body.return), auth.afterLogout());
-    req.session.destroy(() => res.redirect(back));
+    const back = str(req.body.return);
+    req.session.destroy(() => redirectBack(res, back, auth.afterLogout()));
   }));
 
   // ---- GitHub, Google (oauth.js) ----
@@ -320,16 +320,15 @@ async function login(auth, req, res) {
   // which usernames exist
   const ok = await bcrypt.compare(password, u && u.password_hash ? u.password_hash : auth.store.dummyHash());
   if (!ok || !u || !u.password_hash || !u.enabled) {
-    if (u) {
-      auth.store.recordLogin('failed', 'password', u.id);
-    }
+    // counted for the daily report: for the account, or (no account by that name) for none
+    auth.store.recordLogin('failed', 'password', u ? u.id : null);
     auth.log.info(`Auth: failed login for '${shown(name)}' from ${req.ip}`);
     return sendLogin(auth, req, res, 401, 'Unknown username or wrong password');
   }
   await logIn(auth, req, u);
   auth.store.recordLogin('login', 'password', u.id);
   auth.log.info(`Auth: '${u.login}' logged in from ${req.ip}`);
-  res.redirect(safeReturn(str(req.body.return), '/auth/account'));
+  redirectBack(res, str(req.body.return), '/auth/account');
 }
 
 async function providerCallback(auth, p, req, res) {
@@ -382,7 +381,7 @@ async function providerCallback(auth, p, req, res) {
   await logIn(auth, req, u);
   auth.store.recordLogin('login', p.key, u.id);
   auth.log.info(`Auth: '${u.login}' logged in with ${p.label} from ${req.ip}`);
-  res.redirect(safeReturn(o.returnTo, '/auth/account'));
+  redirectBack(res, o.returnTo, '/auth/account');
 }
 
 // ---- forgotten passwords ----
@@ -466,7 +465,7 @@ async function reset(auth, req, res) {
   await logIn(auth, req, auth.store.userById(u.id));
   flash(req, 'Your password is set, and you are logged in');
   // back where logging in started (a forgotten password from the login page), else the account
-  res.redirect(returnOf(req) || '/auth/account');
+  redirectBack(res, str(req.query.return || req.body?.return), '/auth/account');
 }
 
 // ---- a user's account ----

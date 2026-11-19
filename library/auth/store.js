@@ -154,7 +154,9 @@ class AuthStore {
       purgeLinks: p('DELETE FROM links WHERE expires_at < ?'),
       insertEvent: p('INSERT INTO login_events (at, kind, method, user_id) VALUES (?, ?, ?, ?)'),
       purgeEvents: p('DELETE FROM login_events WHERE at < ?'),
-      countEvents: p('SELECT kind, method, COUNT(*) AS n FROM login_events WHERE at > ? AND at <= ? GROUP BY kind, method'),
+      countEvents: p('SELECT kind, method, user_id IS NOT NULL AS known, COUNT(*) AS n FROM login_events WHERE at > ? AND at <= ? GROUP BY kind, method, known'),
+      failedByUser: p(`SELECT u.login, COUNT(*) AS n FROM login_events e JOIN users u ON u.id = e.user_id
+        WHERE e.kind = 'failed' AND e.at > ? AND e.at <= ? GROUP BY e.user_id ORDER BY n DESC, u.login`),
       countUsers: p('SELECT COUNT(*) AS total, SUM(enabled) AS enabled, SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS made FROM users')
     };
   }
@@ -310,8 +312,8 @@ class AuthStore {
   }
 
   /**
-   * A login (kind 'login'), or a failed login for an account that exists ('failed'), for the
-   * daily report
+   * A login (kind 'login'), or a failed login ('failed'), for the daily report. A failed login
+   * has the account's id when there is such an account, and none when the name isn't one
    * @param {'login'|'failed'} kind
    * @param {'password'|'github'|'google'} method
    */
@@ -328,11 +330,16 @@ class AuthStore {
     const to = new Date(until).toISOString();
     this.stmts.purgeEvents.run(new Date(until - EVENT_DAYS * 24 * 60 * 60 * 1000).toISOString());
     const counts = { login: { password: 0, github: 0, google: 0 }, failed: { password: 0, github: 0, google: 0 } };
+    let failedUnknown = 0;
     for (const r of this.stmts.countEvents.all(from, to)) {
-      if (counts[r.kind]) {
+      if (r.kind === 'failed' && !r.known) {
+        failedUnknown += r.n;
+      } else if (counts[r.kind]) {
         counts[r.kind][r.method] = (counts[r.kind][r.method] || 0) + r.n;
       }
     }
+    // the accounts that had failed logins, most first: [{login, n}]
+    const failedAccounts = this.stmts.failedByUser.all(from, to);
     const u = this.stmts.countUsers.get(from, to);
     let sessions = null;
     try {
@@ -345,7 +352,7 @@ class AuthStore {
       // no sessions table (yet): the session store makes it
     }
     return {
-      logins: counts.login, failed: counts.failed,
+      logins: counts.login, failed: counts.failed, failedUnknown, failedAccounts,
       users: u.total || 0, enabled: u.enabled || 0, made: u.made || 0, sessions
     };
   }
