@@ -971,7 +971,12 @@ class CodeSystemProvider {
    * @param {String} filter user entered text search
    * @param {boolean} sort ?
    **/
-  async searchFilter(filterContext, filter, sort) { throw new Error("Text Search is not supported"); } // ? must override?
+  async searchFilter(filterContext, filter, sort) {
+    // a provider that has no text search needn't override this: the request asked for a text
+    // filter this code system doesn't have, which is the client's problem, not a server error
+    throw new Issue('error', 'not-supported', null, 'TEXT_SEARCH_NOT_SUPPORTED',
+      this.opContext.i18n.translate('TEXT_SEARCH_NOT_SUPPORTED', this.opContext.langs, [this.system()]), 'not-supported', 422);
+  }
 
   /**
    * A text filter ($expand filter) over a code system whose concepts are a list held in memory
