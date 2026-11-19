@@ -1,6 +1,8 @@
 // Enhanced registry.js with HTML rendering and resolver endpoints
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
+const auth = require('../library/auth');
 const path = require('path');
 const RegistryCrawler = require('./crawler');
 const RegistryAPI = require('./api');
@@ -60,6 +62,9 @@ function commonBaseUrl(urls) {
 class RegistryModule {
   constructor(stats) {
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.logger = Logger.getInstance().child({ module: 'registry' });
     this.crawler = null;
     this.api = null;

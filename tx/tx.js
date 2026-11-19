@@ -27,8 +27,10 @@ const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
 const { resourceToJson } = require('./json-serialise');
 const { SupplementTextIndex } = require('./library/supplement-text-index');
 const memoryGuard = require('../library/memory-guard');
-const { prepareTextIndexes, registerCaches, buildCachesPage } = require('./tx-caches');
+const { prepareTextIndexes, registerCaches, buildCachesPage, buildCacheListPage } = require('./tx-caches');
+const escapeHtml = require('escape-html');
 const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
 const { trimNativeMemory } = require('../library/native-memory');
 const { connectCaches } = require('../library/cluster-caches');
 const { LibraryFilterMemos, libraryFilterMemos } = require('./library/filter-memo');
@@ -386,7 +388,7 @@ class TXModule {
     // every cache, for the caches page and the memory guard
     this.caches = registerCaches(this);
     // the caches page asks every process, under the launcher (library/cluster-caches.js)
-    this.cachesChannel = connectCaches(action => this.localCaches(action), process,
+    this.cachesChannel = connectCaches((action, arg) => this.localCaches(action, arg), process,
       { cluster: !!config.clusterRole && typeof process.send === 'function' });
     // everything the library and the endpoints use is loaded: with pruneTerminologyCache, the
     // rest of terminology-cache can go
@@ -1488,8 +1490,11 @@ class TXModule {
       }
     };
     // the session (library/auth), so a source can offer an administrator its actions (VSAC: resync a ValueSet)
-    router.get('/info/:id', auth.session, auth.csrfIfLoggedIn, infoHandler);
-    router.post('/info/:id', auth.sameOrigin, auth.session, auth.form, auth.csrf, infoHandler);
+    // the pages that look up who is asking are rate limited, for requests that bring a login or
+    // a token - only these routes: the terminology API is heavy, anonymous and not limited here
+    const credentialLimit = rateLimit(auth.credentialLimits());
+    router.get('/info/:id', credentialLimit, auth.session, auth.csrfIfLoggedIn, infoHandler);
+    router.post('/info/:id', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, infoHandler);
 
     // The caches page: what each cache holds; and, for the server's administrators (library/auth),
     // emptying them (all but the client caches, or all of them), in every process (tx-caches.js)
@@ -1498,6 +1503,25 @@ class TXModule {
       try {
         let message = null;
         let action = 'report';
+        // ?show=<id>: the entries of one cache, in every process - for the administrators: they
+        // hold what clients asked (code systems, codes, language tags)
+        const show = req.method === 'GET' && typeof req.query.show === 'string' ? req.query.show : null;
+        if (show) {
+          const user = auth.currentUser(req);
+          let content;
+          if (!user || !user.isAdmin) {
+            content = '<h2>Caches</h2>\n<p>Only the server\'s administrators can see what a cache holds: <a href="' +
+              escapeHtml(auth.loginUrl(req, req.originalUrl)) + '">log in</a>.</p>\n';
+          } else {
+            content = buildCacheListPage({ answer: await this.cachesChannel.ask('list', show.substring(0, 64)) });
+          }
+          let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+          const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
+          res.setHeader('Content-Type', 'text/html');
+          res.setHeader('Cache-Control', 'no-store');
+          res.send(html);
+          return;
+        }
         if (req.method === 'POST') {
           const body = req.body || {};
           const user = auth.currentUser(req);
@@ -1534,8 +1558,8 @@ class TXModule {
         this.countRequest(endpointPath, 'caches', Date.now() - start, req);
       }
     };
-    router.get('/caches', auth.session, auth.csrfIfLoggedIn, cachesHandler);
-    router.post('/caches', auth.sameOrigin, auth.session, auth.form, auth.csrf, cachesHandler);
+    router.get('/caches', credentialLimit, auth.session, auth.csrfIfLoggedIn, cachesHandler);
+    router.post('/caches', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, cachesHandler);
     // a form post (caches, a source's info page) with a missing or wrong CSRF token: lusca
     // passes on an error, which is the poster's problem, not the server's
     router.use((err, req, res, next) => {
@@ -1742,10 +1766,16 @@ class TXModule {
    * This process's caches, for the caches page (tx-caches.js): what each holds, after emptying
    * them if the action says so (all but the client caches, or all), then a full GC and
    * malloc_trim, so RSS shows what was let go
-   * @param {string} action - 'report', 'unload' or 'unload-all'
-   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}}
+   * @param {string} action - 'report', 'unload', 'unload-all', or 'list' (the entries of one cache)
+   * @param {string} [arg] - for list: the cache's id
+   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}};
+   *   for list, {process, list} (CacheRegistry.list)
    */
-  async localCaches(action) {
+  async localCaches(action, arg = null) {
+    const processName = `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`;
+    if (action === 'list') {
+      return { process: processName, list: this.caches ? this.caches.list(arg) : null };
+    }
     let cleared = null;
     let before = null;
     if (action === 'unload' || action === 'unload-all') {
@@ -1764,7 +1794,7 @@ class TXModule {
     }
     const mem = process.memoryUsage();
     return {
-      process: `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`,
+      process: processName,
       report: this.caches ? this.caches.report() : [],
       cleared,
       memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external, before }

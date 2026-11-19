@@ -15,6 +15,7 @@ const base45 = require('base45');
 const fs = require('fs');
 const folders = require('../library/folder-setup');
 const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
 const { guarded, failRequest } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
@@ -37,6 +38,9 @@ class SHLModule {
     this.db = null;
     this.config = null;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.cleanupJob = null;
     this.fhirValidator = null;
     this.setupSecurityMiddleware();

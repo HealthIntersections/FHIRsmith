@@ -134,6 +134,9 @@ class TestingModule {
   constructor(stats, log) {
     this.stats = stats;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.store = null;
     this.config = null;
     this.retentionTimer = null;

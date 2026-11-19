@@ -42,6 +42,8 @@ const FLUSH_MS = 60 * 1000;
 // what each request has been worked out to be (a promise), so the question is asked once
 const PRINCIPALS = new WeakMap();
 const SESSION_COOKIE = 'fhirsmith.sid';
+// requests a minute from one address that bring a login or a token (auth.requestsPerMinute)
+const DEFAULT_REQUESTS_PER_MINUTE = 1000;
 
 /**
  * The token a request carries, if any: Authorization: Bearer, Api-Key, X-API-Key, or Basic
@@ -604,6 +606,45 @@ class Auth {
       sentences.push(`${plural(s.sessions, 'session')} ${s.sessions === 1 ? 'is' : 'are'} logged in now.`);
     }
     return sentences.join(' ');
+  }
+
+  /**
+   * Does the request bring a login (the session cookie) or an API token? Those are the
+   * requests that make the server look someone up; the rest are anonymous
+   */
+  bringsCredentials(req, sessionOnly = false) {
+    const session = (req.headers.cookie || '').includes(`${SESSION_COOKIE}=`);
+    if (sessionOnly) {
+      return session;
+    }
+    return session || this.presentsToken(req) ||
+      (typeof req.headers['x-crawl-token'] === 'string' && req.headers['x-crawl-token'] !== '');
+  }
+
+  /**
+   * The options for express-rate-limit that every route that looks up who is asking goes
+   * behind: `rateLimit(auth.credentialLimits())`, as the first middleware of the module's router
+   * (or, where the router serves heavy anonymous traffic, of each such route). Requests that
+   * bring a login or a token are limited to auth.requestsPerMinute (1000) a minute from one
+   * address; anonymous requests aren't counted - nobody is looked up for them. The rate limiter
+   * is in each route's own chain so that code scanning (CodeQL js/missing-rate-limiting) sees it
+   * @param {object} [options]
+   * @param {boolean} [options.sessionOnly] count only requests with the session cookie (for this.pages,
+   *   which is before every route of the server, and looks at nothing else)
+   */
+  credentialLimits({ sessionOnly = false } = {}) {
+    return {
+      windowMs: 60 * 1000,
+      // read when a request comes, so a module can make its limiter before auth is initialized
+      limit: () => {
+        const n = Number(this.config.requestsPerMinute);
+        return Number.isInteger(n) && n > 0 ? n : DEFAULT_REQUESTS_PER_MINUTE;
+      },
+      skip: req => !this.bringsCredentials(req, sessionOnly),
+      standardHeaders: 'draft-7',
+      legacyHeaders: false,
+      message: 'Too many requests with this login or token from your address - try again in a minute'
+    };
   }
 
   /** The router for /auth (login, account, users) - see pages.js */

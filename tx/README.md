@@ -265,6 +265,13 @@ too - back to what the server held when it had started. Everything is built agai
 emptying the client caches makes every client start its cache again (they are told the cache-id is
 unknown). A full garbage collection and `malloc_trim` follow, and the page shows RSS before and after.
 
+Some caches list what they hold: their names link to a page of their entries
+(`/{path}/caches?show=<id>`; the most recently used 5,000, in each process), for the server's
+administrators only, since they hold what clients asked for. So far: what the ecosystem registry and
+servers said (`ecosystem`: which servers have a code system and version, their capabilities, the
+searches made of them, their answers to `$lookup` and `$validate-code`, and whether they answer on
+https), and the parsed language tags (`language-tags`).
+
 Under the cluster launcher the page is server wide: it shows every process (a column for each, and
 the total, then each process in full), and empties the caches of every process (see
 [cluster.md](../cluster.md#the-caches-page)). Without it (one process, or roles behind nginx), only

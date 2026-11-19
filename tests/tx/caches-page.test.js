@@ -101,6 +101,26 @@ describe('the caches page', () => {
     expect(txModule.caches.report().find(r => r.name === 'Client caches (cache-ids)').entries).toBe(before);
   });
 
+  test('what a cache holds: a page for the administrators, linked from the cache\'s name', async () => {
+    txModule.languages.parse('en-AU');
+    txModule.languages.parse('fr-CA', null, { caseInsensitive: true });
+    const page = await admin.get(`${R5}/caches`);
+    expect(page.text).toContain('<a href="caches?show=language-tags">Parsed language tags</a>');
+    expect(page.text).toMatch(/different tags \(\d+ ignoring case\)/);
+    let res = await admin.get(`${R5}/caches?show=language-tags`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<h2>Parsed language tags</h2>');
+    expect(res.text).toContain('<td>en-AU</td>');
+    expect(res.text).toMatch(/<td>fr-CA<\/td><td>case insensitive<\/td>/);
+    // no ecosystem resolver configured here: no such cache
+    res = await admin.get(`${R5}/caches?show=ecosystem`);
+    expect(res.text).toContain('There is no such cache');
+    // anyone else is asked to log in
+    res = await request(app).get(`${R5}/caches?show=language-tags`);
+    expect(res.text).toContain('administrators can see what a cache holds');
+    expect(res.text).not.toContain('en-AU');
+  });
+
   test('"all but the client caches" keeps the client caches; "all" empties them too', async () => {
     txModule.languages.parse('en-AU');
     expect(txModule.caches.report().find(r => r.name === 'Parsed language tags').entries).toBeGreaterThan(0);

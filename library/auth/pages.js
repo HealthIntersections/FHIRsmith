@@ -122,6 +122,8 @@ function shown(text) {
 
 function buildRouter(auth) {
   const r = express.Router();
+  // everything here may look someone up: limited, for logins and tokens (auth.credentialLimits)
+  r.use(rateLimit(auth.credentialLimits()));
   const { session, csrf, form, sameOrigin } = auth;
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,

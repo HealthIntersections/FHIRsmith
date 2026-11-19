@@ -541,6 +541,43 @@ describe('the administrator\'s pages', () => {
   });
 });
 
+describe('rate limits', () => {
+  test('requests with a login or a token are limited to requestsPerMinute; anonymous ones aren\'t counted', async () => {
+    const rateLimit = require('express-rate-limit');
+    setupAuth({ requestsPerMinute: 3 });
+    const id = await makeUser('bot', null);
+    const token = tokenFor(id);
+    const app = express();
+    app.use(rateLimit(auth.credentialLimits()));
+    app.get('/x', (req, res) => res.send('ok'));
+    for (let i = 0; i < 6; i++) {
+      expect((await request(app).get('/x')).status).toBe(200);
+    }
+    for (let i = 0; i < 3; i++) {
+      expect((await request(app).get('/x').set('Authorization', `Bearer ${token}`)).status).toBe(200);
+    }
+    const res = await request(app).get('/x').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(429);
+    expect(res.text).toContain('Too many requests with this login or token');
+    // a session cookie counts too, and the same address shares the count
+    expect((await request(app).get('/x').set('Cookie', 'fhirsmith.sid=s%3Aabc')).status).toBe(429);
+    expect((await request(app).get('/x')).status).toBe(200);
+  });
+
+  test('sessionOnly counts the session cookie, not a token', async () => {
+    const rateLimit = require('express-rate-limit');
+    setupAuth({ requestsPerMinute: 1 });
+    const app = express();
+    app.use(rateLimit(auth.credentialLimits({ sessionOnly: true })));
+    app.get('/x', (req, res) => res.send('ok'));
+    for (let i = 0; i < 3; i++) {
+      expect((await request(app).get('/x').set('Authorization', 'Bearer fhs_x')).status).toBe(200);
+    }
+    expect((await request(app).get('/x').set('Cookie', 'fhirsmith.sid=a')).status).toBe(200);
+    expect((await request(app).get('/x').set('Cookie', 'fhirsmith.sid=a')).status).toBe(429);
+  });
+});
+
 describe('the daily report', () => {
   test('nothing when there are no accounts', () => {
     setupAuth();

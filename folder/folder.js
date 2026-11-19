@@ -7,6 +7,7 @@ const SAFE_NAME = /^[a-zA-Z0-9._-]+$/;
 const AUTH_FAIL_DELAY_MS = 5000;
 const folderLog = require('../library/logger').getInstance().child({ module: 'folder' });
 const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
 
 function escapeHtml(str) {
   return String(str)
@@ -47,6 +48,9 @@ class FolderModule {
 
       const urlBase = fc.url.startsWith('/') ? fc.url : '/' + fc.url;
       const router = express.Router();
+      // uploads look up who is asking (library/auth): rate limited, for requests that bring a
+      // login or a token (anonymous downloads aren't counted)
+      router.use(rateLimit(auth.credentialLimits()));
 
       // GET - serve files and directory listings
       router.get(urlBase + '/{*subpath}', (req, res) => {

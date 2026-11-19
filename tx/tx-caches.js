@@ -200,7 +200,10 @@ function registerCaches(tx) {
     registry.add({
       name: 'What the ecosystem registry and servers said', scope: 'process', kind: 'cache',
       count: () => er.cacheCount(),
-      limit: '1000 entries in each of its 6 caches, for an hour',
+      detail: () => Object.entries(er.cacheSizes()).map(([n, v]) => `${n} ${v}`).join(', '),
+      limit: 'answers 10,000, each of the others 1,000; each good for an hour, and kept (and refreshed) while used',
+      id: 'ecosystem',
+      list: () => ({ columns: ['Cache', 'Key', 'Age (s)', 'What it says'], rows: er.cacheEntries() }),
       clear: () => { er.clearCaches(); return null; }
     });
   }
@@ -209,6 +212,21 @@ function registerCaches(tx) {
     registry.add({
       name: 'Parsed language tags', scope: 'process', kind: 'cache',
       count: () => langs.parsed.size,
+      detail: () => {
+        const tags = new Set([...langs.parsed.keys()].map(k => k.substring(k.indexOf(':') + 1)));
+        const folded = new Set([...tags].map(t => t.toLowerCase()));
+        return `${tags.size} different tags (${folded.size} ignoring case); a tag parsed with different options is kept for each`;
+      },
+      id: 'language-tags',
+      list: () => ({
+        columns: ['Tag', 'Options', 'Parsed as'],
+        rows: [...langs.parsed.entries()].map(([k, lang]) => {
+          const i = k.indexOf(':');
+          const opts = k.substring(0, i);
+          return [k.substring(i + 1), [opts.includes('i') ? 'case insensitive' : '', opts.includes('c') ? 'combinations checked' : ''].filter(x => x).join(', '),
+            lang && typeof lang.toString === 'function' ? lang.toString() : ''];
+        })
+      }),
       limit: `${langs.maxParsed} (languageTagCacheSize)`,
       clear: () => { langs.parsed.clear(); return null; }
     });
@@ -333,6 +351,13 @@ const num = (v) => (v == null ? '-' : Number(v).toLocaleString('en-US'));
 /**
  * One process's caches, in full: each cache with its entries, detail and limit
  */
+/**
+ * A cache's name, linked to its entries when it lists them
+ */
+function cacheName(r) {
+  return r.id ? `<a href="caches?show=${encodeURIComponent(r.id)}">${escape(r.name)}</a>` : escape(r.name);
+}
+
 function processTables(report) {
   let html = '';
   for (const kind of ['cache', 'content', 'client']) {
@@ -343,7 +368,7 @@ function processTables(report) {
     html += `<h4>${escape(KIND_NAMES[kind])}</h4>\n`;
     html += '<table class="grid"><tr><th>Cache</th><th>Scope</th><th>Entries</th><th>Detail</th><th>Limit</th></tr>\n';
     for (const r of rows) {
-      html += `<tr><td>${escape(r.name)}${r.clearable ? '' : ' <i>(not emptied)</i>'}</td><td>${escape(r.scope)}</td>` +
+      html += `<tr><td>${cacheName(r)}${r.clearable ? '' : ' <i>(not emptied)</i>'}</td><td>${escape(r.scope)}</td>` +
         `<td style="text-align: right">${num(r.entries)}</td><td>${escape(r.detail || '')}</td><td>${escape(r.limit || '')}</td></tr>\n`;
     }
     html += '</table>\n';
@@ -397,7 +422,7 @@ function buildCachesPage({ answer, message, isAdmin, csrf = '', loginUrl = '/aut
       for (const r of p.result.report) {
         const key = `${r.kind}|${r.name}|${r.scope}`;
         if (!rows.has(key)) {
-          rows.set(key, { kind: r.kind, name: r.name, scope: r.scope, clearable: r.clearable, counts: new Map() });
+          rows.set(key, { kind: r.kind, name: r.name, scope: r.scope, clearable: r.clearable, id: r.id, counts: new Map() });
         }
         rows.get(key).counts.set(i, r.entries);
       }
@@ -417,7 +442,7 @@ function buildCachesPage({ answer, message, isAdmin, csrf = '', loginUrl = '/aut
           total += v || 0;
           return `<td style="text-align: right">${num(v)}</td>`;
         }).join('');
-        html += `<tr><td>${escape(r.name)}${r.clearable ? '' : ' <i>(not emptied)</i>'}</td><td>${escape(r.scope)}</td>${cells}` +
+        html += `<tr><td>${cacheName(r)}${r.clearable ? '' : ' <i>(not emptied)</i>'}</td><td>${escape(r.scope)}</td>${cells}` +
           `<td style="text-align: right"><strong>${num(total)}</strong></td></tr>\n`;
       }
       html += '</table>\n';
@@ -447,4 +472,40 @@ function buildCachesPage({ answer, message, isAdmin, csrf = '', loginUrl = '/aut
   return html;
 }
 
-module.exports = { prepareTextIndexes, registerCaches, buildCachesPage, loadedCodeSystems, TEXT_INDEX_FILE };
+/**
+ * The page of one cache's entries, in each process
+ * @param {Object} opts
+ * @param {Object} opts.answer - library/cluster-caches.js ask('list', id): each result {process, list}
+ * @returns {string} HTML
+ */
+function buildCacheListPage({ answer }) {
+  const procs = answer.results;
+  const first = procs.find(p => p.result && p.result.list);
+  let html = `<p><a href="caches">All the caches</a></p>\n`;
+  if (!first) {
+    return html + '<h2>Caches</h2>\n<p>There is no such cache, or it doesn\'t list what it holds.</p>\n';
+  }
+  html += `<h2>${escape(first.result.list.name)}</h2>\n`;
+  html += `<p>What it holds, ${answer.cluster ? `in each of the ${procs.length} processes` : 'in this process'}, most recently used last.` +
+    (answer.note ? ` ${escape(answer.note)}.` : '') + '</p>\n';
+  for (const p of procs) {
+    const label = p.result ? p.result.process : (p.name || p.code);
+    if (procs.length > 1) {
+      html += `<h3>${escape(label)}</h3>\n`;
+    }
+    if (!p.result || !p.result.list) {
+      html += `<p>${escape(p.error || 'no answer')}</p>\n`;
+      continue;
+    }
+    const list = p.result.list;
+    html += `<p>${num(list.total)} entries` + (list.rows.length < list.total ? `; the ${num(list.rows.length)} most recently used shown` : '') + '</p>\n';
+    html += '<table class="grid"><tr>' + list.columns.map(c => `<th>${escape(c)}</th>`).join('') + '</tr>\n';
+    for (const row of list.rows) {
+      html += '<tr>' + row.map(v => `<td>${escape(v == null ? '' : String(v))}</td>`).join('') + '</tr>\n';
+    }
+    html += '</table>\n';
+  }
+  return html;
+}
+
+module.exports = { prepareTextIndexes, registerCaches, buildCachesPage, buildCacheListPage, loadedCodeSystems, TEXT_INDEX_FILE };

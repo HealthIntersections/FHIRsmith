@@ -516,3 +516,27 @@ describe('EcosystemResolver', () => {
     });
   });
 });
+
+describe('EcosystemResolver caches, for the caches page', () => {
+  const { EcosystemResolver } = require('../../tx/ecosystem-resolver');
+  test('their sizes, and their entries, a row each', () => {
+    const er = new EcosystemResolver({ registry: 'https://registry.example.org' });
+    er.servers.set('http://example.org/cs#4', { at: Date.now() - 5000, value: [{ url: 'https://tx.example.org/r4', authoritative: true }] });
+    er.servers.set('http://unknown.org/cs#4', { at: Date.now(), value: null });
+    er.servers.set('http://failed.org/cs#4', { at: Date.now(), value: null, failure: { reason: 'Unable to read the registry: timeout' } });
+    er.answers.set('https://tx.example.org/r4/CodeSystem/$lookup?code=x', { at: Date.now(), value: { status: 404 } });
+    er.schemes.set('tx.example.org:80', { scheme: 'https', at: Date.now() });
+    er.searched.set('https://tx.example.org/r4|http://example.org/cs', { pending: Promise.resolve() });
+    expect(er.cacheSizes()).toEqual({ servers: 3, capabilities: 0, searches: 1, 'server codes': 0, answers: 1, schemes: 1 });
+    const rows = er.cacheEntries();
+    expect(rows.map(r => [r[0], r[1], r[3]])).toEqual([
+      ['servers', 'http://example.org/cs#4', 'https://tx.example.org/r4 (authoritative)'],
+      ['servers', 'http://unknown.org/cs#4', 'none'],
+      ['servers', 'http://failed.org/cs#4', 'not known: Unable to read the registry: timeout'],
+      ['searches', 'https://tx.example.org/r4|http://example.org/cs', 'being asked now'],
+      ['answers', 'https://tx.example.org/r4/CodeSystem/$lookup?code=x', 'HTTP 404'],
+      ['schemes', 'tx.example.org:80', 'https']
+    ]);
+    expect(rows[0][2]).toBeGreaterThanOrEqual(4);
+  });
+});

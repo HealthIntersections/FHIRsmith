@@ -98,6 +98,60 @@ class EcosystemResolver {
   }
 
   /**
+   * How many entries each of the caches holds (the caches page)
+   * @returns {Object} cache name -> entries
+   */
+  cacheSizes() {
+    return { servers: this.servers.size, capabilities: this.versions.size, searches: this.searched.size,
+      'server codes': this.codes.size, answers: this.answers.size, schemes: this.schemes.size };
+  }
+
+  /**
+   * What the caches hold, an entry a row (the caches page): [cache, key, age in seconds, what it
+   * says], most recently used last in each cache
+   * @returns {Array[]}
+   */
+  cacheEntries() {
+    const now = Date.now();
+    const rows = [];
+    const urls = (list) => list.map(s => (s && s.url ? s.url + (s.authoritative ? ' (authoritative)' : '') : String(s))).join(', ');
+    const say = (entry) => {
+      if (entry.pending) {
+        return 'being asked now';
+      }
+      if (entry.failure) {
+        return 'not known: ' + entry.failure.reason;
+      }
+      const v = entry.value !== undefined ? entry.value : entry;
+      if (v === null) {
+        return 'none';
+      }
+      if (Array.isArray(v)) {
+        return v.length === 0 ? 'none' : (typeof v[0] === 'object' && v[0] && v[0].url ? urls(v) : v.length + ': ' + v.slice(0, 10).map(x => (x && x.code) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') + (v.length > 10 ? ', ...' : ''));
+      }
+      if (v instanceof Map || v instanceof Set) {
+        return v.size + ' entries';
+      }
+      if (typeof v === 'object' && v.status !== undefined) {
+        return 'HTTP ' + v.status;
+      }
+      if (typeof v === 'object' && v.scheme) {
+        return v.scheme;
+      }
+      const text = JSON.stringify(v);
+      return text && text.length > 200 ? text.substring(0, 200) + '...' : String(text);
+    };
+    const caches = [['servers', this.servers], ['capabilities', this.versions], ['searches', this.searched],
+      ['server codes', this.codes], ['answers', this.answers], ['schemes', this.schemes]];
+    for (const [name, cache] of caches) {
+      for (const [key, entry] of cache) {
+        rows.push([name, key, entry && entry.at ? Math.round((now - entry.at) / 1000) : null, say(entry || {})]);
+      }
+    }
+    return rows;
+  }
+
+  /**
    * Forget what the registry and the servers said: it is asked again when next needed. A
    * request under way still answers whoever is waiting for it
    * @returns {number} the entries let go

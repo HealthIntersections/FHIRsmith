@@ -50,6 +50,7 @@ function startupFailure(error) {
 process.on('uncaughtException', startupFailure);
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -246,6 +247,9 @@ app.use(cors(config.server.cors));
 // Who is logged in, for every module's pages: the session when the browser sent its cookie,
 // and the request, for the user's name (or Login) at the right of every page's top menu
 // (library/auth, [%account%] in the templates)
+// The browsers that send the session cookie are rate limited (auth.requestsPerMinute); nobody
+// else is counted here
+app.use(rateLimit(auth.credentialLimits({ sessionOnly: true })));
 app.use(auth.pages);
 
 // Module instances

@@ -1809,7 +1809,8 @@ class PackagesModule {
     // otherwise start at will, so it is for a user with the packages "crawl" role (or an
     // administrator) - software sends an API token (Authorization: Bearer {token}; the
     // x-crawl-token header, as before, works too)
-    this.router.post('/crawl', (req, res, next) => {
+    // rate limited for requests that bring a token (library/auth)
+    this.router.post('/crawl', rateLimit(auth.credentialLimits()), (req, res, next) => {
       const legacy = req.headers['x-crawl-token'];
       if (typeof legacy === 'string' && legacy && !auth.presentsToken(req)) {
         req.headers.authorization = 'Bearer ' + legacy;

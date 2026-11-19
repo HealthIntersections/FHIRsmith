@@ -21,6 +21,9 @@ const GITHUB_MAX_FILE_SIZE = 100 * 1024 * 1024;
 class PublisherModule {
   constructor(stats) {
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.db = null;
     this.config = null;
     this.logger = null;
