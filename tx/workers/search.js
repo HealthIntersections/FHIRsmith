@@ -120,6 +120,13 @@ class SearchWorker extends TerminologyWorker {
           matches = [];
       }
 
+      // _id: the resource with that logical id (an exact match; a list separated by commas
+      // matches any of them)
+      if (params._id) {
+        const idLists = [].concat(params._id).map(v => String(v).split(','));
+        matches = matches.filter(m => idLists.every(ids => ids.includes(m.id)));
+      }
+
       // Sort results
       matches = this.sortResults(matches, sort);
       if (summary !== 'count') {
