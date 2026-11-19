@@ -76,8 +76,7 @@ Create a `config.json` file in your data directory (use `config-template.json` a
   "server": {
     "port": 3000,
     "cors": {
-      "origin": "*",
-      "credentials": true
+      "origin": "*"
     }
   },
   "modules": {
@@ -85,6 +84,12 @@ Create a `config.json` file in your data directory (use `config-template.json` a
   }
 }
 ```
+
+`server.cors` is handed to the [cors](https://www.npmjs.com/package/cors) package. Don't set
+`"credentials": true`: with it, browsers let a script on another site - one on the same domain,
+such as `build.fhir.org` for `tx.fhir.org` - read what the logged in user sees. API clients send
+their token in a header, which needs no credentials mode. (The server also ignores a login
+cookie on a request whose `Origin` is another site.) `node server.js --check` warns about it.
 
 | Option | Default | Description |
 |---|---|---|

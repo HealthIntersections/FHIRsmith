@@ -18,7 +18,8 @@ const bcrypt = require('bcrypt');
 
 const TOKEN_PREFIX = 'fhs_';
 const BCRYPT_COST = 12;
-const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._@+-]{1,99}$/;
+// no @: a login can't be mistaken for another account's email address (userByLoginOrEmail)
+const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{1,99}$/;
 const EMAIL_RE = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,255}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -108,6 +109,14 @@ class AuthStore {
         user_id INTEGER
       );
       CREATE INDEX IF NOT EXISTS login_events_at ON login_events(at);
+      -- the provider id each github:{name} / google:{email} entry of auth.administrators was
+      -- first matched by: from then on the entry is that id, so a name or address someone
+      -- else takes later (a renamed GitHub account's old name) doesn't make them an administrator
+      CREATE TABLE IF NOT EXISTS admin_pins (
+        entry       TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        pinned_at   TEXT NOT NULL
+      );
     `);
     // columns added since the table was first made
     const cols = new Set(this.db.prepare('PRAGMA table_info(users)').all().map(c => c.name));
@@ -157,7 +166,11 @@ class AuthStore {
       countEvents: p('SELECT kind, method, user_id IS NOT NULL AS known, COUNT(*) AS n FROM login_events WHERE at > ? AND at <= ? GROUP BY kind, method, known'),
       failedByUser: p(`SELECT u.login, COUNT(*) AS n FROM login_events e JOIN users u ON u.id = e.user_id
         WHERE e.kind = 'failed' AND e.at > ? AND e.at <= ? GROUP BY e.user_id ORDER BY n DESC, u.login`),
-      countUsers: p('SELECT COUNT(*) AS total, SUM(enabled) AS enabled, SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS made FROM users')
+      countUsers: p('SELECT COUNT(*) AS total, SUM(enabled) AS enabled, SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS made FROM users'),
+      adminPin: p('SELECT provider_id FROM admin_pins WHERE entry = ?'),
+      insertAdminPin: p('INSERT OR IGNORE INTO admin_pins (entry, provider_id, pinned_at) VALUES (?, ?, ?)'),
+      adminPins: p('SELECT entry, provider_id, pinned_at FROM admin_pins ORDER BY entry'),
+      dropAdminPin: p('DELETE FROM admin_pins WHERE entry = ?')
     };
   }
 
@@ -183,9 +196,16 @@ class AuthStore {
     return typeof email === 'string' && email ? this._user(this.stmts.userByEmail.get(email)) : null;
   }
 
-  /** The user a login form names: by login, else by email */
+  /**
+   * The user a login form names: an email address (it has an @) by email, else by login. (A
+   * login made before logins couldn't have an @ is still found by it, when it isn't an
+   * account's email address)
+   */
   userByLoginOrEmail(text) {
-    return this.userByLogin(text) || this.userByEmail(text);
+    if (typeof text === 'string' && text.includes('@')) {
+      return this.userByEmail(text) || this.userByLogin(text);
+    }
+    return this.userByLogin(text);
   }
 
   userByGithub(githubId) {
@@ -226,7 +246,7 @@ class AuthStore {
 
   /** A login that isn't taken, from what's wanted: wanted, else wanted-2, wanted-3... */
   freeLogin(wanted) {
-    let base = String(wanted || 'user').replace(/[^A-Za-z0-9._@+-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').substring(0, 90) || 'user';
+    let base = String(wanted || 'user').replace(/[^A-Za-z0-9._+-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').substring(0, 90) || 'user';
     if (base.length < 2) {
       base = base + '-user';
     }
@@ -298,6 +318,11 @@ class AuthStore {
     return bcrypt.compare(password, user.password_hash);
   }
 
+  /** The user's unused links that set a password stop working */
+  dropLinks(id) {
+    return this.stmts.dropLinks.run(id).changes;
+  }
+
   /** Every session of the user ends */
   endSessions(id) {
     return this.stmts.bumpEpoch.run(id).changes > 0;
@@ -359,6 +384,40 @@ class AuthStore {
 
   deleteUser(id) {
     return this.stmts.deleteUser.run(id).changes > 0;
+  }
+
+  // ---- the configured administrators' provider ids ----
+
+  /** The provider id a configured entry ('github:{name}', 'google:{email}') is tied to, or null */
+  adminPin(entry) {
+    const r = this.stmts.adminPin.get(entry);
+    return r ? r.provider_id : null;
+  }
+
+  /**
+   * Tie a configured entry to a provider id, unless it is tied already (another process may
+   * have got there first)
+   * @returns {string} the id the entry is tied to
+   */
+  pinAdmin(entry, providerId) {
+    this.stmts.insertAdminPin.run(entry, String(providerId), now());
+    return this.adminPin(entry);
+  }
+
+  adminPins() {
+    return this.stmts.adminPins.all();
+  }
+
+  /** Forget the ties of entries no longer configured */
+  dropAdminPinsExcept(entries) {
+    const keep = new Set(entries);
+    let n = 0;
+    for (const p of this.adminPins()) {
+      if (!keep.has(p.entry)) {
+        n += this.stmts.dropAdminPin.run(p.entry).changes;
+      }
+    }
+    return n;
   }
 
   // ---- roles ----

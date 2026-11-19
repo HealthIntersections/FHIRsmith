@@ -437,6 +437,7 @@ class IpsModule {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
     const admin = (req, res, next) => {
+      auth.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
         return res.redirect(auth.loginUrl(req));
@@ -687,6 +688,7 @@ class IpsModule {
     };
     // a manager of the project, or the administrator
     const manager = (req, res, next) => {
+      auth.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
         return res.redirect(auth.loginUrl(req));

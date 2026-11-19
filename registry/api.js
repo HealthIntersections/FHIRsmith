@@ -2,6 +2,11 @@
 
 const { ServerRegistryUtilities } = require('./model');
 const escape = require('escape-html');
+
+// a link to what a registry or server says is its address: only http(s), never javascript: and the like
+function safeHref(url) {
+  return typeof url === 'string' && /^https?:\/\//i.test(url.trim()) ? escape(url) : '#';
+}
 const { Utilities } = require('../library/utilities');
 
 const RELEASE_VERSIONS = {
@@ -929,16 +934,16 @@ class RegistryAPI {
       html += '<tr>\n';
       
       if (!regCode) {
-        html += `<td><a href="${path}&registry=${row['registry-code']}">${escape(row['registry-name'])}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&registry=${encodeURIComponent(row['registry-code'] || '')}`)}">${escape(row['registry-name'])}</a></td>\n`;
       }
       if (!serverCode) {
-        html += `<td><a href="${path}&server=${row['server-code']}">${escape(row['server-name'])}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&server=${encodeURIComponent(row['server-code'] || '')}`)}">${escape(row['server-name'])}</a></td>\n`;
       }
       if (!versionCode) {
-        html += `<td><a href="${path}&fhirVersion=${row.fhirVersion}">${row.fhirVersion}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&fhirVersion=${encodeURIComponent(row.fhirVersion || '')}`)}">${escape(row.fhirVersion)}</a></td>\n`;
       }
       
-      html += `<td><a href="${escape(row.url)}">${escape(row.url)}</a></td>\n`;
+      html += `<td><a href="${safeHref(row.url)}">${escape(row.url)}</a></td>\n`;
       
       if (row.error) {
         html += `<td><span style="color: maroon">Error: ${escape(row.error)}</span> Last OK ${this._formatDuration(row['last-success'])} ago</td>\n`;
@@ -946,7 +951,7 @@ class RegistryAPI {
         html += `<td>Last OK ${this._formatDuration(row['last-success'])} ago</td>\n`;
       }
       
-      html += `<td>${row.systems} systems</td>\n`;
+      html += `<td>${escape(String(row.systems))} systems</td>\n`;
       
       html += '<td>';
       if (row['is-authoritative']) {
@@ -971,20 +976,20 @@ class RegistryAPI {
     const data = this.crawler.getData();
     let html = '<table class="grid">';
     
-    html += `<tr><td width="130px"><img src="/assets/images/tx-registry-root.gif">&nbsp;Registries</td><td>${data.address} (${escape(data.outcome)})</td></tr>`;
+    html += `<tr><td width="130px"><img src="/assets/images/tx-registry-root.gif">&nbsp;Registries</td><td>${escape(data.address)} (${escape(data.outcome)})</td></tr>`;
     
     data.registries.forEach(registry => {
       if (registry.error) {
-        html += `<tr><td title="${escape(registry.name)}">&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${registry.code}</td><td><a href="${escape(registry.address)}">${escape(registry.address)}</a>. Error: ${escape(registry.error)}</td></tr>`;
+        html += `<tr><td title="${escape(registry.name)}">&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${escape(registry.code)}</td><td><a href="${safeHref(registry.address)}">${escape(registry.address)}</a>. Error: ${escape(registry.error)}</td></tr>`;
       } else {
-        html += `<tr><td title="${escape(registry.name)}">&nbsp;&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${registry.code}</td><td><a href="${escape(registry.address)}">${escape(registry.address)}</a></td></tr>`;
+        html += `<tr><td title="${escape(registry.name)}">&nbsp;&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${escape(registry.code)}</td><td><a href="${safeHref(registry.address)}">${escape(registry.address)}</a></td></tr>`;
       }
       
       registry.servers.forEach(server => {
         if (server.authCSList.length > 0 || server.authVSList.length > 0 || server.usageList.length > 0) {
-          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${server.code}</td><td><a href="${escape(server.address)}">${escape(server.address)}</a>. ${server.description}</td></tr>`;
+          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${escape(server.code)}</td><td><a href="${safeHref(server.address)}">${escape(server.address)}</a>. ${escape(server.description || '')}</td></tr>`;
         } else {
-          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${server.code}</td><td><a href="${escape(server.address)}">${escape(server.address)}</a></td></tr>`;
+          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${escape(server.code)}</td><td><a href="${safeHref(server.address)}">${escape(server.address)}</a></td></tr>`;
         }
         
         server.versions.forEach(version => {
@@ -992,7 +997,7 @@ class RegistryAPI {
           const versionParts = version.version.split('.');
           const majorMinor = versionParts.slice(0, 2).join('.');
           
-          html += `<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-version.png">&nbsp;v${majorMinor}</td><td><a href="${escape(version.address)}">${escape(version.address)}</a>. Status: ${escape(version.details)}. ${version.codeSystems.length} CodeSystems, ${version.valueSets.length} ValueSets</td></tr>`;
+          html += `<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-version.png">&nbsp;v${escape(majorMinor)}</td><td><a href="${safeHref(version.address)}">${escape(version.address)}</a>. Status: ${escape(version.details)}. ${version.codeSystems.length} CodeSystems, ${version.valueSets.length} ValueSets</td></tr>`;
         });
       });
     });

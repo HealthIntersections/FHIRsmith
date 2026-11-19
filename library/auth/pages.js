@@ -33,6 +33,7 @@ function render(auth, req, res, title, content, status = 200) {
   res.status(status);
   res.setHeader('Content-Type', 'text/html');
   res.setHeader('Cache-Control', 'no-store');
+  auth.denyFraming(res);
   res.send(html);
 }
 
@@ -67,7 +68,10 @@ function field(name, label, type, { help = '', required = false, value, autocomp
 
 function postButton(res, action, label, cls = 'btn-secondary', confirmText = null, hidden = {}) {
   const extra = Object.entries(hidden).map(([k, v]) => `<input type="hidden" name="${escape(k)}" value="${escape(v)}"/>`).join('');
-  return `<form method="post" action="${escape(action)}" style="display: inline"${confirmText ? ` onsubmit="return confirm('${escape(confirmText)}')"` : ''}>` +
+  // the question is in an attribute, not in the script: an apostrophe in it (escaped as &#39;,
+  // which the browser turns back into ') would end a quoted string there, the script would
+  // fail, and the form would post without asking
+  return `<form method="post" action="${escape(action)}" style="display: inline"${confirmText ? ` data-confirm="${escape(confirmText)}" onsubmit="return confirm(this.dataset.confirm)"` : ''}>` +
     `${csrfField(res)}${extra}<button type="submit" class="btn btn-sm ${cls}">${escape(label)}</button></form>`;
 }
 
@@ -207,6 +211,17 @@ function buildRouter(auth) {
   // ---- a user's own account ----
 
   r.get('/account', session, csrf, user, h((req, res) => sendAccount(auth, req, res)));
+  // who is logged in, for a page's script (a demo page that calls an API with the login's
+  // session): {login, name, administrator}, or 401 with the login page that comes back to
+  // ?return= (a path on this server)
+  r.get('/me', session, h(async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const p = await auth.principal(req);
+    if (!p || p.via === 'internal') {
+      return res.status(401).json({ error: 'not logged in', login: auth.loginUrl(req, safeReturn(str(req.query.return), '/')) });
+    }
+    res.json({ login: p.login, name: p.name, administrator: p.isAdmin });
+  }));
   r.post('/account/name', sameOrigin, session, form, csrf, user, h((req, res) => {
     auth.store.updateUser(req.user.id, { name: str(req.body.name).trim().substring(0, 200) });
     flash(req, 'Saved');
@@ -410,13 +425,14 @@ async function forgot(auth, req, res) {
   const name = str(req.body.login).trim();
   const u = name ? auth.store.userByLoginOrEmail(name) : null;
   if (u && u.enabled && u.email) {
-    try {
-      // the link brings the user back to where they started logging in
-      await auth.emailPasswordLink(u, req, 'reset', returnOf(req));
-      auth.log.info(`Auth: password link for '${u.login}' emailed (asked from ${req.ip})`);
-    } catch (e) {
-      auth.log.error(`Auth: could not email a password link to '${u.login}': ${e.message}`);
-    }
+    // the link brings the user back to where they started logging in. Not waited for: the
+    // answer would take as long as sending an email only when there is such an account, and
+    // so say which accounts exist
+    auth.emailPasswordLink(u, req, 'reset', returnOf(req)).then(sent => {
+      if (sent) {
+        auth.log.info(`Auth: password link for '${u.login}' emailed (asked from ${req.ip})`);
+      }
+    }).catch(e => auth.log.error(`Auth: could not email a password link to '${u.login}': ${e.message}`));
   } else {
     auth.log.info(`Auth: password link asked for '${shown(name)}' from ${req.ip}: no such enabled account with an email`);
   }
@@ -691,7 +707,7 @@ function sendUsers(auth, req, res, message, status = 200) {
     '<p class="text-muted"><small>People who log in with GitHub or Google make their own accounts. Make one here for someone who will log in with a password, ' +
     `or for software (no email - it uses API tokens). ${auth.canEmail() ? 'Someone with an email address is sent a link to set their password.' : 'This server can\'t send email: you\'ll be shown the link that sets the password, to pass on.'}</small></p>` +
     `<form method="post" action="/auth/admin/users" style="max-width: 480px">${csrfField(res)}` +
-    field('login', 'Login', 'text', { required: true, help: 'Letters, digits, and . _ @ + - (an email address will do)' }) +
+    field('login', 'Login', 'text', { required: true, help: 'Letters, digits, and . _ + - (not an email address)' }) +
     field('name', 'Name', 'text', { help: 'Who or what this is' }) +
     field('email', 'Email', 'email', { help: 'Where password links go; leave out for software' }) +
     '<button type="submit" class="btn btn-primary">Make the account</button></form>';
@@ -734,9 +750,14 @@ async function sendOrShowLink(auth, req, u, reason) {
   }
   if (sent) {
     flash(req, `A link to set the password has been emailed to ${u.email}`);
-  } else {
-    req.session.newLink = auth.passwordLink(u.id, req);
+    return;
+  }
+  const link = auth.passwordLink(u.id, req);
+  if (link) {
+    req.session.newLink = link;
     flash(req, 'The link that sets the password is below: pass it on to the user (it is shown once)', 'warning');
+  } else {
+    flash(req, 'No link that sets a password can be made: set auth.publicUrl (or hostName) in config.json', 'danger');
   }
 }
 
@@ -819,14 +840,15 @@ function sendUser(auth, req, res, message, status = 200) {
   render(auth, req, res, `User ${u.login}`, h, status);
 }
 
-function updateUser(auth, req, res) {
+async function updateUser(auth, req, res) {
   const u = targetUser(auth, req);
   if (!u) {
     return sendError(auth, req, res, 404, 'No such user');
   }
   const isSelf = u.id === req.user.id;
   const email = str(req.body.email).trim();
-  if (email && email.toLowerCase() !== String(u.email || '').toLowerCase() && auth.store.userByEmail(email)) {
+  const emailChanged = email.toLowerCase() !== String(u.email || '').toLowerCase();
+  if (email && emailChanged && auth.store.userByEmail(email)) {
     return sendUser(auth, req, res, { text: `Another account has the email ${email}`, level: 'danger' }, 400);
   }
   try {
@@ -837,6 +859,17 @@ function updateUser(auth, req, res) {
     });
   } catch (e) {
     return sendUser(auth, req, res, { text: e.message, level: 'danger' }, 400);
+  }
+  if (emailChanged) {
+    // the address may have changed because the old one is no longer the user's: a link sent
+    // to it stops working, and so does every session
+    auth.store.dropLinks(u.id);
+    auth.store.endSessions(u.id);
+    auth.log.info(`Auth: email of '${u.login}' changed by ${req.user.login}: its password links and sessions ended`);
+    if (isSelf) {
+      // this session goes on
+      await logIn(auth, req, auth.store.userById(u.id));
+    }
   }
   if (!isSelf) {
     const enabled = req.body.enabled === '1';
