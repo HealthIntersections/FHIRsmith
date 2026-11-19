@@ -1037,6 +1037,35 @@ describe('SNOMED CT display language selection', () => {
     }
   });
 
+  // The editions with an English language reference set of their own display from it
+  // first, then from the nearer International dialect. The test edition has none of
+  // these national reference sets, so each order is checked against the reference sets
+  // it does have (an Australian edition on it displays GB English, then US).
+  test('Australian, Canadian, New Zealand and Irish editions display from their own English first', () => {
+    const sct = provider.sct;
+    const savedEdition = sct.edition;
+    const savedOrder = sct._dispOrder;
+    const US = 900000000000509007n, GB = 900000000000508004n;
+    const expected = {
+      '32506021000036107': [32570271000036106n, GB, US],  // Australian
+      '20621000087109': [19491000087109n, US, GB],        // Canadian (English)
+      '21000210109': [271000210107n, GB, US],             // New Zealand
+      '11000220105': [21000220103n, GB, US]               // Irish
+    };
+    try {
+      for (const [edition, refsets] of Object.entries(expected)) {
+        sct.edition = edition;
+        sct._dispOrder = null;
+        const have = refsets.map((id) => sct.concepts.findConcept(id)).filter((r) => r.found).map((r) => r.index);
+        expect(have.length).toBeGreaterThan(0);
+        expect(sct._displayRefsetOrder()).toEqual(have);
+      }
+    } finally {
+      sct.edition = savedEdition;
+      sct._dispOrder = savedOrder;
+    }
+  });
+
   test('getDisplayNameEx reports the language the display is actually in', () => {
     const sct = provider.sct;
     const r = sct.concepts.findConcept(11687002n); // Gestational diabetes mellitus

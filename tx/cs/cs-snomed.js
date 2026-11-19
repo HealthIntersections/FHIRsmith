@@ -501,18 +501,32 @@ class SnomedServices {
   // with no displayLanguage is taken to mean everywhere else in the server. An
   // edition with no English at all still falls through to the any-refset step
   // below, so nothing regresses.
+  //
+  // The editions with an English language reference set of their own (Australia,
+  // Canada, New Zealand, Ireland) display from it first, so that a request with
+  // no language gets the national spelling. A concept their reference set does not
+  // cover falls back to the nearer of the two International dialects: GB English
+  // for Australia, New Zealand and Ireland, US English for Canada.
   _displayRefsetOrder() {
     if (this._dispOrder) return this._dispOrder;
     const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
     const US = 900000000000509007n;   // US English
     const GB = 900000000000508004n;   // GB English
+    const AU = 32570271000036106n;    // Australian English
+    const CA = 19491000087109n;       // Canadian English
+    const NZ = 271000210107n;         // New Zealand English
+    const IE = 21000220103n;          // Irish English
     const byEdition = {
       '900000000000207008': [US],       // International Edition (US English is the default)
       '31000003106': [US],              // tx-ecosystem test edition (International-derived, US English default)
       '731000124108': [US],             // US Edition
       '5991000124107': [US],            // US Edition (with ICD-10-CM maps)
       '83821000000107': [GB],           // UK Edition
-      '999000021000000109': [GB]        // UK Clinical Edition
+      '999000021000000109': [GB],       // UK Clinical Edition
+      '32506021000036107': [AU, GB, US], // Australian Edition
+      '20621000087109': [CA, US, GB],   // Canadian Edition (English)
+      '21000210109': [NZ, GB, US],      // New Zealand Edition
+      '11000220105': [IE, GB, US]       // Irish Edition
     };
     const ids = byEdition[String(this.edition)] || [US, GB];
     this._dispOrder = ids.map(idx).filter((i) => i >= 0);

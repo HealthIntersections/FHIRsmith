@@ -2197,6 +2197,18 @@ describe('sharing as SHL / VHL', () => {
     expect(c.internal).toBe(false);
     expect(c.days).toBe(100);
   });
+
+  test('a URL that is this server\'s own shl module is recognised, and so needs no token', () => {
+    const { isOwnShlServer } = require('../../ips/share');
+    const self = { hostName: 'www.example.org', publicUrl: 'https://fhir.example.org' };
+    expect(isOwnShlServer('https://www.example.org/shl', self)).toBe(true);
+    expect(isOwnShlServer('https://WWW.example.org/shl/', self)).toBe(true);
+    expect(isOwnShlServer('http://fhir.example.org/shl', self)).toBe(true);
+    expect(isOwnShlServer('https://other.example.org/shl', self)).toBe(false);
+    expect(isOwnShlServer('https://www.example.org/other/shl', self)).toBe(false);
+    expect(isOwnShlServer('/shl', self)).toBe(false);
+    expect(isOwnShlServer('https://www.example.org/shl', {})).toBe(false);
+  });
 });
 
 describe('the editor', () => {

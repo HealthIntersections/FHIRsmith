@@ -2,8 +2,8 @@
 // One login for the whole server. Every module asks this who a request is - a person logged
 // in with a session cookie, or software presenting an API token - and what they may do.
 //
-//  - Users log in with a password, or with GitHub. Anyone can make an account with GitHub; it
-//    has no roles until the administrator gives it some. The administrator makes password
+//  - Users log in with a password, or with GitHub or Google. Anyone can make an account with
+//    GitHub or Google; it has no roles until the administrator gives it some. The administrator makes password
 //    accounts, and the password is set from a link that is emailed (and the same for a
 //    forgotten password). Passwords are at least 15 characters.
 //  - Roles: "administrator" is server wide, and passes every check. Modules define their own
@@ -13,7 +13,7 @@
 //  - Software uses API tokens, which a user issues (or the administrator issues for them) and
 //    which carry that user's roles.
 //  - Who is an administrator is said by the configuration (auth.administrators: email addresses
-//    or github:{name}), and by the role granted on the users page.
+//    github:{name} or google:{email}), and by the role granted on the users page.
 //
 // It is a singleton (like html-server): require('library/auth') anywhere, and server.js
 // initializes it before any module. See library/auth/README.md.
@@ -75,9 +75,33 @@ function presentedToken(req) {
   return null;
 }
 
-/** A return path that stays on this server: a local path, never //host or /\host */
+/**
+ * Is this a path on this server - one a redirect can't turn into another site? It starts with
+ * one /, not // or /\ (which browsers take as //host), nor an encoded / or \ there; it has no
+ * control characters; and it isn't too long. (Named so that code scanning - CodeQL
+ * js/server-side-unvalidated-url-redirection - takes it as the check it is)
+ */
+function isLocalUrl(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= 2000 &&
+    value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') &&
+    // eslint-disable-next-line no-control-regex -- control characters are what it looks for
+    !/^\/(%2f|%5c)/i.test(value) && !/[\u0000-\u001F\u007F]/.test(value);
+}
+
+/**
+ * Redirect back to where the user was: `value` if it's a path on this server, else `fallback`
+ * (a path the server chose). Every redirect to a place a request named goes through this
+ */
+function redirectBack(res, value, fallback) {
+  if (isLocalUrl(value)) {
+    return res.redirect(value);
+  }
+  return res.redirect(fallback);
+}
+
+/** A return path that stays on this server: a local path (isLocalUrl), else the fallback */
 function safeReturn(value, fallback = '/') {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\') || value.length > 2000 || /[\r\n]/.test(value)) {
+  if (!isLocalUrl(value)) {
     return fallback;
   }
   return value;
@@ -94,6 +118,7 @@ class Principal {
     this.name = user.name || user.login;
     this.email = user.email || null;
     this.githubLogin = user.github_login || null;
+    this.googleEmail = user.google_email || null;
     this.hasPassword = !!user.hasPassword;
     this.isAdmin = isAdmin;
     this.adminFromConfig = adminFromConfig;
@@ -180,7 +205,16 @@ class Auth {
     this.dbPath = dbPath;
     this.store = new AuthStore(dbPath, { bcryptCost: this.config.bcryptCost });
     this.linkMinutes = Number.isInteger(this.config.linkMinutes) && this.config.linkMinutes > 0 ? this.config.linkMinutes : DEFAULT_LINK_MINUTES;
-    this.github = this.config.github && this.config.github.clientId && this.config.github.clientSecret ? this.config.github : null;
+    // the login providers configured (library/auth/oauth.js): auth.github, auth.google
+    this.providers = {};
+    for (const key of ['github', 'google']) {
+      const c = this.config[key];
+      if (c && typeof c.clientId === 'string' && c.clientId && typeof c.clientSecret === 'string' && c.clientSecret) {
+        this.providers[key] = c;
+      }
+    }
+    this.github = this.providers.github || null;
+    this.google = this.providers.google || null;
     this.applyConfiguredAdministrators();
     this.setupMiddleware();
     this.flushTimer = setInterval(() => {
@@ -192,7 +226,8 @@ class Auth {
     }, FLUSH_MS);
     this.flushTimer.unref();
     this.initialized = true;
-    this.log.info(`Auth: users in ${dbPath}; ${this.github ? 'GitHub login on' : 'no GitHub login (auth.github)'}; ` +
+    const on = Object.keys(this.providers);
+    this.log.info(`Auth: users in ${dbPath}; ${on.length ? `logging in with ${on.join(' and ')}` : 'no GitHub or Google login (auth.github, auth.google)'}; ` +
       `${this.mailer && this.mailer.configured() ? 'password links are emailed' : 'no email: password links are shown to the administrator'}`);
   }
 
@@ -223,12 +258,13 @@ class Auth {
   // ---- administrators from the configuration ----
 
   /**
-   * The configured administrators: {emails, github} (lower case). Only emails and GitHub
-   * names: a bare login could be taken by anyone who makes an account with GitHub first
+   * The configured administrators: {emails, github, google} (lower case). Only emails, GitHub
+   * names and Google email addresses: a bare login could be taken by anyone who makes an
+   * account with GitHub or Google first
    */
   configuredAdministrators() {
     const list = Array.isArray(this.config.administrators) ? this.config.administrators : [];
-    const out = { emails: new Set(), github: new Set(), invalid: [] };
+    const out = { emails: new Set(), github: new Set(), google: new Set(), invalid: [] };
     for (const raw of list) {
       if (typeof raw !== 'string' || !raw.trim()) {
         continue;
@@ -236,6 +272,8 @@ class Auth {
       const v = raw.trim().toLowerCase();
       if (v.startsWith('github:')) {
         out.github.add(v.substring(7));
+      } else if (v.startsWith('google:') && /^[^\s@]+@[^\s@]+$/.test(v.substring(7))) {
+        out.google.add(v.substring(7));
       } else if (/^[^\s@]+@[^\s@]+$/.test(v)) {
         out.emails.add(v);
       } else {
@@ -249,7 +287,9 @@ class Auth {
   isConfiguredAdministrator(user, admins = this.configuredAdministrators()) {
     return !!user && ((user.email && admins.emails.has(user.email.toLowerCase())) ||
       // only an account GitHub has vouched for (a github_id) matches a github: entry
-      (user.github_id && user.github_login && admins.github.has(user.github_login.toLowerCase())));
+      (user.github_id && user.github_login && admins.github.has(user.github_login.toLowerCase())) ||
+      // and only an account Google has vouched for (a google_id) matches a google: entry
+      (user.google_id && user.google_email && admins.google.has(user.google_email.toLowerCase())));
   }
 
   /**
@@ -265,9 +305,9 @@ class Auth {
       }
     }
     for (const bad of admins.invalid) {
-      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address nor github:{name} - ignored`);
+      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address, github:{name} nor google:{email} - ignored`);
     }
-    if (admins.emails.size + admins.github.size === 0) {
+    if (admins.emails.size + admins.github.size + admins.google.size === 0) {
       this.log.warn('Auth: no administrators are configured (auth.administrators) - nobody can manage users unless one has been given the role');
     }
   }
@@ -547,13 +587,14 @@ class Auth {
    * A link that sets the user's password (any earlier one stops working)
    * @returns {string|null} the URL, or null if there is no public URL to make it from
    */
-  passwordLink(userId, req) {
+  passwordLink(userId, req, back = '') {
     this.requireInitialized();
     const base = this.publicUrl(req);
     if (!base) {
       return null;
     }
-    return `${base}/auth/reset/${this.store.createLink(userId, this.linkMinutes)}`;
+    const ret = safeReturn(back, '');
+    return `${base}/auth/reset/${this.store.createLink(userId, this.linkMinutes)}${ret ? `?return=${encodeURIComponent(ret)}` : ''}`;
   }
 
   canEmail() {
@@ -561,11 +602,11 @@ class Auth {
   }
 
   /** Email a user a link that sets their password. Resolves true if it was sent */
-  async emailPasswordLink(user, req, reason = 'reset') {
+  async emailPasswordLink(user, req, reason = 'reset', back = '') {
     if (!this.canEmail() || !user || !user.email) {
       return false;
     }
-    const link = this.passwordLink(user.id, req);
+    const link = this.passwordLink(user.id, req, back);
     const where = this.publicUrl(req) || 'FHIRsmith';
     const text = (reason === 'new' ?
       `An account has been made for you on ${where}, with the login ${user.login}.\n\nSet its password here:\n\n` :
@@ -592,13 +633,31 @@ class Auth {
     if (s.users === 0) {
       return '';
     }
-    const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
-    const logins = s.logins.password + s.logins.github;
-    const failed = s.failed.password + s.failed.github;
+    const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub'], [c.google, 'with Google']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
+    const total = c => c.password + c.github + c.google;
+    const logins = total(s.logins);
+    const known = total(s.failed);
+    const failed = known + s.failedUnknown;
     const sentences = [];
-    let first = `${plural(logins, 'login')}${logins > 0 && how(s.logins).length > 1 ? ` (${how(s.logins).join(', ')})` : ''}`;
-    first += `, and ${plural(failed, 'failed login')} for accounts that exist${failed > 0 && how(s.failed).length > 1 ? ` (${how(s.failed).join(', ')})` : ''}.`;
+    const first = `${plural(logins, 'login')}${logins > 0 && how(s.logins).length > 1 ? ` (${how(s.logins).join(', ')})` : ''}.`;
     sentences.push(first.charAt(0).toUpperCase() + first.slice(1));
+    // failed logins altogether, and by account. (A GitHub or Google login that was cancelled or
+    // abandoned isn't one: only a wrong password, or a disabled account, is)
+    if (failed === 0) {
+      sentences.push('No failed logins.');
+    } else {
+      const SHOWN = 10;
+      const accounts = s.failedAccounts.slice(0, SHOWN).map(a => `${a.login} ${a.n}`).join(', ') +
+        (s.failedAccounts.length > SHOWN ? `, and ${s.failedAccounts.length - SHOWN} more` : '');
+      const parts = [];
+      if (s.failedUnknown > 0) {
+        parts.push(`${s.failedUnknown} for ${s.failedUnknown === 1 ? 'a name that isn\'t an account' : 'names that aren\'t accounts'}`);
+      }
+      if (known > 0) {
+        parts.push(`${known} for ${s.failedAccounts.length === 1 ? 'an account that exists' : 'accounts that exist'} (${accounts})`);
+      }
+      sentences.push(`${plural(failed, 'failed login')}: ${parts.join(', and ')}.`);
+    }
     const disabled = s.users - s.enabled;
     sentences.push(`${plural(s.users, 'user account')}${disabled > 0 ? ` (${disabled} disabled)` : ''}` +
       `${s.made > 0 ? `, ${s.made} of them new` : ''}.`);
@@ -606,6 +665,11 @@ class Auth {
       sentences.push(`${plural(s.sessions, 'session')} ${s.sessions === 1 ? 'is' : 'are'} logged in now.`);
     }
     return sentences.join(' ');
+  }
+
+  /** Where logging out goes (auth.afterLogout, a path on this server; default the server's home page) */
+  afterLogout() {
+    return safeReturn(this.config.afterLogout, '/');
   }
 
   /**
@@ -678,4 +742,4 @@ class Auth {
   }
 }
 
-module.exports = { Auth, Principal, presentedToken, safeReturn, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };
+module.exports = { Auth, Principal, presentedToken, safeReturn, isLocalUrl, redirectBack, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };
