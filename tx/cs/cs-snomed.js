@@ -5052,14 +5052,15 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
   }
 
   id() {
+    let prefix = "";
     let match = this.version().match(/^http:\/\/snomed\.info\/sct\/(\d+)(?:\/version\/(\d{8}))?$/);
     if (!match) {
       match = this.version().match(/^http:\/\/snomed\.info\/xsct\/(\d+)(?:\/version\/(\d{8}))?$/);
       if (match) {
-        match = "x"+match;
+        prefix = "x";
       }
     }
-    return match && match[1] && match[2] ? "SCT-"+match[1]+"-"+match[2] : null;
+    return match && match[1] && match[2] ? prefix+"SCT-"+match[1]+"-"+match[2] : null;
   }
 
   describeVersion(version) {
