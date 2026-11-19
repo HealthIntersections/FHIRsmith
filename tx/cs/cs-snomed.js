@@ -74,6 +74,20 @@ const ECL_DIALECT_ALIASES = {
   'da-dk': '554461000005103'
 };
 
+// The English part of the same table read the other way: language reference set ->
+// the BCP 47 tag of the dialect it defines ('900000000000508004' -> 'en-GB'). A
+// description that is Preferred in one of these is the preferred term for that
+// dialect, which is what lets a request for en-GB be answered with the GB term and
+// not the US one. English only: it is the language in which one edition carries
+// two dialects' preferred terms side by side (the International edition's US and
+// GB reference sets), and the other languages' designations are left as they were.
+const LANGUAGE_REFSET_DIALECTS = Object.entries(ECL_DIALECT_ALIASES)
+  .filter(([alias]) => alias.startsWith('en-'))
+  .map(([alias, refset]) => {
+    const [lang, region] = alias.split('-');
+    return { refset: BigInt(refset), lang, tag: lang + '-' + region.toUpperCase() };
+  });
+
 // Context kinds matching Pascal enum
 
 const SnomedProviderContextKind = {
@@ -521,6 +535,51 @@ class SnomedServices {
     return -1;
   }
 
+  // The dialect language reference sets (LANGUAGE_REFSET_DIALECTS) the loaded
+  // edition has, as [{refsetIdx, lang, tag}], resolved once per edition.
+  _dialectRefsets() {
+    if (this._dialects) return this._dialects;
+    this._dialects = [];
+    for (const d of LANGUAGE_REFSET_DIALECTS) {
+      const r = this.concepts.findConcept(d.refset);
+      if (r.found) this._dialects.push({ refsetIdx: r.index, lang: d.lang, tag: d.tag });
+    }
+    return this._dialects;
+  }
+
+  // The dialect tag ('en-GB') of a language reference set (a concept index), or
+  // null if it is not one of the known dialect reference sets.
+  _dialectOfRefset(refsetIdx) {
+    const d = this._dialectRefsets().find((e) => e.refsetIdx === refsetIdx);
+    return d ? d.tag : null;
+  }
+
+  // The dialects a description is the preferred term in: the tags of the known
+  // dialect reference sets that mark it Preferred, in the description's own
+  // language (so ['en-GB'], ['en-US', 'en-GB'], or [] for most descriptions of
+  // a national language whose reference set is not a known dialect).
+  _preferredDialects(description) {
+    const K = this._displayConstants();
+    const lang = SCT_LANGUAGE_CODES[description.lang] || 'en';
+    const tags = [];
+    for (const d of this._dialectRefsets()) {
+      if (d.lang === lang && this._descAcceptability(description, d.refsetIdx) === K.preferred) tags.push(d.tag);
+    }
+    return tags;
+  }
+
+  // Where a description comes in the edition's display language reference sets
+  // (_displayRefsetOrder): the position of the first one that marks it
+  // Preferred, or Infinity if none does.
+  _displayRefsetRank(description) {
+    const K = this._displayConstants();
+    const order = this._displayRefsetOrder();
+    for (let i = 0; i < order.length; i++) {
+      if (this._descAcceptability(description, order[i]) === K.preferred) return i;
+    }
+    return Infinity;
+  }
+
   // True if the description is a synonym marked Preferred (900000000000548007)
   // in ANY of its language reference sets. Editions use different English
   // language refsets (International US-English 509007, GB 508004, US extension,
@@ -551,10 +610,12 @@ class SnomedServices {
   // term as en-US puts it in an IG's English display column and makes the real
   // French designation look like a duplicate.
   //
-  // Returns {term, lang} - lang is a language code, or null when no description
-  // could be read.
+  // Returns {term, lang, dialect} - lang is a language code, or null when no
+  // description could be read; dialect is the tag ('en-US', 'en-GB') of the
+  // display language reference set the term is Preferred in, or null when the
+  // term was not chosen by one (the fallbacks) or the set is not a known dialect.
   getDisplayNameEx(reference = 0) {
-    const none = { term: '', lang: null };
+    const none = { term: '', lang: null, dialect: null };
     try {
       const concept = this.concepts.getConcept(reference);
       const descriptionsRef = concept.descriptions;
@@ -565,10 +626,15 @@ class SnomedServices {
 
       const descriptionIndices = this.refs.getReferences(descriptionsRef);
       const K = this._displayConstants();
-      const pick = (description) => ({
-        term: this.strings.getEntry(description.iDesc).trim(),
-        lang: SCT_LANGUAGE_CODES[description.lang] || 'en'
-      });
+      const pick = (description, refsetIdx = -1) => {
+        const lang = SCT_LANGUAGE_CODES[description.lang] || 'en';
+        const dialect = refsetIdx >= 0 ? this._dialectOfRefset(refsetIdx) : null;
+        return {
+          term: this.strings.getEntry(description.iDesc).trim(),
+          lang,
+          dialect: dialect && dialect.startsWith(lang + '-') ? dialect : null
+        };
+      };
 
       // 1. Preferred synonym in the edition's default display refset(s), tried
       //    in priority order. This is what disambiguates dialects: on the
@@ -581,7 +647,7 @@ class SnomedServices {
           const description = this.descriptions.getDescription(descIndex);
           if (!description.active || description.kind !== K.synonym) continue;
           if (this._descAcceptability(description, refsetIdx) === K.preferred) {
-            return pick(description);
+            return pick(description, refsetIdx);
           }
         }
       }
@@ -3092,7 +3158,17 @@ class SnomedProvider extends BaseCSServices {
               // The edition-default display is also added as the display
               // designation (which the expand worker selects for `display` when
               // no language was asked for, and skips from the emitted list).
-              const fsns = new Map(), prefSyns = new Map();
+              //
+              // Which preferred synonym stands for a language is decided as the
+              // display is: the one Preferred in the edition's display language
+              // reference set, before one Preferred only in another (the
+              // International edition has a US and a GB preferred term for
+              // "tumor"/"tumour" concepts, both in language 'en'; taking the
+              // first one stored gave displayLanguage=en a mix of the two
+              // dialects across one expansion). The preferred term of each
+              // other dialect is added under that dialect's own tag when it is a
+              // different term, so that displayLanguage=en-GB finds it.
+              const fsns = new Map(), prefSyns = new Map(), dialectSyns = new Map();
               for (const descIndex of descriptionIndices) {
                 const description = this.sct.descriptions.getDescription(descIndex);
                 if (!description.active) continue;
@@ -3103,7 +3179,12 @@ class SnomedProvider extends BaseCSServices {
                 if (description.kind === K.fsn) {
                   if (!fsns.has(langCode)) fsns.set(langCode, { langCode, use, term });
                 } else if (this.sct._synonymIsPreferred(description)) {
-                  if (!prefSyns.has(langCode)) prefSyns.set(langCode, { langCode, use, term });
+                  const rank = this.sct._displayRefsetRank(description);
+                  const cur = prefSyns.get(langCode);
+                  if (!cur || rank < cur.rank) prefSyns.set(langCode, { langCode, use, term, rank });
+                  for (const tag of this.sct._preferredDialects(description)) {
+                    if (!dialectSyns.has(tag)) dialectSyns.set(tag, { langCode, tag, use, term });
+                  }
                 }
               }
               // Tagged with the language the term is actually in, not a
@@ -3112,9 +3193,11 @@ class SnomedProvider extends BaseCSServices {
               // is what puts it in an IG's English display column and makes the
               // real French designation look like a duplicate of it. English
               // stays 'en-US' (the term comes from the US English language
-              // reference set), so nothing changes for English editions.
+              // reference set), so nothing changes for English editions - other
+              // than those whose display comes from another English dialect's
+              // reference set (the UK editions: GB English), which say so.
               const display = this.sct.getDisplayNameEx(ctxt.getReference());
-              const displayLang = (!display.lang || display.lang === 'en') ? 'en-US' : display.lang;
+              const displayLang = display.dialect || ((!display.lang || display.lang === 'en') ? 'en-US' : display.lang);
               if (display.term) displays.addDesignation(true, 'active', displayLang, null, display.term);
               // FSNs before synonyms, matching the designation order the published
               // tx-ecosystem expectations were written against (sct/expand-inactive).
@@ -3123,6 +3206,9 @@ class SnomedProvider extends BaseCSServices {
               // above the FSN - not by the order they are emitted in.
               for (const d of fsns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
               for (const d of prefSyns.values()) displays.addDesignation(false, 'active', d.langCode, d.use, d.term);
+              for (const d of dialectSyns.values()) {
+                if (d.term !== prefSyns.get(d.langCode).term) displays.addDesignation(false, 'active', d.tag, d.use, d.term);
+              }
             } else {
               // $lookup: emit every description. Order matters only for the
               // display: a request with no displayLanguage takes the first
@@ -3132,28 +3218,48 @@ class SnomedProvider extends BaseCSServices {
               // keeps that pick in one language - otherwise a national edition
               // answers $lookup in French for one concept and Dutch for the
               // next, depending on description storage order.
+              //
+              // The first preferred synonym of a language in this order stands for
+              // the language, as in $expand. Another preferred synonym in the same
+              // language is the preferred term of a different dialect (on the
+              // International edition, the GB English one where it differs from
+              // the US one), and is reported in that dialect ('en-GB') rather than
+              // the bare language, so that a request for en-GB gets it as the
+              // display. A language with one preferred term is reported as before.
               const K2 = this.sct._displayConstants();
               const displayRefsets = this.sct._displayRefsetOrder();
-              // Buckets: 0 = preferred in the edition's display refset, 1 =
-              // preferred in some other language refset, 2 = everything else
-              // (FSNs and acceptable synonyms, left in their original order -
+              // Buckets: preferred in one of the edition's display refsets (in
+              // their order, so that an edition whose display is US English then
+              // GB English lists the US term first, as its display is chosen);
+              // then preferred in some other language refset; then everything
+              // else (FSNs and acceptable synonyms, left in their original order -
               // Array.sort is stable, so nothing else about the output moves).
+              const otherPreferred = displayRefsets.length;
               const rank = (description) => {
-                if (description.kind !== K2.synonym) return 2;
-                for (const refsetIdx of displayRefsets) {
-                  if (this.sct._descAcceptability(description, refsetIdx) === K2.preferred) return 0;
-                }
-                return this.sct._synonymIsPreferred(description) ? 1 : 2;
+                if (description.kind !== K2.synonym) return otherPreferred + 1;
+                const r = this.sct._displayRefsetRank(description);
+                if (r < otherPreferred) return r;
+                return this.sct._synonymIsPreferred(description) ? otherPreferred : otherPreferred + 1;
               };
               const orderedIndices = descriptionIndices.slice().sort((a, b) => {
                 const da = this.sct.descriptions.getDescription(a);
                 const db = this.sct.descriptions.getDescription(b);
                 return rank(da) - rank(db);
               });
+              const languageTerms = new Map();   // language -> dialects of the synonym that stands for it
               for (const descIndex of orderedIndices) {
                 const description = this.sct.descriptions.getDescription(descIndex);
                 const term = this.sct.strings.getEntry(description.iDesc).trim();
-                const langCode = this.getLanguageCode(description.lang);
+                let langCode = this.getLanguageCode(description.lang);
+                if (description.active && rank(description) <= otherPreferred) {
+                  const dialects = this.sct._preferredDialects(description);
+                  const taken = languageTerms.get(langCode);
+                  if (!taken) {
+                    languageTerms.set(langCode, dialects);
+                  } else {
+                    langCode = dialects.find((tag) => !taken.includes(tag)) || langCode;
+                  }
+                }
                 const kind = this.sct.concepts.getConcept(description.kind);
                 const kid = String(kind.identity);
                 const kdesc = this.sct.getDisplayName(description.kind);
