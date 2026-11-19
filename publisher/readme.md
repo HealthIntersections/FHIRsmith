@@ -36,8 +36,6 @@ In `config.json`, under `modules`:
 "publisher": {
   "enabled": true,
   "database": "publisher.db",
-  "sessionSecret": "a-long-random-string",
-  "adminPassword": "a-good-password",
   "workspaceRoot": "workspaces"
 }
 ```
@@ -45,14 +43,10 @@ In `config.json`, under `modules`:
 | Setting | Default | Description |
 |---|---|---|
 | `enabled` | false | Run the module, at `/publisher` |
-| `database` | - | The SQLite database (users, websites, permissions, tasks). A relative path is in the data directory's `publisher` folder |
-| `sessionSecret` | random | Signs the login session cookie. Set it: without it, a random one is made at startup (with a warning), and logins don't survive a restart |
-| `adminPassword` | random | The password of the administrator, `admin` (see [Administration](#administration)) |
-| `cookieSecure` | true | The session cookie is only sent over https. Set `false` only to run over plain http. Behind a TLS proxy, the proxy must set `X-Forwarded-Proto`, or logins seem to do nothing |
+| `database` | - | The SQLite database (websites, tasks, and what users did). A relative path is in the data directory's `publisher` folder |
 | `workspaceRoot` | - | Where task folders (`task-{id}`) are made. A relative path is in the data directory's `publisher` folder |
 | `igPublisherTimeoutMinutes` | 60 | An IG Publisher run that takes longer is stopped, and the task fails |
 | `pollInterval` | 5000 | How often (ms) the module looks for a task to run |
-| `loginAttemptsPerWindow` | 20 | Failed logins allowed per IP address per 15 minutes |
 | `taskActionsPerMinute` | 30 | Task actions (create, approve, delete, retry) per IP address per minute |
 | `taskReadsPerMinute` | 300 | Reads of task output, history and QA pages per IP address per minute |
 | `large-file-archive` | none | Where files over GitHub's 100 MB limit are moved from the web folder, for websites whose publish setup says they are on GitHub. A relative path is in the data directory's `publisher` folder. Without it they are left in place, and the push fails |
@@ -63,13 +57,10 @@ In `config.json`, under `modules`:
 
 ## Administration
 
-The administrator's login is `admin`, and its password is `adminPassword` from the config,
-set at every start - so to change it, change the config and restart. Without `adminPassword`,
-the first start gives the administrator a random password (a UUID) and logs it; set
-`adminPassword` to choose your own. There is no page to change a password.
+Users and logins are the server's ([library/auth](../library/auth/README.md)): people log in at
+`/auth/login`, with a password or GitHub. The server's administrators manage:
 
-Administrators manage (at `/publisher/admin/...`):
-
-- **Websites**: each has a name, its local web folder (a git checkout), the history and web
+- **Websites** (at `/publisher/admin/websites`): each has a name, its local web folder (a git checkout), the history and web
   templates, and a server update script.
-- **Users**, and what each may do for each website: publish (create tasks) and approve.
+- **Users** (at `/auth/admin/users`), and what each may do for each website: the publisher
+  roles **queue** (create tasks) and **approve**, each for a website, or for every website.

@@ -65,6 +65,16 @@ describe('cluster caches', () => {
     expect(answer.results.map(r => [r.code, r.error || r.result.process])).toEqual([['m0', 'p1'], ['tx1', 'no answer in 0 s'], ['tx2', 'not running']]);
   });
 
+  test('list: the argument (a cache id) reaches every process; a bad one is refused', async () => {
+    const seen = [];
+    const local = (n) => async (action, arg) => { seen.push([n, action, arg]); return { process: `p${n}`, list: { name: arg } }; };
+    const { sides } = cluster([local(1), local(2)]);
+    const answer = await sides[1].ask('list', 'language-tags');
+    expect(seen.sort()).toEqual([[1, 'list', 'language-tags'], [2, 'list', 'language-tags']]);
+    expect(answer.results.map(r => r.result.list.name)).toEqual(['language-tags', 'language-tags']);
+    await expect(sides[0].ask('list', 'x'.repeat(65))).rejects.toThrow();
+  });
+
   test('a process that fails says why', async () => {
     const { sides } = cluster([report(1), async () => { throw new Error('broken'); }]);
     const answer = await sides[0].ask('report');
@@ -105,7 +115,7 @@ describe('cluster caches', () => {
 
   test('the page: a column for each process, and the total', async () => {
     const { sides } = cluster([report(1), report(2)]);
-    const html = buildCachesPage({ answer: await sides[0].ask('report'), message: null, passwordConfigured: true });
+    const html = buildCachesPage({ answer: await sides[0].ask('report'), message: null, isAdmin: true, csrf: 'tok' });
     expect(html).toContain('in each of its 2 processes');
     expect(html).toMatch(/<th>m0<\/th><th>tx1<\/th><th>Total<\/th>/);
     expect(html).toMatch(/Expansion cache<\/td><td>\/r4<\/td><td style="text-align: right">1<\/td><td style="text-align: right">2<\/td><td style="text-align: right"><strong>3<\/strong>/);

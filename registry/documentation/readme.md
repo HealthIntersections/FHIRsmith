@@ -12,7 +12,7 @@ registry runs at https://tx.fhir.org/tx-reg (moving to https://ecosystem.hl7.org
 | this page | What the registry does, and the specifications it implements |
 | [configuration.md](configuration.md) | `modules.registry` settings |
 | [api.md](api.md) | The API: discovery, resolution, and how resolution decides |
-| [security.md](security.md) | Closing the API: API token, users and tokens, OpenID Connect |
+| [security.md](security.md) | Closing the API: members and their tokens, OpenID Connect |
 | [documents.md](documents.md) | Documents the registry stores and serves: ecosystem policy and configuration |
 | [internals.md](internals.md) | Scanning, storage, the pages, the code and the tests |
 

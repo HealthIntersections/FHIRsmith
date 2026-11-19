@@ -38,7 +38,8 @@ const FORWARDED_HEADER = 'X-FHIRsmith-Ecosystem-Forwarded';
 const DEFAULT_REGISTRY = 'https://ecosystem.hl7.org/tx-reg';
 // how an R4 (or R3) TerminologyCapabilities says what content it has for a code system
 const CAPS_CONTENT_EXT = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content';
-const TIMEOUT_MS = 30000; // for the whole request, not just until the answer starts
+// for the whole request, not just until the answer starts (modules.tx.ecosystem.timeout, in seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // a TerminologyCapabilities is under 1 MB
 const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
 const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
@@ -47,7 +48,7 @@ const MAX_KNOWN = 1000; // the most entries kept in each of the caches of what t
 const MAX_REDIRECTS = 5;
 // how long an https:// try may wait for the answer to start, for a server given as http://
 // whose https:// hasn't been tried yet: one that doesn't answer on https at all isn't waited on
-// for the whole TIMEOUT_MS before http:// is tried
+// for the whole timeout before http:// is tried (never more than the timeout itself)
 const HTTPS_PROBE_MS = 10000;
 // a system is only looked for in the ecosystem if it's a URI: a scheme, then the characters a
 // URI may have, and no white space. Not "1", "PRESCRIPTION_TYPE", "a uri with spaces", or a
@@ -64,11 +65,13 @@ class EcosystemResolver {
     this.excludedServers = (config.excludedServers || []).map(e => EcosystemResolver.normalise(e));
     this.excludedPatterns = (config.excludedPatterns || []).map(p => EcosystemResolver.patternToRegex(p));
     this.agents = createGuardedAgents({ allowPrivate: config.allowPrivateAddresses === true });
+    this.timeoutMs = config.timeout !== undefined ? config.timeout * 1000 : DEFAULT_TIMEOUT_MS;
+    this.httpsProbeMs = Math.min(HTTPS_PROBE_MS, this.timeoutMs);
     this.credentials = new ServerCredentials({
       apiKeys: config.apiKeys,
       oauth: config.oauth,
-      timeout: TIMEOUT_MS,
-      signal: () => AbortSignal.timeout(TIMEOUT_MS),
+      timeout: this.timeoutMs,
+      signal: () => AbortSignal.timeout(this.timeoutMs),
       userAgent: 'FHIRsmith (ecosystem resolution)',
       agents: () => this.agents
     });
@@ -92,6 +95,60 @@ class EcosystemResolver {
    */
   cacheCount() {
     return this.servers.size + this.versions.size + this.searched.size + this.codes.size + this.answers.size + this.schemes.size;
+  }
+
+  /**
+   * How many entries each of the caches holds (the caches page)
+   * @returns {Object} cache name -> entries
+   */
+  cacheSizes() {
+    return { servers: this.servers.size, capabilities: this.versions.size, searches: this.searched.size,
+      'server codes': this.codes.size, answers: this.answers.size, schemes: this.schemes.size };
+  }
+
+  /**
+   * What the caches hold, an entry a row (the caches page): [cache, key, age in seconds, what it
+   * says], most recently used last in each cache
+   * @returns {Array[]}
+   */
+  cacheEntries() {
+    const now = Date.now();
+    const rows = [];
+    const urls = (list) => list.map(s => (s && s.url ? s.url + (s.authoritative ? ' (authoritative)' : '') : String(s))).join(', ');
+    const say = (entry) => {
+      if (entry.pending) {
+        return 'being asked now';
+      }
+      if (entry.failure) {
+        return 'not known: ' + entry.failure.reason;
+      }
+      const v = entry.value !== undefined ? entry.value : entry;
+      if (v === null) {
+        return 'none';
+      }
+      if (Array.isArray(v)) {
+        return v.length === 0 ? 'none' : (typeof v[0] === 'object' && v[0] && v[0].url ? urls(v) : v.length + ': ' + v.slice(0, 10).map(x => (x && x.code) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') + (v.length > 10 ? ', ...' : ''));
+      }
+      if (v instanceof Map || v instanceof Set) {
+        return v.size + ' entries';
+      }
+      if (typeof v === 'object' && v.status !== undefined) {
+        return 'HTTP ' + v.status;
+      }
+      if (typeof v === 'object' && v.scheme) {
+        return v.scheme;
+      }
+      const text = JSON.stringify(v);
+      return text && text.length > 200 ? text.substring(0, 200) + '...' : String(text);
+    };
+    const caches = [['servers', this.servers], ['capabilities', this.versions], ['searches', this.searched],
+      ['server codes', this.codes], ['answers', this.answers], ['schemes', this.schemes]];
+    for (const [name, cache] of caches) {
+      for (const [key, entry] of cache) {
+        rows.push([name, key, entry && entry.at ? Math.round((now - entry.at) / 1000) : null, say(entry || {})]);
+      }
+    }
+    return rows;
   }
 
   /**
@@ -140,6 +197,9 @@ class EcosystemResolver {
       if (v !== undefined && (!Array.isArray(v) || v.some(e => typeof e !== 'string' || !e.trim()))) {
         fail(`${name} must be a list of strings, not ${JSON.stringify(v)}`);
       }
+    }
+    if (cfg.timeout !== undefined && (typeof cfg.timeout !== 'number' || !(cfg.timeout > 0) || cfg.timeout > 300)) {
+      fail(`timeout must be a number of seconds, above 0 and no more than 300, not ${JSON.stringify(cfg.timeout)}`);
     }
     if (cfg.apiKeys !== undefined && (typeof cfg.apiKeys !== 'object' || Array.isArray(cfg.apiKeys) || Object.values(cfg.apiKeys).some(v => typeof v !== 'string'))) {
       fail('apiKeys must be an object: server code -> API key');
@@ -256,13 +316,49 @@ class EcosystemResolver {
       this.#remember(cache, key, { at: Date.now(), value });
       return value;
     }, e => {
-      // not known: null for now, and asked again (in the background) in a few minutes
-      this.log.warn(why(e));
-      this.#remember(cache, key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null });
+      // not known: null for now, and asked again (in the background) in a few minutes. Why is
+      // kept with it (see #failureOf), so that an operation that finds nothing can say that it
+      // wasn't because there's nothing to find
+      const reason = why(e);
+      this.log.warn(reason);
+      this.#remember(cache, key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null, failure: { reason, noAnswer: EcosystemResolver.noAnswer(e.cause) } });
       return null;
     });
     this.#remember(cache, key, { pending });
     return pending;
+  }
+
+  /**
+   * Why what's known under key is null, if it's because the registry or the server couldn't be
+   * asked (or didn't give a usable answer), not because it said there's nothing: {reason,
+   * noAnswer}, or null. noAnswer: it didn't answer at all (see noAnswer)
+   */
+  #failureOf(cache, key) {
+    const entry = cache.get(key);
+    return entry && 'value' in entry && entry.value === null && entry.failure ? entry.failure : null;
+  }
+
+  /**
+   * Why the registry couldn't say which servers have system|version (findServers gave null
+   * because the registry couldn't be asked), or null
+   */
+  whyNoServers(system, version, fhirVersion) {
+    const key = system + (version ? '|' + version : '');
+    const failure = this.#failureOf(this.servers, key + '#' + fhirVersion);
+    return failure ? failure.reason : null;
+  }
+
+  /**
+   * Why listVersions gave null for server and system, if it's because the server couldn't be
+   * asked, not because it doesn't have the code system, or null
+   */
+  whyUnavailable(server, system, authoritative = false) {
+    const caps = this.#failureOf(this.versions, server);
+    if (caps && caps.noAnswer) {
+      return caps.reason;
+    }
+    const search = this.#failureOf(this.searched, server + '|' + system + (authoritative ? '#auth' : ''));
+    return search ? search.reason : null;
   }
 
   /**
@@ -310,7 +406,7 @@ class EcosystemResolver {
     }
     const secure = { ...config, url: 'https://' + url.substring('http://'.length) };
     try {
-      const response = await this.#send(secure, sameHost, fresh ? TIMEOUT_MS : HTTPS_PROBE_MS);
+      const response = await this.#send(secure, sameHost, fresh ? this.timeoutMs : this.httpsProbeMs);
       this.#remember(this.schemes, host, { scheme: 'https', at: Date.now() });
       return response;
     } catch (e) {
@@ -319,7 +415,7 @@ class EcosystemResolver {
       }
       const response = await this.#send(config, sameHost);
       this.#remember(this.schemes, host, { scheme: 'http', at: Date.now() });
-      this.log.info(`${host} doesn't answer on https (${describeRequestFailure(e.cause, { timeoutMs: HTTPS_PROBE_MS, maxBytes: MAX_RESPONSE_BYTES })}): using http`);
+      this.log.info(`${host} doesn't answer on https (${describeRequestFailure(e.cause, { timeoutMs: this.httpsProbeMs, maxBytes: MAX_RESPONSE_BYTES })}): using http`);
       return response;
     }
   }
@@ -340,9 +436,9 @@ class EcosystemResolver {
     return true;
   }
 
-  async #send(config, sameHost, headerTimeoutMs = TIMEOUT_MS) {
+  async #send(config, sameHost, headerTimeoutMs = this.timeoutMs) {
     // the deadline covers the whole request; axios's timeout only the wait for the headers
-    const deadline = requestDeadline(TIMEOUT_MS);
+    const deadline = requestDeadline(this.timeoutMs);
     const host = new URL(config.url).hostname;
     try {
       return await axios.request({
@@ -541,6 +637,11 @@ class EcosystemResolver {
     const entry = caps ? caps.get(system) : null;
     if (entry && (authoritative || entry.content === undefined || EcosystemResolver.isUsableContent(entry.content))) {
       return entry.versions;
+    }
+    const failure = caps ? null : this.#failureOf(this.versions, server);
+    if (failure && failure.noAnswer) {
+      // the server didn't answer at all: searching it would only wait out another timeout
+      return null;
     }
     return this.searchVersions(server, system, opContext, authoritative);
   }

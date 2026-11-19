@@ -50,8 +50,8 @@ const SCHEMA = `
     display      TEXT
   );
 
-  -- people who can maintain the named links and delete reports. The administrator is not
-  -- in here: their password is in the configuration
+  -- no longer used: users, logins and rights are the server's (library/auth). Kept so a
+  -- database from before still opens
   CREATE TABLE IF NOT EXISTS users (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     login               TEXT UNIQUE NOT NULL,
@@ -323,41 +323,6 @@ class TestReportStore {
 
   deleteLink(id) {
     return this.db.prepare('DELETE FROM links WHERE id = ?').run(id).changes > 0;
-  }
-
-  // ---- users ----
-
-  /** @returns {Array} users, without their password hashes */
-  users() {
-    return this.db.prepare('SELECT id, login, name, can_edit_links, can_delete_reports, created FROM users ORDER BY login').all();
-  }
-
-  /** @returns {Object|null} the user, including the password hash */
-  userByLogin(login) {
-    return this.db.prepare('SELECT * FROM users WHERE login = ?').get(login) || null;
-  }
-
-  userById(id) {
-    return this.db.prepare('SELECT id, login, name, can_edit_links, can_delete_reports FROM users WHERE id = ?').get(id) || null;
-  }
-
-  createUser(login, name, passwordHash, rights) {
-    this.db.prepare(`INSERT INTO users (login, name, password_hash, can_edit_links, can_delete_reports, created)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(login, name, passwordHash, rights.editLinks ? 1 : 0, rights.deleteReports ? 1 : 0,
-      new Date().toISOString());
-  }
-
-  updateUser(id, name, rights, passwordHash) {
-    const n = this.db.prepare('UPDATE users SET name = ?, can_edit_links = ?, can_delete_reports = ? WHERE id = ?')
-      .run(name, rights.editLinks ? 1 : 0, rights.deleteReports ? 1 : 0, id).changes;
-    if (n > 0 && passwordHash) {
-      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
-    }
-    return n > 0;
-  }
-
-  deleteUser(id) {
-    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
   }
 
   /** The distinct values in a column, for filter drop-downs. */

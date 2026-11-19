@@ -1,7 +1,7 @@
 /**
  * The tx module's caches (tx/tx-caches.js): the text indexes of what was loaded at startup kept in
  * the text index store, every cache in one registry, and the /caches page that lists them and,
- * with modules.tx.adminPassword, empties them
+ * for the server's administrators (library/auth), empties them
  */
 
 const express = require('express');
@@ -11,6 +11,7 @@ const TXModule = require('../../tx/tx');
 const { TextIndexStore, StoredNameIndex } = require('../../tx/library/text-index-store');
 const { loadedCodeSystems } = require('../../tx/tx-caches');
 const memoryGuard = require('../../library/memory-guard');
+const { ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, login, csrfOf } = require('../helpers/auth');
 
 const LIBRARY = path.join(__dirname, 'fixtures', 'test-library.yaml');
 const R5 = '/tx/r5';
@@ -22,14 +23,25 @@ const SIMPLE = {
 };
 
 describe('the caches page', () => {
-  let app, txModule;
+  let app, txModule, admin;
 
   beforeAll(async () => {
     app = express();
     app.use(express.json());
+    setupAuth();
+    mountAuth(app);
+    await makeUser('admin', ADMIN_PASSWORD, { admin: true });
+    await makeUser('someone', 'someone-password');
     txModule = new TXModule();
-    await txModule.initialize({ librarySource: LIBRARY, adminPassword: 'secret', endpoints: [{ path: R5, fhirVersion: '5.0', context: null }] }, app);
+    await txModule.initialize({ librarySource: LIBRARY, endpoints: [{ path: R5, fhirVersion: '5.0', context: null }] }, app);
+    admin = (await login(app, 'admin', ADMIN_PASSWORD)).agent;
   }, 240000);
+
+  // a post from the page, as the agent
+  const empty = async (agent, action) => {
+    const _csrf = await csrfOf(agent, `${R5}/caches`);
+    return agent.post(`${R5}/caches`).type('form').send({ action, _csrf });
+  };
 
   afterAll(async () => {
     if (txModule) {
@@ -63,24 +75,56 @@ describe('the caches page', () => {
       expect(names).toContain(name);
     }
     expect(report.find(r => r.name === 'Client caches (cache-ids)').entries).toBe(1);
+    // anyone sees what they hold; only an administrator the buttons
     const res = await request(app).get(`${R5}/caches`);
     expect(res.status).toBe(200);
     expect(res.text).toContain('Client caches (cache-ids)');
-    expect(res.text).toContain('Empty all but the client caches');
+    expect(res.text).not.toContain('Empty all but the client caches');
+    expect(res.text).toContain('The server\'s administrators can empty the caches: <a href="/auth/login?return=');
+    const page = await admin.get(`${R5}/caches`);
+    expect(page.text).toContain('Empty all but the client caches');
+    expect(page.text).toContain('name="_csrf"');
+    expect(page.text).not.toContain('type="password"');
   });
 
-  test('a wrong password empties nothing', async () => {
+  test('anyone but an administrator empties nothing', async () => {
     const before = txModule.caches.report().find(r => r.name === 'Client caches (cache-ids)').entries;
-    const res = await request(app).post(`${R5}/caches`).type('form').send({ password: 'wrong', action: 'unload-all' });
+    const someone = (await login(app, 'someone', 'someone-password')).agent;
+    // the page has no form for them: a post with their session's token, as if it had
+    const _csrf = await csrfOf(someone);
+    let res = await someone.post(`${R5}/caches`).type('form').send({ action: 'unload-all', _csrf });
     expect(res.status).toBe(200);
-    expect(res.text).toContain('Incorrect password');
+    expect(res.text).toContain('Only the server&#39;s administrators can empty the caches');
+    // not logged in: there is no form to post from (no CSRF token), so the post is refused
+    res = await request(app).post(`${R5}/caches`).type('form').send({ action: 'unload-all' });
+    expect(res.status).toBe(403);
     expect(txModule.caches.report().find(r => r.name === 'Client caches (cache-ids)').entries).toBe(before);
+  });
+
+  test('what a cache holds: a page for the administrators, linked from the cache\'s name', async () => {
+    txModule.languages.parse('en-AU');
+    txModule.languages.parse('fr-CA', null, { caseInsensitive: true });
+    const page = await admin.get(`${R5}/caches`);
+    expect(page.text).toContain('<a href="caches?show=language-tags">Parsed language tags</a>');
+    expect(page.text).toMatch(/different tags \(\d+ ignoring case\)/);
+    let res = await admin.get(`${R5}/caches?show=language-tags`);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('<h2>Parsed language tags</h2>');
+    expect(res.text).toContain('<td>en-AU</td>');
+    expect(res.text).toMatch(/<td>fr-CA<\/td><td>case insensitive<\/td>/);
+    // no ecosystem resolver configured here: no such cache
+    res = await admin.get(`${R5}/caches?show=ecosystem`);
+    expect(res.text).toContain('There is no such cache');
+    // anyone else is asked to log in
+    res = await request(app).get(`${R5}/caches?show=language-tags`);
+    expect(res.text).toContain('administrators can see what a cache holds');
+    expect(res.text).not.toContain('en-AU');
   });
 
   test('"all but the client caches" keeps the client caches; "all" empties them too', async () => {
     txModule.languages.parse('en-AU');
     expect(txModule.caches.report().find(r => r.name === 'Parsed language tags').entries).toBeGreaterThan(0);
-    let res = await request(app).post(`${R5}/caches`).type('form').send({ password: 'secret', action: 'unload' });
+    let res = await empty(admin, 'unload');
     expect(res.text).toContain('not the client caches');
     let report = txModule.caches.report();
     expect(report.find(r => r.name === 'Parsed language tags').entries).toBe(0);
@@ -88,7 +132,7 @@ describe('the caches page', () => {
     // the store is not a cache: it stays
     expect(report.find(r => r.name === 'Text index store (SQLite, kept between runs)').entries).toBeGreaterThan(0);
 
-    res = await request(app).post(`${R5}/caches`).type('form').send({ password: 'secret', action: 'unload-all' });
+    res = await empty(admin, 'unload-all');
     expect(res.text).toContain('client caches included');
     report = txModule.caches.report();
     expect(report.find(r => r.name === 'Client caches (cache-ids)').entries).toBe(0);
@@ -104,22 +148,4 @@ describe('the caches page', () => {
     expect(names).toContain('Filter results on package value sets (process)');
     expect(names).not.toContain('SNOMED CT indexes built as they are used (process)');
   });
-});
-
-describe('the caches page, with no password configured', () => {
-  test('lists the caches, and empties none', async () => {
-    const app = express();
-    app.use(express.json());
-    const txModule = new TXModule();
-    try {
-      await txModule.initialize({ librarySource: LIBRARY, endpoints: [{ path: R5, fhirVersion: '5.0', context: null }] }, app);
-      let res = await request(app).get(`${R5}/caches`);
-      expect(res.text).toContain('none is configured');
-      expect(res.text).not.toContain('type="password"');
-      res = await request(app).post(`${R5}/caches`).type('form').send({ password: '', action: 'unload-all' });
-      expect(res.text).toContain('nothing was emptied');
-    } finally {
-      await txModule.shutdown();
-    }
-  }, 240000);
 });

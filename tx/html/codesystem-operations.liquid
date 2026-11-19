@@ -16,6 +16,7 @@
   <strong>Lookup</strong>
   <form method="get" action="$lookup" style="display: inline-block; margin-left: 10px;">
     <input type="hidden" name="system" value="{{ url }}"/>
+    {% if systemVersion != "" %}<input type="hidden" name="version" value="{{ systemVersion }}"/>{% endif %}
     <input type="text" name="code" placeholder="Code" required size="20"/>
     <button type="submit" class="btn btn-sm btn-primary">Lookup</button>
   </form>
@@ -25,6 +26,7 @@
   <strong>Subsumes</strong>
   <form method="get" action="$subsumes" style="display: inline-block; margin-left: 10px;">
     <input type="hidden" name="system" value="{{ url }}"/>
+    {% if systemVersion != "" %}<input type="hidden" name="version" value="{{ systemVersion }}"/>{% endif %}
     <input type="text" name="codeA" placeholder="Code A" required size="15"/>
     <input type="text" name="codeB" placeholder="Code B" required size="15"/>
     <button type="submit" class="btn btn-sm btn-primary">Subsumes</button>

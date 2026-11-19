@@ -71,7 +71,8 @@ as before.
 | | master | tx-worker |
 |---|---|---|
 | tx module (`/r4`, `/r5` and the other endpoints) | yes (may also serve tx requests) | yes |
-| Every other module (packages, xig, registry, publisher, token, shl, ips, ...) | yes | no |
+| Every other module (packages, xig, registry, publisher, shl, ips, ...) | yes | no |
+| Logins (`/auth`, [library/auth](library/auth/README.md)) | yes | the users and sessions are in one database every process reads: a login on one is one on all (with `auth.sessionSecret` set) |
 | `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
 | Syndication feed (the store) | yes | no: routed to the master |
 | VSAC sync, and the resync form on `/info/vsac` | yes | no: reads what the master wrote |
@@ -173,7 +174,7 @@ With buffering on, nginx reads each request body whole and sends it on with a
 `Content-Length`. The launcher passes a chunked body on chunked, but it has none of nginx's
 limits on what clients send. The same host, because the launcher believes `X-Forwarded-Proto`
 only from a loopback address: from any other it sets it to `http`, so behind an HTTPS nginx on
-another machine the servers would advertise `http://` URLs, and the publisher's `Secure` login
+another machine the servers would advertise `http://` URLs, and the `Secure` login
 cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
 
 ## The launcher (cluster.js)
@@ -438,7 +439,7 @@ is ready again. So:
 The tx caches page (`/{path}/caches`, see [tx/README.md](tx/README.md#the-caches-page)) is server
 wide: whichever process a request reaches asks the launcher, the launcher asks every process
 that is ready, and the page shows each process's caches and memory, with a column for each and
-the total. Emptying the caches (with `modules.tx.adminPassword`) empties them in every process;
+the total. Emptying the caches (for the server's administrators, logged in) empties them in every process;
 each then runs a full GC. A process that doesn't answer in 30 seconds is shown as not answering,
 one that isn't ready as not running (`library/cluster-caches.js`). Without the launcher (roles
 behind nginx), the page shows, and empties, only the process the request reached.

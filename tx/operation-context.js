@@ -1272,6 +1272,30 @@ class OperationContext {
   }
 
   /**
+   * A server in the terminology ecosystem (or the ecosystem registry) that should have been able
+   * to answer for a code system couldn't be asked: the operation reports it, so that a code
+   * system that isn't found here because the server that has it is down doesn't read as one
+   * that doesn't exist (see Provider.findInEcosystem). Shared with copies, like the count
+   *
+   * @param {string} vurl - the code system (url|version) it was for
+   * @param {string} why - what went wrong, in words
+   */
+  noteEcosystemProblem(vurl, why) {
+    if (!this._external.problems) {
+      this._external.problems = new Map();
+    }
+    this._external.problems.set(vurl + ' ' + why, { vurl, why });
+  }
+
+  /**
+   * What noteEcosystemProblem was told, in the order it was told
+   * @returns {{vurl: string, why: string}[]}
+   */
+  ecosystemProblems() {
+    return this._external.problems ? [...this._external.problems.values()] : [];
+  }
+
+  /**
    * Create a copy of this operation context
    * @param {Object} [options]
    * @param {boolean} [options.ownProviders=false] - give the copy its own provider

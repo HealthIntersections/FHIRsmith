@@ -8,7 +8,7 @@ makes them available through a FHIR API and a set of web pages. It runs at `/tes
 
     POST /testing/TestReport
     Content-Type: application/fhir+json
-    Authorization: Bearer <token>        (only if a token is configured)
+    Authorization: Bearer <API token>    (only with requireToken: a user with the testing "submit" role)
 
 R4 and R5 TestReports are treated the same. A report is accepted if it is JSON, has
 `resourceType: TestReport`, and has `name`, `status`, `result`, `tester`, `issued` (a valid
@@ -23,8 +23,9 @@ there are no versions. Sending the same report twice stores it twice.
 
 Responses follow the spec: `201 Created` with a `Location` header, and the stored report,
 or nothing (`Prefer: return=minimal`), or an OperationOutcome (`Prefer: return=OperationOutcome`).
-Errors are OperationOutcomes: 400 (not JSON, or not an acceptable TestReport), 401 (token),
-413 (too big), 415 (not JSON), 429 (rate limit).
+Errors are OperationOutcomes: 400 (not JSON, or not an acceptable TestReport), 401 (no token,
+or not a valid one), 403 (the token's user doesn't have the role), 413 (too big), 415 (not JSON),
+429 (rate limit).
 
 The submitter's IP address is recorded, for tracing abuse. It is never returned by the API or
 shown on any page.
@@ -135,29 +136,28 @@ full URL in the tooltip and the version after the name.
 
 ## Administration
 
-`/testing/login`. The administrator logs in as `admin` with the `adminPassword` from the
-configuration, and manages the other users at `/testing/admin/users`. A user can have either
-or both of two rights:
+Users and logins are the server's ([library/auth](../library/auth/README.md)): people log in at
+`/auth/login`, and the server's administrators give users the module's roles on the users pages
+(`/auth/admin/users`):
 
-* **edit named links** - `/testing/admin/links`: the canonical URLs that are shown by name
-* **delete reports** - a Delete button on each report's page
+* **submit** - post reports, when `requireToken` is set (with an API token)
+* **edit-links** - `/testing/admin/links`: the canonical URLs that are shown by name
+* **delete-reports** - a Delete button on each report's page, and `DELETE` through the API
 
-Logins work as the publisher's do: a session cookie (set `sessionSecret`, and `cookieSecure:
-false` if the server is reached over plain http), bcrypt password hashes, and a rate limited
-login (`loginAttemptsPerWindow`, default 20 per 15 minutes). Rights are checked on every
-request, so changing or deleting a user takes effect at once. Every form post must come from
+The server's administrators have them all. Roles are checked on every
+request, so changing or disabling a user takes effect at once. Every form post must come from
 the server's own pages: each form carries a per-session CSRF token (lusca) that the post must
 return, the cookie is SameSite=Lax, and a post whose `Origin` is another host is refused
 (behind a proxy, that needs the proxy to pass on `Host` or `X-Forwarded-Host`). The session
-and CSRF checks are only on the web pages: the FHIR API is authenticated by the header
-token, and sets no cookie.
+and CSRF checks are only on the web pages: the FHIR API is authenticated by an API token, and
+sets no cookie.
 
 ## Deleting
 
     DELETE /testing/TestReport/{id}
-    Authorization: Bearer <adminToken>
+    Authorization: Bearer <API token>
 
-Only when `adminToken` is configured; without it, nothing can be deleted through the API.
+The token's user needs the "delete-reports" role.
 
 ## Configuration
 
@@ -165,9 +165,8 @@ Only when `adminToken` is configured; without it, nothing can be deleted through
 "testing": {
   "enabled": true,
   "database": "testing.db",
-  "token": "secret",
+  "requireToken": true,
   "tokenHeader": "Authorization",
-  "adminToken": "another-secret",
   "maxSize": 512000,
   "rateLimit": { "windowMinutes": 1, "max": 60 },
   "retentionDays": 365
@@ -175,9 +174,11 @@ Only when `adminToken` is configured; without it, nothing can be deleted through
 ```
 
 * `database` - relative paths are under the data folder's `databases` directory
-* `token` - if set, every POST must carry it in `tokenHeader` (a `Bearer ` prefix is optional).
-  If not set, anyone can submit.
-* `tokenHeader` - defaults to `Authorization`. `adminToken` uses the same header.
+* `requireToken` - if true, every POST must carry an API token of a user with the "submit"
+  role, in `tokenHeader` (a `Bearer ` prefix is optional) or `Authorization: Bearer`. If not
+  set, anyone can submit. (The old shared `token` is no longer a credential; while it is still
+  in the configuration, posting stays closed.)
+* `tokenHeader` - defaults to `Authorization`. `DELETE` uses the same header.
 * `maxSize` - bytes; default 500 KB. Note that the server's body parsers accept up to 50 MB
   before this module sees the request; a `Content-Length` over the limit is refused before
   the body is looked at.

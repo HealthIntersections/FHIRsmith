@@ -50,6 +50,35 @@
     "password": "<!-- password -->",
     "from": "FHIRsmith <fhirsmith@example.org>"
   },
+  // The server's one login system (library/auth/README.md): users, roles and API tokens for
+  // every module. People log in with a password (set from an emailed link: needs "email"
+  // above) or with GitHub; software uses API tokens. Optional; these are the defaults
+  "auth": {
+    // the users, sessions, roles and tokens, in the databases folder
+    "database": "auth.db",
+    // required in production: without it a random one is used, so logins don't survive a
+    // restart, and under the launcher aren't shared between processes
+    "sessionSecret": "change-this-to-a-secure-random-string",
+    // the administrators (server wide): email addresses (an account is made for each, and
+    // the password set with Forgot password, or node server.js --password-link {email}),
+    // and github:{name} for a GitHub account. Others can be made administrators on the users page
+    "administrators": ["admin@example.org"],
+    // where links in emails point; without it, https://{hostName}
+    // "publicUrl": "https://tx.example.org",
+    // logging in with GitHub: an OAuth app (https://github.com/settings/developers) whose
+    // callback URL is {publicUrl}/auth/github/callback. Without it, passwords only
+    // "github": { "clientId": "...", "clientSecret": "..." },
+    // session cookies only over HTTPS (behind a TLS proxy, make sure it sets X-Forwarded-Proto);
+    // false only to run over plain http
+    "cookieSecure": true,
+    // how long a login lasts, and how long a password link works
+    "sessionHours": 24,
+    "linkMinutes": 60,
+    // failed logins (and password link requests) allowed per IP per 15 minutes
+    "loginAttemptsPerWindow": 20,
+    // requests a minute per IP that bring a login or an API token (anonymous ones aren't counted)
+    "requestsPerMinute": 1000
+  },
   // A markdown report on the server - its uptime since the last report, restarts and
   // upgrades, a paragraph from any module with something to say, and the version, logs
   // and free disk space - emailed at midnight (local time), or as soon as the server is
@@ -90,7 +119,7 @@
     "shl": {
       "enabled": false,
       "database": "shl.db",
-      "password": "<!-- Uuid -->",
+      // POST /shl/create is for users with the shl "create" role (with an API token), and the ips module
       "certificates": {
         "certFile": "<!-- filename -->",
         "keyFile": "<!-- filename -->",
@@ -138,10 +167,9 @@
       // time; the crawler writes through another). 0: everything through the one. Optional; 4
       "readConnections": 4,
       "mirrorPath": "/absolute/path/to/mirror",
-      // shared secret for POST /packages/crawl, which triggers a full registry crawl on
-      // demand. Send it in the x-crawl-token header. Omit this and the endpoint is
-      // disabled entirely - the scheduled crawler below is unaffected either way.
-      "crawlToken": "change-this-to-a-secure-random-string",
+      // POST /packages/crawl, which triggers a full registry crawl on demand, is for users with
+      // the packages "crawl" role, with an API token (Authorization: Bearer, or x-crawl-token).
+      // The scheduled crawler below is unaffected either way.
       "crawler": {
         "enabled": true,
         "schedule": "0 * * * *",
@@ -210,30 +238,19 @@
       // how far back the software page reports each server's uptime, and how long scan outcomes are kept
       "uptimeWindowDays": 30,
       "uptimeRetentionDays": 90
-      // Securing the JSON API (the HTML pages stay open). Omit for an open registry. Any of the
-      // three can be configured, alone or together - see registry/documentation/security.md
+      // Securing the JSON API (the HTML pages stay open). Omit for an open registry. required:
+      // users of the server with the registry "member" role (with an API token); oidc: JWTs
+      // from an identity provider - see registry/documentation/security.md
       // "security": {
-      //   "apiToken": "one token every client sends",
-      //   "users": { "database": "registry-auth.db", "adminUsername": "admin", "adminPassword": "...", "sessionSecret": "...", "cookieSecure": true },
+      //   "required": true,
       //   "oidc": { "issuer": "https://login.microsoftonline.com/{tenant}/v2.0", "audience": "api://ecosystem.hl7.org", "requiredScope": "registry.read" }
       // }
     },
     "publisher": {
       "enabled": false,
       "database": "/absolute/path/to/publisher.db",
-      // required. Without it the publisher generates a random secret at startup, logs a
-      // warning, and logins stop working across restarts.
-      "sessionSecret": "change-this-to-a-secure-random-string",
-      // the password of the administrator, login 'admin' - set at every start, so changing it
-      // here changes it. Without it, the administrator gets a random password, which is logged
-      "adminPassword": "change-this-to-a-secure-password",
-      // session cookies are marked Secure by default, so they only travel over HTTPS.
-      // Set false only to run the publisher over plain HTTP - otherwise the browser will
-      // not send the cookie back and logins will appear to do nothing. Behind a TLS
-      // proxy, make sure it sets X-Forwarded-Proto.
-      "cookieSecure": true,
-      // failed-login attempts allowed per IP per 15 minutes (default 20)
-      "loginAttemptsPerWindow": 20,
+      // users and logins are the server's ("auth" above): its administrators manage the
+      // websites, and the publisher "queue" and "approve" roles (for a website) are given on the users page
       // per IP address per minute: task actions (create, approve, delete, retry), and reads
       // of task output, history and QA pages and files
       "taskActionsPerMinute": 30,
@@ -280,48 +297,6 @@
       "searchParametersPath": null,
       "debounceMs": 500
     },
-    "token": {
-      "enabled": false,
-      "database": "/absolute/path/to/token.db",
-      "sessionSecret": "change-this-to-a-secure-random-string-for-token-sessions",
-      "oauth": {
-        "google": {
-          "clientId": "your-google-client-id",
-          "clientSecret": "your-google-client-secret",
-          "redirectUri": "http://localhost:3000/token/callback/google",
-          "scope": ["openid", "profile", "email"]
-        },
-        "facebook": {
-          "clientId": "your-facebook-app-id",
-          "clientSecret": "your-facebook-app-secret",
-          "redirectUri": "http://localhost:3000/token/callback/facebook",
-          "scope": ["email"]
-        },
-        "apple": {
-          "clientId": "your-apple-service-id",
-          "teamId": "your-apple-team-id",
-          "keyId": "your-apple-key-id",
-          "privateKey": "/path/to/apple-private-key.p8",
-          "redirectUri": "http://localhost:3000/token/callback/apple",
-          "scope": ["email", "name"]
-        },
-        "github": {
-          "clientId": "your-github-client-id",
-          "clientSecret": "your-github-client-secret",
-          "redirectUri": "http://localhost:3000/token/callback/github",
-          "scope": ["user:email"]
-        }
-      },
-      "apiKeys": {
-        "defaultAllowedRequests": 50,
-        "maxKeysPerUser": 10,
-        "keyExpiration": null
-      },
-      "rateLimit": {
-        "windowMs": 900000,
-        "max": 100
-      }
-    },
     "tx": {
       "enabled": false,
       "librarySource": "/absolute/path/to/library.yml",
@@ -347,9 +322,7 @@
       // concepts the filter results remembered on package value sets hold between them (a
       // resolved ECL expression, the concepts a full scan found); least recently used dropped
       "filterMemoMaxConcepts": 10000000,
-      // the password for emptying the caches on the caches page (/{path}/caches). Without it, the
-      // page lists the caches and can't empty them
-      // "adminPassword": "<!-- secret -->",
+      // (the caches page, /{path}/caches, lists the caches; the server's administrators, logged in, can empty them)
       // distinct codes, and longest code (characters), counted for usage-count; others aren't counted
       "usageTrackerMaxCodes": 1000000,
       "usageTrackerMaxCodeLength": 100,
@@ -455,19 +428,12 @@
       "enabled": false,
       // relative paths resolve under the data folder's databases directory
       "database": "testing.db",
-      // if set, every POST must carry this token in tokenHeader (a "Bearer " prefix is
-      // allowed). Leave it out and anyone can submit a report
-      // "token": "<!-- secret -->",
+      // if true, every POST must carry an API token (in tokenHeader, or as Authorization: Bearer)
+      // of a user with the testing "submit" role. Leave it out and anyone can submit a report.
+      // DELETE of a report needs a user with the "delete-reports" role; the named links pages,
+      // "edit-links". Users, logins and roles are the server's ("auth" above)
+      // "requireToken": true,
       "tokenHeader": "Authorization",
-      // DELETE of a report needs this token, in the same header. No adminToken, no deletes
-      // "adminToken": "<!-- secret -->",
-      // the web administration pages: log in as 'admin' with this password to manage users
-      // (who can edit the named links and/or delete reports). No adminPassword, no administrator
-      // "adminPassword": "<!-- secret -->",
-      // signs the login cookie; without it logins don't survive a restart
-      // "sessionSecret": "<!-- random string -->",
-      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
-      // "cookieSecure": true,
       // bytes
       "maxSize": 512000,
       // reports per IP address per window; max 0 turns the limit off
@@ -480,16 +446,8 @@
       "enabled": false,
       // relative paths resolve under the data folder's databases directory
       "database": "ips/ips-content.db",
-      // the administrator: creates and deletes projects and users, and says who manages
-      // which project. No adminPassword, no administrator
-      "adminUsername": "admin",
-      // "adminPassword": "<!-- secret -->",
-      // signs the login cookie; without it logins don't survive a restart
-      // "sessionSecret": "<!-- random string -->",
-      // the login cookie is HTTPS-only unless this is false (e.g. for local testing over http)
-      // "cookieSecure": true,
-      // failed-login attempts allowed per IP per 15 minutes (default 20)
-      "loginAttemptsPerWindow": 20,
+      // users and logins are the server's ("auth" above): its administrators create and delete
+      // projects, and say who manages which (the ips "manager" role)
       // the biggest document accepted, in bytes (default 10MB)
       "maxSize": 10485760,
       // documents submitted per IP address per window; max 0 turns the limit off
@@ -517,13 +475,14 @@
       // models are built in (ips/ai-client.js DEFAULT_PRICES); anything here overrides them
       // "ai": { "provider": "anthropic", "model": "claude-sonnet-5-5", "apiKey": "...", "dailyCap": 50,
       //         "prices": { "claude-sonnet-5-5": { "input": 3, "output": 15 } } },
-      // the secret the projects' own AI keys are encrypted with in the database (else the
-      // sessionSecret is used; with neither, projects cannot keep their own accounts)
+      // the secret the projects' own AI keys are encrypted with in the database (else the module's
+      // old sessionSecret, if it is still there - keys stored before were encrypted with it; with
+      // neither, projects cannot keep their own accounts)
       // "aiKeySecret": "<!-- random string -->",
       // sharing a document as a QR code - a SMART Health Link, or a Verifiable Health Link
       // signed as the GDHCN does it - through an SHL server: this server's own shl module
-      // ("server": "/shl"; the password is taken from modules.shl when left out) or another
-      // FHIRsmith's ("server": "https://host/shl", "password": its password). days: how long
+      // ("server": "/shl", the default when the shl module is on) or another FHIRsmith's
+      // ("server": "https://host/shl", "token": an API token of a user there with the shl "create" role). days: how long
       // the shared copy lives (100); viewer: the SHL viewer the QR opens (this server's own, /ips/view)
       // "shl": { "server": "/shl", "days": 100 },
       // the SHL viewer at /ips/view (on unless enabled is false): other systems can name it as the
