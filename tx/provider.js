@@ -246,6 +246,14 @@ class Provider {
       return null;
     }
     const servers = await this.ecosystem.findServers(system, version, this.fhirVersion, opContext);
+    const vurl = system + (version ? '|' + version : '');
+    if (servers == null) {
+      const why = this.ecosystem.whyNoServers(system, version, this.fhirVersion);
+      if (why) {
+        // the registry couldn't be asked: not the same as no server having it
+        opContext.noteEcosystemProblem(vurl, why);
+      }
+    }
     // a server has to have the content of the code system (complete or fragment, unless it's
     // authoritative for it: see EcosystemResolver.listVersions) - and the version: the one asked
     // for, or, for a version that is a url, the latest release of it (a SNOMED CT edition asked
@@ -256,7 +264,15 @@ class Provider {
       const server = s.url;
       const versions = await this.ecosystem.listVersions(server, system, opContext, s.authoritative);
       if (versions == null) {
-        opContext.log('Not using ' + server + ' for ' + system + ': it doesn\'t have the content');
+        const why = this.ecosystem.whyUnavailable(server, system, s.authoritative);
+        if (why) {
+          // it couldn't be asked: if nothing else answers for the code system, the operation
+          // says so (see OperationContext.noteEcosystemProblem), not just that it isn't known
+          opContext.log('Not using ' + server + ' for ' + system + ': ' + why);
+          opContext.noteEcosystemProblem(vurl, why);
+        } else {
+          opContext.log('Not using ' + server + ' for ' + system + ': it doesn\'t have the content');
+        }
         continue;
       }
       const codes = versions.map(v => v.code);

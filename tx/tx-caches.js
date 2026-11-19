@@ -5,8 +5,8 @@
 //   server starts, kept in SQLite between runs (library/text-index-store.js)
 // - registerCaches: every cache the module keeps, in a CacheRegistry, and the memory guard
 //   told how to empty them (the client caches last)
-// - buildCachesPage: the /caches page - what each cache holds, and (with
-//   modules.tx.adminPassword) emptying them
+// - buildCachesPage: the /caches page - what each cache holds, and (for the server's
+//   administrators) emptying them
 //
 
 const path = require('path');
@@ -357,10 +357,12 @@ function processTables(report) {
  * @param {Object} opts.answer - library/cluster-caches.js ask(): {cluster, note, results: [{code, name, role,
  *   result: TXModule.localCaches(), or error}]}
  * @param {string|null} opts.message - the outcome of an action, in words (or null)
- * @param {boolean} opts.passwordConfigured - whether modules.tx.adminPassword is set
+ * @param {boolean} opts.isAdmin - whether the request is from one of the server's administrators (library/auth)
+ * @param {string} [opts.csrf] - the session's CSRF token, for the form
+ * @param {string} [opts.loginUrl] - where to log in
  * @returns {string} HTML
  */
-function buildCachesPage({ answer, message, passwordConfigured }) {
+function buildCachesPage({ answer, message, isAdmin, csrf = '', loginUrl = '/auth/login' }) {
   const procs = answer.results;
   const label = (p) => (p.result ? p.result.process : `${p.name || p.code}`);
   const several = procs.length > 1;
@@ -429,15 +431,15 @@ function buildCachesPage({ answer, message, passwordConfigured }) {
   }
 
   html += '<h3>Empty the caches</h3>\n';
-  if (!passwordConfigured) {
-    html += '<p>Emptying the caches needs a password, and none is configured (modules.tx.adminPassword).</p>\n';
+  if (!isAdmin) {
+    html += `<p>The server's administrators can empty the caches: <a href="${escape(loginUrl)}">log in</a>.</p>\n`;
   } else {
     html += '<p>Everything emptied is built again as it is needed: the server is slower for a while. ' +
       'Emptying the client caches as well makes every client start its cache again. ' +
       (answer.cluster ? 'Every process empties its caches. ' : '') +
       'A full garbage collection follows, so RSS shows what was let go.</p>\n' +
       '<form method="POST">\n' +
-      '<label>Password: <input type="password" name="password" autocomplete="off"></label>\n' +
+      `<input type="hidden" name="_csrf" value="${escape(csrf)}">\n` +
       '<button type="submit" name="action" value="unload">Empty all but the client caches</button>\n' +
       '<button type="submit" name="action" value="unload-all">Empty all the caches, client caches too</button>\n' +
       '</form>\n';

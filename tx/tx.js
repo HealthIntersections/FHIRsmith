@@ -28,7 +28,7 @@ const { resourceToJson } = require('./json-serialise');
 const { SupplementTextIndex } = require('./library/supplement-text-index');
 const memoryGuard = require('../library/memory-guard');
 const { prepareTextIndexes, registerCaches, buildCachesPage } = require('./tx-caches');
-const { tokenMatches, tokenConfigured } = require('../library/request-token');
+const auth = require('../library/auth');
 const { trimNativeMemory } = require('../library/native-memory');
 const { connectCaches } = require('../library/cluster-caches');
 const { LibraryFilterMemos, libraryFilterMemos } = require('./library/filter-memo');
@@ -237,6 +237,9 @@ class TXModule {
     libraryFilterMemos.maxConcepts = this.limits.filterMemoMaxConcepts;
 
     this.log.info('Initializing TX module');
+    if (config.adminPassword) {
+      this.log.warn('modules.tx.adminPassword is no longer used: the server\'s administrators (logged in) empty the caches');
+    }
     this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
       Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
     this.log.info(`Expansion limits: externalLimit=${this.expansionLimitValues.external}, internalLimit=${this.expansionLimitValues.internal}, ` +
@@ -451,6 +454,8 @@ class TXModule {
     }
 
     this.log.info(`Setting up endpoint: ${endpointPath} (FHIR v${fhirVersion}, context: ${context || 'none'})`);
+    auth.defineModule('tx', { title: 'Terminology' });
+    auth.addAdminPage('tx', { label: `Caches (${endpointPath})`, path: `${endpointPath}/caches`, description: 'empty the caches' });
 
     const router = express.Router();
 
@@ -1470,7 +1475,7 @@ class TXModule {
           return;
         }
         let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
-        const content = await txhtml.buildInfoPage(source, req);
+        const content = await txhtml.buildInfoPage(source, req, res);
         const html = await txhtml.renderPage(source.name(), content, req.txEndpoint, start);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -1482,11 +1487,12 @@ class TXModule {
         this.countRequest(endpointPath, 'info', Date.now() - start, req);
       }
     };
-    router.get('/info/:id', infoHandler);
-    router.post('/info/:id', infoHandler);
+    // the session (library/auth), so a source can offer an administrator its actions (VSAC: resync a ValueSet)
+    router.get('/info/:id', auth.session, auth.csrfIfLoggedIn, infoHandler);
+    router.post('/info/:id', auth.sameOrigin, auth.session, auth.form, auth.csrf, infoHandler);
 
-    // The caches page: what each cache holds; and, with modules.tx.adminPassword, emptying them
-    // (all but the client caches, or all of them). This process's caches only (tx-caches.js)
+    // The caches page: what each cache holds; and, for the server's administrators (library/auth),
+    // emptying them (all but the client caches, or all of them), in every process (tx-caches.js)
     const cachesHandler = async (req, res) => {
       const start = Date.now();
       try {
@@ -1494,10 +1500,9 @@ class TXModule {
         let action = 'report';
         if (req.method === 'POST') {
           const body = req.body || {};
-          if (!tokenConfigured(this.config.adminPassword)) {
-            message = 'No password is configured (modules.tx.adminPassword): nothing was emptied';
-          } else if (!tokenMatches(this.config.adminPassword, typeof body.password === 'string' ? body.password : null)) {
-            message = 'Incorrect password: nothing was emptied';
+          const user = auth.currentUser(req);
+          if (!user || !user.isAdmin) {
+            message = 'Only the server\'s administrators can empty the caches: nothing was emptied';
           } else if (body.action !== 'unload' && body.action !== 'unload-all') {
             message = 'Unknown action: nothing was emptied';
           } else {
@@ -1513,9 +1518,12 @@ class TXModule {
             (action === 'unload-all' ? ', client caches included' : ', not the client caches');
           this.log.info(`Caches page: ${message}`);
         }
+        const user = auth.currentUser(req);
         const content = buildCachesPage({
           answer, message,
-          passwordConfigured: tokenConfigured(this.config.adminPassword)
+          isAdmin: !!(user && user.isAdmin),
+          csrf: res.locals._csrf || '',
+          loginUrl: auth.loginUrl(req, req.originalUrl)
         });
         let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
         const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
@@ -1526,8 +1534,16 @@ class TXModule {
         this.countRequest(endpointPath, 'caches', Date.now() - start, req);
       }
     };
-    router.get('/caches', cachesHandler);
-    router.post('/caches', cachesHandler);
+    router.get('/caches', auth.session, auth.csrfIfLoggedIn, cachesHandler);
+    router.post('/caches', auth.sameOrigin, auth.session, auth.form, auth.csrf, cachesHandler);
+    // a form post (caches, a source's info page) with a missing or wrong CSRF token: lusca
+    // passes on an error, which is the poster's problem, not the server's
+    router.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
+      }
+      next(err);
+    });
 
     // ===== Fallbacks - keep these last =====
 

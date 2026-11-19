@@ -2,7 +2,7 @@
  * A value set whose include lists a code that isn't in the code system: by default the code is
  * left out, and the expansion says so with an expansion-issue (a contained OperationOutcome with
  * a warning); with modules.tx.errorsForInvalidCodes, the value set can't be expanded (422).
- * The same for an include filter that selects by concept (is-a etc.) on a code that isn't there.
+ * The same for an include filter that selects by concept (is-a etc., and in) on a code that isn't there.
  * The tx-ecosystem tests simple-expand-enum-invalid and simple-expand-isa-invalid accept either;
  * this covers both here.
  */
@@ -13,7 +13,7 @@ const { I18nSupport } = require('../../library/i18nsupport');
 const { OperationContext } = require('../../tx/operation-context');
 const { FhirCodeSystemFactory } = require('../../tx/cs/cs-cs');
 const { CodeSystem } = require('../../tx/library/codesystem');
-const { ValueSetExpander, ExpandWorker } = require('../../tx/workers/expand');
+const { ValueSetExpander, ExpandWorker, filterConceptCodes } = require('../../tx/workers/expand');
 const { TxParameters } = require('../../tx/params');
 const { SearchFilterText } = require('../../tx/library/designations');
 const ValueSet = require('../../tx/library/valueset');
@@ -128,6 +128,45 @@ describe('$expand: a listed code that is not in the code system', () => {
       expect(res.expansion.contains.map(c => c.code)).toEqual(['a', 'b']);
       expect(res.contained).toBeUndefined();
     }
+  });
+
+  // in: like is-a etc., but for any code of its list. The whole include adds nothing, the valid
+  // codes of the list included
+  test('an in filter with an unknown code in its list: the include adds nothing, with an expansion-issue warning', async () => {
+    const vs = valueSet(['a']);
+    vs.compose.include.push({ system: SYSTEM, filter: [{ property: 'concept', op: 'in', value: 'b,xxxx' }] });
+    const res = await expand(vs, false);
+    expect(res.expansion.contains.map(c => c.code)).toEqual(['a']);
+    const issue = res.contained[0].issue[0];
+    expect(issue.severity).toBe('warning');
+    expect(issue.extension[0].valueString).toBe('VALUESET_EXPANSION_FILTER_UNKNOWN_CODE');
+    expect(issue.details.text).toContain("'concept in b,xxxx'");
+  });
+
+  test('an in filter with an unknown code in its list, with errorsForInvalidCodes: 422', async () => {
+    const vs = valueSet(['a']);
+    vs.compose.include.push({ system: SYSTEM, filter: [{ property: 'code', op: 'in', value: 'b, xxxx' }] });
+    await expect(expand(vs, true)).rejects.toMatchObject({
+      statusCode: 422, msgId: 'VALUESET_EXPANSION_FILTER_UNKNOWN_CODE_ERROR'
+    });
+  });
+
+  test('an in filter on known codes is not reported', async () => {
+    const vs = valueSet([]);
+    vs.compose.include[0].filter = [{ property: 'concept', op: 'in', value: 'a, b' }];
+    delete vs.compose.include[0].concept;
+    for (const flag of [false, true]) {
+      const res = await expand(vs, flag);
+      expect(res.expansion.contains.map(c => c.code).sort()).toEqual(['a', 'b']);
+      expect(res.contained).toBeUndefined();
+    }
+  });
+
+  test('the codes a filter names', () => {
+    expect(filterConceptCodes({ property: 'concept', op: 'is-a', value: 'x' })).toEqual(['x']);
+    expect(filterConceptCodes({ property: 'code', op: 'in', value: ' a, b ,,c ' })).toEqual(['a', 'b', 'c']);
+    expect(filterConceptCodes({ property: 'concept', op: 'not-in', value: 'a,b' })).toEqual([]);
+    expect(filterConceptCodes({ property: 'display', op: 'in', value: 'a' })).toEqual([]);
   });
 
   test('a value set with only valid codes gets no expansion-issue either way', async () => {
