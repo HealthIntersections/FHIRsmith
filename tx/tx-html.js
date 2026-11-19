@@ -2063,9 +2063,9 @@ class TxHtmlRenderer {
     });
   }
 
-  async buildInfoPage(source, req) {
+  async buildInfoPage(source, req, res) {
     let html = '';
-    const infoContent = await source.info(req);
+    const infoContent = await source.info(req, res);
     html += infoContent;
     return html;
   }

@@ -25,3 +25,10 @@ Config:
 
 All files will be in {data}/shl. the file paths in the config are relative to 
 that location
+## Who can create links
+
+`POST /shl/create` is for users of the server with the shl "create" role, sending an API token
+(`Authorization: Bearer {token}` - see [library/auth](../library/auth/README.md)), and for the ips
+module of this server (an in-process call, as the server itself). The old shared
+`modules.shl.password` is no longer used, and a `password` in the request body is ignored.
+Uploading to a link (`/shl/upload`) still needs the link's own `pword`, which `/create` returns.

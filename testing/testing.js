@@ -8,21 +8,18 @@
  * The /testing module: a place to send TestReports (from TxTester, and anything else),
  * and to look at them.
  *
- *   POST   {base}/TestReport        create (token required if one is configured)
+ *   POST   {base}/TestReport        create (with requireToken: an API token of a user with the testing "submit" role)
  *   GET    {base}/TestReport        search - a Bundle, or HTML for a browser
  *   GET    {base}/TestReport/:id    read - JSON, or the rendered report for a browser
- *   DELETE {base}/TestReport/:id    admin only (adminToken)
+ *   DELETE {base}/TestReport/:id    an API token of a user with the testing "delete-reports" role
  *   GET    {base}/metadata          CapabilityStatement
  *   GET    {base}                   the filterable list (HTML)
  *   GET    {base}/summary           latest result per test script x participant (HTML)
- *   GET    {base}/login             login for the administration pages; POST {base}/logout
  *   GET    {base}/admin/links       names for known canonical URLs (users who can edit links)
- *   GET    {base}/admin/users       users and their rights (the administrator only)
  *
- * Logins work as the publisher's do: a session cookie, bcrypt password hashes, a rate
- * limited login. The administrator logs in as 'admin' with the adminPassword from the
- * configuration, and manages the other users; a user can have either or both of the
- * rights to edit the named links and to delete reports.
+ * Users and logins are the server's (library/auth). The module's roles: "submit" (post
+ * reports, when requireToken is set), "edit-links" (the named links) and "delete-reports";
+ * the server's administrators have them all. They are given on the server's users pages.
  *
  * R4 and R5 TestReports are treated as the same thing. Reports can't be changed once
  * received: each POST is a new report, even when it's the same report as before.
@@ -35,20 +32,18 @@ const path = require('path');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
-const session = require('express-session');
-const lusca = require('lusca');
-const bcrypt = require('bcrypt');
+const auth = require('../library/auth');
 
 const folders = require('../library/folder-setup');
 const htmlServer = require('../library/html-server');
-const { tokenMatches, tokenConfigured } = require('../library/request-token');
+const { tokenConfigured } = require('../library/request-token');
 const { requireSameOrigin } = require('../library/same-origin');
 const packageJson = require('../package.json');
 const { TestReportStore } = require('./store');
 const { parseSearch, dateRange, capabilitySearchParams } = require('./search');
 const testingOpenApi = require('./openapi');
 const {
-  renderList, renderSummary, renderReport, renderLogin, renderLinks, renderUsers, listQueryToSearch
+  renderList, renderSummary, renderReport, renderLinks, listQueryToSearch
 } = require('./render');
 
 const TEMPLATE = 'testing';
@@ -139,6 +134,9 @@ class TestingModule {
   constructor(stats, log) {
     this.stats = stats;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.store = null;
     this.config = null;
     this.retentionTimer = null;
@@ -160,58 +158,40 @@ class TestingModule {
 
     htmlServer.loadTemplate(TEMPLATE, path.join(__dirname, 'testing-template.html'));
 
-    // the administrator's password is checked the same way as everyone else's: bcrypt against
-    // a hash, made once here, of the configured password
-    this.adminHash = tokenConfigured(this.config.adminPassword) ? bcrypt.hashSync(this.config.adminPassword, 10) : null;
+    auth.defineRoles('testing', [
+      { role: 'submit', label: 'Submit reports', description: 'POST TestReports (when modules.testing.requireToken is set), with an API token' },
+      { role: 'edit-links', label: 'Edit named links' },
+      { role: 'delete-reports', label: 'Delete reports' }
+    ], { title: 'Test reports', path: '/testing' });
+    // posting is open unless requireToken is set. The old shared token closed it: so does its
+    // being there (it is no longer the credential - an API token is)
+    this.requireToken = this.config.requireToken === true || tokenConfigured(this.config.token);
+    for (const old of ['token', 'adminToken', 'adminPassword', 'sessionSecret']) {
+      if (this.config[old]) {
+        this.log.warn(`Testing module: modules.testing.${old} is no longer used - users, roles and API tokens are the server's (library/auth)` +
+          (old === 'token' ? '; posting needs an API token with the testing "submit" role (set requireToken: true)' : ''));
+      }
+    }
 
     this.setupSession();
     this.setupRoutes();
     this.setupAdminRoutes();
     this.setupRetention();
     this.log.info(`Testing module: ${this.store.count()} reports in ${dbPath}; ` +
-      `posting ${tokenConfigured(this.config.token) ? 'requires a token' : 'is open'}, max ${this.maxSize} bytes`);
+      `posting ${this.requireToken ? 'requires an API token (testing "submit" role)' : 'is open'}, max ${this.maxSize} bytes`);
   }
 
   /**
-   * The session (login) cookie and CSRF protection. Neither is put on the whole router:
-   * the FHIR API (POST and DELETE of TestReports) is authenticated by a token in a header,
-   * not a cookie, so it needs neither and must not be made to carry a CSRF token. The web
-   * pages get this.web; every form post gets sameOrigin + this.session + a form parser +
+   * The login session and CSRF protection are the server's (library/auth). Neither is put on
+   * the whole router: the FHIR API (POST and DELETE of TestReports) is authenticated by an API
+   * token, not a cookie, so it needs neither and must not be made to carry a CSRF token. The
+   * web pages get this.web; every form post gets sameOrigin + this.session + a form parser +
    * this.csrf (see setupAdminRoutes).
-   *
-   * CSRF has two layers: lusca's per-session token, which every form carries in a hidden
-   * _csrf field, and the Origin check (library/same-origin). The cookie is also SameSite=Lax.
    */
   setupSession() {
-    if (!this.config.sessionSecret) {
-      // as for the publisher: never a constant secret, which would be a published signing key
-      this.log.warn('testing: no sessionSecret configured - using a random one, so logins will not ' +
-        'survive a restart. Set modules.testing.sessionSecret.');
-    }
-    this.session = session({
-      name: 'testing.sid',
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        // HTTPS only unless cookieSecure is false - see the publisher's notes on nginx
-        secure: this.config.cookieSecure ?? true,
-        // the browser will not send the cookie on a form posted from another site, which,
-        // with the Origin check on every form post, is the CSRF protection
-        sameSite: 'lax',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000
-      }
-    });
-    // used directly (not wrapped) in every form post's route, so static analysis can see
-    // it there. A bad or missing token comes out as an error, which the error handler at the
-    // end of setupAdminRoutes turns into a page
-    this.csrf = lusca.csrf({ key: '_csrf' });
-    // the pages show a logout form (which needs a token) only to someone logged in. Making
-    // a token stores a secret in the session, so doing it for every visitor would give
-    // every crawler a session
-    const csrfIfLoggedIn = (req, res, next) => this.currentUser(req) ? this.csrf(req, res, next) : next();
-    this.web = [this.session, csrfIfLoggedIn];
+    this.session = auth.session;
+    this.csrf = auth.csrf;
+    this.web = auth.web;
   }
 
   setupRoutes() {
@@ -359,18 +339,32 @@ class TestingModule {
     });
   }
 
-  /** The token from the configured header, without any "Bearer " prefix. */
-  suppliedToken(req) {
-    const v = req.get(this.tokenHeader);
-    return typeof v === 'string' ? v.replace(/^Bearer\s+/i, '').trim() : v;
+  /**
+   * Who the request's API token (or session) is, or null. The token is looked for where
+   * library/auth looks (Authorization: Bearer, Api-Key...), and in the configured tokenHeader
+   */
+  async apiUser(req) {
+    if (this.tokenHeader.toLowerCase() !== 'authorization' && !auth.presentsToken(req)) {
+      const v = req.get(this.tokenHeader);
+      if (typeof v === 'string' && v.trim()) {
+        req.headers.authorization = 'Bearer ' + v.replace(/^Bearer\s+/i, '').trim();
+      }
+    }
+    return auth.principal(req);
   }
 
   // ---- FHIR API ----
 
   async create(req, res) {
-    if (tokenConfigured(this.config.token) && !tokenMatches(this.config.token, this.suppliedToken(req))) {
-      res.set('WWW-Authenticate', 'Bearer');
-      return this.sendOutcome(res, 401, 'login', `A valid token is required in the ${this.tokenHeader} header`);
+    if (this.requireToken) {
+      const who = await this.apiUser(req);
+      if (!who) {
+        res.set('WWW-Authenticate', 'Bearer');
+        return this.sendOutcome(res, 401, 'login', `A valid API token is required in the ${this.tokenHeader} header`);
+      }
+      if (!who.has('testing', 'submit')) {
+        return this.sendOutcome(res, 403, 'forbidden', `${who.login} does not have the testing "submit" role`);
+      }
     }
     if (!req.is('application/fhir+json') && !req.is('application/json')) {
       return this.sendOutcome(res, 415, 'not-supported', 'Reports must be JSON (application/fhir+json)');
@@ -453,13 +447,18 @@ class TestingModule {
   }
 
   async remove(req, res) {
-    if (!tokenConfigured(this.config.adminToken) || !tokenMatches(this.config.adminToken, this.suppliedToken(req))) {
-      return this.sendOutcome(res, 403, 'forbidden', 'Deleting reports requires the admin token');
+    const who = await this.apiUser(req);
+    if (!who) {
+      res.set('WWW-Authenticate', 'Bearer');
+      return this.sendOutcome(res, 401, 'login', 'Deleting reports requires an API token');
+    }
+    if (!who.has('testing', 'delete-reports')) {
+      return this.sendOutcome(res, 403, 'forbidden', `${who.login} does not have the testing "delete-reports" role`);
     }
     if (!this.store.delete(req.params.id)) {
       return this.sendOutcome(res, 404, 'not-found', `No TestReport with id '${req.params.id}'`);
     }
-    this.log.info(`Testing module: report ${req.params.id} deleted by admin`);
+    this.log.info(`Testing module: report ${req.params.id} deleted by ${who.login}`);
     return res.status(204).end();
   }
 
@@ -605,33 +604,18 @@ class TestingModule {
    * Who is logged in, with their rights as they are now (not as they were at login, so
    * taking a right away, or deleting the user, takes effect at once).
    */
+  /** Who is logged in (library/auth), with the module's rights */
   currentUser(req) {
-    const s = req.session;
-    if (!s) {
+    const p = auth.currentUser(req);
+    if (!p) {
       return null;
     }
-    if (s.testingAdmin) {
-      return { name: 'Administrator', isAdmin: true, canEditLinks: true, canDeleteReports: true };
-    }
-    if (s.testingUserId) {
-      const u = this.store.userById(s.testingUserId);
-      if (u) {
-        return { id: u.id, name: u.name, isAdmin: false, canEditLinks: !!u.can_edit_links, canDeleteReports: !!u.can_delete_reports };
-      }
-    }
-    return null;
+    return { id: p.id, name: p.name, login: p.login, isAdmin: p.isAdmin, canEditLinks: p.has('testing', 'edit-links'), canDeleteReports: p.has('testing', 'delete-reports') };
   }
 
   setupAdminRoutes() {
     const r = this.router;
     const form = express.urlencoded({ extended: false, limit: '64kb' });
-    const loginLimiter = rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: this.config.loginAttemptsPerWindow ?? 20,
-      standardHeaders: 'draft-7',
-      legacyHeaders: false,
-      handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
     // every form post must come from one of our own pages
     const sameOrigin = requireSameOrigin((req, res) =>
       htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Cross-site form posts are not accepted'), 403));
@@ -639,7 +623,7 @@ class TestingModule {
     const need = (right) => (req, res, next) => {
       const user = this.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(auth.loginUrl(req));
       }
       if (!(user.isAdmin || (right && user[right]))) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('You do not have permission to do that'), 403);
@@ -652,11 +636,8 @@ class TestingModule {
     // this.session, form, this.csrf. They are written out in each route rather than spread
     // from an array, so that CodeQL can see the CSRF middleware on every cookie-using route.
 
-    r.get('/login', this.session, this.csrf, h('login', (req, res) => this.sendLogin(req, res, 200)));
-    r.post('/login', sameOrigin, loginLimiter, this.session, form, this.csrf, h('login', (req, res) => this.login(req, res)));
-    r.post('/logout', sameOrigin, this.session, form, this.csrf, h('logout', (req, res) => {
-      req.session.destroy(() => res.redirect(req.baseUrl || '/'));
-    }));
+    // logging in is the server's: an old link to the module's login page goes there
+    r.get('/login', (req, res) => res.redirect(auth.loginUrl(req, req.baseUrl || '/')));
 
     r.get('/admin/links', this.session, this.csrf, need('canEditLinks'), h('links', (req, res) => this.sendLinks(req, res)));
     r.post('/admin/links', sameOrigin, this.session, form, this.csrf, need('canEditLinks'), h('links', (req, res) => this.saveLink(req, res, null)));
@@ -666,15 +647,8 @@ class TestingModule {
       this.namesCache = null;
       res.redirect(req.baseUrl + '/admin/links');
     }));
-
-    r.get('/admin/users', this.session, this.csrf, need(null), h('users', (req, res) => this.sendUsers(req, res)));
-    r.post('/admin/users', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => this.saveUser(req, res, null)));
-    r.post('/admin/users/:id', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => this.saveUser(req, res, req.params.id)));
-    r.post('/admin/users/:id/delete', sameOrigin, this.session, form, this.csrf, need(null), h('users', (req, res) => {
-      this.store.deleteUser(parseInt(req.params.id, 10));
-      this.log.info(`Testing module: user ${req.params.id} deleted`);
-      res.redirect(req.baseUrl + '/admin/users');
-    }));
+    // users are the server's
+    r.get('/admin/users', (req, res) => res.redirect('/auth/admin/users'));
 
     r.post('/TestReport/:id/delete', sameOrigin, this.session, form, this.csrf, need('canDeleteReports'), h('delete', (req, res) => {
       if (!this.store.delete(req.params.id)) {
@@ -693,38 +667,6 @@ class TestingModule {
       }
       next(err);
     });
-  }
-
-  sendLogin(req, res, status, error) {
-    res.status(status);
-    this.sendHtml(res, 'Login', renderLogin(req.baseUrl, error, res.locals._csrf), Date.now());
-  }
-
-  async login(req, res) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    let ok = false;
-    const regenerate = () => new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
-    if (login === 'admin') {
-      if (this.adminHash && await bcrypt.compare(password, this.adminHash)) {
-        await regenerate();
-        req.session.testingAdmin = true;
-        ok = true;
-      }
-    } else if (login) {
-      const user = this.store.userByLogin(login);
-      if (user && await bcrypt.compare(password, user.password_hash)) {
-        await regenerate();
-        req.session.testingUserId = user.id;
-        ok = true;
-      }
-    }
-    if (!ok) {
-      this.log.info(`Testing module: failed login for '${login}' from ${req.ip}`);
-      return this.sendLogin(req, res, 401, 'Unknown username or wrong password');
-    }
-    this.log.info(`Testing module: '${login}' logged in from ${req.ip}`);
-    res.redirect(req.baseUrl || '/');
   }
 
   sendLinks(req, res, message, status = 200) {
@@ -761,42 +703,6 @@ class TestingModule {
     }
     this.namesCache = null;
     res.redirect(req.baseUrl + '/admin/links');
-  }
-
-  sendUsers(req, res, message, status = 200) {
-    res.status(status);
-    this.sendHtml(res, 'Users', renderUsers(this.store.users(), { base: req.baseUrl, user: req.user, csrf: res.locals._csrf }, message), Date.now());
-  }
-
-  async saveUser(req, res, id) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    const rights = { editLinks: req.body.editLinks === '1', deleteReports: req.body.deleteReports === '1' };
-    let problem = null;
-    if (id === null && !/^[A-Za-z0-9._@-]{1,64}$/.test(login)) {
-      problem = 'The username must be 1-64 letters, digits, or . _ @ -';
-    } else if (id === null && login.toLowerCase() === 'admin') {
-      problem = "'admin' is the administrator's login";
-    } else if (!name || name.length > 100) {
-      problem = 'A name is required (up to 100 characters)';
-    } else if ((id === null || password) && password.length < 8) {
-      problem = 'Passwords must be at least 8 characters';
-    }
-    if (problem) {
-      return this.sendUsers(req, res, problem, 400);
-    }
-    const hash = password ? await bcrypt.hash(password, 10) : null;
-    if (id === null) {
-      if (this.store.userByLogin(login)) {
-        return this.sendUsers(req, res, `There is already a user '${login}'`, 409);
-      }
-      this.store.createUser(login, name, hash, rights);
-      this.log.info(`Testing module: user '${login}' created`);
-    } else if (!this.store.updateUser(parseInt(id, 10), name, rights, hash)) {
-      return this.sendUsers(req, res, 'That user no longer exists', 404);
-    }
-    res.redirect(req.baseUrl + '/admin/users');
   }
 }
 

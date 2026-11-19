@@ -1176,6 +1176,31 @@ class TerminologyWorker {
     }
   }
 
+  /**
+   * Issues for the code systems in systems (url or url|version, as x-unknown-system has them)
+   * that weren't found because a server in the ecosystem that should have them couldn't be asked
+   * (see OperationContext.noteEcosystemProblem)
+   *
+   * @param {string[]} systems
+   * @param {string} severity
+   * @returns {Issue[]}
+   */
+  ecosystemIssues(systems, severity) {
+    const problems = this.opContext.ecosystemProblems();
+    if (problems.length === 0 || systems.length === 0) {
+      return [];
+    }
+    const urls = new Set(systems.filter(s => s).map(s => s.split('|')[0]));
+    const result = [];
+    for (const p of problems) {
+      if (urls.has(p.vurl.split('|')[0])) {
+        const m = this.i18n.translate('ECOSYSTEM_SERVER_UNAVAILABLE', this.opContext.HTTPLanguages, [p.vurl, p.why]);
+        result.push(new Issue(severity, 'transient', null, 'ECOSYSTEM_SERVER_UNAVAILABLE', m, 'not-found'));
+      }
+    }
+    return result;
+  }
+
   presentVersionList(items) {
     // a code system with no version is listed as one (null): say so, rather than 'null'
     const list = items.map(v => (v === null || v === undefined || v === '') ? '(no version)' : v);

@@ -5,7 +5,7 @@
 //
 
 /**
- * SQLite storage for the /ips module: projects, their managers, the users, and the IPS
+ * SQLite storage for the /ips module: projects, and the IPS
  * documents in each project, with the search index over them.
  *
  * A document is kept whole, as the JSON that was stored (with the server's id and
@@ -36,8 +36,8 @@ const SCHEMA = `
     created      TEXT NOT NULL
   );
 
-  -- the people who can manage projects. The administrator is not in here: their login is
-  -- in the configuration
+  -- users and project_managers are no longer used: users, logins and the managers of projects
+  -- are the server's (library/auth). Kept so a database from before still opens
   CREATE TABLE IF NOT EXISTS users (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     login          TEXT UNIQUE NOT NULL,
@@ -471,25 +471,12 @@ class IpsStore {
 
   // ---- projects ----
 
-  /** All projects, with their document counts and managers; by name. */
+  /** All projects, with their document counts; by name. (Their managers are the server's: IpsModule.projectsWithManagers) */
   projects() {
-    const rows = this.db.prepare(`
+    return this.db.prepare(`
       SELECT p.id, p.code, p.name, p.description, p.created,
         (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS documents
       FROM projects p ORDER BY p.name COLLATE NOCASE, p.code`).all();
-    const managers = this.db.prepare(`
-      SELECT pm.project_id, u.id, u.login, u.name FROM project_managers pm JOIN users u ON u.id = pm.user_id ORDER BY u.login`).all();
-    const byProject = new Map();
-    for (const m of managers) {
-      if (!byProject.has(m.project_id)) {
-        byProject.set(m.project_id, []);
-      }
-      byProject.get(m.project_id).push({ id: m.id, login: m.login, name: m.name });
-    }
-    for (const p of rows) {
-      p.managers = byProject.get(p.id) || [];
-    }
-    return rows;
   }
 
   /** @returns {Object|null} the project, including its token */
@@ -561,68 +548,6 @@ class IpsStore {
   /** Delete a project and everything in it. @returns {boolean} whether there was one */
   deleteProject(id) {
     return this.db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
-  }
-
-  /** Replace the set of users who manage a project. */
-  setProjectManagers(projectId, userIds) {
-    this.db.transaction(() => {
-      this.db.prepare('DELETE FROM project_managers WHERE project_id = ?').run(projectId);
-      const ins = this.db.prepare('INSERT OR IGNORE INTO project_managers (project_id, user_id) VALUES (?, ?)');
-      for (const u of userIds) {
-        ins.run(projectId, u);
-      }
-    })();
-  }
-
-  /** The ids of the projects a user manages. */
-  managedProjectIds(userId) {
-    return this.db.prepare('SELECT project_id FROM project_managers WHERE user_id = ?').all(userId).map(r => r.project_id);
-  }
-
-  // ---- users ----
-
-  /** @returns {Array} users, without their password hashes, with the codes of the projects they manage */
-  users() {
-    const rows = this.db.prepare('SELECT id, login, name, created FROM users ORDER BY login').all();
-    const pm = this.db.prepare('SELECT pm.user_id, p.code FROM project_managers pm JOIN projects p ON p.id = pm.project_id ORDER BY p.code').all();
-    const by = new Map();
-    for (const m of pm) {
-      if (!by.has(m.user_id)) {
-        by.set(m.user_id, []);
-      }
-      by.get(m.user_id).push(m.code);
-    }
-    for (const u of rows) {
-      u.projects = by.get(u.id) || [];
-    }
-    return rows;
-  }
-
-  /** @returns {Object|null} the user, including the password hash */
-  userByLogin(login) {
-    return this.db.prepare('SELECT * FROM users WHERE login = ?').get(login) || null;
-  }
-
-  userById(id) {
-    return this.db.prepare('SELECT id, login, name FROM users WHERE id = ?').get(id) || null;
-  }
-
-  createUser(login, name, passwordHash) {
-    const r = this.db.prepare('INSERT INTO users (login, name, password_hash, created) VALUES (?, ?, ?, ?)')
-      .run(login, name, passwordHash, new Date().toISOString());
-    return Number(r.lastInsertRowid);
-  }
-
-  updateUser(id, name, passwordHash) {
-    const n = this.db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id).changes;
-    if (n > 0 && passwordHash) {
-      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
-    }
-    return n > 0;
-  }
-
-  deleteUser(id) {
-    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
   }
 
   // ---- documents ----

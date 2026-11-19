@@ -76,7 +76,7 @@ describe('NDC Module Import', () => {
 
       // Verify version table has correct version
       const version = await getVersion(db);
-      expect(version).toBe('2025-07-11');
+      expect(version).toBe('20250711');
       // (`✓ Version: ${version}`);
 
       // Verify data integrity - packages should reference valid products
@@ -614,7 +614,7 @@ describe('NDC Provider', () => {
       const filter = await provider.filter(filterContext, true, 'code-type', '=', 'product');
 
       expect(filter).toBeDefined();
-      expect(filter.type).toBe('code-type');
+      expect(filter.property).toBe('code-type');
       expect(filter.value).toBe('product');
 
       const filterSets = await provider.executeFilters(filterContext);

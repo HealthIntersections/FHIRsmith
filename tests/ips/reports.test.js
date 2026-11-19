@@ -10,6 +10,7 @@
  */
 
 const fs = require('fs');
+const { ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, login: authLogin, csrfOf: authCsrf } = require('../helpers/auth');
 const os = require('os');
 const path = require('path');
 const express = require('express');
@@ -77,8 +78,11 @@ async function makeApp(config = {}) {
   app.use(express.raw({ type: 'application/fhir+json', limit: '50mb' }));
   app.use(express.json({ limit: '50mb' }));
   const mod = new IpsModule(makeStats(), quietLog);
+  setupAuth();
+  await makeUser('admin', ADMIN_PASSWORD, { admin: true });
+  mountAuth(app);
   await mod.initialize({
-    database: ':memory:', rateLimit: { max: 0 }, adminPassword: 'admin-secret', cookieSecure: false,
+    database: ':memory:', rateLimit: { max: 0 }, cookieSecure: false,
     processing: { enabled: false }, ...config
   }, app);
   app.use('/ips', mod.router);
@@ -102,16 +106,14 @@ async function makeApp(config = {}) {
   return { app, mod };
 }
 
-const csrfOf = async (agent) => (await agent.get('/ips/login')).text.match(/name="_csrf" value="([^"]+)"/)[1];
+const csrfOf = (agent) => authCsrf(agent);
 // the token first: the agent puts its cookies on a request when it is made
 const form = async (agent, url, data = {}) => {
   const _csrf = await csrfOf(agent);
   return agent.post(url).type('form').send({ ...data, _csrf });
 };
 const admin = async (app) => {
-  const agent = request.agent(app);
-  await form(agent, '/ips/login', { login: 'admin', password: 'admin-secret' });
-  return agent;
+  return (await authLogin(app, 'admin', ADMIN_PASSWORD)).agent;
 };
 const submit = (app, code, body) => request(app).post(`/ips/${code}/Bundle`).set('Content-Type', 'application/fhir+json').send(JSON.stringify(body));
 const html = (app, url) => request(app).get(url).set('Accept', 'text/html');

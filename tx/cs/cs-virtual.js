@@ -1,5 +1,6 @@
 const { CodeSystemProvider, FilterExecutionContext } = require('./cs-api');
 const { DesignationUse } = require('../library/designations');
+const { Issue } = require('../library/operation-outcome');
 
 /**
  * A code system (and version) that this server doesn't hold, answered by asking another server
@@ -40,8 +41,13 @@ class VirtualCodeSystemProvider extends CodeSystemProvider {
     }
   }
 
+  // What the request asked for can't be done with a code system on another server (an $expand,
+  // say): the answer to the request (422), not a failure of the server - which was a 500, logged
+  // with its stack
   #notSupported(name) {
-    return new Error(`${this.vurl()} is not held on this server, and is provided by ${this.server}, but '${name}' isn't supported for code systems on other servers`);
+    return new Issue('error', 'not-supported', null, null,
+      `${this.vurl()} is not held on this server, and is provided by ${this.server}, but '${name}' isn't supported for code systems on other servers`,
+      'not-found', 422).handleAsOO(422);
   }
 
   // --- metadata -------------------------------------------------------------------------------

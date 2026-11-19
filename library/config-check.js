@@ -93,6 +93,9 @@ const map = (of, o = {}) => ({ t: 'map', of, ...o }); // an object whose keys ar
 const any = (o = {}) => ({ t: 'any', ...o });
 const either = (...specs) => ({ t: 'either', specs });
 const retired = (message) => ({ t: 'retired', message });
+// a setting the server no longer reads: a warning, so a configuration from before still runs
+const obsolete = (message) => ({ t: 'obsolete', message });
+const NO_LOGIN = 'is no longer used: users and logins are the server\'s ("auth" - library/auth/README.md)';
 const internal = () => ({ t: 'internal' }); // set by the server itself
 const custom = (check) => ({ t: 'custom', check }); // (value, where, report) => void
 
@@ -169,6 +172,20 @@ const TOP = obj({
     from: str({ nonEmpty: true })
   }),
   dailyReport: obj({ enabled: bool(), to: either(str({ nonEmpty: true }), arr(str({ nonEmpty: true }))) }),
+  // the one login system (library/auth)
+  auth: obj({
+    database: str({ nonEmpty: true }),
+    sessionSecret: str({ nonEmpty: true }),
+    administrators: arr(str({ pattern: /^(github:[A-Za-z0-9-]{1,39}|[^\s@]+@[^\s@]+)$/, patternText: 'an email address, or github:{name}' })),
+    publicUrl: url(),
+    github: obj({ clientId: str({ nonEmpty: true, required: true }), clientSecret: str({ nonEmpty: true, required: true }), callbackUrl: url() }),
+    cookieSecure: bool(),
+    sessionHours: positive(),
+    linkMinutes: int({ min: 1 }),
+    loginAttemptsPerWindow: count(),
+    requestsPerMinute: positive(),
+    bcryptCost: int({ min: 4, max: 15 })
+  }),
   accessibility: obj({ checkPanel: bool() }),
   logging: obj({
     level: str({ values: LOG_LEVELS }),
@@ -188,7 +205,7 @@ const MODULES = {
   shl: obj({
     enabled: bool(),
     database: str({ nonEmpty: true }),
-    password: str({ nonEmpty: true }),
+    password: obsolete('is no longer used: /shl/create is for users with the shl "create" role (an API token), and the ips module'),
     // relative to the data folder's shl directory
     certificates: obj({ certFile: str({ nonEmpty: true }), keyFile: str({ nonEmpty: true }), kid: str() }),
     vhl: obj({ issuer: str() }),
@@ -204,7 +221,7 @@ const MODULES = {
     mirrorPath: str(),
     bucketPath: str(),
     masterUrl: str({ nonEmpty: true }),
-    crawlToken: str({ nonEmpty: true }),
+    crawlToken: obsolete('is no longer used: /packages/crawl is for users with the packages "crawl" role, with an API token'),
     localFeedDirs: arr(str({ nonEmpty: true })),
     allowPrivateAddresses: bool(),
     crawler: obj({
@@ -244,15 +261,10 @@ const MODULES = {
     uptimeRetentionDays: positive(),
     allowPrivateAddresses: bool(),
     security: obj({
-      apiToken: str({ nonEmpty: true }),
-      users: obj({
-        database: str({ nonEmpty: true }),
-        adminUsername: str({ nonEmpty: true }),
-        adminPassword: str({ nonEmpty: true }),
-        sessionSecret: str({ nonEmpty: true }),
-        cookieSecure: bool(),
-        loginAttemptsPerWindow: count()
-      }),
+      required: bool(),
+      database: str({ nonEmpty: true }),
+      apiToken: obsolete('is no longer a credential (the API stays closed while it is set): set required, and give the clients\' users the registry "member" role and an API token'),
+      users: obsolete('is no longer used (the API stays closed while it is set): users and logins are the server\'s ("auth"); set required'),
       oidc: obj({
         issuer: url({ required: true }),
         audience: str({ required: true }),
@@ -266,10 +278,10 @@ const MODULES = {
   publisher: obj({
     enabled: bool(),
     database: str({ nonEmpty: true, required: true }),
-    sessionSecret: str({ nonEmpty: true }),
-    adminPassword: str({ nonEmpty: true }),
-    cookieSecure: bool(),
-    loginAttemptsPerWindow: count(),
+    sessionSecret: obsolete(NO_LOGIN),
+    adminPassword: obsolete(NO_LOGIN),
+    cookieSecure: obsolete(NO_LOGIN),
+    loginAttemptsPerWindow: obsolete(NO_LOGIN),
     taskActionsPerMinute: count(),
     taskReadsPerMinute: count(),
     workspaceRoot: str({ nonEmpty: true, required: true }),
@@ -294,16 +306,8 @@ const MODULES = {
     searchParametersFolder: str(),
     debounceMs: count()
   }),
-  token: obj({
-    enabled: bool(),
-    database: str({ nonEmpty: true, required: true }),
-    sessionSecret: str({ nonEmpty: true }),
-    csrfSecret: str({ nonEmpty: true }),
-    cookieSecure: bool(),
-    oauth: map(obj({}, { open: true })),
-    apiKeys: obj({ defaultAllowedRequests: count(), maxKeysPerUser: count(), keyExpiration: any() }),
-    rateLimit: obj({ windowMs: positive(), max: count() })
-  }),
+  // removed: logging in with Google, Facebook or GitHub, and API keys, are the server's (library/auth)
+  token: obsolete('the token module has been removed: logins (GitHub included) and API tokens are the server\'s ("auth")'),
   tx: obj({
     enabled: bool(),
     librarySource: str({ nonEmpty: true, required: true }),
@@ -336,8 +340,8 @@ const MODULES = {
     expansionCacheMemoryThreshold: num({ min: 0 }),
     expansionCacheMaxCodes: count(),
     xmlCacheMB: num({ min: 0 }),
-    // the password of the caches page's actions (/caches): none, and caches can't be emptied there
-    adminPassword: str({ nonEmpty: true }),
+    // the caches page's actions (/caches) are for the server's administrators
+    adminPassword: obsolete('is no longer used: the server\'s administrators, logged in, empty the caches'),
     loincConnections: int({ min: 0 }),
     // an include that names a code the code system doesn't have: an error, rather than a warning
     errorsForInvalidCodes: bool(),
@@ -361,7 +365,8 @@ const MODULES = {
       baseUrl: url(),
       refreshIntervalHours: positive(),
       timeoutMs: positive(),
-      resyncPassword: str({ nonEmpty: true }),
+      resync: bool(),
+      resyncPassword: obsolete('is no longer used: the server\'s administrators, logged in, can resync a ValueSet (resync: false turns it off)'),
       valueSetCacheMB: num({ min: 0 }),
       cluster: internal() // leader or follower, from the role
     }),
@@ -391,12 +396,13 @@ const MODULES = {
   testing: obj({
     enabled: bool(),
     database: str({ nonEmpty: true }),
-    token: str({ nonEmpty: true }),
+    requireToken: bool(),
+    token: obsolete('is no longer a credential (posting stays closed while it is set): set requireToken, and give the submitters\' users the testing "submit" role and an API token'),
     tokenHeader: str({ nonEmpty: true }),
-    adminToken: str({ nonEmpty: true }),
-    adminPassword: str({ nonEmpty: true }),
-    sessionSecret: str({ nonEmpty: true }),
-    cookieSecure: bool(),
+    adminToken: obsolete('is no longer used: deleting needs an API token of a user with the testing "delete-reports" role'),
+    adminPassword: obsolete(NO_LOGIN),
+    sessionSecret: obsolete(NO_LOGIN),
+    cookieSecure: obsolete(NO_LOGIN),
     maxSize: int({ min: 1 }),
     rateLimit: rateLimitWindow,
     retentionDays: positive()
@@ -404,11 +410,12 @@ const MODULES = {
   ips: obj({
     enabled: bool(),
     database: str({ nonEmpty: true }),
-    adminUsername: str({ nonEmpty: true }),
-    adminPassword: str({ nonEmpty: true }),
+    adminUsername: obsolete(NO_LOGIN),
+    adminPassword: obsolete(NO_LOGIN),
+    // only for the projects' AI keys, if there is no aiKeySecret: they were encrypted with it
     sessionSecret: str({ nonEmpty: true }),
-    cookieSecure: bool(),
-    loginAttemptsPerWindow: count(),
+    cookieSecure: obsolete(NO_LOGIN),
+    loginAttemptsPerWindow: obsolete(NO_LOGIN),
     maxSize: int({ min: 1 }),
     rateLimit: obj({ windowMinutes: positive(), max: count(), lookupMax: count() }),
     processing: obj({ enabled: bool(), intervalSeconds: positive() }),
@@ -428,7 +435,7 @@ const MODULES = {
       prices: map(obj({ input: num({ min: 0 }), output: num({ min: 0 }) }))
     }),
     aiKeySecret: str({ nonEmpty: true }),
-    shl: obj({ server: str({ nonEmpty: true }), password: str(), days: positive(), viewer: str() }),
+    shl: obj({ server: str({ nonEmpty: true }), token: str({ nonEmpty: true }), password: obsolete('is no longer used: an SHL server elsewhere takes a token (an API token there with the shl "create" role); this server\'s own needs nothing'), days: positive(), viewer: str() }),
     viewer: obj({
       enabled: bool(),
       keepMinutes: positive(),
@@ -595,6 +602,9 @@ function check(value, spec, where, report) {
       return;
     case 'retired':
       report.error(where, spec.message);
+      return;
+    case 'obsolete':
+      report.warn(where, spec.message);
       return;
     case 'custom':
       spec.check(value, where, report);
@@ -888,9 +898,6 @@ const MODULE_CHECKS = {
     if (typeof key === 'string' && key) {
       checkFile(path.resolve(key), `${where}.github-app.private-key`, report, 'the GitHub App key');
     }
-    if (typeof cfg.sessionSecret !== 'string' || !cfg.sessionSecret) {
-      report.warn(`${where}.sessionSecret`, 'is not set: a random one is made at startup, and logins don\'t survive a restart');
-    }
   },
   folder(cfg, where, report) {
     (Array.isArray(cfg.folders) ? cfg.folders : []).forEach((f, i) => {
@@ -950,6 +957,18 @@ function checkParsedConfig(config, options = {}) {
     return report;
   }
   check(config, TOP, '', report);
+  // the login system: without a session secret, logins don't last; without administrators,
+  // nobody can administer the server
+  if (isObject(config.auth)) {
+    if (typeof config.auth.sessionSecret !== 'string' || !config.auth.sessionSecret) {
+      report.warn('auth.sessionSecret', 'is not set: a random one is made at startup, so logins don\'t survive a restart (or, under the launcher, reach the other processes)');
+    }
+    if (!Array.isArray(config.auth.administrators) || config.auth.administrators.length === 0) {
+      report.note('auth.administrators', 'names nobody: only users given the administrator role on the users page can administer the server');
+    }
+  } else {
+    report.note('auth', 'is not configured: nobody can log in as an administrator (library/auth/README.md)');
+  }
   // check() names top-level settings ".server": tidy those
   for (const list of [report.errors, report.warnings, report.notes]) {
     for (const e of list) {

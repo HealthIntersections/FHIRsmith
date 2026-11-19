@@ -1,6 +1,6 @@
 # ![🔥](static/FHIRsmith64.png) FHIRsmith - FHIR Server toolkit
 
-This server provides a set of server-side services that are useful for the FHIR Community. Each is a module, turned on and configured in `config.json`. The modules are at different stages, and stability varies between them: a module in production can still be changing in places (and the terminology server's behaviour follows decisions about its content - ICD-11, SNOMED CT - as they are made).
+This server provides a set of server-side services that are useful for the FHIR Community. Each is a module, turned on and configured in `config.json`. The modules share [one login system](library/auth/README.md): users log in with a password or GitHub, software uses API tokens, and the server's administrators give users the modules' roles. The modules are at different stages, and stability varies between them: a module in production can still be changing in places (and the terminology server's behaviour follows decisions about its content - ICD-11, SNOMED CT - as they are made).
 
 ## In production
 
@@ -27,7 +27,6 @@ This server provides a set of server-side services that are useful for the FHIR 
 These are not being actively developed at present.
 
 * [NpmProjector](npmprojector/readme.md) (`npmprojector`) - watches a local npm package directory and serves its FHIR resources with FHIRPath-based search
-* Token (`token`) - API key services
 
 ## Planned
 
@@ -98,7 +97,6 @@ The data directory contains (depending on which modules are in use):
 * `shl/` — SHL databases and certificates
 * `registry/` — registry crawler data
 * `publisher/` — publisher database and build workspace
-* `token/` — token database
 
 During development with a cloned repository, the data directory defaults to `[root]/data`
 (the test cases require this setup). When deployed via Docker or npm, the data directory
