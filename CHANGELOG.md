@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ips: an `ips.shl.server` given as this server's own URL (`https://{hostName}/shl`) is called in process, with no token, as `"/shl"` is. With the single login it was treated as another server, which needs a token, so documents had no QR codes
 - publisher: a database made before websites had their history and web templates folders couldn't add or change a website ("Failed to create website": the columns were never added to an existing table). They are now added when the module starts, and the page says why when saving a website fails
 
 ### Removed

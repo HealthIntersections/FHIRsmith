@@ -868,6 +868,9 @@ base64url-encoded. An SHL's code carries `{viewer}#shlink:/{payload}`; a VHL's c
 COSE_Sign1 of the GDHCN payload, deflated and base45). The SHL server is this server's own
 shl module (`"server": "/shl"`, dispatched in-process, as this server itself) or another
 FHIRsmith's (an https URL, and `token`: an API token of a user there with the shl "create" role).
+A URL that is this server's own shl module - the host of `hostName` or `auth.publicUrl`, and
+`/shl` - is treated as `"/shl"`: no token. Anyone who can see a document can share it; the
+server makes the link as itself, so they don't need to log in.
 Shares are rate-limited as submissions are, and a document whose JWE is over 2MB is not
 shared this way. The QR codes are made with `qrcode-generator`, error correction L.
 
