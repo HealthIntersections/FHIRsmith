@@ -480,8 +480,11 @@ class TxParameters {
       case 'profile': {
         // only meaningful from a Parameters.parameter, which can carry a resource
         const res = value.resource;
-        if (res && (res.resourceType === 'Parameters' || res.resourceType === 'ExpansionProfile')) {
+        if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
+        } else if (res && res.resourceType === 'ExpansionProfile') {
+          // it has no parameter list to read: say so, rather than fail, or drop what it asks for
+          throw new Issue('error', 'not-supported', null, null, "A 'profile' that is an ExpansionProfile is not supported by this system: use a Parameters resource", null, 400);
         }
         break;
       }
