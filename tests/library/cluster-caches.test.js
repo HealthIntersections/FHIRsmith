@@ -105,7 +105,7 @@ describe('cluster caches', () => {
 
   test('the page: a column for each process, and the total', async () => {
     const { sides } = cluster([report(1), report(2)]);
-    const html = buildCachesPage({ answer: await sides[0].ask('report'), message: null, passwordConfigured: true });
+    const html = buildCachesPage({ answer: await sides[0].ask('report'), message: null, isAdmin: true, csrf: 'tok' });
     expect(html).toContain('in each of its 2 processes');
     expect(html).toMatch(/<th>m0<\/th><th>tx1<\/th><th>Total<\/th>/);
     expect(html).toMatch(/Expansion cache<\/td><td>\/r4<\/td><td style="text-align: right">1<\/td><td style="text-align: right">2<\/td><td style="text-align: right"><strong>3<\/strong>/);

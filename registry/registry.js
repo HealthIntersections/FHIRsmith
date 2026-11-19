@@ -113,7 +113,7 @@ class RegistryModule {
       // Load saved data if available
       await this.loadSavedData();
 
-      // Securing the API (see auth.js). With no modules.registry.security, the API is open
+      // Securing the API (see auth.js). Without modules.registry.security.required (or oidc), the API is open
       this.auth = new RegistryAuth(config.security, {
         logger: this.logger,
         renderPage: (req, res, title, content, status) => {
@@ -320,15 +320,16 @@ class RegistryModule {
     };
     // failed authentications are limited (successful ones aren't counted)
     const apiLimiter = this.auth.apiLimiter();
-    // the session, where there are users, so the pages know who is logged in (it makes none)
+    // the session (the server's), so the pages know who is logged in (it makes none). Before
+    // the guard: a member logged in with a browser can use the API too
     const session = this.auth.optionalSession();
     this.auth.setupRoutes(this.router);
 
     // Main registry page
-    this.router.get('/', apiLimiter, apiGuard, session, this.handleMainPage.bind(this));
-    this.router.get('/resolve', apiLimiter, apiGuard, session, this.handleResolveEndpoint.bind(this));
+    this.router.get('/', session, apiLimiter, apiGuard, this.handleMainPage.bind(this));
+    this.router.get('/resolve', session, apiLimiter, apiGuard, this.handleResolveEndpoint.bind(this));
     // JSON only - there's no page for a browser, so it's always guarded
-    this.router.get('/choose-server', apiLimiter, guard, this.handleChooseServerEndpoint.bind(this));
+    this.router.get('/choose-server', session, apiLimiter, guard, this.handleChooseServerEndpoint.bind(this));
     this.router.get('/log', session, this.handleLogEndpoint.bind(this));
     this.router.get('/software', session, this.handleSoftwarePage.bind(this));
 
@@ -363,15 +364,16 @@ class RegistryModule {
   }
 
   /**
-   * The registry's pages: html-server's template, plus the login/account link in the
-   * navbar (pages rendered without a request show the login link)
+   * The registry's pages: html-server's template, plus the registry's own links in the
+   * navbar (the documents, and usage for administrators). The account link is the template's
+   * [%account%], as on every page
    */
   renderPage(template, title, content, stats, req) {
     if (template === 'registry' && !htmlServer.hasTemplate('registry')) {
       htmlServer.loadTemplate('registry', path.join(__dirname, 'registry-template.html'));
     }
     const html = htmlServer.renderPage(template, title, content, stats);
-    return html.replace('[%account%]', () => this.auth ? this.auth.navLinks(req || {}) : '');
+    return html.replace('[%registry-links%]', () => this.auth ? this.auth.navLinks(req || {}) : '');
   }
 
   /**

@@ -13,10 +13,10 @@ How the module works, for anyone changing it. The user-facing behaviour is in
 | `model.js` | The data model (`ServerRegistries` → `ServerRegistry` → `ServerInformation` → `ServerVersionInformation`), its JSON form, and `ServerRegistryUtilities` - mask matching and version matching |
 | `uptime.js` | `UptimeHistory`: per-endpoint scan outcomes, and the uptime calculation |
 | `fhirsmith-releases.js` | FHIRsmith's release list (GitHub, falling back to `CHANGELOG.md`), for dating servers on the software page |
-| `auth.js`, `auth-store.js` | `RegistryAuth` (API guard, OIDC verification, login/admin/account pages) and `AuthStore` (users, tokens, usage and documents in SQLite) |
+| `auth.js`, `auth-store.js` | `RegistryAuth` (API guard over the server's users and tokens, OIDC verification, the usage page) and `AuthStore` (usage and documents in SQLite) |
 | `documents.js` | `RegistryDocuments`: the document pages, raw serving, editing and history ([documents.md](documents.md)) |
 | `openapi.yaml`, `openapi.js` | The API description, and the module that serves it |
-| `registry-template.html` | The page template (`[%title%]`, `[%content%]`, `[%account%]` for the login link, and the footer placeholders html-server fills) |
+| `registry-template.html` | The page template (`[%title%]`, `[%content%]`, `[%registry-links%]` for the documents and usage links, `[%account%]` for the user's name or Login, and the footer placeholders html-server fills) |
 
 `test-runner.js` is a leftover and does not run.
 
@@ -71,8 +71,9 @@ at startup:
 * `registry-uptime.json` - `UptimeHistory.toJSON()`: `{ version: "1", endpoints: { url:
   [[timeMs, 1|0], ...] } }`, kept to `uptimeRetentionDays`.
 
-Users, tokens, usage and documents live in `databases/registry-auth.db` (better-sqlite3, WAL;
-the `admin` column on `users` is added on open if an older database lacks it). Request
+Usage and documents live in `databases/registry-auth.db` (better-sqlite3, WAL; the `users`
+and `tokens` tables of a database from before the server's login system are left as they
+are, unused). Users, roles and API tokens are the server's (`library/auth`). Request
 counts are accumulated in memory and flushed once a minute and at shutdown, so a busy registry
 is not writing SQLite on every API call.
 
@@ -98,8 +99,8 @@ producing one row per endpoint.
 ## The pages
 
 All pages go through `RegistryModule.renderPage()`, which applies the template via
-`library/html-server` and fills `[%account%]` with the login, account or users link from
-`RegistryAuth.navLinks()`. Content that came from registration files or scanned servers -
+`library/html-server` and fills `[%registry-links%]` with the documents link (and usage, for an
+administrator) from `RegistryAuth.navLinks()`; html-server fills `[%account%]`, as on every page. Content that came from registration files or scanned servers -
 names, URLs, errors, software names - is other people's input, and is escaped on output; URLs
 are only linked when they are http(s) (`safeHref`). `tests/registry/registry-hostile-content.test.js`
 feeds script-laden registration data through every page to keep it that way.
@@ -117,12 +118,13 @@ all the row's endpoints: the share of probes in the window that succeeded.
 
 ### Login and administration
 
-`RegistryAuth` adds its routes only when `security.users` is configured. Sessions
-(`express-session`, cookie `txreg.sid`), CSRF (`lusca`) and the same-origin check
-(`library/same-origin`) are written out on every route rather than composed, so that static
-analysis can see the CSRF middleware on each cookie-using route - the convention the other
-modules follow. The API guard (`apiGuard()`) is a separate middleware on `/` and `/resolve`,
-applied only when the request does not accept HTML.
+Logins, users and tokens are the server's (`library/auth`): `/tx-reg/login`, `/tx-reg/account`
+and `/tx-reg/admin/users` redirect to its pages. The session, CSRF (`lusca`) and the same-origin
+check (`library/same-origin`) are the server's middleware, written out on every route rather
+than composed, so that static analysis can see the CSRF middleware on each cookie-using route.
+The session comes before the API guard (`apiGuard()`), a separate middleware on `/`,
+`/resolve` and `/choose-server`, applied only when the request does not accept HTML: a member
+logged in with a browser can call the API too.
 
 ## Security notes for maintainers
 
@@ -130,11 +132,8 @@ applied only when the request does not accept HTML.
   (SSRF guard, size limit, timeout). The OIDC fetches (`fetch` for discovery, `jose` for keys)
   go only to administrator-configured https URLs.
 * Everything rendered from scanned data or the database is escaped; `safeHref` for links.
-* API tokens are compared with `library/request-token` (constant time); user tokens by
-  SHA-256 lookup; passwords with bcrypt, and a login for an unknown user still runs a bcrypt
-  comparison so the timing does not reveal which users exist.
-* A user's own token operations are scoped by the user id from the session
-  (`revokeToken(userId, tokenId)`), never by the token id alone.
+* API tokens and passwords are `library/auth`'s: tokens by SHA-256 lookup, passwords with
+  bcrypt (see its README).
 
 ## Tests
 
@@ -146,8 +145,8 @@ applied only when the request does not accept HTML.
 | `registry-language.test.js`, `registry-exclusions.test.js` | Language specific claims; exclusions |
 | `registry-disabled.test.js` | Disabled registries and servers are not read or scanned |
 | `registry-software.test.js` | Release dating, the collapsed software rows, uptime history |
-| `registry-auth.test.js` | The three security methods end to end (supertest), including an OIDC provider stood up in the test with a generated key pair |
-| `registry-documents.test.js` | Documents: visibility, editing, history, validation; administrator users |
+| `registry-auth.test.js` | Members and their tokens, the old settings keeping the API closed, the failed-auth limit, and OIDC end to end (supertest), including an OIDC provider stood up in the test with a generated key pair |
+| `registry-documents.test.js` | Documents: visibility (members), editing, history, validation |
 | `registry-hostile-content.test.js` | Script injection through registration data, on every page |
 | `registry-footer.test.js` | The "last updated" footer |
 | `openapi.test.js` | The OpenAPI description agrees with the router and the parameter lists |

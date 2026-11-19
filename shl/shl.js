@@ -14,6 +14,7 @@ const pako = require('pako');
 const base45 = require('base45');
 const fs = require('fs');
 const folders = require('../library/folder-setup');
+const auth = require('../library/auth');
 const { guarded, failRequest } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
@@ -250,6 +251,10 @@ class SHLModule {
 
   async initialize(config) {
     this.config = config;
+    auth.defineRoles('shl', [{ role: 'create', label: 'Create links', description: 'Make SMART Health Links (POST /shl/create), usually with an API token' }], { title: 'SMART Health Links', path: '/shl' });
+    if (config && config.password) {
+      shlLog.warn('modules.shl.password is no longer used: /shl/create is for users with the shl "create" role (an API token), and the ips module');
+    }
 
     // Initialize database
     await this.initializeDatabase();
@@ -678,15 +683,17 @@ class SHLModule {
       }
     });
 
-    // SHL create endpoint
-    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res, next) => {
+    // SHL create endpoint: for a user with the shl "create" role (an API token, usually), or this
+    // server itself (the ips module). A "password" in the body, as clients sent before, is ignored
+    const creator = auth.requireApi(p => p.has('shl', 'create'));
+    this.router.post('/create', creator, this.validateJsonBody(['vhl', 'days'], ['password']), (req, res, next) => {
       const start = Date.now();
       try {
-        const {vhl, password, days} = req.body;
+        const {vhl, days} = req.body;
 
-        if (typeof vhl !== 'boolean' || !password) {
+        if (typeof vhl !== 'boolean') {
           return res.status(400).json({
-            error: 'Invalid request. Required: vhl (boolean), password (string), days (number or string)'
+            error: 'Invalid request. Required: vhl (boolean), days (number or string)'
           });
         }
 
@@ -704,10 +711,6 @@ class SHLModule {
           return res.status(400).json({
             error: 'days is required and must be a number or numeric string'
           });
-        }
-
-        if (password !== this.config.password) {
-          return res.status(401).json({error: 'Unauthorized'});
         }
 
         const uuid = this.generateUUID();

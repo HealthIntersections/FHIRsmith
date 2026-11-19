@@ -4,7 +4,7 @@
 // it was last edited; every change is logged with the content as it was.
 //
 //   public documents     anyone can read
-//   other documents      anyone logged in (a browser session - never an API token)
+//   other documents      members of the registry (the registry "member" role) logged in with a browser
 //   editing, deleting    administrators (the configured one, or a user flagged admin)
 //
 // Markdown is rendered without raw HTML (commonmark's safe mode: inline and block HTML is
@@ -68,7 +68,7 @@ class RegistryDocuments {
     const admin = (req, res, next) => {
       const user = a.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(a.loginUrl(req));
       }
       if (!user.isAdmin) {
         return a.sendError(req, res, 403, 'Only an administrator can do that');
@@ -76,7 +76,7 @@ class RegistryDocuments {
       req.user = user;
       next();
     };
-    // the session is read on every page, so that a logged in user sees the private
+    // the session is read on every page, so that a logged in member sees the private
     // documents; CSRF only matters for the forms
     router.get('/docs', a.session, a.csrfIfLoggedIn, h((req, res) => this.sendList(req, res)));
     router.get('/docs/new', a.session, a.csrf, admin, h((req, res) => this.sendForm(req, res, null)));
@@ -100,10 +100,14 @@ class RegistryDocuments {
 
   /**
    * May this request read the document - or a past version of it (a log entry, which has
-   * its own public flag)? Public: anyone; else a logged in user
+   * its own public flag)? Public: anyone; else a member of the registry (or an administrator)
    */
   canRead(req, doc) {
-    return !!doc.public || !!this.auth.currentUser(req);
+    if (doc.public) {
+      return true;
+    }
+    const user = this.auth.currentUser(req);
+    return !!user && (user.member || user.isAdmin);
   }
 
   wantsHtml(req) {
@@ -115,17 +119,17 @@ class RegistryDocuments {
   sendList(req, res) {
     const base = escape(req.baseUrl || '');
     const user = this.auth.currentUser(req);
-    const docs = this.store.documents().filter(d => d.public || user);
+    const docs = this.store.documents().filter(d => d.public || (user && (user.member || user.isAdmin)));
     let h = '';
     if (user && user.isAdmin) {
       h += `<p style="float: right"><a class="btn btn-primary btn-sm" href="${base}/docs/new">New document</a></p>`;
     }
     h += '<p>Documents this registry publishes: configuration and policy for its ecosystem. ' +
-      (user ? '' : 'Documents that are not public are shown to logged in users.') + '</p>';
+      (user && (user.member || user.isAdmin) ? '' : 'Documents that are not public are shown to the registry\'s members.') + '</p>';
     h += '<table class="grid"><thead><tr><th>Name</th><th>Type</th><th>Visibility</th><th>Last edited</th><th>By</th><th>Size</th></tr></thead><tbody>';
     for (const d of docs) {
       h += `<tr><td><a href="${base}/docs/${encodeURIComponent(d.name)}">${escape(d.name)}</a></td><td>${escape(d.type)}</td>` +
-        `<td>${d.public ? 'public' : 'logged in users'}</td><td>${escape(d.updated_at.substring(0, 16).replace('T', ' '))}</td>` +
+        `<td>${d.public ? 'public' : 'members'}</td><td>${escape(d.updated_at.substring(0, 16).replace('T', ' '))}</td>` +
         `<td>${escape(d.updated_by)}</td><td>${d.size}</td></tr>`;
     }
     if (docs.length === 0) {
@@ -152,7 +156,7 @@ class RegistryDocuments {
     const base = escape(req.baseUrl || '');
     const user = this.auth.currentUser(req);
     let h = `<p class="text-muted"><small>${escape(doc.type === 'md' ? 'Markdown' : 'JSON')} &middot; ` +
-      `${doc.public ? 'public' : 'logged in users'} &middot; last edited ${escape(doc.updated_at.substring(0, 16).replace('T', ' '))} by ${escape(doc.updated_by)} &middot; ` +
+      `${doc.public ? 'public' : 'members'} &middot; last edited ${escape(doc.updated_at.substring(0, 16).replace('T', ' '))} by ${escape(doc.updated_by)} &middot; ` +
       `<a href="${base}/docs/${encodeURIComponent(doc.name)}/history">history</a>`;
     if (user && user.isAdmin) {
       h += ` &middot; <a href="${base}/docs/${encodeURIComponent(doc.name)}/edit">edit</a>`;
@@ -187,7 +191,7 @@ class RegistryDocuments {
     const versions = this.store.documentLog(doc.id).filter(e => this.canRead(req, e));
     for (const e of versions) {
       h += `<tr><td><a href="${url}/history/${e.id}">${escape(e.at.substring(0, 19).replace('T', ' '))}</a></td><td>${escape(e.by)}</td>` +
-        `<td>${escape(e.action)}</td><td>${escape(e.name)}</td><td>${escape(e.type)}</td><td>${e.public ? 'public' : 'logged in users'}</td><td>${e.size}</td></tr>`;
+        `<td>${escape(e.action)}</td><td>${escape(e.name)}</td><td>${escape(e.type)}</td><td>${e.public ? 'public' : 'members'}</td><td>${e.size}</td></tr>`;
     }
     h += '</tbody></table>';
     this.auth.renderPage(req, res, `History of ${doc.name}`, h, 200);
@@ -224,10 +228,13 @@ class RegistryDocuments {
   }
 
   // a document that exists but is not public looks the same as one that doesn't, to a
-  // stranger: a browser is sent to log in, anything else gets 404
+  // stranger: a browser not logged in is sent to log in, anything else gets 404
   denied(req, res) {
     if (this.wantsHtml(req)) {
-      return res.redirect(`${req.baseUrl || ''}/login`);
+      if (!this.auth.currentUser(req)) {
+        return res.redirect(this.auth.loginUrl(req));
+      }
+      return this.auth.sendError(req, res, 404, 'No such document');
     }
     res.status(404).json({ error: 'not-found', message: 'No such document' });
   }

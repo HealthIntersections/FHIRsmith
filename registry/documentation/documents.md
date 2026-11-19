@@ -5,9 +5,9 @@ documentation: its policies, the configuration its clients should use, the terms
 servers are listed. The registry stores and serves such documents itself, so an administrator
 can keep them next to the registry without a separate website.
 
-Documents are available when `security.users` is configured ([security.md](security.md)):
-they live in the same database as the users, and who may read and edit them is decided by the
-same logins.
+Who may read and edit them is decided by the server's logins and roles
+([library/auth](../../library/auth/README.md)): its administrators edit them, and the registry's
+members (the registry "member" role) read the ones that aren't public.
 
 ## What a document is
 
@@ -15,21 +15,21 @@ same logins.
 |---|---|
 | **name** | Its address: `/tx-reg/docs/{name}`. Letters, digits, dots, hyphens and underscores, up to 100 characters, unique. Can be changed (the old address stops working). |
 | **type** | `md` (Markdown) or `json`. |
-| **public** | Whether anyone can read it. If not, only logged in users can. |
+| **public** | Whether anyone can read it. If not, only the registry's members can. |
 | **last edited** | When, and by whom. |
 | **content** | The text, up to 2 MB. JSON must parse to be saved. |
 
 ## Who sees what
 
 * A **public** document is readable by anyone: on the page, and as the raw file.
-* A document that is **not public** is readable by anyone who is logged in - any user, not
-  just administrators. This is for enterprise configuration and policy that should not be on
-  the open web. A logged in session is required: an API token, the configured API token or an
-  OIDC JWT does *not* give access to documents (they authenticate software to the API; the
-  documents are for people). To a stranger such a document does not exist: a browser is sent
-  to the login page, anything else gets 404, so names are not disclosed.
-* **Administrators** - the configured one, and any user with the administrator flag - create,
-  edit, rename and delete documents. An administrator user can also manage users.
+* A document that is **not public** is readable by the registry's members - the users of the
+  server with the registry "member" role - and its administrators. (Anyone can make an account
+  by logging in with GitHub, so being logged in is not enough.) This is for enterprise
+  configuration and policy that should not be on the open web. A logged in session is
+  required: an API token or an OIDC JWT does *not* give access to documents (they authenticate
+  software to the API; the documents are for people). To a stranger such a document does not
+  exist: a browser is sent to the login page, anything else gets 404, so names are not disclosed.
+* The server's **administrators** create, edit, rename and delete documents.
 
 ## Reading
 
@@ -61,7 +61,7 @@ normalised to `\n`.
 Every change - creation, edit, rename, deletion - is logged with who made it, when, and the
 complete document as it then was. `/tx-reg/docs/{name}/history` lists the log, and each entry
 opens that version, rendered. Each version keeps the visibility it had then: a version from
-when the document was private is only for logged in users, even after the document has been
+when the document was private is only for members, even after the document has been
 made public. Deleting a
 document keeps its log, but the log is reached by the document's id, so it is no longer
 browsable once the document is gone; it remains in the database (`document_log`) for the
@@ -69,6 +69,6 @@ administrator who needs it. A deleted name may be reused; the new document start
 
 ## Storage
 
-Two tables in the users' database (`databases/registry-auth.db`): `documents` (the current
+Two tables in the registry's database (`databases/registry-auth.db`): `documents` (the current
 state) and `document_log` (every version). Nothing is cached; a document is read on each
 request.
