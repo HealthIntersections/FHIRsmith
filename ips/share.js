@@ -181,4 +181,34 @@ function qrSvg(text) {
   return qr.createSvgTag({ cellSize: 4, margin: 8, scalable: true });
 }
 
-module.exports = { ShlClient, qrSvg, DEFAULT_VIEWER, DEFAULT_DAYS, MAX_SHARE_BYTES };
+/**
+ * Is this SHL server URL this server's own shl module: http(s), the host of hostName or of
+ * publicUrl, and the path /shl? (Then the ips module calls it in process, as this server.)
+ * @param {string} server - modules.ips.shl.server
+ * @param {{hostName?: string, publicUrl?: string}} self - config.hostName, auth.publicUrl
+ */
+function isOwnShlServer(server, { hostName, publicUrl } = {}) {
+  if (typeof server !== 'string' || !/^https?:\/\//i.test(server)) {
+    return false;
+  }
+  let u;
+  try {
+    u = new URL(server);
+  } catch {
+    return false;
+  }
+  const hosts = new Set();
+  if (typeof hostName === 'string' && hostName) {
+    hosts.add(hostName.toLowerCase());
+  }
+  try {
+    if (typeof publicUrl === 'string' && publicUrl) {
+      hosts.add(new URL(publicUrl).host.toLowerCase());
+    }
+  } catch {
+    // not a URL: config-check says so
+  }
+  return hosts.has(u.host.toLowerCase()) && u.pathname.replace(/\/+$/, '') === '/shl';
+}
+
+module.exports = { ShlClient, qrSvg, isOwnShlServer, DEFAULT_VIEWER, DEFAULT_DAYS, MAX_SHARE_BYTES };

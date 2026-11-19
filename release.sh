@@ -3,7 +3,9 @@
 # Release FHIRsmith: ./release.sh 0.17.0
 #
 # Checks that the release is ready, submits the tx test report to the /testing server, then
-# tags the release and pushes the tag (which starts .github/workflows/release.yml).
+# tags the release and pushes the tag (which starts .github/workflows/release.yml), then
+# starts the next version (utilities/next-snapshot.js: 0.17.1-snapshot, and a CHANGELOG
+# section for 0.17.1), leaving that uncommitted.
 # Stops at the first problem, before anything is tagged.
 #
 # The test report: run the tx tests first (npx jest tests/tx/test-cases.test.js). If the
@@ -90,3 +92,7 @@ node utilities/submit-test-report.js -file "$REPORT" || fail "the test report wa
 git tag -a "$TAG" -m "FHIRsmith $VERSION"
 git push origin "$TAG"
 echo "Tagged and pushed $TAG - the release workflow is now running"
+
+# --- start the next version: X.Y.(Z+1)-snapshot, and its CHANGELOG section (not committed) ---
+node utilities/next-snapshot.js "$VERSION" \
+  || echo "release.sh: $TAG is released, but starting the next version failed - run node utilities/next-snapshot.js $VERSION" >&2

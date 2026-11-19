@@ -2,6 +2,7 @@ const { OperationContext } = require('../../tx/operation-context');
 const { AreaCodeFactoryProvider } = require('../../tx/cs/cs-areacode');
 const { Languages } = require('../../library/languages');
 const {TestUtilities} = require("../test-utilities");
+const { SearchFilterText } = require("../../tx/library/designations");
 
 describe('AreaCodeServices', () => {
   let factory;
@@ -261,10 +262,11 @@ describe('AreaCodeServices', () => {
       ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "class contains country" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
-    test('should throw error for search filter', async () => {
-      await expect(
-        provider.searchFilter(await provider.getPrepContext(false), 'test', false)
-      ).rejects.toThrow('Text Search is not supported');
+    test('should search the names (text filter)', async () => {
+      const ctxt = await provider.getPrepContext(false);
+      await provider.searchFilter(ctxt, new SearchFilterText('eastern'), false);
+      const [set] = await provider.executeFilters(ctxt);
+      expect(set.list.map(c => c.code)).toEqual(expect.arrayContaining(['014', '030', '151']));
     });
 
   });

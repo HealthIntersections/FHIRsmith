@@ -9,7 +9,7 @@ const { fakeService } = require('./fake-ai');
 const render = require('../../ips/render');
 const profiles = require('../../ips/profiles');
 const htmlServer = require('../../library/html-server');
-const { auth, ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, login: authLogin, csrfOf: authCsrf } = require('../helpers/auth');
+const { auth, ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, tokenFor, login: authLogin, csrfOf: authCsrf } = require('../helpers/auth');
 
 const quietLog = { info() {}, warn() {}, error() {}, debug() {} };
 htmlServer.useLog(quietLog);
@@ -514,6 +514,115 @@ describe('the web pages', () => {
     expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()) })).status).toBe(401);
     expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()), token: 'wrong' })).status).toBe(401);
     expect((await agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()), token: 'tok' })).status).toBe(302);
+  });
+});
+
+describe('who may submit: the token, users, or anyone', () => {
+  let app;
+  let mod;
+  let pid;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    pid = mod.store.createProject('demo', 'Demo', null);
+    mod.store.createProject('other', 'Other', null);
+  });
+  afterEach(() => mod.shutdown());
+
+  const bearer = (t) => ({ Authorization: `Bearer ${t}` });
+  const submitForm = async (agent, data = {}) => {
+    const page = await agent.get('/ips/demo/submit');
+    const m = page.text.match(/name="_csrf" value="([^"]+)"/);
+    return agent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()), ...(m ? { _csrf: m[1] } : {}), ...data });
+  };
+
+  test('the manager chooses on the settings page; any logged in user, on the pages and with an API token', async () => {
+    await makeManager('mgr', 'password1', [pid]);
+    const mgr = (await loginAs(app, 'mgr', 'password1')).agent;
+    const settings = (await mgr.get('/ips/demo/settings')).text;
+    expect(settings).toContain('Who may submit');
+    expect(settings).toContain('name="users" value="any"');
+    await form(mgr, '/ips/demo/settings', { form: 'users', users: 'any' });
+    expect(mod.store.projectByCode('demo').submit_users).toBe('any');
+
+    // the API: a user's API token, not a session, and not nothing
+    const res = await post(app, 'demo', ips());
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toBe('Bearer');
+    expect(res.body.issue[0].details.text).toMatch(/a logged in user: send the user's API token/);
+    const jane = await makeUser('jane', 'password1', { name: 'Jane Doe' });
+    const created = await post(app, 'demo', ips(), bearer(tokenFor(jane)));
+    expect(created.status).toBe(201);
+    expect(mod.store.read(Number(created.body.id), pid).submitted_by).toBe('Jane Doe (jane)');
+    const janeAgent = (await loginAs(app, 'jane', 'password1')).agent;
+    expect((await janeAgent.post('/ips/demo/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()))).status).toBe(401);
+
+    // the pages: log in first
+    const anon = await request(app).get('/ips/demo/submit');
+    expect(anon.text).toContain('Log in to submit documents to this project');
+    expect(anon.text).not.toContain('<textarea');
+    expect((await submitForm(request.agent(app))).status).toBe(401);
+    expect((await janeAgent.get('/ips/demo/submit')).text).toContain('You are submitting as <b>Jane Doe</b>');
+    const sent = await submitForm(janeAgent);
+    expect(sent.status).toBe(302);
+    const doc = await janeAgent.get(sent.headers.location).set('Accept', 'text/html');
+    expect(doc.text).toContain('(form) from Jane Doe (jane)');
+    // a logged in user's post carries the CSRF token
+    expect((await janeAgent.post('/ips/demo/submit').type('form').send({ bundle: JSON.stringify(ips()) })).status).toBe(403);
+    // the capability statement and the documentation say so
+    expect((await request(app).get('/ips/demo/metadata')).body.rest[0].documentation).toMatch(/requires a logged in user/);
+  });
+
+  test('approved users: those given the submitter role for the project (and its managers)', async () => {
+    mod.store.setProjectSubmitUsers(pid, 'approved');
+    const jane = await makeUser('jane', 'password1');
+    const elsewhere = await makeUser('elsewhere', 'password1', { roles: [['ips', 'submitter', String(pid + 1)]] });
+    const mgr = await makeManager('mgr', 'password1', [pid]);
+    const refused = await post(app, 'demo', ips(), bearer(tokenFor(jane)));
+    expect(refused.status).toBe(403);
+    expect(refused.body.issue[0].details.text).toMatch(/not been approved/);
+    expect((await post(app, 'demo', ips(), bearer(tokenFor(elsewhere)))).status).toBe(403);
+    expect((await post(app, 'demo', ips(), bearer(tokenFor(mgr)))).status).toBe(201);
+    auth.grant(jane, 'ips', 'submitter', String(pid));
+    expect((await post(app, 'demo', ips(), bearer(tokenFor(jane)))).status).toBe(201);
+    // the role is on the user's page, and the approved users on the settings page
+    const admin = (await loginAs(app, 'admin', ADMIN_PASSWORD)).agent;
+    expect((await admin.get(`/auth/admin/users/${elsewhere}`)).text).toContain('Submit documents');
+    const settings = (await admin.get('/ips/demo/settings')).text;
+    expect(settings).toContain('Approved: ');
+    expect(settings).toContain('<code>jane</code>');
+    expect(settings).not.toContain('<code>elsewhere</code>');
+    // logged in, not approved: told so
+    const other = (await loginAs(app, 'elsewhere', 'password1')).agent;
+    expect((await other.get('/ips/demo/submit')).text).toContain('You have not been approved to submit documents to this project');
+  });
+
+  test('the token and users: either will do; an editor submits as the user', async () => {
+    mod.store.setProjectToken(pid, 'proj-token');
+    mod.store.setProjectSubmitUsers(pid, 'any');
+    const jane = await makeUser('jane', 'password1');
+    expect((await post(app, 'demo', ips(), bearer('proj-token'))).status).toBe(201);
+    expect((await post(app, 'demo', ips(), bearer(tokenFor(jane)))).status).toBe(201);
+    const none = await post(app, 'demo', ips(), bearer('wrong'));
+    expect(none.status).toBe(401);
+    expect(none.body.issue[0].details.text).toMatch(/its submission token, or a logged in user/);
+    // the form: the token, or log in
+    const anon = (await request(app).get('/ips/demo/submit')).text;
+    expect(anon).toContain('name="token"');
+    expect(anon).toContain('log in</a>: it takes documents from users too');
+    expect((await submitForm(request.agent(app), { token: 'proj-token' })).status).toBe(302);
+    // the editor's submit, logged in: the CSRF token in a header
+    const agent = (await loginAs(app, 'jane', 'password1')).agent;
+    const page = (await agent.get('/ips/compose/general')).text;
+    const csrf = page.match(/"csrf":"([^"]+)"/)[1];
+    const mother = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '../../ips/patient-editor/test-patients/2-new-mother.json'), 'utf8'));
+    const body = { project: 'demo', bundle: mother, editor: 'general' };
+    expect((await agent.post('/ips/compose/submit').send(body)).status).toBe(403);
+    const r = await agent.post('/ips/compose/submit').set('X-CSRF-Token', csrf).send(body);
+    expect(r.status).toBe(201);
+    expect(mod.store.read(Number(r.body.id), pid).submitted_by).toBe('jane (jane)');
+    expect(page).toContain('"label":""');
+    // the project list everyone sees says what each needs
+    expect((await request(app).get('/ips/compose/general')).text).toContain('"label":"(log in, or a token)"');
   });
 });
 
@@ -2197,6 +2306,18 @@ describe('sharing as SHL / VHL', () => {
     expect(c.internal).toBe(false);
     expect(c.days).toBe(100);
   });
+
+  test('a URL that is this server\'s own shl module is recognised, and so needs no token', () => {
+    const { isOwnShlServer } = require('../../ips/share');
+    const self = { hostName: 'www.example.org', publicUrl: 'https://fhir.example.org' };
+    expect(isOwnShlServer('https://www.example.org/shl', self)).toBe(true);
+    expect(isOwnShlServer('https://WWW.example.org/shl/', self)).toBe(true);
+    expect(isOwnShlServer('http://fhir.example.org/shl', self)).toBe(true);
+    expect(isOwnShlServer('https://other.example.org/shl', self)).toBe(false);
+    expect(isOwnShlServer('https://www.example.org/other/shl', self)).toBe(false);
+    expect(isOwnShlServer('/shl', self)).toBe(false);
+    expect(isOwnShlServer('https://www.example.org/shl', {})).toBe(false);
+  });
 });
 
 describe('the editor', () => {
@@ -2245,7 +2366,7 @@ describe('the editor', () => {
     expect(page.text).toMatch(/<script src="\/ips\/doc-actions\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
     expect(page.text).toContain('"urls":{"build":"/ips/compose/build","model":"/ips/compose/model","lookup":"/ips/compose/lookup","back":"/ips/demo"}');
     expect(page.text).toContain('"key":"problems"');
-    expect(page.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
+    expect(page.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false,"login":false,"asUser":false,"blocked":null,"label":""},"projects":[]');
     expect(page.text).toContain('"model":null');
     // the test patients: documents to load
     expect(page.text).toMatch(/"testPatients":\[\{"key":"1-retired-man","name":"Retired man","url":"\/ips\/assets\/test-patients\/1-retired-man\.json\?v=[A-Za-z0-9_-]{12}"\}/);
@@ -2256,7 +2377,7 @@ describe('the editor', () => {
     // without a project: the user picks the project to submit to
     const free = await request(app).get('/ips/compose/general').set('Accept', 'text/html');
     expect(free.status).toBe(200);
-    expect(free.text).toContain('"project":null,"projects":[{"code":"demo","name":"Demo","needsToken":false}]');
+    expect(free.text).toContain('"project":null,"projects":[{"code":"demo","name":"Demo","needsToken":false,"login":false,"asUser":false,"blocked":null,"label":""}]');
     expect((await request(app).get('/ips/compose').set('Accept', 'text/html')).text).toContain('<a class="btn btn-primary" href="/ips/compose/patient">Patient IPS editor</a>');
     // without a terminology server: no lookups
     const other = await makeApp();
@@ -2449,7 +2570,7 @@ describe('the document creators: building, checking, loading, sharing and submit
     expect((await call('/ips/compose/submit', { bundle, project: 'demo' })).status).toBe(401);
     expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' })).status).toBe(201);
     const page = (await request(app).get('/ips/compose/general').set('Accept', 'text/html')).text;
-    expect(page).toContain('"projects":[{"code":"demo","name":"Demo","needsToken":true}]');
+    expect(page).toContain('"projects":[{"code":"demo","name":"Demo","needsToken":true,"login":false,"asUser":false,"blocked":null,"label":"(needs a token)"}]');
     expect((await call('/ips/compose/submit', { bundle, project: 'demo', token: 'tok' }, 'http://evil.example')).status).toBe(403);
   });
 
@@ -2489,7 +2610,7 @@ describe('the document creators: building, checking, loading, sharing and submit
     expect((await request(app).get('/ips/assets/nothing.js')).status).toBe(404);
     // for a project: submits to it
     const forProject = await request(app).get('/ips/demo/compose/patient').set('Accept', 'text/html');
-    expect(forProject.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false},"projects":[]');
+    expect(forProject.text).toContain('"project":{"code":"demo","name":"Demo","needsToken":false,"login":false,"asUser":false,"blocked":null,"label":""},"projects":[]');
   });
 });
 
@@ -3502,7 +3623,7 @@ describe('the SHL viewer', () => {
     expect(page).toContain('<option value="locked">Locked (needs a token)</option>');
 
     const add = (data) => request(app).post(`${url}/add`).set('Origin', 'http://example.org').set('Host', 'example.org').type('form').send(data);
-    expect((await add({ doc: '0', project: 'locked' })).text).toContain('The submission token for Locked is missing or wrong');
+    expect((await add({ doc: '0', project: 'locked' })).text).toContain('Locked: The submission token is missing or wrong');
     expect((await add({ doc: '0', project: 'nope' })).status).toBe(400);
     expect((await add({ doc: '5', project: 'demo' })).status).toBe(400);
     const added = await add({ doc: '0', project: 'demo' });

@@ -281,7 +281,7 @@ class IpsStore {
       insertIndex: this.db.prepare(`
         INSERT INTO ips_index (doc_id, res, param, type, str, str_lc, sys, code, lo, hi, ref)
         VALUES (@doc_id, @res, @param, @type, @str, @str_lc, @sys, @code, @lo, @hi, @ref)`),
-      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, json, analysed_json FROM documents WHERE id = ?'),
+      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, submitted_by, json, analysed_json FROM documents WHERE id = ?'),
       saveAnalysed: this.db.prepare('UPDATE documents SET analysed_json = ? WHERE id = ?'),
       deleteDoc: this.db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?'),
       countDocs: this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE project_id = ?'),
@@ -326,6 +326,15 @@ class IpsStore {
     }
     if (!has('national_profiles', 'snomed_edition')) {
       this.db.exec('ALTER TABLE national_profiles ADD COLUMN snomed_edition TEXT');
+    }
+    if (!has('projects', 'submit_users')) {
+      // who may submit besides the token's holders: '' (nobody: the token, or anyone if there is
+      // none), 'any' (any logged in user), 'approved' (users given the ips submitter role)
+      this.db.exec('ALTER TABLE projects ADD COLUMN submit_users TEXT');
+    }
+    if (!has('documents', 'submitted_by')) {
+      // the user who submitted the document ("Name (login)"), when a user did
+      this.db.exec('ALTER TABLE documents ADD COLUMN submitted_by TEXT');
     }
     if (!has('projects', 'ai_json')) {
       // the project's AI assessment settings (JSON; the API key encrypted)
@@ -543,6 +552,17 @@ class IpsStore {
   /** Set (or, with null, clear) the token submissions to the project must carry. */
   setProjectToken(id, token) {
     return this.db.prepare('UPDATE projects SET token = ? WHERE id = ?').run(token || null, id).changes > 0;
+  }
+
+  /** Which users may submit: '' (none), 'any', 'approved' */
+  setProjectSubmitUsers(id, mode) {
+    const m = mode === 'any' || mode === 'approved' ? mode : null;
+    return this.db.prepare('UPDATE projects SET submit_users = ? WHERE id = ?').run(m, id).changes > 0;
+  }
+
+  /** Record the user who submitted a document */
+  setSubmittedBy(id, label) {
+    this.db.prepare('UPDATE documents SET submitted_by = ? WHERE id = ?').run(label || null, id);
   }
 
   /** Delete a project and everything in it. @returns {boolean} whether there was one */

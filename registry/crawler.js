@@ -17,6 +17,32 @@ const {debugLog} = require("../tx/operation-context");
 
 const MASTER_URL = 'https://fhir.github.io/ig-registry/tx-servers.json';
 
+/**
+ * Take a request's credential headers off a redirect that goes to another host
+ * (follow-redirects' beforeRedirect: options is the next request's)
+ */
+function dropCredentialsOffHost(options, fetchUrl, credentials) {
+  if (!credentials || Object.keys(credentials).length === 0) {
+    return;
+  }
+  let host;
+  try {
+    host = new URL(fetchUrl).host;
+  } catch {
+    host = null;
+  }
+  const next = options.port ? `${options.hostname}:${options.port}` : options.hostname;
+  if (next === host || options.hostname === host) {
+    return;
+  }
+  const names = new Set(Object.keys(credentials).map(k => k.toLowerCase()));
+  for (const h of Object.keys(options.headers || {})) {
+    if (names.has(h.toLowerCase())) {
+      delete options.headers[h];
+    }
+  }
+}
+
 class RegistryCrawler {
   log;
 
@@ -384,6 +410,23 @@ class RegistryCrawler {
   }
 
   /**
+   * The FHIR version a server's CapabilityStatement says it is, if it looks like one (1.0.2,
+   * 4.0.1, 6.0.0-ballot3...), else the default. What a server says is shown on the registry's
+   * pages: anything else is not kept
+   */
+  fhirVersionOf(capability, def, address) {
+    const v = capability ? capability.fhirVersion : undefined;
+    if (v === undefined || v === null || v === '') {
+      return def;
+    }
+    if (typeof v === 'string' && /^\d{1,2}\.\d{1,2}(\.\d{1,3})?(-[A-Za-z0-9.]{1,20})?$/.test(v)) {
+      return v;
+    }
+    this.addLogEntry('warn', `The CapabilityStatement's fhirVersion is not a FHIR version - ${def} assumed`, address);
+    return def;
+  }
+
+  /**
    * Process an R3 server
    */
   async processServerVersionR3(version, server, exclusions) {
@@ -391,7 +434,7 @@ class RegistryCrawler {
     const capabilityUrl = `${version.address}/metadata`;
     const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
-    version.version = capability.fhirVersion || '3.0.2';
+    version.version = this.fhirVersionOf(capability, '3.0.2', version.address);
     version.software = capability.software ? capability.software.name : "unknown";
     version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
     version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
@@ -437,7 +480,7 @@ class RegistryCrawler {
     const capabilityUrl = `${version.address}/metadata`;
     const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
-    version.version = capability.fhirVersion || defVersion;
+    version.version = this.fhirVersionOf(capability, defVersion, version.address);
     version.software = capability.software ? capability.software.name : "unknown";
     version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
     version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
@@ -649,7 +692,10 @@ class RegistryCrawler {
       // counted as it is unzipped, so a small response that unzips to a lot is stopped too
       maxContentLength: this.config.maxResponseBytes,
       httpAgent: this.guardedAgents().httpAgent,
-      httpsAgent: this.guardedAgents().httpsAgent
+      httpsAgent: this.guardedAgents().httpsAgent,
+      // a server's credentials go only to it: a redirect to another host goes on without them
+      // (axios drops Authorization there itself, but not Api-Key)
+      beforeRedirect: (options) => dropCredentialsOffHost(options, fetchUrl, credentials)
     });
   }
 
@@ -869,3 +915,4 @@ class RegistryCrawler {
 }
 
 module.exports = RegistryCrawler;
+module.exports.dropCredentialsOffHost = dropCredentialsOffHost;

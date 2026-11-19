@@ -21,7 +21,10 @@ const { SqlitePool } = require('../library/sqlite-pool');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
-const {tokenMatches, tokenConfigured} = require('../library/request-token');
+const rateLimit = require('express-rate-limit');
+const auth = require('../library/auth');
+const parse5 = require('parse5');
+const { checkNarrative } = require('../library/narrative-check');
 const xigLog = Logger.getInstance().child({ module: 'xig' });
 
 const router = express.Router();
@@ -1971,18 +1974,18 @@ function getDatabaseAgeInfo() {
   };
 }
 
-// The form on /xig/stats that starts an update (POST /xig/update), when an updateToken is configured
-function buildUpdateForm() {
-  if (!tokenConfigured(xigSettings.updateToken)) {
-    return '<p class="text-muted">An update can be started from here when an updateToken is set in the xig configuration.</p>';
+// The form on /xig/stats that starts an update (POST /xig/update), for the server's administrators
+function buildUpdateForm(req, res) {
+  const user = auth.currentUser(req);
+  if (!user || !user.isAdmin) {
+    return '<p class="text-muted">The server\'s administrators can start an update of the database from here.</p>';
   }
   let html = '<h4>Update the database now</h4>';
   html += '<form method="POST" action="/xig/update" class="mb-4">';
+  html += `<input type="hidden" name="_csrf" value="${escape(res.locals._csrf || '')}"/>`;
   html += '<p>Downloads the current database from fhir.org (about 3 GB) and switches to it. ';
   html += updateInProgress ? '<strong>An update is running now.</strong>' : 'It takes several minutes.';
   html += '</p>';
-  html += '<label for="xig-update-token">Update token</label> ';
-  html += '<input type="password" id="xig-update-token" name="token" required autocomplete="off" maxlength="200"> ';
   html += '<button type="submit" class="btn btn-primary">Start the update</button>';
   html += '</form>';
   return html;
@@ -2498,7 +2501,7 @@ router.get(/^\/sitemap-(\d+)\.xml\.gz$/, async (req, res) => {
 });
 
 // Stats endpoint
-router.get('/stats', async (req, res) => {
+router.get('/stats', ...auth.web, async (req, res) => {
   const start = Date.now();
   try {
 
@@ -2557,7 +2560,7 @@ router.get('/stats', async (req, res) => {
         introContent += `</div>`;
       }
 
-      const fullContent = introContent + content + buildUpdateForm();
+      const fullContent = introContent + content + buildUpdateForm(req, res);
 
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
@@ -2987,8 +2990,15 @@ function formatMB(bytes) {
 
 function buildResourceNarrative(jsonData, packageObj) {
   let html = '<hr/><h3>Narrative</h3>';
-  if (jsonData.text && jsonData.text.div) {
-    let narrativeDiv = jsonData.text.div;
+  if (jsonData.text && typeof jsonData.text.div === 'string' && jsonData.text.div) {
+    // whoever published the package wrote it: not shown if it has active content (script,
+    // event handlers, forms...), and otherwise shown as its parsed tree written out again, never
+    // the string as it is (an unterminated tag would swallow the rest of the page)
+    const active = checkNarrative(jsonData.text.div);
+    if (active) {
+      return html + `<p style="color: maroon">The narrative is not shown: ${escape(active)}</p>`;
+    }
+    let narrativeDiv = parse5.serialize(parse5.parseFragment(jsonData.text.div));
 
     // Fix narrative links to be relative to the package canonical base
     if (packageObj && packageObj.Web) {
@@ -3047,11 +3057,13 @@ function fixNarrative(narrativeHtml, baseUrl) {
   }
 
   try {
+    // (the base is the package's own claim: it goes into an attribute, so it is escaped)
+    const base = escape(baseUrl);
     // Fix relative image sources (but not http/https/data: URLs)
-    let fixed = narrativeHtml.replace(/src="(?!http|https|data:|#)([^"]+)"/g, `src="${baseUrl}/$1"`);
+    let fixed = narrativeHtml.replace(/src="(?!http|https|data:|#)([^"]+)"/g, (m, rel) => `src="${base}/${rel}"`);
 
     // Fix relative links (but not http/https/data:/mailto:/# URLs)
-    fixed = fixed.replace(/href="(?!http|https|data:|mailto:|#)([^"]+)"/g, `href="${baseUrl}/$1"`);
+    fixed = fixed.replace(/href="(?!http|https|data:|mailto:|#)([^"]+)"/g, (m, rel) => `href="${base}/${rel}"`);
 
     return fixed;
   } catch (error) {
@@ -3101,45 +3113,74 @@ router.get('/cache', async (req, res) => {
   }
 });
 
-// POST /xig/update re-downloads the database (about 3 GB), so it needs the updateToken from
-// the xig config: in the x-update-token header, or (from the form on /xig/stats) in a
-// "token" form field. With no updateToken it is disabled.
+// POST /xig/update re-downloads the database (about 3 GB): for the server's administrators.
+// From the form on /xig/stats, logged in (with the CSRF token); from software, with an
+// administrator's API token (Authorization: Bearer).
 //
 // The form gets a page back straight away, while the update runs on (it takes minutes);
 // /xig/stats shows how it went. Other callers wait for the update and get JSON.
-router.post('/update', express.urlencoded({ extended: false, limit: '2kb' }), async (req, res) => {
-  const fromForm = !!req.is('application/x-www-form-urlencoded');
-  const page = (status, alert, message) => {
-    const content = `<div class="alert alert-${alert}">${escape(message)}</div><p><a href="/xig/stats">Back to the status page</a></p>`;
-    res.status(status).setHeader('Content-Type', 'text/html');
-    res.send(renderPage('Update the XIG database', content));
+function updatePage(res, status, alert, message) {
+  const content = `<div class="alert alert-${alert}">${escape(message)}</div><p><a href="/xig/stats">Back to the status page</a></p>`;
+  res.status(status).setHeader('Content-Type', 'text/html');
+  res.send(renderPage('Update the XIG database', content));
+}
+
+// run a list of middleware in turn
+function inTurn(list) {
+  return (req, res, next) => {
+    let i = 0;
+    const step = (err) => {
+      if (err) {
+        return next(err);
+      }
+      const mw = list[i++];
+      if (!mw) {
+        return next();
+      }
+      try {
+        mw(req, res, step);
+      } catch (e) {
+        next(e);
+      }
+    };
+    step();
   };
-  const refuse = (message) => fromForm ? page(403, 'danger', message) : res.status(403).json({ status: 'ERROR', error: 'forbidden: ' + message });
+}
 
+const updateFromForm = inTurn([auth.sameOrigin, auth.session, express.urlencoded({ extended: false, limit: '2kb' }), auth.csrf,
+  auth.requirePage(u => u.isAdmin, (req, res, status, message) => updatePage(res, status, 'danger', message))]);
+const updateFromApi = auth.requireApi(p => p.isAdmin, (req, res, status, message) => {
+  if (status === 401) {
+    res.setHeader('WWW-Authenticate', 'Bearer');
+  }
+  res.status(status).json({ status: 'ERROR', error: (status === 401 ? 'unauthorized: ' : 'forbidden: ') + message });
+});
+
+router.post('/update', rateLimit(auth.credentialLimits()), (req, res, next) => {
+  if (!req.is('application/x-www-form-urlencoded')) {
+    return updateFromApi(req, res, next);
+  }
+  updateFromForm(req, res, (err) => {
+    if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+      return updatePage(res, 403, 'danger', 'The form has expired or did not come from this site - reload the status page and try again');
+    }
+    next(err);
+  });
+}, async (req, res) => {
+  const fromForm = !!req.is('application/x-www-form-urlencoded');
   try {
-    if (!tokenConfigured(xigSettings.updateToken)) {
-      refuse('no updateToken is configured, so this endpoint is disabled');
-      return;
-    }
-    const supplied = req.headers['x-update-token'] ?? req.body?.token;
-    if (!tokenMatches(xigSettings.updateToken, supplied)) {
-      xigLog.warn('Rejected /xig/update: missing or invalid token (from ' + req.ip + ')');
-      refuse('missing or invalid x-update-token');
-      return;
-    }
-
     if (fromForm) {
       if (updateInProgress) {
-        page(200, 'info', 'An update is already running. The status page shows how it is going.');
+        updatePage(res, 200, 'info', 'An update is already running. The status page shows how it is going.');
         return;
       }
-      xigLog.info('Manual update triggered from the status page');
+      xigLog.info(`Manual update started from the status page by ${req.user.login}`);
       updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
-      page(202, 'success', 'The update has started. It takes several minutes; the status page shows how it is going.');
+      updatePage(res, 202, 'success', 'The update has started. It takes several minutes; the status page shows how it is going.');
       return;
     }
 
-    xigLog.info('Manual update triggered via API');
+    xigLog.info(`Manual update started via the API by ${req.user.login}`);
     await updateXigDatabase();
     res.json({
       status: 'SUCCESS',

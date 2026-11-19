@@ -1198,7 +1198,7 @@ class RegistryModule {
 
       // Format versions as R3/R4/R5
       const formattedVersions = cs.servers[0].versions.map(v => this._formatFhirVersion(v));
-      html += `<td>${formattedVersions.join(',')}</td>`;
+      html += `<td>${escape(formattedVersions.join(','))}</td>`;
       html += '</tr>';
 
       // Additional rows for this code system (if any)
@@ -1208,7 +1208,7 @@ class RegistryModule {
 
         // Format versions as R3/R4/R5
         const formattedVersions = cs.servers[i].versions.map(v => this._formatFhirVersion(v));
-        html += `<td>${formattedVersions.join(',')}</td>`;
+        html += `<td>${escape(formattedVersions.join(','))}</td>`;
         html += '</tr>';
       }
     });
@@ -1254,7 +1254,7 @@ class RegistryModule {
 
       // Format versions as R3/R4/R5
       const formattedVersions = vs.servers[0].versions.map(v => this._formatFhirVersion(v));
-      html += `<td>${formattedVersions.join(',')}</td>`;
+      html += `<td>${escape(formattedVersions.join(','))}</td>`;
       html += '</tr>';
 
       // Additional rows for this value set (if any)
@@ -1264,7 +1264,7 @@ class RegistryModule {
 
         // Format versions as R3/R4/R5
         const formattedVersions = vs.servers[i].versions.map(v => this._formatFhirVersion(v));
-        html += `<td>${formattedVersions.join(',')}</td>`;
+        html += `<td>${escape(formattedVersions.join(','))}</td>`;
         html += '</tr>';
       }
     });
