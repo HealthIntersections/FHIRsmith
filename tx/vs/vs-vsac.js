@@ -136,7 +136,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
    * @param {number} [config.refreshIntervalHours=24] - Hours between refresh scans
    * @param {string} [config.baseUrl='https://cts.nlm.nih.gov/fhir'] - Base URL for VSAC FHIR server
    * @param {number} [config.timeoutMs=120000] - HTTP request timeout in milliseconds
-   * @param {string} [config.resyncPassword] - If set, enables the operator "resync a ValueSet"
+   * @param {boolean} [config.resync] - false turns off the "resync a ValueSet"
    *   form on the /info page, gated by this password. If unset, the form is not offered.
    * @param {number} [config.valueSetCacheMB=64] - Size (of their stored JSON) of the recently used
    *   value sets kept parsed (see RecentValueSets); 0 for none. This is measured in stored JSON,
@@ -156,7 +156,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     this.apiKey = config.apiKey;
     // Optional operator password for the on-demand resync form (see info()).
-    this.resyncPassword = config.resyncPassword || null;
+    this.resyncAllowed = config.resync !== false;
+    if (config.resyncPassword) {
+      vsacLog.warn('VSAC: resyncPassword is no longer used - the server\'s administrators (logged in) can resync a ValueSet from the info page');
+    }
     this.cacheFolder = folders.ensureFolder("terminology-cache", "vsac");
     // https: every request carries the API key. (VSAC redirects http to https, but only after
     // the key has been sent in the clear)
@@ -1241,27 +1244,18 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Whether the on-demand resync form is enabled (a resyncPassword is configured).
+   * Whether the on-demand resync form is there at all: unless resync is false in the
+   * configuration. Only the server's administrators (library/auth) see and use it.
    */
   _resyncEnabled() {
     // a follower doesn't write: the info pages are routed to the master
-    return !!this.resyncPassword && this.cluster !== 'follower';
+    return this.resyncAllowed && this.cluster !== 'follower';
   }
 
-  /**
-   * Timing-safe comparison of a provided password against the configured one.
-   * @private
-   */
-  _passwordMatches(provided) {
-    if (!this.resyncPassword) {
-      return false;
-    }
-    const a = Buffer.from(String(provided == null ? '' : provided));
-    const b = Buffer.from(String(this.resyncPassword));
-    if (a.length !== b.length) {
-      return false;
-    }
-    return crypto.timingSafeEqual(a, b);
+  /** Is the request from one of the server's administrators? @private */
+  _isAdministrator(req) {
+    const user = req ? require('../../library/auth').currentUser(req) : null;
+    return !!(user && user.isAdmin);
   }
 
   /**
@@ -1283,9 +1277,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * Handle a POST from the resync form. Validates the password (timing-safe) and,
+   * Handle a POST from the resync form. From one of the server's administrators, and
    * if a full sync isn't already running, resyncs the requested URL. Returns an
-   * HTML notice. Never echoes or logs the password.
+   * HTML notice.
    * @private
    */
   async _handleResyncRequest(req) {
@@ -1296,10 +1290,8 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     const body = req.body || {};
     const url = this._expandOidOrUrl(body.url);
 
-    if (!this._passwordMatches(body.password)) {
-      // Small delay to blunt brute-forcing; reveal nothing else.
-      await new Promise(r => setTimeout(r, 1000));
-      return '<p style="color:#a00"><strong>Incorrect password &mdash; no action taken.</strong></p>';
+    if (!this._isAdministrator(req)) {
+      return '<p style="color:#a00"><strong>Only the server\'s administrators can resync a ValueSet (log in) &mdash; no action taken.</strong></p>';
     }
     if (!url) {
       return '<p style="color:#a00">Enter a ValueSet URL to resync.</p>';
@@ -1335,26 +1327,31 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
-   * The resync form HTML, or '' when the feature is disabled (no password set).
+   * The resync form HTML, for an administrator; else '' (or, when it is enabled, a link to log in)
    * @private
    */
-  _resyncFormHtml() {
+  _resyncFormHtml(req, res) {
     if (!this._resyncEnabled()) {
       return '';
     }
-    return `<form method="post" autocomplete="off" style="margin:0 0 1em 0; padding:0.75em; border:1px solid #ccc; background:#f7f7f7">
+    const escape = require('escape-html');
+    if (!this._isAdministrator(req)) {
+      const auth = require('../../library/auth');
+      return req ? `<p style="font-size: 85%"><a href="${escape(auth.loginUrl(req))}">Log in</a> as an administrator to resync a ValueSet.</p>` : '';
+    }
+    const csrf = res && res.locals && res.locals._csrf ? `<input type="hidden" name="_csrf" value="${escape(res.locals._csrf)}">` : '';
+    return `<form method="post" autocomplete="off" style="margin:0 0 1em 0; padding:0.75em; border:1px solid #ccc; background:#f7f7f7">${csrf}
   <strong>Resync a ValueSet</strong>
   <div style="margin-top:0.5em">
     <label>ValueSet URL or OID: <input type="text" name="url" size="70" autocomplete="off"></label>
   </div>
   <div style="margin-top:0.5em">
-    <label>Password: <input type="password" name="password" autocomplete="off"></label>
     <button type="submit">Resync</button>
   </div>
 </form>`;
   }
 
-  async info(req) {
+  async info(req, res) {
     const escape = require('escape-html');
 
     // Operator action: resync a specific ValueSet (POST from the form below).
@@ -1420,7 +1417,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         : '—';
 
     let html = '';
-    html += this._resyncFormHtml();
+    html += this._resyncFormHtml(req, res);
     html += resyncNotice;
     html += '<h3>VSAC Sync History</h3>';
     html += '<table class="grid">';

@@ -163,24 +163,17 @@ function csrfField(token) {
 }
 
 /**
- * The line at the top of every page: who is logged in, and what they can get to.
- * @param {{base: string, user?: Object, csrf?: string}} ctx
+ * The links at the top of every page for someone who may edit the named links. Who is logged
+ * in (or Login) is the right-most item of the top menu, as on every module's pages
+ * ([%account%], library/auth)
+ * @param {{base: string, user?: Object}} ctx
  */
 function userBar(ctx) {
-  const base = escape(ctx.base);
   const u = ctx.user;
-  if (!u) {
-    return `<div style="float: right; font-size: 85%"><a href="${base}/login">Login</a></div>`;
+  if (!u || !u.canEditLinks) {
+    return '';
   }
-  const parts = [`Logged in as <b>${escape(u.name)}</b>`];
-  if (u.canEditLinks) {
-    parts.push(`<a href="${base}/admin/links">Named links</a>`);
-  }
-  if (u.isAdmin) {
-    parts.push(`<a href="${base}/admin/users">Users</a>`);
-  }
-  parts.push(`<form method="post" action="${base}/logout" style="display: inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
-  return `<div style="float: right; font-size: 85%">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
+  return `<div style="float: right; font-size: 85%"><a href="${escape(ctx.base)}/admin/links">Named links</a></div>`;
 }
 
 // ---- the list ------------------------------------------------------------------------
@@ -631,21 +624,6 @@ function renderReport(report, baseUrl, ctx = {}) {
 
 // ---- login and administration --------------------------------------------------------
 
-function renderLogin(baseUrl, error, csrf) {
-  const base = escape(baseUrl);
-  let h = STYLE;
-  if (error) {
-    h += `<div class="alert alert-danger">${escape(error)}</div>`;
-  }
-  h += `<form method="post" action="${base}/login" style="max-width: 360px">${csrfField(csrf)}` +
-    '<div class="mb-3"><label for="login" class="form-label">Username</label>' +
-    '<input type="text" class="form-control" id="login" name="login" required autocomplete="username"/></div>' +
-    '<div class="mb-3"><label for="password" class="form-label">Password</label>' +
-    '<input type="password" class="form-control" id="password" name="password" required autocomplete="current-password"/></div>' +
-    '<button type="submit" class="btn btn-primary">Login</button></form>';
-  return h;
-}
-
 /**
  * The named links: canonical URLs that are shown by name.
  * @param {Array} links - from store.links()
@@ -680,44 +658,7 @@ function renderLinks(links, ctx, message) {
   return h + '</table>';
 }
 
-/**
- * User administration (the administrator only).
- * @param {Array} users - from store.users()
- * @param {{base: string, user: Object}} ctx
- */
-function renderUsers(users, ctx, message) {
-  const base = escape(ctx.base);
-  let h = STYLE + userBar(ctx);
-  h += `<p><a href="${base}">All reports</a> &nbsp;|&nbsp; <a href="${base}/admin/links">Named links</a></p>`;
-  h += '<p>The administrator (login <code>admin</code>, password in the configuration) can do everything. ' +
-    'Other users get the rights ticked here. Leave the password blank to keep the current one.</p>';
-  if (message) {
-    h += `<div class="alert alert-warning">${escape(message)}</div>`;
-  }
-  h += '<table class="table table-sm tr-table"><tr><th>Login</th><th>Name</th><th>Password</th><th>Edit named links</th><th>Delete reports</th><th></th></tr>';
-  const cb = (form, name, on) => `<input form="${form}" type="checkbox" name="${name}" value="1"${on ? ' checked' : ''}/>`;
-  for (const u of users) {
-    const form = `user-${u.id}`;
-    const action = `${base}/admin/users/${u.id}`;
-    h += `<tr><td>${escape(u.login)}</td>` +
-      `<td><input form="${form}" type="text" name="name" required class="form-control" style="font-size: 85%" value="${escape(u.name)}"/></td>` +
-      `<td><input form="${form}" type="password" name="password" class="form-control" style="font-size: 85%" autocomplete="new-password" placeholder="(unchanged)"/></td>` +
-      `<td>${cb(form, 'editLinks', u.can_edit_links)}</td><td>${cb(form, 'deleteReports', u.can_delete_reports)}</td>` +
-      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" style="display: inline">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-primary tr-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
-      `<form method="post" action="${action}/delete" style="display: inline" onsubmit="return confirm('Delete this user?')">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-default tr-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
-  }
-  h += `<tr><td><input form="user-new" type="text" name="login" required class="form-control" style="font-size: 85%" autocomplete="off"/></td>` +
-    '<td><input form="user-new" type="text" name="name" required class="form-control" style="font-size: 85%"/></td>' +
-    '<td><input form="user-new" type="password" name="password" required class="form-control" style="font-size: 85%" autocomplete="new-password"/></td>' +
-    `<td>${cb('user-new', 'editLinks', false)}</td><td>${cb('user-new', 'deleteReports', false)}</td>` +
-    `<td><form id="user-new" method="post" action="${base}/admin/users" style="display: inline">${csrfField(ctx.csrf)}` +
-    '<button type="submit" class="btn btn-primary tr-btn" style="font-size: 85%; padding: 1px 10px">Add</button></form></td></tr>';
-  return h + '</table>';
-}
-
 module.exports = {
-  renderList, renderSummary, renderReport, renderLogin, renderLinks, renderUsers,
+  renderList, renderSummary, renderReport, renderLinks,
   listQueryToSearch, uriLink, badge, canonicalHtml, runLength
 };

@@ -217,7 +217,8 @@ These are HTML, not part of the API, and never secured:
 |---|---|
 | `/tx-reg/software` | What each server runs, how old it is, and its uptime ([internals.md](internals.md#the-software-page)) |
 | `/tx-reg/log` | The scanner's log |
-| `/tx-reg/login`, `/tx-reg/account`, `/tx-reg/admin/users` | Login and user administration, when users are configured ([security.md](security.md)) |
+| `/tx-reg/login`, `/tx-reg/account`, `/tx-reg/admin/users` | Redirects to the server's login, account and users pages ([library/auth](../../library/auth/README.md)) |
+| `/tx-reg/usage` | The requests each client made, for the server's administrators ([security.md](security.md)) |
 
 ## Keeping the description honest
 

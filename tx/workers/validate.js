@@ -21,7 +21,7 @@ const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = req
 const {Parameters} = require("../library/parameters");
 const {Designations, DisplayCheckingStyle, DisplayDifference, SearchFilterText} = require("../library/designations");
 const ValueSet = require("../library/valueset");
-const {ValueSetExpander, UNKNOWN_CONCEPT_FILTER_PROPS, UNKNOWN_CONCEPT_FILTER_OPS} = require("./expand");
+const {ValueSetExpander, filterConceptCodes} = require("./expand");
 const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
@@ -128,7 +128,7 @@ class ValueSetChecker {
         }
       }
     } catch (error) {
-      this.worker.log.error(error);
+      // rethrown: the handler logs it, if it isn't the answer to the request
       debugLog(error);
       if (error instanceof Issue && error.statusCode >= 400 && error.statusCode < 500) {
         // the value set can't be expanded (a code system it imports is unknown, it's too big...):
@@ -396,8 +396,13 @@ class ValueSetChecker {
    * matches nothing (the value set is invalid - see invalidContentMessages)
    */
   async filterNamesUnknownCode(cs, fc) {
-    return !!fc.value && UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) && UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)
-      && !(await this.codeKnown(cs, fc.value));
+    // the value, or for `in`, any code of its list
+    for (const code of filterConceptCodes(fc)) {
+      if (!(await this.codeKnown(cs, code))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async invalidContentMessages() {
@@ -1447,6 +1452,15 @@ class ValueSetChecker {
     // the answer, which is not the same as ok: a coding can be in the value set and still carry an
     // error of its own (an unknown version, say), and then the CodeableConcept is not valid
     let valid = ok === true && !op.hasErrors();
+    // a code system that wasn't found because the server in the ecosystem that has it couldn't be
+    // asked: the response says so, next to the issue saying it wasn't found. An error when the
+    // validation failed (it's part of why), a warning when it didn't
+    for (const iss of this.worker.ecosystemIssues([...unknownSystems], valid ? 'warning' : 'error')) {
+      op.addIssue(iss);
+      if (!valid) {
+        msg(iss.message);
+      }
+    }
     result.addParamBool('result', valid);
     if (psys) {
       result.addParamUri('system', psys);
@@ -2316,7 +2330,9 @@ class ValidateWorker extends TerminologyWorker {
       }
       return result;
     } catch (error) {
-      this.log.error(error);
+      // An Issue becomes the validation's result (a code with no system, say): that is the
+      // answer, not a server failure, so it isn't logged. Anything else is rethrown, and the
+      // handler logs it
       debugLog(error);
       if (error instanceof Issue && !error.isHandleAsOO()) {
         return await this.handlePrepareError(error, coded, mode.mode, txp);
@@ -2756,7 +2772,7 @@ class ValidateWorker extends TerminologyWorker {
     try {
       await checker.prepare();
     } catch (error) {
-      this.log.error(error);
+      // as in handleCodeSystemInner: an Issue is the result, anything else the handler logs
       debugLog(error);
       if (!(error instanceof Issue) || error.isHandleAsOO()) {
         throw error;
@@ -2868,10 +2884,14 @@ class ValidateWorker extends TerminologyWorker {
   async handlePrepareError(error, coded, mode, txp) {
     let op = new OperationOutcome();
     op.addIssue(error);
+    const extra = this.ecosystemIssues(error.unknownSystem ? [error.unknownSystem] : [], error.level === 'error' ? 'error' : 'warning');
+    for (const iss of extra) {
+      op.addIssue(iss);
+    }
     let p = new Parameters();
     p.addParamResource('issues', op.jsonObj);
     p.addParamBool('result', false);
-    p.addParamStr('message', error.message);
+    p.addParamStr('message', [error.message, ...extra.filter(i => i.level === 'error').map(i => i.message)].join('; '));
     if (!mode || !coded) {
       // nothing to add
     } else if (mode == 'codeableConcept') {

@@ -65,6 +65,16 @@ describe('CodeSystem Operations tab', () => {
     expect(html).toContain('action="$subsumes"');
   });
 
+  // A code system can be loaded in more than one version (SNOMED editions, say): the
+  // lookup and subsumes forms must ask about the version being viewed, not the default one.
+  test('lookup and subsumes carry the version of the code system being viewed', () => {
+    for (const op of ['$lookup', '$subsumes']) {
+      const start = html.indexOf(`action="${op}"`);
+      const form = html.substring(start, html.indexOf('</form>', start));
+      expect(form).toMatch(/<input type="hidden" name="version" value="[^"]+"\/>/);
+    }
+  });
+
   test('the filter form posts to $expand and carries the code system it was opened on', () => {
     expect(html).toContain('/tx/r5/ValueSet/$expand?_format=html');
     expect(html).toContain('data-system="http://hl7.org/fhir/administrative-gender"');

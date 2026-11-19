@@ -10,7 +10,7 @@
  * passport page takes in the browser, here on the server, against an SHL server - this
  * server's own shl module (an internal path, dispatched in-process) or another FHIRsmith's:
  *
- *   1. POST {shl}/create  { password, days, vhl }       -> { uuid, pword, link }
+ *   1. POST {shl}/create  { days, vhl }                 -> { uuid, pword, link }   (as a user with the shl "create" role)
  *   2. encrypt the document as a JWE (dir / A256GCM, a random 256-bit key)
  *   3. POST {shl}/upload  { uuid, pword, files: [{ cnt: base64(jwe), type }] }
  *   4. the shlink payload { url: link, flag: 'U', key, label }, base64url (no flag for a VHL:
@@ -45,15 +45,14 @@ function b64url(bytes) {
  */
 class ShlClient {
   /**
-   * @param {{server: string, password: string, days?: number, viewer?: string, timeoutMs?: number}} config
+   * @param {{server: string, token?: string, days?: number, viewer?: string, timeoutMs?: number}} config
+   *   token: for an SHL server elsewhere, an API token of a user there with the shl "create" role. A
+   *   server on this server is called as this server itself
    * @param {{app?: Object, log?: Object}} [options]
    */
   constructor(config, options = {}) {
     if (!config || typeof config.server !== 'string' || !config.server.trim()) {
       throw new Error('modules.ips.shl.server is required (a URL, or a path on this server)');
-    }
-    if (typeof config.password !== 'string' || !config.password) {
-      throw new Error('modules.ips.shl.password is required (the shl module\'s password)');
     }
     this.base = config.server.trim().replace(/\/+$/, '');
     this.internal = this.base.startsWith('/');
@@ -65,7 +64,10 @@ class ShlClient {
     }
     this.app = options.app || null;
     this.log = options.log || null;
-    this.password = config.password;
+    this.token = typeof config.token === 'string' && config.token ? config.token : null;
+    if (!this.internal && !this.token) {
+      throw new Error('modules.ips.shl.token is required for an SHL server elsewhere (an API token of a user there with the shl "create" role)');
+    }
     this.days = Number.isInteger(config.days) && config.days > 0 ? config.days : DEFAULT_DAYS;
     // the viewer the QR opens: the configured one, else the one share() is given (this
     // server's own, usually), else viewer.tcpdev.org
@@ -84,7 +86,9 @@ class ShlClient {
    */
   async post(path, body, host) {
     const target = `${this.base}${path}`;
-    const headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    const headers = { 'Content-Type': 'application/json', Accept: 'application/json',
+      // who is asking: this server itself (in process), or the user the token belongs to
+      ...(this.internal ? require('../library/auth').internalHeaders() : { Authorization: `Bearer ${this.token}` }) };
     let status;
     let text;
     if (this.internal) {
@@ -144,7 +148,7 @@ class ShlClient {
     if (jwe.length > MAX_SHARE_BYTES) {
       throw new Error(`The document is too big to share this way (${jwe.length} bytes encrypted; the limit is ${MAX_SHARE_BYTES})`);
     }
-    const created = await this.post('/create', { password: this.password, days, vhl: kind === 'vhl' }, options.host);
+    const created = await this.post('/create', { days, vhl: kind === 'vhl' }, options.host);
     if (typeof created.uuid !== 'string' || typeof created.pword !== 'string' || typeof created.link !== 'string') {
       throw new Error('The SHL server did not give a uuid, password and link');
     }

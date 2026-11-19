@@ -1,5 +1,6 @@
 const express = require('express');
 const request = require('supertest');
+const { ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, tokenFor, login: authLogin, csrfOf: authCsrf } = require('../helpers/auth');
 
 const TestingModule = require('../../testing/testing');
 const { validateReport } = require('../../testing/testing');
@@ -39,6 +40,10 @@ async function makeApp(config = {}) {
   app.use(express.raw({ type: 'application/fhir+json', limit: '50mb' }));
   app.use(express.raw({ type: 'application/fhir+xml', limit: '50mb' }));
   app.use(express.json({ limit: '50mb' }));
+  // the server's users (library/auth): a fresh database, with the administrator 'admin'
+  setupAuth();
+  await makeUser('admin', ADMIN_PASSWORD, { admin: true, name: 'Administrator' });
+  mountAuth(app);
   const mod = new TestingModule(makeStats(), quietLog);
   await mod.initialize({ database: ':memory:', rateLimit: { max: 0 }, ...config });
   app.use('/testing', mod.router);
@@ -212,36 +217,43 @@ describe('POST', () => {
 });
 
 describe('tokens', () => {
-  test('when a token is configured every POST needs it', async () => {
-    const { app, mod } = await makeApp({ token: 'sekrit' });
+  test('with requireToken every POST needs an API token with the submit role', async () => {
+    const { app, mod } = await makeApp({ requireToken: true });
+    const submitter = tokenFor(await makeUser('ci-bot', null, { roles: [['testing', 'submit']] }));
+    const nobody = tokenFor(await makeUser('nobody', null));
     expect((await post(app, report())).status).toBe(401);
-    expect((await post(app, report(), { Authorization: 'Bearer wrong' })).status).toBe(401);
-    expect((await post(app, report(), { Authorization: 'Bearer sekrit' })).status).toBe(201);
-    expect((await post(app, report(), { Authorization: 'sekrit' })).status).toBe(201);
+    expect((await post(app, report(), { Authorization: 'Bearer fhs_wrong' })).status).toBe(401);
+    expect((await post(app, report(), { Authorization: `Bearer ${nobody}` })).status).toBe(403);
+    expect((await post(app, report(), { Authorization: `Bearer ${submitter}` })).status).toBe(201);
+    mod.shutdown();
+  });
+
+  test('an old shared token in the configuration keeps posting closed', async () => {
+    const { app, mod } = await makeApp({ token: 'sekrit' });
+    expect((await post(app, report(), { Authorization: 'Bearer sekrit' })).status).toBe(401);
     mod.shutdown();
   });
 
   test('the header is configurable', async () => {
-    const { app, mod } = await makeApp({ token: 'sekrit', tokenHeader: 'X-Test-Token' });
-    expect((await post(app, report(), { Authorization: 'Bearer sekrit' })).status).toBe(401);
-    expect((await post(app, report(), { 'X-Test-Token': 'sekrit' })).status).toBe(201);
+    const { app, mod } = await makeApp({ requireToken: true, tokenHeader: 'X-Test-Token' });
+    const submitter = tokenFor(await makeUser('ci-bot', null, { roles: [['testing', 'submit']] }));
+    expect((await post(app, report(), { 'X-Test-Token': submitter })).status).toBe(201);
+    expect((await post(app, report(), { 'X-Test-Token': `Bearer ${submitter}` })).status).toBe(201);
+    // and the usual place works too
+    expect((await post(app, report(), { Authorization: `Bearer ${submitter}` })).status).toBe(201);
     mod.shutdown();
   });
 
-  test('deleting needs the admin token', async () => {
-    const { app, mod } = await makeApp({ adminToken: 'admin' });
-    const id = (await post(app, report())).body.id;
-    expect((await request(app).delete(`/testing/TestReport/${id}`)).status).toBe(403);
-    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', 'Bearer admin')).status).toBe(204);
-    expect((await request(app).get(`/testing/TestReport/${id}`)).status).toBe(404);
-    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', 'Bearer admin')).status).toBe(404);
-    mod.shutdown();
-  });
-
-  test('with no admin token nothing can be deleted', async () => {
+  test('deleting needs an API token with the delete-reports role', async () => {
     const { app, mod } = await makeApp();
+    const deleter = tokenFor(await makeUser('cleaner', null, { roles: [['testing', 'delete-reports']] }));
+    const submitter = tokenFor(await makeUser('ci-bot', null, { roles: [['testing', 'submit']] }));
     const id = (await post(app, report())).body.id;
-    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', 'Bearer ')).status).toBe(403);
+    expect((await request(app).delete(`/testing/TestReport/${id}`)).status).toBe(401);
+    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', `Bearer ${submitter}`)).status).toBe(403);
+    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', `Bearer ${deleter}`)).status).toBe(204);
+    expect((await request(app).get(`/testing/TestReport/${id}`)).status).toBe(404);
+    expect((await request(app).delete(`/testing/TestReport/${id}`).set('Authorization', `Bearer ${deleter}`)).status).toBe(404);
     mod.shutdown();
   });
 
@@ -596,47 +608,37 @@ describe('logins, users, named links', () => {
   let mod;
   let reportId;
   beforeEach(async () => {
-    ({ app, mod } = await makeApp({ adminPassword: 'admin-secret', cookieSecure: false, sessionSecret: 'x'.repeat(32) }));
+    ({ app, mod } = await makeApp());
     reportId = (await post(app, report({ testScript: 'http://example.org/TestScript/tx|1.9.5',
       participant: [{ type: 'server', uri: 'http://sut.example.org', version: '2.0' }] }))).body.id;
   });
   afterEach(() => mod.shutdown());
 
   // every form carries the session's CSRF token; get one the way a browser would, from a page
-  const csrfOf = async (agent) => {
-    const page = await agent.get('/testing/login');
-    return page.text.match(/name="_csrf" value="([^"]+)"/)[1];
-  };
+  const csrfOf = (agent) => authCsrf(agent);
   const form = async (agent, url, data = {}, headers = {}) => {
     const _csrf = await csrfOf(agent);
     return agent.post(url).type('form').set(headers).send({ ...data, _csrf });
   };
-  const loginAs = async (login, password, target = app) => {
-    const agent = request.agent(target);
-    const res = await form(agent, '/testing/login', { login, password });
-    return { agent, res };
-  };
+  const loginAs = (login, password, target = app) => authLogin(target, login, password);
 
-  test('the administrator logs in with the configured password', async () => {
+  test('the administrator logs in on the server\'s login page', async () => {
     expect((await loginAs('admin', 'wrong')).res.status).toBe(401);
-    const { agent, res } = await loginAs('admin', 'admin-secret');
+    const { agent, res } = await loginAs('admin', ADMIN_PASSWORD);
     expect(res.status).toBe(302);
     const page = await agent.get('/testing');
-    expect(page.text).toContain('Logged in as <b>Administrator</b>');
-    expect(page.text).toContain('/testing/admin/users');
-    await form(agent, '/testing/logout');
+    // the top menu ends with the user's name, linked to their account page
+    expect(page.text).toContain('<span style="float: right"><a href="/auth/account" style="color: gold" title="Your account">Administrator</a></span>');
+    expect(page.text).toContain('/testing/admin/links');
+    await form(agent, '/auth/logout');
     expect((await agent.get('/testing/admin/links')).status).toBe(302);
-  });
-
-  test('with no adminPassword nobody is the administrator', async () => {
-    const other = await makeApp({ cookieSecure: false });
-    const { res } = await loginAs('admin', '', other.app);
-    expect(res.status).toBe(401);
-    other.mod.shutdown();
+    // the module's old pages go to the server's
+    expect((await request(app).get('/testing/login')).headers.location).toBe('/auth/login?return=%2Ftesting');
+    expect((await request(app).get('/testing/admin/users')).headers.location).toBe('/auth/admin/users');
   });
 
   test('named links replace canonical URLs with names', async () => {
-    const { agent } = await loginAs('admin', 'admin-secret');
+    const { agent } = await loginAs('admin', ADMIN_PASSWORD);
     expect((await form(agent, '/testing/admin/links', { canonical: 'http://example.org/TestScript/tx|ignored', name: 'Tx Tests', link: 'https://example.org/tx' })).status).toBe(302);
     await form(agent, '/testing/admin/links', { canonical: 'http://sut.example.org', name: 'The <SUT>', link: '' });
     expect((await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X', link: 'javascript:alert(1)' })).status).toBe(400);
@@ -656,43 +658,39 @@ describe('logins, users, named links', () => {
   });
 
   test('users get exactly the rights they are given', async () => {
-    const admin = (await loginAs('admin', 'admin-secret')).agent;
-    expect((await form(admin, '/testing/admin/users', { login: 'linker', name: 'Link Editor', password: 'password1', editLinks: '1' })).status).toBe(302);
-    expect((await form(admin, '/testing/admin/users', { login: 'short', name: 'Short', password: 'x' })).status).toBe(400);
-    expect((await form(admin, '/testing/admin/users', { login: 'admin', name: 'Impostor', password: 'password1' })).status).toBe(400);
-    const users = await admin.get('/testing/admin/users');
-    expect(users.text).toContain('linker');
-    expect(users.text).not.toContain('password_hash');
-
+    const id = await makeUser('linker', 'password1', { name: 'Link Editor', roles: [['testing', 'edit-links']] });
     const { agent: linker, res } = await loginAs('linker', 'password1');
     expect(res.status).toBe(302);
     expect((await linker.get('/testing/admin/links')).status).toBe(200);
-    expect((await linker.get('/testing/admin/users')).status).toBe(403);
+    expect((await linker.get('/auth/admin/users')).status).toBe(403);
     expect((await form(linker, `/testing/TestReport/${reportId}/delete`)).status).toBe(403);
     expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).not.toContain('Delete this report');
 
-    // give them the right to delete; it applies at once, without logging in again
-    const id = users.text.match(/action="\/testing\/admin\/users\/(\d+)"/)[1];
-    await form(admin, `/testing/admin/users/${id}`, { name: 'Link Editor', editLinks: '1', deleteReports: '1', password: '' });
+    // the administrator gives them the right to delete, on the server's page; it applies at
+    // once, without logging in again
+    const admin = (await loginAs('admin', ADMIN_PASSWORD)).agent;
+    const userPage = await admin.get(`/auth/admin/users/${id}`);
+    expect(userPage.text).toContain('Delete reports');
+    const role = (r) => JSON.stringify(['testing', r, '']);
+    expect((await form(admin, `/auth/admin/users/${id}/roles`, { role: [role('edit-links'), role('delete-reports')] })).status).toBe(302);
     expect((await linker.get(`/testing/TestReport/${reportId}`).set('Accept', 'text/html')).text).toContain('Delete this report');
     expect((await form(linker, `/testing/TestReport/${reportId}/delete`)).status).toBe(302);
     expect((await request(app).get(`/testing/TestReport/${reportId}`)).status).toBe(404);
 
-    // the password was left blank, so it still works; deleting the user ends their session
-    expect((await loginAs('linker', 'password1')).res.status).toBe(302);
-    await form(admin, `/testing/admin/users/${id}/delete`);
+    // disabling the user ends their session
+    await form(admin, `/auth/admin/users/${id}`, { name: 'Link Editor' });
     expect((await linker.get('/testing/admin/links')).status).toBe(302);
     expect((await loginAs('linker', 'password1')).res.status).toBe(401);
   });
 
   test('form posts from another site are refused', async () => {
-    const { agent } = await loginAs('admin', 'admin-secret');
+    const { agent } = await loginAs('admin', ADMIN_PASSWORD);
     const res = await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X' }, { Origin: 'https://evil.example.com' });
     expect(res.status).toBe(403);
   });
 
   test('form posts need the session\'s CSRF token', async () => {
-    const { agent } = await loginAs('admin', 'admin-secret');
+    const { agent } = await loginAs('admin', ADMIN_PASSWORD);
     // none
     expect((await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://x.org', name: 'X' })).status).toBe(403);
     // someone else's
@@ -700,7 +698,7 @@ describe('logins, users, named links', () => {
     const stolen = await csrfOf(other);
     expect((await agent.post('/testing/admin/links').type('form').send({ canonical: 'http://x.org', name: 'X', _csrf: stolen })).status).toBe(403);
     // a login needs one too
-    expect((await request(app).post('/testing/login').type('form').send({ login: 'admin', password: 'admin-secret' })).status).toBe(403);
+    expect((await request(app).post('/auth/login').type('form').send({ login: 'admin', password: ADMIN_PASSWORD })).status).toBe(403);
     // the page's own works
     expect((await form(agent, '/testing/admin/links', { canonical: 'http://x.org', name: 'X' })).status).toBe(302);
   });

@@ -318,24 +318,22 @@ function alert(message, kind = 'warning') {
 }
 
 /**
- * The line at the top of every page: who is logged in, and what they can get to.
- * @param {{base: string, user?: Object, csrf?: string}} ctx
+ * The administrators' links at the top of every page. Who is logged in (or Login) is the
+ * right-most item of the top menu, as on every module's pages ([%account%], library/auth)
+ * @param {{base: string, user?: Object}} ctx
  */
 function userBar(ctx) {
-  const base = escape(ctx.base);
   const u = ctx.user;
-  if (!u) {
-    return `<div class="ips-userbar"><a href="${base}/login">Login</a></div>`;
+  if (!u || !u.isAdmin) {
+    return '';
   }
-  const parts = [`Logged in as <b>${escape(u.name)}</b>`];
-  if (u.isAdmin) {
-    parts.push(`<a href="${base}/admin/projects">Projects</a>`);
-    parts.push(`<a href="${base}/admin/users">Users</a>`);
-    parts.push(`<a href="${base}/StructureDefinition">Clinical profiles</a>`);
-    parts.push(`<a href="${base}/national-profiles">National profiles</a>`);
-    parts.push(`<a href="${base}/reports">Reports</a>`);
-  }
-  parts.push(`<form method="post" action="${base}/logout" class="ips-inline">${csrfField(ctx.csrf)}<button type="submit" class="btn btn-link" style="padding: 0; font-size: 100%; vertical-align: baseline">Logout</button></form>`);
+  const base = escape(ctx.base);
+  const parts = [
+    `<a href="${base}/admin/projects">Projects</a>`,
+    `<a href="${base}/StructureDefinition">Clinical profiles</a>`,
+    `<a href="${base}/national-profiles">National profiles</a>`,
+    `<a href="${base}/reports">Reports</a>`
+  ];
   return `<div class="ips-userbar">${parts.join(' &nbsp;|&nbsp; ')}</div>`;
 }
 
@@ -421,31 +419,27 @@ function viewerInstructions(ctx) {
     'Don\'t use it for real patients\' documents.</p></div>';
 }
 
-function renderLogin(ctx, error) {
-  const base = escape(ctx.base);
-  let h = STYLE + crumbs(ctx) + alert(error, 'danger');
-  h += `<form method="post" action="${base}/login" style="max-width: 360px">${csrfField(ctx.csrf)}` +
-    '<div class="mb-3"><label for="login" class="form-label">Username</label>' +
-    '<input type="text" class="form-control" id="login" name="login" required autocomplete="username"/></div>' +
-    '<div class="mb-3"><label for="password" class="form-label">Password</label>' +
-    '<input type="password" class="form-control" id="password" name="password" required autocomplete="current-password"/></div>' +
-    '<button type="submit" class="btn btn-primary">Login</button></form>';
-  return h;
-}
-
 /**
  * The administrator's projects page: create, edit, delete, and who manages each.
- * @param {Array} projects - from store.projects()
- * @param {Array} users - from store.users()
+ * @param {Array} projects - from IpsModule.projectsWithManagers()
+ * @param {Array} users - the users who can be made managers: the IPS Project Admins
  */
 function renderProjects(projects, users, ctx, message) {
   const base = escape(ctx.base);
   let h = STYLE + userBar(ctx) + crumbs(ctx, null, 'Projects') + alert(message);
-  h += '<p>A project\'s code is its address: <code>' + base + '/{code}</code>. Codes are 2-32 lower case letters, digits and hyphens, and can\'t be changed once a project exists.</p>';
-  const managerBoxes = (p, form) => users.map(u => {
-    const on = p && p.managers.some(m => m.id === u.id);
-    return `<label class="ips-inline" style="margin-right: 8px; font-weight: normal"><input form="${form}" type="checkbox" name="manager" value="${u.id}"${on ? ' checked' : ''}/> ${escape(u.login)}</label>`;
-  }).join('') || '<span class="ips-small">(no users yet)</span>';
+  h += '<p>A project\'s managers can be any of the users with the <b>IPS Project Admin</b> role, which the server\'s administrator gives on ' +
+    '<a href="/auth/admin/users">the users page</a>. A project\'s code is its address: <code>' + base + '/{code}</code>. ' +
+    'Codes are 2-32 lower case letters, digits and hyphens, and can\'t be changed once a project exists.</p>';
+  const box = (form, u, on, note = '') => `<label class="ips-inline" style="margin-right: 8px; font-weight: normal"><input form="${form}" type="checkbox" name="manager" value="${u.id}"${on ? ' checked' : ''}/> ` +
+    `${escape(u.login)}${note}</label>`;
+  const managerBoxes = (p, form) => {
+    const current = p ? p.managers : [];
+    // a manager who is no longer an IPS Project Admin is shown until taken off
+    const others = current.filter(m => !users.some(u => u.id === m.id))
+      .map(m => box(form, m, true, ' <span class="ips-small">(not an IPS Project Admin)</span>'));
+    const boxes = users.map(u => box(form, u, current.some(m => m.id === u.id))).concat(others);
+    return boxes.join('') || '<span class="ips-small">(no users have the IPS Project Admin role)</span>';
+  };
   h += '<table class="table table-sm ips-table"><tr><th>Code</th><th>Name</th><th>Description</th><th>Managers</th><th>Documents</th><th></th></tr>';
   for (const p of projects) {
     const form = `project-${p.id}`;
@@ -465,36 +459,6 @@ function renderProjects(projects, users, ctx, message) {
     `<td>${managerBoxes(null, 'project-new')}</td><td></td>` +
     `<td><form id="project-new" method="post" action="${base}/admin/projects">${csrfField(ctx.csrf)}` +
     '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Create</button></form></td></tr>';
-  return h + '</table>';
-}
-
-/**
- * The administrator's users page.
- * @param {Array} users - from store.users()
- */
-function renderUsers(users, ctx, message) {
-  const base = escape(ctx.base);
-  let h = STYLE + userBar(ctx) + crumbs(ctx, null, 'Users') + alert(message);
-  h += `<p>Users manage projects: which ones is set on the <a href="${base}/admin/projects">projects</a> page. ` +
-    'Leave the password blank to keep it.</p>';
-  h += '<table class="table table-sm ips-table"><tr><th>Username</th><th>Name</th><th>Password</th><th>Manages</th><th></th></tr>';
-  for (const u of users) {
-    const form = `user-${u.id}`;
-    const action = `${base}/admin/users/${u.id}`;
-    h += `<tr><td>${escape(u.login)}</td>` +
-      `<td><input form="${form}" type="text" name="name" required class="form-control" style="font-size: 85%" value="${escape(u.name)}"/></td>` +
-      `<td><input form="${form}" type="password" name="password" class="form-control" style="font-size: 85%" autocomplete="new-password" placeholder="(unchanged)"/></td>` +
-      `<td>${u.projects.map(c => `<code>${escape(c)}</code>`).join(' ')}</td>` +
-      `<td style="white-space: nowrap"><form id="${form}" method="post" action="${action}" class="ips-inline">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Save</button></form> ' +
-      `<form method="post" action="${action}/delete" class="ips-inline" data-confirm="${escape(`Delete user ${u.login}?`)}">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-default ips-btn" style="font-size: 85%; padding: 1px 10px">Delete</button></form></td></tr>';
-  }
-  h += '<tr><td><input form="user-new" type="text" name="login" required class="form-control" style="font-size: 85%" placeholder="username" autocomplete="off"/></td>' +
-    '<td><input form="user-new" type="text" name="name" required class="form-control" style="font-size: 85%" placeholder="Name"/></td>' +
-    '<td><input form="user-new" type="password" name="password" required class="form-control" style="font-size: 85%" autocomplete="new-password" placeholder="at least 8 characters"/></td>' +
-    `<td></td><td><form id="user-new" method="post" action="${base}/admin/users">${csrfField(ctx.csrf)}` +
-    '<button type="submit" class="btn btn-primary ips-btn" style="font-size: 85%; padding: 1px 10px">Add</button></form></td></tr>';
   return h + '</table>';
 }
 
@@ -2983,7 +2947,7 @@ function renderProjectReport(project, report, out, problem, errors, ctx, maxRows
 
 module.exports = {
   analysisOk,
-  renderHome, renderLogin, renderProjects, renderUsers, renderProject, renderSubmit, renderSettings, renderDocument,
+  renderHome, renderProjects, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
   renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };

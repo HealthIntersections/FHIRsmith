@@ -977,7 +977,8 @@ class PackageCrawler {
 
   // Runs fn inside a database transaction: all of its writes commit, or none do. The crawler
   // stores one package at a time, so its transactions never nest. The connection is shared
-  // with the web side, so a write it makes meanwhile (a download count) joins the transaction.
+  // with the web side, so a write it makes meanwhile joins the transaction (the download counts
+  // don't: they have a connection of their own - PackagesModule.openCountsConnection).
   async transaction(fn) {
     await this.run('BEGIN IMMEDIATE');
     try {

@@ -35,6 +35,7 @@ const SERVER_MODULE = '(server)';
 const DAY_MS = 24 * 60 * 60 * 1000;
 // headings for the modules' paragraphs; a module not listed is headed by its key
 const MODULE_TITLES = {
+  auth: 'Users and logins',
   tx: 'Terminology server',
   registry: 'Terminology server registry',
   packages: 'Packages',

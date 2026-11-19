@@ -3,6 +3,7 @@
 
 const nock = require('nock');
 const { EcosystemResolver } = require('../../tx/ecosystem-resolver');
+const { Issue } = require('../../tx/library/operation-outcome');
 const { VirtualCodeSystemProvider } = require('../../tx/cs/cs-virtual');
 const { OperationContext } = require('../../tx/operation-context');
 const { Designations, DesignationUse } = require('../../tx/library/designations');
@@ -77,6 +78,22 @@ describe('VirtualCodeSystemProvider', () => {
 
   // CodeSystem/$validate-code (no value set): the code system's implicit value set is made from
   // what the provider says about the code system, including valueSet(), which isn't known here
+  // an $expand of a value set that includes it, say: the answer to the request, not a server
+  // failure (it was a 500, logged with its stack)
+  test('what isn\'t supported for a code system on another server is a 422, naming it', () => {
+    const p = provider();
+    let error = null;
+    try {
+      p.specialEnumeration();
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(Issue);
+    expect(error.statusCode).toBe(422);
+    expect(error.isHandleAsOO()).toBe(true);
+    expect(error.message).toContain(`is provided by ${SERVER}, but 'specialEnumeration' isn't supported`);
+  });
+
   test('a code is validated against the code system, with no value set', async () => {
     const p = provider();
     lookup('46635009', 'Type 1 diabetes mellitus');
@@ -164,6 +181,33 @@ describe('VirtualCodeSystemProvider', () => {
     expect(cs.server).toBe(SERVER);
     expect(cs.version()).toBe('1');
     expect(nock.isDone()).toBe(true);
+  });
+
+  // the Czech server, down: the code system isn't found, and the operation knows why
+  test('a server that doesn\'t answer is passed over, and the operation is told why', async () => {
+    const resolver = new EcosystemResolver({ use: true, registry: `${REG}/tx-reg` });
+    nock(REG).get('/tx-reg').query(true).reply(200, { results: [] });
+    nock(REG).get('/tx-reg/resolve').query(true).reply(200, { authoritative: [{ url: SERVER, open: true }] });
+    nock('https://other.example').get('/fhir/metadata').query(true).replyWithError({ code: 'ECONNRESET', message: 'socket hang up' });
+    const ctxt = new OperationContext('en', i18n);
+    expect(await virtualProvider(resolver).findInEcosystem(ctxt, SCT, EDITION, null)).toBeNull();
+    expect(ctxt.ecosystemProblems()).toEqual([{ vurl: `${SCT}|${EDITION}`,
+      why: expect.stringMatching(/^Unable to read the code systems that https:\/\/other.example\/fhir has: .*socket hang up/) }]);
+    expect(nock.isDone()).toBe(true);
+
+    // and $validate-code says so, next to saying the version isn't known
+    const worker = new ValidateWorker(ctxt, { debug() {}, info() {}, warn() {}, error() {} }, {}, languages, i18n);
+    const notFound = new Issue('error', 'not-found', 'Coding.system', 'UNKNOWN_CODESYSTEM_VERSION',
+      `A definition for CodeSystem '${SCT}' version '${EDITION}' could not be found`, 'not-found', 422).setUnknownSystem(`${SCT}|${EDITION}`);
+    const result = await worker.handlePrepareError(notFound, null, null, new TxParameters(languages, i18n));
+    const message = result.parameter.find(x => x.name === 'message').valueString;
+    expect(message).toMatch(/could not be found; '.*11000279109' could not be looked for on the server in the terminology ecosystem that provides it: Unable to read the code systems that https:\/\/other.example\/fhir has/);
+    const issues = result.parameter.find(x => x.name === 'issues').resource.issue;
+    expect(issues.map(i => [i.severity, i.code, i.extension[0].valueString])).toEqual([
+      ['error', 'not-found', 'UNKNOWN_CODESYSTEM_VERSION'], ['error', 'transient', 'ECOSYSTEM_SERVER_UNAVAILABLE']]);
+    expect(issues[1].details.coding[0].code).toBe('not-found');
+    // a code system it wasn't about gets nothing extra
+    expect(worker.ecosystemIssues(['http://loinc.org'], 'error')).toEqual([]);
   });
 
   // a server that holds the concepts in its own tables, and says not-present, is used if it's
