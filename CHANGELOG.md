@@ -33,8 +33,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - tx: client errors are no longer logged with a stack: a `$validate-code` whose Issue becomes its result (a coding with no system, say) isn't logged at all, and what can't be done with a code system on another server (an `$expand` of a value set that includes one) is a 422 OperationOutcome, not a 500
 - tx: an include filter `concept in <codes>` (or `code in`) with a code the code system doesn't have is treated as the other filters that select by concept are (1.0.3): the include adds no codes, and the expansion says so with an `expansion-issue` warning - or, with `errorsForInvalidCodes`, the value set can't be expanded (422) - and `$validate-code` says the value set is not valid. SNOMED CT failed on it (500, logged with a stack)
 
+### Security
+
+- A login cookie on a request that another site made (its `Origin` names another host) is ignored: the request is nobody. Browsers attach the cookie to requests that scripts on the same site make (`build.fhir.org` and `tx.fhir.org` are both `fhir.org`), and with `server.cors` `credentials: true` - which the template had - such a script could read what the logged in user sees, and use the APIs that take a login as well as a token (`/shl/create`, `/packages/crawl`, deleting test reports, folder uploads, the registry API). The template no longer sets `credentials`, and `--check` warns when it is set. Pages that need someone logged in, and the `/auth` pages, can't be put in another site's frame
+- `github:{name}` and `google:{email}` in `auth.administrators` are tied to the provider's id for the first account they match, and from then on match that id: whoever later takes a renamed GitHub account's old name doesn't become an administrator (the name was matched on every login). `github:#{id}` and `google:#{id}` name an account by id
+- Password links are made only from `auth.publicUrl` or `hostName`, never from the request's Host header; with neither, there are none (`--check` warns). *Forgotten your password?* answers without waiting for the email to be sent, so the time it takes doesn't say whether there is such an account
+- Changing an account's email ends its sessions, and a password link sent to the old address stops working
+- A login can't have an `@`, so it can't be mistaken for another account's email address: a name with an `@` on the login and forgotten password pages is looked up by email first. A configured administrator's account gets the part of its address before the `@` as its login
+- registry: the FHIR version a crawled server's CapabilityStatement gave was shown on the authoritative code systems and value sets tables without escaping, so a listed server could put script on the registry's pages. It is escaped, and the crawler keeps only a `fhirVersion` that looks like a FHIR version (else it assumes the default, with a warning in the crawl log)
+- shl: `POST /shl/validate/loadig`, which downloads a package and loads it into the validator, is for users with the new shl "load-ig" role (an API token), and administrators; it was open to anyone
+- shl: everything but reading a link (`/shl/access`, `/shl/file`, which its recipients use with no account) is for users with the shl "create" role, sending an API token, and this server's ips module: `/shl/upload`, `/shl/sign` (which signed a VHL for any URL with the server's key, for anyone) and `/shl/validate` (and its status) as well as `/shl/create`
+- xig: a resource's narrative - written by whoever published its package - was put into the resource's page as it was, script and all. A narrative with active content (script, event handlers, forms, javascript: links...) is no longer shown, and the rest are shown as their parsed tree written out again; the package's web address the links are rebased to is escaped
+- registry: the registry and server codes, server descriptions and FHIR versions in the registry tree and the matches table (`RegistryAPI.renderInfoToHtml`, `renderJsonToHtml`) were not escaped, and their links took any scheme; they are escaped, and links are http(s) only
+- tx: an expansion's error message on a value set's page was not escaped
+- The page templates no longer load `jtip.js` and `fhir-gw.js`, and they and `xml.js` are gone: nothing used them, and `fhir-gw.js` built HTML from data without escaping it
+- publisher: a build's own pages (*View IG*) are served sandboxed (`Content-Security-Policy: sandbox`), so the IG's scripts run in an origin of their own, not with the login of whoever looks at them
+- registry: the crawler drops a server's credentials (`Api-Key`) from a redirect to another host; they went with it (axios drops only `Authorization`)
+- tx: a resource's *Original Narrative* is shown as its parsed tree written out again, not the string as it is, so that an unterminated tag or attribute can't swallow the rest of the page (as the ips pages do)
+- ips: the editors' PDF has the narratives sanitised by the same rules as the patient editor's page (one copy of them, in doc-actions.js); its own were weaker (no `svg`, `math` or `base`, and `xlink:href` unchecked)
+- ips: the submission form and the editors say that everyone can see a project's documents, and not to use them for real patients' documents
+- xig: `POST /xig/update` is for the server's administrators - logged in, from the form on `/xig/stats`, or with an administrator's API token. `modules.xig.updateToken` is no longer used (a warning)
+
 ### Fixed
 
+- ips: the patient editor's script declared `makeCareTeamResources` twice (the same function)
+- auth: *Remove the password* (and any other confirmation with an apostrophe in its question) posted without asking: the question's escaped apostrophe broke the script that asks it
 - ips: an `ips.shl.server` given as this server's own URL (`https://{hostName}/shl`) is called in process, with no token, as `"/shl"` is. With the single login it was treated as another server, which needs a token, so documents had no QR codes
 - publisher: a database made before websites had their history and web templates folders couldn't add or change a website ("Failed to create website": the columns were never added to an existing table). They are now added when the module starts, and the page says why when saving a website fails
 

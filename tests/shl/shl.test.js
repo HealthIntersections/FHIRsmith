@@ -111,7 +111,9 @@ describe('SHL Module', () => {
       mod.config = { certificates: { kid: 'test-kid' }, vhl: { issuer: 'XX' } };
       mod.loadCertificates = () => ({ certPem: publicKey.export({ type: 'spki', format: 'pem' }), keyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
       const shlink = 'shlink://eyJ1cmwiOiJodHRwczovL2V4YW1wbGUub3JnL3NobC9hY2Nlc3MvdmhsMSJ9';
-      const r = await request(app).post('/shl/sign').send({ url: shlink });
+      setupAuth();
+      expect((await request(app).post('/shl/sign').send({ url: shlink })).status).toBe(401);
+      const r = await request(app).post('/shl/sign').set(auth.internalHeaders()).send({ url: shlink });
       expect(r.status).toBe(200);
       const { decodeVhl, loadTrust, Trace } = require('../../ips/viewer');
       const trace = new Trace();
@@ -153,6 +155,44 @@ describe('SHL Module', () => {
       expect((await create({ Authorization: `Bearer ${other}` })).status).toBe(403);
       // and with the role, an old client's password does no harm
       expect((await create({ Authorization: `Bearer ${creator}` }, { vhl: false, days: 7, password: 'x' })).status).toBeLessThan(300);
+    });
+  });
+
+  describe('everything but reading a link needs the role', () => {
+    test('upload, sign, validate and its status: 401 without a token, 403 without the role; access and file stay open', async () => {
+      setupAuth();
+      const other = tokenFor(await makeUser('someone', null));
+      const creator = tokenFor(await makeUser('sharer', null, { roles: [['shl', 'create']] }));
+      const calls = [['post', '/shl/upload', { uuid: 'one', pword: 'pw', files: [] }], ['post', '/shl/sign', { url: 'shlink://x' }],
+        ['post', '/shl/validate', {}], ['get', '/shl/validate/status']];
+      for (const [method, url, body] of calls) {
+        const call = (token) => {
+          const r = request(app)[method](url);
+          return (token ? r.set('Authorization', `Bearer ${token}`) : r).send(body);
+        };
+        expect([url, (await call(null)).status]).toEqual([url, 401]);
+        expect([url, (await call(other)).status]).toEqual([url, 403]);
+        expect([401, 403]).not.toContain((await call(creator)).status);
+      }
+      expect((await request(app).get('/shl/access/one?recipient=x')).status).toBe(200);
+    });
+  });
+
+  describe('loading an IG into the validator', () => {
+    test('needs the shl "load-ig" role (or an administrator)', async () => {
+      setupAuth();
+      const loader = tokenFor(await makeUser('loader', null, { roles: [['shl', 'load-ig']] }));
+      const other = tokenFor(await makeUser('someone', null));
+      const admin = tokenFor(await makeUser('admin', null, { admin: true }));
+      const load = (token) => {
+        const r = request(app).post('/shl/validate/loadig');
+        return (token ? r.set('Authorization', `Bearer ${token}`) : r).send({ packageId: 'hl7.fhir.uv.ips', version: '2.0.0' });
+      };
+      expect((await load(null)).status).toBe(401);
+      expect((await load(other)).status).toBe(403);
+      // past the guard: there is no validator running here
+      expect((await load(loader)).status).toBe(503);
+      expect((await load(admin)).status).toBe(503);
     });
   });
 });

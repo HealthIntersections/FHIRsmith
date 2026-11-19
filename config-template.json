@@ -3,9 +3,10 @@
   // // and /* */ comments too). Every module is off: set "enabled": true on the ones you run
   "server": {
     "port": 3000,
+    // Any site's scripts may call the APIs. Not "credentials": true - that lets other sites'
+    // scripts read what a logged in user sees; API clients send tokens in a header instead
     "cors": {
-      "origin": true,
-      "credentials": true
+      "origin": true
     }
     // The largest request body accepted, in MB (bigger: 413). Optional; this is the default.
     // "maxBodyMB": 50,
@@ -61,10 +62,12 @@
     "sessionSecret": "change-this-to-a-secure-random-string",
     // the administrators (server wide): email addresses (an account is made for each, and
     // the password set with Forgot password, or node server.js --password-link {email}),
-    // github:{name} for a GitHub account, and google:{email} for a Google account. Others can be made administrators on the users page
+    // github:{name} for a GitHub account, and google:{email} for a Google account (each tied to
+    // the first account it matches - library/auth/README.md). Others can be made administrators on the users page
     "administrators": ["admin@example.org"],
-    // where links in emails point; without it, https://{hostName}
-    // "publicUrl": "https://tx.example.org",
+    // where links in emails point; without it, https://{hostName}. With neither, no links that
+    // set a password are made (never from the address a request names, which can be forged)
+    "publicUrl": "https://tx.example.org",
     // logging in with GitHub: an OAuth app (https://github.com/settings/developers) whose
     // callback URL is {publicUrl}/auth/github/callback
     // "github": { "clientId": "...", "clientSecret": "..." },
@@ -155,10 +158,8 @@
     "xig": {
       "enabled": false,
       "autoUpdate": true,
-      // shared secret for POST /xig/update, which re-downloads the database on demand. Send
-      // it in the x-update-token header. Omit this and the endpoint is disabled entirely -
-      // the scheduled update (autoUpdate) is unaffected either way.
-      "updateToken": "change-this-to-a-secure-random-string",
+      // POST /xig/update re-downloads the database on demand: for the server's administrators,
+      // from /xig/stats or with an API token. The scheduled update (autoUpdate) is separate
       // the public address the sitemap's URLs (/xig/sitemap.xml) start with. Optional; without
       // it, the request's own address - only right behind a proxy that passes the host and scheme on
       // "baseUrl": "https://npm.fhir.org",

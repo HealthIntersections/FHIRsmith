@@ -629,6 +629,7 @@ function renderSubmit(project, ctx, options = {}) {
   let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Submit') + alert(options.error, 'danger');
   h += '<p>Paste an IPS document (a FHIR R4 <code>Bundle</code> of type <code>document</code>, as JSON, whose first entry is the ' +
     'Composition), or choose a file. Once received, the document is queued for processing.</p>';
+  h += '<div class="alert alert-warning">Everyone can see the documents in a project. Don\'t submit real patients\' documents.</div>';
   if (options.aiEnabled) {
     h += '<div class="alert alert-info">Documents submitted to this project are sent to an external AI service for assessment, as part of their processing.</div>';
   }
@@ -1625,7 +1626,7 @@ function composeNotes(project, options) {
     '(a patient with a name, an author, and the allergies, problems and medications sections, each with entries or saying why it is empty). ' +
     (project ? `Submitting adds the document to ${escape(project.name)}, where everyone can see it` : 'Submitting adds the document to the project you choose, where everyone can see it') +
     (options.aiEnabled ? ', and sends it to an external AI service for assessment' : '') + '; ' +
-    'sharing as a QR code stores it, encrypted, on this server for the days you choose.';
+    'sharing as a QR code stores it, encrypted, on this server for the days you choose. Don\'t use it for real patients\' documents.';
 }
 
 /** The document creators to choose from (for a project, or none). */

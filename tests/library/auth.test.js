@@ -810,6 +810,124 @@ describe('the daily report', () => {
   });
 });
 
+describe('the security review (Nov 2026)', () => {
+  test('a login cookie on a request another site made is nobody, on pages and APIs', async () => {
+    const app = makeApp();
+    const id = await makeUser('person', GOOD, { roles: [['mod', 'use']] });
+    const { agent } = await login(app, 'person', GOOD);
+    expect((await agent.get('/module/page')).text).toBe('hello person');
+    expect((await agent.get('/module/page').set('Origin', 'https://build.example.org')).text).toBe('nobody');
+    expect((await agent.get('/module/api')).body.who).toBe('person');
+    expect((await agent.get('/module/api').set('Origin', 'https://build.example.org')).status).toBe(401);
+    expect((await agent.get('/module/api').set('Origin', 'null')).status).toBe(401);
+    // a token is not a cookie: another site's script can only send one it has
+    const token = tokenFor(id);
+    expect((await request(app).get('/module/api').set('Origin', 'https://build.example.org').set('Authorization', `Bearer ${token}`)).body.via).toBe('token');
+  });
+
+  test('the /auth pages, and pages that need a login, can\'t be framed by another site', async () => {
+    const app = makeApp();
+    for (const url of ['/auth/login', '/auth/account']) {
+      const res = await request(app).get(url);
+      expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+      expect(res.headers['content-security-policy']).toBe("frame-ancestors 'self'");
+    }
+  });
+
+  test('a github: or google: administrator is tied to the first account it matches, and keeps it through a rename', () => {
+    const log = { info() {}, warn() {}, error() {} };
+    auth.initialize({ database: ':memory:', bcryptCost: 4, administrators: ['github:TheBoss', 'google:boss@example.org', 'github:#555'] }, { log });
+    const boss = auth.store.createUser({ login: 'theboss', githubId: 77, githubLogin: 'theboss' });
+    expect(auth.principalById(boss).isAdmin).toBe(true);
+    expect(auth.store.adminPin('github:theboss')).toBe('77');
+    // the boss renames on GitHub, and someone else takes the old name
+    auth.store.setGithub(boss, 77, 'the-old-boss');
+    const taker = auth.store.createUser({ login: 'taker', githubId: 99, githubLogin: 'theboss' });
+    expect(auth.principalById(boss).isAdmin).toBe(true);
+    expect(auth.principalById(taker).isAdmin).toBe(false);
+    // google: the same
+    const g = auth.store.createUser({ login: 'gboss', identity: { provider: 'google', id: 'sub-1', handle: 'boss@example.org' } });
+    const g2 = auth.store.createUser({ login: 'gboss2', identity: { provider: 'google', id: 'sub-2', handle: 'boss@example.org' } });
+    expect(auth.principalById(g).isAdmin).toBe(true);
+    expect(auth.principalById(g2).isAdmin).toBe(false);
+    // by id
+    const byId = auth.store.createUser({ login: 'byid', githubId: 555, githubLogin: 'whoever' });
+    expect(auth.principalById(byId).isAdmin).toBe(true);
+    // taken out of the configuration, the tie is forgotten when the server starts
+    auth.config.administrators = ['google:boss@example.org'];
+    auth.applyConfiguredAdministrators();
+    expect(auth.store.adminPin('github:theboss')).toBeNull();
+    expect(auth.store.adminPin('google:boss@example.org')).toBe('sub-1');
+    expect(auth.principalById(boss).isAdmin).toBe(false);
+  });
+
+  test('no password link without auth.publicUrl or hostName - never from the request', async () => {
+    setupAuth({ options: { mailer: fakeMailer() } });
+    const id = auth.store.createUser({ login: 'person', email: 'p@example.org' });
+    expect(auth.passwordLink(id, { protocol: 'https', get: () => 'evil.example.org' })).toBeNull();
+    expect(auth.canEmail()).toBe(false);
+    expect(await auth.emailPasswordLink(auth.store.userById(id), { protocol: 'https', get: () => 'evil.example.org' })).toBe(false);
+  });
+
+  test('forgotten password answers without waiting for the email', async () => {
+    const never = { configured: () => true, send: () => new Promise(() => {}) };
+    const app = makeApp({}, never);
+    await makeUser('person', GOOD, { email: 'person@example.org' });
+    const res = await form(request.agent(app), '/auth/forgot', { login: 'person' }, '/auth/forgot');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('If there is an account');
+  });
+
+  test('changing an account\'s email ends its sessions, and a link sent to the old address', async () => {
+    const mailer = fakeMailer();
+    const app = makeApp({}, mailer);
+    await makeUser('admin', ADMIN_PASSWORD, { admin: true, email: 'admin@example.org' });
+    const id = await makeUser('person', GOOD, { email: 'old@example.org' });
+    const { agent: theirs } = await login(app, 'person', GOOD);
+    const link = auth.passwordLink(id, null).replace('https://fhir.example.org', '');
+    const admin = (await login(app, 'admin', ADMIN_PASSWORD)).agent;
+    // saving with the same email changes nothing
+    await form(admin, `/auth/admin/users/${id}`, { name: 'P', email: 'OLD@example.org', enabled: '1' }, `/auth/admin/users/${id}`);
+    expect((await theirs.get('/module/page')).text).toBe('hello person');
+    await form(admin, `/auth/admin/users/${id}`, { name: 'P', email: 'new@example.org', enabled: '1' }, `/auth/admin/users/${id}`);
+    expect((await theirs.get('/module/page')).text).toBe('nobody');
+    expect((await request(app).get(link)).status).toBe(404);
+    // an administrator changing their own stays logged in
+    const me = auth.store.userByLogin('admin').id;
+    await form(admin, `/auth/admin/users/${me}`, { name: 'Me', email: 'me@example.org' }, `/auth/admin/users/${me}`);
+    expect((await admin.get('/module/page')).text).toBe('hello admin');
+  });
+
+  test('a login can\'t have an @; a name with one is looked up by email first', () => {
+    setupAuth();
+    expect(() => auth.store.createUser({ login: 'a@example.org' })).toThrow(/A login is/);
+    expect(auth.store.freeLogin('a@example.org')).toBe('a-example.org');
+    // a login from before, that is another account's email address
+    const old = auth.store.createUser({ login: 'placeholder' });
+    auth.store.db.prepare('UPDATE users SET login = ? WHERE id = ?').run('alice@example.org', old);
+    const alice = auth.store.createUser({ login: 'alice', email: 'alice@example.org' });
+    expect(auth.store.userByLoginOrEmail('alice@example.org').id).toBe(alice);
+    expect(auth.store.userByLoginOrEmail('alice').id).toBe(alice);
+    auth.store.db.prepare('UPDATE users SET login = ? WHERE id = ?').run('bob@example.org', old);
+    expect(auth.store.userByLoginOrEmail('bob@example.org').id).toBe(old);
+  });
+
+  test('a configured administrator\'s account gets the part of the address before the @ as its login', () => {
+    auth.initialize({ database: ':memory:', bcryptCost: 4, administrators: ['grahame@example.org'] }, { log: { info() {}, warn() {}, error() {} } });
+    expect(auth.store.userByEmail('grahame@example.org').login).toBe('grahame');
+  });
+
+  test('a confirmation with an apostrophe asks (the question is in an attribute, not the script)', async () => {
+    const app = makeApp();
+    await makeUser('admin', ADMIN_PASSWORD, { admin: true });
+    const id = await makeUser('person', GOOD);
+    const admin = (await login(app, 'admin', ADMIN_PASSWORD)).agent;
+    const page = (await admin.get(`/auth/admin/users/${id}`)).text;
+    expect(page).toContain('data-confirm="Remove this user&#39;s password?" onsubmit="return confirm(this.dataset.confirm)"');
+    expect(page).not.toMatch(/confirm\('/);
+  });
+});
+
 describe('node server.js --password-link', () => {
   test('prints a link for an account, and makes a configured administrator\'s', () => {
     const fs = require('fs');

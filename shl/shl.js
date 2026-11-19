@@ -255,7 +255,10 @@ class SHLModule {
 
   async initialize(config) {
     this.config = config;
-    auth.defineRoles('shl', [{ role: 'create', label: 'Create links', description: 'Make SMART Health Links (POST /shl/create), usually with an API token' }], { title: 'SMART Health Links', path: '/shl' });
+    auth.defineRoles('shl', [
+      { role: 'create', label: 'Create links', description: 'Make, fill and sign SMART Health Links, and validate with the validator (POST /shl/create, /upload, /sign, /validate), usually with an API token' },
+      { role: 'load-ig', label: 'Load IGs into the validator', description: 'Load an IG package into the validator (POST /shl/validate/loadig), with an API token' }
+    ], { title: 'SMART Health Links', path: '/shl' });
     if (config && config.password) {
       shlLog.warn('modules.shl.password is no longer used: /shl/create is for users with the shl "create" role (an API token), and the ips module');
     }
@@ -558,8 +561,13 @@ class SHLModule {
       displayOption: { maxLength: 50, pattern: /^[a-zA-Z0-9_-]*$/ }
     };
 
+    // Everything but reading a link (/access, /file - its recipients, who need no account) is for
+    // a user with the shl "create" role, sending an API token, or this server itself (the ips
+    // module); loading an IG into the validator has a role of its own
+    const creator = auth.requireApi(p => p.has('shl', 'create'));
+
     // FHIR Validation endpoint
-    this.router.post('/validate', this.validateQueryParams(validationParams), async (req, res) => {
+    this.router.post('/validate', creator, this.validateQueryParams(validationParams), async (req, res) => {
       const start = Date.now();
       try {
         if (!this.fhirValidator || !this.fhirValidator.isRunning()) {
@@ -626,7 +634,7 @@ class SHLModule {
     });
 
     // Validator status endpoint
-    this.router.get('/validate/status', (req, res) => {
+    this.router.get('/validate/status', creator, (req, res) => {
       const start = Date.now();
       try {
         const status = {
@@ -640,8 +648,10 @@ class SHLModule {
       }
     });
 
-    // Load additional IG endpoint
-    this.router.post('/validate/loadig', this.validateJsonBody(['packageId', 'version']), async (req, res) => {
+    // Load an additional IG into the validator: it downloads the package and keeps it loaded, so
+    // it is for a user with the shl "load-ig" role (an API token), or the server's administrators
+    this.router.post('/validate/loadig', auth.requireApi(p => p.has('shl', 'load-ig')),
+      this.validateJsonBody(['packageId', 'version']), async (req, res) => {
       const start = Date.now();
       try {
         if (!this.fhirValidator || !this.fhirValidator.isRunning()) {
@@ -687,9 +697,7 @@ class SHLModule {
       }
     });
 
-    // SHL create endpoint: for a user with the shl "create" role (an API token, usually), or this
-    // server itself (the ips module). A "password" in the body, as clients sent before, is ignored
-    const creator = auth.requireApi(p => p.has('shl', 'create'));
+    // SHL create endpoint (creator, above). A "password" in the body, as clients sent before, is ignored
     this.router.post('/create', creator, this.validateJsonBody(['vhl', 'days'], ['password']), (req, res, next) => {
       const start = Date.now();
       try {
@@ -745,7 +753,7 @@ class SHLModule {
     });
 
     // SHL upload endpoint
-    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
+    this.router.post('/upload', creator, this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
       const start = Date.now();
       try {
         const {uuid, pword, files} = req.body;
@@ -986,7 +994,7 @@ class SHLModule {
     });
 
     // SHL sign endpoint
-    this.router.post('/sign', this.validateJsonBody(['url']), async (req, res) => {
+    this.router.post('/sign', creator, this.validateJsonBody(['url']), async (req, res) => {
       const start = Date.now();
       try {
         const {url} = req.body;

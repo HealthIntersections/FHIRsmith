@@ -25,10 +25,19 @@ Config:
 
 All files will be in {data}/shl. the file paths in the config are relative to 
 that location
-## Who can create links
+## Who can use it
 
-`POST /shl/create` is for users of the server with the shl "create" role, sending an API token
-(`Authorization: Bearer {token}` - see [library/auth](../library/auth/README.md)), and for the ips
-module of this server (an in-process call, as the server itself). The old shared
-`modules.shl.password` is no longer used, and a `password` in the request body is ignored.
-Uploading to a link (`/shl/upload`) still needs the link's own `pword`, which `/create` returns.
+Reading a link - `/shl/access/{uuid}` and `/shl/file/{id}` - is open: that is what the link's
+recipients do, with no account. Everything else - `POST /shl/create`, `/shl/upload`, `/shl/sign`,
+`/shl/validate` and `GET /shl/validate/status` - is for users of the server with the shl
+"create" role, sending an API token (`Authorization: Bearer {token}` - see
+[library/auth](../library/auth/README.md)), and for the ips module of this server (an in-process
+call, as the server itself). The old shared `modules.shl.password` is no longer used, and a
+`password` in the request body is ignored. Uploading to a link (`/shl/upload`) also needs the
+link's own `pword`, which `/create` returns.
+
+## Loading IGs into the validator
+
+`POST /shl/validate/loadig` (`{ "packageId", "version" }`) downloads a package and loads it into
+the validator, where it stays. It is for users with the shl "load-ig" role, sending an API token,
+and the server's administrators.

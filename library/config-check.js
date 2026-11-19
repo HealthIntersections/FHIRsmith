@@ -215,7 +215,7 @@ const MODULES = {
     validator: validatorSpec
   }),
   vcl: obj({ enabled: bool() }),
-  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: str({ nonEmpty: true }), connections: int({ min: 1 }), baseUrl: str({ nonEmpty: true }) }),
+  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: obsolete('is no longer used: the server\'s administrators start an update - on /xig/stats, logged in, or with an API token (POST /xig/update)'), connections: int({ min: 1 }), baseUrl: str({ nonEmpty: true }) }),
   packages: obj({
     enabled: bool(),
     database: str({ nonEmpty: true, required: true }),
@@ -968,8 +968,17 @@ function checkParsedConfig(config, options = {}) {
     if (!Array.isArray(config.auth.administrators) || config.auth.administrators.length === 0) {
       report.note('auth.administrators', 'names nobody: only users given the administrator role on the users page can administer the server');
     }
+    const hasPublicUrl = typeof config.auth.publicUrl === 'string' && /^https?:\/\//.test(config.auth.publicUrl);
+    if (!hasPublicUrl && !(typeof config.hostName === 'string' && /^[A-Za-z0-9.-]+(:\d+)?$/.test(config.hostName))) {
+      report.warn('auth.publicUrl', 'is not set, and nor is hostName: no links that set a password can be made (a link is never made from the address a request names, which anyone can forge)');
+    }
   } else {
     report.note('auth', 'is not configured: nobody can log in as an administrator (library/auth/README.md)');
+  }
+  // the session cookie must not be usable by other sites' scripts (library/auth/README.md)
+  if (isObject(config.server) && isObject(config.server.cors) && config.server.cors.credentials === true) {
+    report.warn('server.cors.credentials', 'is true: browsers then let other sites\' scripts read what a logged in user sees. ' +
+      'Take it out - API clients send tokens in a header, and need no credentials mode (the server ignores a login cookie on a request from another site anyway)');
   }
   // check() names top-level settings ".server": tidy those
   for (const list of [report.errors, report.warnings, report.notes]) {

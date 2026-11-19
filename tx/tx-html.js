@@ -10,6 +10,7 @@ const Logger = require('../library/logger');
 const packageJson = require("../package.json");
 const escape = require('escape-html');
 const { checkResourceNarratives } = require('../library/narrative-check');
+const parse5 = require('parse5');
 const {ExpandWorker} = require("./workers/expand");
 const ValueSet = require("./library/valueset");
 const {CodeSystemXML} = require("./xml/codesystem-xml");
@@ -1222,7 +1223,7 @@ class TxHtmlRenderer {
           if (exp instanceof ValueSet) {
             html += await this.renderer.renderVSExpansion(exp.jsonObj, false)
           } else {
-            html += `<p>Error: `+exp.message+`</p>`;
+            html += `<p>Error: ${escape(String(exp.message))}</p>`;
           }
         }
       } else if (_fmt == "html/json") {
@@ -1999,7 +2000,10 @@ class TxHtmlRenderer {
     if (found) {
       return `<div class="alert alert-danger">This narrative is not shown: ${escape(found)}</div>`;
     }
-    return this.renderResourceWithNarrative(json, json.text?.div);
+    // the parsed tree written out again, never the string as it is: an unterminated tag or
+    // attribute at the end would otherwise swallow the rest of the page
+    const div = json.text?.div;
+    return this.renderResourceWithNarrative(json, typeof div === 'string' && div ? parse5.serialize(parse5.parseFragment(div)) : null);
   }
 
   async renderResourceJson(json) {

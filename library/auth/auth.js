@@ -26,7 +26,7 @@ const express = require('express');
 const session = require('express-session');
 const lusca = require('lusca');
 const { SqliteSessionStore, betterSqlite } = require('../sqlite-session-store');
-const { requireSameOrigin } = require('../same-origin');
+const { requireSameOrigin, originIsThisSite } = require('../same-origin');
 const { AuthStore, TOKEN_PREFIX } = require('./store');
 
 const SERVER = 'server';
@@ -258,19 +258,24 @@ class Auth {
   // ---- administrators from the configuration ----
 
   /**
-   * The configured administrators: {emails, github, google} (lower case). Only emails, GitHub
-   * names and Google email addresses: a bare login could be taken by anyone who makes an
-   * account with GitHub or Google first
+   * The configured administrators: {emails, github, google, githubIds, googleIds} (lower case).
+   * Only emails, GitHub names or ids (github:#{id}) and Google email addresses or ids
+   * (google:#{sub}): a bare login could be taken by anyone who makes an account with GitHub or
+   * Google first
    */
   configuredAdministrators() {
     const list = Array.isArray(this.config.administrators) ? this.config.administrators : [];
-    const out = { emails: new Set(), github: new Set(), google: new Set(), invalid: [] };
+    const out = { emails: new Set(), github: new Set(), google: new Set(), githubIds: new Set(), googleIds: new Set(), invalid: [] };
     for (const raw of list) {
       if (typeof raw !== 'string' || !raw.trim()) {
         continue;
       }
       const v = raw.trim().toLowerCase();
-      if (v.startsWith('github:')) {
+      if (/^github:#\d+$/.test(v)) {
+        out.githubIds.add(v.substring(8));
+      } else if (/^google:#\S+$/.test(v)) {
+        out.googleIds.add(raw.trim().substring(8)); // Google's ids are case sensitive
+      } else if (v.startsWith('github:') && v.length > 7 && !v.includes('#')) {
         out.github.add(v.substring(7));
       } else if (v.startsWith('google:') && /^[^\s@]+@[^\s@]+$/.test(v.substring(7))) {
         out.google.add(v.substring(7));
@@ -285,11 +290,54 @@ class Auth {
 
   /** Is this user named an administrator by the configuration? */
   isConfiguredAdministrator(user, admins = this.configuredAdministrators()) {
-    return !!user && ((user.email && admins.emails.has(user.email.toLowerCase())) ||
-      // only an account GitHub has vouched for (a github_id) matches a github: entry
-      (user.github_id && user.github_login && admins.github.has(user.github_login.toLowerCase())) ||
-      // and only an account Google has vouched for (a google_id) matches a google: entry
-      (user.google_id && user.google_email && admins.google.has(user.google_email.toLowerCase())));
+    if (!user) {
+      return false;
+    }
+    if (user.email && admins.emails.has(user.email.toLowerCase())) {
+      return true;
+    }
+    // only an account GitHub or Google has vouched for (a github_id, a google_id) matches
+    return this.matchesProvider(user, 'github', user.github_id, admins.githubIds, admins.github) ||
+      this.matchesProvider(user, 'google', user.google_id, admins.googleIds, admins.google);
+  }
+
+  /**
+   * Does a user's identity with a provider match an entry of auth.administrators? An id entry
+   * ({provider}:#{id}) matches that id. A name entry (github:{name}, google:{email}) is tied to
+   * the provider id of the first account that matches it (store.adminPin), and from then on
+   * matches that id, whatever the account is called now: a GitHub user who renames keeps it,
+   * and whoever takes the old name doesn't get it
+   */
+  matchesProvider(user, provider, providerId, ids, handles) {
+    if (!providerId) {
+      return false;
+    }
+    if (ids.has(String(providerId))) {
+      return true;
+    }
+    if (handles.size === 0 || !this.store) {
+      return false;
+    }
+    const handle = AuthStore.identityOf(user, provider)?.handle;
+    const id = String(providerId);
+    // an entry already tied to this account (by name now, or by a name it had)
+    for (const h of handles) {
+      if (this.store.adminPin(`${provider}:${h}`) === id) {
+        return true;
+      }
+    }
+    // the entry for the name it has now, if no account has been tied to it yet
+    if (handle && handles.has(handle.toLowerCase())) {
+      const entry = `${provider}:${handle.toLowerCase()}`;
+      if (this.store.adminPin(entry) === null) {
+        const pinned = this.store.pinAdmin(entry, id);
+        if (pinned === id) {
+          this.log.info(`Auth: auth.administrators entry '${entry}' is now tied to ${provider} id ${id} (account '${user.login}')`);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -300,14 +348,20 @@ class Auth {
     const admins = this.configuredAdministrators();
     for (const email of admins.emails) {
       if (!this.store.userByEmail(email)) {
-        const id = this.store.createUser({ login: this.store.freeLogin(email), email, name: '', notes: 'An administrator named in the configuration' });
+        const id = this.store.createUser({ login: this.store.freeLogin(email.split('@')[0]), email, name: '', notes: 'An administrator named in the configuration' });
         this.log.info(`Auth: made the account for the configured administrator ${email} (id ${id}); set its password with Forgot password, or node server.js --password-link ${email}`);
       }
     }
     for (const bad of admins.invalid) {
-      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address, github:{name} nor google:{email} - ignored`);
+      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address, github:{name}, github:#{id}, google:{email} nor google:#{id} - ignored`);
     }
-    if (admins.emails.size + admins.github.size + admins.google.size === 0) {
+    // an entry taken out of the configuration lets go of the account it was tied to
+    const entries = [...[...admins.github].map(h => `github:${h}`), ...[...admins.google].map(h => `google:${h}`)];
+    const dropped = this.store.dropAdminPinsExcept(entries);
+    if (dropped > 0) {
+      this.log.info(`Auth: forgot the accounts of ${dropped} auth.administrators entr${dropped === 1 ? 'y' : 'ies'} no longer configured`);
+    }
+    if (admins.emails.size + admins.github.size + admins.google.size + admins.githubIds.size + admins.googleIds.size === 0) {
       this.log.warn('Auth: no administrators are configured (auth.administrators) - nobody can manage users unless one has been given the role');
     }
   }
@@ -344,9 +398,15 @@ class Auth {
 
   // ---- who is asking ----
 
-  /** The user logged in with this request's session (sync), or null */
+  /**
+   * The user logged in with this request's session (sync), or null. A request another site
+   * made (its Origin names another host) is nobody, whatever cookie came with it: the browser
+   * attaches the cookie to requests from pages on the same site (build.fhir.org and
+   * tx.fhir.org are one site, fhir.org), and SameSite=Lax doesn't stop those. Software uses
+   * API tokens, which no browser attaches by itself
+   */
   currentUser(req) {
-    if (!this.store || !req.session || !req.session.auth) {
+    if (!this.store || !req.session || !req.session.auth || !originIsThisSite(req)) {
       return null;
     }
     const s = req.session.auth;
@@ -427,6 +487,7 @@ class Auth {
    */
   requirePage(check, onError) {
     return (req, res, next) => {
+      this.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
         return res.redirect(this.loginUrl(req));
@@ -437,6 +498,16 @@ class Auth {
       req.user = user;
       next();
     };
+  }
+
+  /**
+   * The headers that stop another site putting a page in a frame (clickjacking): for pages that
+   * need someone logged in, and every /auth page
+   * @param {import('express').Response} res
+   */
+  denyFraming(res) {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
   }
 
   /** requirePage for administrators */
@@ -566,16 +637,14 @@ class Auth {
   }
 
   /**
-   * The base URL links in emails start with: auth.publicUrl, else hostName (https, or http
-   * when cookieSecure is false), else the request's. hostName comes before the request so
-   * that a forged Host header can't point a password link at another site.
+   * The server's public URL: auth.publicUrl, else hostName (https, or http when cookieSecure is
+   * false), else - only when `req` is given - the request's. For the GitHub and Google callbacks,
+   * which those sites check against the one registered, so a forged Host header gets nowhere
    */
   publicUrl(req) {
-    if (typeof this.config.publicUrl === 'string' && /^https?:\/\//.test(this.config.publicUrl)) {
-      return this.config.publicUrl.replace(/\/+$/, '');
-    }
-    if (this.hostName && /^[A-Za-z0-9.-]+(:\d+)?$/.test(this.hostName)) {
-      return `${this.config.cookieSecure === false ? 'http' : 'https'}://${this.hostName}`;
+    const base = this.configuredUrl();
+    if (base) {
+      return base;
     }
     if (req) {
       return `${req.protocol}://${req.get('host')}`;
@@ -584,21 +653,39 @@ class Auth {
   }
 
   /**
+   * The public URL from the configuration (auth.publicUrl, else hostName), or null. Password
+   * links are made only from this: never from the request, whose Host header anyone can forge
+   * to have a link to their own site emailed to a user
+   */
+  configuredUrl() {
+    if (typeof this.config.publicUrl === 'string' && /^https?:\/\//.test(this.config.publicUrl)) {
+      return this.config.publicUrl.replace(/\/+$/, '');
+    }
+    if (this.hostName && /^[A-Za-z0-9.-]+(:\d+)?$/.test(this.hostName)) {
+      return `${this.config.cookieSecure === false ? 'http' : 'https'}://${this.hostName}`;
+    }
+    return null;
+  }
+
+  /**
    * A link that sets the user's password (any earlier one stops working)
-   * @returns {string|null} the URL, or null if there is no public URL to make it from
+   * @returns {string|null} the URL, or null if there is no public URL (auth.publicUrl or
+   *   hostName) to make it from
    */
   passwordLink(userId, req, back = '') {
     this.requireInitialized();
-    const base = this.publicUrl(req);
+    const base = this.configuredUrl();
     if (!base) {
+      this.log.warn('Auth: no link that sets a password can be made: set auth.publicUrl (or hostName) in config.json');
       return null;
     }
     const ret = safeReturn(back, '');
     return `${base}/auth/reset/${this.store.createLink(userId, this.linkMinutes)}${ret ? `?return=${encodeURIComponent(ret)}` : ''}`;
   }
 
+  /** Can password links be emailed: email is set up, and there is a public URL to make them from */
   canEmail() {
-    return !!(this.mailer && this.mailer.configured());
+    return !!(this.mailer && this.mailer.configured()) && this.configuredUrl() !== null;
   }
 
   /** Email a user a link that sets their password. Resolves true if it was sent */
@@ -607,7 +694,10 @@ class Auth {
       return false;
     }
     const link = this.passwordLink(user.id, req, back);
-    const where = this.publicUrl(req) || 'FHIRsmith';
+    if (!link) {
+      return false;
+    }
+    const where = this.configuredUrl();
     const text = (reason === 'new' ?
       `An account has been made for you on ${where}, with the login ${user.login}.\n\nSet its password here:\n\n` :
       `Someone (hopefully you) asked to set the password of the account ${user.login} on ${where}.\n\nSet it here:\n\n`) +

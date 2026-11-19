@@ -29,6 +29,18 @@ function isSameOrigin(req) {
   if (SAFE.has(req.method)) {
     return true;
   }
+  return originIsThisSite(req);
+}
+
+/**
+ * Did the request come from this site, whatever its method? True when it names no Origin
+ * (a navigation, a same-origin GET, software), or names this host. A browser names the page's
+ * origin on every cross-origin fetch, GET included, so this is how a request made by another
+ * site's script - one that the browser has attached this site's cookie to - is told apart.
+ * @param {import('express').Request} req
+ * @returns {boolean}
+ */
+function originIsThisSite(req) {
   const origin = req.get('Origin');
   if (!origin) {
     return true;
@@ -59,4 +71,4 @@ function requireSameOrigin(reject) {
   };
 }
 
-module.exports = { isSameOrigin, requireSameOrigin };
+module.exports = { isSameOrigin, originIsThisSite, requireSameOrigin };

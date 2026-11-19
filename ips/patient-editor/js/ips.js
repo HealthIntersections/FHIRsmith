@@ -836,20 +836,6 @@ async function makeCareDirectiveResources(bnd, comp, now, form) {
 }
 
 
-function makeCareTeamResources(bnd, comp, now, form) {
-  const div = xhtml.div();
-  var sect = addSection(comp, 'Care Team', 'http://loinc.org', '86744-0');
-  var ul = div.ul();
-
-  addToBundle(bnd, makeCareAdvocate(bnd, form, sect, ul));
-  if (sect.entry == null || sect.entry.length == 0) {
-    ul.li().tx("No User provided Patient Advocate / Power of Attorney");
-    comp.section = comp.section.filter(section => section !== sect);
-  } else {
-    sect.text.div = div.done().outerHTML;
-  }
-}
-
 function selText(name) {
   const select = document.getElementById(name);
   return select.options[select.selectedIndex].text;
