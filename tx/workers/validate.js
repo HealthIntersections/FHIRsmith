@@ -282,7 +282,8 @@ class ValueSetChecker {
           op.addIssue(new Issue('error', 'not-found', addToPath(path, 'system'), 'UNKNOWN_CODESYSTEM_VERSION', msg, 'not-found'));
           messages.push(msg);
         }
-      } else if (cs === null && result !== versionCoding) {
+      } else if (cs === null && result && result !== versionCoding) {
+        // (no version from the include or the parameters: nothing to compare the coding's version with)
         let msg = this.worker.i18n.translate('VALUESET_VALUE_MISMATCH', this.params.HTTPLanguages, [system, result, versionCoding]);
         op.addIssue(new Issue('error', 'invalid', addToPath(path, 'version'), 'VALUESET_VALUE_MISMATCH', msg, 'vs-invalid'));
         messages.push(msg);
