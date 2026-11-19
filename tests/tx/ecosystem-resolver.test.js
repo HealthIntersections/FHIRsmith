@@ -54,6 +54,18 @@ describe('EcosystemResolver', () => {
       expect(() => EcosystemResolver.checkConfig({ use: true, oauth: { nzhts: { tokenEndpoint: 'https://a.example/t' } } })).toThrow(/oauth.nzhts needs/);
       expect(() => EcosystemResolver.checkConfig({ use: true, oauth: { nzhts: { tokenEndpoint: 'http://a.example/t', clientId: 'a', clientSecret: 'b' } } })).toThrow(/must be an https: URL/);
       expect(() => EcosystemResolver.checkConfig({ use: true, registry: 'nowhere' })).toThrow(/registry must be the address/);
+      expect(() => EcosystemResolver.checkConfig({ use: true, timeout: '10' })).toThrow(/timeout must be a number of seconds/);
+      expect(() => EcosystemResolver.checkConfig({ use: true, timeout: 0 })).toThrow(/timeout must be a number of seconds/);
+      expect(() => EcosystemResolver.checkConfig({ use: true, timeout: 301 })).toThrow(/timeout must be a number of seconds/);
+      expect(EcosystemResolver.checkConfig({ use: true, timeout: 7.5 })).toEqual({ use: true, timeout: 7.5 });
+    });
+
+    test('the timeout is 30 seconds unless it is set', () => {
+      expect(resolver().timeoutMs).toBe(30000);
+      expect(resolver().httpsProbeMs).toBe(10000);
+      expect(resolver({ timeout: 5 }).timeoutMs).toBe(5000);
+      // the https:// try never gets longer than the whole request
+      expect(resolver({ timeout: 5 }).httpsProbeMs).toBe(5000);
     });
   });
 
@@ -235,6 +247,50 @@ describe('EcosystemResolver', () => {
       expect(await r.listVersions(OPEN, 'http://example.org/unlisted')).toEqual([{ code: '2024', isDefault: false }, { code: '2025', isDefault: false }]);
       // for an authoritative server, what it says about the content doesn't matter
       expect(await r.listVersions(OPEN, 'http://example.org/tables', null, true)).toEqual([{ code: '1', isDefault: false }]);
+    });
+  });
+
+  // a server that should have the code system, but can't be asked: why is kept, so that the
+  // operation can say that's why the code system isn't found (Provider.findInEcosystem)
+  describe('a server that can\'t be asked', () => {
+    test('one that doesn\'t answer at all isn\'t searched as well, and says why', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/metadata').query(true).replyWithError({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED' });
+      const search = nock('https://open.example').get('/fhir/CodeSystem').query(true).reply(200, { resourceType: 'Bundle' });
+      expect(await r.listVersions(OPEN, SCT)).toBeNull();
+      // waiting for a search of a server that's down would only be waiting out another timeout
+      expect(search.isDone()).toBe(false);
+      expect(r.whyUnavailable(OPEN, SCT)).toMatch(/^Unable to read the code systems that https:\/\/open.example\/fhir has: .*ECONNREFUSED/);
+    });
+
+    test('one that answers with an error is still searched, and says why if that fails too', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/metadata').query(true).reply(500, { resourceType: 'OperationOutcome' });
+      nock('https://open.example').get('/fhir/CodeSystem').query(true).reply(503, 'busy');
+      expect(await r.listVersions(OPEN, SCT)).toBeNull();
+      expect(nock.isDone()).toBe(true);
+      expect(r.whyUnavailable(OPEN, SCT)).toBe(`Unable to search for ${SCT} on ${OPEN}: it returned status 503`);
+    });
+
+    test('one that answers, and doesn\'t have it, has no excuse', async () => {
+      const r = resolver();
+      mockListing();
+      nock('https://open.example').get('/fhir/metadata').query(true).reply(200, { resourceType: 'TerminologyCapabilities', codeSystem: [] });
+      nock('https://open.example').get('/fhir/CodeSystem').query(true).reply(200, { resourceType: 'Bundle' });
+      expect(await r.listVersions(OPEN, SCT)).toBeNull();
+      expect(r.whyUnavailable(OPEN, SCT)).toBeNull();
+    });
+
+    test('a registry that can\'t be asked says why, and one that knows of no server doesn\'t', async () => {
+      const r = resolver();
+      nock(REG).get('/tx-reg/resolve').query(q => q.url === `${SCT}|${EE}`).times(3).replyWithError({ code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' });
+      expect(await r.findServers(SCT, EE, 5)).toBeNull();
+      expect(r.whyNoServers(SCT, EE, 5)).toMatch(/^Ecosystem resolution of .* failed: .*ETIMEDOUT/);
+      nock(REG).get('/tx-reg/resolve').query(q => q.url === 'http://example.org/none').times(3).reply(200, { authoritative: [], candidates: [] });
+      expect(await r.findServers('http://example.org/none', null, 5)).toBeNull();
+      expect(r.whyNoServers('http://example.org/none', null, 5)).toBeNull();
     });
   });
 
@@ -452,6 +508,11 @@ describe('EcosystemResolver', () => {
       await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/slow\/fhir\/metadata: no complete response within 30 s$/);
       expect(await r.findServer(SCT, null, 5)).toBeNull();
       expect(Date.now() - start).toBeLessThan(5000);
+    });
+
+    test('the timeout is the one configured', async () => {
+      const r = resolver({ registry: `${local}/slow/tx-reg`, allowPrivateAddresses: true, timeout: 2 });
+      await expect(r.send(`${local}/fhir`, `${local}/slow/fhir/metadata`)).rejects.toThrow(/no complete response within 2 s$/);
     });
   });
 });
