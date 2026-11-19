@@ -5,9 +5,9 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.6] - 2026-11-19
 
-**Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder, tx) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
+**Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
 
 ### Added
 
@@ -16,10 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Roles: administrator, server wide (named in `auth.administrators` - email addresses, or `github:{name}`, tied to the GitHub user id - or given on the users page), and the modules' own, some of them for one thing: ips manager (a project) and project-admin (IPS Project Admin: the users the IPS projects page offers as managers), publisher queue and approve (a website), testing submit, edit-links and delete-reports, registry member, packages crawl, shl create, folder upload (a folder). The administrator gives them on `/auth/admin/users`
 - API tokens (`fhs_...`, stored as SHA-256 hashes, shown once, with an optional expiry and a use count), made by a user on their account page or by the administrator for software accounts, sent as `Authorization: Bearer` (or `Api-Key`, `X-API-Key`, or Basic with the token as the password). A token can do what its user's roles allow
 - The account is the right-most item of the top menu on every page, in every module: *Login*, or the user's name, linked to their own page, which says who they are and what they can do (their roles, linked to the modules; for an administrator, the users and the modules' administration pages), and where they change their name and password, link GitHub, manage their API tokens and log out
-- The daily report has a paragraph on users and logins, when there are any accounts: logins (with a password, with GitHub), failed logins for accounts that exist, the user accounts (how many disabled, how many new) and the sessions logged in now. Logins and failed logins are kept in the auth database for 90 days
+- The daily report has a paragraph on users and logins, when there are any accounts: logins (with a password, with GitHub), failed logins (altogether, for names that aren't accounts, and for each account that exists), the user accounts (how many disabled, how many new) and the sessions logged in now. Logins and failed logins are kept in the auth database for 90 days
 - Requests that bring a login or an API token are rate limited, by IP address, on every route that looks up who is asking (`auth.requestsPerMinute`, 1000 a minute). Anonymous requests aren't counted, and the terminology API isn't behind it
+- ips: a project can take documents from users as well as, or instead of, with its submission token: any logged in user, or approved users (the ips *Submit documents* role for the project, which the administrator gives; managers count too). On the pages they log in; on the API they send their own API token. The document records who submitted it. Logged in users' submissions carry the CSRF token
+- Logging in with Google (`auth.google`, an OAuth client in a Google Cloud project), as with GitHub: anyone can make an account with it, with no roles; it is tied to Google's id for the account, needs a verified email address, and can be linked to an existing account. `google:{email}` in `auth.administrators` names a Google account. The login page offers GitHub and Google first, then the password form for accounts the administrator has made
+- shl: `"users": "any"` in `modules.shl` lets any logged in account make, sign and validate links (`/shl/create`, `/upload`, `/sign`, `/validate`), not only the shl "create" role - for a public demo page on the same site, which calls them with the login's session. Making a link and signing a VHL are logged with who did it
+- auth: `GET /auth/me` says who is logged in (`{login, name, administrator}`), or answers 401 with the login page to send them to - for a page's script
 - `node server.js --password-link {login or email}`: prints a link that sets the account's password, for when there is no email or the administrator can't log in
 - registry: `/tx-reg/usage`, the API requests each client (user or OIDC client) made, for the administrators
+- tx: text filters (`$expand` `filter`) on currencies (ISO 4217), countries (ISO 3166, in English, or in French for a French request), UN M49 area codes and US states, matched and ranked as for any other code system (the codes too, by a left match, and the codes a supplement in use matches); they had no text search, and answered a text filter with an error. Countries now also say they have French names, which they do for nearly every code
 
 ### Changed
 
@@ -30,13 +35,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - tx: client errors are no longer logged with a stack: a `$validate-code` whose Issue becomes its result (a coding with no system, say) isn't logged at all, and what can't be done with a code system on another server (an `$expand` of a value set that includes one) is a 422 OperationOutcome, not a 500
 - tx: an include filter `concept in <codes>` (or `code in`) with a code the code system doesn't have is treated as the other filters that select by concept are (1.0.3): the include adds no codes, and the expansion says so with an `expansion-issue` warning - or, with `errorsForInvalidCodes`, the value set can't be expanded (422) - and `$validate-code` says the value set is not valid. SNOMED CT failed on it (500, logged with a stack)
 
+### Security
+
+- A login cookie on a request that another site made (its `Origin` names another host) is ignored: the request is nobody. Browsers attach the cookie to requests that scripts on the same site make (`build.fhir.org` and `tx.fhir.org` are both `fhir.org`), and with `server.cors` `credentials: true` - which the template had - such a script could read what the logged in user sees, and use the APIs that take a login as well as a token (`/shl/create`, `/packages/crawl`, deleting test reports, folder uploads, the registry API). The template no longer sets `credentials`, and `--check` warns when it is set. Pages that need someone logged in, and the `/auth` pages, can't be put in another site's frame
+- `github:{name}` and `google:{email}` in `auth.administrators` are tied to the provider's id for the first account they match, and from then on match that id: whoever later takes a renamed GitHub account's old name doesn't become an administrator (the name was matched on every login). `github:#{id}` and `google:#{id}` name an account by id
+- Password links are made only from `auth.publicUrl` or `hostName`, never from the request's Host header; with neither, there are none (`--check` warns). *Forgotten your password?* answers without waiting for the email to be sent, so the time it takes doesn't say whether there is such an account
+- Changing an account's email ends its sessions, and a password link sent to the old address stops working
+- A login can't have an `@`, so it can't be mistaken for another account's email address: a name with an `@` on the login and forgotten password pages is looked up by email first. A configured administrator's account gets the part of its address before the `@` as its login
+- registry: the FHIR version a crawled server's CapabilityStatement gave was shown on the authoritative code systems and value sets tables without escaping, so a listed server could put script on the registry's pages. It is escaped, and the crawler keeps only a `fhirVersion` that looks like a FHIR version (else it assumes the default, with a warning in the crawl log)
+- shl: `POST /shl/validate/loadig`, which downloads a package and loads it into the validator, is for users with the new shl "load-ig" role (an API token), and administrators; it was open to anyone
+- shl: everything but reading a link (`/shl/access`, `/shl/file`, which its recipients use with no account) is for users with the shl "create" role, sending an API token, and this server's ips module: `/shl/upload`, `/shl/sign` (which signed a VHL for any URL with the server's key, for anyone) and `/shl/validate` (and its status) as well as `/shl/create`
+- xig: a resource's narrative - written by whoever published its package - was put into the resource's page as it was, script and all. A narrative with active content (script, event handlers, forms, javascript: links...) is no longer shown, and the rest are shown as their parsed tree written out again; the package's web address the links are rebased to is escaped
+- registry: the registry and server codes, server descriptions and FHIR versions in the registry tree and the matches table (`RegistryAPI.renderInfoToHtml`, `renderJsonToHtml`) were not escaped, and their links took any scheme; they are escaped, and links are http(s) only
+- tx: an expansion's error message on a value set's page was not escaped
+- The page templates no longer load `jtip.js` and `fhir-gw.js`, and they and `xml.js` are gone: nothing used them, and `fhir-gw.js` built HTML from data without escaping it
+- publisher: a build's own pages (*View IG*) are served sandboxed (`Content-Security-Policy: sandbox`), so the IG's scripts run in an origin of their own, not with the login of whoever looks at them
+- registry: the crawler drops a server's credentials (`Api-Key`) from a redirect to another host; they went with it (axios drops only `Authorization`)
+- tx: a resource's *Original Narrative* is shown as its parsed tree written out again, not the string as it is, so that an unterminated tag or attribute can't swallow the rest of the page (as the ips pages do)
+- ips: the editors' PDF has the narratives sanitised by the same rules as the patient editor's page (one copy of them, in doc-actions.js); its own were weaker (no `svg`, `math` or `base`, and `xlink:href` unchecked)
+- ips: the submission form and the editors say that everyone can see a project's documents, and not to use them for real patients' documents
+- xig: `POST /xig/update` is for the server's administrators - logged in, from the form on `/xig/stats`, or with an administrator's API token. `modules.xig.updateToken` is no longer used (a warning)
+
 ### Fixed
 
+- ips: the patient editor's script declared `makeCareTeamResources` twice (the same function)
+- auth: *Remove the password* (and any other confirmation with an apostrophe in its question) posted without asking: the question's escaped apostrophe broke the script that asks it
+- ips: an `ips.shl.server` given as this server's own URL (`https://{hostName}/shl`) is called in process, with no token, as `"/shl"` is. With the single login it was treated as another server, which needs a token, so documents had no QR codes
 - publisher: a database made before websites had their history and web templates folders couldn't add or change a website ("Failed to create website": the columns were never added to an existing table). They are now added when the module starts, and the page says why when saving a website fails
 
 ### Removed
 
 - The token module (`modules.token`), and with it logging in with Google and Facebook, and the passport packages
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.6 passed all 5545 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
 
 ## [1.0.5] - 2026-11-18
 

@@ -76,8 +76,7 @@ Create a `config.json` file in your data directory (use `config-template.json` a
   "server": {
     "port": 3000,
     "cors": {
-      "origin": "*",
-      "credentials": true
+      "origin": "*"
     }
   },
   "modules": {
@@ -85,6 +84,12 @@ Create a `config.json` file in your data directory (use `config-template.json` a
   }
 }
 ```
+
+`server.cors` is handed to the [cors](https://www.npmjs.com/package/cors) package. Don't set
+`"credentials": true`: with it, browsers let a script on another site - one on the same domain,
+such as `build.fhir.org` for `tx.fhir.org` - read what the logged in user sees. API clients send
+their token in a header, which needs no credentials mode. (The server also ignores a login
+cookie on a request whose `Origin` is another site.) `node server.js --check` warns about it.
 
 | Option | Default | Description |
 |---|---|---|
@@ -215,7 +220,7 @@ counts in the statistics database for the period. The modules that report:
 
 | Module | Reports |
 |---|---|
-| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub), failed logins for accounts that exist, the user accounts (disabled, new), and the sessions logged in now |
+| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub, with Google), failed logins (altogether, for names that aren't accounts, and for each account), the user accounts (disabled, new), and the sessions logged in now |
 | Terminology server | how many of each operation were performed, over all its endpoints |
 | Terminology server registry | client requests answered by the API, servers registered, and any server that answered none of the registry's scans in the period |
 | Packages | packages served (tarball downloads) and new package versions found by the crawler |
@@ -242,14 +247,15 @@ counts in the statistics database for the period. The modules that report:
 ## Users and logins
 
 The top-level `auth` block configures the server's one login system: the users, roles and API
-tokens of every module, who the administrators are, and logging in with GitHub. See
+tokens of every module, who the administrators are, and logging in with GitHub and Google. See
 [library/auth/README.md](library/auth/README.md). In brief:
 
 ```json
 "auth": {
   "sessionSecret": "a long random string",
-  "administrators": ["you@example.org", "github:yourname"],
-  "github": { "clientId": "...", "clientSecret": "..." }
+  "administrators": ["you@example.org", "github:yourname", "google:you@gmail.com"],
+  "github": { "clientId": "...", "clientSecret": "..." },
+  "google": { "clientId": "....apps.googleusercontent.com", "clientSecret": "..." }
 }
 ```
 
@@ -281,7 +287,7 @@ The modules' own logins, users and passwords are gone: the server has one login 
 ([library/auth](library/auth/README.md)). Users are not carried over - start again:
 
 1. add the `auth` block (above): `sessionSecret`, and yourself in `administrators`
-2. set your password (*Forgotten your password?*, or `node server.js --password-link {email}`), or log in with GitHub
+2. set your password (*Forgotten your password?*, or `node server.js --password-link {email}`), or log in with GitHub or Google
 3. give users the modules' roles on `/auth/admin/users` (IPS project managers also on the IPS projects page), and make API tokens for the software that used the old shared tokens (packages crawl, testing submissions and deletes, `/shl/create`, folder uploads, a secured registry's clients)
 4. take the old settings out. Until then they are warnings in the log and in `--check`, and the old shared tokens are no longer accepted - but a registry with `security.apiToken` or `users`, and a testing module with `token`, stay closed rather than open
 

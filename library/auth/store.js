@@ -18,7 +18,8 @@ const bcrypt = require('bcrypt');
 
 const TOKEN_PREFIX = 'fhs_';
 const BCRYPT_COST = 12;
-const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._@+-]{1,99}$/;
+// no @: a login can't be mistaken for another account's email address (userByLoginOrEmail)
+const LOGIN_RE = /^[A-Za-z0-9][A-Za-z0-9._+-]{1,99}$/;
 const EMAIL_RE = /^[^\s@<>"']{1,64}@[^\s@<>"']{1,255}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -61,6 +62,8 @@ class AuthStore {
         password_hash TEXT,
         github_id     TEXT UNIQUE,
         github_login  TEXT,
+        google_id     TEXT,
+        google_email  TEXT,
         enabled       INTEGER NOT NULL DEFAULT 1,
         epoch         INTEGER NOT NULL DEFAULT 0,
         notes         TEXT NOT NULL DEFAULT '',
@@ -106,7 +109,24 @@ class AuthStore {
         user_id INTEGER
       );
       CREATE INDEX IF NOT EXISTS login_events_at ON login_events(at);
+      -- the provider id each github:{name} / google:{email} entry of auth.administrators was
+      -- first matched by: from then on the entry is that id, so a name or address someone
+      -- else takes later (a renamed GitHub account's old name) doesn't make them an administrator
+      CREATE TABLE IF NOT EXISTS admin_pins (
+        entry       TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        pinned_at   TEXT NOT NULL
+      );
     `);
+    // columns added since the table was first made
+    const cols = new Set(this.db.prepare('PRAGMA table_info(users)').all().map(c => c.name));
+    for (const c of ['google_id', 'google_email']) {
+      if (!cols.has(c)) {
+        this.db.exec(`ALTER TABLE users ADD COLUMN ${c} TEXT`);
+      }
+    }
+    // (SQLite can't add a UNIQUE column: an index does it)
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_id)');
     this.db.pragma('foreign_keys = ON');
     this.pendingUse = new Map(); // token id -> { count, last }
     const p = sql => this.db.prepare(sql);
@@ -115,6 +135,8 @@ class AuthStore {
       userByLogin: p('SELECT * FROM users WHERE login = ?'),
       userByEmail: p('SELECT * FROM users WHERE email = ?'),
       userByGithub: p('SELECT * FROM users WHERE github_id = ?'),
+      userByGoogle: p('SELECT * FROM users WHERE google_id = ?'),
+      setGoogle: p('UPDATE users SET google_id = ?, google_email = ? WHERE id = ?'),
       users: p('SELECT * FROM users ORDER BY login'),
       insertUser: p('INSERT INTO users (login, name, email, github_id, github_login, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
       updateUser: p('UPDATE users SET name = ?, email = ?, notes = ? WHERE id = ?'),
@@ -141,8 +163,14 @@ class AuthStore {
       purgeLinks: p('DELETE FROM links WHERE expires_at < ?'),
       insertEvent: p('INSERT INTO login_events (at, kind, method, user_id) VALUES (?, ?, ?, ?)'),
       purgeEvents: p('DELETE FROM login_events WHERE at < ?'),
-      countEvents: p('SELECT kind, method, COUNT(*) AS n FROM login_events WHERE at > ? AND at <= ? GROUP BY kind, method'),
-      countUsers: p('SELECT COUNT(*) AS total, SUM(enabled) AS enabled, SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS made FROM users')
+      countEvents: p('SELECT kind, method, user_id IS NOT NULL AS known, COUNT(*) AS n FROM login_events WHERE at > ? AND at <= ? GROUP BY kind, method, known'),
+      failedByUser: p(`SELECT u.login, COUNT(*) AS n FROM login_events e JOIN users u ON u.id = e.user_id
+        WHERE e.kind = 'failed' AND e.at > ? AND e.at <= ? GROUP BY e.user_id ORDER BY n DESC, u.login`),
+      countUsers: p('SELECT COUNT(*) AS total, SUM(enabled) AS enabled, SUM(CASE WHEN created_at > ? AND created_at <= ? THEN 1 ELSE 0 END) AS made FROM users'),
+      adminPin: p('SELECT provider_id FROM admin_pins WHERE entry = ?'),
+      insertAdminPin: p('INSERT OR IGNORE INTO admin_pins (entry, provider_id, pinned_at) VALUES (?, ?, ?)'),
+      adminPins: p('SELECT entry, provider_id, pinned_at FROM admin_pins ORDER BY entry'),
+      dropAdminPin: p('DELETE FROM admin_pins WHERE entry = ?')
     };
   }
 
@@ -168,18 +196,57 @@ class AuthStore {
     return typeof email === 'string' && email ? this._user(this.stmts.userByEmail.get(email)) : null;
   }
 
-  /** The user a login form names: by login, else by email */
+  /**
+   * The user a login form names: an email address (it has an @) by email, else by login. (A
+   * login made before logins couldn't have an @ is still found by it, when it isn't an
+   * account's email address)
+   */
   userByLoginOrEmail(text) {
-    return this.userByLogin(text) || this.userByEmail(text);
+    if (typeof text === 'string' && text.includes('@')) {
+      return this.userByEmail(text) || this.userByLogin(text);
+    }
+    return this.userByLogin(text);
   }
 
   userByGithub(githubId) {
     return githubId ? this._user(this.stmts.userByGithub.get(String(githubId))) : null;
   }
 
+  userByGoogle(googleId) {
+    return googleId ? this._user(this.stmts.userByGoogle.get(String(googleId))) : null;
+  }
+
+  /** The user an identity from a login provider ('github', 'google') is linked to, or null */
+  userByIdentity(provider, id) {
+    return provider === 'github' ? this.userByGithub(id) : provider === 'google' ? this.userByGoogle(id) : null;
+  }
+
+  /**
+   * Link (or, with no id, unlink) a provider's identity: its id, and the handle shown for it
+   * (the GitHub login, the Google email)
+   */
+  setIdentity(provider, userId, id, handle) {
+    if (provider === 'github') {
+      return this.setGithub(userId, id, handle);
+    }
+    if (provider === 'google') {
+      return this.stmts.setGoogle.run(id ? String(id) : null, id ? handle : null, userId).changes > 0;
+    }
+    throw new Error(`Unknown login provider ${provider}`);
+  }
+
+  /** The id and handle of a provider's identity linked to this user row, or null */
+  static identityOf(user, provider) {
+    if (!user) {
+      return null;
+    }
+    const [id, handle] = provider === 'github' ? [user.github_id, user.github_login] : provider === 'google' ? [user.google_id, user.google_email] : [null, null];
+    return id ? { id, handle } : null;
+  }
+
   /** A login that isn't taken, from what's wanted: wanted, else wanted-2, wanted-3... */
   freeLogin(wanted) {
-    let base = String(wanted || 'user').replace(/[^A-Za-z0-9._@+-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').substring(0, 90) || 'user';
+    let base = String(wanted || 'user').replace(/[^A-Za-z0-9._+-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').substring(0, 90) || 'user';
     if (base.length < 2) {
       base = base + '-user';
     }
@@ -194,15 +261,23 @@ class AuthStore {
    * @returns {number} the new user's id
    * @throws if the login or email is taken, or not valid
    */
-  createUser({ login, name = '', email = null, githubId = null, githubLogin = null, notes = '' }) {
+  createUser({ login, name = '', email = null, githubId = null, githubLogin = null, notes = '', identity = null }) {
     if (!LOGIN_RE.test(login || '')) {
       throw new Error('A login is 2-100 letters, digits, and . _ @ + -, starting with a letter or digit');
     }
     if (email && !EMAIL_RE.test(email)) {
       throw new Error('That is not an email address');
     }
-    const r = this.stmts.insertUser.run(login, name, email || null, githubId ? String(githubId) : null, githubLogin, notes, now());
-    return Number(r.lastInsertRowid);
+    const create = () => {
+      const r = this.stmts.insertUser.run(login, name, email || null, githubId ? String(githubId) : null, githubLogin, notes, now());
+      const id = Number(r.lastInsertRowid);
+      // identity: {provider, id, handle}, from a login provider
+      if (identity) {
+        this.setIdentity(identity.provider, id, identity.id, identity.handle);
+      }
+      return id;
+    };
+    return this.db.transaction(create)();
   }
 
   updateUser(id, { name, email, notes }) {
@@ -243,6 +318,11 @@ class AuthStore {
     return bcrypt.compare(password, user.password_hash);
   }
 
+  /** The user's unused links that set a password stop working */
+  dropLinks(id) {
+    return this.stmts.dropLinks.run(id).changes;
+  }
+
   /** Every session of the user ends */
   endSessions(id) {
     return this.stmts.bumpEpoch.run(id).changes > 0;
@@ -257,10 +337,10 @@ class AuthStore {
   }
 
   /**
-   * A login (kind 'login'), or a failed login for an account that exists ('failed'), for the
-   * daily report
+   * A login (kind 'login'), or a failed login ('failed'), for the daily report. A failed login
+   * has the account's id when there is such an account, and none when the name isn't one
    * @param {'login'|'failed'} kind
-   * @param {'password'|'github'} method
+   * @param {'password'|'github'|'google'} method
    */
   recordLogin(kind, method, userId) {
     this.stmts.insertEvent.run(now(), kind, method, userId ?? null);
@@ -274,12 +354,17 @@ class AuthStore {
     const from = new Date(since).toISOString();
     const to = new Date(until).toISOString();
     this.stmts.purgeEvents.run(new Date(until - EVENT_DAYS * 24 * 60 * 60 * 1000).toISOString());
-    const counts = { login: { password: 0, github: 0 }, failed: { password: 0, github: 0 } };
+    const counts = { login: { password: 0, github: 0, google: 0 }, failed: { password: 0, github: 0, google: 0 } };
+    let failedUnknown = 0;
     for (const r of this.stmts.countEvents.all(from, to)) {
-      if (counts[r.kind]) {
+      if (r.kind === 'failed' && !r.known) {
+        failedUnknown += r.n;
+      } else if (counts[r.kind]) {
         counts[r.kind][r.method] = (counts[r.kind][r.method] || 0) + r.n;
       }
     }
+    // the accounts that had failed logins, most first: [{login, n}]
+    const failedAccounts = this.stmts.failedByUser.all(from, to);
     const u = this.stmts.countUsers.get(from, to);
     let sessions = null;
     try {
@@ -292,13 +377,47 @@ class AuthStore {
       // no sessions table (yet): the session store makes it
     }
     return {
-      logins: counts.login, failed: counts.failed,
+      logins: counts.login, failed: counts.failed, failedUnknown, failedAccounts,
       users: u.total || 0, enabled: u.enabled || 0, made: u.made || 0, sessions
     };
   }
 
   deleteUser(id) {
     return this.stmts.deleteUser.run(id).changes > 0;
+  }
+
+  // ---- the configured administrators' provider ids ----
+
+  /** The provider id a configured entry ('github:{name}', 'google:{email}') is tied to, or null */
+  adminPin(entry) {
+    const r = this.stmts.adminPin.get(entry);
+    return r ? r.provider_id : null;
+  }
+
+  /**
+   * Tie a configured entry to a provider id, unless it is tied already (another process may
+   * have got there first)
+   * @returns {string} the id the entry is tied to
+   */
+  pinAdmin(entry, providerId) {
+    this.stmts.insertAdminPin.run(entry, String(providerId), now());
+    return this.adminPin(entry);
+  }
+
+  adminPins() {
+    return this.stmts.adminPins.all();
+  }
+
+  /** Forget the ties of entries no longer configured */
+  dropAdminPinsExcept(entries) {
+    const keep = new Set(entries);
+    let n = 0;
+    for (const p of this.adminPins()) {
+      if (!keep.has(p.entry)) {
+        n += this.stmts.dropAdminPin.run(p.entry).changes;
+      }
+    }
+    return n;
   }
 
   // ---- roles ----

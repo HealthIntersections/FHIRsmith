@@ -621,6 +621,7 @@ class TestingModule {
       htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Cross-site form posts are not accepted'), 403));
     // a right, or the administrator
     const need = (right) => (req, res, next) => {
+      auth.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
         return res.redirect(auth.loginUrl(req));

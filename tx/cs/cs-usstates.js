@@ -1,4 +1,4 @@
-const { CodeSystemProvider, CodeSystemFactoryProvider} = require('./cs-api');
+const { CodeSystemProvider, CodeSystemFactoryProvider, FilterExecutionContext } = require('./cs-api');
 const assert = require('assert');
 const { CodeSystem } = require("../library/codesystem");
 
@@ -6,6 +6,13 @@ class USStateConcept {
   constructor(code, display) {
     this.code = code;
     this.display = display;
+  }
+}
+
+class USStateConceptFilter {
+  constructor() {
+    this.list = [];
+    this.cursor = -1;
   }
 }
 
@@ -155,6 +162,57 @@ class USStateServices extends CodeSystemProvider {
       return concept;
     }
     return null;
+  }
+
+  // Text filter ($expand filter): the codes, displays (CodeSystemProvider._searchConceptList)
+  async searchFilter(filterContext, filter, sort) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    const result = new USStateConceptFilter();
+    result.list = await this._searchConceptList(filterContext, filter, sort, this.codes);
+    filterContext.filters.push(result);
+    return filterContext;
+  }
+
+  async _rootDisplay(code) {
+    const concept = this.codeMap.get(code);
+    return concept ? concept.display || null : null;
+  }
+
+  async executeFilters(filterContext) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    return filterContext.filters;
+  }
+
+  async filterSize(filterContext, set) {
+    assert(set && set instanceof USStateConceptFilter, 'set must be a USStateConceptFilter');
+    return set.list.length;
+  }
+
+  async filtersNotClosed(filterContext) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    return false; // Finite set
+  }
+
+  async filterMore(filterContext, set) {
+    assert(set && set instanceof USStateConceptFilter, 'set must be a USStateConceptFilter');
+    set.cursor++;
+    return set.cursor < set.list.length;
+  }
+
+  async filterConcept(filterContext, set) {
+    assert(set && set instanceof USStateConceptFilter, 'set must be a USStateConceptFilter');
+    return set.cursor >= 0 && set.cursor < set.list.length ? set.list[set.cursor] : null;
+  }
+
+  async filterLocate(filterContext, set, code) {
+    assert(set && set instanceof USStateConceptFilter, 'set must be a USStateConceptFilter');
+    return set.list.find(concept => concept.code === code) || null;
+  }
+
+  async filterCheck(filterContext, set, concept) {
+    assert(set && set instanceof USStateConceptFilter, 'set must be a USStateConceptFilter');
+    const ctxt = await this.#ensureContext(concept);
+    return set.list.includes(ctxt);
   }
 
   // Subsumption

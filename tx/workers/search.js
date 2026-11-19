@@ -120,6 +120,13 @@ class SearchWorker extends TerminologyWorker {
           matches = [];
       }
 
+      // _id: the resource with that logical id (an exact match; a list separated by commas
+      // matches any of them)
+      if (params._id) {
+        const idLists = [].concat(params._id).map(v => String(v).split(','));
+        matches = matches.filter(m => idLists.every(ids => ids.includes(m.id)));
+      }
+
       // Sort results
       matches = this.sortResults(matches, sort);
       if (summary !== 'count') {
@@ -561,6 +568,10 @@ class SearchWorker extends TerminologyWorker {
         status: "active",
         description: "This is a place holder for the code system which is fully supported through internal means (not by this code system)",
         content: "not-present"
+      }
+      if (!json.version) {
+        // no version (the internal code systems without one): no element, rather than version: null
+        delete json.version;
       }
       if (csp.webSource()) {
         json.extension = [{ url: "http://hl7.org/fhir/StructureDefinition/web-source", valueUrl : csp.webSource()}];

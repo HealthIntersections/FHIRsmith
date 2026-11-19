@@ -488,6 +488,19 @@ function projectNav(project, ctx) {
   return h + '</div>';
 }
 
+/** What submitting on the API needs, for the documentation: '' when anyone can */
+function submitNote(project) {
+  const token = tokenConfigured(project.token);
+  const users = project.submit_users === 'any' ? 'a user' : project.submit_users === 'approved' ? 'an approved user' : '';
+  if (token && users) {
+    return ` (this project requires its token, or ${users}'s API token: <code>Authorization: Bearer {token}</code>)`;
+  }
+  if (users) {
+    return ` (this project requires ${users}'s API token, made on their account page: <code>Authorization: Bearer {token}</code>)`;
+  }
+  return token ? ' (this project requires a token: <code>Authorization: Bearer {token}</code>)' : '';
+}
+
 /** The documentation at the foot of a project's page: how to reach it as a FHIR endpoint. */
 function projectDocs(project, ctx) {
   const purl = projectUrl(ctx, project);
@@ -495,7 +508,7 @@ function projectDocs(project, ctx) {
     `<p>This project is a FHIR endpoint: <code>${purl}</code> (<a href="${purl}/metadata">CapabilityStatement</a>). ` +
     'Documents are IPS Bundles (<code>type: document</code>, a Composition first, with the Patient it refers to) in JSON.</p>' +
     '<table class="table table-sm ips-table ips-api"><tr><th>Request</th><th></th></tr>' +
-    `<tr><td><code>POST ${purl}/Bundle</code></td><td>submit a document${tokenConfigured(project.token) ? ' (this project requires a token: <code>Authorization: Bearer {token}</code>)' : ''}; the response is the stored document, with its id</td></tr>` +
+    `<tr><td><code>POST ${purl}/Bundle</code></td><td>submit a document${submitNote(project)}; the response is the stored document, with its id</td></tr>` +
     `<tr><td><code>GET ${purl}/Bundle/{id}</code></td><td>read a document - JSON for a FHIR client, this web page for a browser (<code>?_format=json</code> forces JSON, <code>?download=1</code> downloads it)</td></tr>` +
     `<tr><td><code>GET ${purl}/Bundle?...</code></td><td>search: Bundle's search parameters (<code>_id</code>, <code>identifier</code>, <code>_lastUpdated</code>, <code>composition</code>), chained to the Composition and Patient as ` +
     '<code>composition.date</code>, <code>composition.title</code>, <code>composition.patient.name</code>, <code>composition.patient.gender</code>, <code>composition.patient.birthdate</code>, <code>composition.patient.identifier</code>, ...; ' +
@@ -616,13 +629,23 @@ function renderSubmit(project, ctx, options = {}) {
   let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Submit') + alert(options.error, 'danger');
   h += '<p>Paste an IPS document (a FHIR R4 <code>Bundle</code> of type <code>document</code>, as JSON, whose first entry is the ' +
     'Composition), or choose a file. Once received, the document is queued for processing.</p>';
+  h += '<div class="alert alert-warning">Everyone can see the documents in a project. Don\'t submit real patients\' documents.</div>';
   if (options.aiEnabled) {
     h += '<div class="alert alert-info">Documents submitted to this project are sent to an external AI service for assessment, as part of their processing.</div>';
   }
+  if (options.blocked) {
+    // users only, and this one can't: say why, and (logged out) how
+    h += `<div class="alert alert-warning">${escape(options.blocked)}${options.login && options.loginUrl ? ` - <a href="${escape(options.loginUrl)}">log in</a>` : ''}.</div>`;
+    return h;
+  }
   h += `<form method="post" action="${purl}/submit" class="ips-form">${csrfField(ctx.csrf)}`;
+  if (options.asUser && ctx.user) {
+    h += `<div class="ips-small">You are submitting as <b>${escape(ctx.user.name)}</b>.</div>`;
+  }
   if (options.needsToken) {
     h += '<label for="token">Submission token</label><input type="password" id="token" name="token" required autocomplete="off"/>' +
-      '<div class="ips-small">This project requires a token to submit documents; ask its managers.</div>';
+      '<div class="ips-small">This project requires a token to submit documents; ask its managers.' +
+      (options.login && options.loginUrl ? ` Or <a href="${escape(options.loginUrl)}">log in</a>: it takes documents from users too.` : '') + '</div>';
   }
   h += '<label for="file">File</label><input type="file" id="file" accept=".json,application/json,application/fhir+json"/>';
   h += `<label for="bundle">Document</label><textarea id="bundle" name="bundle" required>${escape(options.bundle || '')}</textarea>`;
@@ -643,15 +666,34 @@ document.getElementById('file').addEventListener('change', function () {
 function renderSettings(project, ctx, message, options = {}) {
   const purl = projectUrl(ctx, project);
   let h = STYLE + userBar(ctx) + crumbs(ctx, project, 'Settings') + alert(message, message && /must|cannot|not a URL|Unknown|no model|no API key/.test(message) ? 'danger' : 'success');
-  h += '<h3>Submission token</h3>';
-  h += '<p>When a token is set, a document can only be submitted with it: in the <code>token</code> field of the ' +
+  const users = project.submit_users === 'any' || project.submit_users === 'approved' ? project.submit_users : '';
+  h += '<h3>Who may submit</h3>';
+  h += '<p>A project with no submission token and no users takes documents from anyone. Otherwise it takes them from whoever has its token, ' +
+    'and from the users chosen below: either will do.</p>';
+  h += '<h4>Submission token</h4>';
+  h += '<p>When a token is set, a document can be submitted with it: in the <code>token</code> field of the ' +
     `submission form, or in the <code>Authorization</code> header of a <code>POST ${purl}/Bundle</code> ` +
-    '(<code>Authorization: Bearer &lt;token&gt;</code>). Clear it and anyone can submit.</p>';
-  h += `<p>Current token: ${project.token ? `<code>${escape(project.token)}</code>` : '<i>none - submissions are open</i>'}</p>`;
+    `(<code>Authorization: Bearer &lt;token&gt;</code>).${users ? '' : ' Clear it and anyone can submit.'}</p>`;
+  h += `<p>Current token: ${project.token ? `<code>${escape(project.token)}</code>` : `<i>none${users ? '' : ' - submissions are open'}</i>`}</p>`;
   h += `<form method="post" action="${purl}/settings" class="ips-form" style="max-width: 480px">${csrfField(ctx.csrf)}` +
     '<label for="token">New token</label><input type="text" id="token" name="token" autocomplete="off" placeholder="leave blank to clear"/>' +
     '<p style="margin-top: 10px"><button type="submit" class="btn btn-primary">Save</button> ' +
     '<button type="submit" name="generate" value="1" class="btn btn-default">Generate a random token</button></p></form>';
+  h += '<h4>Users</h4>';
+  h += '<p>Users submit as themselves: on these pages logged in, and on the API with their own API token (<code>Authorization: Bearer fhs_...</code>, ' +
+    'made on their account page). The document records who submitted it.</p>';
+  h += `<form method="post" action="${purl}/settings" class="ips-form" style="max-width: 560px">${csrfField(ctx.csrf)}<input type="hidden" name="form" value="users"/>` +
+    [['', 'No users (only the token, or anyone if there is none)'], ['any', 'Any logged in user'],
+      ['approved', 'Approved users: those the server\'s administrator gives the IPS "Submit documents" role for this project (and the project\'s managers)']]
+      .map(([v, label]) => `<label style="font-weight: normal; display: block"><input type="radio" name="users" value="${v}"${users === v ? ' checked' : ''}/> ${escape(label)}</label>`).join('') +
+    '<p style="margin-top: 10px"><button type="submit" class="btn btn-primary">Save</button></p></form>';
+  if (users === 'approved') {
+    const approved = options.approved || [];
+    h += approved.length === 0
+      ? '<p><i>No users have been approved yet.</i></p>'
+      : '<p>Approved: ' + approved.map(u => `${escape(u.name || u.login)} (<code>${escape(u.login)}</code>)`).join(', ') + '</p>';
+    h += '<p class="ips-small">The server\'s administrator approves users on <a href="/auth/admin/users">the users page</a> (the user\'s page, <i>Submit documents</i> for this project).</p>';
+  }
   h += aiSettingsHtml(project, ctx, options);
   h += '<h3>Managers</h3>';
   const managers = project.managers || [];
@@ -1584,7 +1626,7 @@ function composeNotes(project, options) {
     '(a patient with a name, an author, and the allergies, problems and medications sections, each with entries or saying why it is empty). ' +
     (project ? `Submitting adds the document to ${escape(project.name)}, where everyone can see it` : 'Submitting adds the document to the project you choose, where everyone can see it') +
     (options.aiEnabled ? ', and sends it to an external AI service for assessment' : '') + '; ' +
-    'sharing as a QR code stores it, encrypted, on this server for the days you choose.';
+    'sharing as a QR code stores it, encrypted, on this server for the days you choose. Don\'t use it for real patients\' documents.';
 }
 
 /** The document creators to choose from (for a project, or none). */
@@ -2220,9 +2262,9 @@ function renderView(view, ctx, message) {
       if (projects.length === 0) {
         h += '<p class="ips-small"><i>There are no projects to add the document to.</i></p>';
       } else {
-        h += `<form method="post" action="${vurl}/add" class="ips-view-add"><input type="hidden" name="doc" value="${i}"/>` +
+        h += `<form method="post" action="${vurl}/add" class="ips-view-add">${csrfField(ctx.csrf)}<input type="hidden" name="doc" value="${i}"/>` +
           `<label for="ips-view-project-${i}">Add it to a project</label><select id="ips-view-project-${i}" name="project" required><option value="">(choose)</option>` +
-          projects.map(x => `<option value="${escape(x.code)}">${escape(x.name)}${x.needsToken ? ' (needs a token)' : ''}${x.ai ? ' (AI assessment)' : ''}</option>`).join('') + '</select>' +
+          projects.map(x => `<option value="${escape(x.code)}">${escape(x.name)}${x.label ? ' ' + escape(x.label) : ''}${x.ai ? ' (AI assessment)' : ''}</option>`).join('') + '</select>' +
           `<label for="ips-view-token-${i}">Submission token</label><input type="password" id="ips-view-token-${i}" name="token" autocomplete="off" placeholder="if the project needs one"/>` +
           '<button type="submit" class="btn btn-default">Add</button>' +
           '<div class="ips-small"><b>Adding the document to a project makes it visible to everyone</b>: anyone can list, search and read a project\'s documents. ' +
@@ -2600,7 +2642,7 @@ function renderDocument(project, row, view, ctx) {
     (row.patient_birth ? `, born ${escape(row.patient_birth)}` : '') + '</div>';
   h += '<div class="ips-facts">' +
     (row.comp_date ? `Document date ${escape(row.comp_date)} &nbsp;|&nbsp; ` : '') +
-    `Received ${escape(row.received)} (${escape(row.source)}) &nbsp;|&nbsp; ${row.size.toLocaleString()} bytes` +
+    `Received ${escape(row.received)} (${escape(row.source)})${row.submitted_by ? ` from ${escape(row.submitted_by)}` : ''} &nbsp;|&nbsp; ${row.size.toLocaleString()} bytes` +
     ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a> &nbsp;|&nbsp; <a href="${durl}?download=1">Download</a></div>`;
   if (row.patient_id) {
     h += `<div class="ips-facts">Patient <a href="${purl}/Patient/${row.patient_id}">#${row.patient_id}</a>` +

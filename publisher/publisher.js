@@ -334,6 +334,9 @@ class PublisherModule {
           return res.status(404).send('Not found');
         }
         const outputDir = path.join(task.local_folder, 'draft', 'output');
+        // the IG's own pages: their scripts run, but in an origin of their own, so they can't act
+        // with the login of whoever is looking at them (an administrator approving the build)
+        res.setHeader('Content-Security-Policy', 'sandbox allow-scripts allow-popups allow-forms allow-downloads');
         express.static(outputDir)(req, res, next);
       }).catch(() => res.status(500).send('Error'));
     });
@@ -1497,6 +1500,7 @@ class PublisherModule {
 
   // Middleware
   requireAuth(req, res, next) {
+    auth.denyFraming(res);
     if (!req.pub.userId) {
       return res.redirect(auth.loginUrl(req, '/publisher'));
     }
@@ -1504,6 +1508,7 @@ class PublisherModule {
   }
 
   requireAdmin(req, res, next) {
+    auth.denyFraming(res);
     if (!req.pub.userId) {
       return res.redirect(auth.loginUrl(req));
     }
