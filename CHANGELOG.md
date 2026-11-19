@@ -5,9 +5,9 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.6]
 
-**Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder, tx) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
+**Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
 
 ### Added
 
@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - The token module (`modules.token`), and with it logging in with Google and Facebook, and the passport packages
+
+### Tx Conformance Statement
+
+(paste)
+
 
 ## [1.0.5] - 2026-11-18
 
