@@ -5,7 +5,7 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.6]
+## [1.0.6] - 2026-11-19
 
 **Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
 
