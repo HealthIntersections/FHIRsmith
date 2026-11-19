@@ -17,7 +17,7 @@ const {Languages, Language} = require("../../library/languages");
 const {Extensions} = require("../library/extensions");
 const {validateParameter, isAbsoluteUrl, validateOptionalParameter, getValuePrimitive} = require("../../library/utilities");
 const {TxParameters} = require("../params");
-const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
+const { OperationOutcome, Issue, buildOperationOutcome } = require('../library/operation-outcome');
 const {Parameters} = require("../library/parameters");
 const {Designations, DisplayCheckingStyle, DisplayDifference, SearchFilterText} = require("../library/designations");
 const ValueSet = require("../library/valueset");
@@ -1462,6 +1462,11 @@ class ValueSetChecker {
         msg(iss.message);
       }
     }
+    // a request supplement with the url of the code system it supplements (see
+    // TerminologyWorker.noteSupplementsWithCodeSystemUrl): only ever a warning
+    for (const iss of this.worker.sameUrlSupplementIssues()) {
+      op.addIssue(iss, true);
+    }
     result.addParamBool('result', valid);
     if (psys) {
       result.addParamUri('system', psys);
@@ -2276,16 +2281,10 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      if (error instanceof Issue) {
-        // Issues raised inside the validation are turned into a result by the inner method;
-        // one that reaches here (e.g. cache-id-unknown from setupAdditionalResources, before
-        // the inner try) must still be answered, or the request never completes.
-        let oo = new OperationOutcome();
-        oo.addIssue(error);
-        return res.status(error.statusCode || 500).json(oo.jsonObj);
-      } else {
-        return res.status(error.statusCode || 500).json(outcomeFromError(error));
-      }
+      // Issues raised inside the validation are turned into a result by the inner method;
+      // one that reaches here (e.g. cache-id-unknown from setupAdditionalResources, before
+      // the inner try) must still be answered, or the request never completes.
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
 
     }
   }
@@ -2408,7 +2407,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      return res.status(error.statusCode || 500).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2428,13 +2427,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      if (error instanceof Issue) {
-        let op = new OperationOutcome();
-        op.addIssue(error);
-        return res.status(error.statusCode || 500).json(op.jsonObj);
-      } else {
-        return res.status(error.statusCode || 500).json(outcomeFromError(error));
-      }
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2507,7 +2500,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      return res.status(error.statusCode || 500).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2886,7 +2879,7 @@ class ValidateWorker extends TerminologyWorker {
     let op = new OperationOutcome();
     op.addIssue(error);
     const extra = this.ecosystemIssues(error.unknownSystem ? [error.unknownSystem] : [], error.level === 'error' ? 'error' : 'warning');
-    for (const iss of extra) {
+    for (const iss of [...extra, ...this.sameUrlSupplementIssues()]) {
       op.addIssue(iss);
     }
     let p = new Parameters();
