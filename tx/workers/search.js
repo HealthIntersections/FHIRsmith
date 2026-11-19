@@ -562,6 +562,10 @@ class SearchWorker extends TerminologyWorker {
         description: "This is a place holder for the code system which is fully supported through internal means (not by this code system)",
         content: "not-present"
       }
+      if (!json.version) {
+        // no version (the internal code systems without one): no element, rather than version: null
+        delete json.version;
+      }
       if (csp.webSource()) {
         json.extension = [{ url: "http://hl7.org/fhir/StructureDefinition/web-source", valueUrl : csp.webSource()}];
       }
