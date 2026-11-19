@@ -208,6 +208,8 @@ const MODULES = {
     enabled: bool(),
     database: str({ nonEmpty: true }),
     password: obsolete('is no longer used: /shl/create is for users with the shl "create" role (an API token), and the ips module'),
+    // "any": any logged in account may make, sign and validate links, not only the "create" role
+    users: str({ values: ['any', 'role'] }),
     // relative to the data folder's shl directory
     certificates: obj({ certFile: str({ nonEmpty: true }), keyFile: str({ nonEmpty: true }), kid: str() }),
     vhl: obj({ issuer: str() }),

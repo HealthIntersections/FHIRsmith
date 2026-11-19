@@ -178,6 +178,27 @@ describe('SHL Module', () => {
     });
   });
 
+  describe('users: "any"', () => {
+    afterEach(() => {
+      delete mod.config.users;
+    });
+
+    test('any logged in account may make, fill and sign links, not only the role; not load IGs', async () => {
+      setupAuth();
+      const someone = tokenFor(await makeUser('someone', null));
+      const call = (method, url, body) => request(app)[method](url).set('Authorization', `Bearer ${someone}`).send(body);
+      expect((await call('post', '/shl/create', { vhl: false, days: 1 })).status).toBe(403);
+      mod.config.users = 'any';
+      const r = await call('post', '/shl/create', { vhl: false, days: 1 });
+      expect(r.status).toBe(201);
+      expect((await call('post', '/shl/upload', { uuid: r.body.uuid, pword: r.body.pword, files: [] })).status).not.toBe(403);
+      expect((await call('get', '/shl/validate/status')).status).toBe(200);
+      expect((await call('post', '/shl/validate/loadig', { packageId: 'x', version: '1' })).status).toBe(403);
+      // still nobody without a login
+      expect((await request(app).post('/shl/create').send({ vhl: false, days: 1 })).status).toBe(401);
+    });
+  });
+
   describe('loading an IG into the validator', () => {
     test('needs the shl "load-ig" role (or an administrator)', async () => {
       setupAuth();

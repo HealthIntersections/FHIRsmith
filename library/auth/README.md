@@ -323,6 +323,10 @@ router.post('/thing', auth.sameOrigin, auth.session, auth.form, auth.csrf,
 router.post('/api', auth.requireApi(p => p.has('mymodule', 'edit')), handler);
 ```
 
+- `GET /auth/me`, for a page's script: `{login, name, administrator}` for the session's user (or
+  the API token's), or 401 `{error, login}`, where `login` is the login page, coming back to
+  `?return=` (a path on this server). A demo page on this site that calls an API with the login's
+  session uses it to show a *Log in* button when nobody is
 - `auth.currentUser(req)`: the logged-in user (session only), or null. `auth.principal(req)`
   (a promise): the session's user, else the token's, else this server itself, else null
 - a principal has `id`, `login`, `name`, `isAdmin`, `has(module, role, scope?)` (an administrator

@@ -563,8 +563,10 @@ class SHLModule {
 
     // Everything but reading a link (/access, /file - its recipients, who need no account) is for
     // a user with the shl "create" role, sending an API token, or this server itself (the ips
-    // module); loading an IG into the validator has a role of its own
-    const creator = auth.requireApi(p => p.has('shl', 'create'));
+    // module) - or, with modules.shl.users "any", for any logged in account (a demo web page on
+    // this site, with the login's session; or software with any user's API token). Loading an IG
+    // into the validator has a role of its own
+    const creator = auth.requireApi(p => p.has('shl', 'create') || (this.config?.users === 'any' && p.id > 0));
 
     // FHIR Validation endpoint
     this.router.post('/validate', creator, this.validateQueryParams(validationParams), async (req, res) => {
@@ -740,6 +742,7 @@ class SHLModule {
           }
 
           const host = req.get('host') || 'localhost:3000';
+          shlLog.info(`SHL ${uuid} made by ${req.user.via === 'internal' ? 'this server' : `'${req.user.login}'`} (${vhl ? 'VHL' : 'SHL'}, ${daysNumber} days)`);
 
           res.status(201).json({
             uuid: uuid,
@@ -1038,6 +1041,7 @@ class SHLModule {
 
             const cborEncoded = CBOR.encode(claims);
             const coseSigned = await this.createCOSESign1(cborEncoded, jwk, kid);
+            shlLog.info(`VHL signed for ${req.user.via === 'internal' ? 'this server' : `'${req.user.login}'`}: ${String(url).substring(0, 200)}`);
             const deflated = pako.deflate(coseSigned);
             const base45Encoded = base45.encode(deflated);
 

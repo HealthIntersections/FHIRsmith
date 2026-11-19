@@ -211,6 +211,17 @@ function buildRouter(auth) {
   // ---- a user's own account ----
 
   r.get('/account', session, csrf, user, h((req, res) => sendAccount(auth, req, res)));
+  // who is logged in, for a page's script (a demo page that calls an API with the login's
+  // session): {login, name, administrator}, or 401 with the login page that comes back to
+  // ?return= (a path on this server)
+  r.get('/me', session, h(async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const p = await auth.principal(req);
+    if (!p || p.via === 'internal') {
+      return res.status(401).json({ error: 'not logged in', login: auth.loginUrl(req, safeReturn(str(req.query.return), '/')) });
+    }
+    res.json({ login: p.login, name: p.name, administrator: p.isAdmin });
+  }));
   r.post('/account/name', sameOrigin, session, form, csrf, user, h((req, res) => {
     auth.store.updateUser(req.user.id, { name: str(req.body.name).trim().substring(0, 200) });
     flash(req, 'Saved');

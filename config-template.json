@@ -127,7 +127,10 @@
     "shl": {
       "enabled": false,
       "database": "shl.db",
-      // POST /shl/create is for users with the shl "create" role (with an API token), and the ips module
+      // making, signing and validating links (/shl/create, /upload, /sign, /validate) is for users
+      // with the shl "create" role (with an API token), and the ips module. "users": "any" lets any
+      // logged in account do it too (a demo page on this site, say: it uses the login's session)
+      // "users": "any",
       "certificates": {
         "certFile": "<!-- filename -->",
         "keyFile": "<!-- filename -->",

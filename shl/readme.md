@@ -36,6 +36,12 @@ call, as the server itself). The old shared `modules.shl.password` is no longer 
 `password` in the request body is ignored. Uploading to a link (`/shl/upload`) also needs the
 link's own `pword`, which `/create` returns.
 
+With `"users": "any"` in `modules.shl`, any logged in account may do these too, not only the
+"create" role: anyone who logs in with GitHub or Google, say, so a public demo page works. A page
+on this site calls them with the login's session (its `fetch` sends the cookie); it can ask
+`GET /auth/me` whether someone is logged in, and send them to the login page if not (see
+[library/auth](../library/auth/README.md)). Each link records who made it in the log.
+
 ## Loading IGs into the validator
 
 `POST /shl/validate/loadig` (`{ "packageId", "version" }`) downloads a package and loads it into

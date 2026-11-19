@@ -928,6 +928,24 @@ describe('the security review (Nov 2026)', () => {
   });
 });
 
+describe('GET /auth/me', () => {
+  test('who is logged in, or 401 with the login page that comes back', async () => {
+    const app = makeApp();
+    await makeUser('person', GOOD, { name: 'A Person' });
+    let r = await request(app).get('/auth/me?return=/icvp.html');
+    expect(r.status).toBe(401);
+    expect(r.body.login).toBe('/auth/login?return=%2Ficvp.html');
+    expect((await request(app).get('/auth/me?return=https://evil.example.org/')).body.login).toBe('/auth/login?return=%2F');
+    const { agent } = await login(app, 'person', GOOD);
+    r = await agent.get('/auth/me');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ login: 'person', name: 'A Person', administrator: false });
+    expect(r.headers['cache-control']).toBe('no-store');
+    // not for another site's script
+    expect((await agent.get('/auth/me').set('Origin', 'https://build.example.org')).status).toBe(401);
+  });
+});
+
 describe('node server.js --password-link', () => {
   test('prints a link for an account, and makes a configured administrator\'s', () => {
     const fs = require('fs');
