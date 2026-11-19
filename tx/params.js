@@ -478,13 +478,15 @@ class TxParameters {
 
       // -- nested parameters -------------------------------------------------
       case 'profile': {
-        // only meaningful from a Parameters.parameter, which can carry a resource
+        // only an inline Parameters resource can be read. Anything else - an (R3) ExpansionProfile,
+        // another resource, or a uri/canonical/string naming a profile - is refused, rather than
+        // answered without what it asks for
         const res = value.resource;
         if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
-        } else if (res && res.resourceType === 'ExpansionProfile') {
-          // it has no parameter list to read: say so, rather than fail, or drop what it asks for
-          throw new Issue('error', 'not-supported', null, null, "A 'profile' that is an ExpansionProfile is not supported by this system: use a Parameters resource", null, 400);
+        } else {
+          const found = res ? 'a resource of type ' + res.resourceType : "the value '" + getValuePrimitive(value) + "'";
+          throw new Issue('error', 'not-supported', null, null, "The parameter 'profile' is only supported as an inline Parameters resource, not " + found, null, 400);
         }
         break;
       }
