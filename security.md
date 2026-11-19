@@ -38,7 +38,7 @@ This server doesn't provide SSL support - use an NGINX reverse proxy for that.
 
 There is one login system for the server ([library/auth](library/auth/README.md)): users log in
 with a password (at least 15 characters, set only from an emailed one-time link, stored as a
-bcrypt hash) or with GitHub, and software uses API tokens (stored as SHA-256 hashes, shown
+bcrypt hash) or with GitHub or Google, and software uses API tokens (stored as SHA-256 hashes, shown
 once). No module has a login or a password of its own, and the configuration holds no
 passwords for logging in - only the server's own credentials for other services (email, VSAC,
 AI providers). Administrators are named in `auth.administrators` (email addresses, or

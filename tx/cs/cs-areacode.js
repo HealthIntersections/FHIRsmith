@@ -243,6 +243,20 @@ class AreaCodeServices extends CodeSystemProvider {
     return null;
   }
 
+  // Text filter ($expand filter): the codes, displays (CodeSystemProvider._searchConceptList)
+  async searchFilter(filterContext, filter, sort) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    const result = new AreaCodeConceptFilter();
+    result.list = await this._searchConceptList(filterContext, filter, sort, this.codes);
+    filterContext.filters.push(result);
+    return filterContext;
+  }
+
+  async _rootDisplay(code) {
+    const concept = this.codeMap.get(code);
+    return concept ? concept.display || null : null;
+  }
+
   async filterCheck(filterContext, set, concept) {
     
     assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');

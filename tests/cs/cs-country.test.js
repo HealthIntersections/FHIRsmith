@@ -1,6 +1,7 @@
 const { CountryCodeFactoryProvider } = require('../../tx/cs/cs-country');
 const { OperationContext } = require('../../tx/operation-context');
 const {TestUtilities} = require("../test-utilities");
+const { SearchFilterText } = require("../../tx/library/designations");
 
 describe('CountryCodeServices', () => {
   let factory;
@@ -448,10 +449,11 @@ describe('CountryCodeServices', () => {
       ).rejects.toThrow('Invalid regex pattern');
     });
 
-    test('should throw error for search filter', async () => {
-      await expect(
-        provider.searchFilter(await provider.getPrepContext(false), 'test', false)
-      ).rejects.toThrow('Text Search is not supported');
+    test('should search the names and codes (text filter)', async () => {
+      const ctxt = await provider.getPrepContext(false);
+      await provider.searchFilter(ctxt, new SearchFilterText('new zealand'), false);
+      const [set] = await provider.executeFilters(ctxt);
+      expect(set.list.map(c => c.code)).toEqual(expect.arrayContaining(['NZ', 'NZL', '554']));
     });
 
   });
