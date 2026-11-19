@@ -2980,7 +2980,8 @@ class ValueSetExpander {
   }
 
   getPropValue(cc, name) {
-    for (let p of cc.property) {
+    // a code only has a property array when one of the properties asked for has a value for it
+    for (let p of cc.property || []) {
       if (p.code == name) {
         return getValuePrimitive(p);
       }
