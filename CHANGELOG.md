@@ -5,6 +5,37 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder, tx) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).
+
+### Added
+
+- One login system for the whole server ([library/auth](library/auth/README.md)), at `/auth`: a single user database, sessions and roles shared by every module, and API tokens for software. Users log in with a password or with GitHub (`auth.github`, an OAuth app); anyone can make an account with GitHub, which has no roles until an administrator gives it some, and a user can link GitHub to a password account. The administrator makes password accounts, and the password is set from an emailed one-time link (`linkMinutes`, 60), which is also how a forgotten password is reset: the administrator never chooses or sees a password. Passwords are at least 15 characters, stored as bcrypt hashes (cost 12); changing a password, or disabling the account, ends its sessions everywhere
+- Roles: administrator, server wide (named in `auth.administrators` - email addresses, or `github:{name}`, tied to the GitHub user id - or given on the users page), and the modules' own, some of them for one thing: ips manager (a project) and project-admin (IPS Project Admin: the users the IPS projects page offers as managers), publisher queue and approve (a website), testing submit, edit-links and delete-reports, registry member, packages crawl, shl create, folder upload (a folder). The administrator gives them on `/auth/admin/users`
+- API tokens (`fhs_...`, stored as SHA-256 hashes, shown once, with an optional expiry and a use count), made by a user on their account page or by the administrator for software accounts, sent as `Authorization: Bearer` (or `Api-Key`, `X-API-Key`, or Basic with the token as the password). A token can do what its user's roles allow
+- The account is the right-most item of the top menu on every page, in every module: *Login*, or the user's name, linked to their own page, which says who they are and what they can do (their roles, linked to the modules; for an administrator, the users and the modules' administration pages), and where they change their name and password, link GitHub, manage their API tokens and log out
+- The daily report has a paragraph on users and logins, when there are any accounts: logins (with a password, with GitHub), failed logins for accounts that exist, the user accounts (how many disabled, how many new) and the sessions logged in now. Logins and failed logins are kept in the auth database for 90 days
+- `node server.js --password-link {login or email}`: prints a link that sets the account's password, for when there is no email or the administrator can't log in
+- registry: `/tx-reg/usage`, the API requests each client (user or OIDC client) made, for the administrators
+
+### Changed
+
+- Everything that took a password or shared token from the configuration is now for a user with a role (an API token, for software), or for the server's administrators logged in: IPS projects, profiles and reports; the publisher's websites and permissions (now the publisher roles); the testing module's named links, deletes and (with `requireToken`) submissions; a secured registry's API (`security.required`, members) and its private documents; `POST /packages/crawl`; `POST /shl/create`; folder uploads (a `.users.json` is now a list of logins); emptying the tx caches; resyncing a VSAC value set. The ips module shares through this server's shl module as the server itself, and through another server's with `modules.ips.shl.token`
+- The old settings - `adminPassword`, `adminUsername`, `sessionSecret`, `cookieSecure` and `loginAttemptsPerWindow` of ips, publisher and testing; `modules.testing.token` and `adminToken`; `modules.registry.security.apiToken` and `users`; `modules.packages.crawlToken`; `modules.shl.password`; `modules.tx.adminPassword`; VSAC's `resyncPassword` - are no longer used, and are warnings in the log and `--check`. A registry with `apiToken` or `users`, and a testing module with `token`, stay closed while those are set. Users are not carried over from the modules' databases
+- The ips module's `sessionSecret`, if set, is still used to read the AI keys projects stored before (`aiKeySecret` is the setting for them)
+- packages: download counts are counted in memory and written every 30 seconds (and when the server stops), in one transaction, through a connection of their own, so the counts shown can be 30 seconds behind. Each download was two UPDATEs as it happened, on the connection the crawler writes through: when downloads came together while the database was waiting on another writer's lock, the main thread waited too - node-sqlite3 runs one statement at a time on a connection, and finishes each on the main thread. npm.fhir.org's event loop stalled for 3-4 s at a time, with no request in flight (the counts are written after the response) and the main thread waiting on a futex
+- tx: client errors are no longer logged with a stack: a `$validate-code` whose Issue becomes its result (a coding with no system, say) isn't logged at all, and what can't be done with a code system on another server (an `$expand` of a value set that includes one) is a 422 OperationOutcome, not a 500
+- tx: an include filter `concept in <codes>` (or `code in`) with a code the code system doesn't have is treated as the other filters that select by concept are (1.0.3): the include adds no codes, and the expansion says so with an `expansion-issue` warning - or, with `errorsForInvalidCodes`, the value set can't be expanded (422) - and `$validate-code` says the value set is not valid. SNOMED CT failed on it (500, logged with a stack)
+
+### Fixed
+
+- publisher: a database made before websites had their history and web templates folders couldn't add or change a website ("Failed to create website": the columns were never added to an existing table). They are now added when the module starts, and the page says why when saving a website fails
+
+### Removed
+
+- The token module (`modules.token`), and with it logging in with Google and Facebook, and the passport packages
+
 ## [1.0.5] - 2026-11-18
 
 ### Added

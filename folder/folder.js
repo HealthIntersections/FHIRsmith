@@ -6,6 +6,7 @@ const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
 const SAFE_NAME = /^[a-zA-Z0-9._-]+$/;
 const AUTH_FAIL_DELAY_MS = 5000;
 const folderLog = require('../library/logger').getInstance().child({ module: 'folder' });
+const auth = require('../library/auth');
 
 function escapeHtml(str) {
   return String(str)
@@ -24,6 +25,10 @@ class FolderModule {
 
   initialize(config, app) {
     this.folders = [];
+    // uploads are for users of the server (library/auth) with the folder "upload" role for the
+    // folder, or named in a .users.json in the directory or one above it
+    auth.defineRoles('folder', [{ role: 'upload', label: 'Upload', description: 'PUT files into the folder, with an API token (curl -u {login}:{token} works)',
+      scope: { label: 'Folder', values: () => this.folders.map(f => ({ value: f.name, label: `${f.name} (${f.url})` })) } }], { title: 'Folders' });
 
     const folderConfigs = config.folders || [];
     for (const fc of folderConfigs) {
@@ -53,7 +58,12 @@ class FolderModule {
 
       // PUT - upload with basic auth (express.raw captures body before any global JSON parser)
       router.put(urlBase + '/{*subpath}', express.raw({ type: '*/*', limit: MAX_UPLOAD_BYTES }), (req, res) => {
-        this.handlePut(req, res, rootDir, urlBase);
+        this.handlePut(req, res, rootDir, urlBase, fc.name).catch(err => {
+          folderLog.error(`PUT failed: ${err.message}`);
+          if (!res.headersSent) {
+            res.status(500).send('Upload failed');
+          }
+        });
       });
 
       app.use('/', router);
@@ -139,7 +149,7 @@ class FolderModule {
     return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
   }
 
-  handlePut(req, res, rootDir, urlBase) {
+  async handlePut(req, res, rootDir, urlBase, folderName) {
     this.stats.countRequest('submit', 0);
     const subPath = req.path.substring(urlBase.length);
     const safePath = path.normalize(subPath);
@@ -175,14 +185,20 @@ class FolderModule {
       return res.status(413).send(`File too large (limit ${MAX_UPLOAD_BYTES / 1024 / 1024} MB)`);
     }
 
-    // authenticate
-    const credentials = this.parseBasicAuth(req);
-    if (!credentials) {
+    // authenticate: an API token (Basic with the token as the password, or Bearer)
+    const who = await auth.principal(req);
+    if (!who) {
+      if (auth.presentsToken(req)) {
+        return setTimeout(() => {
+          res.set('WWW-Authenticate', 'Basic realm="Folder Upload"');
+          res.status(401).send('The API token is not valid');
+        }, AUTH_FAIL_DELAY_MS);
+      }
       res.set('WWW-Authenticate', 'Basic realm="Folder Upload"');
-      return res.status(401).send('Authentication required');
+      return res.status(401).send('Authentication required: an API token, as the password (curl -u {login}:{token})');
     }
 
-    if (!this.checkUser(rootDir, path.dirname(fullPath), credentials.username, credentials.password)) {
+    if (!this.mayUpload(who, folderName, rootDir, path.dirname(fullPath))) {
       // deliberate delay to slow down brute-force attempts
       return setTimeout(() => {
         res.set('WWW-Authenticate', 'Basic realm="Folder Upload"');
@@ -240,51 +256,43 @@ class FolderModule {
     });
   }
 
-  parseBasicAuth(req) {
-    const header = req.headers.authorization;
-    if (!header || !header.startsWith('Basic ')) {
-      return null;
+  /**
+   * May this user upload into dir? The folder "upload" role for the folder (or every folder),
+   * or the user's login in a .users.json in dir or a directory above it, up to the folder's
+   * root. A .users.json is a JSON array of logins; one in the old form (an object of logins and
+   * passwords) is not used any more
+   */
+  mayUpload(who, folderName, rootDir, dir) {
+    if (who.has('folder', 'upload', folderName)) {
+      return true;
     }
-    const decoded = Buffer.from(header.substring(6), 'base64').toString('utf-8');
-    const colon = decoded.indexOf(':');
-    if (colon < 0) {
-      return null;
-    }
-    return {
-      username: decoded.substring(0, colon),
-      password: decoded.substring(colon + 1)
-    };
-  }
-
-  // walk up from the target directory to rootDir looking for .users.json
-  checkUser(rootDir, dir, username, password) {
     let current = path.resolve(dir);
     const root = path.resolve(rootDir);
-
     for (;;) {
       const usersPath = path.join(current, USERS_FILE);
       if (fs.existsSync(usersPath)) {
         try {
           const users = JSON.parse(fs.readFileSync(usersPath, 'utf-8'));
-          if (users[username] && users[username] === password) {
-            return true;
+          if (Array.isArray(users)) {
+            if (users.some(u => typeof u === 'string' && u.toLowerCase() === who.login.toLowerCase())) {
+              return true;
+            }
+          } else {
+            folderLog.warn(`${usersPath} has passwords in it, which are no longer used (and should be deleted): make it a list of logins, or give the users the folder "upload" role`);
           }
         } catch (e) {
           // malformed json, keep walking up
         }
       }
-
       if (current === root) {
         break;
       }
-
       const parent = path.dirname(current);
       if (parent === current) {
-        break;  // filesystem root - stop
+        break; // filesystem root - stop
       }
       current = parent;
     }
-
     return false;
   }
 
