@@ -75,7 +75,9 @@
     "sessionHours": 24,
     "linkMinutes": 60,
     // failed logins (and password link requests) allowed per IP per 15 minutes
-    "loginAttemptsPerWindow": 20
+    "loginAttemptsPerWindow": 20,
+    // requests a minute per IP that bring a login or an API token (anonymous ones aren't counted)
+    "requestsPerMinute": 1000
   },
   // A markdown report on the server - its uptime since the last report, restarts and
   // upgrades, a paragraph from any module with something to say, and the version, logs

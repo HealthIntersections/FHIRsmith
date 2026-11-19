@@ -26,6 +26,7 @@ The top-level `auth` block of `config.json` (all optional; see `config-template.
 | `sessionHours` | 24 | How long a login lasts |
 | `linkMinutes` | 60 | How long a password link works |
 | `loginAttemptsPerWindow` | 20 | Failed logins (and password link requests, and password changes) per IP address per 15 minutes |
+| `requestsPerMinute` | 1000 | Requests a minute from one IP address that bring a login (the session cookie) or an API token, to the routes that look up who is asking (429 after that). Anonymous requests aren't counted, and the terminology API isn't behind it |
 
 Email (the top-level `email` block, [CONFIGURATION.md](../../CONFIGURATION.md#email-and-the-daily-report)) is how
 password links are sent. Without it the administrator is shown each link, to pass on.
@@ -158,6 +159,11 @@ router.post('/api', auth.requireApi(p => p.has('mymodule', 'edit')), handler);
 - a principal has `id`, `login`, `name`, `isAdmin`, `has(module, role, scope?)` (an administrator
   has every role; no scope: any scope will do) and `scopes(module, role)`
 - `auth.loginUrl(req)`: the login page, coming back to this one
+- rate limiting: a router whose routes look up who is asking starts with
+  `router.use(rateLimit(auth.credentialLimits()))` (express-rate-limit), or each such route
+  has the limiter first, where the router has heavy anonymous traffic. It counts only the
+  requests that bring a login or a token. It is in each module's own router, not just once
+  for the server, so that code scanning (CodeQL `js/missing-rate-limiting`) sees it
 - the top menu: a module's page template ends its top menu with
   `<span style="float: right">[%account%]</span>` (first in the menu's `div`, so it floats to the
   right on the same line), and html-server fills it with *Login* or the user's name. The module

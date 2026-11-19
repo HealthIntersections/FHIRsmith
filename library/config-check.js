@@ -183,6 +183,7 @@ const TOP = obj({
     sessionHours: positive(),
     linkMinutes: int({ min: 1 }),
     loginAttemptsPerWindow: count(),
+    requestsPerMinute: positive(),
     bcryptCost: int({ min: 4, max: 15 })
   }),
   accessibility: obj({ checkPanel: bool() }),
