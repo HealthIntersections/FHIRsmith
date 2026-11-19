@@ -105,12 +105,52 @@ describe('packages: a download redirected to the bucket', () => {
       expect(asked).toEqual([false]);
       expect(await find('example.fhir.bucket', '1.0.0', true, false)).not.toHaveProperty('Content');
       // and it is counted, as a download sent from here is
-      await module.dbGet('SELECT 1'); // the count is written fire-and-forget: wait for it
+      await module.flushDownloadCounts(); // counted in memory, and written every 30 s
       const counts = await module.dbGet(`SELECT v.DownloadCount AS v, p.DownloadCount AS p FROM PackageVersions v, Packages p
         WHERE v.Id = p.Id AND v.Id = 'example.fhir.bucket' AND v.Version = '1.0.0'`);
       expect(counts).toEqual({ v: 1, p: 1 });
     } finally {
       await module.shutdown();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('packages: download counts', () => {
+  test('are counted in memory, written together, and written at shutdown', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'packages-counts-'));
+    const module = await start(tmp, { bucketPath: 'https://bucket.example.org/packages' });
+    let stopped = false;
+    try {
+      const link = 'http://example.org/feed/example.fhir.counted-1.0.0.tgz';
+      await module.crawler.store('test-feed', link, link, new Date('2025-01-01T00:00:00Z'),
+        tarball('example.fhir.counted', '1.0.0'), 'example.fhir.counted#1.0.0', {});
+      const res = () => ({ redirect: jest.fn(), status: jest.fn(), setHeader: jest.fn(), send: jest.fn(), json: jest.fn() });
+      await Promise.all([1, 2, 3].map(() => module.serveDownload(true, 'example.fhir.counted', '1.0.0', res())));
+      const read = () => module.dbGet(`SELECT v.DownloadCount AS v, p.DownloadCount AS p FROM PackageVersions v, Packages p
+        WHERE v.Id = p.Id AND v.Id = 'example.fhir.counted' AND v.Version = '1.0.0'`);
+      // nothing written yet: they are written every 30 s, through a connection of their own
+      expect(await read()).toEqual({ v: 0, p: 0 });
+      expect(module.countsDb).not.toBeNull();
+      expect(module.countsDb).not.toBe(module.db);
+      await module.flushDownloadCounts();
+      expect(await read()).toEqual({ v: 3, p: 3 });
+      expect(module.pendingDownloads.size).toBe(0);
+      // and what is counted after that is written as the module stops
+      await module.serveDownload(true, 'example.fhir.counted', '1.0.0', res());
+      await module.shutdown();
+      stopped = true;
+      const check = await start(tmp, { bucketPath: 'https://bucket.example.org/packages' });
+      try {
+        const after = await check.dbGet(`SELECT DownloadCount AS v FROM PackageVersions WHERE Id = 'example.fhir.counted'`);
+        expect(after).toEqual({ v: 4 });
+      } finally {
+        await check.shutdown();
+      }
+    } finally {
+      if (!stopped) {
+        await module.shutdown();
+      }
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });

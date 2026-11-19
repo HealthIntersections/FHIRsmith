@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3');
 const jose = require('jose');
 const crypto = require('crypto');
 const SHLModule = require('../../shl/shl');
+const { setupAuth, makeUser, tokenFor, auth } = require('../helpers/auth');
 
 describe('SHL Module', () => {
   let app, mod, key, jwe;
@@ -117,6 +118,41 @@ describe('SHL Module', () => {
       const out = decodeVhl(`HC1:${r.body.signature}`, loadTrust([{ kid: 'test-kid', name: 'the test key', certificate: publicKey.export({ type: 'spki', format: 'pem' }) }]), trace);
       expect(out).toEqual({ shlink, issuer: 'XX', kid: 'test-kid', verified: true, verifiedBy: 'the test key' });
       expect(trace.entries.filter(e => e.level === 'warning' || e.level === 'error')).toEqual([]);
+    });
+  });
+  describe('create', () => {
+    let creator;
+    let other;
+    beforeAll(async () => {
+      setupAuth();
+      creator = tokenFor(await makeUser('sharer', null, { roles: [['shl', 'create']] }));
+      other = tokenFor(await makeUser('someone', null));
+      mod.config = { ...(mod.config || {}) };
+    });
+
+    const create = (headers = {}, body = { vhl: false, days: 7 }) => {
+      let r = request(app).post('/shl/create');
+      for (const [k, v] of Object.entries(headers)) {
+        r = r.set(k, v);
+      }
+      return r.send(body);
+    };
+
+    test('for a user with the shl "create" role, or this server itself', async () => {
+      let r = await create({ Authorization: `Bearer ${creator}` });
+      expect(r.status).toBeLessThan(300);
+      expect(typeof r.body.uuid).toBe('string');
+      expect(typeof r.body.pword).toBe('string');
+      r = await create(auth.internalHeaders());
+      expect(r.status).toBeLessThan(300);
+    });
+
+    test('not for anyone else; the old password in the body is ignored', async () => {
+      expect((await create()).status).toBe(401);
+      expect((await create({}, { vhl: false, days: 7, password: 'the-old-shared-password' })).status).toBe(401);
+      expect((await create({ Authorization: `Bearer ${other}` })).status).toBe(403);
+      // and with the role, an old client's password does no harm
+      expect((await create({ Authorization: `Bearer ${creator}` }, { vhl: false, days: 7, password: 'x' })).status).toBeLessThan(300);
     });
   });
 });

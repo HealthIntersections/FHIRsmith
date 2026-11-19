@@ -215,6 +215,7 @@ counts in the statistics database for the period. The modules that report:
 
 | Module | Reports |
 |---|---|
+| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub), failed logins for accounts that exist, the user accounts (disabled, new), and the sessions logged in now |
 | Terminology server | how many of each operation were performed, over all its endpoints |
 | Terminology server registry | client requests answered by the API, servers registered, and any server that answered none of the registry's scans in the period |
 | Packages | packages served (tarball downloads) and new package versions found by the crawler |
@@ -238,6 +239,24 @@ counts in the statistics database for the period. The modules that report:
 | `SUPPRESS_LOGS` | `true`: the log isn't written to the console unless `logging.console` says it is - this changes the default (the log files are written either way). CI runs the tests with it: the code under test logs tens of thousands of lines, which bury the results and get the job's log truncated | not set |
 | `UV_THREADPOOL_SIZE` | Threads in libuv's pool, which runs the sqlite3 queries (LOINC, RxNorm, ICD-11, VSAC, the packages and XIG databases), file reads and async gzip. Node's own default is 4, which a few slow queries can fill, holding everything else up. Each process (each cluster worker) has its own pool | `16` |
 
+## Users and logins
+
+The top-level `auth` block configures the server's one login system: the users, roles and API
+tokens of every module, who the administrators are, and logging in with GitHub. See
+[library/auth/README.md](library/auth/README.md). In brief:
+
+```json
+"auth": {
+  "sessionSecret": "a long random string",
+  "administrators": ["you@example.org", "github:yourname"],
+  "github": { "clientId": "...", "clientSecret": "..." }
+}
+```
+
+An administrator's password is set from a link: *Forgotten your password?* on the login page
+(emailed, so `email` must be configured), or `node server.js --password-link you@example.org` on
+the server.
+
 ## Modules
 
 Each module has its own entry under `modules`, documented with the module:
@@ -252,10 +271,24 @@ Each module has its own entry under `modules`, documented with the module:
 | `testing` - test reports | [testing/readme.md](testing/readme.md) |
 | `folder` | [folder/readme.md](folder/readme.md) |
 | `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |
-| `token` | [token/security_guide.md](token/security_guide.md) |
 | `xig` | [xig/readme.md](xig/readme.md) |
 | `vcl` | [vcl/readme.md](vcl/readme.md) |
 | `publisher` | [publisher/readme.md](publisher/readme.md) |
+
+## Upgrading to the single login
+
+The modules' own logins, users and passwords are gone: the server has one login system
+([library/auth](library/auth/README.md)). Users are not carried over - start again:
+
+1. add the `auth` block (above): `sessionSecret`, and yourself in `administrators`
+2. set your password (*Forgotten your password?*, or `node server.js --password-link {email}`), or log in with GitHub
+3. give users the modules' roles on `/auth/admin/users` (IPS project managers also on the IPS projects page), and make API tokens for the software that used the old shared tokens (packages crawl, testing submissions and deletes, `/shl/create`, folder uploads, a secured registry's clients)
+4. take the old settings out. Until then they are warnings in the log and in `--check`, and the old shared tokens are no longer accepted - but a registry with `security.apiToken` or `users`, and a testing module with `token`, stay closed rather than open
+
+The table of old settings and what replaces each is in [library/auth/README.md](library/auth/README.md#upgrading).
+Two to keep: copy `modules.ips.sessionSecret` to `modules.ips.aiKeySecret` if projects keep
+their own AI keys (they were encrypted with it), and in a pool of instances behind one host
+name, share `auth.database` and `auth.sessionSecret` between them ([nginx.md](nginx.md)).
 
 ## Upgrading to 1.0.0
 

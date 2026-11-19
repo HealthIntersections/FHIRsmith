@@ -48,7 +48,23 @@ const TotalStatus = {
 // include filters that select by concept: one that names a code the code system doesn't have is
 // reported (see ValueSetExpander.#filterNamesUnknownCode)
 const UNKNOWN_CONCEPT_FILTER_PROPS = new Set(['concept', 'code']);
-const UNKNOWN_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'descendent-leaf', 'generalizes']);
+const UNKNOWN_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'descendent-leaf', 'generalizes', 'in']);
+
+/**
+ * The codes an include filter that selects by concept names: its value, or for `in`, each code
+ * of its comma separated list. [] for any other filter
+ * @param {Object} fc - the filter (property, op, value)
+ * @returns {string[]}
+ */
+function filterConceptCodes(fc) {
+  if (!fc || !fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) {
+    return [];
+  }
+  if (fc.op === 'in') {
+    return String(fc.value).split(',').map(c => c.trim()).filter(c => c.length > 0);
+  }
+  return [fc.value];
+}
 
 class ImportedValueSet {
   /**
@@ -650,26 +666,31 @@ class ValueSetExpander {
 
   /**
    * An include filter that selects by concept (is-a, descendent-of, child-of, descendent-leaf,
-   * generalizes, =) names a code that isn't in its code system: like a listed code that isn't
+   * generalizes, =, and in - any code of its list) names a code that isn't in its code system:
+   * like a listed code that isn't
    * (see #unknownListedCode), the value set can't be expanded (errorsForInvalidCodes), or the
    * include contributes no codes, and the expansion says so. Checked here, before the provider is
    * asked, so every code system behaves the same way (left to themselves, some return nothing,
-   * some fail). is-not-a, in, not-in and regex are not checked
+   * some fail). is-not-a, not-in and regex are not checked
    * @returns {Promise<boolean>} true if a filter names an unknown code (the include is skipped)
    */
   async #filterNamesUnknownCode(cs, filters) {
     let unknown = false;
     for (const fc of filters) {
-      if (!fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) {
-        continue;
+      let missing = false;
+      for (const code of filterConceptCodes(fc)) {
+        let loc = null;
+        try {
+          loc = await cs.locate(code);
+        } catch (e) {
+          loc = null;
+        }
+        if (!loc || !loc.context) {
+          missing = true;
+          break;
+        }
       }
-      let loc = null;
-      try {
-        loc = await cs.locate(fc.value);
-      } catch (e) {
-        loc = null;
-      }
-      if (!loc || !loc.context) {
+      if (missing) {
         const system = this.canonical(cs.system(), cs.version());
         this.#unknownCode(cs, 'VALUESET_EXPANSION_FILTER_UNKNOWN_CODE', [fc.property, fc.op, fc.value, system],
           system + '#' + fc.property + ' ' + fc.op + ' ' + fc.value);
@@ -3349,6 +3370,7 @@ class ExpandWorker extends TerminologyWorker {
 }
 
 module.exports = {
+  filterConceptCodes,
   ExpandWorker,
   ValueSetExpander,
   ValueSetCounter,

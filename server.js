@@ -50,6 +50,7 @@ function startupFailure(error) {
 process.on('uncaughtException', startupFailure);
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
@@ -109,6 +110,12 @@ try {
 
 Logger.getInstance().configure(config.logging || {});
 const serverLog = Logger.getInstance().child({ module: 'server' });
+
+// node server.js --password-link {login or email}: print a link that sets an account's password,
+// and exit (library/auth/cli.js)
+if (require('./library/auth/cli').wantsPasswordLink(process.argv.slice(2))) {
+  process.exit(require('./library/auth/cli').runPasswordLink(process.argv.slice(2), config, { databasesDir: folders.databasesDir() }));
+}
 if (configReport) {
   for (const e of configReport.errors) {
     serverLog.error(`Configuration: ${e.where}: ${e.message}`);
@@ -149,13 +156,13 @@ const xigModule = require('./xig/xig.js');
 const PackagesModule = require('./packages/packages.js');
 const RegistryModule = require('./registry/registry.js');
 const PublisherModule = require('./publisher/publisher.js');
-const TokenModule = require('./token/token.js');
 const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
 const TestingModule = require('./testing/testing.js');
 const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
+const auth = require('./library/auth');
 const ServerStats = require("./stats");
 const { connectMetrics, graphData, externalSummary } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
@@ -237,6 +244,14 @@ app.use((req, res, next) => {
 // duplicate, conflicting headers that browsers reject).
 app.use(cors(config.server.cors));
 
+// Who is logged in, for every module's pages: the session when the browser sent its cookie,
+// and the request, for the user's name (or Login) at the right of every page's top menu
+// (library/auth, [%account%] in the templates)
+// The browsers that send the session cookie are rate limited (auth.requestsPerMinute); nobody
+// else is counted here
+app.use(rateLimit(auth.credentialLimits({ sessionOnly: true })));
+app.use(auth.pages);
+
 // Module instances
 const modules = {};
 
@@ -260,6 +275,8 @@ let npmAudit = null;
 let stallWatchdog = null;
 // the daily report, emailed at midnight when "email" and "dailyReport.to" are configured - see library/daily-report.js
 let dailyReport = null;
+// outbound email (the daily report, password links), when config.email says how - see library/mailer.js
+const mailer = new Mailer(config.email, Logger.getInstance().child({ module: 'email' }));
 
 // Initialize modules based on configuration
 async function initializeModules() {
@@ -278,6 +295,15 @@ async function initializeModules() {
       figures: () => ownFigures(stats, { inFlight: () => inFlight, refusing: () => memoryGuard.shouldReject() }) });
   }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
+
+  // The one login system, before any module: they all ask it who a request is (library/auth)
+  auth.initialize(config.auth || {}, {
+    log: Logger.getInstance().child({ module: 'auth' }),
+    mailer,
+    hostName: config.hostName,
+    databasesDir: folders.databasesDir()
+  });
+  app.use('/auth', auth.router());
 
   // Initialize SHL module
   if (config.modules?.shl?.enabled) {
@@ -358,19 +384,6 @@ async function initializeModules() {
     }
   }
 
-  // Initialize Token module
-  if (config.modules?.token?.enabled) {
-    try {
-      serverLog.info('Initializing module: token...');
-      modules.token = new TokenModule(stats.forModule('token'));
-      await modules.token.initialize(config.modules.token);
-      app.use('/token', modules.token.router);
-    } catch (error) {
-      serverLog.error('Failed to initialize Token module:', error);
-      throw error;
-    }
-  }
-
   // Initialize NpmProjector module
   if (config.modules?.npmprojector?.enabled) {
     try {
@@ -410,10 +423,10 @@ async function initializeModules() {
   if (config.modules?.ips?.enabled) {
     try {
       serverLog.info('Initializing module: ips...');
-      // sharing through this server's own shl module: its password, unless the ips
-      // configuration names an SHL server of its own
-      if (config.modules.ips.shl && !config.modules.ips.shl.password && config.modules.shl?.password) {
-        config.modules.ips.shl = { server: '/shl', ...config.modules.ips.shl, password: config.modules.shl.password };
+      // sharing through this server's own shl module, unless the ips configuration names an
+      // SHL server of its own (with a token for it)
+      if (config.modules.ips.shl && !config.modules.ips.shl.server && config.modules.shl?.enabled) {
+        config.modules.ips.shl = { server: '/shl', ...config.modules.ips.shl };
       }
       // the SHL viewer checks VHL signatures with the certificates it trusts: this server's own
       // shl module's (it signs the VHLs the ips module shares), unless told otherwise
@@ -481,9 +494,6 @@ async function loadTemplates() {
     const publisherTemplatePath = path.join(__dirname, 'publisher', 'publisher-template.html');
     htmlServer.loadTemplate('publisher', publisherTemplatePath);
 
-    // Load Token template
-    const tokenTemplatePath = path.join(__dirname, 'token', 'token-template.html');
-    htmlServer.loadTemplate('token', tokenTemplatePath);
 
   } catch (error) {
     serverLog.error('Failed to load templates:', error);
@@ -684,13 +694,6 @@ async function buildRootPageContent() {
     content += '<li class="list-group-item">';
     content += '<a href="/publisher" class="text-decoration-none">FHIR Publisher</a>: ';
     content += 'Manage FHIR Implementation Guide publication tasks and approvals';
-    content += '</li>';
-  }
-
-  if (config.modules?.token?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/token" class="text-decoration-none">Token Server</a>: ';
-    content += 'OAuth authentication and API key management for FHIR services';
     content += '</li>';
   }
 
@@ -1090,8 +1093,9 @@ async function startServer() {
     dailyReport = new DailyReport(config.dailyReport, {
       log: Logger.getInstance().child({ module: 'daily-report' }),
       stats: stats,
-      modules: modules,
-      mailer: new Mailer(config.email, Logger.getInstance().child({ module: 'email' })),
+      // the login system's paragraph (library/auth) comes before the modules'
+      modules: { auth, ...modules },
+      mailer,
       npmAudit: npmAudit,
       version: packageJson.version,
       serverId: config.hostName,
@@ -1159,6 +1163,7 @@ async function shutdown() {
       serverLog.error(`Error shutting down ${moduleName} module:`, error);
     }
   }
+  auth.shutdown();
   stats.finishStats();
   disconnectMetrics();
   disconnectStatus();

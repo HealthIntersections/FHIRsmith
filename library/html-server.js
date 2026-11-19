@@ -121,7 +121,9 @@ class HtmlServer {
       // raw HTML: a link to the current project (or other context) in the nav bar, where the
       // module has one
       ['context-link', () => renderOptions.contextLink || ''],
-      ['api-head', () => renderOptions.apiHead || '']
+      ['api-head', () => renderOptions.apiHead || ''],
+      // raw HTML: the right-most item of the top menu, the user's name or Login (library/auth)
+      ['account', () => require('./auth').accountLink()]
     ]);
     // a module's own template variables, escaped when they are strings; the standard ones win
     if (options.templateVars) {

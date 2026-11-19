@@ -33,8 +33,9 @@
  * from 'submitted' through 'processing' to 'processed' or 'error', and keeping what each
  * step made of the document for the pages to show.
  *
- * Logins work as the publisher's and the testing module's do: a session cookie, bcrypt
- * password hashes, a rate limited login, CSRF tokens on every form.
+ * Logins are the server's (library/auth): the administrator manages the module, and the
+ * managers of a project are the users given the ips "manager" role for it. CSRF tokens are on
+ * every form.
  *
  * @module ips/ips
  */
@@ -48,9 +49,10 @@ const assets = require('./assets');
 const { minimalIpsProblems } = require('./minimal');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
-const session = require('express-session');
-const lusca = require('lusca');
-const bcrypt = require('bcrypt');
+const auth = require('../library/auth');
+
+// the role of the users who can be made managers of projects
+const PROJECT_ADMIN = 'project-admin';
 
 const folders = require('../library/folder-setup');
 const htmlServer = require('../library/html-server');
@@ -270,6 +272,9 @@ class IpsModule {
   constructor(stats, log) {
     this.stats = stats;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.store = null;
     this.config = null;
     this.queueTimer = null;
@@ -320,14 +325,19 @@ class IpsModule {
 
     htmlServer.loadTemplate(TEMPLATE, path.join(__dirname, 'ips-template.html'));
 
-    // the administrator's password is checked the same way as everyone else's: bcrypt against
-    // a hash, made once here, of the configured password
-    this.adminUsername = typeof this.config.adminUsername === 'string' && this.config.adminUsername ? this.config.adminUsername : 'admin';
-    this.adminHash = tokenConfigured(this.config.adminPassword) ? bcrypt.hashSync(this.config.adminPassword, 10) : null;
-    // compared against when a login names no user, so that takes as long as a real one
-    this.dummyHash = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
-    if (!this.adminHash) {
-      this.log.warn('IPS module: no adminPassword configured - nobody can create projects or users');
+    // users and logins are the server's (library/auth). The manager of a project, granted on the
+    // projects page or the user's page; and the IPS Project Admins, the users the projects page
+    // offers as managers, given by the administrator on the user's page
+    auth.defineRoles('ips', [{
+      role: 'manager', label: 'Manage project', description: 'The project\'s settings and submission token, and deleting and reprocessing its documents',
+      scope: { label: 'Project', values: () => this.store.projects().map(p => ({ value: String(p.id), label: `${p.code} (${p.name})` })) }
+    }, {
+      role: PROJECT_ADMIN, label: 'IPS Project Admin', description: 'Can be made a manager of IPS projects: the projects page offers only these users'
+    }], { title: 'IPS', path: '/ips' });
+    auth.addAdminPage('ips', { label: 'Projects', path: '/ips/admin/projects', description: 'make and remove IPS projects, and give them managers' });
+    auth.addAdminPage('ips', { label: 'Reports', path: '/ips/reports', description: 'the reports projects can run' });
+    if (tokenConfigured(this.config.adminPassword)) {
+      this.log.warn('IPS module: modules.ips.adminPassword is no longer used - the server\'s administrators (auth.administrators) manage the module');
     }
 
     // the terminology server: links to code systems, and the analysis's queries. None
@@ -349,8 +359,8 @@ class IpsModule {
       this.log.warn('IPS module: no txServer configured - code systems will not be linked, and documents will not be analysed');
     }
 
-    // the secret the projects' AI keys are encrypted with: its own, else the session's
-    // (when that is configured - a random one would make the keys unreadable after a restart)
+    // the secret the projects' AI keys are encrypted with: its own, else the module's old
+    // sessionSecret (keys stored before logins moved to the server were encrypted with it)
     this.aiSecret = typeof this.config.aiKeySecret === 'string' && this.config.aiKeySecret ? this.config.aiKeySecret : (this.config.sessionSecret || null);
     if (!this.aiSecret) {
       this.log.warn('IPS module: no aiKeySecret or sessionSecret configured - projects cannot keep their own AI accounts');
@@ -400,31 +410,15 @@ class IpsModule {
   }
 
   /**
-   * The session (login) cookie and CSRF protection - as the testing module has them. The
-   * FHIR API (POST Bundle) is authenticated by a token in a header, not a cookie, so it
-   * gets neither; the pages get this.web, and every form post gets sameOrigin +
-   * this.session + a form parser + this.csrf.
+   * The login session and CSRF protection are the server's (library/auth). The FHIR API (POST
+   * Bundle) is authenticated by a token in a header, not a cookie, so it gets neither; the
+   * pages get this.web, and every form post gets sameOrigin + this.session + a form parser +
+   * this.csrf.
    */
   setupSession() {
-    if (!this.config.sessionSecret) {
-      this.log.warn('ips: no sessionSecret configured - using a random one, so logins will not ' +
-        'survive a restart. Set modules.ips.sessionSecret.');
-    }
-    this.session = session({
-      name: 'ips.sid',
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        secure: this.config.cookieSecure ?? true,
-        sameSite: 'lax',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000
-      }
-    });
-    this.csrf = lusca.csrf({ key: '_csrf' });
-    const csrfIfLoggedIn = (req, res, next) => this.currentUser(req) ? this.csrf(req, res, next) : next();
-    this.web = [this.session, csrfIfLoggedIn];
+    this.session = auth.session;
+    this.csrf = auth.csrf;
+    this.web = auth.web;
     this.form = express.urlencoded({ extended: false, limit: '64kb' });
     // the submission form carries a whole document
     this.bigForm = express.urlencoded({ extended: false, limit: Math.ceil(this.maxSize * 1.5) });
@@ -437,17 +431,10 @@ class IpsModule {
   setupRootRoutes() {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
-    const loginLimiter = rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: this.config.loginAttemptsPerWindow ?? 20,
-      standardHeaders: 'draft-7',
-      legacyHeaders: false,
-      handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
     const admin = (req, res, next) => {
       const user = this.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(auth.loginUrl(req));
       }
       if (!user.isAdmin) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Only the administrator can do that'), 403);
@@ -466,11 +453,8 @@ class IpsModule {
     // from an array, so that CodeQL can see the CSRF middleware on every cookie-using route.
     // the processing queue: one for the whole module
     r.get('/queue', ...this.web, h('queue', (req, res) => this.sendQueue(req, res)));
-    r.get('/login', this.session, this.csrf, h('login', (req, res) => this.sendLogin(req, res, 200)));
-    r.post('/login', this.sameOrigin, loginLimiter, this.session, this.form, this.csrf, h('login', (req, res) => this.login(req, res)));
-    r.post('/logout', this.sameOrigin, this.session, this.form, this.csrf, h('logout', (req, res) => {
-      req.session.destroy(() => res.redirect(req.baseUrl || '/'));
-    }));
+    // logging in is the server's: an old link to the module's login page goes there
+    r.get('/login', (req, res) => res.redirect(auth.loginUrl(req, req.baseUrl || '/')));
 
     r.get('/admin/projects', this.session, this.csrf, admin, h('projects', (req, res) => this.sendProjects(req, res)));
     r.post('/admin/projects', this.sameOrigin, this.session, this.form, this.csrf, admin, h('projects', (req, res) => this.saveProject(req, res, null)));
@@ -479,20 +463,13 @@ class IpsModule {
       const p = this.store.projectById(parseInt(req.params.id, 10));
       if (p && this.store.deleteProject(p.id)) {
         this.reports.deleteProject(p.id);
+        auth.setHolders('ips', 'manager', String(p.id), []);
         this.log.info(`IPS module: project '${p.code}' deleted by the administrator`);
       }
       res.redirect(req.baseUrl + '/admin/projects');
     }));
-
-    r.get('/admin/users', this.session, this.csrf, admin, h('users', (req, res) => this.sendUsers(req, res)));
-    r.post('/admin/users', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => this.saveUser(req, res, null)));
-    r.post('/admin/users/:id', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => this.saveUser(req, res, req.params.id)));
-    r.post('/admin/users/:id/delete', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => {
-      if (this.store.deleteUser(parseInt(req.params.id, 10))) {
-        this.log.info(`IPS module: user ${req.params.id} deleted`);
-      }
-      res.redirect(req.baseUrl + '/admin/users');
-    }));
+    // users are the server's
+    r.get('/admin/users', (req, res) => res.redirect('/auth/admin/users'));
   }
 
   /**
@@ -705,7 +682,7 @@ class IpsModule {
     const manager = (req, res, next) => {
       const user = this.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(auth.loginUrl(req));
       }
       if (!this.canManage(user, req.project)) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('You do not manage this project'), 403);
@@ -1331,6 +1308,8 @@ class IpsModule {
     const user = this.currentUser(req);
     return {
       base: req.baseUrl,
+      // the page, for logging in and out and coming back to it
+      here: auth.safeReturn(req.method === 'GET' ? req.originalUrl : req.baseUrl, req.baseUrl),
       user,
       csrf: res.locals._csrf,
       canManage: req.project ? this.canManage(user, req.project) : false,
@@ -1571,78 +1550,69 @@ class IpsModule {
   // ---- users ----
 
   /**
-   * Who is logged in, with the projects they manage as they are now (not as they were at
-   * login, so taking a project away, or deleting the user, takes effect at once).
+   * Who is logged in (library/auth), with the projects they manage as they are now (not as
+   * they were at login, so taking a project away, or disabling the user, takes effect at once).
+   * projects: the ids; allProjects: a manager of every project
    */
   currentUser(req) {
-    const s = req.session;
-    if (!s) {
+    const p = auth.currentUser(req);
+    if (!p) {
       return null;
     }
-    if (s.ipsAdmin) {
-      return { name: 'Administrator', login: this.adminUsername, isAdmin: true, projects: [] };
-    }
-    if (s.ipsUserId) {
-      const u = this.store.userById(s.ipsUserId);
-      if (u) {
-        return { id: u.id, name: u.name, login: u.login, isAdmin: false, projects: this.store.managedProjectIds(u.id) };
-      }
-    }
-    return null;
+    const scopes = p.scopes('ips', 'manager');
+    return {
+      id: p.id, name: p.name, login: p.login, isAdmin: p.isAdmin,
+      allProjects: scopes.includes(''),
+      projects: scopes.filter(x => /^\d+$/.test(x)).map(x => parseInt(x, 10))
+    };
   }
 
   canManage(user, project) {
-    return !!user && (user.isAdmin || user.projects.includes(project.id));
+    return !!user && (user.isAdmin || user.allProjects || user.projects.includes(project.id));
   }
 
-  sendLogin(req, res, status, error) {
-    res.status(status);
-    this.sendHtml(res, 'Login', render.renderLogin({ base: req.baseUrl, csrf: res.locals._csrf }, error), Date.now());
-  }
-
-  async login(req, res) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    // for the log: no control characters, no novel
-    const shown = login.replace(/[^\x20-\x7e]/g, '?').substring(0, 64);
-    let ok = false;
-    const regenerate = () => new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
-    if (login === this.adminUsername) {
-      if (this.adminHash && await bcrypt.compare(password, this.adminHash)) {
-        await regenerate();
-        req.session.ipsAdmin = true;
-        ok = true;
-      }
-    } else {
-      const user = login ? this.store.userByLogin(login) : null;
-      // the comparison is made whether or not there is such a user, so the time taken
-      // doesn't say which usernames exist
-      if (await bcrypt.compare(password, user ? user.password_hash : this.dummyHash) && user) {
-        await regenerate();
-        req.session.ipsUserId = user.id;
-        ok = true;
+  /** The projects (store.projects()), each with its managers from the server's users */
+  projectsWithManagers() {
+    const users = new Map(auth.users().map(u => [u.id, u]));
+    const byScope = new Map();
+    for (const h of auth.allHolders('ips', 'manager')) {
+      const u = users.get(h.user_id);
+      if (u) {
+        if (!byScope.has(h.scope)) {
+          byScope.set(h.scope, []);
+        }
+        byScope.get(h.scope).push({ id: u.id, login: u.login, name: u.name || u.login });
       }
     }
-    if (!ok) {
-      this.log.info(`IPS module: failed login for '${shown}' from ${req.ip}`);
-      return this.sendLogin(req, res, 401, 'Unknown username or wrong password');
-    }
-    this.log.info(`IPS module: '${shown}' logged in from ${req.ip}`);
-    res.redirect(req.baseUrl || '/');
+    return this.store.projects().map(p => ({ ...p, managers: byScope.get(String(p.id)) || [] }));
   }
 
   // ---- administration: projects and users ----
 
   sendProjects(req, res, message, status = 200) {
     res.status(status);
-    this.sendHtml(res, 'IPS Projects', render.renderProjects(this.store.projects(), this.store.users(), this.ctx(req, res), message), Date.now());
+    this.sendHtml(res, 'IPS Projects', render.renderProjects(this.projectsWithManagers(), this.managerCandidates(), this.ctx(req, res), message), Date.now());
+  }
+
+  /** The users the projects page offers as managers: enabled, with the IPS Project Admin role */
+  managerCandidates() {
+    const ids = new Set(auth.allHolders('ips', PROJECT_ADMIN).map(h => h.user_id));
+    return auth.users().filter(u => u.enabled && ids.has(u.id));
   }
 
   saveProject(req, res, id) {
     const code = typeof req.body.code === 'string' ? req.body.code.trim().toLowerCase() : '';
     const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
     const description = typeof req.body.description === 'string' ? req.body.description.trim() : '';
-    const managers = [].concat(req.body.manager || []).filter(m => /^\d{1,9}$/.test(m)).map(m => parseInt(m, 10));
+    // an IPS Project Admin, or someone who manages the project already (kept, though they no
+    // longer have the role, until they are taken off)
+    const allowed = new Set(this.managerCandidates().map(u => u.id));
+    if (id !== null) {
+      for (const uid of auth.holders('ips', 'manager', String(parseInt(id, 10)))) {
+        allowed.add(uid);
+      }
+    }
+    const managers = [].concat(req.body.manager || []).filter(m => /^\d{1,9}$/.test(m)).map(m => parseInt(m, 10)).filter(m => allowed.has(m));
     let problem = null;
     if (id === null && (!CODE_RE.test(code) || RESERVED.has(code))) {
       problem = 'The code must be 2-32 lower case letters, digits and hyphens, starting with a letter or digit' +
@@ -1668,49 +1638,14 @@ class IpsModule {
         return this.sendProjects(req, res, 'That project no longer exists', 404);
       }
     }
-    this.store.setProjectManagers(projectId, managers);
+    auth.setHolders('ips', 'manager', String(projectId), managers, req.user.login);
     res.redirect(req.baseUrl + '/admin/projects');
-  }
-
-  sendUsers(req, res, message, status = 200) {
-    res.status(status);
-    this.sendHtml(res, 'IPS Users', render.renderUsers(this.store.users(), this.ctx(req, res), message), Date.now());
-  }
-
-  async saveUser(req, res, id) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    let problem = null;
-    if (id === null && !/^[A-Za-z0-9._@-]{1,64}$/.test(login)) {
-      problem = 'The username must be 1-64 letters, digits, or . _ @ -';
-    } else if (id === null && login === this.adminUsername) {
-      problem = `'${login}' is the administrator's login`;
-    } else if (!name || name.length > 100) {
-      problem = 'A name is required (up to 100 characters)';
-    } else if ((id === null || password) && password.length < 8) {
-      problem = 'Passwords must be at least 8 characters';
-    }
-    if (problem) {
-      return this.sendUsers(req, res, problem, 400);
-    }
-    const hash = password ? await bcrypt.hash(password, 10) : null;
-    if (id === null) {
-      if (this.store.userByLogin(login)) {
-        return this.sendUsers(req, res, `There is already a user '${login}'`, 409);
-      }
-      this.store.createUser(login, name, hash);
-      this.log.info(`IPS module: user '${login}' created`);
-    } else if (!this.store.updateUser(parseInt(id, 10), name, hash)) {
-      return this.sendUsers(req, res, 'That user no longer exists', 404);
-    }
-    res.redirect(req.baseUrl + '/admin/users');
   }
 
   // ---- a project's settings ----
 
   projectWithManagers(project) {
-    return { ...project, managers: (this.store.projects().find(p => p.id === project.id) || {}).managers || [] };
+    return { ...project, managers: (this.projectsWithManagers().find(p => p.id === project.id) || {}).managers || [] };
   }
 
   sendSettings(req, res, message, status = 200) {

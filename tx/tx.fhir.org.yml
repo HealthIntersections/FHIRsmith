@@ -22,7 +22,7 @@ sources:
   - loinc:loinc-2.77-c.db
   - loinc!:Loinc_2.83f.db
   - rxnorm:rxnorm_20261005-a.cache
-  - ndc:ndc-20211101.db
+  - ndc:ndc-20261117.db
   - unii:unii_20240622.db
   - snomed:sct_intl_20250201-21.cache
   - snomed!:sct_intl_20260701-21.cache

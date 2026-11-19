@@ -1,28 +1,12 @@
 // registry/auth-store.js
-// The registry's users and their API tokens, in SQLite (better-sqlite3: synchronous, like
-// stats-db.js). A token is stored only as its SHA-256 hash: tokens are 256 bits of
-// randomness, so a fast hash is enough to make the stored form useless to a thief, and a
-// lookup by hash is one indexed read per request. Usage is counted per principal - a
-// user's token, the configured API token, or an OIDC client - and flushed in batches.
+// The registry's documents, and the requests made by each user and OIDC client, in SQLite
+// (better-sqlite3: synchronous, like stats-db.js). Usage is counted per principal - a user of
+// the server (user:{id}), or an OIDC client - and flushed in batches.
+//
+// The users and tokens tables are from before users and tokens were the server's
+// (library/auth): no longer used, and kept so a database from before still opens.
 
-const crypto = require('crypto');
 const Database = require('better-sqlite3');
-const bcrypt = require('bcrypt');
-
-const TOKEN_PREFIX = 'txr_';
-
-function hashToken(token) {
-  return crypto.createHash('sha256').update(token, 'utf8').digest('hex');
-}
-
-/**
- * Make a new token: txr_ + 32 random bytes, base64url. The first 12 characters are kept
- * in clear as the token's name on the pages
- */
-function makeToken() {
-  const token = TOKEN_PREFIX + crypto.randomBytes(32).toString('base64url');
-  return { token, prefix: token.substring(0, 12), hash: hashToken(token) };
-}
 
 class AuthStore {
   /**
@@ -90,18 +74,6 @@ class AuthStore {
     this.db.pragma('foreign_keys = ON');
     this.pending = new Map(); // principal -> { kind, count, last }
     this.stmts = {
-      userByLogin: this.db.prepare('SELECT * FROM users WHERE login = ?'),
-      userById: this.db.prepare('SELECT * FROM users WHERE id = ?'),
-      users: this.db.prepare('SELECT * FROM users ORDER BY login'),
-      insertUser: this.db.prepare('INSERT INTO users (login, name, password_hash, enabled, notes, admin, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-      updateUser: this.db.prepare('UPDATE users SET name = ?, enabled = ?, notes = ?, admin = ? WHERE id = ?'),
-      setPassword: this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?'),
-      deleteUser: this.db.prepare('DELETE FROM users WHERE id = ?'),
-      tokenByHash: this.db.prepare('SELECT t.*, u.login, u.enabled AS user_enabled FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?'),
-      tokensForUser: this.db.prepare('SELECT * FROM tokens WHERE user_id = ? ORDER BY created_at DESC'),
-      tokenById: this.db.prepare('SELECT * FROM tokens WHERE id = ?'),
-      insertToken: this.db.prepare('INSERT INTO tokens (user_id, prefix, hash, label, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)'),
-      revokeToken: this.db.prepare('UPDATE tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL'),
       usage: this.db.prepare('SELECT * FROM usage WHERE principal = ?'),
       allUsage: this.db.prepare('SELECT * FROM usage ORDER BY last_seen DESC'),
       upsertUsage: this.db.prepare(`INSERT INTO usage (principal, kind, requests, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)
@@ -116,110 +88,6 @@ class AuthStore {
       documentLog: this.db.prepare('SELECT id, action, name, type, public, at, by, length(content) AS size FROM document_log WHERE doc_id = ? ORDER BY id DESC'),
       documentLogEntry: this.db.prepare('SELECT * FROM document_log WHERE id = ? AND doc_id = ?')
     };
-  }
-
-  // ---- users ----
-
-  users() {
-    return this.stmts.users.all().map(u => this._user(u));
-  }
-
-  userById(id) {
-    const u = this.stmts.userById.get(id);
-    return u ? this._user(u) : null;
-  }
-
-  userByLogin(login) {
-    const u = this.stmts.userByLogin.get(login);
-    return u ? this._user(u) : null;
-  }
-
-  _user(row) {
-    return { ...row, enabled: !!row.enabled, admin: !!row.admin, hasPassword: !!row.password_hash };
-  }
-
-  /**
-   * @returns {number} the new user's id
-   * @throws if the login is taken
-   */
-  async createUser({ login, name = '', password = null, notes = '', enabled = true, admin = false }) {
-    const hash = password ? await bcrypt.hash(password, 10) : null;
-    const r = this.stmts.insertUser.run(login, name, hash, enabled ? 1 : 0, notes, admin ? 1 : 0, new Date().toISOString());
-    return Number(r.lastInsertRowid);
-  }
-
-  updateUser(id, { name, enabled, notes, admin }) {
-    const u = this.stmts.userById.get(id);
-    if (!u) {
-      return false;
-    }
-    this.stmts.updateUser.run(name ?? u.name, (enabled ?? !!u.enabled) ? 1 : 0, notes ?? u.notes, (admin ?? !!u.admin) ? 1 : 0, id);
-    return true;
-  }
-
-  async setPassword(id, password) {
-    const hash = password ? await bcrypt.hash(password, 10) : null;
-    return this.stmts.setPassword.run(hash, id).changes > 0;
-  }
-
-  async checkPassword(user, password) {
-    if (!user || !user.password_hash) {
-      return false;
-    }
-    return bcrypt.compare(password, user.password_hash);
-  }
-
-  deleteUser(id) {
-    return this.stmts.deleteUser.run(id).changes > 0;
-  }
-
-  // ---- tokens ----
-
-  /**
-   * Issue a token for a user. The clear token is returned once, here, and never stored
-   * @param {number} userId
-   * @param {object} [options]
-   * @param {string} [options.label]
-   * @param {number} [options.expiresInDays]
-   * @returns {{id: number, token: string, prefix: string}}
-   */
-  issueToken(userId, { label = '', expiresInDays = null } = {}) {
-    const t = makeToken();
-    const now = Date.now();
-    const expires = expiresInDays && expiresInDays > 0 ? new Date(now + expiresInDays * 24 * 60 * 60 * 1000).toISOString() : null;
-    const r = this.stmts.insertToken.run(userId, t.prefix, t.hash, label, new Date(now).toISOString(), expires);
-    return { id: Number(r.lastInsertRowid), token: t.token, prefix: t.prefix };
-  }
-
-  tokensForUser(userId) {
-    const now = Date.now();
-    return this.stmts.tokensForUser.all(userId).map(t => ({
-      ...t,
-      status: t.revoked_at ? 'revoked' : (t.expires_at && new Date(t.expires_at).getTime() < now ? 'expired' : 'active'),
-      usage: this.usageOf(`token:${t.id}`)
-    }));
-  }
-
-  revokeToken(userId, tokenId) {
-    return this.stmts.revokeToken.run(new Date().toISOString(), tokenId, userId).changes > 0;
-  }
-
-  /**
-   * The user behind a presented token, if it is a live token of an enabled user
-   * @returns {{userId: number, login: string, tokenId: number}|null}
-   */
-  authenticateToken(token, now = Date.now()) {
-    if (typeof token !== 'string' || !token.startsWith(TOKEN_PREFIX)) {
-      return null;
-    }
-    const t = this.stmts.tokenByHash.get(hashToken(token));
-    if (!t || t.revoked_at || !t.user_enabled) {
-      return null;
-    }
-    if (t.expires_at && new Date(t.expires_at).getTime() < now) {
-      return null;
-    }
-    return { userId: t.user_id, login: t.login, tokenId: t.id };
   }
 
   // ---- usage ----
@@ -274,10 +142,10 @@ class AuthStore {
     };
   }
 
-  /** Usage of principals other than users' tokens (the API token, OIDC clients) */
-  otherUsage() {
+  /** Every principal's usage, most recent first */
+  allUsage() {
     this.flush();
-    return this.stmts.allUsage.all().filter(u => u.kind !== 'token');
+    return this.stmts.allUsage.all();
   }
 
   // ---- documents ----
@@ -363,4 +231,4 @@ class AuthStore {
   }
 }
 
-module.exports = { AuthStore, makeToken, hashToken, TOKEN_PREFIX };
+module.exports = { AuthStore };

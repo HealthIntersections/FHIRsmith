@@ -24,27 +24,29 @@ const ALL = 'fhirsmith:caches-all'; // the launcher, to the process that asked
 // how long to wait for the processes: emptying the caches is followed by a full GC, which
 // takes a few seconds on a big heap
 const DEFAULT_TIMEOUT_MS = 30000;
-const ACTIONS = ['report', 'unload', 'unload-all'];
+// list: the entries of one cache (arg: its id)
+const ACTIONS = ['report', 'unload', 'unload-all', 'list'];
+const okArg = (arg) => arg === undefined || arg === null || (typeof arg === 'string' && arg.length <= 64);
 
 /**
  * A process's side.
- * @param {Function} local - async (action) => this process's result (a plain object)
+ * @param {Function} local - async (action, arg) => this process's result (a plain object)
  * @param {Object} [channel] - process, or a stand-in (tests); none (no send): this process only
  * @param {Object} [options]
  * @param {boolean} [options.cluster] - whether the launcher is there to ask (a role, with IPC)
  * @param {number} [options.timeoutMs] - the launcher's wait for the processes
  * @param {number} [options.marginMs] - how much longer this process waits for the launcher
- * @returns {{ask: Function, disconnect: Function}} ask(action) => Promise<{cluster, results}>,
+ * @returns {{ask: Function, disconnect: Function}} ask(action, arg) => Promise<{cluster, results}>,
  *   results [{code, name, role, result} or {code, name, role, error}]
  */
 function connectCaches(local, channel = process, { cluster = false, timeoutMs = DEFAULT_TIMEOUT_MS, marginMs = 5000 } = {}) {
   const usable = cluster && channel && typeof channel.send === 'function';
   const pending = new Map(); // id -> {resolve, timer}
 
-  const alone = async (action, note = null) => {
+  const alone = async (action, arg, note = null) => {
     const self = { code: null, name: 'this process', role: null };
     try {
-      return { cluster: false, note, results: [{ ...self, result: await local(action) }] };
+      return { cluster: false, note, results: [{ ...self, result: await local(action, arg) }] };
     } catch (e) {
       return { cluster: false, note, results: [{ ...self, error: e.message }] };
     }
@@ -54,10 +56,10 @@ function connectCaches(local, channel = process, { cluster = false, timeoutMs = 
     if (!message || typeof message !== 'object') {
       return;
     }
-    if (message.type === RUN && ACTIONS.includes(message.action)) {
+    if (message.type === RUN && ACTIONS.includes(message.action) && okArg(message.arg)) {
       let reply;
       try {
-        reply = { type: DONE, id: message.id, result: await local(message.action) };
+        reply = { type: DONE, id: message.id, result: await local(message.action, message.arg) };
       } catch (e) {
         reply = { type: DONE, id: message.id, error: e.message };
       }
@@ -77,12 +79,12 @@ function connectCaches(local, channel = process, { cluster = false, timeoutMs = 
     channel.on('message', receive);
   }
 
-  const ask = (action) => {
-    if (!ACTIONS.includes(action)) {
+  const ask = (action, arg = null) => {
+    if (!ACTIONS.includes(action) || !okArg(arg)) {
       return Promise.reject(new Error(`Unknown action ${action}`));
     }
     if (!usable || channel.connected === false) {
-      return alone(action);
+      return alone(action, arg);
     }
     const id = crypto.randomUUID();
     return new Promise(resolve => {
@@ -90,15 +92,15 @@ function connectCaches(local, channel = process, { cluster = false, timeoutMs = 
         pending.delete(id);
         // the launcher didn't answer at all: this process at least (not emptied twice: the
         // launcher didn't pass it on, or it would have answered)
-        resolve(alone(action, 'The launcher did not answer: this process only'));
+        resolve(alone(action, arg, 'The launcher did not answer: this process only'));
       }, timeoutMs + marginMs);
       pending.set(id, { resolve, timer });
       try {
-        channel.send({ type: ASK, id, action });
+        channel.send({ type: ASK, id, action, arg });
       } catch (e) {
         clearTimeout(timer);
         pending.delete(id);
-        resolve(alone(action, 'The launcher could not be asked: this process only'));
+        resolve(alone(action, arg, 'The launcher could not be asked: this process only'));
       }
     });
   };
@@ -141,7 +143,7 @@ class CacheFanout {
    * @param {Object} message
    */
   ask(from, message) {
-    if (!message || typeof message.id !== 'string' || !ACTIONS.includes(message.action) || this.pending.has(message.id)) {
+    if (!message || typeof message.id !== 'string' || !ACTIONS.includes(message.action) || !okArg(message.arg) || this.pending.has(message.id)) {
       return;
     }
     const asker = from.child;
@@ -156,7 +158,7 @@ class CacheFanout {
     for (const p of targets) {
       entry.waiting.add(p.code);
       try {
-        p.child.send({ type: RUN, id: message.id, action: message.action });
+        p.child.send({ type: RUN, id: message.id, action: message.action, arg: message.arg });
       } catch (e) {
         entry.waiting.delete(p.code);
         entry.results.set(p.code, { ...CacheFanout.#who(p), error: 'could not be asked' });

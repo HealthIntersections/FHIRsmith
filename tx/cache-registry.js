@@ -20,6 +20,8 @@
 //
 
 const KINDS = ['cache', 'content', 'client'];
+// the most entries of one cache shown (the most recently used)
+const LIST_ROWS = 5000;
 
 class CacheRegistry {
   constructor() {
@@ -36,6 +38,9 @@ class CacheRegistry {
    * @param {Function} [cache.clear] - () => empties it; returns about how many bytes that let go,
    *   or null if that isn't known. No clear: it is listed, but never emptied
    * @param {string} [cache.limit] - its limit, in words
+   * @param {string} [cache.id] - names it in a link to its entries (with list)
+   * @param {Function} [cache.list] - () => its entries, for an administrator to look at:
+   *   {columns: string[], rows: Array[]} (see LIST_ROWS)
    */
   add(cache) {
     if (!KINDS.includes(cache.kind)) {
@@ -59,8 +64,24 @@ class CacheRegistry {
       } catch (e) {
         detail = `unable to count: ${e.message}`;
       }
-      return { name: c.name, scope: c.scope, kind: c.kind, entries, detail, limit: c.limit || null, clearable: !!c.clear };
+      return { name: c.name, scope: c.scope, kind: c.kind, entries, detail, limit: c.limit || null, clearable: !!c.clear,
+        id: c.list && c.id ? c.id : null };
     });
+  }
+
+  /**
+   * The entries of the cache with this id (at most LIST_ROWS of them), or null if there is none
+   * that lists them
+   * @param {string} id
+   * @returns {Object|null} {id, name, scope, columns, rows, total}
+   */
+  list(id) {
+    const c = this.caches.find(x => x.id === id && x.list);
+    if (!c) {
+      return null;
+    }
+    const { columns, rows } = c.list();
+    return { id, name: c.name, scope: c.scope, columns, rows: rows.slice(-LIST_ROWS), total: rows.length };
   }
 
   /**
@@ -94,4 +115,4 @@ class CacheRegistry {
   }
 }
 
-module.exports = { CacheRegistry, KINDS };
+module.exports = { CacheRegistry, KINDS, LIST_ROWS };

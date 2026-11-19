@@ -33,24 +33,21 @@ Any GET request under the configured URL serves files directly. If the path is a
 
 PUT writes a file to the path specified in the URL. The parent directory is created automatically if it doesn't exist.
 
-All PUT requests require HTTP Basic authentication. Credentials are checked against `.users.json` files (see below).
+Every PUT needs an API token of one of the server's users ([library/auth](../library/auth/README.md)): HTTP Basic, with the token as the password (`curl -u {login}:{token} -T file.zip {url}`), or `Authorization: Bearer {token}`. The user may upload if they have the folder "upload" role for the folder (or every folder), given on the server's users pages, or are named in a `.users.json` (see below). A bad token is answered after a delay.
 
 Special case: uploading `main.zip` or `master.zip` automatically creates a copy named `default.zip` in the same directory.
 
 ## .users.json
 
-Authentication for PUT is controlled by `.users.json` files placed anywhere in the served directory tree. Format is a simple JSON object mapping usernames to passwords:
+A `.users.json` placed anywhere in the served directory tree lets the users it names upload there and below - for access to part of a folder. It is a list of logins (the server's users):
 
 ```json
-{
-  "grahame": "secretpassword",
-  "ci-bot": "buildtoken123"
-}
+["grahame", "ci-bot"]
 ```
 
-When a PUT comes in, the module walks up from the target directory to the folder root looking for a `.users.json` file. The first one found that contains a matching username and password grants access. If no match is found at any level, the request is rejected with 403.
+When a PUT comes in from a user without the role, the module walks up from the target directory to the folder root looking for `.users.json` files; one that names the user grants access. If none does, the request is rejected with 403. `.users.json` files are never served by GET.
 
-This means you can put a `.users.json` at the root to cover everything, or use per-subdirectory files to grant more specific access. `.users.json` files are never served by GET.
+The old form - an object of usernames and passwords - is no longer used (it is logged as such): replace it with a list of logins, give the users API tokens, and delete the passwords.
 
 ## Dependencies
 

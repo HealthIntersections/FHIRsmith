@@ -77,6 +77,26 @@ describe('config-check', () => {
     expect(report.warnings).toEqual([]);
   });
 
+  test('the passwords and secrets logins have replaced are warnings, not errors, so an old configuration still runs', () => {
+    const report = check({
+      auth: { sessionSecret: 'x', administrators: ['admin@example.org', 'github:someone', 'bare-name'] },
+      modules: {
+        publisher: { enabled: true, database: 'p.db', workspaceRoot: '/tmp', adminPassword: 'a', sessionSecret: 'b' },
+        testing: { enabled: true, token: 't', adminToken: 'a', adminPassword: 'p' },
+        packages: { enabled: true, database: 'p.db', crawlToken: 'c' },
+        token: { enabled: true, database: 'x' }
+      }
+    });
+    const warned = where(report.warnings);
+    for (const w of ['modules.publisher.adminPassword', 'modules.publisher.sessionSecret', 'modules.testing.token', 'modules.testing.adminToken',
+      'modules.testing.adminPassword', 'modules.packages.crawlToken', 'modules.token']) {
+      expect(warned).toContain(w);
+    }
+    expect(where(report.errors)).toEqual(['auth.administrators[2]']);
+    // without the auth block: said, once
+    expect(check({}).notes.some(n => n.where === 'auth')).toBe(true);
+  });
+
   test('an unknown module is a warning', () => {
     const report = check({ modules: { txx: { enabled: true } } });
     expect(report.warnings[0].where).toBe('modules.txx');
@@ -108,19 +128,20 @@ describe('config-check', () => {
 
   test('a secret that is wrong is reported without its value, and an object or list without its content', () => {
     const report = check({
+      email: { host: 'smtp.example.org', password: 4242 },
+      auth: { sessionSecret: ['s3cr3t'] },
       modules: {
-        registry: { enabled: true, apiKeys: { nzhts: 12345678 }, oauth: { nzhts: { tokenEndpoint: 'https://x.org/t', clientId: 'c', clientSecret: 98765 } } },
-        publisher: { enabled: true, database: 'p.db', adminPassword: 4242, sessionSecret: ['s3cr3t'] }
+        registry: { enabled: true, apiKeys: { nzhts: 12345678 }, oauth: { nzhts: { tokenEndpoint: 'https://x.org/t', clientId: 'c', clientSecret: 98765 } } }
       }
     });
     const text = report.errors.map(e => `${e.where}: ${e.message}`).join('\n');
     expect(where(report.errors)).toEqual(expect.arrayContaining(['modules.registry.apiKeys.nzhts',
-      'modules.registry.oauth.nzhts.clientSecret', 'modules.publisher.adminPassword', 'modules.publisher.sessionSecret']));
+      'modules.registry.oauth.nzhts.clientSecret', 'email.password', 'auth.sessionSecret']));
     for (const secret of ['12345678', '98765', '4242', 's3cr3t']) {
       expect(text).not.toContain(secret);
     }
-    expect(report.errors.find(e => e.where === 'modules.publisher.adminPassword').message).toBe('must be a string, not a number (not shown)');
-    expect(report.errors.find(e => e.where === 'modules.publisher.sessionSecret').message).toBe('must be a string, not a list');
+    expect(report.errors.find(e => e.where === 'email.password').message).toBe('must be a string, not a number (not shown)');
+    expect(report.errors.find(e => e.where === 'auth.sessionSecret').message).toBe('must be a string, not a list');
     // an object where a list belongs is said to be one, not shown (it could hold a secret)
     const list = check({ modules: { registry: { enabled: true, oauth: [{ clientSecret: 'hidden-value' }] } } });
     expect(list.errors.map(e => e.message).join('\n')).not.toContain('hidden-value');
