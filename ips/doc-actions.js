@@ -44,8 +44,11 @@
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
-  function postJson(url, body) {
-    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' })
+  // csrf: the CSRF token, for a logged in user's post (the server checks it for them)
+  function postJson(url, body, csrf) {
+    var headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (csrf) { headers['X-CSRF-Token'] = csrf; }
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), credentials: 'same-origin' })
       .then(function (r) {
         return r.json().catch(function () { return { error: 'HTTP ' + r.status }; }).then(function (j) {
           if (!r.ok) {
@@ -156,17 +159,27 @@
     var submitPart = el('span', {});
     var projectSelect = null;
     var tokenInput = el('input', { type: 'password', class: 'form-control', style: 'display: inline-block; width: 12em', placeholder: 'Submission token', autocomplete: 'off', 'aria-label': 'Submission token' });
+    // the project chosen: its submitOffer (needsToken, blocked, asUser...)
+    function chosen() {
+      if (cfg.project) { return cfg.project; }
+      return (cfg.projects || []).filter(function (x) { return projectSelect && x.code === projectSelect.value; })[0] || null;
+    }
+    var note = el('span', { class: 'ips-small' });
     function needsToken() {
-      if (cfg.project) { return cfg.project.needsToken; }
-      var p = (cfg.projects || []).filter(function (x) { return projectSelect && x.code === projectSelect.value; })[0];
+      var p = chosen();
       return !!(p && p.needsToken);
     }
-    function showToken() { tokenInput.style.display = needsToken() ? 'inline-block' : 'none'; }
+    function showToken() {
+      var p = chosen();
+      tokenInput.style.display = needsToken() ? 'inline-block' : 'none';
+      // users only, and this one can't: say so (the server would refuse it anyway)
+      note.textContent = p && p.blocked ? ' ' + p.blocked : '';
+    }
     function submit() {
       var project = cfg.project ? cfg.project.code : (projectSelect ? projectSelect.value : '');
       if (!project) { failed('Not submitted', new Error('Choose the project to submit the document to')); return; }
       messages.innerHTML = '<p><i>Submitting...</i></p>';
-      postJson(cfg.urls.submit, { project: project, token: tokenInput.value, bundle: bundle, editor: cfg.editor })
+      postJson(cfg.urls.submit, { project: project, token: tokenInput.value, bundle: bundle, editor: cfg.editor }, cfg.csrf)
         .then(function (j) {
           if (hooks.onSubmitted) { hooks.onSubmitted(j); }
           messages.innerHTML = '<p class="text-success">Submitted as document ' + escapeHtml(String(j.id)) + '. Opening it...</p>';
@@ -186,6 +199,7 @@
     if (cfg.project || (cfg.projects || []).length) {
       submitPart.appendChild(document.createTextNode(' '));
       submitPart.appendChild(tokenInput);
+      submitPart.appendChild(note);
       showToken();
     }
 

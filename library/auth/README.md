@@ -256,6 +256,7 @@ A token is sent as:
 |---|---|---|---|
 | (server) | administrator | | everything, on every module |
 | ips | manager | a project | the project's settings and submission token; deleting and reprocessing its documents |
+| ips | submitter (Submit documents) | a project | submitting documents to a project that takes them from approved users |
 | ips | project-admin (IPS Project Admin) | | can be made a manager of projects: the IPS projects page offers only these users |
 | publisher | queue | a website | queuing publications |
 | publisher | approve | a website | approving publications |

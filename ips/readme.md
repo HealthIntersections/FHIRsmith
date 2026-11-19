@@ -41,15 +41,23 @@ deletes its documents.
 
 A project's managers (and the administrator) can:
 
-- set the project's submission token at `/ips/{code}/settings`. When one is set, a document
-  can only be submitted with it: in the `token` field of the submission form, or as
-  `Authorization: Bearer <token>` on a `POST`. Managers can read the token back, so it is
-  stored as it is, not hashed
+- say who may submit, at `/ips/{code}/settings` (*Who may submit*): a submission token, users,
+  both, or neither (anyone). With both, either will do:
+  - **the token**: a document is submitted with it in the `token` field of the submission form,
+    or as `Authorization: Bearer <token>` on a `POST`. Managers can read the token back, so it
+    is stored as it is, not hashed
+  - **users**: *any logged in user*, or *approved users* - those the server's administrator
+    gives the ips *Submit documents* role for the project (`ips submitter`, on the user's page;
+    the project's managers count as approved). On the pages a user logs in; on the API they
+    send their own API token (`Authorization: Bearer fhs_...`, made on their account page) -
+    never a session cookie. The document records who submitted it ("from {name} ({login})")
 - delete documents, and put a document back in the processing queue
 
 Logins are the server's: its session cookie, an Origin check and a CSRF token on every form post - except
 the submission form, which anyone may post (with the project's token, if it has one), so it
-carries no CSRF token and starts no session; the Origin check still applies.
+carries no CSRF token and starts no session; the Origin check still applies. A logged in user's
+submissions (the form, the editors, adding a document from the viewer) carry the CSRF token,
+since they ride on the session.
 
 ## Limits
 
@@ -72,14 +80,14 @@ narratives as they are.
 
     POST /ips/{code}/Bundle
     Content-Type: application/fhir+json
-    Authorization: Bearer <token>        (only if the project has one)
+    Authorization: Bearer <token>        (the project's token, or a user's API token, if the project needs one)
 
 or paste the JSON (or pick a file) at `/ips/{code}/submit`. The server gives the document its
 id - a serial number, one series across all projects - sets `meta.lastUpdated` to the time it
 was received, and drops `meta.versionId`: documents can't be changed once received.
 Responses follow the spec: `201 Created` with a `Location` header, and the stored document,
 or nothing (`Prefer: return=minimal`), or an OperationOutcome (`Prefer: return=OperationOutcome`).
-Errors are OperationOutcomes: 400, 401 (token), 413 (too big), 415 (not JSON), 429 (rate
+Errors are OperationOutcomes: 400, 401 (no token or user, or a wrong one), 403 (a user who isn't approved), 413 (too big), 415 (not JSON), 429 (rate
 limit). The submitter's IP address is recorded, for tracing abuse, and never returned.
 
     GET /ips/{code}/Bundle/{id}          the document (JSON), or a view of it for a browser
