@@ -480,11 +480,12 @@ class TxParameters {
       case 'profile': {
         // only an inline Parameters resource can be read. Anything else - an (R3) ExpansionProfile,
         // another resource, or a uri/canonical/string naming a profile - is refused, rather than
-        // answered without what it asks for
+        // answered without what it asks for. A 'profile' among a ValueSet's embedded expansion
+        // parameters (overwrite=false) can only be a value and is left ignored, as before
         const res = value.resource;
         if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
-        } else {
+        } else if (overwrite) {
           const found = res ? 'a resource of type ' + res.resourceType : "the value '" + getValuePrimitive(value) + "'";
           throw new Issue('error', 'not-supported', null, null, "The parameter 'profile' is only supported as an inline Parameters resource, not " + found, null, 400);
         }

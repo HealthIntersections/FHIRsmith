@@ -49,4 +49,9 @@ describe("'profile' parameter", () => {
     expect(error.message).toContain('only supported as an inline Parameters resource');
     expect(error.message).toContain(found);
   });
+
+  test("a 'profile' in a ValueSet's embedded expansion parameters is ignored, not refused", () => {
+    const p = new TxParameters(langDefs, i18n);
+    expect(() => p.seeParameter('profile', { valueUri: 'http://example.org/fhir/ExpansionProfile/x' }, false)).not.toThrow();
+  });
 });
