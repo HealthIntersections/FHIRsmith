@@ -69,8 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Tx Conformance Statement
 
-(paste)
-
+FHIRsmith v1.0.6 passed all 5545 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
 
 ## [1.0.5] - 2026-11-18
 
