@@ -291,7 +291,7 @@ function sendLogin(auth, req, res, status, error) {
   // first, logging in with another site's account: anyone can, and the first time makes an account
   const providers = Object.values(oauth.PROVIDERS).filter(p => auth.providers[p.key]);
   if (providers.length > 0) {
-    h += '<p>' + providers.map(p => `<a class="btn btn-outline-dark" style="margin: 0 8px 8px 0" href="/auth/${p.key}${q}">Log in with ${p.label}</a>`).join('') + '</p>' +
+    h += '<p>' + providers.map(p => `<a class="btn btn-primary" role="button" style="margin: 0 8px 8px 0; min-width: 200px" href="/auth/${p.key}${q}">Log in with ${p.label}</a>`).join('') + '</p>' +
       `<p class="text-muted"><small>Logging in with ${providers.map(p => p.label).join(' or ')} the first time makes you an account. ` +
       'It can\'t do anything until the administrator gives it a role.</small></p><hr/>' +
       '<p>Or log in with the username and password of an account you have been given:</p>';

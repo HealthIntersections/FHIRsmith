@@ -5300,3 +5300,35 @@ p {
 .affix {
   position: fixed;
 }
+
+/* FHIRsmith: button classes from later Bootstraps that pages use (btn-secondary, btn-outline-*),
+   which this Bootstrap 3 doesn't have. Without these, .btn:hover's white text was all that
+   applied, and such a button vanished when the mouse was over it */
+.btn-secondary {
+  color: #ffffff;
+  background-color: #6c757d;
+  border-color: #6c757d;
+}
+.btn-secondary:hover,
+.btn-secondary:focus,
+.btn-secondary:active,
+.btn-secondary.active {
+  color: #ffffff;
+  background-color: #5a6268;
+  border-color: #545b62;
+}
+.btn-outline-secondary,
+.btn-outline-dark,
+.btn-outline-primary,
+.btn-outline-danger {
+  background-color: #ffffff;
+}
+.btn-outline-secondary { color: #474949; border-color: #6c757d; }
+.btn-outline-dark { color: #222222; border-color: #222222; }
+.btn-outline-primary { color: #2c618f; border-color: #2c618f; }
+.btn-outline-danger { color: #c9302c; border-color: #d9534f; }
+.btn-outline-secondary:hover, .btn-outline-secondary:focus, .btn-outline-secondary:active { color: #ffffff; background-color: #6c757d; border-color: #6c757d; }
+.btn-outline-dark:hover, .btn-outline-dark:focus, .btn-outline-dark:active { color: #ffffff; background-color: #222222; border-color: #222222; }
+.btn-outline-primary:hover, .btn-outline-primary:focus, .btn-outline-primary:active { color: #ffffff; background-color: #2c618f; border-color: #2c618f; }
+.btn-outline-danger:hover, .btn-outline-danger:focus, .btn-outline-danger:active { color: #ffffff; background-color: #d9534f; border-color: #d9534f; }
+.btn-sm { padding: 4px 10px; font-size: 13px; }
