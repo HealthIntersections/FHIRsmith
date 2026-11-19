@@ -147,7 +147,7 @@ function buildRouter(auth) {
   r.get('/login', session, csrf, h((req, res) => sendLogin(auth, req, res, 200)));
   r.post('/login', sameOrigin, limiter, session, form, csrf, h((req, res) => login(auth, req, res)));
   r.post('/logout', sameOrigin, session, form, csrf, h((req, res) => {
-    const back = safeReturn(str(req.body.return), '/');
+    const back = safeReturn(str(req.body.return), auth.afterLogout());
     req.session.destroy(() => res.redirect(back));
   }));
 
@@ -282,7 +282,8 @@ function sendLogin(auth, req, res, status, error) {
     (ret ? `<input type="hidden" name="return" value="${escape(ret)}"/>` : '') +
     field('login', 'Username or email', 'text', { required: true, autocomplete: 'username' }) +
     field('password', 'Password', 'password', { required: true, autocomplete: 'current-password' }) +
-    '<button type="submit" class="btn btn-primary">Log in</button> &nbsp; <a href="/auth/forgot">Forgotten your password?</a></form>';
+    '<button type="submit" class="btn btn-primary">Log in</button> &nbsp; ' +
+    `<a href="/auth/forgot${ret ? `?return=${escape(encodeURIComponent(ret))}` : ''}">Forgotten your password?</a></form>`;
   if (auth.github) {
     h += `<p style="margin-top: 1.5em"><a class="btn btn-outline-dark" href="/auth/github${ret ? `?return=${escape(encodeURIComponent(ret))}` : ''}">Log in with GitHub</a></p>` +
       '<p class="text-muted"><small>Logging in with GitHub the first time makes you an account. It can\'t do anything until the administrator gives it a role.</small></p>';
@@ -368,13 +369,20 @@ async function githubCallback(auth, req, res) {
 
 // ---- forgotten passwords ----
 
+/** The page to come back to after logging in: a path on this server, or '' */
+function returnOf(req) {
+  return safeReturn(str(req.query.return || req.body?.return), '');
+}
+
 function sendForgot(auth, req, res, status, message) {
+  const ret = returnOf(req);
   let h = alert(message);
   if (!auth.canEmail()) {
     h += '<p>This server can\'t send email. Ask the administrator for a link to set your password.</p>';
   } else {
     h += '<p>Say who you are, and a link to set your password will be sent to the email address of the account.</p>' +
       `<form method="post" action="/auth/forgot" style="max-width: 420px">${csrfField(res)}` +
+      (ret ? `<input type="hidden" name="return" value="${escape(ret)}"/>` : '') +
       field('login', 'Username or email', 'text', { required: true, autocomplete: 'username' }) +
       '<button type="submit" class="btn btn-primary">Send the link</button></form>';
   }
@@ -386,7 +394,8 @@ async function forgot(auth, req, res) {
   const u = name ? auth.store.userByLoginOrEmail(name) : null;
   if (u && u.enabled && u.email) {
     try {
-      await auth.emailPasswordLink(u, req, 'reset');
+      // the link brings the user back to where they started logging in
+      await auth.emailPasswordLink(u, req, 'reset', returnOf(req));
       auth.log.info(`Auth: password link for '${u.login}' emailed (asked from ${req.ip})`);
     } catch (e) {
       auth.log.error(`Auth: could not email a password link to '${u.login}': ${e.message}`);
@@ -413,6 +422,7 @@ function sendReset(auth, req, res, status, error) {
   let h = alert(error ? { text: error, level: 'danger' } : null);
   h += `<p>Choose a password for <b>${escape(u.login)}</b>${u.email ? ` (${escape(u.email)})` : ''}. It must be at least ${MIN_PASSWORD} characters; a password manager is a good idea.</p>` +
     `<form method="post" action="/auth/reset/${escape(encodeURIComponent(req.params.secret))}" style="max-width: 420px">${csrfField(res)}` +
+    (returnOf(req) ? `<input type="hidden" name="return" value="${escape(returnOf(req))}"/>` : '') +
     `<input type="text" name="username" value="${escape(u.login)}" autocomplete="username" style="display: none"/>` +
     field('password', 'New password', 'password', { required: true, autocomplete: 'new-password' }) +
     field('confirm', 'The same again', 'password', { required: true, autocomplete: 'new-password' }) +
@@ -437,7 +447,8 @@ async function reset(auth, req, res) {
   auth.log.info(`Auth: password of '${u.login}' set from a link, from ${req.ip}`);
   await logIn(auth, req, auth.store.userById(u.id));
   flash(req, 'Your password is set, and you are logged in');
-  res.redirect('/auth/account');
+  // back where logging in started (a forgotten password from the login page), else the account
+  res.redirect(returnOf(req) || '/auth/account');
 }
 
 // ---- a user's account ----
@@ -501,7 +512,7 @@ function sendAccount(auth, req, res) {
   const p = req.user;
   let h = alert(takeFlash(req)) + newTokenBanner(req);
   h += `<p>You are logged in as <b>${escape(u.name || u.login)}</b>. ` +
-    postButton(res, '/auth/logout', 'Logout', 'btn-outline-secondary', null, { return: '/' }) + '</p>';
+    postButton(res, '/auth/logout', 'Logout', 'btn-outline-secondary') + '</p>';
   h += '<table class="grid" style="margin-bottom: 1em">' +
     `<tr><td><b>Login</b></td><td>${escape(u.login)}</td></tr>` +
     `<tr><td><b>Email</b></td><td>${escape(u.email || '(none)')} <small class="text-muted">(the administrator changes this)</small></td></tr>` +

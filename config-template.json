@@ -71,6 +71,8 @@
     // session cookies only over HTTPS (behind a TLS proxy, make sure it sets X-Forwarded-Proto);
     // false only to run over plain http
     "cookieSecure": true,
+    // where Logout goes: a path on this server (e.g. "/ips" when something else is at the root)
+    "afterLogout": "/",
     // how long a login lasts, and how long a password link works
     "sessionHours": 24,
     "linkMinutes": 60,

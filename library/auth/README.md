@@ -21,8 +21,9 @@ The top-level `auth` block of `config.json` (all optional; see `config-template.
 | `sessionSecret` | random | Signs the login cookie. **Set it**: without it logins don't survive a restart, and under the launcher a login on one process isn't one on the others |
 | `administrators` | none | The server's administrators: email addresses, and `github:{name}` for GitHub accounts. See below |
 | `publicUrl` | `https://{hostName}` (`http://` when `cookieSecure` is false) | Where the links in emails point, and the GitHub callback |
-| `github` | none | `{ "clientId", "clientSecret" }` of a GitHub OAuth app, for logging in with GitHub. Optional `callbackUrl` |
+| `github` | none | `{ "clientId", "clientSecret" }` of a GitHub OAuth app, for logging in with GitHub ([setting it up](#setting-up-logging-in-with-github)). Optional `callbackUrl` |
 | `cookieSecure` | `true` | The login cookie only travels over HTTPS. Behind a TLS proxy, the proxy must send `X-Forwarded-Proto` ([nginx.md](../../nginx.md)). `false` only to run over plain http |
+| `afterLogout` | `/` | Where *Logout* goes: a path on this server, e.g. `/ips` when something else is at the root of the site |
 | `sessionHours` | 24 | How long a login lasts |
 | `linkMinutes` | 60 | How long a password link works |
 | `loginAttemptsPerWindow` | 20 | Failed logins (and password link requests, and password changes) per IP address per 15 minutes |
@@ -30,6 +31,82 @@ The top-level `auth` block of `config.json` (all optional; see `config-template.
 
 Email (the top-level `email` block, [CONFIGURATION.md](../../CONFIGURATION.md#email-and-the-daily-report)) is how
 password links are sent. Without it the administrator is shown each link, to pass on.
+
+## Setting up logging in with GitHub
+
+Logging in with GitHub needs a GitHub **OAuth app** (not a "GitHub App") for the server. Each
+server needs its own, because an OAuth app has one callback URL.
+
+1. **Make the app.** On GitHub go to *Settings → Developer settings → OAuth Apps → New OAuth
+   App*. That's your own account's settings, or an organization's (*Organization settings →
+   Developer settings*) if the app should belong to the organization. Fill in:
+   - *Application name*: what users see on GitHub's "Authorize" page, e.g. `FHIRsmith (tx.example.org)`
+   - *Homepage URL*: the server, e.g. `https://tx.example.org`
+   - *Authorization callback URL*: the server's public URL followed by `/auth/github/callback`,
+     e.g. `https://tx.example.org/auth/github/callback`. This is OAuth's *redirect URI*, and
+     GitHub's documentation and error messages call it that too (`redirect_uri`). Register
+     exactly what the server sends (step 3). GitHub accepts a redirect URI on the same scheme,
+     host and port whose path is the callback's or a subdirectory of it, but an exact match
+     leaves nothing to get wrong
+   - leave *Enable Device Flow* off
+2. **Get the credentials.** On the app's page, copy the *Client ID*, then *Generate a new
+   client secret* and copy that too. GitHub shows the secret only once.
+3. **Configure the server.** Add them to the `auth` block of `config.json`:
+
+   ```json
+   "auth": {
+     "sessionSecret": "...",
+     "publicUrl": "https://tx.example.org",
+     "github": { "clientId": "Ov23li...", "clientSecret": "..." },
+     "administrators": ["github:your-github-name"]
+   }
+   ```
+
+   The server sends `{publicUrl}/auth/github/callback` as the callback. Without `publicUrl` it
+   uses `https://{hostName}` (`http://` when `cookieSecure` is false), and without `hostName`
+   it uses the address the request came in on. Set `publicUrl` whenever the server is behind a
+   proxy, so that the callback is the public address. If the callback has to be something else,
+   set `github.callbackUrl` to the full URL; it must still end up at `/auth/github/callback` on
+   this server.
+4. **Restart the server, and try it.** The login page now has *Log in with GitHub*. The first
+   time, GitHub asks the user to authorize the app. It asks for `read:user` and `user:email`:
+   who they are, and their verified primary email address, nothing else. Then they come back
+   logged in.
+
+What happens next:
+
+- **A GitHub user with no account here** gets one, with no roles, so they can't do anything
+  until an administrator gives them a role. The new account's login is their GitHub name, or
+  that name with `-2` (and so on) added if it's taken. Its email is their verified primary
+  GitHub email, unless another account here already has that address: accounts are never
+  matched or merged by email.
+- **An existing password account** can add GitHub on its account page (*Link GitHub account*),
+  and then log in either way.
+- **The account is tied to the GitHub user id**, not the name, so it survives a rename on GitHub.
+- **Administrators:** `github:{name}` in `administrators` makes that GitHub user an
+  administrator from their first GitHub login.
+
+Running more than one server (say production and a test server, or your own machine) needs an
+OAuth app for each. For development, GitHub accepts `http://localhost:{port}/auth/github/callback`
+as the callback URL; set `"cookieSecure": false` and
+`"publicUrl": "http://localhost:{port}"` to go with it.
+
+Each server makes outgoing HTTPS requests to `github.com` and `api.github.com` during a GitHub
+login, so a firewall must allow them.
+
+If it goes wrong:
+
+| What you see | Why |
+|---|---|
+| No *Log in with GitHub* button | `github.clientId` or `github.clientSecret` is missing, or the server hasn't been restarted |
+| GitHub says *The redirect_uri is not associated with this application* | The callback the server sent isn't the app's *Authorization callback URL*: check `publicUrl` (and `http` vs `https`) |
+| *GitHub did not give an access token: incorrect_client_credentials* | The client secret is wrong, or has been regenerated |
+| *GitHub did not give an access token: bad_verification_code* | The code was used already or expired: the user went back, or took too long. Try again |
+| *The GitHub login did not start here, or took too long* | The session cookie didn't come back: over plain http with `cookieSecure` true, or a proxy not sending `X-Forwarded-Proto` ([nginx.md](../../nginx.md)) |
+| *GitHub login was cancelled* | The user chose *Cancel* on GitHub's Authorize page |
+| Logged in, but can't do anything | The account has no roles yet: an administrator gives them on `/auth/admin/users` |
+
+Failed GitHub logins are logged (`Auth: GitHub login failed from ...`) with the reason.
 
 ## The administrators
 
@@ -54,6 +131,10 @@ administrator who can't log in gets back in. It reads `config.json` as the serve
 (`auth.database`, `auth.publicUrl` or `hostName`).
 
 ## Accounts
+
+Logging in comes back to the page it started from: the *Login* link at the right of every page's
+top menu, and the login page a protected page sends you to, carry the page with them, through a
+wrong password, *Log in with GitHub*, and a forgotten password's emailed link.
 
 - **Made by the administrator** (`/auth/admin/users`): a login, a name and an email. With an
   email, the user is sent a link to set their password (or the administrator is shown it). An
@@ -80,7 +161,8 @@ in `administrators` makes the account an administrator.
 - set only from a link: the administrator never chooses or sees a password
 - stored as bcrypt hashes (cost 12)
 - a forgotten password: *Forgotten your password?* asks for a login or email, and says the same
-  whether or not there is such an account
+  whether or not there is such an account. The emailed link remembers the page logging in started
+  from, and setting the password comes back to it, logged in
 - a link works once, for `linkMinutes`; asking for another stops the last one working
 - changing a password, or the administrator disabling the account, ends the account's sessions everywhere
 

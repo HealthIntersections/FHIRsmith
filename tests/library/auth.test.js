@@ -206,6 +206,20 @@ describe('logging in with a password', () => {
     expect(res.headers.location).toBe('/module/page');
     expect((await agent.get('/module/page')).text).toBe('nobody');
   });
+
+  test('the account page\'s Logout goes to afterLogout (default /); one that leaves the server is ignored', async () => {
+    let { agent } = await login(app, 'person', GOOD);
+    expect((await form(agent, '/auth/logout', {}, '/auth/account')).headers.location).toBe('/');
+    app = makeApp({ afterLogout: '/ips' });
+    await makeUser('person', GOOD);
+    ({ agent } = await login(app, 'person', GOOD));
+    expect((await agent.get('/auth/account')).text).not.toContain('name="return" value="/"');
+    expect((await form(agent, '/auth/logout', {}, '/auth/account')).headers.location).toBe('/ips');
+    app = makeApp({ afterLogout: '//evil.example' });
+    await makeUser('person', GOOD);
+    ({ agent } = await login(app, 'person', GOOD));
+    expect((await form(agent, '/auth/logout', {}, '/auth/account')).headers.location).toBe('/');
+  });
 });
 
 describe('password links', () => {
@@ -254,6 +268,29 @@ describe('password links', () => {
     expect(auth.publicUrl(fakeReq)).toBe('http://localhost:3001');
     setupAuth({ cookieSecure: false, publicUrl: 'https://fhir.example.org/', options: { hostName: 'localhost:3001' } });
     expect(auth.publicUrl(fakeReq)).toBe('https://fhir.example.org');
+  });
+
+  test('a forgotten password, asked for from the login page, comes back to where logging in started', async () => {
+    const agent = request.agent(app);
+    const loginPage = await agent.get('/auth/login?return=%2Fmodule%2Fpage');
+    expect(loginPage.text).toContain('href="/auth/forgot?return=%2Fmodule%2Fpage"');
+    const forgotPage = await agent.get('/auth/forgot?return=%2Fmodule%2Fpage');
+    expect(forgotPage.text).toContain('<input type="hidden" name="return" value="/module/page"/>');
+    await form(agent, '/auth/forgot', { login: 'person', return: '/module/page' }, '/auth/forgot');
+    const m = mailer.sent[0].text.match(/https:\/\/fhir\.example\.org(\/auth\/reset\/[A-Za-z0-9_-]+\?return=%2Fmodule%2Fpage)/);
+    expect(m).not.toBeNull();
+    const page = await agent.get(m[1]);
+    expect(page.text).toContain('<input type="hidden" name="return" value="/module/page"/>');
+    const res = await form(agent, m[1], { password: 'a-new-password-1', confirm: 'a-new-password-1', return: '/module/page' }, m[1]);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe('/module/page');
+    expect((await agent.get('/module/page')).text).toBe('hello person');
+  });
+
+  test('a return that leaves the server is dropped from the link', async () => {
+    const agent = request.agent(app);
+    await form(agent, '/auth/forgot', { login: 'person', return: '//evil.example/x' }, '/auth/forgot');
+    expect(mailer.sent[0].text).not.toContain('return=');
   });
 
   test('without email, there is no form - ask the administrator', async () => {

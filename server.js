@@ -151,6 +151,7 @@ serverLog.info(`Loaded Configuration. Active modules = ${activeModules}`);
 
 // Import modules
 const SHLModule = require('./shl/shl.js');
+const { isOwnShlServer } = require('./ips/share.js');
 const VCLModule = require('./vcl/vcl.js');
 const xigModule = require('./xig/xig.js');
 const PackagesModule = require('./packages/packages.js');
@@ -427,6 +428,12 @@ async function initializeModules() {
       // SHL server of its own (with a token for it)
       if (config.modules.ips.shl && !config.modules.ips.shl.server && config.modules.shl?.enabled) {
         config.modules.ips.shl = { server: '/shl', ...config.modules.ips.shl };
+      }
+      // an SHL server named by URL that is this server's own shl module (its hostName, or
+      // auth.publicUrl, and /shl) is called in process, as this server - it needs no token
+      if (config.modules.ips.shl && config.modules.shl?.enabled && isOwnShlServer(config.modules.ips.shl.server, { hostName: config.hostName, publicUrl: config.auth?.publicUrl })) {
+        serverLog.info(`IPS module: ${config.modules.ips.shl.server} is this server's own shl module - shared in process`);
+        config.modules.ips.shl = { ...config.modules.ips.shl, server: '/shl' };
       }
       // the SHL viewer checks VHL signatures with the certificates it trusts: this server's own
       // shl module's (it signs the VHLs the ips module shares), unless told otherwise

@@ -184,6 +184,7 @@ const TOP = obj({
     linkMinutes: int({ min: 1 }),
     loginAttemptsPerWindow: count(),
     requestsPerMinute: positive(),
+    afterLogout: str({ pattern: /^\/(?![/\\])\S*$/, patternText: 'a path on this server, starting with /' }),
     bcryptCost: int({ min: 4, max: 15 })
   }),
   accessibility: obj({ checkPanel: bool() }),

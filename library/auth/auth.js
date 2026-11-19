@@ -547,13 +547,14 @@ class Auth {
    * A link that sets the user's password (any earlier one stops working)
    * @returns {string|null} the URL, or null if there is no public URL to make it from
    */
-  passwordLink(userId, req) {
+  passwordLink(userId, req, back = '') {
     this.requireInitialized();
     const base = this.publicUrl(req);
     if (!base) {
       return null;
     }
-    return `${base}/auth/reset/${this.store.createLink(userId, this.linkMinutes)}`;
+    const ret = safeReturn(back, '');
+    return `${base}/auth/reset/${this.store.createLink(userId, this.linkMinutes)}${ret ? `?return=${encodeURIComponent(ret)}` : ''}`;
   }
 
   canEmail() {
@@ -561,11 +562,11 @@ class Auth {
   }
 
   /** Email a user a link that sets their password. Resolves true if it was sent */
-  async emailPasswordLink(user, req, reason = 'reset') {
+  async emailPasswordLink(user, req, reason = 'reset', back = '') {
     if (!this.canEmail() || !user || !user.email) {
       return false;
     }
-    const link = this.passwordLink(user.id, req);
+    const link = this.passwordLink(user.id, req, back);
     const where = this.publicUrl(req) || 'FHIRsmith';
     const text = (reason === 'new' ?
       `An account has been made for you on ${where}, with the login ${user.login}.\n\nSet its password here:\n\n` :
@@ -606,6 +607,11 @@ class Auth {
       sentences.push(`${plural(s.sessions, 'session')} ${s.sessions === 1 ? 'is' : 'are'} logged in now.`);
     }
     return sentences.join(' ');
+  }
+
+  /** Where logging out goes (auth.afterLogout, a path on this server; default the server's home page) */
+  afterLogout() {
+    return safeReturn(this.config.afterLogout, '/');
   }
 
   /**
